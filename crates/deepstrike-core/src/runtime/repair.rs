@@ -324,7 +324,7 @@ mod tests {
                 criteria: vec![],
                 agent_id: None,
                 system_prompt: None,
-            attachments: vec![],
+                attachments: vec![],
             },
             SessionEvent::PageOut {
                 turn: 1,

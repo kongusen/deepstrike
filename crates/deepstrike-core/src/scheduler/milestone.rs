@@ -52,6 +52,34 @@ impl MilestoneTracker {
             .unwrap_or(&[])
     }
 
+    /// §12.2 · position an already-loaded cascade where a checkpoint recorded it.
+    ///
+    /// `phase_id` is the *current* (not-yet-passed) phase; `None` means every phase passed. The
+    /// contract itself is reloaded from the operation's configuration first, so this restores the
+    /// cursor only — it can never invent a phase the configuration does not declare, and it reports
+    /// `false` rather than guessing when the id names nothing.
+    pub fn restore_cursor(&mut self, phase_id: Option<&str>, blocked_count: usize) -> bool {
+        let Some(contract) = &self.contract else {
+            return phase_id.is_none();
+        };
+        let index = match phase_id {
+            None => contract.phases.len(),
+            Some(id) => match contract.phases.iter().position(|phase| phase.id == id) {
+                Some(index) => index,
+                None => return false,
+            },
+        };
+        self.current_phase = index;
+        self.blocked_count = blocked_count;
+        true
+    }
+
+    /// How many times the current phase has been blocked — the retry budget a restore must not
+    /// hand back full.
+    pub fn blocked_count(&self) -> usize {
+        self.blocked_count
+    }
+
     /// A phase passed: move the cursor to the next phase and reset the block counter.
     pub fn advance(&mut self) {
         self.current_phase += 1;

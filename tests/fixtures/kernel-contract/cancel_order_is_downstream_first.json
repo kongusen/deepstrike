@@ -1,0 +1,27 @@
+{
+  "id": "cancel-order-is-downstream-first",
+  "domain": "cancel",
+  "kind": "positive",
+  "title": "取消顺序是先停下游、后收根：外部 I/O 与子任务先停，内核最后提交根终态",
+  "semantics": "取消的固定顺序是：调用方请求取消 → 宿主停止模型、工具与子代理的真实 I/O → 宿主提交取消命令 → 内核提交取消终态 → 宿主落投影并释放作用域。内核在提交终态的同一次转移里清理全部待决等待（工具等待、子任务等待、尚未派生的批次），不留悬挂项。真实的取消动作由宿主执行，内核只裁决终态。",
+  "given": [
+    "一个正在运行的操作，存在待决工具调用、运行中的子任务与尚未派生的节点批次"
+  ],
+  "when": [
+    "调用方请求取消"
+  ],
+  "then": [
+    "宿主先停止外部 I/O 与子任务，再提交取消命令",
+    "内核在同一次转移里清理待决工具等待、子任务等待与未派生批次",
+    "内核最后提交取消终态，不留下任何悬挂的待决项",
+    "宿主在终态提交后才落投影并释放作用域"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §11.1「取消顺序」",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::cancellation_cleans_tool_and_subagent_wait_states",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::cancellation_cleans_pending_workflow_spawn"
+    ]
+  },
+  "target": "§11.1"
+}

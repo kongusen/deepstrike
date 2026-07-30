@@ -1,0 +1,9 @@
+{
+  "kind": "cancelled",
+  "reason": "user",
+  "usage": {
+    "input_tokens": "402",
+    "output_tokens": "17",
+    "turns": 1
+  }
+}

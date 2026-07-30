@@ -1,0 +1,17 @@
+{
+  "expect": "policy_violation",
+  "stage": "resolution",
+  "note": "atomic cross-field validation \u00b7 a memory feature switch without an access binding would fail-open on the first memory syscall",
+  "config": {
+    "feature_policy": {
+      "memory_enabled": true
+    },
+    "host_effect_support": {
+      "supported": [
+        "call_provider",
+        "persist_memory",
+        "query_memory"
+      ]
+    }
+  }
+}

@@ -24,6 +24,19 @@ pub type TaskId = CompactString;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskLifecycle {
+    /// Spec §10.4 · the kernel has minted this task's identity (task/attempt/launch token) but the
+    /// launch effect that carries it is not published yet. A child exists as a committed fact
+    /// before any host is asked to start it — that is what stops a resolution from *creating*
+    /// process identity.
+    ///
+    /// Only the canonical, ack-gated spawn path constructs this state
+    /// ([`crate::scheduler::state_machine::LoopStateMachine::set_ack_gated_launch`]); the legacy
+    /// path still seeds children `Running`.
+    PendingLaunch,
+    /// Spec §10.4 · the launch effect is published and the host has been asked to start the child,
+    /// but no acknowledgement has arrived. Distinct from [`Self::Running`] because "we asked" and
+    /// "it is running" are different facts, and only the second may be reported as one.
+    Starting,
     /// Eligible to run, not yet picked by the scheduler.
     Ready,
     /// Currently executing a turn (`ProcessState::Running`).
@@ -37,6 +50,8 @@ pub enum TaskLifecycle {
 impl TaskLifecycle {
     pub fn label(self) -> &'static str {
         match self {
+            Self::PendingLaunch => "pending_launch",
+            Self::Starting => "starting",
             Self::Ready => "ready",
             Self::Running => "running",
             Self::Suspended => "suspended",
@@ -46,6 +61,16 @@ impl TaskLifecycle {
 
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Done(_))
+    }
+
+    /// Whether this task holds one of the operation's concurrency slots.
+    ///
+    /// A launch the kernel has already decided on occupies a slot even before the host confirms it
+    /// — otherwise every in-flight launch would be invisible to the spawn quota and an ack-gated
+    /// run could overshoot `max_concurrent_subagents` by the size of its launch window. Legacy runs
+    /// never construct the two launch states, so this reads exactly as `== Running` for them.
+    pub fn occupies_slot(self) -> bool {
+        matches!(self, Self::PendingLaunch | Self::Starting | Self::Running)
     }
 }
 
@@ -120,9 +145,11 @@ impl Default for BudgetLedger {
 /// This is what makes the `AgentProcess` view *derived* from the [`TaskTable`]: every child task
 /// whose `proc` is `Some` reconstructs exactly one [`crate::proc::AgentProcess`] (see
 /// [`crate::proc::AgentProcess::from_tcb`]).
+///
+/// § Task 11 · carries no session. A child's lineage is the logical `Tcb::parent` task id; the host
+/// keeps its own child-task → child-session mapping (§5.2) and the kernel never sees it.
 #[derive(Debug, Clone)]
 pub struct ProcInfo {
-    pub parent_session_id: CompactString,
     pub role: AgentRole,
     pub isolation: AgentIsolation,
     pub context_inheritance: ContextInheritance,
@@ -161,15 +188,27 @@ impl Tcb {
     /// A sub-agent task spawned under the root, seeded `Running`, carrying the manifest's
     /// process identity. The single source of truth for what the `AgentProcess` view exposes.
     pub fn spawned(manifest: &IsolationManifest, budget: SchedulerBudget) -> Self {
+        Self::spawned_in(manifest, budget, TaskLifecycle::Running)
+    }
+
+    /// The same child, seeded in an explicit lifecycle state.
+    ///
+    /// §10.4's spawn arc is `PendingLaunch → Starting → Running(ack)`; the legacy path collapses it
+    /// to `Running` at insert time, which is why [`Self::spawned`] exists unchanged and this is the
+    /// entry point the ack-gated canonical path uses.
+    pub fn spawned_in(
+        manifest: &IsolationManifest,
+        budget: SchedulerBudget,
+        state: TaskLifecycle,
+    ) -> Self {
         Self {
             id: manifest.agent_id.clone(),
             parent: Some("root".into()),
-            state: TaskLifecycle::Running,
+            state,
             budget: BudgetLedger::new(budget),
             wait: None,
             caps: manifest.permitted_capability_ids.clone(),
             proc: Some(ProcInfo {
-                parent_session_id: manifest.parent_session_id.clone(),
                 role: manifest.role,
                 isolation: manifest.isolation,
                 context_inheritance: manifest.context_inheritance,

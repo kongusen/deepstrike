@@ -1,0 +1,20 @@
+{
+  "expect": "unknown_variant",
+  "envelope": {
+    "abi_version": 3,
+    "operation_id": "op-2026-07-29-0001",
+    "input_id": "caller-supplied-idempotency-key-1",
+    "observed_at_ms": "1753747200000",
+    "input": {
+      "kind": "start_operation",
+      "entry": {
+        "kind": "spawn_sub_agent",
+        "spec": {
+          "goal": "g"
+        },
+        "parent_session_id": "sess-1"
+      },
+      "initial_context": {}
+    }
+  }
+}

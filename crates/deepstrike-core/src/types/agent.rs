@@ -5,13 +5,22 @@ use super::capability::{CapabilityDescriptor, CapabilityKind, CapabilityManifest
 use super::milestone::MilestoneContract;
 
 /// Unified agent identity — shared across scheduler, memory, and governance.
+///
+/// § Task 11 · the two session fields below are **host projection only**. No kernel decision reads
+/// them and no kernel output echoes them — locked by
+/// `runtime::kernel::tests::identical_kernel_trace_under_different_host_session_ids`, which drives
+/// the same logical arc under two disjoint host namings and compares the traces byte for byte. The
+/// canonical wire has no slot for them at all (`LogicalAgentSpec` carries no identity), so the
+/// canonical driver builds this struct with an empty session. They survive only because
+/// `AgentRunSpec` rides the legacy `KernelInputEvent::SpawnSubAgent` input, and they are deleted
+/// with that enum in Task 23.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentIdentity {
     pub agent_id: CompactString,
+    /// Host persistence/audit identity. Never a kernel fact (§22.6) — see the type doc.
     pub session_id: CompactString,
     pub is_sub_agent: bool,
-    /// Session ID of the parent agent that spawned this one.
-    /// `None` for top-level agents; set for any sub-agent to enable lineage replay.
+    /// Session ID of the parent agent that spawned this one — host lineage only, see the type doc.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<CompactString>,
 }
@@ -112,10 +121,13 @@ pub enum ContextInheritance {
 
 /// Auto-generated isolation contract for a spawned sub-agent.
 /// Derived from `AgentRunSpec` + the current capability snapshot at spawn time.
+///
+/// § Task 11 · purely logical. Isolation is decided from role, requested isolation mode and the
+/// capability filter — never from who the host says the parent session is (§22.6). The manifest
+/// therefore has no session field to stamp onto the child's TCB.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IsolationManifest {
     pub agent_id: CompactString,
-    pub parent_session_id: CompactString,
     pub role: AgentRole,
     pub isolation: AgentIsolation,
     pub context_inheritance: ContextInheritance,
@@ -126,11 +138,7 @@ pub struct IsolationManifest {
 
 impl IsolationManifest {
     /// Build an isolation manifest from a spawn spec and the parent's live capability snapshot.
-    pub fn from_spec(
-        spec: &AgentRunSpec,
-        parent_session_id: &str,
-        available: &CapabilityManifest,
-    ) -> Self {
+    pub fn from_spec(spec: &AgentRunSpec, available: &CapabilityManifest) -> Self {
         let context_inheritance = Self::role_default_context_inheritance(spec.role);
         let filtered = spec.filter_manifest(available);
         let permitted_capability_ids = filtered
@@ -140,7 +148,6 @@ impl IsolationManifest {
             .collect();
         Self {
             agent_id: spec.identity.agent_id.clone(),
-            parent_session_id: parent_session_id.into(),
             role: spec.role,
             isolation: spec.isolation,
             context_inheritance,
@@ -305,6 +312,48 @@ mod tests {
         assert_eq!(
             spec.verification_contract_id.unwrap().as_str(),
             "contract-1"
+        );
+    }
+
+    /// § Task 11 · isolation is decided from logical identity alone. Two specs that differ **only**
+    /// in every session field a host can name produce the same contract, and the contract itself has
+    /// nowhere to put a session.
+    #[test]
+    fn isolation_is_decided_without_any_session_input() {
+        let mut available = CapabilityManifest::new();
+        available.add_marker(CapabilityKind::Tool, "read_file", "read files");
+        available.add_marker(CapabilityKind::Tool, "write_file", "write files");
+
+        let spec_of = |session: &str| {
+            AgentRunSpec::new(
+                AgentIdentity::sub_agent("worker", format!("{session}-worker"))
+                    .with_parent(format!("{session}-parent")),
+                AgentRole::Explore,
+                "inspect only",
+            )
+            .with_capability_filter(AgentCapabilityFilter {
+                allowed_kinds: vec![CapabilityKind::Tool],
+                allowed_ids: vec!["read_file".into()],
+            })
+        };
+
+        let a = IsolationManifest::from_spec(&spec_of("host-a"), &available);
+        let b = IsolationManifest::from_spec(&spec_of("host-b"), &available);
+
+        let json = |manifest: &IsolationManifest| serde_json::to_value(manifest).unwrap();
+        assert_eq!(
+            json(&a),
+            json(&b),
+            "two hosts naming their sessions differently must get the same isolation contract"
+        );
+        assert_eq!(a.role, AgentRole::Explore);
+        assert_eq!(a.context_inheritance, ContextInheritance::SystemOnly);
+        assert_eq!(a.permitted_capability_ids.len(), 1);
+
+        let text = json(&a).to_string();
+        assert!(
+            !text.contains("session"),
+            "the isolation contract names a session: {text}"
         );
     }
 }

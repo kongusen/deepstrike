@@ -1,0 +1,27 @@
+{
+  "id": "signal-admission-uses-accepted-time",
+  "domain": "signal",
+  "kind": "positive",
+  "title": "信号的存活期与准入只用信封接受时间，来源时间戳仅供展示",
+  "semantics": "信号可能携带一个来源时间戳，但它只是载荷元数据。存活期、截止升级与准入判定一律使用该输入被接受时的宿主时钟事实，即信封时间。这样同一条信号在重放时的处置是确定的，不随宿主重投时刻漂移。",
+  "given": [
+    "一个已配置信号策略（含存活期与截止升级）的运行中操作"
+  ],
+  "when": [
+    "宿主投递一条来源时间戳明显早于当前接受时间的信号"
+  ],
+  "then": [
+    "存活期与截止升级按信封接受时间计算，不按来源时间戳计算",
+    "来源时间戳只进入展示与审计投影",
+    "同一次投递在重放时得到相同处置",
+    "内核自身不读取系统时钟"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.7 末条与 §11.2「时间事实」",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::configured_signal_policy_applies_queue_ttl_in_runtime",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::configured_deadline_escalation_changes_runtime_disposition"
+    ]
+  },
+  "target": "§11.2"
+}

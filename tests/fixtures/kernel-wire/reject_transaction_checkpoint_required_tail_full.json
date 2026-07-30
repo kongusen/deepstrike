@@ -1,0 +1,44 @@
+{
+  "description": "Spec 12.3 · the next transaction would carry the journal tail past its hard limit, so `prepare` refuses with the one retryable fault code and zero mutation. The input was never accepted: after a checkpoint candidate is installed and acked, the *same* envelope — same input id, same clock, same payload — is submitted again and commits. There is no permanent overflow latch: an acked checkpoint takes the tail pressure straight back to nominal.",
+  "expect": "checkpoint_required",
+  "fault": {
+    "code": "checkpoint_required",
+    "message": "the journal tail already holds 3 records; its hard limit is 3; take a checkpoint candidate, install and ack it, then retry this input unchanged — it was never accepted"
+  },
+  "refused_envelope": {
+    "abi_version": 3,
+    "input": {
+      "effect_id": "op-driver-1:step:2:effect:0",
+      "kind": "resolve_effect",
+      "outcome": {
+        "result": {
+          "kind": "tools",
+          "results": [
+            {
+              "call_id": "call-1",
+              "kind": "inline",
+              "result": {
+                "disposition": "recoverable",
+                "output": "three sources found"
+              }
+            }
+          ]
+        },
+        "status": "succeeded"
+      }
+    },
+    "input_id": "in-results",
+    "observed_at_ms": "1700000003000",
+    "operation_id": "op-driver-1"
+  },
+  "retryable": true,
+  "tail_bounds": {
+    "hard_bytes": "1048576",
+    "hard_records": "3",
+    "soft_bytes": "65536",
+    "soft_records": "2"
+  },
+  "tail_usage_at_refusal": {
+    "records": "3"
+  }
+}

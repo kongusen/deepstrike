@@ -1,0 +1,30 @@
+{
+  "id": "fault-transition-result-is-closed",
+  "domain": "fault",
+  "kind": "positive",
+  "title": "转移结果是封闭三态，拒绝必须结构化，不得退化为语言异常或混合形态",
+  "semantics": "一次转移的结果只有三种：已准备（等待持久提交）、已重放（指向既有记录与既有步序）、已拒绝（携带结构化故障）。不能构造出「既有动作又有故障」的混合形态；载荷非法、未知字段或未知变体、契约修订不匹配同样落到已拒绝，而不是在不同语言里表现为不同的本地异常。",
+  "given": [
+    "四种语言宿主中的任意一个",
+    "一条可能非法的输入"
+  ],
+  "when": [
+    "宿主驱动一次转移"
+  ],
+  "then": [
+    "结果落在封闭三态之一，不存在第四种形态",
+    "已拒绝分支携带结构化故障码，不抛出语言相关异常",
+    "不存在同时包含动作与故障的混合结果",
+    "已重放分支携带指向既有记录的步序，不产生新记录",
+    "四语言对同一输入得到同一结论"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.13「Fault 与 transition result」",
+      "spec §14.3「删除 KernelStep.faults」（crates/deepstrike-core/src/runtime/kernel/protocol.rs:830）",
+      "canonical-kernel-abi-capability-inventory.md §5.2：四个宿主都读 step.faults[0]，node 抛错而 rust 静默丢弃",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::prepared_step_json_round_trips_the_normalized_input_and_status"
+    ]
+  },
+  "target": "§7.13"
+}

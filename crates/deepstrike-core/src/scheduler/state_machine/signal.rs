@@ -11,6 +11,13 @@ use crate::types::signal::RuntimeSignal;
 use super::super::tcb::TaskLifecycle;
 
 impl LoopStateMachine {
+    /// How many signals the kernel is currently holding for the next turn boundary. An observable
+    /// fact rather than an internal one: `SignalsPending` reports it, and a refused delivery must
+    /// be provably absent from it.
+    pub fn signal_queue_depth(&self) -> usize {
+        self.signal_router.depth()
+    }
+
     /// Atomically replace the versioned signal policy after protocol validation. Keeping TTL in
     /// the deterministic router lets replay use journaled timestamps.
     pub fn set_signal_policy(
@@ -26,19 +33,26 @@ impl LoopStateMachine {
     /// dispatches through the in-kernel router. Returns
     /// `None` when the signal does not drive a provider call this step
     /// (queued / observed / ignored / dropped).
+    ///
+    /// `may_issue_request` is the caller's statement about whether a **new** provider request may
+    /// be published this step. A canonical operation holds at most one pending request per kind
+    /// (DEC-3), so a critical signal that arrives while one is in flight cannot re-ask now; it is
+    /// admitted to the attention partition and read at the next turn boundary instead. The legacy
+    /// runtime, which lets the host abandon an in-flight request, passes `true`.
     pub fn signal_event(
         &mut self,
         operation_id: String,
         delivery_id: String,
         attempt: u32,
         signal: RuntimeSignal,
+        may_issue_request: bool,
     ) -> Option<LoopAction> {
         self.observations.clear();
         self.sweep_expired_leases();
         // K3: skill leases expire on the same head-of-event cadence as capability leases.
         self.ctx.sweep_expired_skill_leases(self.turn);
         let signal_id = signal.id.to_string();
-        let (action, disposition, queue_depth) = self.route_signal(signal);
+        let (action, disposition, queue_depth) = self.route_signal(signal, may_issue_request);
         self.observations
             .push(KernelObservation::SignalDeliveryDisposed {
                 turn: self.turn,
@@ -55,12 +69,14 @@ impl LoopStateMachine {
     /// Route a signal and decide whether it drives a turn now. Assumes the caller
     /// has already cleared observations / swept leases (see `feed` and `signal_event`).
     pub(super) fn dispatch_signal(&mut self, signal: RuntimeSignal) -> Option<LoopAction> {
-        self.route_signal(signal).0
+        // Drained at a turn boundary, where nothing is in flight by construction.
+        self.route_signal(signal, true).0
     }
 
     fn route_signal(
         &mut self,
         signal: RuntimeSignal,
+        may_issue_request: bool,
     ) -> (Option<LoopAction>, SignalDisposition, u32) {
         let lifecycle = self.lifecycle();
         let signal_id = signal.id.to_string();
@@ -68,7 +84,7 @@ impl LoopStateMachine {
         let now_ms = self.last_now_ms.unwrap_or(signal.timestamp_ms);
         let router = &mut self.signal_router;
         let outcome = router.ingest_at(signal, lifecycle, now_ms);
-        let disposition = outcome.disposition;
+        let mut disposition = outcome.disposition;
         let queue_depth = router.depth() as u32;
         for expired_signal_id in outcome.expired_signal_ids {
             self.observations.push(KernelObservation::SignalExpired {
@@ -102,8 +118,20 @@ impl LoopStateMachine {
             SignalDisposition::InterruptNow => {
                 self.ctx.push_signal(format!("[INTERRUPT] {summary}"));
                 self.phase = LoopPhase::Reason;
-                self.request_preempt_for_interrupt(&summary)
-                    .or_else(|| Some(self.emit_call_llm()))
+                match self.request_preempt_for_interrupt(&summary) {
+                    // Preempting running children is a host action and is legal either way — it is
+                    // not a provider request.
+                    Some(action) => Some(action),
+                    // DEC-3: a request is already in flight and the kernel holds at most one, so it
+                    // cannot re-ask now. The interrupt is already in the attention partition and is
+                    // read when that request resolves — which is the soft-interrupt disposition,
+                    // reported honestly rather than as a `run` that produced nothing.
+                    None if !may_issue_request => {
+                        disposition = SignalDisposition::Interrupt;
+                        None
+                    }
+                    None => Some(self.emit_call_llm()),
+                }
             }
             // #2-A: soft interrupt (High while busy) — expose it at the NEXT turn boundary (when
             // running children complete and the root resumes). Does NOT force a turn or abort

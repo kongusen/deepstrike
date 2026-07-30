@@ -11,10 +11,16 @@ import type { SkillMetadata } from "../skills/loader.js"
 import type { RollbackReason } from "./session-log.js"
 import type { SessionLog } from "./session-log.js"
 import {
+  KernelLogConflictError,
+  KernelLogIntegrityError,
   createKernelOperationGenesis,
   createKernelTransaction,
   kernelRecordDigest,
+  type KernelOperationGenesis,
+  type KernelTransaction,
 } from "./kernel-transaction-log.js"
+// Runtime import; `kernel-rebuild.ts` only imports *types* from this module, so there is no cycle.
+import { rebuildKernelRuntime } from "./kernel-rebuild.js"
 
 export const KERNEL_ABI_VERSION = 2
 
@@ -672,9 +678,60 @@ interface DurableKernelState {
   sessionId: string
   operationId: string
   genesisDigest: string
+  /**
+   * The runtime's genesis-shape checkpoint, captured before its first transition. Replaying it
+   * through `restore()` swaps the binding's inner runtime *in place*, so this handle returns to the
+   * fresh shape `rebuildKernelRuntime` demands without invalidating the host's reference to it.
+   */
+  genesisSnapshotJson: string
 }
 
 const durableKernelStates = new WeakMap<KernelRuntimeHandle, DurableKernelState>()
+
+/**
+ * Spec §8.3 rows 5/6: once a record is durable, `abort` is no longer a legal disposal — the runtime
+ * is what gets thrown away, and the authoritative state is re-derived from the journal. This error
+ * is that instruction, made explicit for the host.
+ */
+export class DurableKernelRebuildRequiredError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options)
+    this.name = "DurableKernelRebuildRequiredError"
+  }
+}
+
+/**
+ * A runtime that reached an "already durable, cannot publish" state. Fail closed: it is out of sync
+ * with the journal, so every later transition on it is rejected with the original reason instead of
+ * silently continuing on a runtime the protocol says must be discarded.
+ */
+const discardedKernelRuntimes = new WeakMap<KernelRuntimeHandle, DurableKernelRebuildRequiredError>()
+
+function discardKernelRuntime(
+  runtime: KernelRuntimeHandle,
+  message: string,
+  cause: unknown,
+): DurableKernelRebuildRequiredError {
+  const error = new DurableKernelRebuildRequiredError(message, { cause })
+  discardedKernelRuntimes.set(runtime, error)
+  return error
+}
+
+/**
+ * Exactly one CAS conflict is retried per input. Rebuild is O(journal length), and a *second*
+ * consecutive conflict on the same (session, operation) chain is not a transient race — it means two
+ * live writers own one operation, which is a host identity error that must surface rather than be
+ * ground down by an unbounded retry loop.
+ */
+const DURABLE_CAS_REBUILD_RETRIES = 1
+
+function isKernelCasConflict(error: unknown): boolean {
+  if (error instanceof KernelLogConflictError) return true
+  // Hosts may supply their own journal (§9.4) and dual-package loads defeat `instanceof`; the two
+  // class names are part of the documented conflict contract.
+  const name = (error as { name?: unknown } | null | undefined)?.name
+  return name === "KernelLogConflictError" || name === "JournalCasConflictError"
+}
 
 /**
  * Execute one production transition behind the durable action-publish gate. Genesis is persisted
@@ -687,6 +744,9 @@ export async function durableKernelStep(
   sessionId: string,
   event: Record<string, unknown>,
 ): Promise<KernelStepJson> {
+  const discarded = discardedKernelRuntimes.get(runtime)
+  if (discarded) throw discarded
+
   const inputJson = stepInput(runtime, event)
   const input = JSON.parse(inputJson) as Record<string, unknown>
   const operationId = String(input.operation_id ?? "")
@@ -694,7 +754,10 @@ export async function durableKernelStep(
 
   let durableState = durableKernelStates.get(runtime)
   if (!durableState) {
-    const snapshot = snapshotKernelRuntime(runtime)
+    // Captured before the first transition, i.e. while the runtime is still genesis-fresh — this is
+    // both the genesis body and the reset point every later rebuild replays from.
+    const genesisSnapshotJson = runtime.snapshot()
+    const snapshot = JSON.parse(genesisSnapshotJson) as KernelSnapshot
     const genesis = await createKernelOperationGenesis({
       abi_version: KERNEL_ABI_VERSION,
       operation_id: operationId,
@@ -712,47 +775,135 @@ export async function durableKernelStep(
       sessionId,
       operationId,
       genesisDigest: receipt.genesis_digest,
+      genesisSnapshotJson,
     }
     durableKernelStates.set(runtime, durableState)
   } else if (durableState.sessionId !== sessionId || durableState.operationId !== operationId) {
     throw new Error("kernel runtime cannot change its durable session or operation identity")
   }
 
+  return durableKernelTransition(
+    runtime,
+    sessionLog,
+    durableState,
+    inputJson,
+    DURABLE_CAS_REBUILD_RETRIES,
+  )
+}
+
+/**
+ * One prepare/append/commit attempt, plus the §8.3 failure matrix.
+ *
+ * `appended` is the abort boundary and it flips on the line immediately after the CAS append returns
+ * — **before** `commitPrepared`. Everything downstream of a successful append is a durable fact:
+ * a commit that throws, a digest mismatch, a lost response. None of them may call `abortPrepared`
+ * (row 6: "discard the runtime, rebuild from the journal; never undo the durable record"). Only the
+ * pre-append window (rows 3/4) owns a process-local candidate that abort is allowed to drop.
+ *
+ * A CAS conflict (row 4) is the one recoverable failure: nothing was appended, so the candidate is
+ * aborted, the runtime is re-folded from the authoritative record stream, and the *same* input is
+ * replayed once against the new head.
+ */
+async function durableKernelTransition(
+  runtime: KernelRuntimeHandle,
+  sessionLog: SessionLog,
+  state: DurableKernelState,
+  inputJson: string,
+  rebuildRetriesLeft: number,
+): Promise<KernelStepJson> {
   const prepared = JSON.parse(runtime.prepareStep(inputJson)) as KernelPreparedStep
   if (prepared.status !== "prepared") return prepared.step
   const token = prepared.prepare_token
   if (!token) throw new Error("prepared kernel transition is missing its commit token")
-  let committed = false
+  let appended = false
   try {
-    const head = await sessionLog.kernelTransactionHead(sessionId, operationId)
+    const head = await sessionLog.kernelTransactionHead(state.sessionId, state.operationId)
     if (!head) throw new Error("durable kernel genesis is missing before transaction append")
     const transaction = await createKernelTransaction({
-      operation_id: operationId,
+      operation_id: state.operationId,
       step_seq: prepared.step.step_seq,
       base_generation: prepared.base_generation,
       input: prepared.input,
       step: prepared.step as unknown as Record<string, unknown>,
       previous_transaction_digest: head,
     })
-    await sessionLog.compareAndAppendKernelTransaction(sessionId, head, transaction)
+    await sessionLog.compareAndAppendKernelTransaction(state.sessionId, head, transaction)
+    appended = true
     const committedStep = parseStep(runtime.commitPrepared(token))
-    committed = true
     if (kernelRecordDigest(committedStep) !== transaction.step_digest) {
       throw new Error("committed kernel step does not match the durable prepared step")
     }
     return committedStep
   } catch (transitionError) {
-    if (!committed) {
-      try {
-        runtime.abortPrepared(token)
-      } catch (abortError) {
-        throw new AggregateError(
-          [transitionError, abortError],
-          "durable transition failed and the prepared kernel state could not be aborted",
-        )
-      }
+    if (appended) {
+      throw discardKernelRuntime(
+        runtime,
+        "durable kernel record was appended but its transition could not be published; " +
+          "discard this runtime and rebuild it from the journal — the durable record must stand",
+        transitionError,
+      )
+    }
+    try {
+      runtime.abortPrepared(token)
+    } catch (abortError) {
+      throw new AggregateError(
+        [transitionError, abortError],
+        "durable transition failed and the prepared kernel state could not be aborted",
+      )
+    }
+    if (rebuildRetriesLeft > 0 && isKernelCasConflict(transitionError)) {
+      await rebuildKernelRuntimeFromJournal(runtime, sessionLog, state, transitionError)
+      return durableKernelTransition(runtime, sessionLog, state, inputJson, rebuildRetriesLeft - 1)
     }
     throw transitionError
+  }
+}
+
+/**
+ * Re-fold this runtime from the authoritative record stream after losing a CAS race (§8.3 row 4).
+ *
+ * The reset is deliberately in place: `restore()` replaces the binding's inner runtime while the JS
+ * handle survives, so the runner's `runtime` reference — and the wire state keyed by that handle,
+ * which must keep minting event ids from the same operation identity — stay valid. That is also why
+ * this calls `runtime.restore()` directly instead of the exported `restoreKernelRuntime` helper,
+ * which would drop the wire state along with the (absent) snapshot operation id.
+ */
+async function rebuildKernelRuntimeFromJournal(
+  runtime: KernelRuntimeHandle,
+  sessionLog: SessionLog,
+  state: DurableKernelState,
+  conflict: unknown,
+): Promise<void> {
+  let genesis: KernelOperationGenesis | undefined
+  let transactions: KernelTransaction[]
+  try {
+    genesis = await sessionLog.readKernelGenesis(state.sessionId, state.operationId)
+    if (!genesis) {
+      throw new KernelLogIntegrityError(
+        "durable kernel genesis is missing; the operation cannot be rebuilt after a CAS conflict",
+      )
+    }
+    transactions = (await sessionLog.readKernelTransactions(state.sessionId, state.operationId)).map(
+      entry => entry.transaction,
+    )
+  } catch (readError) {
+    // Nothing has been mutated yet, so the runtime is still usable; report both causes.
+    throw new AggregateError(
+      [conflict, readError],
+      "durable kernel CAS conflict could not be rebuilt: the authoritative record stream is unreadable",
+    )
+  }
+
+  try {
+    runtime.restore(state.genesisSnapshotJson)
+    rebuildKernelRuntime(runtime, genesis, transactions)
+  } catch (rebuildError) {
+    // A partially re-folded runtime is unusable, exactly as `rebuildKernelRuntime` documents.
+    throw discardKernelRuntime(
+      runtime,
+      "durable kernel CAS conflict could not be rebuilt from the journal; discard this runtime",
+      rebuildError,
+    )
   }
 }
 

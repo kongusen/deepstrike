@@ -1,0 +1,31 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-17",
+  "observed_at_ms": "1753747217000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-07-29-0001:step:11:effect:0",
+    "outcome": {
+      "status": "succeeded",
+      "result": {
+        "kind": "memory_queried",
+        "recalls": [
+          {
+            "record_ref": "memory:01J8Y2QK7C4N0X",
+            "name": "release pipeline",
+            "kind": "project",
+            "content": "tag v* triggers four publish workflows",
+            "score": 0.82
+          },
+          {
+            "record_ref": "memory:01J8Y2QK7C4N0Y",
+            "name": "algorithm simplicity",
+            "kind": "feedback",
+            "content": "subtract before adding"
+          }
+        ]
+      }
+    }
+  }
+}

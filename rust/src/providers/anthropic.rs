@@ -4,7 +4,7 @@ use deepstrike_core::runtime::session::ProviderReplay;
 use deepstrike_core::types::message::{Content, ContentPart, Message, Role, ToolCall, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -82,7 +82,9 @@ fn content_part_to_anthropic(part: &ContentPart) -> Result<Value> {
             ..
         } => {
             let mt = media_type.as_deref().unwrap_or("image/png");
-            Ok(json!({ "type": "image", "source": { "type": "base64", "media_type": mt, "data": data } }))
+            Ok(
+                json!({ "type": "image", "source": { "type": "base64", "media_type": mt, "data": data } }),
+            )
         }
         ContentPart::Image { .. } => Ok(json!({ "type": "text", "text": "" })),
         ContentPart::Audio { .. } => Err(Error::Provider(
@@ -822,10 +824,12 @@ mod tests {
         // history (2) + state (1) appended last
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["role"], "user");
-        assert!(messages[2]["content"]
-            .as_str()
-            .unwrap()
-            .contains("[TASK STATE]"));
+        assert!(
+            messages[2]["content"]
+                .as_str()
+                .unwrap()
+                .contains("[TASK STATE]")
+        );
         // the state turn carries NO cache breakpoint (it is the uncached tail)
         assert!(messages[2].get("cache_control").is_none());
         // the last history turn DID get a breakpoint (read anchor) — it became a block array

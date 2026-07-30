@@ -1,6 +1,6 @@
 use deepstrike_core::runtime::kernel::{
-    ConstraintSpec, KernelInputEvent, PolicyAction, PolicyRule, RateLimitSpec, SignalPolicyConfig,
-    SIGNAL_POLICY_VERSION,
+    ConstraintSpec, KernelInputEvent, PolicyAction, PolicyRule, RateLimitSpec,
+    SIGNAL_POLICY_VERSION, SignalPolicyConfig,
 };
 pub use deepstrike_core::scheduler::policy::SchedulerPolicyConfig;
 

@@ -1,0 +1,28 @@
+{
+  "id": "budget-grant-is-reservation-backed",
+  "domain": "budget",
+  "kind": "positive",
+  "title": "组预算以预留额度表达，不由累计基数推算",
+  "semantics": "保留 v2 的预留式组预算：预算在配置期以一份带预留标识的额度授予（可含 token、子代理数与轮次），内核据此本地扣减，不再靠「累计基数加差值」反推跨进程共享额度。零 token 的额度在配置期即被拒绝——一个注定无法执行任何模型调用的操作不允许启动。",
+  "given": [
+    "宿主准备了一份带预留标识的额度"
+  ],
+  "when": [
+    "宿主在配置期提交该额度，并分别尝试提交一份零 token 的额度"
+  ],
+  "then": [
+    "额度以预留标识为锚，内核本地扣减",
+    "不存在依赖累计基数推算的第二套账本",
+    "零 token 的额度在配置期被结构化拒绝，且零状态变更",
+    "额度只在配置期授予，运行期不能靠配置入口重新放大"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §3.4 能力对照矩阵：group budget 由 cumulative base 改为 reservation grant",
+      "spec §14.1「budget grant/usage」保留",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::zero_token_budget_grant_is_rejected_at_configure",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::budget_grant_enforces_local_token_cap"
+    ]
+  },
+  "target": "§14.1"
+}

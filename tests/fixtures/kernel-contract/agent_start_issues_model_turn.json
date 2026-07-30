@@ -1,0 +1,28 @@
+{
+  "id": "agent-start-issues-model-turn",
+  "domain": "agent",
+  "kind": "positive",
+  "title": "代理根启动直接产生一次模型调用请求，请求标识由内核分配",
+  "semantics": "保留 v1 起就成立的边界：内核决定下一步动作，宿主只负责执行并回灌结果。代理根启动后内核直接发出一次模型调用的外部动作请求；请求标识与因果输入标识都由内核生成，宿主不得自铸。每个动作种类同时最多只有一个待决请求；在旧请求被回灌前内核不得发出同种类新请求，也不得静默驱逐旧登记。",
+  "given": [
+    "操作已配置并以代理根入口启动"
+  ],
+  "when": [
+    "内核完成该次转移"
+  ],
+  "then": [
+    "恰好产生一个待决的模型调用动作请求",
+    "请求标识由内核分配，宿主不能提出或改写",
+    "宿主只能用与该请求种类匹配的结果回灌它",
+    "同种类的旧待决请求未被回灌前，内核不发出新的同种类请求，也不静默丢弃旧登记"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §15.1「effect ID 由 kernel 生成」",
+      "spec §15.3（DEC-3：每个 effect kind 至多一个 pending，删除静默驱逐；现状 crates/deepstrike-core/src/runtime/kernel/runtime.rs:1232-1238）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::start_run_returns_versioned_provider_action",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::deterministic_replay_preserves_the_next_effect_identity"
+    ]
+  },
+  "target": "§15.3"
+}

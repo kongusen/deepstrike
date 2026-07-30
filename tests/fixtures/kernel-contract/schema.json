@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deepstrike.dev/schemas/kernel-contract-fixture.json",
+  "title": "Canonical Kernel ABI version-neutral semantic fixture",
+  "description": "Phase 0 Task 2 冻结的语义 fixture。一文件一场景，文件名 <domain>_<slug>.json（slug = id 的下划线形式）。given/when/then/title/semantics 只允许版本中立的语义词汇；v1/v2 wire 名、file:line 与测试名只能出现在 evidence.sources 内。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "domain",
+    "kind",
+    "title",
+    "semantics",
+    "given",
+    "when",
+    "then",
+    "evidence",
+    "target"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "kebab-case 唯一标识；文件名是它的下划线形式加 .json",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "domain": {
+      "type": "string",
+      "description": "语义域；negative fixture 一律归入 removed",
+      "enum": [
+        "agent",
+        "workflow",
+        "signal",
+        "budget",
+        "cancel",
+        "fault",
+        "resume",
+        "removed"
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "positive",
+        "negative"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "description": "中文一句话",
+      "minLength": 1
+    },
+    "semantics": {
+      "type": "string",
+      "description": "人可读的语义陈述：保留或删除什么行为，以及为什么",
+      "minLength": 1
+    },
+    "given": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "when": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "then": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "description": "历史出处的唯一容身处",
+      "additionalProperties": false,
+      "required": [
+        "sources"
+      ],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "target": {
+      "type": "string",
+      "description": "Canonical spec 小节号，例如 §6.1",
+      "pattern": "^§[0-9]+(\\.[0-9]+)*$"
+    }
+  }
+}

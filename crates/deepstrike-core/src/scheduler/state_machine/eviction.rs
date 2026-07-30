@@ -60,6 +60,23 @@ impl LoopStateMachine {
             // the same outcome the runners produced, minus the fabricated `timeout`.
             return self.terminate(TerminationReason::Error, None);
         }
+        self.run_context_overflow_ladder()
+    }
+
+    /// §7.9 · the **semantic** context-overflow outcome, straight from the canonical wire.
+    ///
+    /// Same ladder as [`Self::recover_from_provider_error`] minus its classification step: on the
+    /// canonical wire the outcome itself says "the prompt did not fit", so no vendor text is read
+    /// and §22.8's reason to forbid that reading does not arise. An overflow is therefore never
+    /// triaged as a transport failure and never enters the [`HostEffectFailure`] path.
+    ///
+    /// [`HostEffectFailure`]: crate::runtime::kernel::wire::effect::HostEffectFailure
+    pub fn recover_from_context_overflow(&mut self) -> LoopAction {
+        self.observations.clear();
+        self.run_context_overflow_ladder()
+    }
+
+    fn run_context_overflow_ladder(&mut self) -> LoopAction {
         if self.recovery_attempts >= self.provider_recovery_attempt_limit {
             return self.terminate(TerminationReason::ContextOverflow, None);
         }

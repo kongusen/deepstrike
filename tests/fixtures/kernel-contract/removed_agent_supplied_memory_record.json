@@ -1,0 +1,28 @@
+{
+  "id": "removed-agent-supplied-memory-record",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：代理直接提交完整记忆记录",
+  "semantics": "现状模型侧的记忆写入可以携带一整条记忆记录，含范围、来源、作者与时间等本应由内核裁决的字段。目标只接受提案（名称、种类、正文、描述与证据引用）；范围、来源、信任、时间戳与记录标识一律由内核依据操作的访问绑定、接受时间与因果生成，模型无法伪造。模型可见的记忆能力也不得绕过内核直查存储——它必须归约为一次内核能力请求并产生对应的外部动作。",
+  "given": [
+    "一个开启了记忆能力的运行中操作"
+  ],
+  "when": [
+    "模型请求写入一条记忆，并试图自带范围与来源"
+  ],
+  "then": [
+    "完整记忆记录形态在契约里不存在",
+    "只接受提案字段，其余事实由内核生成",
+    "模型无法伪造租户、信任或来源",
+    "模型可见的记忆查询不得绕过内核直查存储"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §22.13「agent 直接提交 MemoryRecord」被否决、§14.3、§7.6 约束",
+      "spec §7.10 现状注记：python/deepstrike/runtime/execution_plane.py:137-155 完全绕过内核",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::memory_scoped_upsert_is_canonical_and_snapshot_replay_is_exact",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::memory_policy_validation_disabled_admits_forbidden_write"
+    ]
+  },
+  "target": "§7.6"
+}

@@ -1,0 +1,13 @@
+{
+  "expect": "policy_violation",
+  "stage": "resolution",
+  "note": "DEC-8 config-time cross-validation · knowledge_enabled exposes a partition that is paged out under budget pressure, so archive_page_out must be declared; a capability switched on while its only execution path is disowned is a self-contradictory configure and is refused whole",
+  "config": {
+    "feature_policy": {
+      "knowledge_enabled": true
+    },
+    "host_effect_support": {
+      "supported": ["call_provider"]
+    }
+  }
+}

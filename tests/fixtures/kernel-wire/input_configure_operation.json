@@ -1,0 +1,22 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-1",
+  "observed_at_ms": "1753747200000",
+  "input": {
+    "kind": "configure_operation",
+    "config": {
+      "context_policy": {
+        "knowledge_budget_ppm": 250000
+      },
+      "kernel_limits": {
+        "max_input_bytes": 1048576,
+        "max_json_depth": 32,
+        "max_collection_entries": 4096
+      },
+      "host_effect_support": {
+        "supported": ["call_provider", "execute_tools"]
+      }
+    }
+  }
+}

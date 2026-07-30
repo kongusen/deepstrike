@@ -21,11 +21,15 @@ impl LoopStateMachine {
     pub(super) fn evaluate_syscall(&mut self, sys: &Syscall) -> Disposition {
         match sys {
             Syscall::Invoke(call) => {
+                // § Task 11 · the caller handed to governance is logical identity. The session slot
+                // `AgentIdentity` still declares is filled with nothing here, and no gate reads it
+                // (§22.6) — a fabricated session literal in a decision path is exactly the
+                // dependency this task removes.
                 let caller = self
                     .run_spec
                     .as_ref()
                     .map(|s| s.identity.clone())
-                    .unwrap_or_else(|| AgentIdentity::new("agent", "session"));
+                    .unwrap_or_else(|| AgentIdentity::new("agent", ""));
                 match self.governance.as_mut() {
                     Some(pipeline) => pipeline.evaluate(call, &caller).into(),
                     None => Disposition::Allow,
@@ -71,6 +75,15 @@ impl LoopStateMachine {
         self.evaluate_syscall(sys)
     }
 
+    /// §7.6 · adjudicate a memory-write **proposal** at the same trap.
+    ///
+    /// The memory arm reads only the rolling write-rate window and never the record itself, so the
+    /// canonical path — where an agent submits a proposal and the kernel authors the record — does
+    /// not have to materialise a record just to be metered.
+    pub fn gate_memory_write_proposal(&mut self) -> Disposition {
+        self.evaluate_memory_write_quota()
+    }
+
     /// G4: snapshot the active workflow's remaining headroom under the resource quota. `None` when no
     /// quota is installed (nothing to bound, so no signal to report). Reads only the kernel's own
     /// node count + `TaskTable` — no I/O. Carried on `WorkflowBatchSpawned` so a coordinator node can
@@ -85,7 +98,7 @@ impl LoopStateMachine {
             .tasks
             .all()
             .iter()
-            .filter(|t| t.proc.is_some() && matches!(t.state, TaskLifecycle::Running))
+            .filter(|t| t.proc.is_some() && t.state.occupies_slot())
             .count();
         let nodes_max = quota.and_then(|quota| quota.max_workflow_nodes);
         let max_concurrent_subagents = quota
@@ -142,7 +155,7 @@ impl LoopStateMachine {
                 .tasks
                 .all()
                 .iter()
-                .filter(|t| t.proc.is_some() && matches!(t.state, TaskLifecycle::Running))
+                .filter(|t| t.proc.is_some() && t.state.occupies_slot())
                 .count() as u32;
             if running >= max {
                 return if concurrency_transient {

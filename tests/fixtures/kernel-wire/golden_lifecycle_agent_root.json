@@ -1,0 +1,112 @@
+{
+  "description": "Configure → atomic agent root start (spec 6, 7.4). Two accepted inputs reach the first provider call: the genesis record freezes the resolved configuration, and the start record's step carries the immutable root kind, the initial execution focus and the one CallProvider effect the transition published.",
+  "genesis_digest": "sha256:39d3f7ea449c2fadbbd98cd4747d76bc8a47e3722531337b4c3e62f7041299b4",
+  "head_digest": "sha256:96a43ca628a987215c5f3600684e9cf957dd7c31d300fcef935f8c475123a194",
+  "links": [
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "config": {
+            "execution_policy": {
+              "max_turns": 12
+            },
+            "host_effect_support": {
+              "supported": [
+                "call_provider",
+                "spawn_tasks"
+              ]
+            }
+          },
+          "kind": "configure_operation"
+        },
+        "input_id": "in-configure",
+        "observed_at_ms": "1700000000000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiY29uZmlnIjp7ImFiaV92ZXJzaW9uIjozLCJidWRnZXRfZ3JhbnQiOm51bGwsImNvbnRleHRfcG9saWN5Ijp7ImNvbGxhcHNlX29sZF9hc3Npc3RhbnRfbmFycmF0aW9uIjp0cnVlLCJpZGxlX21pY3JvX2NvbXBhY3RfbWludXRlcyI6NjAsImtub3dsZWRnZV9idWRnZXRfcHBtIjoyNTAwMDAsInByZXNlcnZlX3JlY2VudF90dXJucyI6MiwicHJlc3N1cmVfdGhyZXNob2xkc19wcG0iOnsiYXV0byI6OTUwMDAwLCJjb2xsYXBzZSI6OTAwMDAwLCJtaWNybyI6ODAwMDAwLCJyZW5ld2FsIjo5ODAwMDAsInNuaXAiOjcwMDAwMH0sInByb21wdF9idWRnZXQiOnsib3V0cHV0X3Jlc2VydmVfdG9rZW5zIjowLCJwcm9tcHRfb3ZlcmhlYWRfdG9rZW5zIjowLCJzYWZldHlfbWFyZ2luX3Rva2VucyI6MH0sInJlbmV3YWxfY2FycnlvdmVyX3BwbSI6NTAwMDAsInRhcmdldF9hZnRlcl9jb21wcmVzc19wcG0iOjY1MDAwMH0sImV4ZWN1dGlvbl9wb2xpY3kiOnsiY3JpdGVyaWFfZ2F0ZV9lbmFibGVkIjp0cnVlLCJlbnRyb3B5X3dhdGNoIjp7ImNvb2xkb3duX3R1cm5zIjo0LCJlbmFibGVkIjpmYWxzZSwiaHlzdGVyZXNpc19wcG0iOjEwMDAwMCwibm90aWZ5X21vZGVsIjpmYWxzZSwidGhyZXNob2xkX3BwbSI6NjUwMDAwfSwibWF4X2NvbnRleHRfdG9rZW5zIjoxMjgwMDAsIm1heF90b3RhbF90b2tlbnMiOiIxMDAwMDAwIiwibWF4X3R1cm5zIjoxMiwibWF4X3dhbGxfbXMiOm51bGwsInJlcGVhdF9mdXNlIjp7ImRlbnlfYWZ0ZXIiOjUsImVuYWJsZWQiOnRydWUsInRlcm1pbmF0ZV9hZnRlciI6OH19LCJmZWF0dXJlX3BvbGljeSI6eyJrbm93bGVkZ2VfZW5hYmxlZCI6ZmFsc2UsIm1lbW9yeV9lbmFibGVkIjpmYWxzZSwicGxhbl90b29sX2VuYWJsZWQiOmZhbHNlLCJzdGFibGVfY29yZV90b29sX2lkcyI6W10sInRvb2xfZGlzcGF0Y2hfZ2F0ZSI6ImV4cG9zZWQifSwiZ292ZXJuYW5jZV9wb2xpY3kiOnsiY29uc3RyYWludHMiOltdLCJkZWZhdWx0X2FjdGlvbiI6ImFsbG93IiwicmF0ZV9saW1pdHMiOltdLCJydWxlcyI6W10sInZldG9lZF90b29scyI6W119LCJob3N0X2VmZmVjdF9zdXBwb3J0Ijp7InN1cHBvcnRlZCI6WyJjYWxsX3Byb3ZpZGVyIiwic3Bhd25fdGFza3MiXX0sImtlcm5lbF9saW1pdHMiOnsiY29sbGVjdGlvbl9saW1pdHMiOnsiY2FwYWJpbGl0eV9ncmFudHMiOjY1NTM2LCJnb3Zlcm5hbmNlX3J1bGVzIjo2NTUzNiwiaW5pdGlhbF9tZXNzYWdlcyI6NjU1MzYsImtub3dsZWRnZV9lbnRyaWVzIjo2NTUzNiwic2tpbGxfY2F0YWxvZyI6NjU1MzYsInRvb2xfY2F0YWxvZyI6NjU1MzZ9LCJtYXhfY29sbGVjdGlvbl9lbnRyaWVzIjo2NTUzNiwibWF4X2lucHV0X2J5dGVzIjoxNjc3NzIxNiwibWF4X2pzb25fZGVwdGgiOjY0fSwibWVtb3J5X2FjY2VzcyI6bnVsbCwibWVtb3J5X3BvbGljeSI6eyJtYXhfY29udGVudF9ieXRlcyI6MTAwMDAsIm1heF9uYW1lX2xlbmd0aCI6MTAwLCJwcm9tb3Rpb25fcmVjYWxsX3RocmVzaG9sZCI6bnVsbCwicmV0cmlldmFsX3RvcF9rIjo1LCJzdGFsZV93YXJuaW5nX2RheXMiOjIsInZhbGlkYXRpb25fZW5hYmxlZCI6dHJ1ZX0sInBheWxvYWRfcG9saWN5Ijp7ImlubGluZV90aHJlc2hvbGRfYnl0ZXMiOjUxMjAwLCJwcmV2aWV3X2J5dGVzIjoyMDQ4fSwicmVjb3ZlcnlfcG9saWN5Ijp7Im91dHB1dF9yZWNvdmVyeV9hdHRlbXB0cyI6MSwicHJvdmlkZXJfcmVjb3ZlcnlfYXR0ZW1wdHMiOjEsInRhaWxfYm91bmRzIjp7ImhhcmRfYnl0ZXMiOiIxNjc3NzIxNiIsImhhcmRfcmVjb3JkcyI6IjIwNDgiLCJzb2Z0X2J5dGVzIjoiNDE5NDMwNCIsInNvZnRfcmVjb3JkcyI6IjUxMiJ9fSwicmVzb3VyY2VfcXVvdGEiOnt9LCJzY2hlZHVsZXJfcG9saWN5Ijp7ImFnZV93ZWlnaHQiOjEwMDAsImNyaXRpY2FsX3BhdGhfd2VpZ2h0IjoxMDAwMDAwLCJmYW5vdXRfd2VpZ2h0IjoxMDAwMCwidG9rZW5fY29zdF93ZWlnaHQiOjF9LCJzaWduYWxfcG9saWN5Ijp7ImRlYWRsaW5lX2VzY2FsYXRpb24iOmZhbHNlLCJxdWV1ZV9tYXgiOjY0LCJ0dGxfbXMiOm51bGx9LCJza2lsbF9jYXRhbG9nIjpbXSwidG9vbF9jYXRhbG9nIjpbXSwidmVyaWZpY2F0aW9uX2NvbnRyYWN0cyI6W119LCJraW5kIjoiY29uZmlndXJlX29wZXJhdGlvbiJ9LCJpbnB1dF9pZCI6ImluLWNvbmZpZ3VyZSIsIm9ic2VydmVkX2F0X21zIjoiMTcwMDAwMDAwMDAwMCIsIm9wZXJhdGlvbl9pZCI6Im9wLWRyaXZlci0xIn0=",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:785b5de5e05f0f1d76f106360aeb4283d64c575ef187145ce31aea9ab8495582",
+        "input_id": "in-configure",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": null,
+        "record_digest": "sha256:39d3f7ea449c2fadbbd98cd4747d76bc8a47e3722531337b4c3e62f7041299b4",
+        "step_digest": "sha256:e35fec9e43d83f26934d990af2aa6be57869acabb43fbc3134b5baf086e5c3d5",
+        "step_seq": "0"
+      },
+      "step": {
+        "disposition": {
+          "kind": "effects"
+        }
+      }
+    },
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "entry": {
+            "kind": "agent",
+            "task": {
+              "goal": "write the research brief"
+            }
+          },
+          "initial_context": {},
+          "kind": "start_operation"
+        },
+        "input_id": "in-start",
+        "observed_at_ms": "1700000001000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiZW50cnkiOnsia2luZCI6ImFnZW50IiwidGFzayI6eyJnb2FsIjoid3JpdGUgdGhlIHJlc2VhcmNoIGJyaWVmIn19LCJpbml0aWFsX2NvbnRleHQiOnt9LCJraW5kIjoic3RhcnRfb3BlcmF0aW9uIn0sImlucHV0X2lkIjoiaW4tc3RhcnQiLCJvYnNlcnZlZF9hdF9tcyI6IjE3MDAwMDAwMDEwMDAiLCJvcGVyYXRpb25faWQiOiJvcC1kcml2ZXItMSJ9",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:70fbd7d3ab4d77a16e39fef15146af669c9d99b913df13e1eed82938558f6122",
+        "input_id": "in-start",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": "sha256:39d3f7ea449c2fadbbd98cd4747d76bc8a47e3722531337b4c3e62f7041299b4",
+        "record_digest": "sha256:96a43ca628a987215c5f3600684e9cf957dd7c31d300fcef935f8c475123a194",
+        "step_digest": "sha256:20994da3c7feae38ec16f6bf3908fad903c4db9a1558a67d8fd10388800255bd",
+        "step_seq": "1"
+      },
+      "step": {
+        "disposition": {
+          "effects": [
+            {
+              "causation_input_id": "in-start",
+              "effect": {
+                "context": {
+                  "state_turn": {
+                    "content": "[TASK STATE] goal: write the research brief\n\n→ focus: write the research brief\n\nProceed.",
+                    "role": "user"
+                  },
+                  "turns": [
+                    {
+                      "content": "Proceed with the task described in [TASK STATE].",
+                      "role": "user",
+                      "tokens": 12
+                    }
+                  ]
+                },
+                "kind": "call_provider"
+              },
+              "effect_id": "op-driver-1:step:1:effect:0"
+            }
+          ],
+          "kind": "effects"
+        },
+        "focus": {
+          "kind": "agent_turn",
+          "task_id": "root"
+        },
+        "root_kind": "agent"
+      }
+    }
+  ]
+}

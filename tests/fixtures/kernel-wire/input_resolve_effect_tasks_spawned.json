@@ -1,0 +1,36 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-14",
+  "observed_at_ms": "1753747214000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-07-29-0001:step:8:effect:0",
+    "outcome": {
+      "status": "succeeded",
+      "result": {
+        "kind": "tasks_spawned",
+        "attempts": [
+          {
+            "task_id": "task-1",
+            "attempt_id": "task-1:attempt:1",
+            "outcome": {
+              "status": "started"
+            }
+          },
+          {
+            "task_id": "task-2",
+            "attempt_id": "task-2:attempt:1",
+            "outcome": {
+              "status": "failed",
+              "failure": {
+                "kind": "resource_exhausted",
+                "message": "worker pool saturated"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

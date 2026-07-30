@@ -1,0 +1,17 @@
+{
+  "kind": "agent",
+  "result": {
+    "termination": "completed",
+    "final_message": {
+      "role": "assistant",
+      "content": "Brief delivered."
+    },
+    "turns_used": 7
+  },
+  "usage": {
+    "input_tokens": "18402",
+    "output_tokens": "2117",
+    "turns": 7,
+    "cached_input_tokens": "12000"
+  }
+}

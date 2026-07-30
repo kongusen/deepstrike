@@ -1,0 +1,29 @@
+{
+  "id": "budget-exhaustion-denies-not-degrades",
+  "domain": "budget",
+  "kind": "positive",
+  "title": "预算或配额不足时拒绝该请求，不静默降级",
+  "semantics": "预算与配额是 fail-closed 的门。越限的模型调用、工具调用或任务派生必须被拒绝并留下可观测的审计事实，而不是悄悄缩小上下文、悄悄少派生几个任务、或悄悄放行。上下文预留同理：预留量不得吃掉整个上下文窗口，越界的预留在配置期就被拒绝。",
+  "given": [
+    "一个已授予有限额度、正在运行的操作"
+  ],
+  "when": [
+    "某次请求所需的额度超过剩余额度"
+  ],
+  "then": [
+    "该请求被拒绝，并发出可观测的越限审计事实",
+    "内核不通过缩小上下文或减少派生数量来悄悄放行",
+    "越界的上下文预留在配置期就被拒绝，且零状态变更",
+    "拒绝是确定性的：同样的额度与请求得到同样的结论"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §4.5「Fail Closed」",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::budget_grant_enforces_local_spawn_cap",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::set_resource_quota_input_denies_spawn_over_quota",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::prompt_reservations_cannot_consume_the_entire_context_window",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::configured_prompt_reservations_are_journaled_and_fail_closed"
+    ]
+  },
+  "target": "§4.5"
+}

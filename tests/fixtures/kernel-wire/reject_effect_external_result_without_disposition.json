@@ -1,0 +1,29 @@
+{
+  "expect": "missing_field",
+  "envelope": {
+    "abi_version": 3,
+    "operation_id": "op-2026-07-29-0001",
+    "input_id": "caller-supplied-idempotency-key-r-ext-disposition",
+    "observed_at_ms": "1753747200000",
+    "input": {
+      "kind": "resolve_effect",
+      "effect_id": "op-2026-07-29-0001:step:2:effect:0",
+      "outcome": {
+        "status": "succeeded",
+        "result": {
+          "kind": "tools",
+          "results": [
+            {
+              "kind": "external",
+              "call_id": "call-3",
+              "payload_ref": "payload:01J8Y2QK7C4N0V",
+              "digest": "sha256:3b1f4a7c9e2d05186a4c7f0b9d3e8c25714f6a0b8c5d2e9f1a3b6c8d0e2f4a61",
+              "original_size": "1048576",
+              "preview": "total 42"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

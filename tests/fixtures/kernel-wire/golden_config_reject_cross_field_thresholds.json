@@ -1,0 +1,21 @@
+{
+  "expect": "policy_violation",
+  "stage": "resolution",
+  "note": "atomic cross-field validation \u00b7 the pressure ladder must strictly increase, so the whole configure is refused and nothing is staged",
+  "config": {
+    "context_policy": {
+      "pressure_thresholds_ppm": {
+        "snip": 700000,
+        "micro": 600000,
+        "collapse": 900000,
+        "auto": 950000,
+        "renewal": 980000
+      }
+    },
+    "host_effect_support": {
+      "supported": [
+        "call_provider"
+      ]
+    }
+  }
+}

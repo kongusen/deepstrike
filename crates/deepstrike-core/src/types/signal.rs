@@ -5,7 +5,14 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeSignal {
-    pub id: Uuid,
+    /// The *business* signal identity, verbatim as its author wrote it.
+    ///
+    /// A free string rather than a UUID on purpose (§7.7): the canonical wire's `SignalId` is a
+    /// branded ref the caller owns, and a kernel that could only hold UUIDs would have to mint a
+    /// second identity for every non-UUID signal — which is exactly the fabricated identity the
+    /// disposition/expiry/displacement audit facts must never report. [`RuntimeSignal::new`]
+    /// still mints a UUID when no author supplied one, so a self-issued signal is still unique.
+    pub id: CompactString,
     pub source: SignalSource,
     pub signal_type: SignalType,
     pub urgency: Urgency,
@@ -22,8 +29,12 @@ pub struct RuntimeSignal {
     /// Number of logical signals represented by this delivery.
     #[serde(default = "default_coalesced_count")]
     pub coalesced_count: u32,
-    /// Target a specific agent/session loop. `None` ⇒ broadcast (drained by any puller).
-    /// The canonical key is the recipient's `sessionId` (see R1 / L0).
+    /// Host-side routing key for a targeted delivery; `None` ⇒ broadcast (drained by any puller).
+    ///
+    /// § Task 11 · opaque to the kernel, which never reads it — the SDK's signal gateway matches it
+    /// while deciding *whose* queue a signal lands in, before the delivery reaches the ABI. The
+    /// kernel's own addressing is `SignalTarget` (operation or logical task), which has no session
+    /// slot (§22.6). Do not re-document this as a session id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipient: Option<CompactString>,
     pub timestamp_ms: u64,
@@ -67,7 +78,7 @@ impl RuntimeSignal {
         summary: impl Into<CompactString>,
     ) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id: CompactString::new(Uuid::new_v4().to_string()),
             source,
             signal_type,
             urgency,
@@ -80,6 +91,12 @@ impl RuntimeSignal {
             recipient: None,
             timestamp_ms: 0,
         }
+    }
+
+    /// Adopt the author's own signal identity instead of the minted one.
+    pub fn with_id(mut self, id: impl Into<CompactString>) -> Self {
+        self.id = id.into();
+        self
     }
 
     pub fn with_dedupe(mut self, key: impl Into<CompactString>) -> Self {

@@ -2,20 +2,17 @@
 
 use super::super::tcb::{TaskLifecycle, TaskTable, Tcb, WaitReason};
 use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, SuspendState};
+use crate::AgentRunSpec;
 use crate::proc::AgentProcess;
 use crate::syscall::{Disposition, Syscall};
 use crate::types::result::{SubAgentResult, TerminationReason};
-use crate::AgentRunSpec;
 
 impl LoopStateMachine {
     /// Spawn a sub-agent: registers a kernel process, emits `AgentProcessChanged`,
     /// and enters `Suspended(SubAgentAwait)` until the SDK feeds `SubAgentCompleted`.
-    pub fn spawn_sub_agent(&mut self, spec: AgentRunSpec, parent_session_id: &str) -> LoopAction {
-        let manifest = crate::types::agent::IsolationManifest::from_spec(
-            &spec,
-            parent_session_id,
-            &self.ctx.capabilities,
-        );
+    pub fn spawn_sub_agent(&mut self, spec: AgentRunSpec) -> LoopAction {
+        let manifest =
+            crate::types::agent::IsolationManifest::from_spec(&spec, &self.ctx.capabilities);
         // M2b: spawning is an effectful request — route it through the same syscall trap as tool
         // calls. A rejected spawn has not executed, so it is surfaced as a committed control result
         // instead of rolling back the parent transaction.
@@ -168,7 +165,7 @@ impl LoopStateMachine {
             .push(KernelObservation::AgentProcessChanged {
                 turn: self.turn,
                 agent_id: process.agent_id.to_string(),
-                parent_session_id: process.parent_session_id.to_string(),
+                parent_task_id: process.parent_task_id.to_string(),
                 role: format!("{:?}", process.role).to_lowercase(),
                 isolation: format!("{:?}", process.isolation).to_lowercase(),
                 context_inheritance: format!("{:?}", process.context_inheritance).to_lowercase(),

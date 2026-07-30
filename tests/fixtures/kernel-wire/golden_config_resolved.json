@@ -1,0 +1,416 @@
+{
+  "config": {
+    "budget_grant": {
+      "reservation_id": "res-1",
+      "rounds": 3,
+      "subagents": 4,
+      "tokens": "500000"
+    },
+    "context_policy": {
+      "collapse_old_assistant_narration": true,
+      "idle_micro_compact_minutes": 45,
+      "knowledge_budget_ppm": 250000,
+      "preserve_recent_turns": 3,
+      "pressure_thresholds_ppm": {
+        "auto": 950000,
+        "collapse": 900000,
+        "micro": 800000,
+        "renewal": 980000,
+        "snip": 700000
+      },
+      "prompt_budget": {
+        "output_reserve_tokens": 4000,
+        "prompt_overhead_tokens": 1200,
+        "safety_margin_tokens": 500
+      },
+      "renewal_carryover_ppm": 50000,
+      "target_after_compress_ppm": 650000
+    },
+    "execution_policy": {
+      "criteria_gate_enabled": true,
+      "entropy_watch": {
+        "cooldown_turns": 3,
+        "enabled": true,
+        "hysteresis_ppm": 100000,
+        "notify_model": true,
+        "threshold_ppm": 650000
+      },
+      "max_context_tokens": 200000,
+      "max_total_tokens": "2000000",
+      "max_turns": 40,
+      "max_wall_ms": "600000",
+      "repeat_fuse": {
+        "deny_after": 4,
+        "enabled": true,
+        "terminate_after": 7
+      }
+    },
+    "feature_policy": {
+      "knowledge_enabled": true,
+      "memory_enabled": true,
+      "plan_tool_enabled": true,
+      "stable_core_tool_ids": [
+        "search"
+      ],
+      "tool_dispatch_gate": "exposed"
+    },
+    "governance_policy": {
+      "constraints": [
+        {
+          "kind": "required",
+          "param_path": "destination",
+          "tool": "write"
+        }
+      ],
+      "default_action": "ask_user",
+      "rate_limits": [
+        {
+          "max_calls": 10,
+          "tool": "search",
+          "window_ms": "60000"
+        }
+      ],
+      "rules": [
+        {
+          "action": "deny",
+          "tool_pattern": "shell.*"
+        }
+      ],
+      "vetoed_tools": [
+        "rm"
+      ]
+    },
+    "host_effect_support": {
+      "supported": [
+        "call_provider",
+        "execute_tools",
+        "request_approval",
+        "spawn_tasks",
+        "preempt_tasks",
+        "persist_memory",
+        "query_memory",
+        "archive_page_out",
+        "load_payload",
+        "evaluate_milestone"
+      ]
+    },
+    "kernel_limits": {
+      "collection_limits": {
+        "capability_grants": 128,
+        "governance_rules": 64,
+        "initial_messages": 1024,
+        "knowledge_entries": 512,
+        "skill_catalog": 64,
+        "tool_catalog": 256
+      },
+      "max_collection_entries": 4096,
+      "max_input_bytes": 1048576,
+      "max_json_depth": 32
+    },
+    "memory_access": {
+      "binding_id": "mem-binding-1",
+      "capabilities": {
+        "read": true,
+        "write": true
+      }
+    },
+    "memory_policy": {
+      "max_content_bytes": 20000,
+      "max_name_length": 120,
+      "promotion_recall_threshold": "3",
+      "retrieval_top_k": 8,
+      "stale_warning_days": 7,
+      "validation_enabled": true
+    },
+    "payload_policy": {
+      "inline_threshold_bytes": 32768,
+      "preview_bytes": 1024
+    },
+    "recovery_policy": {
+      "output_recovery_attempts": 1,
+      "provider_recovery_attempts": 2,
+      "tail_bounds": {
+        "hard_bytes": "8388608",
+        "hard_records": "1024",
+        "soft_bytes": "2097152",
+        "soft_records": "256"
+      }
+    },
+    "resource_quota": {
+      "max_concurrent_subagents": 2,
+      "max_spawn_depth": 2,
+      "max_total_subagents": 8,
+      "max_workflow_nodes": 64,
+      "memory_writes_per_window": {
+        "max_events": 4,
+        "window_ms": "60000"
+      }
+    },
+    "scheduler_policy": {
+      "age_weight": 900,
+      "critical_path_weight": 900000,
+      "fanout_weight": 9000,
+      "token_cost_weight": 2
+    },
+    "signal_policy": {
+      "deadline_escalation": true,
+      "queue_max": 32,
+      "ttl_ms": "30000"
+    },
+    "skill_catalog": [
+      {
+        "allowed_tools": [
+          "search"
+        ],
+        "description": "run a literature sweep",
+        "effort": 3,
+        "estimated_tokens": 900,
+        "name": "research",
+        "when_to_use": "sources,citations"
+      }
+    ],
+    "tool_catalog": [
+      {
+        "description": "search the corpus",
+        "name": "search",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "description": "write a file",
+        "name": "write",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    "verification_contracts": [
+      {
+        "contract_id": "brief-quality-v1",
+        "phases": [
+          {
+            "phase_id": "collect",
+            "unlocks": [
+              "research"
+            ]
+          },
+          {
+            "phase_id": "write",
+            "unlocks": [
+              "write"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "note": "frozen §7.3 ResolvedOperationConfig: the genesis record's defaults-free normal form",
+  "resolved": {
+    "abi_version": 3,
+    "budget_grant": {
+      "reservation_id": "res-1",
+      "rounds": 3,
+      "subagents": 4,
+      "tokens": "500000"
+    },
+    "context_policy": {
+      "collapse_old_assistant_narration": true,
+      "idle_micro_compact_minutes": 45,
+      "knowledge_budget_ppm": 250000,
+      "preserve_recent_turns": 3,
+      "pressure_thresholds_ppm": {
+        "auto": 950000,
+        "collapse": 900000,
+        "micro": 800000,
+        "renewal": 980000,
+        "snip": 700000
+      },
+      "prompt_budget": {
+        "output_reserve_tokens": 4000,
+        "prompt_overhead_tokens": 1200,
+        "safety_margin_tokens": 500
+      },
+      "renewal_carryover_ppm": 50000,
+      "target_after_compress_ppm": 650000
+    },
+    "execution_policy": {
+      "criteria_gate_enabled": true,
+      "entropy_watch": {
+        "cooldown_turns": 3,
+        "enabled": true,
+        "hysteresis_ppm": 100000,
+        "notify_model": true,
+        "threshold_ppm": 650000
+      },
+      "max_context_tokens": 200000,
+      "max_total_tokens": "2000000",
+      "max_turns": 40,
+      "max_wall_ms": "600000",
+      "repeat_fuse": {
+        "deny_after": 4,
+        "enabled": true,
+        "terminate_after": 7
+      }
+    },
+    "feature_policy": {
+      "knowledge_enabled": true,
+      "memory_enabled": true,
+      "plan_tool_enabled": true,
+      "stable_core_tool_ids": [
+        "search"
+      ],
+      "tool_dispatch_gate": "exposed"
+    },
+    "governance_policy": {
+      "constraints": [
+        {
+          "kind": "required",
+          "param_path": "destination",
+          "tool": "write"
+        }
+      ],
+      "default_action": "ask_user",
+      "rate_limits": [
+        {
+          "max_calls": 10,
+          "tool": "search",
+          "window_ms": "60000"
+        }
+      ],
+      "rules": [
+        {
+          "action": "deny",
+          "tool_pattern": "shell.*"
+        }
+      ],
+      "vetoed_tools": [
+        "rm"
+      ]
+    },
+    "host_effect_support": {
+      "supported": [
+        "call_provider",
+        "execute_tools",
+        "request_approval",
+        "spawn_tasks",
+        "preempt_tasks",
+        "persist_memory",
+        "query_memory",
+        "archive_page_out",
+        "load_payload",
+        "evaluate_milestone"
+      ]
+    },
+    "kernel_limits": {
+      "collection_limits": {
+        "capability_grants": 128,
+        "governance_rules": 64,
+        "initial_messages": 1024,
+        "knowledge_entries": 512,
+        "skill_catalog": 64,
+        "tool_catalog": 256
+      },
+      "max_collection_entries": 4096,
+      "max_input_bytes": 1048576,
+      "max_json_depth": 32
+    },
+    "memory_access": {
+      "binding_id": "mem-binding-1",
+      "capabilities": {
+        "read": true,
+        "write": true
+      }
+    },
+    "memory_policy": {
+      "max_content_bytes": 20000,
+      "max_name_length": 120,
+      "promotion_recall_threshold": "3",
+      "retrieval_top_k": 8,
+      "stale_warning_days": 7,
+      "validation_enabled": true
+    },
+    "payload_policy": {
+      "inline_threshold_bytes": 32768,
+      "preview_bytes": 1024
+    },
+    "recovery_policy": {
+      "output_recovery_attempts": 1,
+      "provider_recovery_attempts": 2,
+      "tail_bounds": {
+        "hard_bytes": "8388608",
+        "hard_records": "1024",
+        "soft_bytes": "2097152",
+        "soft_records": "256"
+      }
+    },
+    "resource_quota": {
+      "max_concurrent_subagents": 2,
+      "max_spawn_depth": 2,
+      "max_total_subagents": 8,
+      "max_workflow_nodes": 64,
+      "memory_writes_per_window": {
+        "max_events": 4,
+        "window_ms": "60000"
+      }
+    },
+    "scheduler_policy": {
+      "age_weight": 900,
+      "critical_path_weight": 900000,
+      "fanout_weight": 9000,
+      "token_cost_weight": 2
+    },
+    "signal_policy": {
+      "deadline_escalation": true,
+      "queue_max": 32,
+      "ttl_ms": "30000"
+    },
+    "skill_catalog": [
+      {
+        "allowed_tools": [
+          "search"
+        ],
+        "description": "run a literature sweep",
+        "effort": 3,
+        "estimated_tokens": 900,
+        "name": "research",
+        "when_to_use": "sources,citations"
+      }
+    ],
+    "tool_catalog": [
+      {
+        "description": "search the corpus",
+        "name": "search",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "description": "write a file",
+        "name": "write",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    "verification_contracts": [
+      {
+        "contract_id": "brief-quality-v1",
+        "phases": [
+          {
+            "phase_id": "collect",
+            "unlocks": [
+              "research"
+            ]
+          },
+          {
+            "phase_id": "write",
+            "unlocks": [
+              "write"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

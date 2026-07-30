@@ -1,0 +1,37 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0002",
+  "input_id": "caller-supplied-idempotency-key-3",
+  "observed_at_ms": "1753747201000",
+  "input": {
+    "kind": "start_operation",
+    "entry": {
+      "kind": "workflow",
+      "spec": {
+        "name": "brief-pipeline",
+        "nodes": [
+          {
+            "node_id": "gather",
+            "task": {
+              "goal": "Gather candidate sources"
+            }
+          },
+          {
+            "node_id": "write",
+            "task": {
+              "goal": "Write the brief"
+            },
+            "depends_on": [
+              "gather"
+            ],
+            "run_spec": {
+              "goal": "Write the brief",
+              "role": "implement"
+            }
+          }
+        ]
+      }
+    },
+    "initial_context": {}
+  }
+}

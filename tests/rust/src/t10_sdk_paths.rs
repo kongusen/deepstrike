@@ -30,11 +30,7 @@ impl DreamStore for TrackingDreamStore {
     async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> Result<()> {
         Ok(())
     }
-    async fn search(
-        &self,
-        _agent_id: &str,
-        _query: &MemoryQuery,
-    ) -> Result<Vec<MemoryRecall>> {
+    async fn search(&self, _agent_id: &str, _query: &MemoryQuery) -> Result<Vec<MemoryRecall>> {
         Ok(vec![])
     }
     async fn save_session(&self, data: CoreSessionData) -> Result<()> {

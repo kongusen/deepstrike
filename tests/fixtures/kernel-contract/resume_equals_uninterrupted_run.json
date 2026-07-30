@@ -1,0 +1,28 @@
+{
+  "id": "resume-equals-uninterrupted-run",
+  "domain": "resume",
+  "kind": "positive",
+  "title": "恢复之后的下一步必须与不中断运行完全等价",
+  "semantics": "恢复只有一条路径：装载最近的逻辑检查点 → 校验版本、摘要、操作身份、创世摘要与覆盖头 → 还原逻辑状态 → 重放并校验检查点尾巴 → 折叠其后的已提交记录 → 暴露待决动作或终态。没有检查点时从创世记录起走同一条事务折叠。不存在第二套恢复状态机，也不允许由业务日志重新拼装图或历史。",
+  "given": [
+    "一个运行到中途的操作，其持久日志与检查点均完好"
+  ],
+  "when": [
+    "进程崩溃后，新进程从检查点加尾巴恢复"
+  ],
+  "then": [
+    "恢复后的下一步与从未中断的运行完全等价",
+    "恢复过程只使用一条事务折叠路径",
+    "无检查点时从创世记录起折叠，结论相同",
+    "业务投影日志不参与恢复判定"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §12.2「恢复」与 §15.5「uninterrupted 与 checkpoint+tail restore 的下一步等价」",
+      "spec §12.4「删除 SDK 通过业务 SessionLog 重建 workflow graph 的主路径」",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::memory_scoped_upsert_is_canonical_and_snapshot_replay_is_exact",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::aborting_prepared_step_restores_the_exact_committed_runtime"
+    ]
+  },
+  "target": "§15.5"
+}

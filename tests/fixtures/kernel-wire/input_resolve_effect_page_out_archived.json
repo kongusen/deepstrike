@@ -1,0 +1,22 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-18",
+  "observed_at_ms": "1753747218000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-07-29-0001:step:12:effect:0",
+    "outcome": {
+      "status": "succeeded",
+      "result": {
+        "kind": "page_out_archived",
+        "receipt": {
+          "handle_id": "handle-9",
+          "payload_ref": "payload:01J8Y2QK7C4N0Z",
+          "digest": "sha256:3b1f4a7c9e2d05186a4c7f0b9d3e8c25714f6a0b8c5d2e9f1a3b6c8d0e2f4a61",
+          "original_size": "262144"
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,26 @@
 export type { KernelTransactionEntry, SessionEvent, SessionLog } from "./session-log.js"
-export { InMemorySessionLog } from "./session-log.js"
+export { InMemorySessionLog, journalOperationKey } from "./session-log.js"
 export * from "./kernel-transaction-log.js"
+// Durable transaction capability (Canonical Kernel ABI §9.1)
+export {
+  DriverKernelJournal,
+  InMemoryJournalDriver,
+  InMemoryKernelJournal,
+  JournalCasConflictError,
+  JournalIntegrityError,
+  JournalIoError,
+} from "./kernel-journal.js"
+export type {
+  CheckpointCandidate,
+  InstalledCheckpoint,
+  JournalAppendReceipt,
+  JournalEntry,
+  JournalHead,
+  JournalPruneReceipt,
+  JournalRecordInput,
+  JournalStorageDriver,
+  KernelJournal,
+} from "./kernel-journal.js"
 export { rebuildKernelRuntime } from "./kernel-rebuild.js"
 export type { KernelRebuildResult } from "./kernel-rebuild.js"
 export * from "./context-policy.js"

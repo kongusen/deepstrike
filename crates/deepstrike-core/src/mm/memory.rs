@@ -258,7 +258,7 @@ pub fn memory_retention_score(
     current_turn: u64,
     stale_discount_ppm: u32,
 ) -> i64 {
-    use crate::mm::value::{deterministic_retention_score, RetentionFeatures, RetentionKind};
+    use crate::mm::value::{RetentionFeatures, RetentionKind, deterministic_retention_score};
     let kind = match record.kind {
         MemoryKind::User => RetentionKind::User,
         MemoryKind::Feedback => RetentionKind::Feedback,
@@ -720,7 +720,11 @@ mod tests {
 
         let mut pinned = cold.clone();
         pinned.pinned = true;
-        assert_eq!(memory_retention_score(&pinned, 10, 0), i64::MAX, "pin is absolute");
+        assert_eq!(
+            memory_retention_score(&pinned, 10, 0),
+            i64::MAX,
+            "pin is absolute"
+        );
 
         // The TTL/staleness discount (host-supplied, clock-based) lowers the score.
         assert!(memory_retention_score(&cold, 10, 500_000) < memory_retention_score(&cold, 10, 0));

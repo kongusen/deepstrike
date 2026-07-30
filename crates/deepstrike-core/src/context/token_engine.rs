@@ -177,11 +177,15 @@ mod tests {
     fn count_image_uses_detail_heuristic_not_one() {
         let e = engine();
         let low = Message::user_multimodal(vec![ContentPart::image_base64_with_detail(
-            "abc", "image/png", "low",
+            "abc",
+            "image/png",
+            "low",
         )]);
         let auto = Message::user_multimodal(vec![ContentPart::image_base64("abc", "image/png")]);
         let high = Message::user_multimodal(vec![ContentPart::image_base64_with_detail(
-            "abc", "image/png", "high",
+            "abc",
+            "image/png",
+            "high",
         )]);
         assert_eq!(e.count_message(&low), 85);
         assert_eq!(e.count_message(&auto), 255);
@@ -192,10 +196,8 @@ mod tests {
     fn count_audio_uses_decoded_byte_heuristic_not_base64_text() {
         let e = engine();
         // 6400 base64 chars → ~4800 decoded bytes → 4800/1600 = 3 tokens
-        let audio = Message::user_multimodal(vec![ContentPart::audio(
-            "A".repeat(6400),
-            "audio/wav",
-        )]);
+        let audio =
+            Message::user_multimodal(vec![ContentPart::audio("A".repeat(6400), "audio/wav")]);
         assert_eq!(e.count_message(&audio), 3);
         // Must not explode to thousands the way counting base64 as text would.
         assert!(e.count_message(&audio) < 100);

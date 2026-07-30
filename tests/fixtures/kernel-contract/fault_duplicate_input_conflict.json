@@ -1,0 +1,29 @@
+{
+  "id": "fault-duplicate-input-conflict",
+  "domain": "fault",
+  "kind": "positive",
+  "title": "相同输入标识加相同载荷是重放，相同标识加不同载荷是冲突拒绝",
+  "semantics": "幂等锚定在「调用方可提供的输入标识 + 持久日志」，不锚定进程内的有限重放窗口。相同标识与相同规范化载荷返回既有记录与既有步序，不产生新记录；载荷不同则冲突拒绝；跨操作身份的输入一律拒绝。现状把幂等锚在一个固定容量的内存窗口上，超窗后重复投递会从「幂等重放」退化为拒绝，该锚点不保留。",
+  "given": [
+    "一个已运行若干步的操作，其持久日志已有若干记录"
+  ],
+  "when": [
+    "宿主重投一条历史输入；随后用同一输入标识提交不同载荷；再用另一操作身份提交输入"
+  ],
+  "then": [
+    "重投返回既有记录与既有步序，不产生新记录",
+    "同标识不同载荷返回冲突拒绝",
+    "跨操作身份的输入被拒绝",
+    "幂等判定依据持久日志，而不是内存窗口容量"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §4.5 与 §15.2（幂等锚定 input_id + durable journal；现状 crates/deepstrike-core/src/runtime/kernel/runtime.rs:6、:61-69 的 256 条窗口）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::exact_event_replay_returns_the_original_step",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::duplicate_event_id_with_different_payload_is_rejected",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::cross_operation_input_is_rejected",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::event_replay_dedupe_has_a_fixed_capacity（现状锚点反例）"
+    ]
+  },
+  "target": "§15.2"
+}

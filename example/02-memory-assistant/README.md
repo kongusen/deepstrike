@@ -6,7 +6,7 @@ learned in one session is available in the next.
 ```
 session A  ──research──▶ answer ──┐
                                   ▼
-                    runner.writeMemory({content, metadata})   ← the ONE governed write gate
+                    runner.writeMemory(MemoryRecord)          ← the ONE governed write gate
                                   │  (validation · write quota · advisory score · jaccard dedup)
                                   ▼
                           [ DreamStore ]  (keyed by agentId)
@@ -19,11 +19,12 @@ session B  ──run starts──▶ preQueryMemory recall ──▶ fact inject
 | Mechanism | Where it shows up |
 |---|---|
 | **Write gate** | `runner.writeMemory(...)` is the single path memories are written through — validation, a rolling-window write quota, an advisory relevance score, and jaccard dedup all live here. The host decides what's worth keeping (here, a research takeaway). |
-| **Run-start recall** | `preQueryMemory` (default-on, needs `dreamStore` + `agentId`) searches memory at the start of every run and injects hits into the decaying history, so the model sees prior knowledge on turn one. |
+| **Run-start recall** | `preQueryMemory` (default-on, needs `dreamStore` + `agentId` + `memoryScope`) searches memory at the start of every run and injects hits into the decaying history, so the model sees prior knowledge on turn one. |
 | **On-demand recall** | the `memory` meta-tool appears automatically (store present) so the agent can also query memory mid-run. |
 
-The one new config is `dreamStore` + `agentId` on `RuntimeOptions` — set both and the memory
-mechanism turns on. Everything else is L1.
+The new config is `dreamStore` + `agentId` + `memoryScope` on `RuntimeOptions`. The scope
+(`tenant_id` + `namespace`) isolates recall and is required for run-start prefetch, extraction, and
+semantic page-out. Everything else is L1.
 
 ## Run
 

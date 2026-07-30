@@ -1,0 +1,29 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-6",
+  "observed_at_ms": "1753747205000",
+  "input": {
+    "kind": "deliver_external_event",
+    "event": {
+      "kind": "deliver_signal",
+      "delivery_id": "delivery-9f3a",
+      "attempt": 1,
+      "signal": {
+        "signal_id": "signal-cron-0007",
+        "source": "cron",
+        "target": {
+          "kind": "task",
+          "task_id": "task-root"
+        },
+        "urgency": "high",
+        "payload": {
+          "reason": "nightly refresh"
+        },
+        "source_timestamp_ms": "1753747204900",
+        "dedupe_key": "nightly-refresh",
+        "escalate_after_ms": "30000"
+      }
+    }
+  }
+}

@@ -23,7 +23,12 @@ export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationRea
 // on the `@deepstrike/sdk/harness` subpath.
 export type { InstructionProfile, NudgeRule, NudgeTrigger } from "./harness/public.js"
 export type { SignalPolicy } from "./runtime/os-profile.js"
-export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } from "./runtime/kernel-step.js"
+export {
+  DurableKernelRebuildRequiredError,
+  readKernelDiagnostics,
+  restoreKernelRuntime,
+  snapshotKernelRuntime,
+} from "./runtime/kernel-step.js"
 export type { KernelDiagnostics, KernelSnapshot } from "./runtime/kernel-step.js"
 export { rebuildKernelRuntime } from "./runtime/kernel-rebuild.js"
 export type { KernelRebuildResult } from "./runtime/kernel-rebuild.js"
@@ -47,6 +52,24 @@ export { LocalExecutionPlane } from "./runtime/execution-plane.js"
 export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
 export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
 export type { KernelTransactionEntry, SessionLog, SessionEvent } from "./runtime/session-log.js"
+// ── Durable transaction capability (Canonical Kernel ABI §9.1) ──────────────
+export {
+  FileKernelJournal,
+  InMemoryKernelJournal,
+  JournalCasConflictError,
+  JournalIntegrityError,
+  JournalIoError,
+} from "./runtime/kernel-journal.js"
+export type {
+  CheckpointCandidate,
+  InstalledCheckpoint,
+  JournalAppendReceipt,
+  JournalEntry,
+  JournalHead,
+  JournalPruneReceipt,
+  JournalRecordInput,
+  KernelJournal,
+} from "./runtime/kernel-journal.js"
 export {
   KERNEL_LOG_RECORD_VERSION,
   KernelLogConflictError,

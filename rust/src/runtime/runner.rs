@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use crate::runtime::sandboxed_skill::scan_skill_dir;
 use crate::runtime::skill_watcher::SkillWatcher;
@@ -37,7 +37,7 @@ use crate::runtime::execution_plane::{
     PermissionResponse, RunContext, ToolSuspendHandler,
 };
 use crate::runtime::os_profile::{
-    assert_native_profile, GovernancePolicy, OsProfile, SignalPolicy,
+    GovernancePolicy, OsProfile, SignalPolicy, assert_native_profile,
 };
 use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
 use crate::runtime::replay::{
@@ -386,7 +386,9 @@ impl RuntimeRunner {
             "{transcript}\n\nReturn {{\"memories\":[{{\"name\":\"stable-kebab-key\",\"kind\":\"user|feedback|project|reference\",\"content\":\"fact\",\"description\":\"why durable\",\"confidence\":0.0,\"links\":[],\"pinned\":false,\"ttl_days\":null,\"evidence_refs\":[]}}]}} with at most 10 items. Return {{\"memories\":[]}} when nothing is durable."
         );
         let context = rendered_context_from_messages(vec![
-            Message::system("Extract durable, reusable facts from this completed session. Return only JSON; do not include transient progress or guesses."),
+            Message::system(
+                "Extract durable, reusable facts from this completed session. Return only JSON; do not include transient progress or guesses.",
+            ),
             Message::user(prompt),
         ]);
         let state = self.opts.provider.create_run_state();
@@ -406,21 +408,26 @@ impl RuntimeRunner {
         ))
     }
 
-    async fn log_memory_retrieval_result(
-        &self,
-        session_id: Option<&str>,
-        hits: Vec<MemoryRecall>,
-    ) {
+    async fn log_memory_retrieval_result(&self, session_id: Option<&str>, hits: Vec<MemoryRecall>) {
         let Some(session_id) = session_id.or(self.opts.session_id.as_deref()) else {
             return;
         };
         // The session-log record is the durable audit artifact; the kernel needs no
         // acknowledgment (the former kernel event was a no-op and was removed).
-        self.log(
-            session_id,
-            SessionEvent::MemoryRetrievalResult { hits },
-        )
-        .await;
+        self.log(session_id, SessionEvent::MemoryRetrievalResult { hits })
+            .await;
+    }
+
+    /// Test-only probe: the live kernel's `pending_effects` size. Valid while the run stream is
+    /// suspended at a `yield` (the active-kernel guard is still in scope); `None` once the run
+    /// generator has finished. Used by the effect-leak regressions (R-B27).
+    #[cfg(test)]
+    pub(crate) fn active_pending_effect_count(&self) -> Option<usize> {
+        self.active_kernel
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|kernel| kernel.lock().unwrap().diagnostics().pending_effect_count)
     }
 
     fn begin_memory_syscall(
@@ -745,14 +752,14 @@ impl RuntimeRunner {
                     KernelInputEvent::SetTokenizer {
                         name: tokenizer_name.clone(),
                     },
-                );
+                )?;
             }
             if let Some(enabled) = self.opts.enable_plan_tool {
                 kernel_apply(
                     &mut kernel,
                     &mut pending_observations,
                     KernelInputEvent::SetPlanToolEnabled { enabled },
-                );
+                )?;
             }
 
             kernel_apply(
@@ -761,21 +768,21 @@ impl RuntimeRunner {
                 KernelInputEvent::SetTools {
                     tools: self.plane.schemas(),
                 },
-            );
+            )?;
 
             if self.opts.dream_store.is_some() && self.opts.agent_id.is_some() {
                 kernel_apply(
                     &mut kernel,
                     &mut pending_observations,
                     KernelInputEvent::SetMemoryEnabled { enabled: true },
-                );
+                )?;
             }
             if self.opts.knowledge_source.is_some() {
                 kernel_apply(
                     &mut kernel,
                     &mut pending_observations,
                     KernelInputEvent::SetKnowledgeEnabled { enabled: true },
-                );
+                )?;
             }
 
             if let Some(sp) = &self.opts.system_prompt {
@@ -787,7 +794,7 @@ impl RuntimeRunner {
                         content: sp.clone(),
                         tokens,
                     },
-                );
+                )?;
             }
             for mem in &self.opts.initial_memory {
                 let tokens = ((mem.len() / 4) as u32).max(1);
@@ -800,7 +807,7 @@ impl RuntimeRunner {
                         key: None,
                         pinned: false,
                     },
-                );
+                )?;
             }
 
             let skill_watcher = self.opts.skill_dir.as_deref().and_then(SkillWatcher::start);
@@ -811,7 +818,7 @@ impl RuntimeRunner {
                     KernelInputEvent::SetAvailableSkills {
                         skills: scan_skill_dir(skill_dir),
                     },
-                );
+                )?;
             }
 
             // P1-B/D: configure stable-core tool ids (always exposed under skill gating).
@@ -822,7 +829,7 @@ impl RuntimeRunner {
                     KernelInputEvent::SetStableCoreTools {
                         tool_ids: self.opts.stable_core_tool_ids.clone(),
                     },
-                );
+                )?;
             }
 
             if let Some(milestones) = self.opts.milestone_contract.clone() {
@@ -830,7 +837,7 @@ impl RuntimeRunner {
                     &mut kernel,
                     &mut pending_observations,
                     KernelInputEvent::LoadMilestoneContract { contract: milestones },
-                );
+                )?;
             }
 
             let max_bytes = {
@@ -872,14 +879,14 @@ impl RuntimeRunner {
                     KernelInputEvent::PreloadHistory {
                         messages,
                     },
-                );
+                )?;
 
                 for name in reactivate {
                     kernel_apply(
                         &mut kernel,
                         &mut pending_observations,
                         KernelInputEvent::SkillActivated { name, lease_turns: None },
-                    );
+                    )?;
                 }
             }
 
@@ -903,7 +910,7 @@ impl RuntimeRunner {
                 &mut kernel,
                 &mut pending_observations,
                 governance_policy.into_kernel_event(),
-            );
+            )?;
 
             let signal_policy = self
                 .opts
@@ -915,14 +922,14 @@ impl RuntimeRunner {
                 KernelInputEvent::SetSignalPolicy {
                     policy: signal_policy.into_kernel(),
                 },
-            );
+            )?;
 
             if let Some(quota) = self.opts.resource_quota.clone() {
                 kernel_apply(
                     &mut kernel,
                     &mut pending_observations,
                     KernelInputEvent::SetResourceQuota { quota },
-                );
+                )?;
             }
 
             if let Some(policy) = self.opts.memory_policy.clone() {
@@ -930,7 +937,7 @@ impl RuntimeRunner {
                     &mut kernel,
                     &mut pending_observations,
                     memory_policy_event(policy),
-                );
+                )?;
             }
 
             // Multimodal upload: seed attachments before start_run (parity with Node/Python).
@@ -942,7 +949,7 @@ impl RuntimeRunner {
                         message: Message::user_multimodal(attachments.clone()),
                         tokens: None,
                     },
-                );
+                )?;
             }
 
             // I4: pre-fetch memory into the knowledge partition before the first LLM turn.
@@ -984,7 +991,7 @@ impl RuntimeRunner {
                                 message: Message::user(recalled.join("\n")),
                                 tokens: None,
                             },
-                        );
+                        )?;
                     }
                 }
             }
@@ -994,7 +1001,7 @@ impl RuntimeRunner {
                     &mut kernel,
                     &mut pending_observations,
                     KernelInputEvent::Resume,
-                )
+                )?
             } else {
                 // P0-A: fold an explicit `run_spec`, the `allowed_tool_ids` ceiling, and/or the
                 // `baseline_tool_ids` pre-activation surface into the kernel run spec (reuses the
@@ -1014,7 +1021,7 @@ impl RuntimeRunner {
                         task: RuntimeTask::new(&goal).with_criteria(criteria),
                         run_spec,
                     },
-                )
+                )?
             };
 
             let mut last_skill_version: u64 = skill_watcher.as_ref().map(|w| w.version()).unwrap_or(0);
@@ -1033,7 +1040,7 @@ impl RuntimeRunner {
                             KernelInputEvent::SetAvailableSkills {
                                 skills: scan_skill_dir(skill_dir),
                             },
-                        );
+                        )?;
                     }
                 }
 
@@ -1056,7 +1063,7 @@ impl RuntimeRunner {
                             reason: cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
                             pending_call_ids: pending_call_ids(&action),
                         },
-                    );
+                    )?;
                     break;
                 }
 
@@ -1098,9 +1105,9 @@ impl RuntimeRunner {
                                 .unwrap_or_default()
                                 .as_millis() as u64,
                         );
-                        kernel_sig.id = uuid::Uuid::parse_str(&claim.signal_id).map_err(|_| {
-                            crate::Error::Other("signal claim requires a UUID signal_id".into())
-                        })?;
+                        // §7.7 · the claim's signal id is the business identity, kept verbatim; it
+                        // no longer has to parse as a UUID.
+                        kernel_sig.id = claim.signal_id.as_str().into();
                         if let Some(dedupe_key) = &claim.signal.dedupe_key {
                             kernel_sig = kernel_sig.with_dedupe(dedupe_key.clone());
                         }
@@ -1220,7 +1227,7 @@ impl RuntimeRunner {
                                         effect_id: provider_effect_id.clone(),
                                         message: msg.clone(),
                                     },
-                                );
+                                )?;
                                 // Withholding (query.ts parity): surface the raw provider error only
                                 // when the kernel could NOT recover (it returned a terminal). On a
                                 // recovered retry (CallProvider) the error stays hidden. `continue`
@@ -1234,11 +1241,24 @@ impl RuntimeRunner {
                             }
                         };
 
+                        // R-B27/R-B29 sibling: an exception raised AFTER the first chunk must not
+                        // escape through `?`. Doing so leaves the `call_provider` effect pending
+                        // forever (nothing ever resolves it) and skips the kernel's reactive
+                        // recovery ladder. Capture it here and feed `provider_error` below, exactly
+                        // like the stream-open error path and like node/python.
+                        let mut stream_error: Option<String> = None;
                         while let Some(evt) = provider_stream.next().await {
                             if self.interrupted.load(Ordering::Relaxed) {
                                 break;
                             }
-                            match evt? {
+                            let evt = match evt {
+                                Ok(evt) => evt,
+                                Err(e) => {
+                                    stream_error = Some(e.to_string());
+                                    break;
+                                }
+                            };
+                            match evt {
                                 StreamEvent::TextDelta { delta } => {
                                     final_text.push_str(&delta);
                                     yield RunEvent::TextDelta(delta);
@@ -1285,8 +1305,28 @@ impl RuntimeRunner {
                                     reason: cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
                                     pending_call_ids: vec![provider_effect_id],
                                 },
-                            );
+                            )?;
                             break;
+                        }
+
+                        if let Some(msg) = stream_error {
+                            // Same contract as the stream-open failure above: hand the raw provider
+                            // error to the kernel, which resolves the pending provider effect and
+                            // decides recover-and-retry (`CallProvider`) vs honest terminal (`Done`).
+                            // Surface the error to the caller only when the kernel gave up, so a
+                            // recovered turn does not emit a phantom failure.
+                            action = kernel_action(
+                                &mut kernel,
+                                &mut pending_observations,
+                                KernelInputEvent::ProviderError {
+                                    effect_id: provider_effect_id.clone(),
+                                    message: msg.clone(),
+                                },
+                            )?;
+                            if matches!(&action.effect, KernelEffect::Done { .. }) {
+                                yield RunEvent::Error(msg);
+                            }
+                            continue;
                         }
 
                         let mut assistant = Message {
@@ -1318,7 +1358,7 @@ impl RuntimeRunner {
                                 // Phase 4: stop_reason drives the kernel's max-output-tokens recovery.
                                 stop_reason: turn_stop_reason.clone(),
                             },
-                        );
+                        )?;
                         self.log(
                             &session_id,
                             SessionEvent::LlmCompleted {
@@ -1433,7 +1473,7 @@ impl RuntimeRunner {
                                 denied_calls,
                                 error: None,
                             },
-                        );
+                        )?;
                     }
                     KernelEffect::SpawnWorkflow { nodes, .. } => {
                         // This runner has no workflow child orchestrator. Report each
@@ -1456,7 +1496,7 @@ impl RuntimeRunner {
                                 failures,
                                 error: None,
                             },
-                        );
+                        )?;
                     }
                     KernelEffect::PreemptSubAgents { .. } => {
                         // RuntimeRunner does not launch external child runners, so
@@ -1469,7 +1509,7 @@ impl RuntimeRunner {
                                 effect_id: preempt_effect_id,
                                 error: None,
                             },
-                        );
+                        )?;
                     }
                     KernelEffect::PersistMemory { .. } => {
                         let effect_id = action.effect_id.clone();
@@ -1483,7 +1523,7 @@ impl RuntimeRunner {
                                         .to_string(),
                                 ),
                             },
-                        );
+                        )?;
                     }
                     KernelEffect::QueryMemory { .. } => {
                         let effect_id = action.effect_id.clone();
@@ -1498,7 +1538,7 @@ impl RuntimeRunner {
                                         .to_string(),
                                 ),
                             },
-                        );
+                        )?;
                     }
                     KernelEffect::SpoolLargeResult { call_id, output, .. } => {
                         let effect_id = action.effect_id.clone();
@@ -1511,7 +1551,7 @@ impl RuntimeRunner {
                             &mut kernel,
                             &mut pending_observations,
                             KernelInputEvent::LargeResultSpoolResult { effect_id, spool_ref, error },
-                        );
+                        )?;
                     }
                     KernelEffect::ArchivePageOut { archived, tier, action: pressure_action, .. } => {
                         let effect_id = action.effect_id.clone();
@@ -1544,7 +1584,7 @@ impl RuntimeRunner {
                             &mut kernel,
                             &mut pending_observations,
                             KernelInputEvent::PageOutArchiveResult { effect_id, archive_ref, error },
-                        );
+                        )?;
                     }
                     KernelEffect::ExecuteTool { calls } => {
                         let tool_effect_id = action.effect_id.clone();
@@ -1594,7 +1634,7 @@ impl RuntimeRunner {
                                 &mut kernel,
                                 &mut pending_observations,
                                 KernelInputEvent::UpdateTask { update },
-                            );
+                            )?;
                             tool_results.push(deepstrike_core::types::message::ToolResult {
                                 call_id: call.id.clone(),
                                 output: deepstrike_core::types::message::Content::Text("success".to_string()),
@@ -1704,7 +1744,7 @@ impl RuntimeRunner {
                                         ..Default::default()
                                     },
                                 },
-                            );
+                            )?;
                         }
 
                         self.log(
@@ -1733,7 +1773,7 @@ impl RuntimeRunner {
                                     &mut kernel,
                                     &mut pending_observations,
                                     KernelInputEvent::SkillActivated { name: name.to_string(), lease_turns: None },
-                                );
+                                )?;
                             }
                         }
 
@@ -1744,7 +1784,7 @@ impl RuntimeRunner {
                                 effect_id: tool_effect_id,
                                 results: tool_results,
                             },
-                        );
+                        )?;
                     }
                     KernelEffect::EvaluateMilestone {
                         phase_id,
@@ -1763,7 +1803,7 @@ impl RuntimeRunner {
                                     effect_id: milestone_effect_id.clone(),
                                     result,
                                 },
-                            );
+                            )?;
                             next_archive_start = self
                                 .append_observations(
                                     &session_id,
@@ -1788,7 +1828,7 @@ impl RuntimeRunner {
                                     effect_id: milestone_effect_id,
                                     result,
                                 },
-                            );
+                            )?;
                             next_archive_start = self
                                 .append_observations(
                                     &session_id,
@@ -1799,6 +1839,30 @@ impl RuntimeRunner {
                                 )
                                 .await;
                         } else {
+                            // R-B27: no verifier and no evaluation hook. The run still suspends
+                            // with `milestone_pending`, but the `evaluate_milestone` effect MUST be
+                            // resolved first — returning without a result leaves a dangling entry
+                            // in the kernel's `pending_effects`, which becomes an unresolvable
+                            // pending item once logical-checkpoint recovery lands.
+                            //
+                            // `MilestoneCheckResult` has no error channel on the wire today
+                            // (Phase 1 adds one), so the most conservative shape the current
+                            // contract can express is `passed = false` with an explanatory
+                            // `reason`: fail-closed, the phase does not advance and no capability
+                            // is unlocked. The returned action is intentionally dropped — this
+                            // branch terminates the run regardless.
+                            let result = MilestoneCheckResult::fail(
+                                phase_id.clone(),
+                                "milestone unverified: no verifier configured and no host evaluation hook (fail-closed)",
+                            );
+                            let _unverified = kernel_action(
+                                &mut kernel,
+                                &mut pending_observations,
+                                KernelInputEvent::MilestoneResult {
+                                    effect_id: milestone_effect_id,
+                                    result,
+                                },
+                            )?;
                             next_archive_start = self
                                 .append_observations(
                                     &session_id,
@@ -2049,6 +2113,11 @@ impl RuntimeRunner {
                     .await;
                 }
                 KernelObservation::PageOutArchiveFailed { .. } => {}
+                // §7.10 · P3 payload residency facts are canonical-wire only. This SDK runs the
+                // legacy wire, whose large-result path is `SpoolLargeResult`, so nothing here can
+                // produce one; the session-log projection lands with the Phase 6 cutover.
+                KernelObservation::PayloadResidencyChanged { .. }
+                | KernelObservation::PayloadLoadFailed { .. } => {}
                 KernelObservation::Rollbacked {
                     turn,
                     checkpoint_history_len,
@@ -2251,6 +2320,9 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
+                // §13.2 · a live policy patch is a canonical-wire fact; this SDK runs the legacy
+                // wire, which has no live-patch input, so nothing can produce one here.
+                KernelObservation::LivePolicyChanged { .. } => {}
                 KernelObservation::Suspended { .. }
                 | KernelObservation::ApprovalResolutionFailed { .. } => {}
                 KernelObservation::Resumed { .. } => {}
@@ -2500,29 +2572,52 @@ fn action_str_of(action: KernelPressureAction) -> String {
     }
 }
 
-fn kernel_apply(
+/// R-B29 (apply path): a fault on an action-less transition is the same protocol violation as one
+/// on an action-bearing transition — the kernel rejected the input. Silently discarding it left
+/// the run marching on with a configuration/history the kernel never accepted. Node's twin
+/// (`kernel-step.ts::durableKernelApply`) throws; this returns `Err` with the same message shape
+/// as [`take_single_action`], so both paths terminate the run through the runner's error tail.
+pub(crate) fn kernel_apply(
     kernel: &mut KernelRuntime,
     pending_observations: &mut Vec<KernelObservation>,
     event: KernelInputEvent,
-) {
-    let step = kernel.step(KernelInput::new(event));
-    pending_observations.extend(step.observations);
+) -> Result<()> {
+    let mut step = kernel.step(KernelInput::new(event));
+    pending_observations.append(&mut step.observations);
+    if let Some(fault) = step.faults.pop() {
+        return Err(Error::Other(format!(
+            "kernel {:?}: {}",
+            fault.code, fault.message
+        )));
+    }
+    Ok(())
 }
 
 fn kernel_action(
     kernel: &mut KernelRuntime,
     pending_observations: &mut Vec<KernelObservation>,
     event: KernelInputEvent,
-) -> KernelAction {
+) -> Result<KernelAction> {
     let mut step = kernel.step(KernelInput::new(event));
     pending_observations.append(&mut step.observations);
     take_single_action(step)
 }
 
-fn take_single_action(mut step: KernelStep) -> KernelAction {
-    step.actions
-        .pop()
-        .expect("kernel transition must return one action")
+/// R-B29: a kernel fault is the single exit of every fail-closed path (`UnexpectedEffectResult`
+/// and friends). It must reach the host as a `Result` error — the run then terminates through the
+/// runner's normal error tail, matching node (`kernel-step.ts` throw → `run_terminal{error}`) and
+/// python (`RuntimeError` → caught terminal). Panicking here turned a protocol violation into a
+/// process-level crash, i.e. fail-closed degraded into an availability incident.
+pub(crate) fn take_single_action(mut step: KernelStep) -> Result<KernelAction> {
+    if let Some(fault) = step.faults.pop() {
+        return Err(Error::Other(format!(
+            "kernel {:?}: {}",
+            fault.code, fault.message
+        )));
+    }
+    step.actions.pop().ok_or_else(|| {
+        Error::Other("kernel transition returned no action and no fault".to_string())
+    })
 }
 
 pub async fn collect_text(

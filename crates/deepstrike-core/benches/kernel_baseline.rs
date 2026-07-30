@@ -176,7 +176,7 @@ fn main() {
             Urgency::Normal,
             format!("signal-{index}"),
         );
-        signal.id = uuid::Uuid::from_u128(index as u128);
+        signal.id = uuid::Uuid::from_u128(index as u128).to_string().into();
         black_box(signal_runtime.step(input(
             "signal-baseline",
             index,

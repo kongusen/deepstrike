@@ -1,0 +1,100 @@
+{
+  "description": "Canonical byte vectors (spec 7.1.1). `canonical` is the exact UTF-8 byte string core produces; `digest` is SHA-256 over those bytes, hex, sha256-prefixed. Object keys sort by Unicode code point.",
+  "rejected": [
+    {
+      "name": "integer_beyond_exact_range",
+      "value": 9007199254740992
+    },
+    {
+      "name": "negative_integer_beyond_exact_range",
+      "value": -9007199254740992
+    }
+  ],
+  "vectors": [
+    {
+      "canonical": "{}",
+      "digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "name": "empty_object",
+      "value": {}
+    },
+    {
+      "canonical": "[]",
+      "digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "name": "empty_array",
+      "value": []
+    },
+    {
+      "canonical": "{\"\":4,\"A\":2,\"a\":3,\"b\":1}",
+      "digest": "sha256:1ad63bf4b6912ecf86a49a38efa71a325be67c2764432e556a6faa08bdea4d96",
+      "name": "key_order",
+      "value": {
+        "": 4,
+        "A": 2,
+        "a": 3,
+        "b": 1
+      }
+    },
+    {
+      "canonical": "{\"z\":3,\"�\":2,\"𐀀\":1}",
+      "digest": "sha256:e48b6c7a4c01c0c33179350d7515d817dd74652ee0eb9b62e590bae891f28338",
+      "name": "code_point_key_order",
+      "value": {
+        "z": 3,
+        "�": 2,
+        "𐀀": 1
+      }
+    },
+    {
+      "canonical": "\"\\\" \\\\ \\n \\t \\u0001 é 😀\"",
+      "digest": "sha256:2867e2d4cb0865bbfcc4a2c7cb80f4ec8a970c9672556b97c43303ee03cd66b3",
+      "name": "escapes",
+      "value": "\" \\ \n \t \u0001 é 😀"
+    },
+    {
+      "canonical": "[0,0,2,-17,0.5,9007199254740991]",
+      "digest": "sha256:09ec7f2811e68d95b61a6f85d2bf264c7078f47afd5c263abc3e093618963480",
+      "name": "numbers",
+      "value": [
+        0,
+        -0.0,
+        2.0,
+        -17,
+        0.5,
+        9007199254740991
+      ]
+    },
+    {
+      "canonical": "{\"a\":null,\"b\":true,\"c\":false}",
+      "digest": "sha256:17073ac6186d8c60c0c0da712ce30cdb52ed5a9155f616983da39a9785dce715",
+      "name": "null_and_bools",
+      "value": {
+        "a": null,
+        "b": true,
+        "c": false
+      }
+    },
+    {
+      "canonical": "{\"outer\":{\"inner\":[1,{\"deep\":\"value\"}]}}",
+      "digest": "sha256:56158d87e0971c8158798202844a889f6738670d32cdf90816ec23aa85ece588",
+      "name": "nested",
+      "value": {
+        "outer": {
+          "inner": [
+            1,
+            {
+              "deep": "value"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "canonical": "{\"step_seq\":\"18446744073709551615\"}",
+      "digest": "sha256:ac4e9d639d26777694d6e3ff4a8453dae45d84305db5edd7692fcbb0ca8c29f8",
+      "name": "wire_u64_is_a_string",
+      "value": {
+        "step_seq": "18446744073709551615"
+      }
+    }
+  ]
+}

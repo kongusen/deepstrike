@@ -1,0 +1,27 @@
+{
+  "id": "removed-full-journal-snapshot",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：保存全部已接受输入并内联最后一整步的快照",
+  "semantics": "现状快照保存整条已接受输入日志，外加最后一个完整步（其中包含整份渲染上下文），恢复成本随运行总长线性增长，单份快照还额外驮着一份完整上下文。删除该形态及其配套的两个快照容量旋钮，由分区逻辑检查点加有界尾巴取代；持久记录与检查点都不保存完整的一步。",
+  "given": [
+    "一个运行较长的操作"
+  ],
+  "when": [
+    "宿主试图取得一份可用于恢复的完整快照"
+  ],
+  "then": [
+    "全量已接受输入快照在契约里不存在",
+    "最后一整步不再被内联进任何持久结构",
+    "渲染上下文不进入任何持久结构",
+    "恢复改由分区逻辑检查点加有界尾巴承担"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §12.4 删除清单第 1 项与 §15.2",
+      "spec §3.3 第 12 条（crates/deepstrike-core/src/runtime/kernel/protocol.rs:249-252）",
+      "canonical-kernel-abi-capability-inventory.md §5.7：16 个字段整体删除，生产调用点为 0"
+    ]
+  },
+  "target": "§12.4"
+}

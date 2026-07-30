@@ -1,0 +1,29 @@
+{
+  "id": "workflow-child-identity-is-kernel-issued",
+  "domain": "workflow",
+  "kind": "positive",
+  "title": "子任务身份由内核签发，宿主确认启动后任务才进入运行",
+  "semantics": "任务、尝试与启动令牌在派生动作请求提交之前由内核分配。宿主只能确认执行结果，不得新建或改写身份；启动失败终结既有尝试，由内核的依赖策略决定后续节点。宿主自己维护逻辑任务与真实子会话/进程的映射，该映射不进入内核契约。",
+  "given": [
+    "一个正在运行的工作流，内核已就绪一批节点"
+  ],
+  "when": [
+    "内核提交任务派生动作请求，宿主随后回报每个任务的启动结果"
+  ],
+  "then": [
+    "任务、尝试与启动令牌在动作请求中已经存在，由内核分配",
+    "尝试在派生动作提交时处于待启动态，只有收到启动成功确认后才进入运行态",
+    "宿主的回报不能新建或改写任何身份",
+    "启动失败终结该尝试，由内核依赖策略裁决后续节点",
+    "宿主会话或进程标识不出现在契约里"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §10.4「Child identity」与现状注记（crates/deepstrike-core/src/scheduler/tcb.rs:167 在动作发出前即置运行）",
+      "spec §15.3「task attempt 只有在 spawn acknowledgement 后进入 Running」",
+      "spec §25 第 6 条",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::workflow_spawn_host_failure_reissues_effect_without_success_observation"
+    ]
+  },
+  "target": "§10.4"
+}

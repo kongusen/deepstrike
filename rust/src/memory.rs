@@ -13,11 +13,8 @@ pub trait DreamStore: Send + Sync {
 
     /// Semantic search over the agent's long-term memories.
     /// Called on demand during a session when the LLM invokes the `memory` meta-tool.
-    async fn search(
-        &self,
-        agent_id: &str,
-        query: &MemoryQuery,
-    ) -> crate::Result<Vec<MemoryRecall>>;
+    async fn search(&self, agent_id: &str, query: &MemoryQuery)
+    -> crate::Result<Vec<MemoryRecall>>;
 
     /// Persist a completed session before the runner's one extraction pass.
     async fn save_session(
@@ -80,7 +77,12 @@ pub(crate) fn parse_extracted_memories(
                     .unwrap_or_default()
             };
             Some(MemoryRecord {
-                record_id: format!("{}:{}:{}:{name}", scope.tenant_id, scope.namespace, kind.label()),
+                record_id: format!(
+                    "{}:{}:{}:{name}",
+                    scope.tenant_id,
+                    scope.namespace,
+                    kind.label()
+                ),
                 scope: scope.clone(),
                 name: name.to_string(),
                 kind,
@@ -103,7 +105,10 @@ pub(crate) fn parse_extracted_memories(
                 recall_count: 0,
                 confidence,
                 links: strings("links"),
-                pinned: draft.get("pinned").and_then(serde_json::Value::as_bool).unwrap_or(false),
+                pinned: draft
+                    .get("pinned")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
                 ttl_days: draft
                     .get("ttl_days")
                     .and_then(serde_json::Value::as_u64)
@@ -175,10 +180,10 @@ impl DreamStore for InMemoryDreamStore {
             .entry(agent_id.to_string())
             .or_insert_with(|| self.initial_memories.clone());
         if let Some(index) = kept.iter().position(|record| {
-                record.scope == incoming.scope
-                    && record.kind == incoming.kind
-                    && record.name == incoming.name
-            }) {
+            record.scope == incoming.scope
+                && record.kind == incoming.kind
+                && record.name == incoming.name
+        }) {
             kept[index] = incoming;
         } else {
             kept.push(incoming);
@@ -205,10 +210,13 @@ impl DreamStore for InMemoryDreamStore {
             .filter(|(_, record)| {
                 record.scope == query.scope
                     && (query.kinds.is_empty() || query.kinds.contains(&record.kind))
-                    && query.min_score.is_none_or(|minimum| record.confidence >= minimum)
+                    && query
+                        .min_score
+                        .is_none_or(|minimum| record.confidence >= minimum)
             })
             .filter_map(|(insertion_index, record)| {
-                let searchable = format!("{} {} {}", record.name, record.description, record.content);
+                let searchable =
+                    format!("{} {} {}", record.name, record.description, record.content);
                 let candidate_terms = memory_terms(&searchable);
                 let lexical_matches = query_terms
                     .iter()
@@ -325,13 +333,18 @@ mod ranking_tests {
             kinds: Vec::new(),
             min_score: None,
         };
-        let hits = store.search("agent", &query("scheduler rust")).await.unwrap();
+        let hits = store
+            .search("agent", &query("scheduler rust"))
+            .await
+            .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].record.content, "rust scheduler fairness");
-        assert!(store
-            .search("agent", &query("nonexistent"))
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            store
+                .search("agent", &query("nonexistent"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

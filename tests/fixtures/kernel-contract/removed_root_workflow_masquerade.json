@@ -1,0 +1,28 @@
+{
+  "id": "removed-root-workflow-masquerade",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：根工作流先伪装成代理运行、再靠特权输入收尾",
+  "semantics": "现状根工作流必须先启动一个占位的代理运行（连目标文本都是占位的会话描述），再叠加工作流图，最后由宿主抢在一次多余的模型调用被执行之前提交一条特权收尾输入。这条三段式先产生再覆盖一次模型调用请求，把根类别的概念完全抹掉。删除占位启动与特权收尾输入：工作流根由根入口原子启动，完成时内核直接提交终态。",
+  "given": [
+    "宿主希望以工作流为根启动一个操作"
+  ],
+  "when": [
+    "宿主按现状路径先启动代理运行、再加载工作流、最后提交收尾输入"
+  ],
+  "then": [
+    "占位的代理根启动不再存在",
+    "特权收尾输入不再存在",
+    "工作流根由根入口原子启动，根类别显式且不可变",
+    "根工作流完成时由内核直接提交终态，不产生多余的模型调用请求"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §10.1 现状注记与 §14.3「删除 CompleteRun」、「删除 root LoadWorkflow」",
+      "node/src/runtime/runner.ts:1467（占位目标文本）、node/src/runtime/runner.ts:1418（特权收尾）",
+      "crates/deepstrike-core/src/scheduler/state_machine/workflow.rs:463（finish_workflow 无条件再发模型调用）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::complete_run_commits_host_driven_terminal_usage（现状行为）"
+    ]
+  },
+  "target": "§10.1"
+}

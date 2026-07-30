@@ -1,0 +1,27 @@
+{
+  "id": "removed-post-terminal-signal-admission",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：终态之后仍然接受外部信号投递",
+  "semantics": "现状终态闩锁只挡业务变更：终态之后的信号投递仍被接受，写入信号队列，发出一条「有信号待处理」的审计事实，并计入已接受输入日志。这让终态之后的操作仍能积累状态，也让恢复后的重放包含一段终态之后的历史。删除该接受路径：终态之后一切会改变状态的输入都走结构化控制拒绝。",
+  "given": [
+    "一个已提交终态的操作"
+  ],
+  "when": [
+    "宿主投递一条外部信号"
+  ],
+  "then": [
+    "投递被结构化拒绝",
+    "信号不入队",
+    "不写持久日志、不推进步序",
+    "不发出任何审计事实或外部动作"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §6.1 不变量 9（DEC-4）与 §3.3 第 18 条",
+      "crates/deepstrike-core/src/runtime/kernel/runtime.rs:2063-2069、:2159-2169、:1256-1263",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::terminal_runtime_accepts_signal_and_reports_pending_depth（现状行为，须反转）"
+    ]
+  },
+  "target": "§6.1"
+}

@@ -11,16 +11,16 @@ use deepstrike_core::types::message::{Content, ToolCall, ToolResult, ToolSchema}
 use futures::stream::FuturesUnordered;
 use futures::stream::{self, Stream, StreamExt};
 
+use crate::Result;
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
 use crate::memory::DreamStore;
-use deepstrike_core::mm::memory::{MemoryQuery, MemoryScope};
 use crate::run_event::RunEvent;
 use crate::runtime::sandboxed_skill::{
-    execute_json_skill, execute_python_skill, resolve_skill_path, PythonSkillPolicy, SkillKind,
+    PythonSkillPolicy, SkillKind, execute_json_skill, execute_python_skill, resolve_skill_path,
 };
-use crate::tools::{validate_tool_arguments, RegisteredTool, ToolChunk, ToolStep};
-use crate::Result;
+use crate::tools::{RegisteredTool, ToolChunk, ToolStep, validate_tool_arguments};
+use deepstrike_core::mm::memory::{MemoryQuery, MemoryScope};
 
 #[derive(Clone)]
 pub struct ToolSuspendRequest {

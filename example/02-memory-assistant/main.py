@@ -50,6 +50,10 @@ from deepstrike import (  # noqa: E402
     LocalExecutionPlane,
     InMemorySessionLog,
     InMemoryDreamStore,
+    MemoryProvenance,
+    MemoryQuery,
+    MemoryRecord,
+    MemoryScope,
     AnthropicProvider,
     OpenAIProvider,
     TextDelta,
@@ -60,6 +64,7 @@ from deepstrike import (  # noqa: E402
 from shared.studio_tools import studio_tools  # noqa: E402
 
 AGENT_ID = "studio-researcher"
+MEMORY_SCOPE = MemoryScope(tenant_id=AGENT_ID, namespace="research-briefs")
 
 
 def resolve_provider():
@@ -131,8 +136,9 @@ async def main() -> None:
         print("● L2 wiring check (no provider call)")
         print(f"  agent id : {AGENT_ID}  (memory is keyed per agent, not per session)")
         print("  store    : InMemoryDreamStore  → run-start recall + the 'memory' query tool turn on")
-        print("  write    : runner.write_memory({content, metadata})  → the one governed gate")
-        print("  ✓ configure dream_store + agent_id and the memory mechanism turns on.")
+        print(f"  scope    : {MEMORY_SCOPE.tenant_id}/{MEMORY_SCOPE.namespace}")
+        print("  write    : runner.write_memory(record)  → the one governed gate")
+        print("  ✓ configure dream_store + agent_id + memory_scope to enable durable recall.")
         return
 
     runner = RuntimeRunner(RuntimeOptions(
@@ -140,7 +146,8 @@ async def main() -> None:
         execution_plane=plane,
         session_log=InMemorySessionLog(),
         dream_store=dream_store,
-        agent_id=AGENT_ID,  # memory requires BOTH dream_store and agent_id
+        agent_id=AGENT_ID,
+        memory_scope=MEMORY_SCOPE,
         max_tokens=200_000,
         max_turns=12,
     ))
@@ -162,21 +169,43 @@ async def main() -> None:
 
     # ── Write through the one governed gate ──────────────────────────────────────
     now = int(time.time() * 1000)
-    await runner.write_memory({
-        "content": takeaway,
-        "metadata": {
-            "name": "loop-agent-takeaway",
-            "description": "One-sentence definition of a loop agent, learned in session A.",
-            "kind": "reference",
-            "created_at": now,
-            "updated_at": now,
-        },
-    })
+    memory = MemoryRecord(
+        record_id=(
+            f"{MEMORY_SCOPE.tenant_id}:{MEMORY_SCOPE.namespace}"
+            ":reference:loop-agent-takeaway"
+        ),
+        scope=MEMORY_SCOPE,
+        name="loop-agent-takeaway",
+        kind="reference",
+        content=takeaway,
+        description="One-sentence definition of a loop agent, learned in session A.",
+        provenance=MemoryProvenance(
+            session_id="l2-learn",
+            author="host",
+            trust="host_verified",
+            evidence_refs=["assistant:final"],
+        ),
+        created_at=now,
+        updated_at=now,
+        recall_count=0,
+        confidence=1,
+        links=[],
+        pinned=False,
+    )
+    await runner.write_memory(memory, session_id="l2-learn")
 
-    stored = await dream_store.load_memories(AGENT_ID)
+    stored = await runner.query_memory(
+        MemoryQuery(
+            scope=MEMORY_SCOPE,
+            query="loop agent",
+            top_k=10,
+            kinds=["reference"],
+        ),
+        session_id="l2-learn",
+    )
     print(f"\n━━ long-term memory now holds {len(stored)} entry(ies) (via the write_memory gate) ━━")
-    for m in stored:
-        print(f"  • [score {m.score:.2f}] {m.text}")
+    for hit in stored:
+        print(f"  • [score {hit.score:.2f}] {hit.record.content}")
 
     # ── Session B: recall (fresh session id, same agent + store) ─────────────────
     print("\n━━ session B · recall ━━ (a NEW session; the fact surfaces at run-start)\n")

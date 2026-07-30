@@ -1,0 +1,24 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-9",
+  "observed_at_ms": "1753747208000",
+  "input": {
+    "kind": "host_control",
+    "command": {
+      "kind": "seed_knowledge",
+      "entries": [
+        {
+          "content": "Retrieval benchmark table for 2026-Q2.",
+          "key": "benchmarks-2026-q2",
+          "tokens": 240
+        },
+        {
+          "content": "Editorial deadline is Friday 17:00 UTC.",
+          "key": "deadline",
+          "pinned": true
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "id": "resume-tail-overflow-is-retryable",
+  "domain": "resume",
+  "kind": "positive",
+  "title": "尾巴超限是唯一可重试的拒绝：以拒绝形态返回、零变更、原输入标识可原样重试",
+  "semantics": "尾巴同时按条数与字节设软水位与硬上限。下一条事务将越过硬上限时，准备阶段以「已拒绝」形态返回唯一被定义为可重试的故障码——需要检查点。该输入从未被接受，因此零变更；宿主完成检查点的候选、安装与确认之后，可以用同一个输入标识原样重试，这次重试是一次全新的准备，不会落进重复输入冲突。其余所有故障码都是不可重试的拒绝。不保留「一旦溢出就永久禁用检查点并永久拒绝后续准备」的闩锁——现状该闩锁在走持久路径的宿主上表现为整个运行硬失败，在其余宿主上表现为静默降级。",
+  "given": [
+    "一个尾巴已接近硬上限的运行中操作"
+  ],
+  "when": [
+    "宿主提交下一条会越过硬上限的输入，随后完成检查点并用同一个输入标识重试"
+  ],
+  "then": [
+    "准备阶段以「已拒绝」形态返回，故障码是可重试的「需要检查点」",
+    "该输入从未被接受，不产生任何状态变更",
+    "宿主完成检查点的候选、安装与确认后，用同一输入标识原样重试",
+    "该重试被当作一次全新的准备处理，不会被判为重复输入冲突",
+    "「需要检查点」是唯一可重试的故障码，其余故障码一律不可重试",
+    "不存在一经触发就永久生效的溢出闩锁"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.13「两个新增 code 的语义（GAP-2/GAP-6 裁决）」：CheckpointRequired 以 Rejected 形态返回、同 input_id 重试是全新 prepare",
+      "spec §12.3 尾巴 soft watermark / hard limit 与可重试 CheckpointRequired",
+      "spec §12.4 末条：现状永久 snapshot-overflow latch（crates/deepstrike-core/src/runtime/kernel/runtime.rs:165、:536-551）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::snapshot_journal_is_bounded_by_bytes_and_restores_its_watermark",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::reliability_limits_reject_oversized_inputs_before_state_changes"
+    ]
+  },
+  "target": "§12.3"
+}

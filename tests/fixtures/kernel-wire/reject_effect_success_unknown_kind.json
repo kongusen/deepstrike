@@ -1,0 +1,20 @@
+{
+  "expect": "unknown_variant",
+  "envelope": {
+    "abi_version": 3,
+    "operation_id": "op-2026-07-29-0001",
+    "input_id": "caller-supplied-idempotency-key-r",
+    "observed_at_ms": "1753747200000",
+    "input": {
+      "kind": "resolve_effect",
+      "effect_id": "op-2026-07-29-0001:step:2:effect:0",
+      "outcome": {
+        "status": "succeeded",
+        "result": {
+          "kind": "spool_large_result",
+          "spool_ref": "/var/spool/x"
+        }
+      }
+    }
+  }
+}

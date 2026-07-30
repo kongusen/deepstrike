@@ -354,7 +354,11 @@ fn compaction_fixture_snapshot() -> KernelSnapshot {
     drive(
         &mut runtime,
         &mut seq,
-        history_event("user", "recall the project codename ORCHID and its release", 220),
+        history_event(
+            "user",
+            "recall the project codename ORCHID and its release",
+            220,
+        ),
     );
     drive(
         &mut runtime,
@@ -368,12 +372,20 @@ fn compaction_fixture_snapshot() -> KernelSnapshot {
     drive(
         &mut runtime,
         &mut seq,
-        history_event("user", "routine chatter number one about unrelated things", 200),
+        history_event(
+            "user",
+            "routine chatter number one about unrelated things",
+            200,
+        ),
     );
     drive(
         &mut runtime,
         &mut seq,
-        history_event("assistant", "acknowledged the routine chatter number one", 120),
+        history_event(
+            "assistant",
+            "acknowledged the routine chatter number one",
+            120,
+        ),
     );
 
     let started = drive(
@@ -485,7 +497,10 @@ fn compaction_report_is_byte_deterministic() {
     assert!(report.comparable);
     assert_eq!(report.t1.compression_count, 1);
     assert_eq!(report.t1.prefix_invalidation_count, 1);
-    assert!(report.t2.fact_probes[0].retained, "fact recall survives compaction");
+    assert!(
+        report.t2.fact_probes[0].retained,
+        "fact recall survives compaction"
+    );
     assert!(report.t2.invariants.iter().all(|i| i.passed));
 }
 
@@ -671,7 +686,11 @@ fn image_compaction_fixture_snapshot() -> KernelSnapshot {
     drive(
         &mut runtime,
         &mut seq,
-        history_event("assistant", "acknowledged the routine chatter number one", 120),
+        history_event(
+            "assistant",
+            "acknowledged the routine chatter number one",
+            120,
+        ),
     );
 
     let started = drive(
@@ -773,8 +792,8 @@ fn image_compaction_report_is_byte_deterministic() {
         ContentPart::text("x"),
         ContentPart::image_base64("Qk08AAAAAAAA", "image/png"),
     ]);
-    let counted =
-        deepstrike_core::context::token_engine::ContextTokenEngine::char_approx().count_message(&sample);
+    let counted = deepstrike_core::context::token_engine::ContextTokenEngine::char_approx()
+        .count_message(&sample);
     assert!(
         counted >= 255,
         "image auto detail must contribute ≥255 tokens, got {counted}"
@@ -812,6 +831,9 @@ fn image_compaction_report_is_byte_deterministic() {
         "image-weighted history must engage a compression tier; got compression_count={}",
         report.t1.compression_count
     );
-    assert!(report.t2.fact_probes[0].retained, "fact recall survives image compaction");
+    assert!(
+        report.t2.fact_probes[0].retained,
+        "fact recall survives image compaction"
+    );
     assert!(report.t2.invariants.iter().all(|i| i.passed));
 }

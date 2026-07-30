@@ -1,0 +1,29 @@
+{
+  "id": "workflow-root-completion-commits-terminal",
+  "domain": "workflow",
+  "kind": "positive",
+  "title": "根工作流完成直接提交终态；嵌套工作流完成只恢复父代理",
+  "semantics": "完成语义必须按根类别分叉。根工作流的完成本身就是根操作终态，由内核直接提交，不再需要宿主抢在一次多余的模型调用被执行前补一条特权收尾输入。代理内部的工作流完成后只恢复父代理任务，不提交根终态。",
+  "given": [
+    "一个正在运行的工作流，其全部节点均已完成",
+    "该工作流既可能是根，也可能嵌套在代理内"
+  ],
+  "when": [
+    "内核处理最后一个子任务完成事件"
+  ],
+  "then": [
+    "若该工作流是根，内核在同一次已提交的转移中提交工作流终态",
+    "若该工作流嵌套在代理内，内核恢复父代理任务，不提交根终态",
+    "根工作流完成后不再发出任何新的模型调用请求",
+    "宿主不需要、也不能用一条特权输入来终结运行"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §6.1 不变量 7",
+      "spec §10.1 现状注记：finish_workflow 无条件再发模型调用（crates/deepstrike-core/src/scheduler/state_machine/workflow.rs:463）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::load_workflow_input_drives_dag_to_completion",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::complete_run_commits_host_driven_terminal_usage（现状反例）"
+    ]
+  },
+  "target": "§6.1"
+}

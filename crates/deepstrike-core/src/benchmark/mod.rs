@@ -114,7 +114,7 @@ pub fn f2_loop_fairness() -> LoopFairnessGate {
         WorkflowNode::new(RuntimeTask::new("loop"), AgentRole::Implement).with_loop(100),
         WorkflowNode::new(RuntimeTask::new("peer"), AgentRole::Implement),
     ]);
-    let mut run = WorkflowRun::new(&spec, "f2").expect("valid F2 workflow");
+    let mut run = WorkflowRun::new(&spec).expect("valid F2 workflow");
     assert_eq!(run.ready_batch(), vec![0, 1]);
     let loop_id = run.current_agent_id(0);
     run.mark_spawned(0, &loop_id);
@@ -171,7 +171,7 @@ pub fn f3_termination_dependency_matrix() -> TerminationPolicyGate {
                     .with_depends_on(vec![0])
                     .with_dependency_policy(policy),
             ]);
-            let mut run = WorkflowRun::new(&spec, "f3").expect("valid F3 workflow");
+            let mut run = WorkflowRun::new(&spec).expect("valid F3 workflow");
             let upstream = run.current_agent_id(0);
             run.mark_spawned(0, &upstream);
             run.record_completion(&upstream, result(termination, None));

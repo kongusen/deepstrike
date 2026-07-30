@@ -1,0 +1,17 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-5",
+  "observed_at_ms": "1753747204000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-07-29-0001:step:3:effect:0",
+    "outcome": {
+      "status": "failed",
+      "failure": {
+        "kind": "protocol_error",
+        "message": "host cannot execute this effect kind"
+      }
+    }
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "id": "signal-disposition-is-a-fact",
+  "domain": "signal",
+  "kind": "positive",
+  "title": "信号处置是已发生的审计事实，不是待宿主执行的动作",
+  "semantics": "保留命令与事实分离：入队、丢弃、过期、挤占、升级这类处置只以审计事实呈现，宿主读到它们不需要执行任何外部操作。只有真正需要宿主执行的部分（例如抢占正在运行的子任务）才是外部动作请求，并且抢占只有在相关结果回灌之后才提交。",
+  "given": [
+    "一个正在运行、已配置信号策略的操作",
+    "存在若干正在运行的子任务"
+  ],
+  "when": [
+    "宿主投递一条会触发抢占的紧急信号"
+  ],
+  "then": [
+    "处置本身作为审计事实发出，不要求宿主回灌",
+    "真正的抢占以外部动作请求形式发给宿主",
+    "抢占结果只有在宿主回灌后才提交",
+    "普通信号入队时不产生任何外部动作请求"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.8「以下不再是 effect：signal disposition」",
+      "spec §4.4「命令、事实和结果分离」",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::critical_signal_preemption_is_committed_only_after_correlated_result",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::attention_policy_normal_signal_queues_without_action"
+    ]
+  },
+  "target": "§7.8"
+}

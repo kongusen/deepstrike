@@ -1,0 +1,61 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-2",
+  "observed_at_ms": "1753747200500",
+  "input": {
+    "kind": "start_operation",
+    "entry": {
+      "kind": "agent",
+      "task": {
+        "goal": "Draft the weekly research brief",
+        "criteria": [
+          "cites at least three sources",
+          "under 800 words"
+        ],
+        "lane": "orchestrate"
+      },
+      "run_spec": {
+        "goal": "Draft the weekly research brief",
+        "role": "plan",
+        "isolation": "shared",
+        "capability_filter": {
+          "allowed_kinds": [
+            "tool",
+            "skill"
+          ],
+          "allowed_ids": [
+            "search",
+            "read_file"
+          ]
+        },
+        "exposure_baseline": [
+          "search"
+        ]
+      }
+    },
+    "initial_context": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Focus on retrieval-augmented agents this week.",
+          "tokens": 11
+        }
+      ],
+      "knowledge": [
+        {
+          "content": "House style: lead with the decision, then the evidence.",
+          "key": "style-guide",
+          "pinned": true
+        }
+      ],
+      "capabilities": [
+        {
+          "kind": "tool",
+          "id": "search",
+          "description": "Web search over the research corpus"
+        }
+      ]
+    }
+  }
+}

@@ -42,7 +42,9 @@ fn process_state_of(state: crate::scheduler::tcb::TaskLifecycle) -> ProcessState
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProcess {
     pub agent_id: CompactString,
-    pub parent_session_id: CompactString,
+    /// The logical task that owns this process — the kernel's own lineage fact (§10.4). Never a
+    /// host session id: mapping a child task onto a child session stays host-side (§5.2, §22.6).
+    pub parent_task_id: CompactString,
     pub role: AgentRole,
     pub isolation: AgentIsolation,
     pub context_inheritance: ContextInheritance,
@@ -64,7 +66,7 @@ impl AgentProcess {
         let info = tcb.proc.as_ref()?;
         Some(Self {
             agent_id: tcb.id.clone(),
-            parent_session_id: info.parent_session_id.clone(),
+            parent_task_id: tcb.parent.clone().unwrap_or_default(),
             role: info.role,
             isolation: info.isolation,
             context_inheritance: info.context_inheritance,
@@ -89,12 +91,11 @@ mod tests {
 
     fn child_tcb(id: &str) -> Tcb {
         let spec = AgentRunSpec::new(
-            AgentIdentity::sub_agent(id, &format!("{id}-session")),
+            AgentIdentity::sub_agent(id, format!("{id}-session")),
             AgentRole::Implement,
             "do work",
         );
-        let manifest =
-            IsolationManifest::from_spec(&spec, "parent-sess", &CapabilityManifest::new());
+        let manifest = IsolationManifest::from_spec(&spec, &CapabilityManifest::new());
         Tcb::spawned(&manifest, SchedulerBudget::default())
     }
 
@@ -109,7 +110,11 @@ mod tests {
         let tcb = child_tcb("worker");
         let p = AgentProcess::from_tcb(&tcb).expect("child reconstructs a process");
         assert_eq!(p.agent_id.as_str(), "worker");
-        assert_eq!(p.parent_session_id.as_str(), "parent-sess");
+        assert_eq!(
+            p.parent_task_id.as_str(),
+            "root",
+            "lineage is the logical parent task, not a host session"
+        );
         assert_eq!(p.role, AgentRole::Implement);
         assert_eq!(p.state, ProcessState::Running);
         assert!(p.result.is_none());

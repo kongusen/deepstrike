@@ -13,4 +13,5 @@ mod t12_golden_fixtures;
 mod t13_transaction;
 mod t14_milestone;
 mod t15_sub_agent;
+mod t16_kernel_contract_fixtures;
 // Golden OS snapshot: see deepstrike-core `runtime::replay::tests` (tests/rust SDK build blocked on category fields).

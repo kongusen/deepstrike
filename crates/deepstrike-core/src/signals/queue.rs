@@ -80,7 +80,7 @@ impl SignalQueue {
                 .heap
                 .iter()
                 .find(|queued| queued.signal.coalesce_key.as_ref() == Some(key))
-                .map(|queued| queued.signal.id);
+                .map(|queued| queued.signal.id.clone());
             if let Some(existing_id) = existing_id {
                 let mut retained = BinaryHeap::with_capacity(self.heap.len());
                 for mut queued in self.heap.drain() {
@@ -132,7 +132,7 @@ impl SignalQueue {
                         .cmp(&right.timestamp_ms)
                         .then_with(|| left.signal.id.cmp(&right.signal.id))
                 })
-                .map(|queued| queued.signal.id)
+                .map(|queued| queued.signal.id.clone())
                 .expect("a full queue has a displacement candidate");
             let mut displaced = None;
             let mut displaced_dedupe_keys = Vec::new();
@@ -404,7 +404,7 @@ mod tests {
         .with_timestamp(10)
         .with_deadline(200)
         .with_coalesce("batch");
-        let first_id = first.id;
+        let first_id = first.id.clone();
         assert!(q.admit(first).admitted);
 
         let second = RuntimeSignal::new(

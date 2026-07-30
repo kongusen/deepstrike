@@ -1,0 +1,12 @@
+{
+  "kind": "failed",
+  "failure": {
+    "code": "provider_recovery_exhausted",
+    "message": "context overflow ladder exhausted"
+  },
+  "usage": {
+    "input_tokens": "262144",
+    "output_tokens": "0",
+    "turns": 4
+  }
+}

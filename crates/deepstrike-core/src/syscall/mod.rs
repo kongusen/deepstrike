@@ -1,10 +1,22 @@
 //! Primitive P1: the single syscall trap boundary.
 //!
-//! M0 scaffold (see `.local-docs/specs/agent-os-three-primitives.md`): types + conversions
-//! only — **no wiring, no behavior change**. A later milestone (M2) generalizes
-//! [`crate::governance::pipeline`] so its request becomes [`Syscall`] and its result becomes
-//! [`Disposition`], and routes spawn / page-in / write-memory through the same gate (today they
-//! bypass governance entirely).
+//! Every variant of [`Syscall`] has a live gate call site; this is wiring, not a type scaffold.
+//! `evaluate_syscall` ([`crate::scheduler::state_machine`]'s `gate.rs`) is the one adjudicator, and
+//! it is reached from:
+//!
+//! * [`Syscall::Invoke`] — the governance pipeline, from `gate_tool_calls`;
+//! * [`Syscall::Spawn`] — `state_machine/process.rs`'s `spawn_sub_agent`, and the workflow run
+//!   queue's deferrable variant in `spawn_ready_workflow_nodes`;
+//! * [`Syscall::WriteMemory`] — the `WriteMemory` trap in `runtime/kernel/runtime.rs`, and the
+//!   canonical driver's `RequestMemoryWrite` reduction;
+//! * [`Syscall::SubmitNodes`] / [`Syscall::LoadWorkflow`] — `state_machine/workflow.rs`'s
+//!   `append_workflow_nodes` and `submit_workflow`'s bootstrap arm.
+//!
+//! **Who the caller is, is not on this type.** A `Syscall` carries only *what* is asked. The
+//! canonical ABI derives the caller from kernel-owned causation — a tool call inside the provider
+//! result being resolved, or a kernel-issued child attempt (spec §7.6) — and refuses the request
+//! before this gate is reached when that derivation fails. There is no host-declared actor, and
+//! adding one to this enum would reintroduce exactly the bypass §22.10 rejects.
 //!
 //! Concept overlap this primitive collapses: the two parallel decision vocabularies
 //! ([`crate::types::policy::GovernanceVerdict`] and `SignalDisposition`). Tool/spawn/memory

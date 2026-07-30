@@ -3,7 +3,7 @@ use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::types::message::{Content, ContentPart, Role, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{LLMProvider, RuntimePolicy, StreamEvent};
 use crate::{Error, Result};
@@ -167,18 +167,20 @@ fn context_to_openai(context: &RenderedContext) -> Vec<Value> {
             "content": content_to_openai(&message.content),
         });
         if message.role == Role::Assistant && !message.tool_calls.is_empty() {
-            next["tool_calls"] = json!(message
-                .tool_calls
-                .iter()
-                .map(|tc| json!({
-                    "id": tc.id.as_str(),
-                    "type": "function",
-                    "function": {
-                        "name": tc.name.as_str(),
-                        "arguments": tc.arguments.to_string(),
-                    }
-                }))
-                .collect::<Vec<_>>());
+            next["tool_calls"] = json!(
+                message
+                    .tool_calls
+                    .iter()
+                    .map(|tc| json!({
+                        "id": tc.id.as_str(),
+                        "type": "function",
+                        "function": {
+                            "name": tc.name.as_str(),
+                            "arguments": tc.arguments.to_string(),
+                        }
+                    }))
+                    .collect::<Vec<_>>()
+            );
         }
         messages.push(next);
     }
@@ -576,9 +578,11 @@ mod tests {
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs[1]["content"], "history msg");
         assert_eq!(msgs[2]["role"], "user");
-        assert!(msgs[2]["content"]
-            .as_str()
-            .unwrap()
-            .contains("[TASK STATE]"));
+        assert!(
+            msgs[2]["content"]
+                .as_str()
+                .unwrap()
+                .contains("[TASK STATE]")
+        );
     }
 }

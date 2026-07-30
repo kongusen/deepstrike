@@ -350,7 +350,13 @@ fn critical_signal_injects_interrupt_and_re_reasons() {
         "fire",
     );
     let action = sm
-        .signal_event("op-critical".into(), "delivery-critical".into(), 1, sig)
+        .signal_event(
+            "op-critical".into(),
+            "delivery-critical".into(),
+            1,
+            sig,
+            true,
+        )
         .expect("critical signal drives a turn");
     assert!(matches!(action, LoopAction::CallLLM { .. }));
 
@@ -380,7 +386,7 @@ fn high_urgency_signal_injects_note() {
     // next turn boundary) and does not force a provider call. The hard `[INTERRUPT]` marker is
     // reserved for Critical/`InterruptNow` (see `signals::attention::UrgencyBasedPolicy` +
     // `dispatch_signal`).
-    let action = sm.signal_event("op-high".into(), "delivery-high".into(), 1, sig);
+    let action = sm.signal_event("op-high".into(), "delivery-high".into(), 1, sig, true);
     assert!(action.is_none(), "soft interrupt does not force a turn");
 
     let has_signal_note = sm

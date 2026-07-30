@@ -57,16 +57,21 @@ impl LoopStateMachine {
         self.workflow.is_some()
     }
 
+    /// How many nodes the in-flight DAG holds. `0` when none is loaded. The quantity
+    /// `Syscall::SubmitNodes` is metered against, and what a host projection reports.
+    pub fn workflow_node_count(&self) -> usize {
+        self.workflow.as_ref().map(|run| run.len()).unwrap_or(0)
+    }
+
     /// W0: load a workflow DAG and spawn its first gated batch. On an invalid spec (cycle /
     /// out-of-range dependency) the workflow is not installed and the rejection is surfaced as a
     /// committed control result.
     pub fn load_workflow(
         &mut self,
         spec: crate::orchestration::workflow::WorkflowSpec,
-        parent_session_id: &str,
     ) -> LoopAction {
         self.install_workflow(
-            crate::orchestration::workflow::WorkflowRun::new(&spec, parent_session_id),
+            crate::orchestration::workflow::WorkflowRun::new(&spec),
             "load_workflow",
             None,
         )
@@ -105,6 +110,27 @@ impl LoopStateMachine {
         syscall: Syscall,
         tool_label: &str,
     ) -> LoopAction {
+        if !self.append_workflow_nodes(nodes, submitter_agent_id, syscall, tool_label) {
+            return LoopAction::AwaitingResume;
+        }
+        self.drive_workflow(None)
+    }
+
+    /// §10.3 · the gate + trust-aware append, **without** the drive.
+    ///
+    /// Split out of [`Self::append_nodes_gated`] for one reason: a `ChildCompleted`'s
+    /// `parent_requests` are adjudicated *before* the completion is fed, and the completion's own
+    /// `drive_workflow` is what produces the next ready batch. Driving here as well would reserve
+    /// two spawn batches in a single transition and the second `pending_workflow_spawn` would
+    /// silently replace the first. Returns whether the batch was admitted — a caller that drives
+    /// (the provider-tool path) drives only on `true`.
+    pub fn append_workflow_nodes(
+        &mut self,
+        nodes: Vec<crate::orchestration::workflow::WorkflowNode>,
+        submitter_agent_id: Option<&str>,
+        syscall: Syscall,
+        tool_label: &str,
+    ) -> bool {
         let syscall = match syscall {
             Syscall::SubmitNodes { .. } => Syscall::SubmitNodes { count: nodes.len() },
             Syscall::LoadWorkflow { .. } => Syscall::LoadWorkflow {
@@ -134,7 +160,7 @@ impl LoopStateMachine {
                     subject: submitter_agent_id.map(str::to_string),
                     reason,
                 });
-            return LoopAction::AwaitingResume;
+            return false;
         }
         let submission = self
             .workflow
@@ -151,7 +177,7 @@ impl LoopStateMachine {
                         node_index: error.node_index as u32,
                         reason: error.reason,
                     });
-                    return LoopAction::AwaitingResume;
+                    return false;
                 }
             };
             if let Some(&base) = appended.first() {
@@ -166,6 +192,14 @@ impl LoopStateMachine {
                     });
             }
         }
+        true
+    }
+
+    /// §10.3 · run one spawn round over the current DAG. The public half of
+    /// [`Self::drive_workflow`], for the canonical driver's syscall reductions — an append that was
+    /// admitted still needs its next ready batch, and the driver decides when that happens relative
+    /// to the completion it is also folding.
+    pub fn drive_workflow_round(&mut self) -> LoopAction {
         self.drive_workflow(None)
     }
 
@@ -182,7 +216,6 @@ impl LoopStateMachine {
     pub fn submit_workflow(
         &mut self,
         spec: crate::orchestration::workflow::WorkflowSpec,
-        parent_session_id: &str,
         submitter_agent_id: Option<&str>,
     ) -> LoopAction {
         if spec.nodes.is_empty() {
@@ -228,8 +261,7 @@ impl LoopStateMachine {
                 // can persist an agent-authored workflow's nodes and reconstruct them on resume —
                 // the host never had this spec, unlike the `load_workflow` path.
                 let node_count = spec.nodes.len();
-                let built =
-                    crate::orchestration::workflow::WorkflowRun::new(&spec, parent_session_id);
+                let built = crate::orchestration::workflow::WorkflowRun::new(&spec);
                 if built.is_ok() {
                     self.observations
                         .push(KernelObservation::WorkflowNodesSubmitted {
@@ -250,7 +282,6 @@ impl LoopStateMachine {
     pub fn load_workflow_resumed(
         &mut self,
         spec: crate::orchestration::workflow::WorkflowSpec,
-        parent_session_id: &str,
         submissions: &[Vec<crate::orchestration::workflow::WorkflowNode>],
         submission_bases: &[u32],
         outcomes: &[crate::orchestration::workflow::ResumedNodeOutcome],
@@ -258,7 +289,6 @@ impl LoopStateMachine {
         self.install_workflow(
             crate::orchestration::workflow::WorkflowRun::resume(
                 &spec,
-                parent_session_id,
                 submissions,
                 submission_bases,
                 outcomes,
@@ -358,7 +388,18 @@ impl LoopStateMachine {
             match self.evaluate_spawn_quota_deferrable() {
                 Disposition::Allow => {
                     let agent_id = manifest.agent_id.to_string();
-                    let child = Tcb::spawned(&manifest, self.policy.clone());
+                    // §10.4: an ack-gated run mints identity here and stops at `PendingLaunch` —
+                    // the child is a committed kernel fact, not yet a running process. The legacy
+                    // path keeps seeding `Running` at this exact point.
+                    let child = if self.ack_gated_launch {
+                        Tcb::spawned_in(
+                            &manifest,
+                            self.policy.clone(),
+                            TaskLifecycle::PendingLaunch,
+                        )
+                    } else {
+                        Tcb::spawned(&manifest, self.policy.clone())
+                    };
                     self.tasks.insert(child);
                     if let Some(run) = self.workflow.as_mut() {
                         run.mark_spawned(node, &agent_id);
@@ -459,7 +500,16 @@ impl LoopStateMachine {
     }
 
     /// Finish the in-flight workflow: emit `WorkflowCompleted` with its outcome, clear it, and
-    /// resume the parent loop. Shared by the all-gated path and the drained-no-more-ready path.
+    /// **fork on root kind** (spec §6.1 invariant 7, §10.1). Shared by the all-gated path and the
+    /// drained-no-more-ready path.
+    ///
+    /// * a workflow *nested* inside an agent root resumes the parent agent — the completion is one
+    ///   step of that agent's turn, so the loop calls the provider again;
+    /// * a **root** workflow's completion *is* the operation's terminal. It emits no provider call:
+    ///   the historical unconditional `emit_call_llm()` here is the sole reason `CompleteRun`
+    ///   existed, because a host had to commit the terminal before that extra call was executed.
+    ///   The root task is closed and the driver reads the `WorkflowCompleted` observation to build
+    ///   the workflow terminal.
     fn finish_workflow(&mut self) -> LoopAction {
         if let Some(run) = self.workflow.as_mut() {
             let node_outcomes = run.finish();
@@ -470,6 +520,13 @@ impl LoopStateMachine {
                 });
         }
         self.workflow = None;
+        if self.root_workflow {
+            self.set_lifecycle(
+                TaskLifecycle::Done(crate::types::result::TerminationReason::Completed),
+                None,
+            );
+            return LoopAction::AwaitingResume;
+        }
         self.phase = LoopPhase::Reason;
         self.emit_call_llm()
     }
@@ -522,6 +579,15 @@ impl LoopStateMachine {
             .filter(|node| started.contains(node.agent_id.as_str()))
             .collect();
         for node in &started_nodes {
+            // §10.4 / §15.3: this acknowledgement is the *only* transition that makes a task
+            // `Running`. Before it the task was `PendingLaunch`/`Starting` — identity the kernel
+            // minted — so the host confirms an execution, it never creates one.
+            if self.ack_gated_launch
+                && let Some(task) = self.tasks.get_mut(node.agent_id.as_str())
+                && !task.state.is_terminal()
+            {
+                task.state = TaskLifecycle::Running;
+            }
             if let Some(process) = self
                 .tasks
                 .get(&node.agent_id)

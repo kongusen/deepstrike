@@ -1,0 +1,463 @@
+{
+  "description": "One whole agent turn cycle on the canonical wire (spec 7.9 · Task 12): configure → atomic agent start → provider result carrying a tool call → tool results → final provider answer → agent terminal. Every step after the start is a single `ResolveEffect` input, and each one publishes exactly the next effect the loop is waiting on — until the last, whose disposition is the terminal itself and which publishes nothing.",
+  "genesis_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
+  "head_digest": "sha256:c8ee5d4e93f72d9c2a122787a490ca5a8bfead0f4eb4d2e06d8bf66d30da779f",
+  "links": [
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "config": {
+            "execution_policy": {
+              "max_turns": 12
+            },
+            "host_effect_support": {
+              "supported": [
+                "call_provider",
+                "execute_tools",
+                "load_payload",
+                "spawn_tasks",
+                "preempt_tasks",
+                "persist_memory",
+                "query_memory"
+              ]
+            },
+            "memory_access": {
+              "binding_id": "mem-binding-1",
+              "capabilities": {
+                "read": true,
+                "write": true
+              }
+            },
+            "memory_policy": {
+              "retrieval_top_k": 4
+            },
+            "resource_quota": {
+              "max_workflow_nodes": 3
+            },
+            "skill_catalog": [
+              {
+                "description": "debug helper",
+                "name": "debug"
+              }
+            ],
+            "tool_catalog": [
+              {
+                "name": "start_workflow"
+              },
+              {
+                "name": "submit_workflow_nodes"
+              },
+              {
+                "name": "skill"
+              },
+              {
+                "name": "update_plan"
+              },
+              {
+                "name": "memory"
+              },
+              {
+                "name": "read_result"
+              },
+              {
+                "name": "search"
+              }
+            ]
+          },
+          "kind": "configure_operation"
+        },
+        "input_id": "in-configure",
+        "observed_at_ms": "1700000000000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiY29uZmlnIjp7ImFiaV92ZXJzaW9uIjozLCJidWRnZXRfZ3JhbnQiOm51bGwsImNvbnRleHRfcG9saWN5Ijp7ImNvbGxhcHNlX29sZF9hc3Npc3RhbnRfbmFycmF0aW9uIjp0cnVlLCJpZGxlX21pY3JvX2NvbXBhY3RfbWludXRlcyI6NjAsImtub3dsZWRnZV9idWRnZXRfcHBtIjoyNTAwMDAsInByZXNlcnZlX3JlY2VudF90dXJucyI6MiwicHJlc3N1cmVfdGhyZXNob2xkc19wcG0iOnsiYXV0byI6OTUwMDAwLCJjb2xsYXBzZSI6OTAwMDAwLCJtaWNybyI6ODAwMDAwLCJyZW5ld2FsIjo5ODAwMDAsInNuaXAiOjcwMDAwMH0sInByb21wdF9idWRnZXQiOnsib3V0cHV0X3Jlc2VydmVfdG9rZW5zIjowLCJwcm9tcHRfb3ZlcmhlYWRfdG9rZW5zIjowLCJzYWZldHlfbWFyZ2luX3Rva2VucyI6MH0sInJlbmV3YWxfY2FycnlvdmVyX3BwbSI6NTAwMDAsInRhcmdldF9hZnRlcl9jb21wcmVzc19wcG0iOjY1MDAwMH0sImV4ZWN1dGlvbl9wb2xpY3kiOnsiY3JpdGVyaWFfZ2F0ZV9lbmFibGVkIjp0cnVlLCJlbnRyb3B5X3dhdGNoIjp7ImNvb2xkb3duX3R1cm5zIjo0LCJlbmFibGVkIjpmYWxzZSwiaHlzdGVyZXNpc19wcG0iOjEwMDAwMCwibm90aWZ5X21vZGVsIjpmYWxzZSwidGhyZXNob2xkX3BwbSI6NjUwMDAwfSwibWF4X2NvbnRleHRfdG9rZW5zIjoxMjgwMDAsIm1heF90b3RhbF90b2tlbnMiOiIxMDAwMDAwIiwibWF4X3R1cm5zIjoxMiwibWF4X3dhbGxfbXMiOm51bGwsInJlcGVhdF9mdXNlIjp7ImRlbnlfYWZ0ZXIiOjUsImVuYWJsZWQiOnRydWUsInRlcm1pbmF0ZV9hZnRlciI6OH19LCJmZWF0dXJlX3BvbGljeSI6eyJrbm93bGVkZ2VfZW5hYmxlZCI6ZmFsc2UsIm1lbW9yeV9lbmFibGVkIjpmYWxzZSwicGxhbl90b29sX2VuYWJsZWQiOmZhbHNlLCJzdGFibGVfY29yZV90b29sX2lkcyI6W10sInRvb2xfZGlzcGF0Y2hfZ2F0ZSI6ImV4cG9zZWQifSwiZ292ZXJuYW5jZV9wb2xpY3kiOnsiY29uc3RyYWludHMiOltdLCJkZWZhdWx0X2FjdGlvbiI6ImFsbG93IiwicmF0ZV9saW1pdHMiOltdLCJydWxlcyI6W10sInZldG9lZF90b29scyI6W119LCJob3N0X2VmZmVjdF9zdXBwb3J0Ijp7InN1cHBvcnRlZCI6WyJjYWxsX3Byb3ZpZGVyIiwiZXhlY3V0ZV90b29scyIsImxvYWRfcGF5bG9hZCIsInNwYXduX3Rhc2tzIiwicHJlZW1wdF90YXNrcyIsInBlcnNpc3RfbWVtb3J5IiwicXVlcnlfbWVtb3J5Il19LCJrZXJuZWxfbGltaXRzIjp7ImNvbGxlY3Rpb25fbGltaXRzIjp7ImNhcGFiaWxpdHlfZ3JhbnRzIjo2NTUzNiwiZ292ZXJuYW5jZV9ydWxlcyI6NjU1MzYsImluaXRpYWxfbWVzc2FnZXMiOjY1NTM2LCJrbm93bGVkZ2VfZW50cmllcyI6NjU1MzYsInNraWxsX2NhdGFsb2ciOjY1NTM2LCJ0b29sX2NhdGFsb2ciOjY1NTM2fSwibWF4X2NvbGxlY3Rpb25fZW50cmllcyI6NjU1MzYsIm1heF9pbnB1dF9ieXRlcyI6MTY3NzcyMTYsIm1heF9qc29uX2RlcHRoIjo2NH0sIm1lbW9yeV9hY2Nlc3MiOnsiYmluZGluZ19pZCI6Im1lbS1iaW5kaW5nLTEiLCJjYXBhYmlsaXRpZXMiOnsicmVhZCI6dHJ1ZSwid3JpdGUiOnRydWV9fSwibWVtb3J5X3BvbGljeSI6eyJtYXhfY29udGVudF9ieXRlcyI6MTAwMDAsIm1heF9uYW1lX2xlbmd0aCI6MTAwLCJwcm9tb3Rpb25fcmVjYWxsX3RocmVzaG9sZCI6bnVsbCwicmV0cmlldmFsX3RvcF9rIjo0LCJzdGFsZV93YXJuaW5nX2RheXMiOjIsInZhbGlkYXRpb25fZW5hYmxlZCI6dHJ1ZX0sInBheWxvYWRfcG9saWN5Ijp7ImlubGluZV90aHJlc2hvbGRfYnl0ZXMiOjUxMjAwLCJwcmV2aWV3X2J5dGVzIjoyMDQ4fSwicmVjb3ZlcnlfcG9saWN5Ijp7Im91dHB1dF9yZWNvdmVyeV9hdHRlbXB0cyI6MSwicHJvdmlkZXJfcmVjb3ZlcnlfYXR0ZW1wdHMiOjEsInRhaWxfYm91bmRzIjp7ImhhcmRfYnl0ZXMiOiIxNjc3NzIxNiIsImhhcmRfcmVjb3JkcyI6IjIwNDgiLCJzb2Z0X2J5dGVzIjoiNDE5NDMwNCIsInNvZnRfcmVjb3JkcyI6IjUxMiJ9fSwicmVzb3VyY2VfcXVvdGEiOnsibWF4X3dvcmtmbG93X25vZGVzIjozfSwic2NoZWR1bGVyX3BvbGljeSI6eyJhZ2Vfd2VpZ2h0IjoxMDAwLCJjcml0aWNhbF9wYXRoX3dlaWdodCI6MTAwMDAwMCwiZmFub3V0X3dlaWdodCI6MTAwMDAsInRva2VuX2Nvc3Rfd2VpZ2h0IjoxfSwic2lnbmFsX3BvbGljeSI6eyJkZWFkbGluZV9lc2NhbGF0aW9uIjpmYWxzZSwicXVldWVfbWF4Ijo2NCwidHRsX21zIjpudWxsfSwic2tpbGxfY2F0YWxvZyI6W3siZGVzY3JpcHRpb24iOiJkZWJ1ZyBoZWxwZXIiLCJuYW1lIjoiZGVidWcifV0sInRvb2xfY2F0YWxvZyI6W3sibmFtZSI6InN0YXJ0X3dvcmtmbG93In0seyJuYW1lIjoic3VibWl0X3dvcmtmbG93X25vZGVzIn0seyJuYW1lIjoic2tpbGwifSx7Im5hbWUiOiJ1cGRhdGVfcGxhbiJ9LHsibmFtZSI6Im1lbW9yeSJ9LHsibmFtZSI6InJlYWRfcmVzdWx0In0seyJuYW1lIjoic2VhcmNoIn1dLCJ2ZXJpZmljYXRpb25fY29udHJhY3RzIjpbXX0sImtpbmQiOiJjb25maWd1cmVfb3BlcmF0aW9uIn0sImlucHV0X2lkIjoiaW4tY29uZmlndXJlIiwib2JzZXJ2ZWRfYXRfbXMiOiIxNzAwMDAwMDAwMDAwIiwib3BlcmF0aW9uX2lkIjoib3AtZHJpdmVyLTEifQ==",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:6519ee7dfdd139187dec8b4b9c5cdd47aa40ddaa44318d9f74f0095235b1d45a",
+        "input_id": "in-configure",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": null,
+        "record_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
+        "step_digest": "sha256:e35fec9e43d83f26934d990af2aa6be57869acabb43fbc3134b5baf086e5c3d5",
+        "step_seq": "0"
+      },
+      "step": {
+        "disposition": {
+          "kind": "effects"
+        }
+      }
+    },
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "entry": {
+            "kind": "agent",
+            "task": {
+              "goal": "write the research brief"
+            }
+          },
+          "initial_context": {},
+          "kind": "start_operation"
+        },
+        "input_id": "in-start",
+        "observed_at_ms": "1700000001000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiZW50cnkiOnsia2luZCI6ImFnZW50IiwidGFzayI6eyJnb2FsIjoid3JpdGUgdGhlIHJlc2VhcmNoIGJyaWVmIn19LCJpbml0aWFsX2NvbnRleHQiOnt9LCJraW5kIjoic3RhcnRfb3BlcmF0aW9uIn0sImlucHV0X2lkIjoiaW4tc3RhcnQiLCJvYnNlcnZlZF9hdF9tcyI6IjE3MDAwMDAwMDEwMDAiLCJvcGVyYXRpb25faWQiOiJvcC1kcml2ZXItMSJ9",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:70fbd7d3ab4d77a16e39fef15146af669c9d99b913df13e1eed82938558f6122",
+        "input_id": "in-start",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
+        "record_digest": "sha256:012440b11426553aaf9699ccc74c18643b4da00adb52df41fc48d201aa19fcc0",
+        "step_digest": "sha256:b5d4d7d668631b5d382825c737a8f692e1a3198d720f5129f004bfb4c7b000c0",
+        "step_seq": "1"
+      },
+      "step": {
+        "disposition": {
+          "effects": [
+            {
+              "causation_input_id": "in-start",
+              "effect": {
+                "context": {
+                  "state_turn": {
+                    "content": "[TASK STATE] goal: write the research brief\n\n→ focus: write the research brief\n\nProceed.",
+                    "role": "user"
+                  },
+                  "turns": [
+                    {
+                      "content": "Proceed with the task described in [TASK STATE].",
+                      "role": "user",
+                      "tokens": 12
+                    }
+                  ]
+                },
+                "kind": "call_provider",
+                "tools": [
+                  {
+                    "name": "start_workflow"
+                  },
+                  {
+                    "name": "submit_workflow_nodes"
+                  },
+                  {
+                    "name": "skill"
+                  },
+                  {
+                    "name": "update_plan"
+                  },
+                  {
+                    "name": "memory"
+                  },
+                  {
+                    "name": "read_result"
+                  },
+                  {
+                    "name": "search"
+                  },
+                  {
+                    "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",
+                    "name": "skill",
+                    "parameters": {
+                      "properties": {
+                        "name": {
+                          "description": "The name of the skill to load.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ],
+                      "type": "object"
+                    }
+                  }
+                ]
+              },
+              "effect_id": "op-driver-1:step:1:effect:0"
+            }
+          ],
+          "kind": "effects"
+        },
+        "focus": {
+          "kind": "agent_turn",
+          "task_id": "root"
+        },
+        "root_kind": "agent"
+      }
+    },
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "effect_id": "op-driver-1:step:1:effect:0",
+          "kind": "resolve_effect",
+          "outcome": {
+            "result": {
+              "kind": "provider",
+              "outcome": {
+                "kind": "completed",
+                "message": {
+                  "content": "",
+                  "role": "assistant",
+                  "tool_calls": [
+                    {
+                      "arguments": {
+                        "q": "sources"
+                      },
+                      "call_id": "call-1",
+                      "name": "search"
+                    }
+                  ]
+                }
+              }
+            },
+            "status": "succeeded"
+          }
+        },
+        "input_id": "in-acted",
+        "observed_at_ms": "1700000002000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiZWZmZWN0X2lkIjoib3AtZHJpdmVyLTE6c3RlcDoxOmVmZmVjdDowIiwia2luZCI6InJlc29sdmVfZWZmZWN0Iiwib3V0Y29tZSI6eyJyZXN1bHQiOnsia2luZCI6InByb3ZpZGVyIiwib3V0Y29tZSI6eyJraW5kIjoiY29tcGxldGVkIiwibWVzc2FnZSI6eyJjb250ZW50IjoiIiwicm9sZSI6ImFzc2lzdGFudCIsInRvb2xfY2FsbHMiOlt7ImFyZ3VtZW50cyI6eyJxIjoic291cmNlcyJ9LCJjYWxsX2lkIjoiY2FsbC0xIiwibmFtZSI6InNlYXJjaCJ9XX19fSwic3RhdHVzIjoic3VjY2VlZGVkIn19LCJpbnB1dF9pZCI6ImluLWFjdGVkIiwib2JzZXJ2ZWRfYXRfbXMiOiIxNzAwMDAwMDAyMDAwIiwib3BlcmF0aW9uX2lkIjoib3AtZHJpdmVyLTEifQ==",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:7ec1ff03040cc385a9c9cc3d67f7c1233a3e24cdc85abb8e6f1f0328fb0208e8",
+        "input_id": "in-acted",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": "sha256:012440b11426553aaf9699ccc74c18643b4da00adb52df41fc48d201aa19fcc0",
+        "record_digest": "sha256:0a1f1f43e4f258f7ea62673c45d79d0ceb236e94ebf6826f8ee17675f30a7326",
+        "step_digest": "sha256:fc4df7785f97d163e1d7579cd8a6d63f57eafa0b1ac102da9925500d64614b29",
+        "step_seq": "2"
+      },
+      "step": {
+        "disposition": {
+          "effects": [
+            {
+              "causation_input_id": "in-acted",
+              "effect": {
+                "calls": [
+                  {
+                    "arguments": {
+                      "q": "sources"
+                    },
+                    "call_id": "call-1",
+                    "name": "search"
+                  }
+                ],
+                "kind": "execute_tools"
+              },
+              "effect_id": "op-driver-1:step:2:effect:0"
+            }
+          ],
+          "kind": "effects"
+        },
+        "focus": {
+          "kind": "agent_turn",
+          "task_id": "root"
+        },
+        "root_kind": "agent"
+      }
+    },
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "effect_id": "op-driver-1:step:2:effect:0",
+          "kind": "resolve_effect",
+          "outcome": {
+            "result": {
+              "kind": "tools",
+              "results": [
+                {
+                  "call_id": "call-1",
+                  "kind": "inline",
+                  "result": {
+                    "disposition": "recoverable",
+                    "output": "three sources found"
+                  }
+                }
+              ]
+            },
+            "status": "succeeded"
+          }
+        },
+        "input_id": "in-results",
+        "observed_at_ms": "1700000003000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiZWZmZWN0X2lkIjoib3AtZHJpdmVyLTE6c3RlcDoyOmVmZmVjdDowIiwia2luZCI6InJlc29sdmVfZWZmZWN0Iiwib3V0Y29tZSI6eyJyZXN1bHQiOnsia2luZCI6InRvb2xzIiwicmVzdWx0cyI6W3siY2FsbF9pZCI6ImNhbGwtMSIsImtpbmQiOiJpbmxpbmUiLCJyZXN1bHQiOnsiZGlzcG9zaXRpb24iOiJyZWNvdmVyYWJsZSIsIm91dHB1dCI6InRocmVlIHNvdXJjZXMgZm91bmQifX1dfSwic3RhdHVzIjoic3VjY2VlZGVkIn19LCJpbnB1dF9pZCI6ImluLXJlc3VsdHMiLCJvYnNlcnZlZF9hdF9tcyI6IjE3MDAwMDAwMDMwMDAiLCJvcGVyYXRpb25faWQiOiJvcC1kcml2ZXItMSJ9",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:bbe9558f3883229639c8b988c305adfc5b017dc83df923ee8ae929fef1a88fe1",
+        "input_id": "in-results",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": "sha256:0a1f1f43e4f258f7ea62673c45d79d0ceb236e94ebf6826f8ee17675f30a7326",
+        "record_digest": "sha256:272879a0366805fe6e49355a640fc0d914f5b48980c38963a80384ae32676936",
+        "step_digest": "sha256:a0395151dfd9d26c78e60655cd973a13c724a2fc2bb180a7989e687dc066322c",
+        "step_seq": "3"
+      },
+      "step": {
+        "disposition": {
+          "effects": [
+            {
+              "causation_input_id": "in-results",
+              "effect": {
+                "context": {
+                  "state_turn": {
+                    "content": "[TASK STATE] goal: write the research brief\n\n→ did: search · next: advance the goal\n\nProceed.",
+                    "role": "user"
+                  },
+                  "turns": [
+                    {
+                      "content": "Proceed with the task described in [TASK STATE].",
+                      "role": "user",
+                      "tokens": 12
+                    },
+                    {
+                      "content": "",
+                      "role": "assistant",
+                      "tokens": 1
+                    },
+                    {
+                      "content": "",
+                      "role": "tool",
+                      "tokens": 4
+                    }
+                  ]
+                },
+                "kind": "call_provider",
+                "tools": [
+                  {
+                    "name": "start_workflow"
+                  },
+                  {
+                    "name": "submit_workflow_nodes"
+                  },
+                  {
+                    "name": "skill"
+                  },
+                  {
+                    "name": "update_plan"
+                  },
+                  {
+                    "name": "memory"
+                  },
+                  {
+                    "name": "read_result"
+                  },
+                  {
+                    "name": "search"
+                  },
+                  {
+                    "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",
+                    "name": "skill",
+                    "parameters": {
+                      "properties": {
+                        "name": {
+                          "description": "The name of the skill to load.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ],
+                      "type": "object"
+                    }
+                  }
+                ]
+              },
+              "effect_id": "op-driver-1:step:3:effect:0"
+            }
+          ],
+          "kind": "effects"
+        },
+        "focus": {
+          "kind": "agent_turn",
+          "task_id": "root"
+        },
+        "root_kind": "agent"
+      }
+    },
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "effect_id": "op-driver-1:step:3:effect:0",
+          "kind": "resolve_effect",
+          "outcome": {
+            "result": {
+              "kind": "provider",
+              "outcome": {
+                "kind": "completed",
+                "message": {
+                  "content": "the brief cites three sources",
+                  "role": "assistant"
+                },
+                "stop_reason": "end_turn"
+              }
+            },
+            "status": "succeeded"
+          }
+        },
+        "input_id": "in-answer",
+        "observed_at_ms": "1700000004000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiZWZmZWN0X2lkIjoib3AtZHJpdmVyLTE6c3RlcDozOmVmZmVjdDowIiwia2luZCI6InJlc29sdmVfZWZmZWN0Iiwib3V0Y29tZSI6eyJyZXN1bHQiOnsia2luZCI6InByb3ZpZGVyIiwib3V0Y29tZSI6eyJraW5kIjoiY29tcGxldGVkIiwibWVzc2FnZSI6eyJjb250ZW50IjoidGhlIGJyaWVmIGNpdGVzIHRocmVlIHNvdXJjZXMiLCJyb2xlIjoiYXNzaXN0YW50In0sInN0b3BfcmVhc29uIjoiZW5kX3R1cm4ifX0sInN0YXR1cyI6InN1Y2NlZWRlZCJ9fSwiaW5wdXRfaWQiOiJpbi1hbnN3ZXIiLCJvYnNlcnZlZF9hdF9tcyI6IjE3MDAwMDAwMDQwMDAiLCJvcGVyYXRpb25faWQiOiJvcC1kcml2ZXItMSJ9",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:f51c75af72a802c9a83d92ee3dd5928bb1f41c77b9ac3583107aaf00ec4c8d99",
+        "input_id": "in-answer",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": "sha256:272879a0366805fe6e49355a640fc0d914f5b48980c38963a80384ae32676936",
+        "record_digest": "sha256:c8ee5d4e93f72d9c2a122787a490ca5a8bfead0f4eb4d2e06d8bf66d30da779f",
+        "step_digest": "sha256:3d6a32f24ff725bb02fcef953c09b51547499de40b56f6966a5273e4d3a487df",
+        "step_seq": "4"
+      },
+      "step": {
+        "disposition": {
+          "kind": "terminal",
+          "terminal": {
+            "kind": "agent",
+            "result": {
+              "final_message": {
+                "content": "the brief cites three sources",
+                "role": "assistant"
+              },
+              "termination": "completed",
+              "turns_used": 1
+            },
+            "usage": {
+              "input_tokens": "8",
+              "output_tokens": "0",
+              "turns": 1
+            }
+          }
+        },
+        "focus": {
+          "kind": "agent_turn",
+          "task_id": "root"
+        },
+        "root_kind": "agent"
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "cancel-flows-only-through-host-control",
+  "domain": "cancel",
+  "kind": "positive",
+  "title": "取消只走宿主控制通道，不伪装成模型调用或动作失败",
+  "semantics": "操作取消是控制面事实：它只经由一条宿主控制命令进入内核，并直接产生取消终态。宿主不得把取消塞进模型调用失败或工具执行失败的结果回灌，否则内核会对同一个待决动作看到两种互斥语义。异步取消句柄（各语言的中断信号、取消异常或取消令牌）是宿主实现细节，不进入契约，也不进入检查点。取消命令不重复携带操作身份——身份由信封唯一确定。",
+  "given": [
+    "一个正在运行、且存在待决模型调用请求的操作"
+  ],
+  "when": [
+    "调用方请求取消"
+  ],
+  "then": [
+    "取消只以宿主控制命令进入内核",
+    "取消不作为外部动作的失败结果回灌",
+    "取消命令不重复携带操作身份，身份只由信封确定",
+    "宿主侧的取消句柄不出现在契约或检查点里",
+    "针对其他操作身份的取消被结构化拒绝"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.9 约束「operation cancellation 只通过 HostControl::Cancel」",
+      "spec §11.3「语言取消投影」与 §14.3「删除 provider/effect Cancelled failure」",
+      "spec §7.5 现状注记：冗余 operation_id 迫使三个 SDK 特判回填（crates/deepstrike-core/src/runtime/kernel/runtime.rs:891-905）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::cancellation_rejects_an_inner_operation_mismatch"
+    ]
+  },
+  "target": "§7.9"
+}

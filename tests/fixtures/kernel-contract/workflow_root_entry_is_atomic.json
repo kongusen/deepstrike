@@ -1,0 +1,29 @@
+{
+  "id": "workflow-root-entry-is-atomic",
+  "domain": "workflow",
+  "kind": "positive",
+  "title": "工作流根由同一个根入口原子启动，不需要先伪装成代理运行",
+  "semantics": "保留「宿主可以直接以工作流为根」的能力，并让它与代理根共用同一条生命周期：配置 → 根启动（工作流根入口）→ 任务派生动作请求 → 启动结果回灌 → 子任务完成事件 → 工作流终态。不再存在先起一个占位代理运行、再叠加工作流图、最后靠特权输入收尾的三段式。",
+  "given": [
+    "操作已完成配置",
+    "宿主持有一份工作流规格"
+  ],
+  "when": [
+    "宿主以工作流根入口提交根启动输入"
+  ],
+  "then": [
+    "内核直接建立依赖图并发出任务派生动作请求",
+    "不产生任何占位的代理目标，也不先发出模型调用请求",
+    "在根启动之前提交工作流规格的路径被结构化拒绝",
+    "根类别记为工作流且此后不可变"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §10.1「Root host workflow」",
+      "spec §3.3 第 20 条与 §10.1 现状注记（node/src/runtime/runner.ts:1467 占位目标、:1418 特权收尾）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::load_workflow_without_start_run_is_rejected",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::load_workflow_input_drives_dag_to_completion"
+    ]
+  },
+  "target": "§10.1"
+}

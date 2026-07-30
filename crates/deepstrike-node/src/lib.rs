@@ -219,9 +219,9 @@ pub struct RuntimeSignal {
 }
 
 fn runtime_signal_to_rust(s: RuntimeSignal) -> Result<RustRuntimeSignal> {
-    let id =
-        s.id.parse()
-            .map_err(|_| Error::from_reason("signal id must be a UUID"))?;
+    // §7.7 · the signal id is the caller's own branded ref, kept verbatim. It used to have to
+    // parse as a UUID, which forced every non-UUID signal into a minted second identity.
+    let id = s.id.clone();
     let source = match s.source.as_str() {
         "cron" => RustSignalSource::Cron,
         "gateway" => RustSignalSource::Gateway,
@@ -244,7 +244,7 @@ fn runtime_signal_to_rust(s: RuntimeSignal) -> Result<RustRuntimeSignal> {
     let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, s.summary.as_str())
         .with_payload(payload)
         .with_timestamp(s.timestamp_ms as u64);
-    sig.id = id;
+    sig.id = id.into();
     if let Some(key) = s.dedupe_key {
         sig = sig.with_dedupe(key.as_str());
     }
@@ -585,7 +585,10 @@ fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
         turns: rc.turns.iter().map(message_from_rust).collect(),
         state_turn: rc.state_turn.as_ref().map(message_from_rust),
         frozen_prefix_len: rc.frozen_prefix_len.map(|n| n as u32),
-        budget_overflow: rc.budget_overflow.as_ref().map(context_budget_overflow_from_rust),
+        budget_overflow: rc
+            .budget_overflow
+            .as_ref()
+            .map(context_budget_overflow_from_rust),
     }
 }
 
@@ -1084,13 +1087,21 @@ fn memory_record_to_rust(record: MemoryRecord) -> Result<RustMemoryRecord> {
         "model" => RustMemoryAuthor::Model,
         "host" => RustMemoryAuthor::Host,
         "extraction" => RustMemoryAuthor::Extraction,
-        other => return Err(Error::from_reason(format!("invalid memory author {other:?}"))),
+        other => {
+            return Err(Error::from_reason(format!(
+                "invalid memory author {other:?}"
+            )));
+        }
     };
     let trust = match record.provenance.trust.as_str() {
         "untrusted" => RustMemoryTrustLevel::Untrusted,
         "user_asserted" => RustMemoryTrustLevel::UserAsserted,
         "host_verified" => RustMemoryTrustLevel::HostVerified,
-        other => return Err(Error::from_reason(format!("invalid memory trust {other:?}"))),
+        other => {
+            return Err(Error::from_reason(format!(
+                "invalid memory trust {other:?}"
+            )));
+        }
     };
     Ok(RustMemoryRecord {
         record_id: record.record_id,

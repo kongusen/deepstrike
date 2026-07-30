@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use async_stream::try_stream;
 use deepstrike_core::types::message::{ToolCall, ToolSchema};
-use futures::stream::Stream;
 use futures::StreamExt;
+use futures::stream::Stream;
 
+use crate::Result;
 use crate::run_event::RunEvent;
 use crate::runtime::credential_vault::CredentialVault;
 use crate::runtime::execution_plane::{ExecutionPlane, LocalExecutionPlane, RunContext};
 use crate::tools::RegisteredTool;
-use crate::Result;
 
 pub struct RemoteVpcOptions {
     /// Base URL of the remote worker endpoint inside the customer VPC.

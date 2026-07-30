@@ -1,0 +1,35 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-4",
+  "observed_at_ms": "1753747203000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-07-29-0001:step:2:effect:0",
+    "outcome": {
+      "status": "succeeded",
+      "result": {
+        "kind": "provider",
+        "outcome": {
+          "kind": "completed",
+          "message": {
+            "role": "assistant",
+            "content": "Here is the draft outline.",
+            "tool_calls": [
+              {
+                "call_id": "call-1",
+                "name": "read_file",
+                "arguments": {
+                  "target": "docs/brief.md"
+                }
+              }
+            ]
+          },
+          "observed_input_tokens": 1840,
+          "observed_output_tokens": 212,
+          "stop_reason": "tool_use"
+        }
+      }
+    }
+  }
+}

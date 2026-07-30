@@ -2,7 +2,7 @@
   "kind": "agent_process_changed",
   "turn": 1,
   "agent_id": "worker",
-  "parent_session_id": "parent-session-001",
+  "parent_task_id": "root",
   "role": "implement",
   "isolation": "shared",
   "context_inheritance": "full",

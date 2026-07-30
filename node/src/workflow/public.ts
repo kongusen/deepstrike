@@ -16,6 +16,7 @@ export {
   genEval,
   milestoneCheckPass,
   milestoneCheckFail,
+  MILESTONE_UNVERIFIED_REASON,
 } from "../types/agent.js"
 export type {
   AgentCapabilityFilter,

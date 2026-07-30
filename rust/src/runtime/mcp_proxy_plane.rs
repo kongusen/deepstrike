@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use async_stream::try_stream;
 use deepstrike_core::types::message::{ToolCall, ToolSchema};
-use futures::stream::Stream;
 use futures::StreamExt;
+use futures::stream::Stream;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;

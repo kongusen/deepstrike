@@ -447,6 +447,23 @@ class RuntimeRunner:
     # The workflow driver consumes internal spawn effects and hands the committed provider
     # continuation back to the outer run loop through this transaction boundary.
     self._workflow_continuation_action: KernelRunnerAction | None = None
+    # R-B32: the spool used when the host configured no ``result_spool``. It must be ONE instance
+    # for the runner's lifetime: the default ``MemorySpoolDriver`` holds content *in the instance*,
+    # so a fresh ``LargeResultSpool()`` per callsite is garbage the moment that callsite returns —
+    # the kernel gets a well-formed ``spool_ref`` whose content no longer exists anywhere, and every
+    # later ``read_result`` has to fall back to scanning the session log. Always go through
+    # ``_result_spool()`` so the write side and the read side share one driver.
+    self._fallback_result_spool: Any = None
+
+  def _result_spool(self) -> Any:
+    """R-B32: the one spool this runner writes to and reads from. Host-configured when given,
+    otherwise a lazily created runner-lifetime fallback (never a per-callsite throwaway)."""
+    if self._opts.result_spool is not None:
+      return self._opts.result_spool
+    if self._fallback_result_spool is None:
+      from deepstrike.runtime.large_result_spool import LargeResultSpool
+      self._fallback_result_spool = LargeResultSpool()
+    return self._fallback_result_spool
 
   @property
   def host_options(self) -> RuntimeOptions:
@@ -1897,8 +1914,9 @@ class RuntimeRunner:
       pass  # malformed arguments — call_id stays empty, falls through to "not found" below
 
     full: str | None = None
-    from deepstrike.runtime.large_result_spool import LargeResultSpool
-    spool = self._opts.result_spool or LargeResultSpool()
+    # R-B32: read from the SAME spool the ``spool_large_result`` effect wrote to — including the
+    # default in-memory one. A fresh instance here has never seen the key the kernel was handed.
+    spool = self._result_spool()
     try:
       full = await spool.find_by_call_id(session_id, call_id)
     except Exception:
@@ -2491,8 +2509,7 @@ class RuntimeRunner:
         })
 
       elif action.kind == "spool_large_result":
-        from deepstrike.runtime.large_result_spool import LargeResultSpool
-        spool = self._opts.result_spool or LargeResultSpool()
+        spool = self._result_spool()
         spool_ref = None
         error = None
         try:
@@ -2545,7 +2562,6 @@ class RuntimeRunner:
         await self._opts.session_log.append(session_id, {
           "kind": "tool_requested", "turn": runtime.turn(), "calls": all_calls,
         })
-        from deepstrike.runtime.large_result_spool import LargeResultSpool
         run_ctx = RunContext(
           operation=operation,
           agent_id=self._opts.agent_id,
@@ -2555,7 +2571,9 @@ class RuntimeRunner:
           knowledge_source=self._opts.knowledge_source,
           on_tool_suspend=self._opts.on_tool_suspend,
           on_permission_request=self._opts.on_permission_request,
-          result_spool=self._opts.result_spool or LargeResultSpool(),
+          # R-B32: the plane's ``.spool/…`` argument read must hit the runner's spool, not a fresh
+          # throwaway whose in-memory driver has never seen the key.
+          result_spool=self._result_spool(),
         )
         tool_results: list[ToolResult] = []
         # M5 v1: `start_workflow` (author a sub-workflow) flattens to the same append path.
@@ -2813,6 +2831,22 @@ class RuntimeRunner:
             session_id, runtime, next_compressed_archive_start, task_scope,
           )
         else:
+          # R-B27: resolve the effect before ending the run. Nothing here can attest the phase, but
+          # the kernel is holding this milestone in its pending-effect table and only a matching
+          # result removes it — a bare ``return`` leaves a dangling effect that a logical-checkpoint
+          # recovery cannot resolve. Feed back the conservative "unverified" resolution: the wire has
+          # no error field yet, so it rides as ``passed=False``, which keeps the phase where it is
+          # (fail-closed, no unlocks mounted). The run still ends as ``milestone_pending``.
+          from deepstrike.types.agent import (
+            MILESTONE_UNVERIFIED_REASON, milestone_check_fail, milestone_check_result_to_kernel,
+          )
+          kernel_action(runtime, self._pending_observations, {
+            "kind": "milestone_result",
+            "effect_id": milestone_effect_id,
+            "result": milestone_check_result_to_kernel(
+              milestone_check_fail(action.phase_id, MILESTONE_UNVERIFIED_REASON),
+            ),
+          })
           next_compressed_archive_start = await self._append_observations(
             session_id, runtime, next_compressed_archive_start, task_scope,
           )
@@ -2834,6 +2868,17 @@ class RuntimeRunner:
 
       elif action.kind == "done":
         break
+
+      else:
+        # R-B28: fail-closed backstop. Without it an effect that reaches this position but has no
+        # branch here (``spawn_workflow`` / ``preempt_sub_agents`` are only driven inside the
+        # workflow driver, the memory effects are only resolved inside the host syscall helpers,
+        # and any effect kind a newer kernel adds) leaves ``action`` unreplaced and no event in
+        # flight — ``while not runtime.is_terminal()`` re-enters immediately and the run pins a core
+        # at 100% forever while the kernel waits for a result that will never come. Raising into the
+        # loop's existing handler makes the protocol mismatch visible instead (run_terminal
+        # ``error`` + an ``ErrorEvent``) and cannot busy-wait.
+        raise RuntimeError(f"unhandled kernel effect {action.kind} in the main run loop")
     except Exception as err:
       # I0b: kernel rejection (or any other thrown error inside the loop) is observable here — emit
       # run_terminal so downstream code sees a clean end rather than mid-loop EOF.

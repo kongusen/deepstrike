@@ -67,7 +67,7 @@ fn isolation_manifest_from_spec_applies_capability_filter() {
         allowed_ids: vec![],
     });
 
-    let manifest = IsolationManifest::from_spec(&spec, "parent-session-001", &available);
+    let manifest = IsolationManifest::from_spec(&spec, &available);
 
     assert_eq!(manifest.permitted_capability_ids.len(), 1);
     assert_eq!(manifest.permitted_capability_ids[0].as_str(), "search");
@@ -82,7 +82,7 @@ fn isolation_manifest_role_defaults_context_inheritance() {
         AgentRole::Explore,
         "explore",
     );
-    let explore = IsolationManifest::from_spec(&explore_spec, "parent", &available);
+    let explore = IsolationManifest::from_spec(&explore_spec, &available);
     assert_eq!(explore.context_inheritance, ContextInheritance::SystemOnly);
 
     let implement_spec = AgentRunSpec::new(
@@ -90,7 +90,7 @@ fn isolation_manifest_role_defaults_context_inheritance() {
         AgentRole::Implement,
         "implement",
     );
-    let implement = IsolationManifest::from_spec(&implement_spec, "parent", &available);
+    let implement = IsolationManifest::from_spec(&implement_spec, &available);
     assert_eq!(implement.context_inheritance, ContextInheritance::Full);
 
     let verify_spec = AgentRunSpec::new(
@@ -98,11 +98,11 @@ fn isolation_manifest_role_defaults_context_inheritance() {
         AgentRole::Verify,
         "verify",
     );
-    let verify = IsolationManifest::from_spec(&verify_spec, "parent", &available);
+    let verify = IsolationManifest::from_spec(&verify_spec, &available);
     assert_eq!(verify.context_inheritance, ContextInheritance::SystemOnly);
 
     let plan_spec = AgentRunSpec::new(AgentIdentity::sub_agent("p", "s"), AgentRole::Plan, "plan");
-    let plan = IsolationManifest::from_spec(&plan_spec, "parent", &available);
+    let plan = IsolationManifest::from_spec(&plan_spec, &available);
     assert_eq!(plan.context_inheritance, ContextInheritance::Full);
 }
 
@@ -131,7 +131,7 @@ fn spawn_sub_agent_emits_process_observation() {
         AgentRole::Implement,
         "do work",
     );
-    let action = sm.spawn_sub_agent(spec, "parent-session-001");
+    let action = sm.spawn_sub_agent(spec);
     assert!(matches!(action, LoopAction::AwaitingResume));
     assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
     assert!(matches!(
@@ -144,12 +144,13 @@ fn spawn_sub_agent_emits_process_observation() {
         o,
         KernelObservation::AgentProcessChanged {
             agent_id,
-            parent_session_id,
+            parent_task_id,
             role,
             state,
             ..
         } if agent_id == "worker"
-            && parent_session_id == "parent-session-001"
+            // Lineage is the logical parent *task* (the root loop), never a host session id.
+            && parent_task_id == "root"
             && role == "implement"
             && state == "running"
     )));
@@ -166,14 +167,18 @@ fn spawn_sub_agent_registers_kernel_process() {
         AgentRole::Implement,
         "do work",
     );
-    sm.spawn_sub_agent(spec, "parent-session-001");
+    sm.spawn_sub_agent(spec);
     let obs = sm.take_observations();
 
     let process = sm
         .agent_process("worker")
         .expect("process should be registered");
     assert_eq!(process.agent_id.as_str(), "worker");
-    assert_eq!(process.parent_session_id.as_str(), "parent-session-001");
+    assert_eq!(
+        process.parent_task_id.as_str(),
+        "root",
+        "lineage is the logical parent task, not a host session"
+    );
     assert_eq!(process.role, AgentRole::Implement);
     assert_eq!(process.context_inheritance, ContextInheritance::Full);
     assert_eq!(process.state, ProcessState::Running);
@@ -216,7 +221,7 @@ fn spawn_sub_agent_manifest_permits_filtered_capabilities() {
         AgentRole::Implement,
         "full access",
     );
-    let _action = sm.spawn_sub_agent(spec, "parent");
+    let _action = sm.spawn_sub_agent(spec);
     sm.take_observations();
     let process = sm.agent_process("full-agent").expect("process");
     assert!(
@@ -268,7 +273,7 @@ fn sub_agent_completed_updates_kernel_process() {
         AgentRole::Implement,
         "do work",
     );
-    sm.spawn_sub_agent(spec, "parent-session-001");
+    sm.spawn_sub_agent(spec);
     sm.take_observations();
 
     assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
@@ -325,12 +330,24 @@ fn isolation_manifest_serializes_round_trip() {
     )
     .with_isolation(AgentIsolation::ReadOnly);
 
-    let manifest = IsolationManifest::from_spec(&spec, "session-parent", &available);
+    let manifest = IsolationManifest::from_spec(&spec, &available);
     let json = serde_json::to_string(&manifest).expect("serialize");
     let restored: IsolationManifest = serde_json::from_str(&json).expect("deserialize");
 
+    // The manifest is a purely logical isolation contract: host session identity (the spec's
+    // `session_id` / `parent_session_id`) must never reach the wire.
+    let wire: serde_json::Value = serde_json::from_str(&json).expect("json value");
+    let wire = wire.as_object().expect("manifest serializes as an object");
+    assert!(
+        !wire.contains_key("parent_session_id"),
+        "manifest must not carry host parent session identity: {json}"
+    );
+    assert!(
+        !wire.contains_key("session_id"),
+        "manifest must not carry host session identity: {json}"
+    );
+
     assert_eq!(restored.agent_id, manifest.agent_id);
-    assert_eq!(restored.parent_session_id, manifest.parent_session_id);
     assert_eq!(restored.role, manifest.role);
     assert_eq!(restored.isolation, manifest.isolation);
     assert_eq!(restored.context_inheritance, manifest.context_inheritance);

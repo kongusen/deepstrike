@@ -45,6 +45,8 @@ import type { AgentRunSpec, AgentProcessChangedObservation, SubAgentResult, Mile
 import {
   agentRunSpecToKernel,
   findSpawnProcessObservation,
+  MILESTONE_UNVERIFIED_REASON,
+  milestoneCheckFail,
   milestoneCheckPass,
   milestoneCheckResultToKernel,
   spawnObservationToManifest,
@@ -382,6 +384,13 @@ export class RuntimeRunner {
   private pendingObservations: KernelObservation[] = []
   private activeKernel: KernelRuntimeHandle | null = null
   private currentSessionId: string | null = null
+  /** R-B32: the spool used when the host configured no `resultSpool`. It must be ONE instance for
+   *  the runner's lifetime: the default `MemorySpoolDriver` holds content *in the instance*, so a
+   *  `new LargeResultSpool()` per effect is garbage the moment the effect resolves — the kernel
+   *  gets a well-formed `spool_ref` whose content no longer exists anywhere, marks the handle
+   *  `SpooledOut`, and every later `read_result` has to fall back to scanning the session log.
+   *  Always go through `resultSpool()` so writes and reads share one driver. */
+  private fallbackResultSpool: LargeResultSpool | null = null
   /** O2 (system-reminder channel): host-pushed notes awaiting the next turn-boundary drain. */
   private injectedSignals: RuntimeSignal[] = []
   /** Skill names whose content has already been pushed into the durable `knowledge` slot this
@@ -581,6 +590,15 @@ export class RuntimeRunner {
     })
   }
 
+  /** R-B32: the one spool this runner writes to and reads from. Host-configured when given,
+   *  otherwise a lazily created process-lifetime fallback (never a per-effect throwaway — see
+   *  `fallbackResultSpool`). */
+  private resultSpool(): LargeResultSpool {
+    if (this.opts.resultSpool) return this.opts.resultSpool
+    this.fallbackResultSpool ??= new LargeResultSpool()
+    return this.fallbackResultSpool
+  }
+
   /** K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
    *  Errs-open: an unknown key is a kernel-side no-op. */
   removeKnowledge(key: string): void {
@@ -703,9 +721,12 @@ export class RuntimeRunner {
 
     let full: string | undefined
 
-    if (full === undefined && this.opts.resultSpool) {
+    // R-B32: read from the SAME spool the `spool_large_result` effect wrote to — including the
+    // default in-memory one. Gating this on `this.opts.resultSpool` meant an unconfigured host
+    // handed the kernel a spool_ref it could never resolve.
+    if (full === undefined) {
       try {
-        full = await this.opts.resultSpool.findByCallId(sessionId, callId)
+        full = await this.resultSpool().findByCallId(sessionId, callId)
       } catch {
         full = undefined
       }
@@ -1165,7 +1186,7 @@ export class RuntimeRunner {
         }
 
       } else if (action.kind === "spool_large_result") {
-        const spool = this.opts.resultSpool ?? new LargeResultSpool()
+        const spool = this.resultSpool()
         let spoolRef: string | undefined
         let error: string | undefined
         try {
@@ -1221,6 +1242,9 @@ export class RuntimeRunner {
           knowledgeSource: this.opts.knowledgeSource,
           onToolSuspend: this.opts.onToolSuspend,
           onPermissionRequest: this.opts.onPermissionRequest,
+          // R-B32: the plane's `.spool/…` argument read must hit the runner's spool, not a fresh
+          // throwaway whose in-memory driver has never seen the key.
+          resultSpool: this.resultSpool(),
         }
 
         const toolResults: ToolResult[] = []
@@ -1440,6 +1464,8 @@ export class RuntimeRunner {
         }
 
       } else if (action.kind === "evaluate_milestone") {
+        const milestoneEffectId = action.effectId
+        const milestonePhaseId = action.phaseId
         const milestonePolicy = this.opts.milestonePolicy ?? "require_verifier"
         if (milestonePolicy === "auto_pass") {
           action = kernelAction(runtime, this.pendingObservations, {
@@ -1461,6 +1487,19 @@ export class RuntimeRunner {
           })
           nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
         } else {
+          // R-B27: resolve the effect before ending the run. Nothing here can attest the phase, but
+          // the kernel is holding this milestone in its pending-effect table and only a matching
+          // result removes it — a bare `return` leaves a dangling effect that a logical-checkpoint
+          // recovery cannot resolve. Feed back the conservative "unverified" resolution: the wire
+          // has no error field yet, so it rides as `passed: false`, which keeps the phase where it
+          // is (fail-closed, no unlocks mounted). The run still ends as `milestone_pending`.
+          kernelAction(runtime, this.pendingObservations, {
+            kind: "milestone_result",
+            effect_id: milestoneEffectId,
+            result: milestoneCheckResultToKernel(
+              milestoneCheckFail(milestonePhaseId, MILESTONE_UNVERIFIED_REASON),
+            ),
+          })
           nextCompressedArchiveStart = await this.appendObservations(sessionId, runtime, nextCompressedArchiveStart)
           const turnsUsed = Math.max(1, runtime.turn())
           await this.opts.sessionLog.append(sessionId, buildRunTerminalEvent({
@@ -1476,6 +1515,17 @@ export class RuntimeRunner {
 
       } else if (action.kind === "done") {
         break
+      } else {
+        // R-B28: fail-closed backstop. Without it an effect that reaches this position but has no
+        // branch here (`spawn_workflow` / `preempt_sub_agents` are only driven inside the workflow
+        // driver, and any effect kind a newer kernel adds) leaves `action` unreplaced and no event
+        // in flight — `while (!runtime.isTerminal())` re-enters immediately and the run pins a core
+        // at 100% forever while the kernel waits for a result that will never come. Terminating
+        // through the loop's existing throw path makes the protocol mismatch visible instead
+        // (run_terminal `error` + an `error` event) and cannot busy-wait.
+        throw new Error(
+          `unhandled kernel effect ${(action as { kind: string }).kind} in the main run loop`,
+        )
       }
     }
     } catch (err) {

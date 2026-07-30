@@ -1,0 +1,14 @@
+{
+  "expect": "invalid_scalar",
+  "note": "§7.1.1 · an authoritative policy ratio is fixed-point ppm, never a language-default float",
+  "envelope": {
+    "abi_version": 3,
+    "operation_id": "op-2026-07-29-0001",
+    "input_id": "cfg-reject-6",
+    "observed_at_ms": "1753747200000",
+    "input": {
+      "kind": "configure_operation",
+      "config": { "execution_policy": { "entropy_watch": { "threshold_ppm": 0.65 } }, "host_effect_support": { "supported": ["call_provider"] } }
+    }
+  }
+}

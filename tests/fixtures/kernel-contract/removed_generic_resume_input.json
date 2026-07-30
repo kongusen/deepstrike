@@ -1,0 +1,27 @@
+{
+  "id": "removed-generic-resume-input",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：通用恢复输入与第二套恢复状态机",
+  "semantics": "删除「通用恢复」这一类输入，以及把历史预载当作恢复主路径的姿势。恢复不是一条业务输入，而是装载检查点并折叠尾巴的运行时过程；没有检查点时从创世记录起走同一条事务折叠。内核里不允许存在第二套恢复实现。",
+  "given": [
+    "一个中断后需要继续的操作"
+  ],
+  "when": [
+    "宿主试图用一条通用恢复输入让内核回到运行态"
+  ],
+  "then": [
+    "通用恢复输入在契约里不存在",
+    "历史预载不再是恢复主路径",
+    "恢复只走检查点加尾巴（或从创世记录折叠）一条路",
+    "不存在与主转移并行的第二套恢复状态机"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §12.4 与 §14.3「删除 generic Resume」",
+      "canonical-kernel-abi-capability-inventory.md §1 第 25 项（crates/deepstrike-core/src/runtime/kernel/protocol.rs:560、runtime.rs:2099-2105）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::preloaded_history_resumes_from_configured_to_running（现状行为）"
+    ]
+  },
+  "target": "§12.4"
+}

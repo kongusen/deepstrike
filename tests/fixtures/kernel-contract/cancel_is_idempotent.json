@@ -1,0 +1,29 @@
+{
+  "id": "cancel-is-idempotent",
+  "domain": "cancel",
+  "kind": "positive",
+  "title": "取消是幂等的：重复取消返回同一终态，不产生第二个终态",
+  "semantics": "取消一旦被接受即产生唯一的取消终态。语义相同的重复取消（相同意图、相同载荷）被判定为重放，返回既有记录与既有步序，不产生新记录、不推进步序、不发出新动作；即使宿主为重投换了一个新的输入标识，去重分支也同形。",
+  "given": [
+    "一个正在运行的操作",
+    "宿主已提交一次取消命令并得到取消终态"
+  ],
+  "when": [
+    "宿主再次提交语义相同的取消命令，包括换用新的输入标识重投"
+  ],
+  "then": [
+    "返回的是既有的取消终态与既有步序",
+    "不产生第二条记录，也不产生第二个终态",
+    "不发出任何新的外部动作请求",
+    "载荷不同的取消命令走冲突拒绝而不是静默覆盖"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §15.2「replay 不重复 effect/observation/terminal」",
+      "spec §18.3「取消去重分支同形（新 input_id + 已接受 cancellation + 相同 payload ⇒ Replayed）」",
+      "spec §7.13「Replayed 两个触发来源」（现状取消去重分支报 Prepared，crates/deepstrike-core/src/runtime/kernel/runtime.rs:918-934）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::cancellation_is_terminal_correlated_and_idempotent"
+    ]
+  },
+  "target": "§7.12"
+}

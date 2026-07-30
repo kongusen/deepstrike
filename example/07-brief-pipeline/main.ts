@@ -111,9 +111,19 @@ async function main(): Promise<void> {
 
   console.log("━━ running the brief-pipeline DAG ━━ (2 researchers → reduce → writer → gate)\n")
   const outcome = await runner.runWorkflow(spec)
+  if (outcome.rejection) {
+    throw new Error(`workflow rejected (${outcome.rejection.operation}): ${outcome.rejection.reason}`)
+  }
+  const completed = outcome.nodeOutcomes.filter(node => node.status === "completed")
+  const partial = outcome.nodeOutcomes.filter(node => node.status === "completed_partial")
+  const failed = outcome.nodeOutcomes.filter(node => node.status === "failed")
+  const skipped = outcome.nodeOutcomes.filter(node => node.status === "skipped_upstream_failed")
 
   console.log(`\n━━ workflow outcome ━━`)
-  console.log(`  completed nodes : ${outcome.completed.length}   failed: ${outcome.failed.length}`)
+  console.log(
+    `  completed: ${completed.length}   partial: ${partial.length}` +
+      `   failed: ${failed.length}   skipped: ${skipped.length}`,
+  )
   console.log(`\n  node 2 (reduce) merged findings:\n    ${(outcome.outputs["wf-node2"] ?? "—").replace(/\n/g, "\n    ")}`)
   console.log(`\n  node 3 (writer) brief:\n    ${outcome.outputs["wf-node3"] ?? "—"}`)
   console.log(`\n  node 4 (gate) verdict:\n    ${outcome.outputs["wf-node4"] ?? "—"}`)

@@ -10,6 +10,17 @@ impl LoopStateMachine {
         self.milestone.load_contract(contract);
     }
 
+    /// §12.2 · put a freshly loaded cascade back on the phase a checkpoint recorded.
+    pub fn restore_milestone_cursor(&mut self, phase_id: Option<&str>, blocked_count: u32) -> bool {
+        self.milestone
+            .restore_cursor(phase_id, blocked_count as usize)
+    }
+
+    /// How many times the current milestone phase has been blocked.
+    pub fn milestone_blocked_count(&self) -> u32 {
+        self.milestone.blocked_count() as u32
+    }
+
     /// Returns the ID of the current (not-yet-passed) phase, or `None` when
     /// no contract is loaded or all phases are complete.
     pub fn current_milestone_phase_id(&self) -> Option<&str> {

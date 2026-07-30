@@ -1,0 +1,27 @@
+{
+  "id": "removed-dead-configuration-inputs",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：空转与零发送的死接口（以分词器选择为代表）",
+  "semantics": "现存一条选择分词器的输入，其处理逻辑忽略入参并恒重置为同一种近似计数——宿主可以调用，但不产生任何行为差异，也没有任何行为可迁移。删除这类死接口。同一批清理还包括四语言零生产发送的配置入口：其中确有价值的能力改由有语义的宿主命令承载，其余随配置收敛一并消失。所有仅用于启动期的细粒度配置项统一并入一次性的操作配置，真正的运行期变更必须走带语义与修订号的宿主命令，不得复用配置入口。",
+  "given": [
+    "一个正在配置或运行的操作"
+  ],
+  "when": [
+    "宿主提交一条分词器选择输入，或其他仅存于契约但从未产生行为的配置入口"
+  ],
+  "then": [
+    "分词器选择输入被删除，不留兼容别名",
+    "启动期细粒度配置项统一并入一次性操作配置",
+    "确需运行期变更的能力改由带语义与修订号的宿主命令承载",
+    "配置入口不得在运行期被复用来改写策略"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.2.1 UNMAPPED 表（crates/deepstrike-core/src/runtime/kernel/runtime.rs:1351-1356 忽略入参恒重置）",
+      "spec §14.3「setup-only granular setters」、§13.3",
+      "canonical-kernel-abi-capability-inventory.md §7.2 第 5 项与 dead ABI 清单（四语言零生产发送）"
+    ]
+  },
+  "target": "§7.2"
+}

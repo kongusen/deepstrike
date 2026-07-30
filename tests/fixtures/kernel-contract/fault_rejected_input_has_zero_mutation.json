@@ -1,0 +1,28 @@
+{
+  "id": "fault-rejected-input-has-zero-mutation",
+  "domain": "fault",
+  "kind": "positive",
+  "title": "被拒输入零变更：不推进步序、不改生命周期、不发布任何动作",
+  "semantics": "拒绝是一个完整的事务边界：被拒的输入不推进步序、不改变生命周期、不发布外部动作、不写持久记录，也不留下半套配置。配置类输入必须先整体校验再整体应用，不允许「先落一半字段再报错」。",
+  "given": [
+    "一个处于任意合法生命周期的操作"
+  ],
+  "when": [
+    "宿主提交一条会被拒绝的输入（生命周期不合法、配置越界或结果不匹配）"
+  ],
+  "then": [
+    "返回结构化拒绝，并且不产生任何状态变更",
+    "步序不推进，生命周期不改变",
+    "不发布任何外部动作、审计事实或终态",
+    "配置类输入整体校验、整体应用，绝不留下半套配置"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §4.5「Fail Closed」与 §15.2「rejected input 零 mutation」",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::rejected_prepare_has_no_token_and_does_not_mutate_runtime",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::rejected_effect_result_does_not_bind_the_operation",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::reliability_config_rejects_unsafe_ranges_atomically"
+    ]
+  },
+  "target": "§4.5"
+}

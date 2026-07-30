@@ -1,0 +1,30 @@
+{
+  "id": "fault-effect-resolution-fails-closed",
+  "domain": "fault",
+  "kind": "positive",
+  "title": "未知动作标识或不匹配的结果种类一律 fail-closed",
+  "semantics": "每个待决外部动作有且只有一种合法的结果种类。未知的动作标识、与待决种类不匹配的结果、与既有结果冲突的重复回灌全部拒绝；语义相同的重复回灌则判为重放。宿主对无法执行或不认识的动作必须回灌带协议错误分类的失败，不得静默丢弃、不得原地忙等、不得崩溃。",
+  "given": [
+    "一个存在待决外部动作请求的操作"
+  ],
+  "when": [
+    "宿主分别回灌：未知动作标识、种类不匹配的结果、语义相同的重复结果、冲突载荷的重复结果"
+  ],
+  "then": [
+    "未知动作标识被拒绝",
+    "种类不匹配的结果被拒绝",
+    "语义相同的重复结果判为重放，返回既有步",
+    "冲突载荷的重复结果被拒绝",
+    "宿主对无法执行的动作必须回灌协议错误分类的失败，四语言结论一致"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §15.3「Effect」不变量与 §7.8 host 义务（DEC-7）",
+      "spec §18.7 跨语言用例",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::unknown_effect_result_is_rejected",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::duplicate_effect_result_with_conflicting_payload_is_rejected",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::duplicate_effect_result_with_new_event_id_returns_the_original_step"
+    ]
+  },
+  "target": "§15.3"
+}

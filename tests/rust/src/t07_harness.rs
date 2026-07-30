@@ -1,5 +1,5 @@
 use deepstrike_core::harness::{
-    build_eval_messages, parse_verdict, verdict_output_schema, Criterion,
+    Criterion, build_eval_messages, parse_verdict, verdict_output_schema,
 };
 
 // ─── Eval prompt builder ────────────────────────────────────────────────────

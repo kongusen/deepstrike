@@ -1,0 +1,37 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-11",
+  "observed_at_ms": "1753747211000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-07-29-0001:step:5:effect:0",
+    "outcome": {
+      "status": "succeeded",
+      "result": {
+        "kind": "tools",
+        "results": [
+          {
+            "kind": "inline",
+            "call_id": "call-1",
+            "result": {
+              "output": "3 files changed",
+              "disposition": "recoverable",
+              "tokens": 12
+            }
+          },
+          {
+            "kind": "inline",
+            "call_id": "call-2",
+            "result": {
+              "output": "command not found",
+              "is_error": true,
+              "disposition": "fatal",
+              "tokens": 5
+            }
+          }
+        ]
+      }
+    }
+  }
+}

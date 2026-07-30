@@ -1,0 +1,27 @@
+{
+  "id": "fault-clock-regression-fails-closed",
+  "domain": "fault",
+  "kind": "positive",
+  "title": "宿主时钟只有一条通道，时间回退对新输入 fail-closed",
+  "semantics": "输入信封携带的接受时间是唯一的宿主时钟事实，内核自身不读系统时钟。结果与外部事件的载荷不得再携带独立时间字段——否则同一意图的重投必然字节不同，幂等重放会退化为冲突拒绝。精确重放在时钟校验之前就被识别，因此重放不受影响；新输入若接受时间回退则结构化拒绝。截止、限流窗口与信号存活期统一用该时钟。",
+  "given": [
+    "一个已接受若干输入、逻辑时钟已推进的操作"
+  ],
+  "when": [
+    "宿主提交一条接受时间早于已记录时钟的新输入；随后重投一条历史输入"
+  ],
+  "then": [
+    "新输入因时钟回退被结构化拒绝",
+    "历史输入的精确重放先于时钟校验被识别，仍返回既有步",
+    "结果与事件载荷里没有第二个时间来源",
+    "截止、限流与信号存活期都以该时钟为准"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §11.2「时间事实」与 §7.9 约束（DEC-2）",
+      "spec §3.3 第 19 条：现状时间倒退既不拒绝也不 clamp（crates/deepstrike-core/src/scheduler/state_machine/mod.rs:793-801）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::provider_result_now_ms_drives_wall_time_budget（现状第二条时钟通道）"
+    ]
+  },
+  "target": "§11.2"
+}

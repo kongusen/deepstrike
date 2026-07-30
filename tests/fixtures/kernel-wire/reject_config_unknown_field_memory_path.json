@@ -1,0 +1,14 @@
+{
+  "expect": "unknown_field",
+  "note": "§13.3 · memory_path moved to the host MemoryStore config and must not decode anywhere in core",
+  "envelope": {
+    "abi_version": 3,
+    "operation_id": "op-2026-07-29-0001",
+    "input_id": "cfg-reject-1",
+    "observed_at_ms": "1753747200000",
+    "input": {
+      "kind": "configure_operation",
+      "config": { "memory_policy": { "memory_path": "/home/user/.deepstrike/memory", "retrieval_top_k": 5 }, "host_effect_support": { "supported": ["call_provider"] } }
+    }
+  }
+}

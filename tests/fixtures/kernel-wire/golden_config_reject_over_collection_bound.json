@@ -1,0 +1,26 @@
+{
+  "expect": "collection_too_large",
+  "stage": "resolution",
+  "note": "per-collection bounds land in the resolved config; a catalog above its own named bound is refused",
+  "config": {
+    "kernel_limits": {
+      "collection_limits": {
+        "tool_catalog": 1
+      }
+    },
+    "tool_catalog": [
+      {
+        "name": "search"
+      },
+      {
+        "name": "write"
+      }
+    ],
+    "host_effect_support": {
+      "supported": [
+        "call_provider",
+        "execute_tools"
+      ]
+    }
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "resume-preserves-pending-work-and-terminal",
+  "domain": "resume",
+  "kind": "positive",
+  "title": "恢复保持生命周期、根类别、执行焦点、待决动作标识与终态闩锁",
+  "semantics": "待决动作在恢复后以相同标识重新暴露，宿主的至少一次派发因此仍可按动作标识与启动令牌保持幂等；已提交的终态不会被重复提交；生命周期、根类别与执行焦点原样保持。现状恢复会重铸待决标识、丢失重放窗口、把技能租约与工作流预算清零、并靠宿主约定去重终态，这些失真都不保留。",
+  "given": [
+    "一个存在待决外部动作、活跃租约与已消耗预算的运行中操作"
+  ],
+  "when": [
+    "进程崩溃后从检查点加尾巴恢复"
+  ],
+  "then": [
+    "生命周期、根类别与执行焦点原样保持",
+    "待决动作以相同标识重新暴露，不重铸身份",
+    "已提交终态不会被再次提交，且不依赖宿主约定去重",
+    "租约剩余轮次与已消耗预算原样保持，不被清零"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §6.1 不变量 11 与 §15.5",
+      "spec §18.6 恢复链 7 处已知失真（技能租约、待决标识重铸、重放窗口、工作流预算清零、终态靠宿主约定去重）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::snapshot_rejects_an_outstanding_prepared_transition_without_panicking",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::deterministic_replay_preserves_the_next_effect_identity"
+    ]
+  },
+  "target": "§15.5"
+}

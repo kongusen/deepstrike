@@ -18,8 +18,8 @@ use deepstrike_core::runtime::session::ProviderReplay;
 use deepstrike_core::types::message::{Content, ContentPart, Message, ToolCall, ToolSchema};
 use futures::Stream;
 
-use crate::providers::{LLMProvider, ProviderRunState, RuntimePolicy, StreamEvent};
 use crate::Result;
+use crate::providers::{LLMProvider, ProviderRunState, RuntimePolicy, StreamEvent};
 
 /// Options for `ReplayProvider`.
 pub struct ReplayProviderOpts {

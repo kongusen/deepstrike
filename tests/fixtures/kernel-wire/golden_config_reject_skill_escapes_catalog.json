@@ -1,0 +1,27 @@
+{
+  "expect": "policy_violation",
+  "stage": "resolution",
+  "note": "atomic cross-field validation \u00b7 a skill may only narrow the tool catalog, never name a tool the catalog never declared",
+  "config": {
+    "tool_catalog": [
+      {
+        "name": "search",
+        "description": "search the corpus"
+      }
+    ],
+    "skill_catalog": [
+      {
+        "name": "research",
+        "allowed_tools": [
+          "shell"
+        ]
+      }
+    ],
+    "host_effect_support": {
+      "supported": [
+        "call_provider",
+        "execute_tools"
+      ]
+    }
+  }
+}

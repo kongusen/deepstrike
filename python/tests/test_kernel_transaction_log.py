@@ -182,5 +182,8 @@ async def test_file_kernel_transaction_stream_survives_reopen(tmp_path):
         {"log_seq": receipt["log_seq"], "transaction": first}
     ]
     assert await reopened.kernel_transaction_head("session", "op-python") == first["transaction_digest"]
+    # Journal records number themselves by chain position, in a sequence space of their own: the
+    # interleaved `run_started` projection event does NOT push the first transaction to 2. Sharing
+    # one counter is what made journal prefix pruning punch holes in business event numbering.
     assert genesis_receipt["log_seq"] == 0
-    assert receipt["log_seq"] == 2
+    assert receipt["log_seq"] == 1

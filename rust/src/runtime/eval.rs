@@ -7,14 +7,14 @@
 
 use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::harness::eval::{
-    build_eval_messages as core_build_eval_messages, parse_verdict as core_parse_verdict,
-    verdict_output_schema as core_verdict_output_schema, EvalResult,
+    EvalResult, build_eval_messages as core_build_eval_messages,
+    parse_verdict as core_parse_verdict, verdict_output_schema as core_verdict_output_schema,
 };
 use deepstrike_core::types::message::{Content, Message, Role};
 use futures::StreamExt;
 
-use crate::providers::{LLMProvider, StreamEvent};
 use crate::Result;
+use crate::providers::{LLMProvider, StreamEvent};
 
 /// Re-export the kernel's `Criterion` so callers don't need to import from `deepstrike_core`.
 pub use deepstrike_core::harness::eval::Criterion;
@@ -55,7 +55,10 @@ pub async fn judge(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    let turns: Vec<Message> = msgs.into_iter().filter(|m| m.role != Role::System).collect();
+    let turns: Vec<Message> = msgs
+        .into_iter()
+        .filter(|m| m.role != Role::System)
+        .collect();
     let ctx = RenderedContext {
         system_text,
         system_stable: String::new(),
@@ -74,7 +77,9 @@ pub async fn judge(
         }
     }
     if text.is_empty() {
-        return Err(crate::Error::Other("judge: provider produced no text".to_string()));
+        return Err(crate::Error::Other(
+            "judge: provider produced no text".to_string(),
+        ));
     }
     Ok(parse_verdict(&text))
 }

@@ -1,0 +1,21 @@
+{
+  "expect": "missing_field",
+  "envelope": {
+    "abi_version": 3,
+    "operation_id": "op-2026-07-29-0001",
+    "input_id": "caller-supplied-idempotency-key-1",
+    "observed_at_ms": "1753747200000",
+    "input": {
+      "kind": "host_control",
+      "command": {
+        "kind": "apply_policy_patch",
+        "patch": {
+          "kind": "replace_signal_policy",
+          "policy": {
+            "queue_max": 16
+          }
+        }
+      }
+    }
+  }
+}

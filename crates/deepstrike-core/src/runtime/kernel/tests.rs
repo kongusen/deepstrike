@@ -511,6 +511,91 @@ fn prepared_step_json_round_trips_the_normalized_input_and_status() {
     assert_eq!(runtime.lifecycle(), KernelLifecycle::Running);
 }
 
+#[test]
+fn prepare_step_json_measures_bytes_before_it_parses() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let configured = runtime.step(KernelInput::new(KernelInputEvent::ConfigureRun {
+        config: RunConfig {
+            reliability: Some(KernelReliabilityConfig {
+                max_input_bytes: Some(512),
+                ..KernelReliabilityConfig::default()
+            }),
+            ..RunConfig::default()
+        },
+    }));
+    assert!(configured.faults.is_empty());
+
+    // Deliberately not valid JSON: only a boundary that runs *before* the parser can classify
+    // this as a resource-limit fault instead of a deserialization error.
+    let oversized = "{".repeat(2_048);
+    let prepared = runtime
+        .prepare_step_json(&oversized)
+        .expect("the byte boundary answers with a structured rejection, not a parse error");
+
+    assert_eq!(prepared.status, KernelPreparationStatus::Rejected);
+    assert!(prepared.prepare_token.is_none());
+    assert!(matches!(
+        prepared.step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::ResourceLimitExceeded,
+            ..
+        }]
+    ));
+    assert_eq!(runtime.diagnostics().accepted_input_count, 1);
+}
+
+#[test]
+fn prepare_step_json_bounds_nesting_before_it_parses() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let deep = format!("{}1{}", "[".repeat(256), "]".repeat(256));
+
+    let prepared = runtime
+        .prepare_step_json(&deep)
+        .expect("the depth boundary answers with a structured rejection");
+
+    assert_eq!(prepared.status, KernelPreparationStatus::Rejected);
+    assert!(matches!(
+        prepared.step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::ResourceLimitExceeded,
+            ..
+        }]
+    ));
+    assert_eq!(runtime.diagnostics().accepted_input_count, 0);
+}
+
+#[test]
+fn prepare_step_json_probes_the_revision_before_decoding() {
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let mut input = correlated_input(
+        "op-json-prepare",
+        "event-start",
+        42,
+        KernelInputEvent::StartRun {
+            task: RuntimeTask::new("test"),
+            run_spec: None,
+        },
+    );
+    input.version = 1;
+
+    let prepared = runtime
+        .prepare_step_json(&serde_json::to_string(&input).unwrap())
+        .expect("a foreign revision is a structured rejection");
+
+    assert_eq!(prepared.status, KernelPreparationStatus::Rejected);
+    assert!(prepared.prepare_token.is_none());
+    assert!(matches!(
+        prepared.step.faults.as_slice(),
+        [KernelFault {
+            code: KernelFaultCode::VersionMismatch,
+            ..
+        }]
+    ));
+    assert_eq!(prepared.step.operation_id, "op-json-prepare");
+    assert_eq!(runtime.lifecycle(), KernelLifecycle::Created);
+    assert_eq!(runtime.diagnostics().accepted_input_count, 0);
+}
+
 fn accept_workflow_spawn(runtime: &mut KernelRuntime, step: KernelStep) -> KernelStep {
     let Some(KernelAction {
         effect_id,
@@ -1598,19 +1683,21 @@ fn spawn_sub_agent_input_registers_process() {
         o,
         KernelObservation::AgentProcessChanged {
             agent_id,
-            parent_session_id,
+            parent_task_id,
             state,
             ..
-        } if agent_id == "worker" && parent_session_id == "parent-session" && state == "running"
+        } if agent_id == "worker" && parent_task_id == "root" && state == "running"
     )));
+    // § Task 11 · the legacy input still declared `parent_session_id: "parent-session"`. Nothing
+    // the kernel recorded, decided or published mentions it: lineage is the logical parent task.
     assert_eq!(
         runtime
             .state_machine()
             .agent_process("worker")
             .expect("process")
-            .parent_session_id
+            .parent_task_id
             .as_str(),
-        "parent-session"
+        "root"
     );
     assert!(step.observations.iter().any(|o| matches!(
         o,
@@ -1621,6 +1708,227 @@ fn spawn_sub_agent_input_registers_process() {
         runtime.state_machine().wait_reason(),
         Some(crate::scheduler::tcb::WaitReason::SubAgentJoin(_))
     ));
+}
+
+// ── § Task 11 · host session identity reaches no kernel decision and no kernel output ──
+
+/// Every wire slot through which a host can still *name a session* — the root run spec's
+/// `AgentIdentity`, a spawn spec's identity and parent, and the `parent_session_id` of the three
+/// legacy spawn/workflow inputs — driven twice over the same logical sequence with two disjoint
+/// namings.
+///
+/// The trace this returns is everything the kernel produced: every step's actions, observations and
+/// terminal. §22.6's "session is host persistence identity, not a scheduling input" is only a claim
+/// until the two traces are compared byte for byte.
+fn host_session_named_trace(session: &str) -> serde_json::Value {
+    use crate::orchestration::workflow::fanout_synthesize;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    use crate::types::result::TerminationReason;
+
+    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+    let mut steps = Vec::new();
+    let mut at = 1_700_000_000_000u64;
+    let next = |event: KernelInputEvent, at: &mut u64| {
+        *at += 1;
+        correlated_input("op-host-naming", &format!("event-{at}"), *at, event)
+    };
+
+    // the root run spec names a session, and a parent session
+    steps.push(
+        runtime.step(next(
+            KernelInputEvent::StartRun {
+                task: RuntimeTask::new("parent task"),
+                run_spec: Some(AgentRunSpec::new(
+                    AgentIdentity::new("root", format!("{session}-root"))
+                        .with_parent(format!("{session}-ancestor")),
+                    AgentRole::Implement,
+                    "parent task",
+                )),
+            },
+            &mut at,
+        )),
+    );
+
+    // a spawn: the host names the child's session, the child's parent session, and the input's
+    steps.push(
+        runtime.step(next(
+            KernelInputEvent::SpawnSubAgent {
+                spec: AgentRunSpec::new(
+                    AgentIdentity::sub_agent("worker", format!("{session}-worker"))
+                        .with_parent(format!("{session}-root")),
+                    AgentRole::Implement,
+                    "do work",
+                ),
+                parent_session_id: format!("{session}-root"),
+            },
+            &mut at,
+        )),
+    );
+
+    steps.push(runtime.step(next(
+        KernelInputEvent::SubAgentCompleted {
+            result: SubAgentResult {
+                agent_id: compact_str::CompactString::new("worker"),
+                result: LoopResult {
+                    termination: TerminationReason::Completed,
+                    final_message: None,
+                    turns_used: 1,
+                    total_tokens_used: 1,
+                    loop_continue: None,
+                    classify_branch: None,
+                    tournament_winner: None,
+                    pace_decision: None,
+                },
+            },
+        },
+        &mut at,
+    )));
+
+    // a workflow root: the same host naming on `LoadWorkflow`, through spawn ack and completion
+    let accept = |runtime: &mut KernelRuntime,
+                  step: KernelStep,
+                  steps: &mut Vec<KernelStep>,
+                  at: &mut u64| {
+        let ack = match step.actions.first() {
+            Some(KernelAction {
+                effect_id,
+                effect: KernelEffect::SpawnWorkflow { nodes, .. },
+                ..
+            }) => Some(KernelInputEvent::WorkflowSpawnResult {
+                effect_id: effect_id.clone(),
+                started_agent_ids: nodes.iter().map(|node| node.agent_id.clone()).collect(),
+                failures: Vec::new(),
+                error: None,
+            }),
+            _ => None,
+        };
+        steps.push(step);
+        if let Some(ack) = ack {
+            *at += 1;
+            let input = correlated_input("op-host-naming", &format!("event-{at}"), *at, ack);
+            let acked = runtime.step(input);
+            steps.push(acked);
+        }
+    };
+
+    let loaded = runtime.step(next(
+        KernelInputEvent::LoadWorkflow {
+            spec: fanout_synthesize(
+                vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
+                RuntimeTask::new("synth"),
+            ),
+            parent_session_id: format!("{session}-root"),
+            resumed_submissions: Vec::new(),
+            resumed_submission_bases: Vec::new(),
+            resumed_outcomes: Vec::new(),
+        },
+        &mut at,
+    ));
+    accept(&mut runtime, loaded, &mut steps, &mut at);
+    for node in ["wf-node0", "wf-node1"] {
+        let done = runtime.step(next(
+            KernelInputEvent::SubAgentCompleted {
+                result: SubAgentResult {
+                    agent_id: compact_str::CompactString::new(node),
+                    result: LoopResult {
+                        termination: TerminationReason::Completed,
+                        final_message: None,
+                        turns_used: 1,
+                        total_tokens_used: 1,
+                        loop_continue: None,
+                        classify_branch: None,
+                        tournament_winner: None,
+                        pace_decision: None,
+                    },
+                },
+            },
+            &mut at,
+        ));
+        accept(&mut runtime, done, &mut steps, &mut at);
+    }
+
+    serde_json::json!({
+        "steps": steps,
+        "processes": runtime.state_machine().agent_processes(),
+    })
+}
+
+#[test]
+fn identical_kernel_trace_under_different_host_session_ids() {
+    let a = host_session_named_trace("host-a");
+    let b = host_session_named_trace("host-b");
+    assert_eq!(
+        a, b,
+        "two hosts that name their sessions differently must get byte-identical kernel output"
+    );
+
+    let text = a.to_string();
+    for leaked in ["host-a", "host-b", "session"] {
+        assert!(
+            !text.contains(leaked),
+            "the kernel echoed the host's {leaked:?} back into its own output"
+        );
+    }
+}
+
+/// `MemoryProvenance.session_id` is host-authored provenance the legacy write path **echoes** —
+/// the kernel validates and hands the normalized record back, it never reads the field. This pins
+/// both halves: the decision is invariant to it, and the only place it survives is that echo (which
+/// the canonical `CanonicalMemoryWrite` no longer has, and §22.13 removes with the legacy path).
+#[test]
+fn memory_provenance_session_id_changes_no_kernel_decision() {
+    let step = |session: Option<&str>| {
+        let mut runtime = KernelRuntime::new(SchedulerBudget::default());
+        runtime.step(KernelInput::new(KernelInputEvent::StartRun {
+            task: RuntimeTask::new("t"),
+            run_spec: None,
+        }));
+        runtime.clear_test_observations();
+        let mut record = memory_record("record-1", "source-set", "12 primary sources");
+        record.provenance.session_id = session.map(str::to_string);
+        let requested = runtime.step(KernelInput::new(KernelInputEvent::WriteMemory {
+            memory: record,
+        }));
+        let mut value = serde_json::to_value(&requested).unwrap();
+        // the host's own event counter is not part of what the kernel decided
+        value["input_event_id"] = serde_json::Value::Null;
+        for action in value["actions"].as_array_mut().into_iter().flatten() {
+            action["causation_id"] = serde_json::Value::Null;
+        }
+        value
+    };
+
+    let decisions = |session: Option<&str>| {
+        let mut value = step(session);
+        for action in value["actions"].as_array_mut().into_iter().flatten() {
+            // strip the echoed record body; what remains is the decision (effect kind + identity)
+            action["memory"] = serde_json::Value::Null;
+        }
+        value
+    };
+
+    assert_eq!(
+        decisions(Some("session-a")),
+        decisions(Some("session-b")),
+        "the legacy record's session id is host provenance, never a kernel input"
+    );
+    assert_eq!(
+        decisions(Some("session-a")),
+        decisions(None),
+        "and omitting it entirely decides nothing either"
+    );
+    assert_eq!(
+        step(Some("session-a"))["actions"][0]["memory"]["provenance"]["session_id"],
+        "session-a",
+        "the legacy effect still echoes the host's provenance verbatim — §22.13 territory, not a \
+         kernel-authored fact"
+    );
+    assert!(
+        step(None)["actions"][0]["memory"]["provenance"]
+            .get("session_id")
+            .is_none(),
+        "and the kernel never invents one"
+    );
 }
 
 #[test]
@@ -1720,10 +2028,12 @@ fn set_resource_quota_input_denies_spawn_over_quota() {
                 && subject.as_deref() == Some("worker")
                 && reason.contains("max_spawn_depth")
     )));
-    assert!(!step.observations.iter().any(|o| matches!(
-        o,
-        KernelObservation::Rollbacked { .. }
-    )));
+    assert!(
+        !step
+            .observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. }))
+    );
     assert!(!step.observations.iter().any(|o| matches!(
         o,
         KernelObservation::AgentProcessChanged { agent_id, .. } if agent_id == "worker"
@@ -2614,9 +2924,11 @@ fn m4_recall_crossing_threshold_suggests_promotion_only_on_the_edge() {
     // Hit at count 1 → 2: crosses the threshold, suggestion fires with the new count.
     let crossing = recall_hit(&mut runtime, "record-build", 1);
     let suggested = crossing.observations.iter().find_map(|o| match o {
-        KernelObservation::PromotionSuggested { record_id, recall_count, .. } => {
-            Some((record_id.clone(), *recall_count))
-        }
+        KernelObservation::PromotionSuggested {
+            record_id,
+            recall_count,
+            ..
+        } => Some((record_id.clone(), *recall_count)),
         _ => None,
     });
     assert_eq!(suggested, Some(("record-build".into(), 2)));

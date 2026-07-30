@@ -1,0 +1,21 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-16",
+  "observed_at_ms": "1753747216000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-07-29-0001:step:10:effect:0",
+    "outcome": {
+      "status": "succeeded",
+      "result": {
+        "kind": "memory_persisted",
+        "receipt": {
+          "binding_id": "binding-a",
+          "record_ref": "memory:01J8Y2QK7C4N0W",
+          "digest": "sha256:af03c5182d6b94e70cf1a8d3625b9e04f7c28a1d6e9b3405c7f2a8d1e6b09c34"
+        }
+      }
+    }
+  }
+}

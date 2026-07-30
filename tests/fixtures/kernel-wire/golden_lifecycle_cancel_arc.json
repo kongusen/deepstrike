@@ -1,0 +1,447 @@
+{
+  "description": "The cancellation arc on the canonical wire (spec 7.5 / 7.7 / 11.1 · Task 12b): configure → workflow root start → spawn ack → a critical signal that preempts the running child → the host's preempt resolution → `HostControl::Cancel`, whose step is the cancelled terminal itself. Two things this chain fixes in place: the only host action a signal can cause is the preemption (its queueing/dropping/expiry are audit facts and publish nothing), and cancellation settles every downstream wait inside the same transition that commits the root terminal — §7.12 admits effects or a terminal and never both, so there is no second round trip in which the operation is neither running nor cancelled.",
+  "genesis_digest": "sha256:ff471383ae00c8226e46b7ab321f3cdf1db47395abf16ac472a646510127204f",
+  "head_digest": "sha256:6f774bf0a6a89df23fc609fea2eed032a1700a12a065f8e64669c6fc1cd200a2",
+  "links": [
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "config": {
+            "execution_policy": {
+              "max_turns": 12
+            },
+            "host_effect_support": {
+              "supported": [
+                "call_provider",
+                "execute_tools",
+                "load_payload",
+                "spawn_tasks",
+                "preempt_tasks",
+                "persist_memory",
+                "query_memory"
+              ]
+            },
+            "memory_access": {
+              "binding_id": "mem-binding-1",
+              "capabilities": {
+                "read": true,
+                "write": true
+              }
+            },
+            "memory_policy": {
+              "retrieval_top_k": 4
+            },
+            "resource_quota": {
+              "max_workflow_nodes": 3
+            },
+            "signal_policy": {
+              "queue_max": 8
+            },
+            "skill_catalog": [
+              {
+                "description": "debug helper",
+                "name": "debug"
+              }
+            ],
+            "tool_catalog": [
+              {
+                "name": "start_workflow"
+              },
+              {
+                "name": "submit_workflow_nodes"
+              },
+              {
+                "name": "skill"
+              },
+              {
+                "name": "update_plan"
+              },
+              {
+                "name": "memory"
+              },
+              {
+                "name": "read_result"
+              },
+              {
+                "name": "search"
+              }
+            ]
+          },
+          "kind": "configure_operation"
+        },
+        "input_id": "in-configure",
+        "observed_at_ms": "1700000000000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiY29uZmlnIjp7ImFiaV92ZXJzaW9uIjozLCJidWRnZXRfZ3JhbnQiOm51bGwsImNvbnRleHRfcG9saWN5Ijp7ImNvbGxhcHNlX29sZF9hc3Npc3RhbnRfbmFycmF0aW9uIjp0cnVlLCJpZGxlX21pY3JvX2NvbXBhY3RfbWludXRlcyI6NjAsImtub3dsZWRnZV9idWRnZXRfcHBtIjoyNTAwMDAsInByZXNlcnZlX3JlY2VudF90dXJucyI6MiwicHJlc3N1cmVfdGhyZXNob2xkc19wcG0iOnsiYXV0byI6OTUwMDAwLCJjb2xsYXBzZSI6OTAwMDAwLCJtaWNybyI6ODAwMDAwLCJyZW5ld2FsIjo5ODAwMDAsInNuaXAiOjcwMDAwMH0sInByb21wdF9idWRnZXQiOnsib3V0cHV0X3Jlc2VydmVfdG9rZW5zIjowLCJwcm9tcHRfb3ZlcmhlYWRfdG9rZW5zIjowLCJzYWZldHlfbWFyZ2luX3Rva2VucyI6MH0sInJlbmV3YWxfY2FycnlvdmVyX3BwbSI6NTAwMDAsInRhcmdldF9hZnRlcl9jb21wcmVzc19wcG0iOjY1MDAwMH0sImV4ZWN1dGlvbl9wb2xpY3kiOnsiY3JpdGVyaWFfZ2F0ZV9lbmFibGVkIjp0cnVlLCJlbnRyb3B5X3dhdGNoIjp7ImNvb2xkb3duX3R1cm5zIjo0LCJlbmFibGVkIjpmYWxzZSwiaHlzdGVyZXNpc19wcG0iOjEwMDAwMCwibm90aWZ5X21vZGVsIjpmYWxzZSwidGhyZXNob2xkX3BwbSI6NjUwMDAwfSwibWF4X2NvbnRleHRfdG9rZW5zIjoxMjgwMDAsIm1heF90b3RhbF90b2tlbnMiOiIxMDAwMDAwIiwibWF4X3R1cm5zIjoxMiwibWF4X3dhbGxfbXMiOm51bGwsInJlcGVhdF9mdXNlIjp7ImRlbnlfYWZ0ZXIiOjUsImVuYWJsZWQiOnRydWUsInRlcm1pbmF0ZV9hZnRlciI6OH19LCJmZWF0dXJlX3BvbGljeSI6eyJrbm93bGVkZ2VfZW5hYmxlZCI6ZmFsc2UsIm1lbW9yeV9lbmFibGVkIjpmYWxzZSwicGxhbl90b29sX2VuYWJsZWQiOmZhbHNlLCJzdGFibGVfY29yZV90b29sX2lkcyI6W10sInRvb2xfZGlzcGF0Y2hfZ2F0ZSI6ImV4cG9zZWQifSwiZ292ZXJuYW5jZV9wb2xpY3kiOnsiY29uc3RyYWludHMiOltdLCJkZWZhdWx0X2FjdGlvbiI6ImFsbG93IiwicmF0ZV9saW1pdHMiOltdLCJydWxlcyI6W10sInZldG9lZF90b29scyI6W119LCJob3N0X2VmZmVjdF9zdXBwb3J0Ijp7InN1cHBvcnRlZCI6WyJjYWxsX3Byb3ZpZGVyIiwiZXhlY3V0ZV90b29scyIsImxvYWRfcGF5bG9hZCIsInNwYXduX3Rhc2tzIiwicHJlZW1wdF90YXNrcyIsInBlcnNpc3RfbWVtb3J5IiwicXVlcnlfbWVtb3J5Il19LCJrZXJuZWxfbGltaXRzIjp7ImNvbGxlY3Rpb25fbGltaXRzIjp7ImNhcGFiaWxpdHlfZ3JhbnRzIjo2NTUzNiwiZ292ZXJuYW5jZV9ydWxlcyI6NjU1MzYsImluaXRpYWxfbWVzc2FnZXMiOjY1NTM2LCJrbm93bGVkZ2VfZW50cmllcyI6NjU1MzYsInNraWxsX2NhdGFsb2ciOjY1NTM2LCJ0b29sX2NhdGFsb2ciOjY1NTM2fSwibWF4X2NvbGxlY3Rpb25fZW50cmllcyI6NjU1MzYsIm1heF9pbnB1dF9ieXRlcyI6MTY3NzcyMTYsIm1heF9qc29uX2RlcHRoIjo2NH0sIm1lbW9yeV9hY2Nlc3MiOnsiYmluZGluZ19pZCI6Im1lbS1iaW5kaW5nLTEiLCJjYXBhYmlsaXRpZXMiOnsicmVhZCI6dHJ1ZSwid3JpdGUiOnRydWV9fSwibWVtb3J5X3BvbGljeSI6eyJtYXhfY29udGVudF9ieXRlcyI6MTAwMDAsIm1heF9uYW1lX2xlbmd0aCI6MTAwLCJwcm9tb3Rpb25fcmVjYWxsX3RocmVzaG9sZCI6bnVsbCwicmV0cmlldmFsX3RvcF9rIjo0LCJzdGFsZV93YXJuaW5nX2RheXMiOjIsInZhbGlkYXRpb25fZW5hYmxlZCI6dHJ1ZX0sInBheWxvYWRfcG9saWN5Ijp7ImlubGluZV90aHJlc2hvbGRfYnl0ZXMiOjUxMjAwLCJwcmV2aWV3X2J5dGVzIjoyMDQ4fSwicmVjb3ZlcnlfcG9saWN5Ijp7Im91dHB1dF9yZWNvdmVyeV9hdHRlbXB0cyI6MSwicHJvdmlkZXJfcmVjb3ZlcnlfYXR0ZW1wdHMiOjEsInRhaWxfYm91bmRzIjp7ImhhcmRfYnl0ZXMiOiIxNjc3NzIxNiIsImhhcmRfcmVjb3JkcyI6IjIwNDgiLCJzb2Z0X2J5dGVzIjoiNDE5NDMwNCIsInNvZnRfcmVjb3JkcyI6IjUxMiJ9fSwicmVzb3VyY2VfcXVvdGEiOnsibWF4X3dvcmtmbG93X25vZGVzIjozfSwic2NoZWR1bGVyX3BvbGljeSI6eyJhZ2Vfd2VpZ2h0IjoxMDAwLCJjcml0aWNhbF9wYXRoX3dlaWdodCI6MTAwMDAwMCwiZmFub3V0X3dlaWdodCI6MTAwMDAsInRva2VuX2Nvc3Rfd2VpZ2h0IjoxfSwic2lnbmFsX3BvbGljeSI6eyJkZWFkbGluZV9lc2NhbGF0aW9uIjpmYWxzZSwicXVldWVfbWF4Ijo4LCJ0dGxfbXMiOm51bGx9LCJza2lsbF9jYXRhbG9nIjpbeyJkZXNjcmlwdGlvbiI6ImRlYnVnIGhlbHBlciIsIm5hbWUiOiJkZWJ1ZyJ9XSwidG9vbF9jYXRhbG9nIjpbeyJuYW1lIjoic3RhcnRfd29ya2Zsb3cifSx7Im5hbWUiOiJzdWJtaXRfd29ya2Zsb3dfbm9kZXMifSx7Im5hbWUiOiJza2lsbCJ9LHsibmFtZSI6InVwZGF0ZV9wbGFuIn0seyJuYW1lIjoibWVtb3J5In0seyJuYW1lIjoicmVhZF9yZXN1bHQifSx7Im5hbWUiOiJzZWFyY2gifV0sInZlcmlmaWNhdGlvbl9jb250cmFjdHMiOltdfSwia2luZCI6ImNvbmZpZ3VyZV9vcGVyYXRpb24ifSwiaW5wdXRfaWQiOiJpbi1jb25maWd1cmUiLCJvYnNlcnZlZF9hdF9tcyI6IjE3MDAwMDAwMDAwMDAiLCJvcGVyYXRpb25faWQiOiJvcC1kcml2ZXItMSJ9",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:1b1effb99a962f151225d28f3e10138dd446e285e776c69d1286bc9660e65b92",
+        "input_id": "in-configure",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": null,
+        "record_digest": "sha256:ff471383ae00c8226e46b7ab321f3cdf1db47395abf16ac472a646510127204f",
+        "step_digest": "sha256:e35fec9e43d83f26934d990af2aa6be57869acabb43fbc3134b5baf086e5c3d5",
+        "step_seq": "0"
+      },
+      "step": {
+        "disposition": {
+          "kind": "effects"
+        }
+      }
+    },
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "entry": {
+            "kind": "workflow",
+            "spec": {
+              "name": "brief",
+              "nodes": [
+                {
+                  "node_id": "collect",
+                  "task": {
+                    "goal": "collect the sources"
+                  }
+                },
+                {
+                  "depends_on": [
+                    "collect"
+                  ],
+                  "node_id": "write",
+                  "task": {
+                    "goal": "write the brief"
+                  }
+                }
+              ]
+            }
+          },
+          "initial_context": {},
+          "kind": "start_operation"
+        },
+        "input_id": "in-start",
+        "observed_at_ms": "1700000001000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiZW50cnkiOnsia2luZCI6IndvcmtmbG93Iiwic3BlYyI6eyJuYW1lIjoiYnJpZWYiLCJub2RlcyI6W3sibm9kZV9pZCI6ImNvbGxlY3QiLCJ0YXNrIjp7ImdvYWwiOiJjb2xsZWN0IHRoZSBzb3VyY2VzIn19LHsiZGVwZW5kc19vbiI6WyJjb2xsZWN0Il0sIm5vZGVfaWQiOiJ3cml0ZSIsInRhc2siOnsiZ29hbCI6IndyaXRlIHRoZSBicmllZiJ9fV19fSwiaW5pdGlhbF9jb250ZXh0Ijp7fSwia2luZCI6InN0YXJ0X29wZXJhdGlvbiJ9LCJpbnB1dF9pZCI6ImluLXN0YXJ0Iiwib2JzZXJ2ZWRfYXRfbXMiOiIxNzAwMDAwMDAxMDAwIiwib3BlcmF0aW9uX2lkIjoib3AtZHJpdmVyLTEifQ==",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:beccb1b21ef694816dc1eb182b5ec40d289221ed9cebb97fb387e68d74ad00c7",
+        "input_id": "in-start",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": "sha256:ff471383ae00c8226e46b7ab321f3cdf1db47395abf16ac472a646510127204f",
+        "record_digest": "sha256:3373562c5cbb2379b9c83ff175d1ee8a92091c5d6803da3eeb1df3f32ac837d6",
+        "step_digest": "sha256:5d9e20d9af4305831fbb0a00de80c33470bbe096cac0fa33119e2c58b5823406",
+        "step_seq": "1"
+      },
+      "step": {
+        "disposition": {
+          "effects": [
+            {
+              "causation_input_id": "in-start",
+              "effect": {
+                "budget": {
+                  "max_total_tokens": "1000000"
+                },
+                "kind": "spawn_tasks",
+                "tasks": [
+                  {
+                    "attempt_id": "wf-node0:attempt:1",
+                    "launch_token": "op-driver-1:step:1:launch:wf-node0",
+                    "node_id": "collect",
+                    "spec": {
+                      "goal": "collect the sources"
+                    },
+                    "task_id": "wf-node0"
+                  }
+                ]
+              },
+              "effect_id": "op-driver-1:step:1:effect:0"
+            }
+          ],
+          "kind": "effects"
+        },
+        "focus": {
+          "kind": "workflow_controller",
+          "workflow_id": "op-driver-1:workflow:1"
+        },
+        "root_kind": "workflow"
+      }
+    },
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "effect_id": "op-driver-1:step:1:effect:0",
+          "kind": "resolve_effect",
+          "outcome": {
+            "result": {
+              "attempts": [
+                {
+                  "attempt_id": "wf-node0:attempt:1",
+                  "outcome": {
+                    "status": "started"
+                  },
+                  "task_id": "wf-node0"
+                }
+              ],
+              "kind": "tasks_spawned"
+            },
+            "status": "succeeded"
+          }
+        },
+        "input_id": "in-ack",
+        "observed_at_ms": "1700000002000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiZWZmZWN0X2lkIjoib3AtZHJpdmVyLTE6c3RlcDoxOmVmZmVjdDowIiwia2luZCI6InJlc29sdmVfZWZmZWN0Iiwib3V0Y29tZSI6eyJyZXN1bHQiOnsiYXR0ZW1wdHMiOlt7ImF0dGVtcHRfaWQiOiJ3Zi1ub2RlMDphdHRlbXB0OjEiLCJvdXRjb21lIjp7InN0YXR1cyI6InN0YXJ0ZWQifSwidGFza19pZCI6IndmLW5vZGUwIn1dLCJraW5kIjoidGFza3Nfc3Bhd25lZCJ9LCJzdGF0dXMiOiJzdWNjZWVkZWQifX0sImlucHV0X2lkIjoiaW4tYWNrIiwib2JzZXJ2ZWRfYXRfbXMiOiIxNzAwMDAwMDAyMDAwIiwib3BlcmF0aW9uX2lkIjoib3AtZHJpdmVyLTEifQ==",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:41d68b7f8fdb36c2930e44501e9a665497e301cbf66f166ce740f06dd52f725d",
+        "input_id": "in-ack",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": "sha256:3373562c5cbb2379b9c83ff175d1ee8a92091c5d6803da3eeb1df3f32ac837d6",
+        "record_digest": "sha256:2375d9b921a8b58242d39673dff7c691a9641b0aac969659f64856f7a9956bca",
+        "step_digest": "sha256:dc98bacb7dee19def54f74a57bc4af561282914d6c8c5bd5ebdb038d6bf7b895",
+        "step_seq": "2"
+      },
+      "step": {
+        "disposition": {
+          "kind": "effects"
+        },
+        "focus": {
+          "kind": "workflow_controller",
+          "workflow_id": "op-driver-1:workflow:1"
+        },
+        "root_kind": "workflow"
+      }
+    },
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "event": {
+            "attempt": 1,
+            "delivery_id": "delivery-a",
+            "kind": "deliver_signal",
+            "signal": {
+              "signal_id": "sig-abort",
+              "target": {
+                "kind": "operation"
+              },
+              "urgency": "critical"
+            }
+          },
+          "kind": "deliver_external_event"
+        },
+        "input_id": "in-sig",
+        "observed_at_ms": "1700000003000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiZXZlbnQiOnsiYXR0ZW1wdCI6MSwiZGVsaXZlcnlfaWQiOiJkZWxpdmVyeS1hIiwia2luZCI6ImRlbGl2ZXJfc2lnbmFsIiwic2lnbmFsIjp7InNpZ25hbF9pZCI6InNpZy1hYm9ydCIsInRhcmdldCI6eyJraW5kIjoib3BlcmF0aW9uIn0sInVyZ2VuY3kiOiJjcml0aWNhbCJ9fSwia2luZCI6ImRlbGl2ZXJfZXh0ZXJuYWxfZXZlbnQifSwiaW5wdXRfaWQiOiJpbi1zaWciLCJvYnNlcnZlZF9hdF9tcyI6IjE3MDAwMDAwMDMwMDAiLCJvcGVyYXRpb25faWQiOiJvcC1kcml2ZXItMSJ9",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:cd4d5f90cae5470ddc409700405cf12970614e17d942cda7011fb3aaf9ca59f7",
+        "input_id": "in-sig",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": "sha256:2375d9b921a8b58242d39673dff7c691a9641b0aac969659f64856f7a9956bca",
+        "record_digest": "sha256:164b2bbb154f599022faa022364dbfd1b665e7cb36d2e35783d868312979c801",
+        "step_digest": "sha256:2ecd88c5fa7795998796493e2b300c10d5ef86663347686431766bd8ce60bece",
+        "step_seq": "3"
+      },
+      "step": {
+        "disposition": {
+          "effects": [
+            {
+              "causation_input_id": "in-sig",
+              "effect": {
+                "attempts": [
+                  {
+                    "attempt_id": "wf-node0:attempt:1",
+                    "task_id": "wf-node0"
+                  }
+                ],
+                "kind": "preempt_tasks",
+                "reason": "sig-abort"
+              },
+              "effect_id": "op-driver-1:step:3:effect:0"
+            }
+          ],
+          "kind": "effects"
+        },
+        "focus": {
+          "kind": "workflow_controller",
+          "workflow_id": "op-driver-1:workflow:1"
+        },
+        "root_kind": "workflow"
+      }
+    },
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "effect_id": "op-driver-1:step:3:effect:0",
+          "kind": "resolve_effect",
+          "outcome": {
+            "result": {
+              "attempts": [
+                {
+                  "attempt_id": "wf-node0:attempt:1",
+                  "outcome": {
+                    "status": "preempted"
+                  },
+                  "task_id": "wf-node0"
+                }
+              ],
+              "kind": "tasks_preempted"
+            },
+            "status": "succeeded"
+          }
+        },
+        "input_id": "in-preempted",
+        "observed_at_ms": "1700000004000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiZWZmZWN0X2lkIjoib3AtZHJpdmVyLTE6c3RlcDozOmVmZmVjdDowIiwia2luZCI6InJlc29sdmVfZWZmZWN0Iiwib3V0Y29tZSI6eyJyZXN1bHQiOnsiYXR0ZW1wdHMiOlt7ImF0dGVtcHRfaWQiOiJ3Zi1ub2RlMDphdHRlbXB0OjEiLCJvdXRjb21lIjp7InN0YXR1cyI6InByZWVtcHRlZCJ9LCJ0YXNrX2lkIjoid2Ytbm9kZTAifV0sImtpbmQiOiJ0YXNrc19wcmVlbXB0ZWQifSwic3RhdHVzIjoic3VjY2VlZGVkIn19LCJpbnB1dF9pZCI6ImluLXByZWVtcHRlZCIsIm9ic2VydmVkX2F0X21zIjoiMTcwMDAwMDAwNDAwMCIsIm9wZXJhdGlvbl9pZCI6Im9wLWRyaXZlci0xIn0=",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:9222177ab6c53791db6b0c87062572f75f4d7c08095b558239ada202842b2669",
+        "input_id": "in-preempted",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": "sha256:164b2bbb154f599022faa022364dbfd1b665e7cb36d2e35783d868312979c801",
+        "record_digest": "sha256:1fd418356f24fa65f50fb2e0762f9fcf60bec593e99f2ea45736a4bae05ba671",
+        "step_digest": "sha256:4c3710fd083b7e49d0122562c6c56060ee1d7242eaa63dc6abc95d082c70cb9a",
+        "step_seq": "4"
+      },
+      "step": {
+        "disposition": {
+          "effects": [
+            {
+              "causation_input_id": "in-preempted",
+              "effect": {
+                "context": {
+                  "state_turn": {
+                    "content": "[INTERRUPT] sig-abort\n\nProceed.",
+                    "role": "user"
+                  }
+                },
+                "kind": "call_provider",
+                "tools": [
+                  {
+                    "name": "start_workflow"
+                  },
+                  {
+                    "name": "submit_workflow_nodes"
+                  },
+                  {
+                    "name": "skill"
+                  },
+                  {
+                    "name": "update_plan"
+                  },
+                  {
+                    "name": "memory"
+                  },
+                  {
+                    "name": "read_result"
+                  },
+                  {
+                    "name": "search"
+                  },
+                  {
+                    "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",
+                    "name": "skill",
+                    "parameters": {
+                      "properties": {
+                        "name": {
+                          "description": "The name of the skill to load.",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name"
+                      ],
+                      "type": "object"
+                    }
+                  }
+                ]
+              },
+              "effect_id": "op-driver-1:step:4:effect:0"
+            }
+          ],
+          "kind": "effects"
+        },
+        "focus": {
+          "kind": "workflow_controller",
+          "workflow_id": "op-driver-1:workflow:1"
+        },
+        "root_kind": "workflow"
+      }
+    },
+    {
+      "envelope": {
+        "abi_version": 3,
+        "input": {
+          "command": {
+            "kind": "cancel",
+            "reason": "user"
+          },
+          "kind": "host_control"
+        },
+        "input_id": "in-cancel",
+        "observed_at_ms": "1700000005000",
+        "operation_id": "op-driver-1"
+      },
+      "record": {
+        "abi_version": 3,
+        "canonical_input": {
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiY29tbWFuZCI6eyJraW5kIjoiY2FuY2VsIiwicmVhc29uIjoidXNlciJ9LCJraW5kIjoiaG9zdF9jb250cm9sIn0sImlucHV0X2lkIjoiaW4tY2FuY2VsIiwib2JzZXJ2ZWRfYXRfbXMiOiIxNzAwMDAwMDA1MDAwIiwib3BlcmF0aW9uX2lkIjoib3AtZHJpdmVyLTEifQ==",
+          "encoding": "base64"
+        },
+        "input_digest": "sha256:60cfefbc4075a3a5c5cc6dc8c930d9ca335e33f13d36c14c38a2072eee3c9c79",
+        "input_id": "in-cancel",
+        "operation_id": "op-driver-1",
+        "previous_record_digest": "sha256:1fd418356f24fa65f50fb2e0762f9fcf60bec593e99f2ea45736a4bae05ba671",
+        "record_digest": "sha256:6f774bf0a6a89df23fc609fea2eed032a1700a12a065f8e64669c6fc1cd200a2",
+        "step_digest": "sha256:7e8194943371c81aaa02cbefbb4269c15d5f11f3667b491a86175a56839e98fb",
+        "step_seq": "5"
+      },
+      "step": {
+        "disposition": {
+          "kind": "terminal",
+          "terminal": {
+            "kind": "cancelled",
+            "reason": "user",
+            "usage": {
+              "input_tokens": "0",
+              "output_tokens": "0",
+              "turns": 0
+            }
+          }
+        },
+        "focus": {
+          "kind": "workflow_controller",
+          "workflow_id": "op-driver-1:workflow:1"
+        },
+        "root_kind": "workflow"
+      }
+    }
+  ]
+}

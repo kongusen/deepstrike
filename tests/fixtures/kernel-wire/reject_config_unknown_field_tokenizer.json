@@ -1,0 +1,14 @@
+{
+  "expect": "unknown_field",
+  "note": "§7.2.1 · SetTokenizer is deleted dead ABI; the field has no home in the canonical config",
+  "envelope": {
+    "abi_version": 3,
+    "operation_id": "op-2026-07-29-0001",
+    "input_id": "cfg-reject-2",
+    "observed_at_ms": "1753747200000",
+    "input": {
+      "kind": "configure_operation",
+      "config": { "tokenizer": "cl100k_base", "host_effect_support": { "supported": ["call_provider"] } }
+    }
+  }
+}

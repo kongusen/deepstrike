@@ -1,0 +1,28 @@
+{
+  "id": "removed-direct-step",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：绕过持久日志的直接步进路径",
+  "semantics": "v1 遗留的直接步进允许外部动作在持久提交之前逃逸到宿主。生产转移只保留一条协议：准备 → 日志比较并追加 → 提交；只有已提交的计划步才能发布动作、审计事实与终态。基准测试与单元测试使用内存日志走同一条协议。内核可以保留私有转移原语，但它不得成为第二套生命周期与重放实现。随之删除的还有直接步进专用的进程内共享身份（固定操作标识加进程级计数器），它既无按操作的身份也无持久门。",
+  "given": [
+    "一个已配置并启动的操作"
+  ],
+  "when": [
+    "宿主试图在没有持久记录的情况下直接推进一步并取走动作"
+  ],
+  "then": [
+    "该入口在绑定层不再存在",
+    "未持久提交的一步不得发布任何外部动作、审计事实或终态",
+    "内存实现必须走与生产完全相同的协议",
+    "不再存在多个操作共享同一个固定身份的路径"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §8.4「Direct step」与 §14.3「删除 direct production step」",
+      "spec §25 第 14 条",
+      "spec §3.3 第 11 条：Python/WASM/Rust 生产路径全部直接步进（python/deepstrike/runtime/kernel_step.py:400-406、wasm/src/runtime/kernel-step.ts:517-555、rust/src/runtime/runner.rs:307）",
+      "canonical-kernel-abi-capability-inventory.md §5.1：KernelInput::new / LOCAL_OPERATION_ID（crates/deepstrike-core/src/runtime/kernel/protocol.rs:94-114）"
+    ]
+  },
+  "target": "§8.4"
+}

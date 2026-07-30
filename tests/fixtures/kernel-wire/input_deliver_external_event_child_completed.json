@@ -1,0 +1,52 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0002",
+  "input_id": "caller-supplied-idempotency-key-7",
+  "observed_at_ms": "1753747206000",
+  "input": {
+    "kind": "deliver_external_event",
+    "event": {
+      "kind": "child_completed",
+      "task_id": "task-gather",
+      "attempt_id": "task-gather:attempt:1",
+      "result": {
+        "status": "completed",
+        "output": "Collected 7 candidate sources.",
+        "usage": {
+          "input_tokens": "18344",
+          "output_tokens": "902",
+          "turns": 4
+        },
+        "score": 0.82
+      },
+      "parent_requests": [
+        {
+          "kind": "append_workflow_nodes",
+          "nodes": [
+            {
+              "node_id": "verify",
+              "task": {
+                "goal": "Verify the collected sources"
+              },
+              "depends_on": [
+                "gather"
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "request_memory_write",
+          "proposal": {
+            "name": "source-shortlist",
+            "kind": "project",
+            "content": "Shortlist of seven candidate sources.",
+            "description": "Working set for this week's brief",
+            "evidence_refs": [
+              "task-gather:attempt:1"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

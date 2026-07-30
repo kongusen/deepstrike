@@ -10,7 +10,7 @@ use deepstrike_core::context::policy::{ContextPolicyV1, PPM_SCALE};
 use deepstrike_core::runtime::kernel::RunConfig;
 use deepstrike_core::runtime::{
     KERNEL_ABI_VERSION, KernelAction, KernelEffect, KernelInput, KernelInputEvent,
-    KernelObservation, KernelRuntime, KernelSnapshotPolicy, KernelSnapshot, KernelStep,
+    KernelObservation, KernelRuntime, KernelSnapshot, KernelSnapshotPolicy, KernelStep,
 };
 use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::types::message::{Content, ContentPart, Message, Role};

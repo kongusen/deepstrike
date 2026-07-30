@@ -18,7 +18,7 @@ sub-agent spawns and drives it to completion — orchestration as data, not as h
 
 | Mechanism | Where it shows up |
 |---|---|
-| **Workflow DAG** | `WorkflowSpec = { nodes: [...] }`; `runner.runWorkflow(spec)` returns `{ completed, failed, outputs }` (outputs keyed by node id `wf-node{N}`). |
+| **Workflow DAG** | `WorkflowSpec = { nodes: [...] }`; `runner.runWorkflow(spec)` returns `{ nodeOutcomes, outputs, rejection? }`. Each node outcome has `nodeId`, `status`, `termination?`, and `output?`; text outputs are also keyed by `wf-node{N}` in `outputs`. |
 | **Sub-agent spawn + trust** | Each spawn node runs a child agent. A **trusted** node inherits the parent's execution plane (so it has `search`/`read_source`); a `trust: "quarantined"` node runs deny-all — untrusted content can't touch tools. |
 | **Structured output** | `outputSchema` (a JSON-Schema subset) is carried to the spawn; the runner instructs the agent to emit conforming JSON and **validates + retries once** on mismatch. All four LLM nodes here are schema-typed. |
 | **Reducer (host-compute)** | Node 2 has `reducer: "concat"` and runs **no LLM** — the runner routes it to a named pure function over its `dependsOn` outputs. Built-ins: `concat`, `dedupe_lines`, `merge_json_arrays`; add your own via the `reducers` option. |

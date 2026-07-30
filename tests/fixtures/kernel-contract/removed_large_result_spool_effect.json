@@ -1,0 +1,28 @@
+{
+  "id": "removed-large-result-spool-effect",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：大结果外置动作（正文双向穿越内核、两次进日志）",
+  "semantics": "现状大工具结果先整份送进内核，内核生成预览后把整份正文再送回宿主落盘，宿主最后回灌一个引用——同一份正文两次进入持久日志（一次作为已接受输入，一次作为动作）。删除该动作、它的结果输入与两条相关审计事实。目标反转数据流：宿主先落盘，只提交引用、摘要、原始大小与预览；内核只保存句柄、引用与预览，并区分「生成即超限」与「压力归档」两种驻留形态。",
+  "given": [
+    "一个会产生超过阈值的大工具结果的操作"
+  ],
+  "when": [
+    "宿主提交该工具结果"
+  ],
+  "then": [
+    "大正文不再穿过内核，也不进入持久日志或检查点",
+    "宿主先持久化正文，再提交引用、摘要、大小与预览",
+    "内核校验摘要形状、大小、预览与阈值后只保存句柄与引用",
+    "外置动作及其结果输入与相关审计事实一并删除"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.10 规则 6 与现状注记、§14.3、§25 第 10/14 条",
+      "spec §3.3 第 13 条",
+      "crates/deepstrike-core/src/runtime/kernel/protocol.rs:967（SpoolLargeResult）与 crates/deepstrike-core/src/scheduler/state_machine/mod.rs:1162-1195",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::large_result_spool_is_a_correlated_effect_before_provider_continues（现状行为）"
+    ]
+  },
+  "target": "§7.10"
+}

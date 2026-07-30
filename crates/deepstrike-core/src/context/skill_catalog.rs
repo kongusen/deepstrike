@@ -47,6 +47,13 @@ impl SkillCatalog {
         self.available.len()
     }
 
+    /// Whether this operation declared a skill by this name. Spec §7.6: activating a skill the
+    /// operation never declared is a capability mutation with nothing behind it, so the canonical
+    /// driver refuses it rather than recording an activation for a skill no one can load.
+    pub fn is_available(&self, name: &str) -> bool {
+        self.available.contains_key(name)
+    }
+
     /// P1-B tool gating: the tool ids the named skill declares it needs. Empty when the skill is
     /// unknown or declares none (⇒ that skill does not narrow the toolset). The kernel unions these
     /// across the active-skill set in `emit_call_llm`.

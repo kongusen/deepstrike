@@ -1182,10 +1182,15 @@ pub enum KernelObservation {
         threshold: f64,
     },
     /// Kernel process table changed for a spawned sub-agent.
+    ///
+    /// § Task 11 · lineage is the logical parent **task** id. The kernel does not know, and never
+    /// echoes, which host session a child belongs to: mapping child task → child session is the
+    /// host's (§5.2), and a host projection is free to keep restating its own session on the
+    /// SessionLog event it derives from this observation.
     AgentProcessChanged {
         turn: u32,
         agent_id: String,
-        parent_session_id: String,
+        parent_task_id: String,
         role: String,
         isolation: String,
         context_inheritance: String,
@@ -1308,6 +1313,19 @@ pub enum KernelObservation {
         subagents: u32,
         rounds: u32,
     },
+    /// §13.2 / DEC-6 · a revision-guarded live policy patch was applied.
+    ///
+    /// A fact, not a command: the new policy is already installed when this is emitted, and the
+    /// host is asked for nothing. `revision` is the counter *after* the patch — the value the next
+    /// writer must present as its `expected_revision`, which is what makes a refused patch
+    /// rebaseable instead of a silent overwrite.
+    LivePolicyChanged {
+        turn: u32,
+        /// Which of the four §13.2 policies changed (`signal` / `governance` / `resource_quota` /
+        /// `recovery`).
+        policy: String,
+        revision: u64,
+    },
     /// A host cancellation was committed. Emitted exactly once by the accepted cancellation step.
     OperationCancelled {
         turn: u32,
@@ -1413,6 +1431,31 @@ pub enum KernelObservation {
         action: KernelPressureAction,
         tier: String,
         message_count: u32,
+        error: String,
+    },
+    /// §7.10 / §25.9 · a P3 handle's payload residency moved.
+    ///
+    /// The handle table is the kernel's only fact about where a body lives, so every transfer is a
+    /// committed fact — including the first one, where an external result was never resident at
+    /// all (`from` is then absent, because the kernel minted the handle for this very transfer).
+    /// `payload_ref` is the opaque host locator while the body is outside core, and absent once it
+    /// has come home.
+    PayloadResidencyChanged {
+        turn: u32,
+        handle_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        to: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload_ref: Option<String>,
+        original_size: u64,
+    },
+    /// §7.10 · a page-in the host could not satisfy. DEC-5: one decision, taken once — the read is
+    /// abandoned and the loop continues, because a body the host cannot produce is a degraded read,
+    /// not an unsound operation.
+    PayloadLoadFailed {
+        turn: u32,
+        handle_id: String,
         error: String,
     },
 }

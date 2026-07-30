@@ -250,6 +250,44 @@ pub(super) enum GateToolOutcome {
     ApprovalRequired(Vec<ApprovalRequest>),
 }
 
+/// One P1 syscall the kernel adjudicated itself, and the answer the model reads for it.
+///
+/// A syscall call is never dispatched to a host, but it *is* a tool call the model made, so it
+/// still gets a tool result — the v0.2.42 rule that the model-facing surface stays a training-set
+/// convention. `is_error` is what distinguishes "the kernel did it" from "the kernel refused".
+#[derive(Debug, Clone)]
+pub struct AnsweredCall {
+    pub call_id: CompactString,
+    pub output: String,
+    pub is_error: bool,
+}
+
+/// What a provider turn does when the kernel's own adjudication left nothing for a host to run.
+///
+/// Spec adjudication §5k: a batch of pure control-plane calls (`skill`, `update_plan`) publishes no
+/// effect, so without this the operation would have nothing outstanding and stall.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum IdleContinuation {
+    /// §5k · nothing is outstanding, so the kernel continues the turn the only way a turn
+    /// continues: it calls the provider again.
+    #[default]
+    CallProvider,
+    /// The adjudication already published kernel-owned work (a memory effect, a spawn round). The
+    /// turn resumes when that work resolves; issuing a provider call now would race it.
+    Await,
+}
+
+/// What the canonical driver adjudicated *before* the provider turn it is about to feed (§7.6).
+///
+/// Staged rather than passed as an argument so `feed(LLMResponse)` stays the single place that
+/// decides what a provider turn means. Legacy callers never stage one and see the historical
+/// behaviour byte for byte.
+#[derive(Debug, Clone, Default)]
+pub struct AdjudicatedTurn {
+    pub answered_calls: Vec<AnsweredCall>,
+    pub idle_continuation: IdleContinuation,
+}
+
 /// Outcome of the P1 fail-closed exposure gate: the calls that survived, or the committed action
 /// when every call in the batch was denied.
 pub(super) enum ExposureGateOutcome {
@@ -303,10 +341,16 @@ pub struct LoopStateMachine {
     pub(super) output_recovery_attempts: u8,
     pub(crate) output_recovery_attempt_limit: u8,
     pub(crate) host_effect_retry_attempt_limit: u8,
-    /// Transient carrier for the provider `stop_reason` of the in-flight response, set by the
-    /// kernel ABI just before `feed(LLMResponse)` and taken (cleared) inside it. `None` when the
-    /// SDK/provider doesn't report one (every non-Anthropic provider today ⇒ no-op).
-    pub(super) pending_stop_reason: Option<String>,
+    /// Whether the in-flight response was cut off at the provider's output cap. Set just before
+    /// `feed(LLMResponse)` and taken (cleared) inside it.
+    ///
+    /// A **classified** fact, never vendor text (§22.8): the legacy wire's free-form `stop_reason`
+    /// is classified at the boundary in [`Self::set_pending_stop_reason`], the canonical wire's
+    /// typed `ProviderStopReason` in [`Self::set_output_truncated`]. The loop itself reads neither.
+    pub(super) pending_output_truncated: bool,
+    /// §7.6 · what the canonical driver adjudicated for the provider turn about to be fed. Consumed
+    /// (and cleared) inside `feed(LLMResponse)`; `None` for every legacy caller.
+    pub(super) adjudicated_turn: Option<AdjudicatedTurn>,
     /// Number of history messages present at session start (after preload_history).
     /// drain_new_messages() returns the slice from this offset onward.
     pub(super) session_history_baseline: usize,
@@ -363,6 +407,23 @@ pub struct LoopStateMachine {
     /// gated batches (each through `evaluate_syscall(Syscall::Spawn)`) and advances on
     /// completions. `None` (default) preserves the single-spawn `spawn_sub_agent` behavior.
     pub(super) workflow: Option<crate::orchestration::workflow::WorkflowRun>,
+    /// Whether the in-flight workflow **is** this operation's root (spec §6.1 invariant 7).
+    ///
+    /// Immutable for the lifetime of a run: it mirrors the canonical `RootKind`, which no committed
+    /// transition may change. `false` (the default, and every legacy caller) keeps the historical
+    /// behaviour — a workflow nested inside an agent loop, whose completion resumes the parent
+    /// agent with another provider call. `true` makes that completion the operation's terminal
+    /// instead, which is what deletes the host-side `CompleteRun` race (§10.1 现状注记).
+    pub(super) root_workflow: bool,
+    /// Spec §10.4 / §15.3 · whether a spawned child waits for the host's launch acknowledgement
+    /// before it counts as `Running`.
+    ///
+    /// `false` (the default, and every legacy caller) keeps the historical behaviour: `Tcb::spawned`
+    /// seeds `Running` at insert time, *before* the spawn effect is even published. `true` — set by
+    /// the canonical driver — runs the real arc: `PendingLaunch` when the kernel mints identity,
+    /// `Starting` when the launch effect is published, `Running` only once `TasksSpawned` names the
+    /// task as started.
+    pub(super) ack_gated_launch: bool,
     /// Workflow batch reserved by the kernel and awaiting the host's correlated
     /// spawn result. This is intent, not an observed external fact.
     pub(super) pending_workflow_spawn: Option<PendingWorkflowSpawn>,
@@ -438,7 +499,8 @@ impl LoopStateMachine {
             output_recovery_attempts: 0,
             output_recovery_attempt_limit: 3,
             host_effect_retry_attempt_limit: 3,
-            pending_stop_reason: None,
+            pending_output_truncated: false,
+            adjudicated_turn: None,
             session_history_baseline: 0,
             checkpoint: TurnCheckpoint::default(),
             milestone: MilestoneTracker::new(),
@@ -457,6 +519,8 @@ impl LoopStateMachine {
             suspend_state: None,
             pending_denied_results: Vec::new(),
             workflow: None,
+            root_workflow: false,
+            ack_gated_launch: false,
             pending_workflow_spawn: None,
             pending_preempt: None,
             pending_host_effects: VecDeque::new(),
@@ -478,6 +542,69 @@ impl LoopStateMachine {
         self.criteria_gate_enabled = enabled;
     }
 
+    /// Declare that the workflow this machine runs **is** the operation's root (spec §6.1.7).
+    ///
+    /// Set once, before the DAG is installed, and never unset — it mirrors the immutable
+    /// `RootKind`. Its only consumer is `finish_workflow`, which terminates instead of calling the
+    /// provider again. A nested (agent-authored) workflow leaves it `false`.
+    pub fn set_root_workflow(&mut self, is_root: bool) {
+        self.root_workflow = is_root;
+    }
+
+    /// Whether the in-flight workflow is this operation's root.
+    pub fn is_root_workflow(&self) -> bool {
+        self.root_workflow
+    }
+
+    /// §10.4 · make a spawned child wait for the host's launch acknowledgement before it is
+    /// `Running`. Set once by the canonical driver; every legacy caller leaves it `false` and keeps
+    /// the historical insert-as-`Running` behaviour.
+    pub fn set_ack_gated_launch(&mut self, gated: bool) {
+        self.ack_gated_launch = gated;
+    }
+
+    /// The schedulability state of one task, for host projections and tests.
+    pub fn task_lifecycle(&self, task_id: &str) -> Option<TaskLifecycle> {
+        self.tasks.get(task_id).map(|task| task.state)
+    }
+
+    /// §10.4 · the launch effect for these tasks has been published. Moves each of them from
+    /// `PendingLaunch` to `Starting`; a no-op when the run is not ack-gated, and never a downgrade
+    /// of a task that already advanced.
+    pub fn mark_tasks_starting(&mut self, task_ids: &[String]) {
+        if !self.ack_gated_launch {
+            return;
+        }
+        for id in task_ids {
+            if let Some(task) = self.tasks.get_mut(id)
+                && task.state == TaskLifecycle::PendingLaunch
+            {
+                task.state = TaskLifecycle::Starting;
+            }
+        }
+    }
+
+    /// §7.6 · whether the named workflow node ran under quarantine (it read untrusted content).
+    /// A quarantined caller may not use a P1 syscall to widen its own authority, so the canonical
+    /// driver consults this before it admits a workflow / memory / capability request.
+    /// Errs closed only in the sense that an unknown id is *not* quarantined — an id the kernel
+    /// never issued is refused earlier, by causation derivation.
+    pub fn task_quarantined(&self, task_id: &str) -> bool {
+        self.workflow
+            .as_ref()
+            .is_some_and(|run| run.is_agent_quarantined(task_id))
+    }
+
+    /// Test instrument for the §7.6 quarantine refusal. The canonical wire `WorkflowNode` carries
+    /// no trust level yet (SPEC-ISSUE in the canonical driver), so a test cannot declare a
+    /// quarantined node through the contract the driver reads.
+    #[cfg(test)]
+    pub(crate) fn quarantine_task_for_test(&mut self, task_id: &str) -> bool {
+        self.workflow
+            .as_mut()
+            .is_some_and(|run| run.quarantine_agent(task_id))
+    }
+
     /// P1: select the dispatch gate. `true` (kernel default) = fail-closed against the toolset this
     /// run actually exposed; `false` = the permissive `"registered"` escape hatch.
     pub fn set_dispatch_gate_exposed(&mut self, exposed: bool) {
@@ -492,6 +619,17 @@ impl LoopStateMachine {
         if let Some(workflow) = self.workflow.as_mut() {
             workflow.set_scheduler_policy(policy);
         }
+    }
+
+    /// Install the two semantic recovery ladders the kernel owns (§13.2 `ReplaceRecoveryPolicy`).
+    ///
+    /// Separate from [`Self::set_reliability_config`] because that one is the legacy bundle: it
+    /// also carries host transport retry and spool thresholds, which the canonical contract splits
+    /// across other policies. Both ladders are always stated here — a resolved policy has no
+    /// "unset" — so a patch can lower *and* raise within the validated ceiling.
+    pub fn set_recovery_limits(&mut self, provider_attempts: u8, output_attempts: u8) {
+        self.provider_recovery_attempt_limit = provider_attempts;
+        self.output_recovery_attempt_limit = output_attempts;
     }
 
     pub(crate) fn set_reliability_config(
@@ -618,6 +756,27 @@ impl LoopStateMachine {
         archive_ref: Option<String>,
         error: Option<String>,
     ) -> LoopAction {
+        let Some(error) = error else {
+            return self.commit_page_out_archive(archive_ref);
+        };
+        // Legacy wire only: reissue the same intent as a fresh effect, bounded by the retry limit.
+        // DEC-5 deletes this ladder on the canonical wire — see `abandon_page_out_archive`.
+        self.push_page_out_archive_failure(error);
+        self.active_host_effect_failures = self.active_host_effect_failures.saturating_add(1);
+        if self.active_host_effect_failures > self.host_effect_retry_attempt_limit {
+            self.active_host_effect = None;
+            self.pending_host_effects.clear();
+            self.deferred_action = None;
+            return self.terminate(TerminationReason::Error, None);
+        }
+        self.active_host_effect
+            .as_ref()
+            .expect("page-out failure requires an active host effect")
+            .action()
+    }
+
+    /// Commit the archive the host performed and release the continuation it was holding.
+    pub(crate) fn commit_page_out_archive(&mut self, archive_ref: Option<String>) -> LoopAction {
         let pending = self
             .active_host_effect
             .as_ref()
@@ -632,24 +791,6 @@ impl LoopStateMachine {
         else {
             panic!("page-out result does not match active spool effect");
         };
-        if let Some(error) = error {
-            self.observations
-                .push(KernelObservation::PageOutArchiveFailed {
-                    turn: *turn,
-                    action: *action,
-                    tier: tier.clone(),
-                    message_count: archived.len() as u32,
-                    error,
-                });
-            self.active_host_effect_failures = self.active_host_effect_failures.saturating_add(1);
-            if self.active_host_effect_failures > self.host_effect_retry_attempt_limit {
-                self.active_host_effect = None;
-                self.pending_host_effects.clear();
-                self.deferred_action = None;
-                return self.terminate(TerminationReason::Error, None);
-            }
-            return pending.action();
-        }
         self.observations.push(KernelObservation::PageOutArchived {
             turn: *turn,
             action: *action,
@@ -661,6 +802,45 @@ impl LoopStateMachine {
         self.active_host_effect = None;
         self.active_host_effect_failures = 0;
         self.next_after_host_effect()
+    }
+
+    /// DEC-5 · the canonical decision for an archive the host could not perform: **abandon it**.
+    ///
+    /// The compaction it belongs to already happened in this kernel — the summary is in context and
+    /// the evicted bodies are gone either way — so the run stays live and degraded rather than
+    /// dying on a best-effort durability effect. The failure is a typed, replayable audit fact and
+    /// the kernel never re-emits the same archive; a host that wants another attempt asks again
+    /// with a new causation.
+    pub(crate) fn abandon_page_out_archive(&mut self, error: String) -> LoopAction {
+        self.push_page_out_archive_failure(error);
+        self.active_host_effect = None;
+        self.active_host_effect_failures = 0;
+        self.next_after_host_effect()
+    }
+
+    fn push_page_out_archive_failure(&mut self, error: String) {
+        let pending = self
+            .active_host_effect
+            .as_ref()
+            .expect("page-out failure requires an active host effect");
+        let PendingHostEffect::ArchivePageOut {
+            turn,
+            action,
+            archived,
+            tier,
+            ..
+        } = pending
+        else {
+            panic!("page-out failure does not match active spool effect");
+        };
+        self.observations
+            .push(KernelObservation::PageOutArchiveFailed {
+                turn: *turn,
+                action: *action,
+                tier: tier.clone(),
+                message_count: archived.len() as u32,
+                error,
+            });
     }
 
     /// O6: tune or disable the repeat fuse (see [`RepeatFuseConfig`]).
@@ -707,6 +887,16 @@ impl LoopStateMachine {
         matches!(self.lifecycle(), TaskLifecycle::Suspended)
     }
 
+    /// §7.9 · the operation ended because a host executor failed on an effect the loop cannot do
+    /// without. Closes the loop so a later input finds a terminated kernel rather than one that
+    /// still believes it is running.
+    ///
+    /// Deliberately produces no `LoopResult`: the terminal belongs to the canonical driver, and a
+    /// second one minted here would give the same event two representations (§7.12).
+    pub fn close_for_host_effect_failure(&mut self) {
+        self.set_lifecycle(TaskLifecycle::Done(TerminationReason::Error), None);
+    }
+
     /// Set the root task's lifecycle (and wait reason). Single mutation point for schedulability.
     fn set_lifecycle(&mut self, state: TaskLifecycle, wait: Option<WaitReason>) {
         if let Some(root) = self.tasks.get_mut("root") {
@@ -738,6 +928,50 @@ impl LoopStateMachine {
     /// Adjust the wall-clock budget axis at runtime.
     pub fn set_wall_budget(&mut self, max_wall_ms: Option<u64>) {
         self.policy.max_wall_ms = max_wall_ms;
+    }
+
+    /// The wall-clock budget axis as it currently stands — the value an `UpdateDeadline` command
+    /// last projected onto it. Read by the §12.1 checkpoint projection, because a deadline that a
+    /// restore forgot would silently un-bound the run.
+    pub fn wall_budget(&self) -> Option<u64> {
+        self.policy.max_wall_ms
+    }
+
+    // ----- §12.2 · restore -----
+    //
+    // Narrow, one-fact-each setters, not a "load this snapshot" door. Each one writes back exactly
+    // one value the §12.1 projection reads, so "what a checkpoint restores" is decided by the DTO
+    // and enforced by the restore's own digest re-check — never by whatever this struct happens to
+    // hold. Anything not reachable through these is, by construction, state the checkpoint declares
+    // rebuildable (the loop phase, the exposed toolset, the frozen-prefix marker).
+
+    /// Reinstall the counters the budget axes are evaluated against.
+    pub fn restore_budget_usage(&mut self, total_tokens: u64, rounds_completed: u32) {
+        self.total_tokens = total_tokens;
+        self.local_rounds_completed = rounds_completed;
+    }
+
+    /// Reinstall the anchor the wall-clock axis measures from.
+    pub fn restore_started_at_ms(&mut self, started_at_ms: Option<u64>) {
+        self.started_at_ms = started_at_ms;
+    }
+
+    /// The task table, for a restore to repopulate. `insert` is idempotent per task id, so a
+    /// restore that runs twice produces one table, not two.
+    pub fn task_table_mut(&mut self) -> &mut TaskTable {
+        &mut self.tasks
+    }
+
+    /// Reinstall the rolling memory-write window the syscall gate rate-limits against.
+    pub fn restore_memory_write_window(&mut self, window: Vec<u64>) {
+        self.memory_write_times = window;
+    }
+
+    /// The accepted time this operation started measuring wall-clock budget from, if any input has
+    /// carried a clock yet. The wall axis is a *duration* from here, so an absolute deadline is
+    /// projected onto it as `deadline − start`.
+    pub fn started_at_ms(&self) -> Option<u64> {
+        self.started_at_ms
     }
 
     /// Install a governance pipeline. Once set, all model-proposed tool calls
@@ -789,6 +1023,34 @@ impl LoopStateMachine {
         self.memory_policy.as_ref()
     }
 
+    /// Timestamps of the recent allowed memory writes — the rolling window the syscall-gate rate
+    /// limit is evaluated against.
+    ///
+    /// Read by the §12.1 checkpoint projection: the window is a gate *input*, so a checkpoint that
+    /// dropped it would hand the restored run a fresh quota.
+    pub fn memory_write_window(&self) -> &[u64] {
+        &self.memory_write_times
+    }
+
+    /// §11.2 · ingest the **accepted envelope time** of the input being planned.
+    ///
+    /// The canonical driver calls this once per transition, before any semantic call, so that
+    /// every clock-dependent decision this step makes — signal TTL and deadline escalation, the
+    /// governance rate-limit window, the wall-time budget axis, idle time-decay — reads the one
+    /// host clock fact the journal already holds. The kernel itself never reads a system clock.
+    ///
+    /// Beyond [`Self::set_observed_time`] it anchors context *activity* at the first accepted
+    /// time. Without the anchor, `last_activity_ms` starts at 0 while the accepted clock is an
+    /// epoch value, so the very first turn would look idle for ~55 years and trip time-decay
+    /// compaction on an empty context.
+    pub fn observe_accepted_time(&mut self, now_ms: u64) {
+        let first = self.started_at_ms.is_none();
+        self.set_observed_time(now_ms);
+        if first {
+            self.ctx.record_activity(now_ms);
+        }
+    }
+
     /// Feed the current wall-clock time (ms) to scheduler/governance budget axes.
     pub fn set_observed_time(&mut self, now_ms: u64) {
         if self.started_at_ms.is_none() {
@@ -800,10 +1062,49 @@ impl LoopStateMachine {
         }
     }
 
-    /// Stash the in-flight response's provider `stop_reason` so `feed(LLMResponse)` can detect an
-    /// output-cap truncation. Set by the kernel ABI right before feeding the result; `None` clears it.
+    /// Legacy wire: classify the vendor's own `stop_reason` label into the one fact the loop uses.
+    ///
+    /// The classification lives here, at the boundary, and nowhere else — §22.8 forbids core from
+    /// branching on vendor text, and this is the single point where that text is read.
     pub fn set_pending_stop_reason(&mut self, stop_reason: Option<String>) {
-        self.pending_stop_reason = stop_reason;
+        self.set_output_truncated(matches!(
+            stop_reason.as_deref(),
+            Some("max_tokens") | Some("length")
+        ));
+    }
+
+    /// Canonical wire: the provider's typed stop reason already says whether the response was cut
+    /// off at the output cap, so no string is read at all.
+    pub fn set_output_truncated(&mut self, truncated: bool) {
+        self.pending_output_truncated = truncated;
+    }
+
+    /// §7.6 · stage the canonical driver's adjudication of the provider turn about to be fed.
+    pub fn stage_adjudicated_turn(&mut self, adjudicated: AdjudicatedTurn) {
+        self.adjudicated_turn = Some(adjudicated);
+    }
+
+    /// The agent ids of the spawn batch the kernel published and is still waiting on. Empty when no
+    /// launch is outstanding. A batch-level launch failure is charged against exactly this set.
+    pub fn pending_spawn_agent_ids(&self) -> Vec<String> {
+        self.pending_workflow_spawn
+            .as_ref()
+            .map(|pending| {
+                pending
+                    .nodes
+                    .iter()
+                    .map(|node| node.agent_id.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The tool calls this turn dispatched and is still waiting on. Empty outside an `Act` phase.
+    pub fn dispatched_tool_calls(&self) -> Vec<ToolCall> {
+        match &self.phase {
+            LoopPhase::Act { tool_calls } => tool_calls.clone(),
+            LoopPhase::Reason => Vec::new(),
+        }
     }
 
     /// Pre-populate the history partition with messages from a prior session.
@@ -946,6 +1247,9 @@ impl LoopStateMachine {
 
         match event {
             LoopEvent::LLMResponse { message } => {
+                // §7.6 · taken unconditionally, so a staged adjudication can never survive into a
+                // later turn — a turn with no tool calls at all simply has nothing to apply it to.
+                let adjudicated = self.adjudicated_turn.take().unwrap_or_default();
                 let delivered = self
                     .delivered_signals_len
                     .min(self.ctx.partitions.signals.len());
@@ -965,10 +1269,7 @@ impl LoopStateMachine {
                 // cap reports stop_reason = max_tokens (Anthropic) / length (OpenAI). A clean finish
                 // resets the ladder.
                 const OUTPUT_TRUNCATION_NUDGE: &str = "Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.";
-                let truncated = matches!(
-                    self.pending_stop_reason.take().as_deref(),
-                    Some("max_tokens") | Some("length"),
-                );
+                let truncated = std::mem::take(&mut self.pending_output_truncated);
                 if !truncated {
                     self.output_recovery_attempts = 0;
                 }
@@ -1053,6 +1354,42 @@ impl LoopStateMachine {
                     self.ctx.record_activity(now_ms);
                 }
 
+                // §7.6 · the P1 syscalls in this batch were already adjudicated by the canonical
+                // driver. The assistant message keeps every call the model made — it must see the
+                // turn it emitted — but a syscall is never dispatched: it is closed here with the
+                // kernel's own answer, before the fuse/gate, which meter host work only.
+                let calls = if adjudicated.answered_calls.is_empty() {
+                    calls
+                } else {
+                    let answered: HashSet<CompactString> = adjudicated
+                        .answered_calls
+                        .iter()
+                        .map(|answer| answer.call_id.clone())
+                        .collect();
+                    for answer in &adjudicated.answered_calls {
+                        self.push_synthetic_tool_result(
+                            &answer.call_id,
+                            &answer.output,
+                            answer.is_error,
+                        );
+                    }
+                    calls
+                        .into_iter()
+                        .filter(|call| !answered.contains(&call.id))
+                        .collect()
+                };
+                if calls.is_empty() {
+                    // §5k · a syscall-only batch leaves nothing for a host to execute. Either the
+                    // adjudication already published kernel-owned work — and the turn resumes when
+                    // that resolves — or the turn continues the only way a turn can continue: the
+                    // kernel calls the provider again, itself, in this same committed step.
+                    self.phase = LoopPhase::Reason;
+                    return match adjudicated.idle_continuation {
+                        IdleContinuation::CallProvider => self.emit_call_llm(),
+                        IdleContinuation::Await => LoopAction::AwaitingResume,
+                    };
+                }
+
                 // ③ pacing trap: a `pace` call is a kernel-adjudicated round-end proposal,
                 // never an SDK tool. Handled before the fuse/gate — it is a control verb,
                 // not task work.
@@ -1072,6 +1409,7 @@ impl LoopStateMachine {
                             self.push_synthetic_tool_result(
                                 &sibling.id,
                                 "not executed: superseded by pace — the round is ending",
+                                false,
                             );
                         }
                         return self.handle_pace_call(call);
@@ -1440,6 +1778,7 @@ impl LoopStateMachine {
                 self.push_synthetic_tool_result(
                     &call.id,
                     "pace rejected: next must be continue|sleep|stop",
+                    false,
                 );
                 self.ctx.push_signal(note);
                 self.phase = LoopPhase::Reason;
@@ -1476,6 +1815,7 @@ impl LoopStateMachine {
             self.push_synthetic_tool_result(
                 &call.id,
                 "pace(stop) noted — verify the acceptance criteria first, then pace again.",
+                false,
             );
             self.ctx.push_signal(format!(
                 "[CRITERIA CHECK] You proposed stopping the loop. Verify each acceptance \
@@ -1532,6 +1872,7 @@ impl LoopStateMachine {
                     .map(|d| format!(" {d}ms"))
                     .unwrap_or_default()
             ),
+            false,
         );
         self.pending_pace = Some(decision);
         self.pending_termination = Some(TerminationReason::Completed);
@@ -1541,11 +1882,11 @@ impl LoopStateMachine {
 
     /// Close a kernel-handled tool call's transcript pair with a synthetic result so
     /// providers always see call → result.
-    fn push_synthetic_tool_result(&mut self, call_id: &str, output: &str) {
+    fn push_synthetic_tool_result(&mut self, call_id: &str, output: &str, is_error: bool) {
         let msg = Message::tool(vec![crate::types::message::ContentPart::ToolResult {
             call_id: call_id.into(),
             output: output.to_string(),
-            is_error: false,
+            is_error,
         }]);
         let tokens = self.message_tokens(&msg);
         self.ctx.push_history(msg, tokens);
@@ -1829,7 +2170,6 @@ impl LoopStateMachine {
             _ => None,
         }
     }
-
 }
 
 #[cfg(test)]

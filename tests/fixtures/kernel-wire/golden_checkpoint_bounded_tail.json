@@ -1,0 +1,601 @@
+{
+  "base_state_digest": "sha256:7bb9a2cea502246741a6b173d94184a77781715054fae602b5291ea44380abc7",
+  "checkpoint": {
+    "abi_version": 3,
+    "base_record_digest": "sha256:012440b11426553aaf9699ccc74c18643b4da00adb52df41fc48d201aa19fcc0",
+    "base_step_seq": "1",
+    "checkpoint_digest": "sha256:1f1b0dc1979e46319f0f1f3de0e3f255ae824d5faecf3817c20e948daaec6a11",
+    "checkpoint_version": 1,
+    "covered_transaction_head_digest": "sha256:c8ee5d4e93f72d9c2a122787a490ca5a8bfead0f4eb4d2e06d8bf66d30da779f",
+    "genesis_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
+    "logical_state": {
+      "context_vm": {
+        "active_skills": [],
+        "handles": [],
+        "history_len": 1,
+        "knowledge": [],
+        "last_activity_ms": "1700000001000",
+        "last_compact_ms": null,
+        "messages": [
+          {
+            "body": {
+              "form": "inline",
+              "is_error": false,
+              "text": "Proceed with the task described in [TASK STATE].",
+              "tool_call_id": null
+            },
+            "partition": "history",
+            "role": "user",
+            "tokens": 12,
+            "tool_calls": []
+          }
+        ],
+        "next_handle_id": 0,
+        "partition_tokens": {
+          "history": 12,
+          "knowledge": 0,
+          "system": 0
+        },
+        "pending_payload_loads": [],
+        "signals": [],
+        "task_state": {
+          "blocked_on": [],
+          "compression_log": [],
+          "compression_log_dropped": "0",
+          "criteria": [],
+          "current_step": null,
+          "directives": [],
+          "goal": "write the research brief",
+          "plan": [],
+          "preserved_refs": [],
+          "progress": "",
+          "recent_actions": [],
+          "scratchpad": ""
+        }
+      },
+      "scheduler": {
+        "attempts": [],
+        "milestone": null,
+        "rounds_completed": 0,
+        "signal_queue_depth": 0,
+        "started_at_ms": "1700000001000",
+        "subagents_spawned": 0,
+        "tasks": [
+          {
+            "capability_ids": [],
+            "is_subagent": false,
+            "lifecycle": "running",
+            "parent_task_id": null,
+            "task_id": "root",
+            "termination": null,
+            "tokens_used": "0",
+            "turns_used": 0,
+            "wait": null,
+            "waiting_on": []
+          }
+        ],
+        "total_tokens": "0",
+        "turn": 0,
+        "wall_budget_ms": null,
+        "workflow": null
+      },
+      "syscall": {
+        "authored_memory_queries": [],
+        "authored_memory_writes": [],
+        "consumed_call_ids": [],
+        "live_config": {
+          "abi_version": 3,
+          "budget_grant": null,
+          "context_policy": {
+            "collapse_old_assistant_narration": true,
+            "idle_micro_compact_minutes": 60,
+            "knowledge_budget_ppm": 250000,
+            "preserve_recent_turns": 2,
+            "pressure_thresholds_ppm": {
+              "auto": 950000,
+              "collapse": 900000,
+              "micro": 800000,
+              "renewal": 980000,
+              "snip": 700000
+            },
+            "prompt_budget": {
+              "output_reserve_tokens": 0,
+              "prompt_overhead_tokens": 0,
+              "safety_margin_tokens": 0
+            },
+            "renewal_carryover_ppm": 50000,
+            "target_after_compress_ppm": 650000
+          },
+          "execution_policy": {
+            "criteria_gate_enabled": true,
+            "entropy_watch": {
+              "cooldown_turns": 4,
+              "enabled": false,
+              "hysteresis_ppm": 100000,
+              "notify_model": false,
+              "threshold_ppm": 650000
+            },
+            "max_context_tokens": 128000,
+            "max_total_tokens": "1000000",
+            "max_turns": 12,
+            "max_wall_ms": null,
+            "repeat_fuse": {
+              "deny_after": 5,
+              "enabled": true,
+              "terminate_after": 8
+            }
+          },
+          "feature_policy": {
+            "knowledge_enabled": false,
+            "memory_enabled": false,
+            "plan_tool_enabled": false,
+            "stable_core_tool_ids": [],
+            "tool_dispatch_gate": "exposed"
+          },
+          "governance_policy": {
+            "constraints": [],
+            "default_action": "allow",
+            "rate_limits": [],
+            "rules": [],
+            "vetoed_tools": []
+          },
+          "host_effect_support": {
+            "supported": [
+              "call_provider",
+              "execute_tools",
+              "load_payload",
+              "spawn_tasks",
+              "preempt_tasks",
+              "persist_memory",
+              "query_memory"
+            ]
+          },
+          "kernel_limits": {
+            "collection_limits": {
+              "capability_grants": 65536,
+              "governance_rules": 65536,
+              "initial_messages": 65536,
+              "knowledge_entries": 65536,
+              "skill_catalog": 65536,
+              "tool_catalog": 65536
+            },
+            "max_collection_entries": 65536,
+            "max_input_bytes": 16777216,
+            "max_json_depth": 64
+          },
+          "memory_access": {
+            "binding_id": "mem-binding-1",
+            "capabilities": {
+              "read": true,
+              "write": true
+            }
+          },
+          "memory_policy": {
+            "max_content_bytes": 10000,
+            "max_name_length": 100,
+            "promotion_recall_threshold": null,
+            "retrieval_top_k": 4,
+            "stale_warning_days": 2,
+            "validation_enabled": true
+          },
+          "payload_policy": {
+            "inline_threshold_bytes": 51200,
+            "preview_bytes": 2048
+          },
+          "recovery_policy": {
+            "output_recovery_attempts": 1,
+            "provider_recovery_attempts": 1,
+            "tail_bounds": {
+              "hard_bytes": "16777216",
+              "hard_records": "2048",
+              "soft_bytes": "4194304",
+              "soft_records": "512"
+            }
+          },
+          "resource_quota": {
+            "max_workflow_nodes": 3
+          },
+          "scheduler_policy": {
+            "age_weight": 1000,
+            "critical_path_weight": 1000000,
+            "fanout_weight": 10000,
+            "token_cost_weight": 1
+          },
+          "signal_policy": {
+            "deadline_escalation": false,
+            "queue_max": 64,
+            "ttl_ms": null
+          },
+          "skill_catalog": [
+            {
+              "description": "debug helper",
+              "name": "debug"
+            }
+          ],
+          "tool_catalog": [
+            {
+              "name": "start_workflow"
+            },
+            {
+              "name": "submit_workflow_nodes"
+            },
+            {
+              "name": "skill"
+            },
+            {
+              "name": "update_plan"
+            },
+            {
+              "name": "memory"
+            },
+            {
+              "name": "read_result"
+            },
+            {
+              "name": "search"
+            }
+          ],
+          "verification_contracts": []
+        },
+        "memory_write_window_ms": [],
+        "policy_revision": "0",
+        "provider_calls": [
+          {
+            "effect_id": "op-driver-1:step:1:effect:0",
+            "exposed_tools": [
+              "memory",
+              "read_result",
+              "search",
+              "skill",
+              "start_workflow",
+              "submit_workflow_nodes",
+              "update_plan"
+            ],
+            "task_id": "root"
+          }
+        ]
+      },
+      "transition": {
+        "accepted_cancellation": null,
+        "accepted_inputs": [
+          {
+            "input_id": "in-configure",
+            "record_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
+            "step_seq": "0"
+          },
+          {
+            "input_id": "in-start",
+            "record_digest": "sha256:012440b11426553aaf9699ccc74c18643b4da00adb52df41fc48d201aa19fcc0",
+            "step_seq": "1"
+          }
+        ],
+        "focus": {
+          "kind": "agent_turn",
+          "task_id": "root"
+        },
+        "last_observed_at_ms": "1700000001000",
+        "launch_tokens": [],
+        "lifecycle": "running",
+        "pending_effects": [
+          {
+            "causation_input_id": "in-start",
+            "effect": {
+              "context": {
+                "state_turn": {
+                  "content": "[TASK STATE] goal: write the research brief\n\n→ focus: write the research brief\n\nProceed.",
+                  "role": "user"
+                },
+                "turns": [
+                  {
+                    "content": "Proceed with the task described in [TASK STATE].",
+                    "role": "user",
+                    "tokens": 12
+                  }
+                ]
+              },
+              "kind": "call_provider",
+              "tools": [
+                {
+                  "name": "start_workflow"
+                },
+                {
+                  "name": "submit_workflow_nodes"
+                },
+                {
+                  "name": "skill"
+                },
+                {
+                  "name": "update_plan"
+                },
+                {
+                  "name": "memory"
+                },
+                {
+                  "name": "read_result"
+                },
+                {
+                  "name": "search"
+                },
+                {
+                  "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",
+                  "name": "skill",
+                  "parameters": {
+                    "properties": {
+                      "name": {
+                        "description": "The name of the skill to load.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  }
+                }
+              ]
+            },
+            "effect_id": "op-driver-1:step:1:effect:0"
+          }
+        ],
+        "resolved_config": {
+          "abi_version": 3,
+          "budget_grant": null,
+          "context_policy": {
+            "collapse_old_assistant_narration": true,
+            "idle_micro_compact_minutes": 60,
+            "knowledge_budget_ppm": 250000,
+            "preserve_recent_turns": 2,
+            "pressure_thresholds_ppm": {
+              "auto": 950000,
+              "collapse": 900000,
+              "micro": 800000,
+              "renewal": 980000,
+              "snip": 700000
+            },
+            "prompt_budget": {
+              "output_reserve_tokens": 0,
+              "prompt_overhead_tokens": 0,
+              "safety_margin_tokens": 0
+            },
+            "renewal_carryover_ppm": 50000,
+            "target_after_compress_ppm": 650000
+          },
+          "execution_policy": {
+            "criteria_gate_enabled": true,
+            "entropy_watch": {
+              "cooldown_turns": 4,
+              "enabled": false,
+              "hysteresis_ppm": 100000,
+              "notify_model": false,
+              "threshold_ppm": 650000
+            },
+            "max_context_tokens": 128000,
+            "max_total_tokens": "1000000",
+            "max_turns": 12,
+            "max_wall_ms": null,
+            "repeat_fuse": {
+              "deny_after": 5,
+              "enabled": true,
+              "terminate_after": 8
+            }
+          },
+          "feature_policy": {
+            "knowledge_enabled": false,
+            "memory_enabled": false,
+            "plan_tool_enabled": false,
+            "stable_core_tool_ids": [],
+            "tool_dispatch_gate": "exposed"
+          },
+          "governance_policy": {
+            "constraints": [],
+            "default_action": "allow",
+            "rate_limits": [],
+            "rules": [],
+            "vetoed_tools": []
+          },
+          "host_effect_support": {
+            "supported": [
+              "call_provider",
+              "execute_tools",
+              "load_payload",
+              "spawn_tasks",
+              "preempt_tasks",
+              "persist_memory",
+              "query_memory"
+            ]
+          },
+          "kernel_limits": {
+            "collection_limits": {
+              "capability_grants": 65536,
+              "governance_rules": 65536,
+              "initial_messages": 65536,
+              "knowledge_entries": 65536,
+              "skill_catalog": 65536,
+              "tool_catalog": 65536
+            },
+            "max_collection_entries": 65536,
+            "max_input_bytes": 16777216,
+            "max_json_depth": 64
+          },
+          "memory_access": {
+            "binding_id": "mem-binding-1",
+            "capabilities": {
+              "read": true,
+              "write": true
+            }
+          },
+          "memory_policy": {
+            "max_content_bytes": 10000,
+            "max_name_length": 100,
+            "promotion_recall_threshold": null,
+            "retrieval_top_k": 4,
+            "stale_warning_days": 2,
+            "validation_enabled": true
+          },
+          "payload_policy": {
+            "inline_threshold_bytes": 51200,
+            "preview_bytes": 2048
+          },
+          "recovery_policy": {
+            "output_recovery_attempts": 1,
+            "provider_recovery_attempts": 1,
+            "tail_bounds": {
+              "hard_bytes": "16777216",
+              "hard_records": "2048",
+              "soft_bytes": "4194304",
+              "soft_records": "512"
+            }
+          },
+          "resource_quota": {
+            "max_workflow_nodes": 3
+          },
+          "scheduler_policy": {
+            "age_weight": 1000,
+            "critical_path_weight": 1000000,
+            "fanout_weight": 10000,
+            "token_cost_weight": 1
+          },
+          "signal_policy": {
+            "deadline_escalation": false,
+            "queue_max": 64,
+            "ttl_ms": null
+          },
+          "skill_catalog": [
+            {
+              "description": "debug helper",
+              "name": "debug"
+            }
+          ],
+          "tool_catalog": [
+            {
+              "name": "start_workflow"
+            },
+            {
+              "name": "submit_workflow_nodes"
+            },
+            {
+              "name": "skill"
+            },
+            {
+              "name": "update_plan"
+            },
+            {
+              "name": "memory"
+            },
+            {
+              "name": "read_result"
+            },
+            {
+              "name": "search"
+            }
+          ],
+          "verification_contracts": []
+        },
+        "resolved_effects": [],
+        "root_kind": "agent",
+        "terminal": null
+      }
+    },
+    "operation_id": "op-driver-1",
+    "state_digest": "sha256:7bb9a2cea502246741a6b173d94184a77781715054fae602b5291ea44380abc7",
+    "tail_digest": "sha256:bd1792c71da6b755da60eacf66fe56916caf25294ef392108e7a960ca19b1719",
+    "tail_inputs": [
+      {
+        "input": {
+          "abi_version": 3,
+          "input": {
+            "effect_id": "op-driver-1:step:1:effect:0",
+            "kind": "resolve_effect",
+            "outcome": {
+              "result": {
+                "kind": "provider",
+                "outcome": {
+                  "kind": "completed",
+                  "message": {
+                    "content": "",
+                    "role": "assistant",
+                    "tool_calls": [
+                      {
+                        "arguments": {
+                          "q": "sources"
+                        },
+                        "call_id": "call-1",
+                        "name": "search"
+                      }
+                    ]
+                  }
+                }
+              },
+              "status": "succeeded"
+            }
+          },
+          "input_id": "in-acted",
+          "observed_at_ms": "1700000002000",
+          "operation_id": "op-driver-1"
+        },
+        "record_digest": "sha256:0a1f1f43e4f258f7ea62673c45d79d0ceb236e94ebf6826f8ee17675f30a7326",
+        "step_seq": "2"
+      },
+      {
+        "input": {
+          "abi_version": 3,
+          "input": {
+            "effect_id": "op-driver-1:step:2:effect:0",
+            "kind": "resolve_effect",
+            "outcome": {
+              "result": {
+                "kind": "tools",
+                "results": [
+                  {
+                    "call_id": "call-1",
+                    "kind": "inline",
+                    "result": {
+                      "disposition": "recoverable",
+                      "output": "three sources found"
+                    }
+                  }
+                ]
+              },
+              "status": "succeeded"
+            }
+          },
+          "input_id": "in-results",
+          "observed_at_ms": "1700000003000",
+          "operation_id": "op-driver-1"
+        },
+        "record_digest": "sha256:272879a0366805fe6e49355a640fc0d914f5b48980c38963a80384ae32676936",
+        "step_seq": "3"
+      },
+      {
+        "input": {
+          "abi_version": 3,
+          "input": {
+            "effect_id": "op-driver-1:step:3:effect:0",
+            "kind": "resolve_effect",
+            "outcome": {
+              "result": {
+                "kind": "provider",
+                "outcome": {
+                  "kind": "completed",
+                  "message": {
+                    "content": "the brief cites three sources",
+                    "role": "assistant"
+                  },
+                  "stop_reason": "end_turn"
+                }
+              },
+              "status": "succeeded"
+            }
+          },
+          "input_id": "in-answer",
+          "observed_at_ms": "1700000004000",
+          "operation_id": "op-driver-1"
+        },
+        "record_digest": "sha256:c8ee5d4e93f72d9c2a122787a490ca5a8bfead0f4eb4d2e06d8bf66d30da779f",
+        "step_seq": "4"
+      }
+    ],
+    "through_step_seq": "4"
+  },
+  "description": "The incremental form of a logical checkpoint (spec 12.1, 12.2): `logical_state` is the state after `base_step_seq`, and `tail_inputs` covers (base, through] exactly — no hole, no duplicate, nothing outside the range. A restore replays this tail on top of the state, then continues with the journal records after `through_step_seq`. The state digest is byte-identical to the base checkpoint's, because the state is the same state; only the tail and the header moved."
+}

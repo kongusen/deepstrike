@@ -1,0 +1,28 @@
+{
+  "id": "removed-host-assembled-resume-facts",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：由宿主拼装并作为业务输入回灌的恢复事实",
+  "semantics": "现状工作流恢复要求宿主把三组事实拼进业务输入：已完成节点的结果、已提交的动态追加批次、以及每个批次所基于的图基线；恢复时轮次与 token 用量还被硬置为零，预算账本因此失真，未解析的赛制分支也会从头重跑。删除这三组字段与这种恢复姿势——恢复语义完全由内核检查点承担。",
+  "given": [
+    "一个中断在半途的工作流运行"
+  ],
+  "when": [
+    "宿主试图通过业务输入回灌已完成节点、已追加批次与图基线来恢复"
+  ],
+  "then": [
+    "这三组恢复字段在契约里不存在",
+    "恢复不依赖宿主拼装的业务事实",
+    "已消耗的轮次与 token 用量在恢复后保持真实，不被清零",
+    "节点结果的完整性由内核状态保证，而不是由宿主补齐"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §12.4 删除清单与 §14.3「workflow resumed_*」",
+      "spec §3.3 第 14 条（crates/deepstrike-core/src/orchestration/workflow/run.rs:499-506 归零、run.rs:349-351 重跑）",
+      "crates/deepstrike-core/src/runtime/kernel/protocol.rs:716-728",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::load_workflow_resumes_from_completed_nodes（现状行为）"
+    ]
+  },
+  "target": "§12.4"
+}

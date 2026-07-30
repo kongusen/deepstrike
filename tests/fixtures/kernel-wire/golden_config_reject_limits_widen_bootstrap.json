@@ -1,0 +1,20 @@
+{
+  "expect": "policy_violation",
+  "stage": "resolution",
+  "note": "\u00a77.3 \u00b7 operation limits may only tighten KernelBootstrapLimits, never widen them",
+  "bootstrap_limits": {
+    "absolute_max_input_bytes": 1048576,
+    "absolute_max_json_depth": 32,
+    "absolute_max_collection_entries": 1024
+  },
+  "config": {
+    "kernel_limits": {
+      "max_input_bytes": 8388608
+    },
+    "host_effect_support": {
+      "supported": [
+        "call_provider"
+      ]
+    }
+  }
+}

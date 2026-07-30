@@ -1,0 +1,19 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-10",
+  "observed_at_ms": "1753747209000",
+  "input": {
+    "kind": "host_control",
+    "command": {
+      "kind": "apply_policy_patch",
+      "expected_revision": "7",
+      "patch": {
+        "kind": "tighten_resource_quota",
+        "max_concurrent_subagents": 2,
+        "max_total_subagents": 8,
+        "max_spawn_depth": 2
+      }
+    }
+  }
+}

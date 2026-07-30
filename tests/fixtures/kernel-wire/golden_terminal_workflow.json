@@ -1,0 +1,16 @@
+{
+  "kind": "workflow",
+  "outcome": {
+    "workflow_id": "wf-1",
+    "status": "completed",
+    "completed_nodes": [
+      "node-a",
+      "node-b"
+    ]
+  },
+  "usage": {
+    "input_tokens": "51230",
+    "output_tokens": "8811",
+    "turns": 21
+  }
+}

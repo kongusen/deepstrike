@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::StreamExt;
     use crate::RunEvent;
     use crate::memory::WorkingMemory;
     use crate::safety::{PermissionManager, PermissionMode};
@@ -11,6 +10,7 @@ mod tests {
     };
     use compact_str::CompactString;
     use deepstrike_core::types::message::ToolCall;
+    use futures::StreamExt;
     use std::collections::HashMap;
 
     #[test]
@@ -188,9 +188,7 @@ mod tests {
             "echo",
             "Echo",
             serde_json::json!({ "type": "object" }),
-            |args| async move {
-                Ok(crate::tools::SafeToolResult::Data(args["x"].clone()))
-            },
+            |args| async move { Ok(crate::tools::SafeToolResult::Data(args["x"].clone())) },
         );
         let mut registry = HashMap::new();
         registry.insert("echo".to_string(), tool);
@@ -201,7 +199,8 @@ mod tests {
         };
         let results = execute_tools(&[call], &registry).await;
         assert!(!results[0].is_error);
-        let parsed: serde_json::Value = serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
         assert_eq!(parsed["success"], true);
         assert_eq!(parsed["data"], "hi");
     }
@@ -217,7 +216,12 @@ mod tests {
                 if id == "good" {
                     Ok(crate::ok(Some(serde_json::json!({"found": true}))).into())
                 } else {
-                    Ok(crate::fail("not_found", format!("no row {id}"), Some("list rows via /index".into())).into())
+                    Ok(crate::fail(
+                        "not_found",
+                        format!("no row {id}"),
+                        Some("list rows via /index".into()),
+                    )
+                    .into())
                 }
             },
         );
@@ -233,7 +237,8 @@ mod tests {
             &registry,
         )
         .await;
-        let parsed: serde_json::Value = serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
         assert_eq!(parsed["success"], false);
         assert_eq!(parsed["code"], "not_found");
         assert_eq!(parsed["error"], "no row missing");
@@ -266,7 +271,8 @@ mod tests {
             &registry,
         )
         .await;
-        let parsed: serde_json::Value = serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
         assert_eq!(parsed["success"], false);
         assert_eq!(parsed["code"], "not_found");
         assert_eq!(parsed["error"], r#"no section "X""#);
@@ -279,9 +285,7 @@ mod tests {
             "crash",
             "Crash",
             serde_json::json!({ "type": "object" }),
-            |_args| async move {
-                Err(crate::Error::Other("kaboom".into()))
-            },
+            |_args| async move { Err(crate::Error::Other("kaboom".into())) },
         );
         let mut registry = HashMap::new();
         registry.insert("crash".to_string(), tool);
@@ -294,7 +298,8 @@ mod tests {
             &registry,
         )
         .await;
-        let parsed: serde_json::Value = serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(results[0].output.as_text().unwrap()).unwrap();
         assert_eq!(parsed["success"], false);
         assert_eq!(parsed["code"], "internal");
         assert_eq!(parsed["error"], "kaboom");
@@ -407,7 +412,10 @@ mod tests {
         // { item: [...] } unwraps
         let mut a = serde_json::json!({ "ops": { "item": [{ "op": "add" }, { "op": "remove" }] } });
         assert!(validate_tool_arguments(&schema, &mut a).expect("ok"));
-        assert_eq!(a["ops"], serde_json::json!([{ "op": "add" }, { "op": "remove" }]));
+        assert_eq!(
+            a["ops"],
+            serde_json::json!([{ "op": "add" }, { "op": "remove" }])
+        );
 
         // { items: {obj} } wraps a single object
         let mut b = serde_json::json!({ "ops": { "items": { "op": "add" } } });
@@ -701,10 +709,7 @@ mod tests {
             on_milestone_evaluate: None,
         });
 
-        let mut stream = runner
-            .run_streaming("go", &[], None, None)
-            .await
-            .unwrap();
+        let mut stream = runner.run_streaming("go", &[], None, None).await.unwrap();
         while stream.next().await.transpose().unwrap().is_some() {}
 
         let seen = captured.lock().unwrap();
@@ -746,7 +751,9 @@ mod tests {
                     arguments: serde_json::json!({ "name": "debug" }),
                 }
             } else {
-                crate::providers::StreamEvent::TextDelta { delta: "done".into() }
+                crate::providers::StreamEvent::TextDelta {
+                    delta: "done".into(),
+                }
             };
             Ok(Box::new(futures::stream::iter(vec![Ok(evt)])))
         }
@@ -785,7 +792,9 @@ mod tests {
         }
 
         let runner = RuntimeRunner::new(RuntimeOptions {
-            provider: Box::new(GatingProvider { calls: Arc::new(AtomicUsize::new(0)) }),
+            provider: Box::new(GatingProvider {
+                calls: Arc::new(AtomicUsize::new(0)),
+            }),
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
@@ -929,29 +938,46 @@ mod tests {
         });
 
         let session_id = "reactive-compact-rust";
-        session_log.append(session_id, deepstrike_core::runtime::session::SessionEvent::RunStarted {
-            run_id: "seed".to_string(),
-            goal: "seed ".repeat(1200),
-            criteria: vec![],
-            agent_id: None,
-            system_prompt: None,
-            attachments: vec![],
-        }).await;
-        session_log.append(session_id, deepstrike_core::runtime::session::SessionEvent::LlmCompleted {
-            turn: 0,
-            message: deepstrike_core::types::message::Message {
-                role: deepstrike_core::types::message::Role::Assistant,
-                content: deepstrike_core::types::message::Content::Text("prior answer ".repeat(400)),
-                tool_calls: vec![],
-                token_count: None,
-            },
-            provider_replay: None,
-        }).await;
-        session_log.append(session_id, deepstrike_core::runtime::session::SessionEvent::RunTerminal {
-            reason: "completed".to_string(),
-            turns_used: 1,
-            total_tokens: 0,
-        }).await;
+        session_log
+            .append(
+                session_id,
+                deepstrike_core::runtime::session::SessionEvent::RunStarted {
+                    run_id: "seed".to_string(),
+                    goal: "seed ".repeat(1200),
+                    criteria: vec![],
+                    agent_id: None,
+                    system_prompt: None,
+                    attachments: vec![],
+                },
+            )
+            .await;
+        session_log
+            .append(
+                session_id,
+                deepstrike_core::runtime::session::SessionEvent::LlmCompleted {
+                    turn: 0,
+                    message: deepstrike_core::types::message::Message {
+                        role: deepstrike_core::types::message::Role::Assistant,
+                        content: deepstrike_core::types::message::Content::Text(
+                            "prior answer ".repeat(400),
+                        ),
+                        tool_calls: vec![],
+                        token_count: None,
+                    },
+                    provider_replay: None,
+                },
+            )
+            .await;
+        session_log
+            .append(
+                session_id,
+                deepstrike_core::runtime::session::SessionEvent::RunTerminal {
+                    reason: "completed".to_string(),
+                    turns_used: 1,
+                    total_tokens: 0,
+                },
+            )
+            .await;
 
         // The new task goal must itself fit the fixed budget (system + state_turn ≤ max_tokens):
         // a goal larger than `max_tokens` is an unrecoverable `FixedContext` overflow (compaction
@@ -971,10 +997,7 @@ mod tests {
         }
 
         assert_eq!(text, "recovered");
-        assert_eq!(
-            call_count.load(std::sync::atomic::Ordering::SeqCst),
-            2
-        );
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
 
         let entries = session_log.read(session_id, 0, None).await.unwrap();
         assert!(entries.iter().any(|entry| {
@@ -987,14 +1010,14 @@ mod tests {
 
     #[tokio::test]
     async fn recoverable_tool_failure_preserves_replay_context() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use deepstrike_core::types::message::{Message, Role, Content, ToolCall};
-        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
-        use crate::runtime::runner::{RuntimeRunner, RuntimeOptions};
         use crate::providers::LLMProvider;
         use crate::providers::StreamEvent;
         use crate::runtime::replay::replay_messages;
+        use crate::runtime::runner::{RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use deepstrike_core::types::message::{Content, Message, Role, ToolCall};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         use futures::StreamExt;
 
@@ -1038,7 +1061,9 @@ mod tests {
                 tools: &[deepstrike_core::types::message::ToolSchema],
                 extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,
-            ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+            ) -> crate::Result<
+                Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>,
+            > {
                 let msg = self.complete(context, tools, extensions).await?;
                 let mut stream = vec![];
                 if !msg.tool_calls.is_empty() {
@@ -1065,9 +1090,7 @@ mod tests {
             "fail_tool",
             "Fails always",
             serde_json::json!({ "type": "object", "properties": {} }),
-            |_args| Box::pin(async {
-                Err(crate::Error::Tool("Tool crashed!".into()))
-            }),
+            |_args| Box::pin(async { Err(crate::Error::Tool("Tool crashed!".into())) }),
         ));
 
         let session_log = Arc::new(InMemorySessionLog::new());
@@ -1153,13 +1176,13 @@ mod tests {
 
     #[tokio::test]
     async fn runner_milestone_auto_pass() {
-        use std::sync::Arc;
-        use deepstrike_core::types::milestone::{MilestoneContract, MilestonePhase};
-        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
-        use crate::runtime::runner::{RuntimeRunner, RuntimeOptions, MilestonePolicy};
         use crate::providers::LLMProvider;
         use crate::providers::StreamEvent;
         use crate::runtime::execution_plane::LocalExecutionPlane;
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use deepstrike_core::types::milestone::{MilestoneContract, MilestonePhase};
+        use std::sync::Arc;
 
         #[derive(Clone)]
         struct FakeProvider;
@@ -1171,15 +1194,20 @@ mod tests {
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,
-            ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+            ) -> crate::Result<
+                Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>,
+            > {
                 Ok(Box::new(futures::stream::iter(vec![
-                    Ok(StreamEvent::TextDelta { delta: "done".into() }),
+                    Ok(StreamEvent::TextDelta {
+                        delta: "done".into(),
+                    }),
                     Ok(StreamEvent::Done),
                 ])))
             }
         }
 
-        let contract = MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
+        let contract =
+            MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
         let runner = RuntimeRunner::new(RuntimeOptions {
             provider: Box::new(FakeProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
@@ -1223,7 +1251,10 @@ mod tests {
             on_milestone_evaluate: None,
         });
 
-        let mut stream = runner.run_streaming("test", &[], None, Some("s_auto_rust")).await.unwrap();
+        let mut stream = runner
+            .run_streaming("test", &[], None, Some("s_auto_rust"))
+            .await
+            .unwrap();
         let mut done_seen = false;
         while let Some(evt) = stream.next().await {
             if let RunEvent::Done { status, .. } = evt.unwrap() {
@@ -1236,13 +1267,13 @@ mod tests {
 
     #[tokio::test]
     async fn runner_milestone_pending_by_default() {
-        use std::sync::Arc;
-        use deepstrike_core::types::milestone::{MilestoneContract, MilestonePhase};
-        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
-        use crate::runtime::runner::{RuntimeRunner, RuntimeOptions, MilestonePolicy};
         use crate::providers::LLMProvider;
         use crate::providers::StreamEvent;
         use crate::runtime::execution_plane::LocalExecutionPlane;
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use deepstrike_core::types::milestone::{MilestoneContract, MilestonePhase};
+        use std::sync::Arc;
 
         #[derive(Clone)]
         struct FakeProvider;
@@ -1254,15 +1285,20 @@ mod tests {
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,
-            ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+            ) -> crate::Result<
+                Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>,
+            > {
                 Ok(Box::new(futures::stream::iter(vec![
-                    Ok(StreamEvent::TextDelta { delta: "done".into() }),
+                    Ok(StreamEvent::TextDelta {
+                        delta: "done".into(),
+                    }),
                     Ok(StreamEvent::Done),
                 ])))
             }
         }
 
-        let contract = MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
+        let contract =
+            MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
         let runner = RuntimeRunner::new(RuntimeOptions {
             provider: Box::new(FakeProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
@@ -1306,7 +1342,10 @@ mod tests {
             on_milestone_evaluate: None,
         });
 
-        let mut stream = runner.run_streaming("test", &[], None, Some("s_pending_rust")).await.unwrap();
+        let mut stream = runner
+            .run_streaming("test", &[], None, Some("s_pending_rust"))
+            .await
+            .unwrap();
         let mut done_seen = false;
         while let Some(evt) = stream.next().await {
             if let RunEvent::Done { status, .. } = evt.unwrap() {
@@ -1319,14 +1358,16 @@ mod tests {
 
     #[tokio::test]
     async fn runner_milestone_verifier_callback() {
-        use std::sync::Arc;
-        use std::sync::Mutex;
-        use deepstrike_core::types::milestone::{MilestoneContract, MilestonePhase, MilestoneCheckResult};
-        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
-        use crate::runtime::runner::{RuntimeRunner, RuntimeOptions, MilestonePolicy};
         use crate::providers::LLMProvider;
         use crate::providers::StreamEvent;
         use crate::runtime::execution_plane::LocalExecutionPlane;
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use deepstrike_core::types::milestone::{
+            MilestoneCheckResult, MilestoneContract, MilestonePhase,
+        };
+        use std::sync::Arc;
+        use std::sync::Mutex;
 
         #[derive(Clone)]
         struct FakeProvider;
@@ -1338,15 +1379,20 @@ mod tests {
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,
-            ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+            ) -> crate::Result<
+                Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>,
+            > {
                 Ok(Box::new(futures::stream::iter(vec![
-                    Ok(StreamEvent::TextDelta { delta: "done".into() }),
+                    Ok(StreamEvent::TextDelta {
+                        delta: "done".into(),
+                    }),
                     Ok(StreamEvent::Done),
                 ])))
             }
         }
 
-        let contract = MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
+        let contract =
+            MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
         let called = Arc::new(Mutex::new(false));
         let called_clone = called.clone();
 
@@ -1357,7 +1403,8 @@ mod tests {
                 assert_eq!(ctx.criteria, vec!["test".to_string()]);
                 *called_clone.lock().unwrap() = true;
                 Ok(MilestoneCheckResult::pass(ctx.phase_id))
-            }) as futures::future::BoxFuture<'static, crate::Result<MilestoneCheckResult>>
+            })
+                as futures::future::BoxFuture<'static, crate::Result<MilestoneCheckResult>>
         });
 
         let runner = RuntimeRunner::new(RuntimeOptions {
@@ -1403,7 +1450,10 @@ mod tests {
             on_milestone_evaluate: Some(verifier),
         });
 
-        let mut stream = runner.run_streaming("test", &[], None, Some("s_callback_rust")).await.unwrap();
+        let mut stream = runner
+            .run_streaming("test", &[], None, Some("s_callback_rust"))
+            .await
+            .unwrap();
         let mut done_seen = false;
         while let Some(evt) = stream.next().await {
             if let RunEvent::Done { status, .. } = evt.unwrap() {
@@ -1419,14 +1469,15 @@ mod tests {
     async fn test_local_execution_plane_spool_read_intercept() {
         use crate::runtime::execution_plane::{ExecutionPlane, LocalExecutionPlane, RunContext};
         use deepstrike_core::types::message::ToolCall;
-        
+
         // 1. Create a dummy spool file
         let spool_dir = std::path::Path::new(".spool");
         let _ = std::fs::create_dir_all(spool_dir);
         let spool_file = spool_dir.join("test-spool-intercept.txt");
-        let expected_content = "This is the spooled output content that should be transparently read!";
+        let expected_content =
+            "This is the spooled output content that should be transparently read!";
         std::fs::write(&spool_file, expected_content).unwrap();
-        
+
         // 2. Create local execution plane
         let plane = LocalExecutionPlane::new();
         let call = ToolCall {
@@ -1436,7 +1487,7 @@ mod tests {
                 "path": spool_file.to_string_lossy().to_string()
             }),
         };
-        
+
         let ctx = RunContext {
             agent_id: None,
             memory_scope: None,
@@ -1447,18 +1498,25 @@ mod tests {
             on_tool_suspend: None,
             on_permission_request: None,
         };
-        
-        let events: Vec<RunEvent> = plane.execute_all(&[call], ctx)
+
+        let events: Vec<RunEvent> = plane
+            .execute_all(&[call], ctx)
             .map(|r| r.unwrap())
             .collect()
             .await;
-            
+
         // 3. Clean up the spool file
         let _ = std::fs::remove_file(spool_file);
-        
+
         // 4. Assert transparent intercept worked
         assert_eq!(events.len(), 1);
-        if let RunEvent::ToolResult { call_id, content, is_error, .. } = &events[0] {
+        if let RunEvent::ToolResult {
+            call_id,
+            content,
+            is_error,
+            ..
+        } = &events[0]
+        {
             assert_eq!(call_id, "call_read");
             assert_eq!(content, expected_content);
             assert!(!is_error);
@@ -1468,11 +1526,11 @@ mod tests {
     }
 
     use crate::memory::DreamStore;
+    use crate::runtime::InMemorySessionLog;
     use deepstrike_core::mm::memory::{
         MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
         MemoryScope, MemoryTrustLevel,
     };
-    use crate::runtime::InMemorySessionLog;
 
     fn memory_record(name: &str, content: &str) -> MemoryRecord {
         MemoryRecord {
@@ -1500,9 +1558,12 @@ mod tests {
     }
 
     fn memory_recall(record: MemoryRecord) -> MemoryRecall {
-        MemoryRecall { record, score: 0.9, why: "fixture".into() }
+        MemoryRecall {
+            record,
+            score: 0.9,
+            why: "fixture".into(),
+        }
     }
-
 
     struct MockLLMProvider;
 
@@ -1530,7 +1591,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_page_out_observation_does_not_trigger_dream_store_io() {
-        use crate::runtime::runner::{RuntimeRunner, RuntimeOptions, MilestonePolicy};
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
         use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
         use deepstrike_core::types::message::{Message, Role};
         use std::sync::Arc;
@@ -1554,7 +1615,14 @@ mod tests {
                 _agent_id: &str,
                 _query: &MemoryQuery,
             ) -> crate::Result<Vec<MemoryRecall>> {
-                Ok(self.memories.lock().unwrap().clone().into_iter().map(memory_recall).collect())
+                Ok(self
+                    .memories
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .into_iter()
+                    .map(memory_recall)
+                    .collect())
             }
             async fn save_session(
                 &self,
@@ -1666,7 +1734,14 @@ mod tests {
                 _agent_id: &str,
                 _query: &MemoryQuery,
             ) -> crate::Result<Vec<MemoryRecall>> {
-                Ok(self.memories.lock().unwrap().clone().into_iter().map(memory_recall).collect())
+                Ok(self
+                    .memories
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .into_iter()
+                    .map(memory_recall)
+                    .collect())
             }
             async fn save_session(
                 &self,
@@ -1695,7 +1770,10 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: Some(Box::new(Store { memories: memories.clone(), sessions })),
+            dream_store: Some(Box::new(Store {
+                memories: memories.clone(),
+                sessions,
+            })),
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -1721,15 +1799,31 @@ mod tests {
             on_milestone_evaluate: None,
         });
 
-        runner.write_memory(
-            memory_record("prefers-small-tests", "User prefers focused unit tests for SDK behavior."),
-            Some("memory-syscall-rs"),
-            None,
-        ).await.unwrap();
+        runner
+            .write_memory(
+                memory_record(
+                    "prefers-small-tests",
+                    "User prefers focused unit tests for SDK behavior.",
+                ),
+                Some("memory-syscall-rs"),
+                None,
+            )
+            .await
+            .unwrap();
 
-        assert_eq!(memories.lock().unwrap()[0].content, "User prefers focused unit tests for SDK behavior.");
-        let events = session_log.read("memory-syscall-rs", 0, None).await.unwrap();
-        assert!(events.iter().any(|e| e.event.kind_str() == "memory_written"));
+        assert_eq!(
+            memories.lock().unwrap()[0].content,
+            "User prefers focused unit tests for SDK behavior."
+        );
+        let events = session_log
+            .read("memory-syscall-rs", 0, None)
+            .await
+            .unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event.kind_str() == "memory_written")
+        );
     }
 
     #[tokio::test]
@@ -1784,7 +1878,9 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: Some(Box::new(Store { commits: commits.clone() })),
+            dream_store: Some(Box::new(Store {
+                commits: commits.clone(),
+            })),
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -1813,22 +1909,29 @@ mod tests {
             on_milestone_evaluate: None,
         });
 
-        runner.write_memory(
-            memory_record("too-many-writes", "This write should not be committed."),
-            Some("memory-quota-rs"),
-            None,
-        ).await.unwrap();
+        runner
+            .write_memory(
+                memory_record("too-many-writes", "This write should not be committed."),
+                Some("memory-quota-rs"),
+                None,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(*commits.lock().unwrap(), 0);
         let events = session_log.read("memory-quota-rs", 0, None).await.unwrap();
-        assert!(events.iter().any(|e| e.event.kind_str() == "memory_validation_failed"));
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event.kind_str() == "memory_validation_failed")
+        );
     }
 
     #[test]
     fn test_public_agent_os_shape_helpers() {
         use crate::{
-            assert_native_profile, MemoryWriteRateLimit, OsProfile, SchedulerPolicyConfig,
-            DEFAULT_NATIVE_SIGNAL_POLICY,
+            DEFAULT_NATIVE_SIGNAL_POLICY, MemoryWriteRateLimit, OsProfile, SchedulerPolicyConfig,
+            assert_native_profile,
         };
 
         let profile = assert_native_profile(Some(OsProfile::Native)).unwrap();
@@ -1895,7 +1998,14 @@ mod tests {
                 query: &MemoryQuery,
             ) -> crate::Result<Vec<MemoryRecall>> {
                 if query.query.contains("tests") && query.top_k == 1 {
-                    Ok(self.memories.lock().unwrap().clone().into_iter().map(memory_recall).collect())
+                    Ok(self
+                        .memories
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .into_iter()
+                        .map(memory_recall)
+                        .collect())
                 } else {
                     Ok(Vec::new())
                 }
@@ -1953,22 +2063,36 @@ mod tests {
             on_milestone_evaluate: None,
         });
 
-        let hits = runner.query_memory(
-            MemoryQuery {
-                scope: MemoryScope::new("agent-memory", "rust-tests"),
-                query: "Need memory about tests".to_string(),
-                top_k: 1,
-                kinds: Vec::new(),
-                min_score: None,
-            },
-            Some("memory-query-syscall-rs"),
-            None,
-        ).await.unwrap();
+        let hits = runner
+            .query_memory(
+                MemoryQuery {
+                    scope: MemoryScope::new("agent-memory", "rust-tests"),
+                    query: "Need memory about tests".to_string(),
+                    top_k: 1,
+                    kinds: Vec::new(),
+                    min_score: None,
+                },
+                Some("memory-query-syscall-rs"),
+                None,
+            )
+            .await
+            .unwrap();
 
         assert_eq!(hits[0].record.content, "Use small focused tests.");
-        let events = session_log.read("memory-query-syscall-rs", 0, None).await.unwrap();
-        assert!(events.iter().any(|e| e.event.kind_str() == "memory_queried"));
-        assert!(events.iter().any(|e| e.event.kind_str() == "memory_retrieval_result"));
+        let events = session_log
+            .read("memory-query-syscall-rs", 0, None)
+            .await
+            .unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event.kind_str() == "memory_queried")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event.kind_str() == "memory_retrieval_result")
+        );
     }
 
     #[tokio::test]
@@ -1983,10 +2107,17 @@ mod tests {
             async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
                 Ok(())
             }
-            async fn search(&self, _agent_id: &str, _query: &MemoryQuery) -> crate::Result<Vec<MemoryRecall>> {
+            async fn search(
+                &self,
+                _agent_id: &str,
+                _query: &MemoryQuery,
+            ) -> crate::Result<Vec<MemoryRecall>> {
                 Ok(vec![])
             }
-            async fn save_session(&self, _data: deepstrike_core::memory::durable::SessionData) -> crate::Result<()> {
+            async fn save_session(
+                &self,
+                _data: deepstrike_core::memory::durable::SessionData,
+            ) -> crate::Result<()> {
                 Ok(())
             }
         }
@@ -2038,15 +2169,25 @@ mod tests {
         let mut invalid = memory_record("invalid", "invalid write");
         invalid.name.clear();
         invalid.description = "missing name".into();
-        runner.write_memory(
-            invalid,
-            Some("memory-validation-fail-rs"),
-            None,
-        ).await.unwrap();
+        runner
+            .write_memory(invalid, Some("memory-validation-fail-rs"), None)
+            .await
+            .unwrap();
 
-        let events = session_log.read("memory-validation-fail-rs", 0, None).await.unwrap();
-        assert!(events.iter().any(|e| e.event.kind_str() == "memory_validation_failed"));
-        assert!(!events.iter().any(|e| e.event.kind_str() == "memory_written"));
+        let events = session_log
+            .read("memory-validation-fail-rs", 0, None)
+            .await
+            .unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event.kind_str() == "memory_validation_failed")
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.event.kind_str() == "memory_written")
+        );
     }
 
     #[test]
@@ -2059,14 +2200,22 @@ mod tests {
 
         let spec = WorkflowSpec::new(vec![
             WorkflowNode::new(RuntimeTask::new("pick the best"), AgentRole::Plan).with_tournament(
-                vec![RuntimeTask::new("a"), RuntimeTask::new("b"), RuntimeTask::new("c")],
+                vec![
+                    RuntimeTask::new("a"),
+                    RuntimeTask::new("b"),
+                    RuntimeTask::new("c"),
+                ],
             ),
             WorkflowNode::new(RuntimeTask::new("refine until done"), AgentRole::Implement)
                 .with_loop(5),
         ]);
-        spec.validate().expect("tournament + loop nodes form a valid dag");
+        spec.validate()
+            .expect("tournament + loop nodes form a valid dag");
         // The tournament controller is ready up front; only it (not its entrants yet) is runnable.
-        assert_eq!(spec.to_task_graph().expect("graph").ready_tasks(), vec![0, 1]);
+        assert_eq!(
+            spec.to_task_graph().expect("graph").ready_tasks(),
+            vec![0, 1]
+        );
     }
 
     #[test]
@@ -2083,5 +2232,473 @@ mod tests {
         // workers ready first; synth gated behind both.
         let mut graph = spec.to_task_graph().expect("graph");
         assert_eq!(graph.ready_tasks(), vec![0, 1]);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Task 0 pre-migration stop-the-bleeding regressions (canonical-kernel-abi Phase 0).
+    // ---------------------------------------------------------------------------------------
+
+    /// R-B29: a kernel fault must reach the host as a `Result` error, never a panic. The whole
+    /// fail-closed family (`UnexpectedEffectResult`, `InvalidLifecycle`, …) exits through this
+    /// helper, so a `panic!` here turns every protocol violation into a process-level crash
+    /// instead of a clean, recoverable run terminal (node throws, python raises).
+    #[test]
+    fn take_single_action_surfaces_kernel_fault_as_error_not_panic() {
+        use crate::runtime::runner::take_single_action;
+        use deepstrike_core::runtime::kernel::{KernelFault, KernelFaultCode, KernelStep};
+
+        let faulted = KernelStep {
+            version: 2,
+            operation_id: "op-1".to_string(),
+            input_event_id: "evt-1".to_string(),
+            step_seq: 7,
+            actions: Vec::new(),
+            observations: Vec::new(),
+            faults: vec![KernelFault {
+                code: KernelFaultCode::UnexpectedEffectResult,
+                message: "effect result does not match a pending effect: eff-9".to_string(),
+                operation_id: Some("op-1".to_string()),
+                event_id: Some("evt-1".to_string()),
+                effect_id: Some("eff-9".to_string()),
+            }],
+        };
+
+        // `catch_unwind` is the counter-proof: the old `expect(...)` would unwind here.
+        let outcome = std::panic::catch_unwind(move || take_single_action(faulted));
+        let result = outcome.expect("kernel fault must not panic the host process");
+        let err = result.expect_err("kernel fault must surface as Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("UnexpectedEffectResult"),
+            "fault code must survive into the host error: {msg}"
+        );
+        assert!(
+            msg.contains("does not match a pending effect"),
+            "fault message must survive into the host error: {msg}"
+        );
+    }
+
+    /// R-B29 (second half): an actionless, faultless step is still a protocol violation — report
+    /// it as `Err`, not by unwinding out of the runner's async generator.
+    #[test]
+    fn take_single_action_without_action_returns_error_not_panic() {
+        use crate::runtime::runner::take_single_action;
+        use deepstrike_core::runtime::kernel::KernelStep;
+
+        let empty = KernelStep {
+            version: 2,
+            operation_id: "op-2".to_string(),
+            input_event_id: "evt-2".to_string(),
+            step_seq: 1,
+            actions: Vec::new(),
+            observations: Vec::new(),
+            faults: Vec::new(),
+        };
+
+        let outcome = std::panic::catch_unwind(move || take_single_action(empty));
+        let result = outcome.expect("empty step must not panic the host process");
+        assert!(result.is_err(), "empty step must surface as Err");
+    }
+
+    /// R-B29 (apply path): `kernel_apply` used to drop `step.faults` on the floor, so a rejected
+    /// configuration/history input left the run marching on against state the kernel never
+    /// accepted. Node's twin (`durableKernelApply`) throws; the rust helper must return `Err`.
+    #[test]
+    fn kernel_apply_surfaces_kernel_fault_instead_of_succeeding_silently() {
+        use crate::runtime::runner::kernel_apply;
+        use deepstrike_core::runtime::kernel::{
+            KernelInputEvent, KernelReliabilityConfig, KernelRuntime, RunConfig,
+        };
+        use deepstrike_core::scheduler::policy::SchedulerBudget;
+
+        let mut kernel = KernelRuntime::new(SchedulerBudget::default());
+        let configured = kernel.step(deepstrike_core::runtime::kernel::KernelInput::new(
+            KernelInputEvent::ConfigureRun {
+                config: RunConfig {
+                    reliability: Some(KernelReliabilityConfig {
+                        max_input_bytes: Some(512),
+                        ..KernelReliabilityConfig::default()
+                    }),
+                    ..RunConfig::default()
+                },
+            },
+        ));
+        assert!(configured.faults.is_empty(), "setup must be accepted");
+
+        let mut observations = Vec::new();
+        let err = kernel_apply(
+            &mut kernel,
+            &mut observations,
+            // Oversized input ⇒ `ResourceLimitExceeded`, rejected before any state change.
+            KernelInputEvent::AddSystemMessage {
+                content: "x".repeat(2_048),
+                tokens: 512,
+            },
+        )
+        .expect_err("a faulted apply-only transition must not report success");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ResourceLimitExceeded"),
+            "fault code must survive into the host error: {msg}"
+        );
+
+        // Same helper, an accepted input: still `Ok`, observations still forwarded.
+        kernel_apply(
+            &mut kernel,
+            &mut observations,
+            KernelInputEvent::SetMemoryEnabled { enabled: true },
+        )
+        .expect("an accepted apply-only transition stays Ok");
+    }
+
+    /// End-to-end companion: the `?` threading actually reaches the caller — a rejected
+    /// `add_system_message` ends the run as a stream-level `Err` instead of silently running with
+    /// a system prompt the kernel refused.
+    #[tokio::test]
+    async fn runner_surfaces_apply_path_kernel_fault_to_the_caller() {
+        use crate::providers::LLMProvider;
+        use crate::providers::StreamEvent;
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::InMemorySessionLog;
+        use deepstrike_core::runtime::kernel::KernelReliabilityConfig;
+        use std::sync::Arc;
+
+        struct FakeProvider;
+        #[async_trait::async_trait]
+        impl LLMProvider for FakeProvider {
+            async fn stream(
+                &self,
+                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _tools: &[deepstrike_core::types::message::ToolSchema],
+                _extensions: Option<&serde_json::Value>,
+                _state: Option<&crate::providers::ProviderRunState>,
+            ) -> crate::Result<
+                Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>,
+            > {
+                Ok(Box::new(futures::stream::iter(vec![
+                    Ok(StreamEvent::TextDelta {
+                        delta: "should never run".into(),
+                    }),
+                    Ok(StreamEvent::Done),
+                ])))
+            }
+        }
+
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(FakeProvider),
+            execution_plane: None,
+            session_log: Some(Arc::new(InMemorySessionLog::new())),
+            compression_store: None,
+            spool_dir: None,
+            kernel_reliability: Some(KernelReliabilityConfig {
+                max_input_bytes: Some(8_192),
+                ..KernelReliabilityConfig::default()
+            }),
+            session_id: None,
+            max_tokens: 100_000,
+            max_turns: Some(2),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            memory_scope: None,
+            // Far over `max_input_bytes` ⇒ the kernel rejects this `add_system_message`.
+            system_prompt: Some("s".repeat(32_768)),
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            os_profile: None,
+            governance_policy: None,
+            signal_policy: None,
+            scheduler_policy: None,
+            resource_quota: None,
+            memory_policy: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: MilestonePolicy::RequireVerifier,
+            milestone_contract: None,
+            run_spec: None,
+            allowed_tool_ids: None,
+            baseline_tool_ids: None,
+            tool_dispatch_gate: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
+            pre_query_memory: None,
+            on_milestone_evaluate: None,
+        });
+
+        let mut stream = runner
+            .run_streaming("test", &[], None, Some("s_apply_fault_rust"))
+            .await
+            .unwrap();
+        let mut fault_err: Option<String> = None;
+        let mut saw_text = false;
+        while let Some(evt) = stream.next().await {
+            match evt {
+                Ok(RunEvent::TextDelta(_)) => saw_text = true,
+                Ok(_) => {}
+                Err(e) => fault_err = Some(e.to_string()),
+            }
+        }
+
+        let msg = fault_err.expect("a rejected apply-path input must reach the caller as Err");
+        assert!(
+            msg.contains("ResourceLimitExceeded"),
+            "fault code must survive into the host error: {msg}"
+        );
+        assert!(
+            !saw_text,
+            "the run must not proceed to the provider on a rejected kernel input"
+        );
+    }
+
+    /// A provider exception raised AFTER the first chunk must be reported to the kernel as
+    /// `provider_error` (parity with the stream-open path and with node/python). Before the fix
+    /// `evt?` propagated straight out of `try_stream!`: the run ended as a stream-level `Err`
+    /// with no terminal, and the `call_provider` effect stayed pending forever.
+    #[tokio::test]
+    async fn runner_mid_stream_provider_error_is_reported_to_the_kernel() {
+        use crate::providers::LLMProvider;
+        use crate::providers::StreamEvent;
+        use crate::runtime::execution_plane::LocalExecutionPlane;
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use std::sync::Arc;
+
+        struct MidStreamFailProvider;
+        #[async_trait::async_trait]
+        impl LLMProvider for MidStreamFailProvider {
+            async fn stream(
+                &self,
+                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _tools: &[deepstrike_core::types::message::ToolSchema],
+                _extensions: Option<&serde_json::Value>,
+                _state: Option<&crate::providers::ProviderRunState>,
+            ) -> crate::Result<
+                Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>,
+            > {
+                // Opening the stream succeeds; the failure lands after the first chunk.
+                Ok(Box::new(futures::stream::iter(vec![
+                    Ok(StreamEvent::TextDelta {
+                        delta: "partial".into(),
+                    }),
+                    Err(crate::Error::Provider(
+                        "upstream socket closed mid-chunk".into(),
+                    )),
+                ])))
+            }
+        }
+
+        let session_log = Arc::new(InMemorySessionLog::new());
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(MidStreamFailProvider),
+            execution_plane: Some(Box::new(LocalExecutionPlane::new())),
+            session_log: Some(session_log.clone()),
+            compression_store: None,
+            spool_dir: None,
+            kernel_reliability: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            memory_scope: None,
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            os_profile: None,
+            governance_policy: None,
+            signal_policy: None,
+            scheduler_policy: None,
+            resource_quota: None,
+            memory_policy: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: MilestonePolicy::RequireVerifier,
+            milestone_contract: None,
+            run_spec: None,
+            allowed_tool_ids: None,
+            baseline_tool_ids: None,
+            tool_dispatch_gate: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
+            pre_query_memory: None,
+            on_milestone_evaluate: None,
+        });
+
+        let session_id = "s_mid_stream_error_rust";
+        let mut stream = runner
+            .run_streaming("test", &[], None, Some(session_id))
+            .await
+            .unwrap();
+
+        let mut error_seen: Option<String> = None;
+        let mut done_status: Option<String> = None;
+        let mut pending_at_error: Option<usize> = None;
+        while let Some(evt) = stream.next().await {
+            // No stream-level `Err`: the failure travels through the kernel, not around it.
+            let evt = evt.expect("mid-stream provider error must not escape as a stream error");
+            match evt {
+                RunEvent::Error(msg) => {
+                    pending_at_error = runner.active_pending_effect_count();
+                    error_seen = Some(msg);
+                }
+                RunEvent::Done { status, .. } => done_status = Some(status),
+                _ => {}
+            }
+        }
+
+        let msg = error_seen.expect("kernel gave up ⇒ the raw provider error is surfaced");
+        assert!(
+            msg.contains("upstream socket closed mid-chunk"),
+            "raw provider message must be forwarded: {msg}"
+        );
+        // The kernel classified a non-overflow provider failure ⇒ honest `error` terminal.
+        assert_eq!(done_status.as_deref(), Some("error"));
+        // `provider_error` resolved the in-flight `call_provider` effect: nothing left pending.
+        assert_eq!(pending_at_error, Some(0));
+
+        let entries = session_log.read(session_id, 0, None).await.unwrap();
+        assert!(entries.iter().any(|entry| matches!(
+            &entry.event,
+            deepstrike_core::runtime::session::SessionEvent::RunTerminal { reason, .. }
+                if reason == "error"
+        )));
+    }
+
+    /// R-B27: `evaluate_milestone` with neither a verifier policy nor an `on_milestone_evaluate`
+    /// hook used to `return` without feeding a result, leaving the milestone effect dangling in
+    /// the kernel's `pending_effects` — an unresolvable pending item once checkpoint recovery
+    /// lands. The branch now feeds back the most conservative result the current wire can carry
+    /// (`passed = false` + `reason`), so the effect is resolved and the phase does NOT advance.
+    #[tokio::test]
+    async fn runner_milestone_without_verifier_resolves_the_pending_effect() {
+        use crate::providers::LLMProvider;
+        use crate::providers::StreamEvent;
+        use crate::runtime::execution_plane::LocalExecutionPlane;
+        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use deepstrike_core::types::milestone::{MilestoneContract, MilestonePhase};
+        use std::sync::Arc;
+
+        struct FakeProvider;
+        #[async_trait::async_trait]
+        impl LLMProvider for FakeProvider {
+            async fn stream(
+                &self,
+                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _tools: &[deepstrike_core::types::message::ToolSchema],
+                _extensions: Option<&serde_json::Value>,
+                _state: Option<&crate::providers::ProviderRunState>,
+            ) -> crate::Result<
+                Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>,
+            > {
+                Ok(Box::new(futures::stream::iter(vec![
+                    Ok(StreamEvent::TextDelta {
+                        delta: "done".into(),
+                    }),
+                    Ok(StreamEvent::Done),
+                ])))
+            }
+        }
+
+        let contract =
+            MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
+        let session_log = Arc::new(InMemorySessionLog::new());
+        let runner = RuntimeRunner::new(RuntimeOptions {
+            provider: Box::new(FakeProvider),
+            execution_plane: Some(Box::new(LocalExecutionPlane::new())),
+            session_log: Some(session_log.clone()),
+            compression_store: None,
+            spool_dir: None,
+            kernel_reliability: None,
+            session_id: None,
+            max_tokens: 1000,
+            max_turns: Some(3),
+            timeout_ms: None,
+            extensions: None,
+            agent_id: None,
+            memory_scope: None,
+            system_prompt: None,
+            initial_memory: vec![],
+            skill_dir: None,
+            dream_store: None,
+            knowledge_source: None,
+            signal_source: None,
+            governance: None,
+            os_profile: None,
+            governance_policy: None,
+            signal_policy: None,
+            scheduler_policy: None,
+            resource_quota: None,
+            memory_policy: None,
+            tokenizer: None,
+            enable_plan_tool: None,
+            on_tool_suspend: None,
+            on_permission_request: None,
+            milestone_policy: MilestonePolicy::RequireVerifier,
+            milestone_contract: Some(contract),
+            run_spec: None,
+            allowed_tool_ids: None,
+            baseline_tool_ids: None,
+            tool_dispatch_gate: None,
+            on_turn_metrics: None,
+            stable_core_tool_ids: vec![],
+            pre_query_memory: None,
+            on_milestone_evaluate: None,
+        });
+
+        let session_id = "s_milestone_leak_rust";
+        let mut stream = runner
+            .run_streaming("test", &[], None, Some(session_id))
+            .await
+            .unwrap();
+        let mut done_status: Option<String> = None;
+        while let Some(evt) = stream.next().await {
+            // Feeding a result for an effect the kernel does NOT have pending raises an
+            // `UnexpectedEffectResult` fault, which now surfaces as a stream-level `Err`. Getting
+            // a clean `Done` instead is the proof that the milestone effect WAS pending and was
+            // consumed (kernel `runtime.rs` removes it on a matching result).
+            if let RunEvent::Done { status, .. } = evt.expect("no kernel fault") {
+                done_status = Some(status);
+            }
+        }
+        // Host-visible behaviour is unchanged: the run still suspends as `milestone_pending`.
+        assert_eq!(done_status.as_deref(), Some("milestone_pending"));
+
+        let entries = session_log.read(session_id, 0, None).await.unwrap();
+        let blocked = entries
+            .iter()
+            .find_map(|entry| match &entry.event {
+                deepstrike_core::runtime::session::SessionEvent::MilestoneBlocked {
+                    phase_id,
+                    reason,
+                    ..
+                } => Some((phase_id.clone(), reason.clone())),
+                _ => None,
+            })
+            .expect("the unverified milestone must be recorded as blocked, not left dangling");
+        assert_eq!(blocked.0, "phase1");
+        assert!(
+            blocked.1.contains("no verifier"),
+            "conservative reason must explain why the phase did not advance: {}",
+            blocked.1
+        );
+        // Fail-closed: an unverified phase never advances and unlocks nothing.
+        assert!(!entries.iter().any(|entry| matches!(
+            entry.event,
+            deepstrike_core::runtime::session::SessionEvent::MilestoneAdvanced { .. }
+        )));
     }
 }

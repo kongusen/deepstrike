@@ -1,0 +1,28 @@
+{
+  "id": "removed-cancellation-as-effect-failure",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：把取消表达为模型调用或外部动作的失败",
+  "semantics": "删除动作失败分类中的「已取消」取值。取消是控制面事实，只经宿主控制命令进入内核并直接产生取消终态；把取消塞进失败回灌会让内核对同一个待决动作看到两种互斥语义——一边是「这次执行失败了、要不要换策略」，一边是「整个操作要终结」。失败分类只保留跨动作稳定的执行器失败语义。",
+  "given": [
+    "一个存在待决外部动作的操作",
+    "调用方请求取消"
+  ],
+  "when": [
+    "宿主停止该动作的真实执行"
+  ],
+  "then": [
+    "宿主不得以「已取消」为分类回灌失败",
+    "取消只经宿主控制命令进入内核",
+    "失败分类只表达执行器侧的稳定失败语义",
+    "取消直接产生取消终态，不经过失败策略阶梯"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §14.3「删除 provider/effect Cancelled failure」",
+      "spec §7.9 约束「operation cancellation 只通过 HostControl::Cancel」",
+      "spec §11.1「取消顺序」"
+    ]
+  },
+  "target": "§14.3"
+}

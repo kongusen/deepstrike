@@ -1,0 +1,28 @@
+{
+  "id": "budget-live-change-only-tightens",
+  "domain": "budget",
+  "kind": "positive",
+  "title": "运行期只允许收紧资源配额，放大必须走新的预留事实",
+  "semantics": "配额在配置期确定。运行期的策略变更必须是一条有语义的宿主命令，携带期望修订号以避免隐式覆盖，并且只允许收紧。要放大额度必须有独立的预留事实与新的契约，不能复用配置入口。现状允许运行期任意方向改写配额（甚至早于配置到达），该行为不保留。",
+  "given": [
+    "一个已配置资源配额并正在运行的操作"
+  ],
+  "when": [
+    "宿主先提交一次收紧配额的命令，再提交一次放大配额的命令"
+  ],
+  "then": [
+    "收紧命令被接受，且必须携带期望修订号",
+    "放大命令被拒绝，不产生任何状态变更",
+    "配置期入口不能在运行期被复用来改写配额",
+    "配额变更后新的越限请求按新配额拒绝"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.5「resource quota 默认只允许收紧」与 LivePolicyPatch 约束",
+      "spec §13.3 配置处置表",
+      "canonical-kernel-abi-capability-inventory.md §7.2 第 7 项（python/deepstrike/runtime/runner.py:633 早于任何配置发送）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::set_resource_quota_input_denies_spawn_over_quota"
+    ]
+  },
+  "target": "§7.5"
+}

@@ -13,7 +13,6 @@ use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
 use crate::context::pressure::PressureAction;
-use crate::mm::MemoryTierHint;
 
 /// Opaque handle id. M3 assigns these as tool results / knowledge / memory pages enter context.
 pub type HandleId = u32;
@@ -35,15 +34,32 @@ pub enum HandleKind {
 }
 
 /// Where a handle's content currently lives. Page-in/page-out are transitions on this.
+///
+/// [`Self::External`] and [`Self::PagedOut`] are deliberately distinct (§7.10, cluster-b B19): the
+/// first is "generated over the inline threshold and never was resident", the second is "was
+/// resident, archived under context pressure". The historical [`Self::SpooledOut`] collapsed both
+/// into one notion and carried no digest, so a restored body could not be checked against the one
+/// that left — and an oversized result could not be told apart from an evicted one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Residency {
     /// Full content present in working context.
     Resident,
     /// Content written to disk; a preview reference remains (Layer 1 spool).
+    ///
+    /// Legacy wire only — the canonical path never produces it (the host persists before
+    /// submitting, so the body never crosses core). Deleted with the rest of `SpoolLargeResult`.
     SpooledOut { r: String },
-    /// Content archived to long-term storage at the given tier (page-out).
-    PagedOut { tier: MemoryTierHint },
+    /// §7.10 · the body was over the inline threshold when it was generated: the host persisted it
+    /// before the kernel ever saw it, and only `preview` was ever resident.
+    External {
+        /// Opaque host locator. Never a path, never joined, never opened by the kernel.
+        payload_ref: String,
+        digest: String,
+        original_size: u64,
+    },
+    /// §7.10 · the body *was* resident and left under context pressure (page-out archive).
+    PagedOut { payload_ref: String, digest: String },
     /// Original kept locally but projected out of the rendered view (Layer 4 read-time projection).
     Collapsed,
 }
@@ -53,6 +69,7 @@ impl Residency {
         match self {
             Self::Resident => "resident",
             Self::SpooledOut { .. } => "spooled_out",
+            Self::External { .. } => "external",
             Self::PagedOut { .. } => "paged_out",
             Self::Collapsed => "collapsed",
         }
@@ -61,6 +78,29 @@ impl Residency {
     /// Whether the handle's full content currently counts against the token budget.
     pub fn occupies_context(&self) -> bool {
         matches!(self, Self::Resident)
+    }
+
+    /// The opaque locator a page-in must hand back to the host, when one exists.
+    ///
+    /// `None` for every residency the kernel can satisfy on its own — `Resident` and `Collapsed`
+    /// still hold the body locally — and for the legacy spool, whose `r` is a filesystem path
+    /// rather than an opaque `PayloadRef` (§7.10 rule 7) and therefore is not a canonical locator.
+    pub fn payload_ref(&self) -> Option<&str> {
+        match self {
+            Self::External { payload_ref, .. } | Self::PagedOut { payload_ref, .. } => {
+                Some(payload_ref.as_str())
+            }
+            Self::Resident | Self::Collapsed | Self::SpooledOut { .. } => None,
+        }
+    }
+
+    /// The digest a paged-in body must reproduce. Paired with [`Self::payload_ref`]: a residency
+    /// that can be loaded is exactly one that can be verified.
+    pub fn digest(&self) -> Option<&str> {
+        match self {
+            Self::External { digest, .. } | Self::PagedOut { digest, .. } => Some(digest.as_str()),
+            Self::Resident | Self::Collapsed | Self::SpooledOut { .. } => None,
+        }
     }
 }
 
@@ -319,7 +359,12 @@ pub struct SpoolDecision {
 /// The marker uses the truncation phrasing models are trained on ("Output truncated: showing X of
 /// Y…") and carries the retrieval instruction inline — `call_id` + the `read_result` tool — so the
 /// model never has to connect a bare placeholder to a separately-described tool.
-pub fn plan_spool(output: &str, call_id: &str, threshold_bytes: u32, preview_bytes: u32) -> Option<SpoolDecision> {
+pub fn plan_spool(
+    output: &str,
+    call_id: &str,
+    threshold_bytes: u32,
+    preview_bytes: u32,
+) -> Option<SpoolDecision> {
     let size = output.len();
     if threshold_bytes == 0 || size <= threshold_bytes as usize {
         return None;
@@ -416,12 +461,53 @@ mod tests {
     fn residency_occupies_context_only_when_resident() {
         assert!(Residency::Resident.occupies_context());
         assert!(!Residency::Collapsed.occupies_context());
-        assert!(
-            !Residency::PagedOut {
-                tier: MemoryTierHint::Semantic
-            }
-            .occupies_context()
-        );
+        assert!(!paged_out().occupies_context());
+        assert!(!external().occupies_context());
+    }
+
+    fn external() -> Residency {
+        Residency::External {
+            payload_ref: "payload:01J".into(),
+            digest: "sha256:".to_string() + &"a".repeat(64),
+            original_size: 90_000,
+        }
+    }
+
+    fn paged_out() -> Residency {
+        Residency::PagedOut {
+            payload_ref: "payload:02K".into(),
+            digest: "sha256:".to_string() + &"b".repeat(64),
+        }
+    }
+
+    /// §7.10 · a residency is loadable exactly when it is verifiable: the two accessors agree on
+    /// the same set, so no page-in can address a body it could not then check.
+    #[test]
+    fn only_externally_backed_residencies_expose_a_locator_and_a_digest() {
+        for residency in [external(), paged_out()] {
+            assert!(residency.payload_ref().is_some(), "{residency:?}");
+            assert!(residency.digest().is_some(), "{residency:?}");
+        }
+        for residency in [
+            Residency::Resident,
+            Residency::Collapsed,
+            // the legacy spool ref is a filesystem path, not an opaque `PayloadRef`
+            Residency::SpooledOut {
+                r: "/tmp/.spool/x".into(),
+            },
+        ] {
+            assert_eq!(residency.payload_ref(), None, "{residency:?}");
+            assert_eq!(residency.digest(), None, "{residency:?}");
+        }
+    }
+
+    /// B19 · "generated over the limit" and "evicted under pressure" are different facts, and the
+    /// label is what a host event log reads them by.
+    #[test]
+    fn external_and_paged_out_are_distinguishable_states() {
+        assert_eq!(external().label(), "external");
+        assert_eq!(paged_out().label(), "paged_out");
+        assert_ne!(external(), paged_out());
     }
 
     #[test]
@@ -530,7 +616,10 @@ mod tests {
         assert!(d.preview.starts_with(&"y".repeat(32)));
         // Trained truncation phrasing + the inline retrieval instruction: what was cut,
         // and exactly how to read the rest.
-        assert!(d.preview.contains("Output truncated: showing first 32 of 1000 bytes"));
+        assert!(
+            d.preview
+                .contains("Output truncated: showing first 32 of 1000 bytes")
+        );
         assert!(d.preview.contains("read_result"));
         assert!(d.preview.contains("call-42"));
         assert!(d.preview.len() < output.len());

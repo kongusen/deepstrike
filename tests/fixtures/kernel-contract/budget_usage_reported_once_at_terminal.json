@@ -1,0 +1,27 @@
+{
+  "id": "budget-usage-reported-once-at-terminal",
+  "domain": "budget",
+  "kind": "positive",
+  "title": "用量事实沿途可观测，但最终用量只在终态提交一次",
+  "semantics": "运行过程中的用量变化以审计事实呈现，不要求宿主执行任何动作；最终用量报告只随终态提交一次，并且与该终态在同一次已提交的转移里。宿主观察到的 token 用量是可进入契约的宿主事实，但由内核折算与裁决。",
+  "given": [
+    "一个已授予额度并已运行若干轮的操作"
+  ],
+  "when": [
+    "内核提交根操作终态"
+  ],
+  "then": [
+    "沿途的用量变化只作为审计事实出现",
+    "最终用量报告只出现一次，且随终态提交",
+    "用量报告不作为需要宿主回灌的外部动作",
+    "重放终态输入不会产生第二份用量报告"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.12「usage report 在 terminal 内唯一提交」",
+      "spec §7.8「以下不再是 effect：budget usage report」",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::budget_grant_reports_correlated_terminal_usage_once"
+    ]
+  },
+  "target": "§7.12"
+}

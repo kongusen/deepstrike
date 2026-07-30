@@ -1,0 +1,216 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0003",
+  "input_id": "caller-supplied-idempotency-key-full",
+  "observed_at_ms": "1753747200000",
+  "input": {
+    "kind": "configure_operation",
+    "config": {
+      "execution_policy": {
+        "max_context_tokens": 200000,
+        "max_turns": 40,
+        "max_total_tokens": "2000000",
+        "max_wall_ms": "600000",
+        "criteria_gate_enabled": true,
+        "repeat_fuse": {
+          "enabled": true,
+          "deny_after": 4,
+          "terminate_after": 7
+        },
+        "entropy_watch": {
+          "enabled": true,
+          "threshold_ppm": 650000,
+          "hysteresis_ppm": 100000,
+          "cooldown_turns": 3,
+          "notify_model": true
+        }
+      },
+      "governance_policy": {
+        "default_action": "ask_user",
+        "rules": [
+          {
+            "tool_pattern": "shell.*",
+            "action": "deny"
+          }
+        ],
+        "vetoed_tools": [
+          "rm"
+        ],
+        "rate_limits": [
+          {
+            "tool": "search",
+            "max_calls": 10,
+            "window_ms": "60000"
+          }
+        ],
+        "constraints": [
+          {
+            "kind": "required",
+            "tool": "write",
+            "param_path": "destination"
+          },
+          {
+            "kind": "range",
+            "tool": "sample",
+            "min_micros": 0,
+            "max_micros": 1000000,
+            "param_path": "temperature"
+          }
+        ]
+      },
+      "scheduler_policy": {
+        "critical_path_weight": 900000,
+        "fanout_weight": 9000,
+        "age_weight": 900,
+        "token_cost_weight": 2
+      },
+      "resource_quota": {
+        "max_concurrent_subagents": 2,
+        "max_total_subagents": 8,
+        "max_spawn_depth": 2,
+        "max_workflow_nodes": 64,
+        "memory_writes_per_window": {
+          "max_events": 4,
+          "window_ms": "60000"
+        }
+      },
+      "budget_grant": {
+        "reservation_id": "res-2026-07-29-a",
+        "tokens": "500000",
+        "subagents": 4,
+        "rounds": 3
+      },
+      "signal_policy": {
+        "queue_max": 32,
+        "ttl_ms": "30000",
+        "deadline_escalation": true
+      },
+      "context_policy": {
+        "pressure_thresholds_ppm": {
+          "snip": 700000,
+          "micro": 800000,
+          "collapse": 900000,
+          "auto": 950000,
+          "renewal": 980000
+        },
+        "target_after_compress_ppm": 650000,
+        "preserve_recent_turns": 3,
+        "renewal_carryover_ppm": 50000,
+        "collapse_old_assistant_narration": true,
+        "idle_micro_compact_minutes": 45,
+        "knowledge_budget_ppm": 250000,
+        "prompt_budget": {
+          "prompt_overhead_tokens": 1200,
+          "output_reserve_tokens": 4000,
+          "safety_margin_tokens": 500
+        }
+      },
+      "recovery_policy": {
+        "provider_recovery_attempts": 2,
+        "output_recovery_attempts": 1
+      },
+      "payload_policy": {
+        "inline_threshold_bytes": 32768,
+        "preview_bytes": 1024
+      },
+      "kernel_limits": {
+        "max_input_bytes": 1048576,
+        "max_json_depth": 32,
+        "max_collection_entries": 4096,
+        "collection_limits": {
+          "tool_catalog": 256,
+          "skill_catalog": 64,
+          "knowledge_entries": 512,
+          "initial_messages": 1024,
+          "capability_grants": 128,
+          "governance_rules": 64
+        }
+      },
+      "memory_access": {
+        "binding_id": "mem-binding-1",
+        "capabilities": {
+          "read": true,
+          "write": true
+        }
+      },
+      "memory_policy": {
+        "stale_warning_days": 7,
+        "retrieval_top_k": 8,
+        "validation_enabled": true,
+        "max_content_bytes": 20000,
+        "max_name_length": 120,
+        "promotion_recall_threshold": "3"
+      },
+      "tool_catalog": [
+        {
+          "name": "search",
+          "description": "search the corpus",
+          "parameters": {
+            "type": "object"
+          }
+        },
+        {
+          "name": "write",
+          "description": "write a file",
+          "parameters": {
+            "type": "object"
+          }
+        }
+      ],
+      "skill_catalog": [
+        {
+          "name": "research",
+          "description": "run a literature sweep",
+          "when_to_use": "sources,citations",
+          "allowed_tools": [
+            "search"
+          ],
+          "effort": 3,
+          "estimated_tokens": 900
+        }
+      ],
+      "feature_policy": {
+        "memory_enabled": true,
+        "knowledge_enabled": true,
+        "plan_tool_enabled": true,
+        "tool_dispatch_gate": "exposed",
+        "stable_core_tool_ids": [
+          "search"
+        ]
+      },
+      "host_effect_support": {
+        "supported": [
+          "call_provider",
+          "execute_tools",
+          "request_approval",
+          "spawn_tasks",
+          "preempt_tasks",
+          "persist_memory",
+          "query_memory",
+          "archive_page_out",
+          "load_payload",
+          "evaluate_milestone"
+        ]
+      },
+      "verification_contracts": [
+        {
+          "contract_id": "brief-quality-v1",
+          "phases": [
+            {
+              "phase_id": "collect",
+              "unlocks": [
+                "research"
+              ]
+            },
+            {
+              "phase_id": "write",
+              "unlocks": [
+                "write"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

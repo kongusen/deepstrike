@@ -1,0 +1,43 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-15",
+  "observed_at_ms": "1753747215000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-07-29-0001:step:9:effect:0",
+    "outcome": {
+      "status": "succeeded",
+      "result": {
+        "kind": "tasks_preempted",
+        "attempts": [
+          {
+            "task_id": "task-3",
+            "attempt_id": "task-3:attempt:2",
+            "outcome": {
+              "status": "preempted"
+            }
+          },
+          {
+            "task_id": "task-4",
+            "attempt_id": "task-4:attempt:1",
+            "outcome": {
+              "status": "already_finished"
+            }
+          },
+          {
+            "task_id": "task-5",
+            "attempt_id": "task-5:attempt:1",
+            "outcome": {
+              "status": "failed",
+              "failure": {
+                "kind": "unknown",
+                "message": "worker did not acknowledge"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

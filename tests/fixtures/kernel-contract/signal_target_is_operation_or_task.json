@@ -1,0 +1,29 @@
+{
+  "id": "signal-target-is-operation-or-task",
+  "domain": "signal",
+  "kind": "positive",
+  "title": "信号目标只能是根操作或逻辑任务，宿主会话身份不进入事件",
+  "semantics": "保留「信号可以定向」的能力，但寻址空间收敛为内核自己拥有的两种身份：整个根操作，或某个逻辑任务。宿主的会话、进程或线程标识不是寻址依据，也不进入契约。队列容量、丢弃与挤占按已配置的信号策略执行。",
+  "given": [
+    "一个正在运行、且已配置信号队列上限的操作",
+    "该操作下存在若干逻辑任务"
+  ],
+  "when": [
+    "宿主分别向根操作与某个逻辑任务投递信号，并在队列已满时继续投递"
+  ],
+  "then": [
+    "目标只能是根操作或某个逻辑任务",
+    "宿主会话或进程标识不出现在事件里",
+    "队列已满时按已配置策略丢弃，并留下审计事实",
+    "紧急信号按策略抢占当前执行，普通信号入队等待"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.7「SignalTarget」与「host session ID 不进入 event」",
+      "spec §5.2 Host 拥有 session/进程身份",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::attention_policy_critical_signal_interrupts",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::attention_policy_full_queue_drops"
+    ]
+  },
+  "target": "§7.7"
+}

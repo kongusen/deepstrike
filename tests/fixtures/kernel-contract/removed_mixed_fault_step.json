@@ -1,0 +1,28 @@
+{
+  "id": "removed-mixed-fault-step",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：一步之内既有动作又有故障的混合形态",
+  "semantics": "删除步内的故障数组通道。一次转移的结果改为封闭三态，故障只出现在「已拒绝」分支，因此不可能构造出「既有动作又有故障」的中间形态。现状四个宿主都在读取步内故障数组的第一项，语义完全靠约定维系，并且宿主之间已经分裂成「读到故障就抛硬错误」与「静默丢弃继续跑」两种互斥处理。",
+  "given": [
+    "四种语言宿主中的任意一个"
+  ],
+  "when": [
+    "宿主驱动一次会被拒绝的转移"
+  ],
+  "then": [
+    "步内不再有故障数组",
+    "拒绝只能通过封闭三态中的已拒绝分支表达",
+    "不存在同时携带动作与故障的中间形态",
+    "四语言对故障的处理不再分裂为抛错与静默丢弃两种"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.13 与 §14.3「删除 KernelStep.faults」",
+      "crates/deepstrike-core/src/runtime/kernel/protocol.rs:830",
+      "canonical-kernel-abi-capability-inventory.md §5.2（node/src/runtime/kernel-step.ts:767 抛错、rust/src/runtime/runner.rs:2512 静默丢弃）",
+      "spec §17 Task 0 止血第 8 项"
+    ]
+  },
+  "target": "§7.13"
+}

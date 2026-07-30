@@ -1,0 +1,29 @@
+{
+  "id": "removed-kernel-auto-redispatch",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：内核对同一意图无上限地自动重发失败动作",
+  "semantics": "现状审批、任务派生与抢占三条路径在收到失败时会无条件、无上限地把同一意图重发为一个新的动作标识，宿主无法据此去重，于是持续失败的宿主会与内核形成无界的动作与失败往返，每一轮都消耗一个步序、一条持久记录和一条审计事实。删除自动重发：内核收到失败只做一次策略决策（放弃、切换恢复阶梯或提交终态）。重试由宿主发起，并以新的因果重新请求，同时按动作标识与启动令牌保持幂等；宿主的退避过程对内核不可见。",
+  "given": [
+    "一个存在待决外部动作的操作",
+    "宿主的执行器已经耗尽自身重试并稳定失败"
+  ],
+  "when": [
+    "宿主回灌一次失败结果"
+  ],
+  "then": [
+    "内核只做一次策略决策，不重发同一意图",
+    "失败本身作为可重放的类型化事实保留",
+    "重试必须由宿主以新的因果重新发起",
+    "宿主内部的退避与重试过程不进入内核"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §15.3（DEC-5）与 §7.9 现状注记",
+      "crates/deepstrike-core/src/scheduler/state_machine/gate.rs:572、workflow.rs:561、signal.rs:208（三条自动重发路径）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::approval_host_failure_reissues_effect_without_success_observation（现状行为）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::host_effect_retry_limit_terminates_instead_of_spinning"
+    ]
+  },
+  "target": "§15.3"
+}

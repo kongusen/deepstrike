@@ -82,7 +82,7 @@ const reply = await collectText(runner.run({ sessionId: "chat-1", goal: "What is
 
 Use `InMemorySessionLog` for process-local sessions or `FileSessionLog` when replay should survive restarts. `wake(sessionId)` resumes from the event log without inserting a duplicate `run_started` event.
 
-### Package layout (v0.2.30)
+### Package layout (v0.2.50)
 
 The root export is the **intent layer** — what you reach for to run an agent, run a workflow, author a tool, or pick a provider (~30 symbols). Advanced machinery lives behind subpaths, so the common surface stays small and tree-shakeable:
 
@@ -96,7 +96,7 @@ The root export is the **intent layer** — what you reach for to run an agent, 
 | `@deepstrike/sdk/harness` | `AttemptLoop`, body/judge/carry policies, `judge` |
 | `@deepstrike/sdk/os` | profiles, `KernelPrimitivesDashboard`, `primitiveForKind` / `KernelPrimitive`, signals, `PermissionManager`, replay-testing utilities |
 
-> **Migration from 0.2.x:** the kernel-lowering converters (`*ToKernel`), low-level prompt/eval builders, and the `OpenAIChatProvider` alias are no longer exported from root; backend providers, planes, memory, harness, and OS utilities moved to the subpaths above. See [`MIGRATION-v0.2.300.md`](./MIGRATION-v0.2.300.md).
+> **Migration from 0.2.x:** the kernel-lowering converters (`*ToKernel`), low-level prompt/eval builders, and the `OpenAIChatProvider` alias are no longer exported from root; backend providers, planes, memory, harness, and OS utilities moved to the subpaths above. See [`MIGRATION-v0.2.30.md`](./MIGRATION-v0.2.30.md).
 
 ### Recipes — the canonical entry points
 
@@ -193,7 +193,7 @@ Oversized tool results (> 50 KB) stay in context as a preview plus a `.spool/` r
 Every run loads declarative `governancePolicy` (deny / ask_user / rate-limit / param rules) and in-kernel signal routing (`signalPolicy`, default queue 64). Dangerous tools, external interrupts, and approval flows are policy — not ad-hoc `if` checks in your handlers.
 
 **Long-term memory as syscalls (Phase-7)**  
-`writeMemory` and `queryMemory` run outside the main tool loop: kernel validation before `DreamStore.commit`, search → `selectMemories` → `memory_retrieval_result` on query. Failed writes emit `memory_validation_failed` for audit; good memory is durable without polluting history.
+`writeMemory` and `queryMemory` run outside the main tool loop: kernel validation happens before `DreamStore.upsert`, while queries call `DreamStore.search` and journal `memory_retrieval_result`. Failed writes emit `memory_validation_failed` for audit; good memory is durable without polluting history.
 
 **Multi-agent and multi-signal orchestration**  
 Sub-agents register in the kernel process table (`agent_process_changed`); parent runs suspend explicitly until `sub_agent_completed`. Signals get disposition (Interrupt / Queue / Observe / Dropped) in-kernel, so gateways, cron, and heartbeats compose with the main loop instead of racing it.
@@ -228,27 +228,56 @@ const outcome = await runner.runWorkflow({
     { task: "Skeptic: which flags are real violations?",  role: "verify", dependsOn: [0, 1, 2] },
   ],
 })
-// → { completed: ["wf-node0", … ], failed: [], outputs: { "wf-node3": "…" } }
+const completed = outcome.nodeOutcomes.filter(node => node.status === "completed")
+const partial = outcome.nodeOutcomes.filter(node => node.status === "completed_partial")
+const failed = outcome.nodeOutcomes.filter(node => node.status === "failed")
+// outcome.outputs["wf-node3"] contains the skeptic's final text.
+// outcome.rejection is present only when the whole workflow was rejected before any node ran.
 ```
 
 `runWorkflow` works **standalone** — call it on a freshly-constructed runner (e.g. inside a stateless HTTP handler) and it auto-bootstraps a kernel that owns the DAG, drives it under the same governance/quota/attention policies a full `run()` gets, and tears it down on completion. Called *during* a `run()`, it instead drives the workflow on the active kernel. Either way every node's final text comes back in `outputs`, keyed by node agent-id. To resume an interrupted standalone run, pass the prior session id: `runner.resumeWorkflow(spec, { sessionId })`.
 
-A node's `kind` selects the control-flow shape; the same executor drives them all, every spawn passing the syscall gate:
+A workflow node has no public `kind` field. Its control-flow shape is selected by one of four
+mutually exclusive fields; omit all four for a normal spawn. The same executor drives every shape,
+and every spawn passes the syscall gate:
 
-| Node `kind` | Behavior |
+| Public `WorkflowNodeSpec` field | Behavior |
 |---|---|
-| `{ type: "spawn" }` (default) | Run the node's agent once |
-| `{ type: "loop", maxIters }` | Re-run until the agent signals it's done, capped at `maxIters` |
-| `{ type: "classify", branches }` | The classifier's result selects one branch; the rest are pruned |
-| `{ type: "tournament", entrants }` | Generate N entrants, then a pairwise-judge bracket to one winner |
-| `{ type: "reduce", reducer }` | **Tokenless host-compute** — a pure function (`dedupe_lines` / `merge_json_arrays` / `concat` / `count`, or your own via the `reducers` runner option) over the node's dependency outputs |
+| none (default) | Run the node's agent once |
+| `loop: { maxIters }` | Re-run until the agent signals it's done, capped at `maxIters` |
+| `classify: { branches }` | The classifier's result selects one branch; the rest are pruned |
+| `tournament: { entrants }` | Generate N entrants, then a pairwise-judge bracket to one winner |
+| `reducer: "concat"` | **Tokenless host-compute** — a pure function (`dedupe_lines` / `merge_json_arrays` / `concat` / `count`, or your own via the `reducers` runner option) over the node's `dependsOn` outputs |
 
-### 0.2.11 capabilities
+Dependencies use `dependsOn: number[]`, where each number is a node index, and `depPolicy` controls
+how upstream terminal states gate the node (`all_success` by default, plus `accept_partial`,
+`all_terminal`, and `optional`).
 
-- **Runtime fan-out** — give a node the `submitWorkflowNodesTool` and its agent can append nodes to the live DAG mid-run (true loop-until-done; one verifier per claim it discovers). Recorded and replayed on `resumeWorkflow`. Governance rejection fails the submitting node instead of acknowledging work that was never appended.
+### Workflow capabilities (v0.2.50)
+
+- **Runtime fan-out** — register `submitWorkflowNodesTool` on the parent execution plane and a trusted node can append nodes to the live DAG mid-run (true loop-until-done; one verifier per discovered claim). The tool schema is exported from `@deepstrike/sdk/workflow`, not the package root. Submissions are recorded and replayed by `resumeWorkflow`; governance rejection fails the submitting node instead of acknowledging work that was never appended.
 - **Quarantine, no escape** — set `trust: "quarantined"` on a node that reads untrusted content; it's denied write-capable isolation in-kernel, and any nodes it submits are coerced to quarantined too (no privilege escalation).
 - **Structured output** — set `outputSchema` on a node; the runner instructs the agent, validates the result against the JSON-Schema subset, and re-runs once with the errors on mismatch. A node that never conforms fails (its dependents starve).
-- **Budget as signal** — with a `maxWorkflowNodes` / `maxConcurrentSubagents` quota installed, each spawned node's goal carries its remaining headroom so a coordinator can size its fan-out to fit.
+- **Budget as signal** — set `resourceQuota.maxWorkflowNodes` and/or `resourceQuota.maxConcurrentSubagents`; each spawned node's goal carries its remaining headroom so a coordinator can size its fan-out to fit.
+
+`submitWorkflowNodesTool` is a `ToolSchema`, while execution planes register `RegisteredTool`
+instances. Adapt it once on the parent plane; the runner intercepts the call before the placeholder
+handler executes:
+
+```typescript
+import { tool } from "@deepstrike/sdk"
+import { submitWorkflowNodesTool } from "@deepstrike/sdk/workflow"
+
+plane.register(tool(
+  submitWorkflowNodesTool.name,
+  submitWorkflowNodesTool.description,
+  JSON.parse(submitWorkflowNodesTool.parameters),
+  async () => "", // intercepted by RuntimeRunner
+))
+```
+
+Trusted workflow nodes inherit the parent plane, so the tool is visible to all of them. There is no
+per-node tool allowlist on `WorkflowNodeSpec`; quarantined nodes use a filtered, deny-all plane.
 
 ---
 
@@ -337,7 +366,7 @@ Full reference: [docs/concepts/context-slots-compression.md](../docs/concepts/co
 import {
   DEFAULT_NATIVE_GOVERNANCE_POLICY,
   DEFAULT_NATIVE_SIGNAL_POLICY,
-} from "@deepstrike/sdk"
+} from "@deepstrike/sdk/os"
 
 const runner = new RuntimeRunner({
   provider,
@@ -359,7 +388,9 @@ const runner = new RuntimeRunner({
   // Resource quotas (M2) — enforced at the kernel syscall trap. Opt-in; omit for unbounded.
   resourceQuota: {
     maxConcurrentSubagents: 4,                       // deny spawn while at cap
+    maxTotalSubagents: 20,                           // cumulative cap across the RunGroup
     maxSpawnDepth: 2,                                // deny spawn past nesting depth
+    maxWorkflowNodes: 32,                            // cap one live DAG, including submitted nodes
     memoryWritesPerWindow: { maxWrites: 20, windowMs: 60_000 }, // rate-limit writeMemory
   },
 
@@ -417,7 +448,7 @@ const runner = new RuntimeRunner({
 | `governancePolicy` | Declarative deny / ask_user / rate-limit / param rules loaded into the kernel before `start_run` |
 | `signalPolicy` | Versioned in-kernel signal queue/TTL policy (default queue 64) |
 | `promptBudget` | Provider-envelope overhead, output reserve, and safety margin deducted from the context window |
-| `resourceQuota` | M2 declarative limits — `maxConcurrentSubagents` / `maxSpawnDepth` / `memoryWritesPerWindow` — enforced at the kernel syscall trap (`set_resource_quota`); over-quota spawns roll back, over-rate writes surface as `memory_validation_failed` |
+| `resourceQuota` | M2 declarative limits — `maxConcurrentSubagents` / `maxTotalSubagents` / `maxSpawnDepth` / `maxWorkflowNodes` / `memoryWritesPerWindow` — enforced at the kernel syscall trap (`set_resource_quota`); over-quota spawns roll back, over-rate writes surface as `memory_validation_failed` |
 | `memoryPolicy` | Long-term memory config sent as `set_memory_policy` and **kernel-enforced**: `validationEnabled: false` admits writes without validation, `maxContentBytes` / `maxNameLength` override validation limits, `retrievalTopK` caps `query_memory` breadth; `memoryPath` / `staleWarningDays` are SDK-consumed (requires `dreamStore` + `agentId` to enable memory) |
 | `onPermissionRequest` | Resolves `tool_gated` + `suspended` → kernel `resume` with approved/denied call IDs |
 | `compressionStore` | Writes archived messages on `compressed` observations |
@@ -428,7 +459,7 @@ const runner = new RuntimeRunner({
 Rebuild an OS diagnostics snapshot from session events:
 
 ```typescript
-import { rebuildOsSnapshotFromSessionEvents } from "@deepstrike/sdk"
+import { rebuildOsSnapshotFromSessionEvents } from "@deepstrike/sdk/os"
 
 const events = (await sessionLog.read(sessionId)).map(e => e.event)
 const snap = rebuildOsSnapshotFromSessionEvents(events)
@@ -455,7 +486,8 @@ No configuration is required; customize the directory by passing a `resultSpool`
 ## Tools
 
 ```typescript
-import { tool, readFile } from "@deepstrike/sdk"
+import { tool } from "@deepstrike/sdk"
+import { readFile } from "@deepstrike/sdk/workflow"
 
 plane.register(tool("search", "Search.", schema, async (args) => ...))
 plane.register(readFile)     // built-in: read files from disk (also resolves .spool/ refs)
@@ -553,35 +585,31 @@ mem.clear()
 import type { DreamStore } from "@deepstrike/sdk/memory"
 
 class MyStore implements DreamStore {
-  async loadSessions(agentId) { ... }
-  async loadMemories(agentId) { ... }
-  async commit(agentId, result, existing) { ... }
-  async search(agentId, query) { ... } // Promise<MemoryRecall[]>
+  async upsert(agentId, record) { ... }      // the only durable memory mutation
+  async search(agentId, query) { ... }       // Promise<MemoryRecall[]>
+  async saveSession(session) { ... }         // completed transcript for extraction
 }
 
+const memoryScope = { tenant_id: "acme", namespace: "assistant" }
 const runner = new RuntimeRunner({
   provider,
   executionPlane: plane,
   sessionLog: new FileSessionLog(".deepstrike/sessions"),
   maxTokens: 4096,
   dreamStore: new MyStore(),
-  agentId: "my-agent",  // enables `memory` meta-tool + semantic page-out archival
+  agentId: "my-agent",
+  memoryScope,          // scopes run-start recall, queries, extraction, and semantic page-out
 })
 ```
 
-Three memory paths:
+Four memory paths:
 
 | Path | When | What happens |
 |------|------|--------------|
 | In-session `memory(query)` | LLM calls meta-tool | `DreamStore.search()` → history tool result |
 | `initialMemory` | Run start | Injected into Slot 2 (`systemKnowledge`) |
-| Semantic `page_out` | Kernel evicts with `tier_hint: "semantic"` | SDK summarizes via `dreamSummarizer` / `dreamProvider` → `DreamStore.commit()` |
-| `dream(agentId)` | Explicit idle call | `IdlePipeline` batch-consolidates past sessions |
-
-```typescript
-// Post-session batch consolidation
-const result = await runner.dream("my-agent", Date.now())
-```
+| `writeMemory(record)` | Host writes a durable record | Kernel validation / quota / dedup → `DreamStore.upsert()` |
+| Semantic `page_out` | Kernel evicts with `tier_hint: "semantic"` | SDK summarizes via `dreamSummarizer` / `dreamProvider` → gated `writeMemory()` |
 
 ### Phase-7 memory syscalls (`writeMemory` / `queryMemory`)
 
@@ -682,7 +710,7 @@ Inbound signals are routed by the in-kernel attention policy (default queue size
 | queue full | `dropped` |
 
 ```typescript
-import { SignalGateway, ScheduledPrompt } from "@deepstrike/sdk"
+import { SignalGateway, ScheduledPrompt } from "@deepstrike/sdk/os"
 
 const gw = new SignalGateway()
 gw.schedule(new ScheduledPrompt("standup", Date.now() + 3600_000))

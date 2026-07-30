@@ -226,6 +226,20 @@ def milestone_check_fail(phase_id: str, reason: str) -> MilestoneCheckResult:
   return MilestoneCheckResult(phase_id=phase_id, passed=False, reason=reason)
 
 
+#: R-B27: the conservative resolution the runner feeds back when an ``evaluate_milestone`` effect
+#: arrives with no phase ``verifier`` and no host ``on_milestone_evaluate`` hook. Nothing can attest
+#: the phase, but the kernel is already holding the effect in its pending table — returning without
+#: an answer leaves a dangling effect that a logical-checkpoint recovery cannot resolve. The current
+#: ``MilestoneResult`` wire has no error field, so "could not be verified" is expressed with the
+#: shape the wire does have: ``passed=False`` (the phase does not advance — fail-closed).
+#:
+#: The string is part of the cross-SDK contract: Node (``node/src/types/agent.ts``),
+#: WASM (``wasm/src/runtime/types/agent.ts``) and Rust feed back the byte-identical reason.
+MILESTONE_UNVERIFIED_REASON = (
+  "milestone unverified: no verifier configured and no host evaluation hook (fail-closed)"
+)
+
+
 def _safe_parse_tool_args(raw: str | None) -> dict[str, Any]:
   """Tool-call ``arguments`` reach us as a raw model-authored string (e.g. the OpenAIChat-family
   non-streaming path passes it through verbatim). A malformed JSON string must degrade to empty

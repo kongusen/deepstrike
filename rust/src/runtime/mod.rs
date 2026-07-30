@@ -4,6 +4,7 @@ pub mod archive;
 pub mod credential_vault;
 pub mod eval;
 pub mod execution_plane;
+pub mod kernel_journal;
 pub mod large_result_spool;
 pub mod mcp_proxy_plane;
 pub mod os_profile;
@@ -26,11 +27,19 @@ pub use execution_plane::{
     ExecutionPlane, LocalExecutionPlane, PermissionRequest, PermissionRequestHandler,
     PermissionResponse, RunContext, ToolSuspendHandler, ToolSuspendRequest,
 };
+// Durable transaction capability (Canonical Kernel ABI §9.1) — deliberately separate from
+// `SessionLog`: the journal's `step_seq` space and the projection log's business `seq` space must
+// never share numbering (spec Task 8b).
+pub use kernel_journal::{
+    CheckpointCandidate, FileKernelJournal, InMemoryKernelJournal, InstalledCheckpoint,
+    JournalAppendReceipt, JournalEntry, JournalError, JournalHead, JournalPruneReceipt,
+    JournalRecordInput, JournalResult, KernelJournal,
+};
 pub use mcp_proxy_plane::{McpProxyPlane, McpServerConfig};
 pub use os_profile::{
-    assert_native_profile, default_native_governance_policy, governance_filter_schema, os_profile,
-    GovernancePolicy, MemoryWriteRateLimit, NativeOsProfile, OsProfile, SchedulerPolicyConfig,
-    SignalPolicy, DEFAULT_NATIVE_SIGNAL_POLICY,
+    DEFAULT_NATIVE_SIGNAL_POLICY, GovernancePolicy, MemoryWriteRateLimit, NativeOsProfile,
+    OsProfile, SchedulerPolicyConfig, SignalPolicy, assert_native_profile,
+    default_native_governance_policy, governance_filter_schema, os_profile,
 };
 pub use process_sandbox_plane::{ProcessSandboxPlane, SandboxOptions};
 pub use provider_replay::{
@@ -39,9 +48,9 @@ pub use provider_replay::{
 pub use remote_vpc_plane::{RemoteVpcOptions, RemoteVpcPlane};
 pub use replay::{is_mid_run, repair_entries, replay_messages};
 pub use runner::{
-    collect_text, MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy,
-    OnTurnMetricsHandler, RuntimeOptions, RuntimeRunner, TurnMetrics,
+    MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy, OnTurnMetricsHandler,
+    RuntimeOptions, RuntimeRunner, TurnMetrics, collect_text,
 };
-pub use sandboxed_skill::{scan_skill_dir, PythonSkillPolicy, SkillKind};
+pub use sandboxed_skill::{PythonSkillPolicy, SkillKind, scan_skill_dir};
 pub use session_log::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
 pub use skill_watcher::SkillWatcher;

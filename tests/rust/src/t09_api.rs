@@ -618,7 +618,11 @@ async fn signal_gateway_schedule_fires() {
     // Give time for schedule to fire
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
-    let claim = rx.claim_signal().await.expect("claim signal").expect("scheduled signal");
+    let claim = rx
+        .claim_signal()
+        .await
+        .expect("claim signal")
+        .expect("scheduled signal");
     assert_eq!(claim.signal.source, "cron");
     let receipt = deepstrike_sdk::SignalDeliveryReceipt {
         delivery_id: claim.delivery_id,

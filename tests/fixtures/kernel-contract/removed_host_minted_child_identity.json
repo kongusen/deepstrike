@@ -1,0 +1,28 @@
+{
+  "id": "removed-host-minted-child-identity",
+  "domain": "removed",
+  "kind": "negative",
+  "title": "删除：宿主铸造子代理身份、无动作无确认的派生路径",
+  "semantics": "现状存在一条输入，让宿主直接铸造完整的子代理身份（代理标识与会话标识）并让内核事后登记：既没有内核签发的任务与尝试身份，也没有派生动作与启动确认，内核在整条派生生命周期里观测不到「真的起来了」。删除该路径：派生只能由内核动作请求发起，身份由内核签发，宿主只回报启动结果。",
+  "given": [
+    "一个正在运行的操作"
+  ],
+  "when": [
+    "宿主试图直接登记一个自带完整身份的子代理"
+  ],
+  "then": [
+    "该输入在契约里不存在",
+    "子任务身份只能由内核签发",
+    "派生必须经由内核动作请求，并有明确的启动确认",
+    "宿主的会话与进程标识不进入契约"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §14.3 与 §22.11「沿用现状的两条异构 spawn 路径」被否决",
+      "canonical-kernel-abi-capability-inventory.md §1 第 44 项（crates/deepstrike-core/src/runtime/kernel/protocol.rs:705-708、scheduler/state_machine/process.rs:13-54）",
+      "spec §10.4 现状注记：ack 硬编码空失败列表且早于真正运行（node/src/runtime/runner.ts:1594-1608）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::spawn_sub_agent_input_registers_process（现状行为）"
+    ]
+  },
+  "target": "§10.4"
+}

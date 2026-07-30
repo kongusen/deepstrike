@@ -1,0 +1,14 @@
+{
+  "expect": "version_mismatch",
+  "envelope": {
+    "operation_id": "op-2026-07-29-0001",
+    "input_id": "caller-supplied-idempotency-key-1",
+    "observed_at_ms": "1753747200000",
+    "input": {
+      "kind": "host_control",
+      "command": {
+        "kind": "force_compact"
+      }
+    }
+  }
+}

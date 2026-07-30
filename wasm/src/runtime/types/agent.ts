@@ -282,6 +282,20 @@ export function milestoneCheckFail(phaseId: string, reason: string): MilestoneCh
   return { phaseId, passed: false, reason }
 }
 
+/**
+ * R-B27: the conservative resolution the runner feeds back when an `evaluate_milestone` effect
+ * arrives with no phase `verifier` and no host `onMilestoneEvaluate` hook. Nothing can attest the
+ * phase, but the kernel is already holding the effect in its pending table — returning without an
+ * answer leaves a dangling effect that a logical-checkpoint recovery cannot resolve. The current
+ * `MilestoneResult` wire has no error field, so "could not be verified" is expressed with the
+ * shape the wire does have: `passed: false` (the phase does not advance — fail-closed).
+ *
+ * The string is part of the cross-SDK contract: Node (`node/src/types/agent.ts`),
+ * Python (`deepstrike/types/agent.py`) and Rust must feed back the byte-identical reason.
+ */
+export const MILESTONE_UNVERIFIED_REASON =
+  "milestone unverified: no verifier configured and no host evaluation hook (fail-closed)"
+
 // ─── W0-ABI: declarative workflow specs ───
 
 /** A task for a workflow node: a full object, or a bare goal string. */

@@ -1,0 +1,30 @@
+{
+  "id": "fault-unknown-observation-is-recorded-verbatim",
+  "domain": "fault",
+  "kind": "positive",
+  "title": "宿主对未知的审计事实种类必须保真记录，不得静默丢弃",
+  "semantics": "审计事实是已经发生的事实，宿主对它的义务是保真记录，而不是像未知动作那样 fail-closed 拒绝——两者不对称是有意的。投影层遇到不认识的事实种类时，必须落成一条包装记录：原样保留种类标签与原始载荷，写进宿主的事件日志与业务投影，四种语言形状同构。现状三个语言的投影是按种类逐条列举的分支加一个静默返回空值的兜底，导致相当一部分事实既不进业务投影也不进事件日志，等于凭空消失。",
+  "given": [
+    "一个运行中的操作",
+    "内核发出一条该宿主版本尚不认识的审计事实"
+  ],
+  "when": [
+    "宿主把这批事实投影到自己的日志"
+  ],
+  "then": [
+    "未知种类不得被静默丢弃",
+    "它被落成一条包装记录，原样保留种类标签与原始载荷",
+    "该记录同时进入宿主的事件日志与业务投影",
+    "四种语言的包装形状同构，可用同一份跨语言用例守住",
+    "该义务是保真记录，而不是拒绝——与未知动作的 fail-closed 拒绝有意不对称"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.11 要求：未知 observation kind 落 `{ kind, raw }` 包装审计记录（四语言同构，GAP-5 裁决）",
+      "spec §7.11 现状注记：显式 per-kind switch + default 静默丢弃（node/src/runtime/kernel-event-log.ts:284-285，丢弃点 node/src/runtime/runner.ts:3229）",
+      "canonical-kernel-abi-capability-inventory.md §3.1：13 个 observation 从未被 Node/Python/WASM 消费",
+      "spec §18.7 跨语言用例"
+    ]
+  },
+  "target": "§7.11"
+}

@@ -210,8 +210,11 @@ describe("FileSessionLog", () => {
       { log_seq: receipt.log_seq, transaction: first },
     ])
     expect(await reopened.kernelTransactionHead("sess-kernel", "op-1")).toBe(first.transaction_digest)
+    // Journal records number themselves by chain position, in a sequence space of their own: the
+    // interleaved `run_started` projection event does NOT push the first transaction to 2. Sharing
+    // one counter is what made journal prefix pruning punch holes in business event numbering.
     expect(genesisReceipt.log_seq).toBe(0)
-    expect(receipt.log_seq).toBe(2)
+    expect(receipt.log_seq).toBe(1)
   })
 
   it("read returns empty for missing session file", async () => {

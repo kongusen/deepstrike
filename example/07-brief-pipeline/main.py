@@ -182,12 +182,27 @@ async def main() -> None:
 
     print("━━ running the brief-pipeline DAG ━━ (2 researchers → reduce → writer → gate)\n")
     outcome = await runner.run_workflow(spec)
+    if outcome.rejection:
+        raise RuntimeError(
+            f"workflow rejected ({outcome.rejection.operation}): {outcome.rejection.reason}"
+        )
+    completed = [node for node in outcome.node_outcomes if node.status == "completed"]
+    partial = [node for node in outcome.node_outcomes if node.status == "completed_partial"]
+    failed = [node for node in outcome.node_outcomes if node.status == "failed"]
+    skipped = [
+        node for node in outcome.node_outcomes
+        if node.status == "skipped_upstream_failed"
+    ]
 
     def show(key: str) -> str:
-        return outcome["outputs"].get(key, "—")
+        return outcome.outputs.get(key, "—")
 
     print("\n━━ workflow outcome ━━")
-    print(f"  completed nodes : {len(outcome['completed'])}   failed: {len(outcome['failed'])}")
+    print(
+        f"  completed: {len(completed)}   partial: {len(partial)}"
+        f"   failed: {len(failed)}"
+        f"   skipped: {len(skipped)}"
+    )
     print("\n  node 2 (reduce) merged findings:\n    " + show("wf-node2").replace("\n", "\n    "))
     print("\n  node 3 (writer) brief:\n    " + show("wf-node3"))
     print("\n  node 4 (gate) verdict:\n    " + show("wf-node4"))

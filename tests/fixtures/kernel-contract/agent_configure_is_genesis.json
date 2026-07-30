@@ -1,0 +1,31 @@
+{
+  "id": "agent-configure-is-genesis",
+  "domain": "agent",
+  "kind": "positive",
+  "title": "首个被接受的输入必须是操作配置，并成为持久日志的创世记录",
+  "semantics": "保留「显式配置先于一切」的语义：操作在被配置之前不接受任何业务输入。配置输入绑定不可变的操作身份，并成为持久事务日志的第一条记录（创世记录）；落盘的是内核归一化后的完整配置，因此内核默认值日后变化也不会改变旧日志的重建结果。现状把「未列举的输入在未配置态一律隐式当作配置」，该隐式转换不保留。",
+  "given": [
+    "一个新建但尚未配置的操作",
+    "宿主已持有完整的操作配置"
+  ],
+  "when": [
+    "宿主先提交一条非配置输入，随后再提交配置输入"
+  ],
+  "then": [
+    "非配置输入被结构化拒绝，且不产生任何状态变更",
+    "只有配置输入能把操作推进到已配置态",
+    "被接受的配置输入产生日志第一条记录，其前驱记录摘要为空",
+    "该记录保存内核归一化后的完整配置，而不是稀疏输入",
+    "该记录摘要同时是本操作的创世摘要"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §6.1 不变量 1–2",
+      "spec §8.1「第一条 ConfigureOperation record」",
+      "spec §3.3 第 17 条：现状 catch-all 隐式转配置（crates/deepstrike-core/src/runtime/kernel/runtime.rs:2179-2186）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::configure_then_start_advances_the_explicit_lifecycle",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::configure_run_validates_before_applying_any_field"
+    ]
+  },
+  "target": "§6.1"
+}

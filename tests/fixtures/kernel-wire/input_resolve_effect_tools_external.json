@@ -1,0 +1,37 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-12",
+  "observed_at_ms": "1753747212000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-07-29-0001:step:6:effect:0",
+    "outcome": {
+      "status": "succeeded",
+      "result": {
+        "kind": "tools",
+        "results": [
+          {
+            "kind": "external",
+            "call_id": "call-3",
+            "payload_ref": "payload:01J8Y2QK7C4N0V",
+            "digest": "sha256:3b1f4a7c9e2d05186a4c7f0b9d3e8c25714f6a0b8c5d2e9f1a3b6c8d0e2f4a61",
+            "original_size": "1048576",
+            "preview": "total 42\ndrwxr-xr-x  crates\ndrwxr-xr-x  docs",
+            "disposition": "recoverable"
+          },
+          {
+            "kind": "external",
+            "call_id": "call-4",
+            "payload_ref": "payload:01J8Y2QK7C4N0W",
+            "digest": "sha256:9c1d5e8a2b7f04396d5c8f1a0e4b7c36825f7b1c9d6e3f0a2b4c7d9e1f3a5b72",
+            "original_size": "524288",
+            "preview": "Traceback (most recent call last):\n  File \"build.py\", line 91",
+            "is_error": true,
+            "disposition": "fatal"
+          }
+        ]
+      }
+    }
+  }
+}

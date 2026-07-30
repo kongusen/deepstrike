@@ -713,16 +713,18 @@ impl KernelRuntime {
         Ok(runtime)
     }
 
-    /// Decode and execute one wire input. The version is probed before decoding
-    /// the v2 envelope so a v1 payload receives a structured kernel fault rather
-    /// than a host-language deserialization error.
-    pub fn step_json(&mut self, input_json: &str) -> Result<KernelStep, serde_json::Error> {
+    /// Absolute nesting bound applied to a wire input before any parser allocates. Deep enough
+    /// that no legitimate input reaches it; shallow enough that a hostile document cannot make
+    /// the parser recurse on the kernel's behalf.
+    const MAX_INPUT_JSON_DEPTH: u16 = 64;
+
+    /// Structural boundary shared by [`Self::step_json`] and [`Self::prepare_step_json`]:
+    /// measure bytes, then scan nesting depth — both **before** decoding. `None` ⇒ the input may
+    /// be parsed.
+    fn boundary_rejection(&self, input_json: &str) -> Option<(KernelFaultCode, String)> {
         let max_input_bytes = self.boundary_max_input_bytes();
         if input_json.len() > max_input_bytes {
-            return Ok(transaction_fault_step(
-                String::new(),
-                String::new(),
-                self.boundary_step_seq(),
+            return Some((
                 KernelFaultCode::ResourceLimitExceeded,
                 format!(
                     "kernel input is {} bytes; configured maximum is {} bytes",
@@ -731,32 +733,73 @@ impl KernelRuntime {
                 ),
             ));
         }
-        let value: serde_json::Value = serde_json::from_str(input_json)?;
-        if value.get("version").and_then(serde_json::Value::as_u64)
-            != Some(KERNEL_ABI_VERSION as u64)
-        {
-            let operation_id = value
-                .get("operation_id")
+
+        let limits = super::wire::KernelBootstrapLimits {
+            // Bytes are measured above against this runtime's own configured limit, and the
+            // per-container entry bound belongs to the canonical contract, so neither is applied
+            // here: this call enforces nesting depth only.
+            absolute_max_input_bytes: u32::MAX,
+            absolute_max_json_depth: Self::MAX_INPUT_JSON_DEPTH,
+            absolute_max_collection_entries: u32::MAX,
+        };
+        super::wire::scan_structural_boundary(input_json, &limits)
+            .err()
+            .map(|rejection| (KernelFaultCode::ResourceLimitExceeded, rejection.message))
+    }
+
+    /// Probe the revision marker without decoding the body, so a payload from another revision
+    /// gets a structured fault instead of a host-language deserialization error about a shape
+    /// this kernel never agreed to parse. Returns `(operation_id, event_id, rejection)`.
+    fn revision_rejection(
+        value: &serde_json::Value,
+    ) -> Option<(String, String, (KernelFaultCode, String))> {
+        let received = value.get("version").and_then(serde_json::Value::as_u64);
+        if received == Some(KERNEL_ABI_VERSION as u64) {
+            return None;
+        }
+        let field = |name: &str| {
+            value
+                .get(name)
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
-                .to_string();
-            let event_id = value
-                .get("event_id")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let received_version = value
-                .get("version")
-                .and_then(serde_json::Value::as_u64)
-                .map_or_else(|| "missing".to_string(), |version| version.to_string());
-            return Ok(transaction_fault_step(
-                operation_id,
-                event_id,
-                self.boundary_step_seq(),
+                .to_string()
+        };
+        let received_version =
+            received.map_or_else(|| "missing".to_string(), |version| version.to_string());
+        Some((
+            field("operation_id"),
+            field("event_id"),
+            (
                 KernelFaultCode::VersionMismatch,
                 format!(
                     "kernel ABI version mismatch: input v{received_version}, kernel v{KERNEL_ABI_VERSION}"
                 ),
+            ),
+        ))
+    }
+
+    /// Decode and execute one wire input: measure bytes → scan nesting depth → probe the
+    /// revision → decode. An oversized, pathologically nested or wrong-revision payload receives
+    /// a structured kernel fault instead of being allocated first and diagnosed second.
+    pub fn step_json(&mut self, input_json: &str) -> Result<KernelStep, serde_json::Error> {
+        if let Some((code, message)) = self.boundary_rejection(input_json) {
+            return Ok(transaction_fault_step(
+                String::new(),
+                String::new(),
+                self.boundary_step_seq(),
+                code,
+                message,
+            ));
+        }
+
+        let value: serde_json::Value = serde_json::from_str(input_json)?;
+        if let Some((operation_id, event_id, (code, message))) = Self::revision_rejection(&value) {
+            return Ok(transaction_fault_step(
+                operation_id,
+                event_id,
+                self.boundary_step_seq(),
+                code,
+                message,
             ));
         }
 
@@ -764,33 +807,59 @@ impl KernelRuntime {
     }
 
     /// Decode and stage one wire input for a host-controlled durable commit boundary.
+    ///
+    /// Same order as [`Self::step_json`]. Parsing first — as this path used to — means the
+    /// boundary that exists to stop an oversized document only fires once that document has
+    /// already been materialised, and it means no revision check runs at all.
     pub fn prepare_step_json(
         &mut self,
         input_json: &str,
     ) -> Result<KernelPreparedStep, serde_json::Error> {
-        let value: serde_json::Value = serde_json::from_str(input_json)?;
-        let input: KernelInput = serde_json::from_value(value)?;
-        let max_input_bytes = self.boundary_max_input_bytes();
-        if input_json.len() > max_input_bytes {
-            return Ok(KernelPreparedStep {
-                status: KernelPreparationStatus::Rejected,
-                base_generation: self.generation,
-                prepare_token: None,
-                step: transaction_fault_step(
-                    input.operation_id.clone(),
-                    input.event_id.clone(),
-                    self.boundary_step_seq(),
-                    KernelFaultCode::ResourceLimitExceeded,
-                    format!(
-                        "kernel input is {} bytes; configured maximum is {} bytes",
-                        input_json.len(),
-                        max_input_bytes
-                    ),
-                ),
-                input,
-            });
+        if let Some(rejection) = self.boundary_rejection(input_json) {
+            return Ok(self.rejected_prepared_step(String::new(), String::new(), rejection));
         }
+
+        let value: serde_json::Value = serde_json::from_str(input_json)?;
+        if let Some((operation_id, event_id, rejection)) = Self::revision_rejection(&value) {
+            return Ok(self.rejected_prepared_step(operation_id, event_id, rejection));
+        }
+
+        let input: KernelInput = serde_json::from_value(value)?;
         Ok(self.prepare_step(input))
+    }
+
+    /// A staged transition refused at the decode boundary: nothing was decoded, so nothing is
+    /// staged, there is no commit token and no candidate state.
+    ///
+    /// `input` is a placeholder for exactly that reason — there is no decoded input to echo. It
+    /// is inert by construction: a `Rejected` outcome carries no `prepare_token`, so it can never
+    /// be committed, and hosts read only `step` when the status is not `Prepared`.
+    fn rejected_prepared_step(
+        &self,
+        operation_id: String,
+        event_id: String,
+        rejection: (KernelFaultCode, String),
+    ) -> KernelPreparedStep {
+        let (code, message) = rejection;
+        let step = transaction_fault_step(
+            operation_id.clone(),
+            event_id.clone(),
+            self.boundary_step_seq(),
+            code,
+            message,
+        );
+        KernelPreparedStep {
+            status: KernelPreparationStatus::Rejected,
+            base_generation: self.generation,
+            prepare_token: None,
+            input: KernelInput::correlated(
+                operation_id,
+                event_id,
+                0,
+                KernelInputEvent::ForceCompact,
+            ),
+            step,
+        }
     }
 
     pub fn step(&mut self, input: KernelInput) -> KernelStep {
@@ -1724,11 +1793,13 @@ impl KernelRuntime {
                             requires_async_response: false,
                         });
                         if !recalls.is_empty() {
-                            self.sm.observations.push(KernelObservation::MemoryRecalled {
-                                turn,
-                                scope: query.scope,
-                                recalls,
-                            });
+                            self.sm
+                                .observations
+                                .push(KernelObservation::MemoryRecalled {
+                                    turn,
+                                    scope: query.scope,
+                                    recalls,
+                                });
                         }
                         for (record_id, recall_count) in promotions {
                             self.sm
@@ -1858,6 +1929,9 @@ impl KernelRuntime {
                 delivery_id,
                 attempt,
                 signal,
+                // The legacy wire lets the host abandon an in-flight provider request when it sees
+                // a forced turn, so a critical signal may always re-ask here.
+                true,
             ) {
                 Some(action) => action,
                 // Non-actionable disposition (queued / observed / ignored / dropped):
@@ -1870,23 +1944,26 @@ impl KernelRuntime {
                 effect_id: _,
                 result,
             } => self.sm.feed(LoopEvent::MilestoneResult { result }),
+            // § Task 11 · the three legacy spawn/workflow inputs still *carry* a
+            // `parent_session_id` on the wire, and the kernel drops it on the floor here: host
+            // session identity reaches no kernel decision and no kernel-authored output (§22.6).
+            // The fields themselves are deleted with the legacy input enum in Task 23.
             KernelInputEvent::SpawnSubAgent {
                 spec,
-                parent_session_id,
-            } => self.sm.spawn_sub_agent(spec, &parent_session_id),
+                parent_session_id: _,
+            } => self.sm.spawn_sub_agent(spec),
             KernelInputEvent::LoadWorkflow {
                 spec,
-                parent_session_id,
+                parent_session_id: _,
                 resumed_submissions,
                 resumed_submission_bases,
                 resumed_outcomes,
             } => {
                 if resumed_outcomes.is_empty() && resumed_submissions.is_empty() {
-                    self.sm.load_workflow(spec, &parent_session_id)
+                    self.sm.load_workflow(spec)
                 } else {
                     self.sm.load_workflow_resumed(
                         spec,
-                        &parent_session_id,
                         &resumed_submissions,
                         &resumed_submission_bases,
                         &resumed_outcomes,
@@ -1904,11 +1981,9 @@ impl KernelRuntime {
                 .submit_workflow_nodes(nodes, submitter_agent_id.as_deref()),
             KernelInputEvent::SubmitWorkflow {
                 spec,
-                parent_session_id,
+                parent_session_id: _,
                 submitter_agent_id,
-            } => self
-                .sm
-                .submit_workflow(spec, &parent_session_id, submitter_agent_id.as_deref()),
+            } => self.sm.submit_workflow(spec, submitter_agent_id.as_deref()),
             KernelInputEvent::SetMemoryPolicy {
                 memory_path,
                 stale_warning_days,

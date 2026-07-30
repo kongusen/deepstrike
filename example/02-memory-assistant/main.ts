@@ -21,11 +21,13 @@
 import { RuntimeRunner, LocalExecutionPlane, InMemorySessionLog } from "@deepstrike/sdk"
 import type { TextDelta } from "@deepstrike/sdk"
 import { InMemoryDreamStore } from "@deepstrike/sdk/memory"
+import type { MemoryRecord, MemoryScope } from "@deepstrike/sdk/memory"
 import { studioTools } from "../shared/studio-tools.js"
 import { resolveProvider, parseArgs, loadEnv } from "../shared/provider.js"
 import { render } from "../shared/render.js"
 
 const AGENT_ID = "studio-researcher"
+const MEMORY_SCOPE: MemoryScope = { tenant_id: AGENT_ID, namespace: "research-briefs" }
 
 async function main(): Promise<void> {
   loadEnv()
@@ -41,8 +43,9 @@ async function main(): Promise<void> {
     console.log("● L2 wiring check (no provider call)")
     console.log(`  agent id : ${AGENT_ID}  (memory is keyed per agent, not per session)`)
     console.log(`  store    : InMemoryDreamStore  → run-start recall + the 'memory' query tool turn on`)
-    console.log(`  write    : runner.writeMemory({content, metadata})  → the one governed gate`)
-    console.log("  ✓ configure dreamStore + agentId and the memory mechanism turns on.")
+    console.log(`  scope    : ${MEMORY_SCOPE.tenant_id}/${MEMORY_SCOPE.namespace}`)
+    console.log(`  write    : runner.writeMemory(record)  → the one governed gate`)
+    console.log("  ✓ configure dreamStore + agentId + memoryScope to enable durable recall.")
     return
   }
 
@@ -51,7 +54,8 @@ async function main(): Promise<void> {
     executionPlane: plane,
     sessionLog: new InMemorySessionLog(),
     dreamStore,
-    agentId: AGENT_ID, // memory requires BOTH dreamStore and agentId
+    agentId: AGENT_ID,
+    memoryScope: MEMORY_SCOPE,
     maxTokens: 200_000,
     maxTurns: 12,
   })
@@ -72,20 +76,36 @@ async function main(): Promise<void> {
 
   // ── Write through the one governed gate ──────────────────────────────────────
   const now = Date.now()
-  await runner.writeMemory({
+  const memory: MemoryRecord = {
+    record_id: `${MEMORY_SCOPE.tenant_id}:${MEMORY_SCOPE.namespace}:reference:loop-agent-takeaway`,
+    scope: MEMORY_SCOPE,
+    name: "loop-agent-takeaway",
+    kind: "reference",
     content: takeaway,
-    metadata: {
-      name: "loop-agent-takeaway",
-      description: "One-sentence definition of a loop agent, learned in session A.",
-      kind: "reference",
-      created_at: now,
-      updated_at: now,
+    description: "One-sentence definition of a loop agent, learned in session A.",
+    provenance: {
+      session_id: "l2-learn",
+      author: "host",
+      trust: "host_verified",
+      evidence_refs: ["assistant:final"],
     },
-  })
+    created_at: now,
+    updated_at: now,
+    recall_count: 0,
+    confidence: 1,
+    links: [],
+    pinned: false,
+  }
+  await runner.writeMemory(memory, { sessionId: "l2-learn" })
 
-  const stored = await dreamStore.loadMemories(AGENT_ID)
+  const stored = await runner.queryMemory({
+    scope: MEMORY_SCOPE,
+    query: "loop agent",
+    top_k: 10,
+    kinds: ["reference"],
+  }, { sessionId: "l2-learn" })
   console.log(`\n━━ long-term memory now holds ${stored.length} entry(ies) (via the writeMemory gate) ━━`)
-  for (const m of stored) console.log(`  • [score ${m.score.toFixed(2)}] ${m.text}`)
+  for (const hit of stored) console.log(`  • [score ${hit.score.toFixed(2)}] ${hit.record.content}`)
 
   // ── Session B: recall (fresh session id, same agent + store) ─────────────────
   console.log("\n━━ session B · recall ━━ (a NEW session; the fact surfaces at run-start)\n")

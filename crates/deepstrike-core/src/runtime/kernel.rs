@@ -23,6 +23,7 @@ use crate::types::task::RuntimeTask;
 
 mod protocol;
 mod runtime;
+pub mod wire;
 
 pub use protocol::*;
 pub use runtime::KernelRuntime;

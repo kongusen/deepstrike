@@ -5,11 +5,19 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, TypedDict
+from typing import Any, Literal, Protocol, TypedDict
 
 from deepstrike._kernel import ToolCall, ToolResult
 from deepstrike.runtime.kernel_event_log import (
     primitive_for_kind,
+)
+from deepstrike.runtime.kernel_journal import (
+    FileKernelJournal,
+    InMemoryKernelJournal,
+    JournalCasConflictError,
+    JournalEntry,
+    JournalRecordInput,
+    KernelJournal,
 )
 from deepstrike.runtime.kernel_transaction_log import (
     DurableAppendReceipt,
@@ -386,6 +394,17 @@ class SessionEntry:
 
 
 class SessionLog(Protocol):
+    """The business-projection log (spec §9.2): run started/terminal, stream events, observations,
+    provider/tool presentation, audit metadata.
+
+    The five ``*kernel*`` methods below are the **legacy journal face**. The durable transaction
+    capability now lives in its own interface — :class:`~deepstrike.runtime.kernel_journal.KernelJournal`
+    (spec §9.1) — so a custom ``SessionLog`` is no longer forced to masquerade as a transactional
+    journal (§9.4). These methods remain on ``SessionLog`` only so existing callers keep working;
+    both default implementations forward them to an internally held ``KernelJournal`` whose sequence
+    space is separate from business event ``seq``.
+    """
+
     async def append(self, session_id: str, event: SessionEvent) -> int: ...
     async def read(
         self,
@@ -396,32 +415,157 @@ class SessionLog(Protocol):
     async def latest_seq(self, session_id: str) -> int: ...
     async def append_kernel_genesis(
         self, session_id: str, genesis: KernelOperationGenesis
-    ) -> KernelGenesisReceipt: ...
+    ) -> KernelGenesisReceipt:
+        """.. deprecated:: use ``KernelJournal.compare_and_append`` with an empty expected head."""
+        ...
+
     async def read_kernel_genesis(
         self, session_id: str, operation_id: str
-    ) -> KernelOperationGenesis | None: ...
+    ) -> KernelOperationGenesis | None:
+        """.. deprecated:: use ``KernelJournal.read_from`` from step 0."""
+        ...
+
     async def compare_and_append_kernel_transaction(
         self,
         session_id: str,
         expected_transaction_head: str,
         transaction: KernelTransaction,
-    ) -> DurableAppendReceipt: ...
+    ) -> DurableAppendReceipt:
+        """.. deprecated:: use ``KernelJournal.compare_and_append``."""
+        ...
+
     async def read_kernel_transactions(
         self, session_id: str, operation_id: str, from_step_seq: int = 1
-    ) -> list[KernelTransactionEntry]: ...
-    async def kernel_transaction_head(self, session_id: str, operation_id: str) -> str | None: ...
+    ) -> list[KernelTransactionEntry]:
+        """.. deprecated:: use ``KernelJournal.read_from`` or ``KernelJournal.records_after``."""
+        ...
+
+    async def kernel_transaction_head(self, session_id: str, operation_id: str) -> str | None:
+        """.. deprecated:: use ``KernelJournal.head``."""
+        ...
+
+
+# ------------------------------------------------------------------ #
+# Legacy journal face → KernelJournal adapter
+#
+# The legacy face speaks typed `KernelOperationGenesis` / `KernelTransaction` records; the journal
+# speaks opaque bytes + a digest it was given. The adapter is the translation, and it keeps the
+# *typed* integrity checks (tamper detection, successor continuity) on this side — the journal only
+# ever guarantees chain-of-digest and CAS. Genesis is chain position 0, so genesis and transactions
+# share one uniform record chain, exactly as core models it (§8.1).
+# ------------------------------------------------------------------ #
+
+
+def journal_operation_key(session_id: str, operation_id: str) -> str:
+    """Journals are scoped per operation; the legacy ``SessionLog`` face is scoped per
+    (session, operation). Public so a host migrating off the deprecated methods can address the
+    same durable chain through the :class:`KernelJournal` capability directly.
+    """
+    return f"{session_id}\0{operation_id}"
+
+
+def _encode_journal_record(
+    value: KernelOperationGenesis | KernelTransaction, step_seq: int
+) -> JournalRecordInput:
+    digest = value["genesis_digest"] if "genesis_digest" in value else value["transaction_digest"]
+    return JournalRecordInput(
+        step_seq=step_seq,
+        record_digest=digest,
+        record_bytes=json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+    )
+
+
+def _decode_journal_record(entry: JournalEntry) -> Any:
+    return json.loads(bytes(entry.record_bytes).decode("utf-8"))
+
+
+async def _journal_append_genesis(
+    journal: KernelJournal, session_id: str, genesis: KernelOperationGenesis
+) -> KernelGenesisReceipt:
+    verify_kernel_operation_genesis(genesis)
+    key = journal_operation_key(session_id, genesis["operation_id"])
+    try:
+        receipt = await journal.compare_and_append(key, None, _encode_journal_record(genesis, 0))
+        return {"log_seq": receipt.step_seq, "genesis_digest": genesis["genesis_digest"]}
+    except JournalCasConflictError:
+        # A chain already exists: idempotent for the same genesis, a conflict for a different one.
+        existing = await _journal_read_genesis(journal, session_id, genesis["operation_id"])
+        if existing is None or existing["genesis_digest"] != genesis["genesis_digest"]:
+            raise KernelLogConflictError(
+                "session already has a different kernel operation genesis"
+            ) from None
+        return {"log_seq": 0, "genesis_digest": genesis["genesis_digest"]}
+
+
+async def _journal_read_genesis(
+    journal: KernelJournal, session_id: str, operation_id: str
+) -> KernelOperationGenesis | None:
+    entries = await journal.read_from(journal_operation_key(session_id, operation_id), 0)
+    genesis = next((entry for entry in entries if entry.step_seq == 0), None)
+    return _decode_journal_record(genesis) if genesis is not None else None
+
+
+async def _journal_compare_and_append_transaction(
+    journal: KernelJournal,
+    session_id: str,
+    expected_transaction_head: str,
+    transaction: KernelTransaction,
+) -> DurableAppendReceipt:
+    verify_kernel_transaction(transaction)
+    key = journal_operation_key(session_id, transaction["operation_id"])
+    head = await journal.head(key)
+    if head is None:
+        raise KernelLogIntegrityError("kernel transaction requires a durable genesis")
+    if (
+        head.record_digest != expected_transaction_head
+        or transaction["previous_transaction_digest"] != head.record_digest
+    ):
+        raise KernelLogConflictError("kernel transaction head changed before compare-and-append")
+    # step 0 is the genesis record, which has no `KernelTransaction` predecessor.
+    previous: KernelTransaction | None = None
+    if head.step_seq > 0:
+        tail = await journal.read_from(key, head.step_seq)
+        if not tail:
+            # The head resolved from a pruned anchor: the typed successor check cannot run without
+            # the predecessor record. The legacy face has no bounded-tail replay, so refuse rather
+            # than skip.
+            raise KernelLogIntegrityError(
+                "kernel transaction predecessor has been pruned; use the KernelJournal capability directly"
+            )
+        previous = _decode_journal_record(tail[0])
+    verify_kernel_transaction_successor(previous, transaction)
+    receipt = await journal.compare_and_append(
+        key,
+        expected_transaction_head,
+        _encode_journal_record(transaction, transaction["step_seq"]),
+    )
+    return {"log_seq": receipt.step_seq, "transaction_digest": transaction["transaction_digest"]}
+
+
+async def _journal_read_transactions(
+    journal: KernelJournal, session_id: str, operation_id: str, from_step_seq: int
+) -> list[KernelTransactionEntry]:
+    entries = await journal.read_from(
+        journal_operation_key(session_id, operation_id), max(1, from_step_seq)
+    )
+    return [
+        {"log_seq": entry.step_seq, "transaction": _decode_journal_record(entry)}
+        for entry in entries
+    ]
 
 
 class InMemorySessionLog:
+    """**Single-process dev/test implementation** of both capabilities (spec §9.4: one class may
+    provide several capabilities; the *interfaces* stay separate). Its ``KernelJournal`` half is
+    :class:`InMemoryKernelJournal`, whose CAS is atomic within one process only.
+    """
+
     def __init__(self) -> None:
         self._store: dict[str, list[SessionEntry]] = {}
+        #: Business event sequence space only — journal records number themselves by `step_seq`.
         self._seq_counters: dict[str, int] = {}
-        self._genesis_store: dict[str, tuple[int, KernelOperationGenesis]] = {}
-        self._transaction_store: dict[str, list[KernelTransactionEntry]] = {}
-
-    @staticmethod
-    def _operation_key(session_id: str, operation_id: str) -> str:
-        return f"{session_id}\0{operation_id}"
+        #: The durable transaction capability, held rather than inherited (spec §9.1/§9.4).
+        self.kernel_journal: KernelJournal = InMemoryKernelJournal()
 
     def _next_seq(self, session_id: str) -> int:
         seq = self._seq_counters.get(session_id, 0)
@@ -454,23 +598,14 @@ class InMemorySessionLog:
     async def append_kernel_genesis(
         self, session_id: str, genesis: KernelOperationGenesis
     ) -> KernelGenesisReceipt:
-        verify_kernel_operation_genesis(genesis)
-        operation_key = self._operation_key(session_id, genesis["operation_id"])
-        existing = self._genesis_store.get(operation_key)
-        if existing is not None:
-            log_seq, existing_genesis = existing
-            if existing_genesis["genesis_digest"] != genesis["genesis_digest"]:
-                raise KernelLogConflictError("session already has a different kernel operation genesis")
-            return {"log_seq": log_seq, "genesis_digest": genesis["genesis_digest"]}
-        log_seq = self._next_seq(session_id)
-        self._genesis_store[operation_key] = (log_seq, genesis)
-        return {"log_seq": log_seq, "genesis_digest": genesis["genesis_digest"]}
+        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
+        return await _journal_append_genesis(self.kernel_journal, session_id, genesis)
 
     async def read_kernel_genesis(
         self, session_id: str, operation_id: str
     ) -> KernelOperationGenesis | None:
-        existing = self._genesis_store.get(self._operation_key(session_id, operation_id))
-        return existing[1] if existing else None
+        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
+        return await _journal_read_genesis(self.kernel_journal, session_id, operation_id)
 
     async def compare_and_append_kernel_transaction(
         self,
@@ -478,51 +613,41 @@ class InMemorySessionLog:
         expected_transaction_head: str,
         transaction: KernelTransaction,
     ) -> DurableAppendReceipt:
-        verify_kernel_transaction(transaction)
-        operation_key = self._operation_key(session_id, transaction["operation_id"])
-        genesis = await self.read_kernel_genesis(session_id, transaction["operation_id"])
-        if genesis is None:
-            raise KernelLogIntegrityError("kernel transaction requires a durable genesis")
-        if transaction["operation_id"] != genesis["operation_id"]:
-            raise KernelLogIntegrityError("kernel transaction operation_id does not match genesis")
-        head = await self.kernel_transaction_head(session_id, transaction["operation_id"])
-        if head != expected_transaction_head or transaction["previous_transaction_digest"] != head:
-            raise KernelLogConflictError("kernel transaction head changed before compare-and-append")
-        entries = self._transaction_store.setdefault(operation_key, [])
-        verify_kernel_transaction_successor(
-            entries[-1]["transaction"] if entries else None,
-            transaction,
+        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
+        return await _journal_compare_and_append_transaction(
+            self.kernel_journal, session_id, expected_transaction_head, transaction
         )
-        log_seq = self._next_seq(session_id)
-        entries.append({"log_seq": log_seq, "transaction": transaction})
-        return {"log_seq": log_seq, "transaction_digest": transaction["transaction_digest"]}
 
     async def read_kernel_transactions(
         self, session_id: str, operation_id: str, from_step_seq: int = 1
     ) -> list[KernelTransactionEntry]:
-        return [
-            entry
-            for entry in self._transaction_store.get(self._operation_key(session_id, operation_id), [])
-            if entry["transaction"]["step_seq"] >= from_step_seq
-        ]
+        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
+        return await _journal_read_transactions(
+            self.kernel_journal, session_id, operation_id, from_step_seq
+        )
 
     async def kernel_transaction_head(self, session_id: str, operation_id: str) -> str | None:
-        transactions = self._transaction_store.get(self._operation_key(session_id, operation_id), [])
-        if transactions:
-            return transactions[-1]["transaction"]["transaction_digest"]
-        genesis = await self.read_kernel_genesis(session_id, operation_id)
-        return genesis["genesis_digest"] if genesis else None
+        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
+        head = await self.kernel_journal.head(journal_operation_key(session_id, operation_id))
+        return head.record_digest if head is not None else None
 
 
 class FileSessionLog:
-    """Single-writer per session. Safe for sequential appends within one instance.
-    Cross-instance (multi-process) safety requires an external lock."""
+    """File-backed ``SessionLog``. Business appends are single-writer per session: safe within one
+    instance, **not** across processes — that limitation is confined to the projection log now.
+
+    The durable transaction capability is delegated to :class:`FileKernelJournal`, which *is*
+    cross-process atomic (spec Task 8b), so the two capabilities no longer share a file, a sequence
+    space, or a concurrency story.
+    """
 
     def __init__(self, directory: str | Path) -> None:
         self._dir = Path(directory)
-        # Lazy-initialized per-session counter; avoids re-reading on every append.
+        # Lazy-initialized per-session counter for business events only.
         self._seq_counters: dict[str, int] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        #: The durable transaction capability, held rather than inherited (spec §9.1/§9.4).
+        self.kernel_journal: KernelJournal = FileKernelJournal(self._dir / "kernel-journal")
 
     def _path(self, session_id: str) -> Path:
         return self._dir / f"{session_id}.jsonl"
@@ -571,41 +696,14 @@ class FileSessionLog:
     async def append_kernel_genesis(
         self, session_id: str, genesis: KernelOperationGenesis
     ) -> KernelGenesisReceipt:
-        async with self._lock(session_id):
-            verify_kernel_operation_genesis(genesis)
-            existing = next(
-                (
-                    record
-                    for record in self._read_records(session_id)
-                    if record.get("record_type") == "kernel_genesis"
-                    and record["genesis"]["operation_id"] == genesis["operation_id"]
-                ),
-                None,
-            )
-            if existing is not None:
-                if existing["genesis"]["genesis_digest"] != genesis["genesis_digest"]:
-                    raise KernelLogConflictError("session already has a different kernel operation genesis")
-                return {"log_seq": int(existing["seq"]), "genesis_digest": genesis["genesis_digest"]}
-            log_seq = self._next_seq(session_id)
-            self._append_record(
-                session_id,
-                {"seq": log_seq, "record_type": "kernel_genesis", "genesis": genesis},
-            )
-            return {"log_seq": log_seq, "genesis_digest": genesis["genesis_digest"]}
+        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
+        return await _journal_append_genesis(self.kernel_journal, session_id, genesis)
 
     async def read_kernel_genesis(
         self, session_id: str, operation_id: str
     ) -> KernelOperationGenesis | None:
-        record = next(
-            (
-                record
-                for record in self._read_records(session_id)
-                if record.get("record_type") == "kernel_genesis"
-                and record["genesis"]["operation_id"] == operation_id
-            ),
-            None,
-        )
-        return record["genesis"] if record else None
+        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
+        return await _journal_read_genesis(self.kernel_journal, session_id, operation_id)
 
     async def compare_and_append_kernel_transaction(
         self,
@@ -613,85 +711,23 @@ class FileSessionLog:
         expected_transaction_head: str,
         transaction: KernelTransaction,
     ) -> DurableAppendReceipt:
-        async with self._lock(session_id):
-            verify_kernel_transaction(transaction)
-            records = self._read_records(session_id)
-            genesis_record = next(
-                (
-                    record
-                    for record in records
-                    if record.get("record_type") == "kernel_genesis"
-                    and record["genesis"]["operation_id"] == transaction["operation_id"]
-                ),
-                None,
-            )
-            if genesis_record is None:
-                raise KernelLogIntegrityError("kernel transaction requires a durable genesis")
-            genesis = genesis_record["genesis"]
-            if transaction["operation_id"] != genesis["operation_id"]:
-                raise KernelLogIntegrityError("kernel transaction operation_id does not match genesis")
-            transactions = [
-                record
-                for record in records
-                if record.get("record_type") == "kernel_transaction"
-                and record["transaction"]["operation_id"] == transaction["operation_id"]
-            ]
-            head = (
-                transactions[-1]["transaction"]["transaction_digest"]
-                if transactions
-                else genesis["genesis_digest"]
-            )
-            if head != expected_transaction_head or transaction["previous_transaction_digest"] != head:
-                raise KernelLogConflictError("kernel transaction head changed before compare-and-append")
-            verify_kernel_transaction_successor(
-                transactions[-1]["transaction"] if transactions else None,
-                transaction,
-            )
-            log_seq = self._next_seq(session_id)
-            self._append_record(
-                session_id,
-                {
-                    "seq": log_seq,
-                    "record_type": "kernel_transaction",
-                    "transaction": transaction,
-                },
-            )
-            return {"log_seq": log_seq, "transaction_digest": transaction["transaction_digest"]}
+        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
+        return await _journal_compare_and_append_transaction(
+            self.kernel_journal, session_id, expected_transaction_head, transaction
+        )
 
     async def read_kernel_transactions(
         self, session_id: str, operation_id: str, from_step_seq: int = 1
     ) -> list[KernelTransactionEntry]:
-        return [
-            {
-                "log_seq": int(record["seq"]),
-                "transaction": record["transaction"],
-            }
-            for record in self._read_records(session_id)
-            if record.get("record_type") == "kernel_transaction"
-            and record["transaction"]["operation_id"] == operation_id
-            and int(record["transaction"]["step_seq"]) >= from_step_seq
-        ]
+        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
+        return await _journal_read_transactions(
+            self.kernel_journal, session_id, operation_id, from_step_seq
+        )
 
     async def kernel_transaction_head(self, session_id: str, operation_id: str) -> str | None:
-        records = self._read_records(session_id)
-        transactions = [
-            record
-            for record in records
-            if record.get("record_type") == "kernel_transaction"
-            and record["transaction"]["operation_id"] == operation_id
-        ]
-        if transactions:
-            return transactions[-1]["transaction"]["transaction_digest"]
-        genesis = next(
-            (
-                record
-                for record in records
-                if record.get("record_type") == "kernel_genesis"
-                and record["genesis"]["operation_id"] == operation_id
-            ),
-            None,
-        )
-        return genesis["genesis"]["genesis_digest"] if genesis else None
+        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
+        head = await self.kernel_journal.head(journal_operation_key(session_id, operation_id))
+        return head.record_digest if head is not None else None
 
     def _append_record(self, session_id: str, record: dict) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -710,6 +746,12 @@ class FileSessionLog:
                 os.close(directory_fd)
 
     def _read_records(self, session_id: str) -> list[dict]:
+        """Persisted lines. The two ``record_type`` variants (``kernel_genesis`` /
+        ``kernel_transaction``) are **read-compat only**: kernel records used to share this file
+        (and its sequence space) with business events; they now live in the separate
+        :class:`FileKernelJournal` under ``<dir>/kernel-journal``. Keeping them parseable means an
+        older file still loads instead of throwing — it does not migrate those records.
+        """
         path = self._path(session_id)
         if not path.exists():
             return []

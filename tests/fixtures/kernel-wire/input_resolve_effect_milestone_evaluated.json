@@ -1,0 +1,25 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-07-29-0001",
+  "input_id": "caller-supplied-idempotency-key-20",
+  "observed_at_ms": "1753747220000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-07-29-0001:step:14:effect:0",
+    "outcome": {
+      "status": "succeeded",
+      "result": {
+        "kind": "milestone_evaluated",
+        "result": {
+          "phase_id": "phase-2",
+          "passed": false,
+          "failed_criteria": [
+            "unit tests green"
+          ],
+          "score": 0.4,
+          "notes": "two suites still red"
+        }
+      }
+    }
+  }
+}

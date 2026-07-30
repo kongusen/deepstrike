@@ -143,10 +143,8 @@ impl RuntimeSignal {
 
 impl RuntimeSignal {
     fn to_rust(&self) -> PyResult<RustRuntimeSignal> {
-        let id = self
-            .id
-            .parse()
-            .map_err(|_| pyo3::exceptions::PyValueError::new_err("signal id must be a UUID"))?;
+        // §7.7 · the signal id is the caller's own branded ref, kept verbatim (see the Node binding).
+        let id = self.id.clone();
         let source = match self.source.as_str() {
             "cron" => RustSignalSource::Cron,
             "gateway" => RustSignalSource::Gateway,
@@ -169,7 +167,7 @@ impl RuntimeSignal {
         let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, self.summary.as_str())
             .with_payload(payload)
             .with_timestamp(self.timestamp_ms as u64);
-        sig.id = id;
+        sig.id = id.into();
         if let Some(ref key) = self.dedupe_key {
             sig = sig.with_dedupe(key.as_str());
         }
@@ -989,9 +987,9 @@ impl SignalRouter {
             "ready" => TaskLifecycle::Ready,
             "running" => TaskLifecycle::Running,
             "suspended" => TaskLifecycle::Suspended,
-            "done" => TaskLifecycle::Done(
-                deepstrike_core::types::result::TerminationReason::Completed,
-            ),
+            "done" => {
+                TaskLifecycle::Done(deepstrike_core::types::result::TerminationReason::Completed)
+            }
             other => {
                 return Err(PyValueError::new_err(format!(
                     "invalid task lifecycle {other:?}; expected ready|running|suspended|done"
@@ -1254,7 +1252,10 @@ struct MemoryScope {
 impl MemoryScope {
     #[new]
     fn new(tenant_id: String, namespace: String) -> Self {
-        Self { tenant_id, namespace }
+        Self {
+            tenant_id,
+            namespace,
+        }
     }
 }
 
@@ -1381,26 +1382,35 @@ impl MemoryRecord {
             "feedback" => RustMemoryKind::Feedback,
             "project" => RustMemoryKind::Project,
             "reference" => RustMemoryKind::Reference,
-            other => return Err(PyValueError::new_err(format!("invalid memory kind {other:?}"))),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "invalid memory kind {other:?}"
+                )));
+            }
         };
         let author = match self.provenance.author.as_str() {
             "model" => RustMemoryAuthor::Model,
             "host" => RustMemoryAuthor::Host,
             "extraction" => RustMemoryAuthor::Extraction,
-            other => return Err(PyValueError::new_err(format!("invalid memory author {other:?}"))),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "invalid memory author {other:?}"
+                )));
+            }
         };
         let trust = match self.provenance.trust.as_str() {
             "untrusted" => RustMemoryTrustLevel::Untrusted,
             "user_asserted" => RustMemoryTrustLevel::UserAsserted,
             "host_verified" => RustMemoryTrustLevel::HostVerified,
-            other => return Err(PyValueError::new_err(format!("invalid memory trust {other:?}"))),
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "invalid memory trust {other:?}"
+                )));
+            }
         };
         Ok(RustMemoryRecord {
             record_id: self.record_id.clone(),
-            scope: RustMemoryScope::new(
-                self.scope.tenant_id.clone(),
-                self.scope.namespace.clone(),
-            ),
+            scope: RustMemoryScope::new(self.scope.tenant_id.clone(), self.scope.namespace.clone()),
             name: self.name.clone(),
             kind,
             content: self.content.clone(),
@@ -1439,12 +1449,14 @@ impl MemoryRecord {
                     RustMemoryAuthor::Model => "model",
                     RustMemoryAuthor::Host => "host",
                     RustMemoryAuthor::Extraction => "extraction",
-                }.into(),
+                }
+                .into(),
                 trust: match record.provenance.trust {
                     RustMemoryTrustLevel::Untrusted => "untrusted",
                     RustMemoryTrustLevel::UserAsserted => "user_asserted",
                     RustMemoryTrustLevel::HostVerified => "host_verified",
-                }.into(),
+                }
+                .into(),
                 evidence_refs: record.provenance.evidence_refs.clone(),
             },
             created_at: record.created_at,

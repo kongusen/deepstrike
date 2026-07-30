@@ -15,6 +15,8 @@ import {
   verifyKernelTransaction,
   verifyKernelTransactionSuccessor,
 } from "./kernel-transaction-log.js"
+import type { JournalEntry, JournalRecordInput, KernelJournal } from "./kernel-journal.js"
+import { InMemoryKernelJournal, JournalCasConflictError } from "./kernel-journal.js"
 
 export interface KernelTransactionEntry {
   log_seq: number
@@ -156,30 +158,172 @@ export type SessionEvent =
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
   | { kind: "summary_upgraded"; compressed_seq: number; summary: string }
 
+/**
+ * The business-projection log (spec §9.2): run started/terminal, stream events, observations,
+ * provider/tool presentation, audit metadata.
+ *
+ * The five `*Kernel*` methods below are the **legacy journal face**. The durable transaction
+ * capability now lives in its own interface — `KernelJournal` in `./kernel-journal.js` (spec §9.1) —
+ * so a custom `SessionLog` is no longer forced to masquerade as a transactional journal (§9.4).
+ * These methods remain on `SessionLog` only so existing callers keep compiling; the default
+ * implementation forwards them to an internally held `KernelJournal` whose sequence space is
+ * separate from business event `seq`.
+ */
 export interface SessionLog {
   append(sessionId: string, event: SessionEvent): Promise<number>
   read(sessionId: string, fromSeq?: number, primitiveFilter?: KernelPrimitive): Promise<Array<{ seq: number; event: SessionEvent }>>
   latestSeq(sessionId: string): Promise<number>
+  /** @deprecated Use {@link KernelJournal.compareAndAppend} with an empty expected head. */
   appendKernelGenesis(sessionId: string, genesis: KernelOperationGenesis): Promise<KernelGenesisReceipt>
+  /** @deprecated Use {@link KernelJournal.readFrom} from step 0. */
   readKernelGenesis(sessionId: string, operationId: string): Promise<KernelOperationGenesis | undefined>
+  /** @deprecated Use {@link KernelJournal.compareAndAppend}. */
   compareAndAppendKernelTransaction(
     sessionId: string,
     expectedTransactionHead: string,
     transaction: KernelTransaction,
   ): Promise<DurableAppendReceipt>
+  /** @deprecated Use {@link KernelJournal.readFrom} or {@link KernelJournal.recordsAfter}. */
   readKernelTransactions(sessionId: string, operationId: string, fromStepSeq?: number): Promise<KernelTransactionEntry[]>
+  /** @deprecated Use {@link KernelJournal.head}. */
   kernelTransactionHead(sessionId: string, operationId: string): Promise<string | undefined>
 }
 
+/* ------------------------------------------------------------------ *
+ * Legacy journal face → KernelJournal adapter
+ *
+ * The legacy face speaks typed `KernelOperationGenesis` / `KernelTransaction` records; the journal
+ * speaks opaque bytes + a digest it was given. The adapter is the translation, and it keeps the
+ * *typed* integrity checks (tamper detection, successor continuity) on this side — the journal only
+ * ever guarantees chain-of-digest and CAS. Genesis is chain position 0, so genesis and transactions
+ * share one uniform record chain, exactly as core models it (§8.1).
+ * ------------------------------------------------------------------ */
+
+/**
+ * Journals are scoped per operation; the legacy `SessionLog` face is scoped per
+ * (session, operation). Exported so a host migrating off the deprecated methods can address the
+ * same durable chain through the {@link KernelJournal} capability directly.
+ */
+export function journalOperationKey(sessionId: string, operationId: string): string {
+  return `${sessionId}\u0000${operationId}`
+}
+
+const journalTextEncoder = new TextEncoder()
+const journalTextDecoder = new TextDecoder()
+
+function encodeJournalRecord(
+  value: KernelOperationGenesis | KernelTransaction,
+  stepSeq: number,
+): JournalRecordInput {
+  return {
+    step_seq: stepSeq,
+    record_digest: "genesis_digest" in value ? value.genesis_digest : value.transaction_digest,
+    record_bytes: journalTextEncoder.encode(JSON.stringify(value)),
+  }
+}
+
+function decodeJournalRecord<T>(entry: JournalEntry): T {
+  return JSON.parse(journalTextDecoder.decode(entry.record_bytes)) as T
+}
+
+async function journalAppendGenesis(
+  journal: KernelJournal,
+  sessionId: string,
+  genesis: KernelOperationGenesis,
+): Promise<KernelGenesisReceipt> {
+  await verifyKernelOperationGenesis(genesis)
+  const key = journalOperationKey(sessionId, genesis.operation_id)
+  try {
+    const receipt = await journal.compareAndAppend(key, undefined, encodeJournalRecord(genesis, 0))
+    return { log_seq: receipt.step_seq, genesis_digest: genesis.genesis_digest }
+  } catch (err) {
+    if (!(err instanceof JournalCasConflictError)) throw err
+    // A chain already exists: idempotent for the same genesis, a conflict for a different one.
+    const existing = await journalReadGenesis(journal, sessionId, genesis.operation_id)
+    if (!existing || existing.genesis_digest !== genesis.genesis_digest) {
+      throw new KernelLogConflictError("session already has a different kernel operation genesis")
+    }
+    return { log_seq: 0, genesis_digest: genesis.genesis_digest }
+  }
+}
+
+async function journalReadGenesis(
+  journal: KernelJournal,
+  sessionId: string,
+  operationId: string,
+): Promise<KernelOperationGenesis | undefined> {
+  const entries = await journal.readFrom(journalOperationKey(sessionId, operationId), 0)
+  const genesis = entries.find(entry => entry.step_seq === 0)
+  return genesis ? decodeJournalRecord<KernelOperationGenesis>(genesis) : undefined
+}
+
+async function journalCompareAndAppendTransaction(
+  journal: KernelJournal,
+  sessionId: string,
+  expectedTransactionHead: string,
+  transaction: KernelTransaction,
+): Promise<DurableAppendReceipt> {
+  await verifyKernelTransaction(transaction)
+  const key = journalOperationKey(sessionId, transaction.operation_id)
+  const head = await journal.head(key)
+  if (!head) throw new KernelLogIntegrityError("kernel transaction requires a durable genesis")
+  if (
+    head.record_digest !== expectedTransactionHead
+    || transaction.previous_transaction_digest !== head.record_digest
+  ) {
+    throw new KernelLogConflictError("kernel transaction head changed before compare-and-append")
+  }
+  // step 0 is the genesis record, which has no `KernelTransaction` predecessor.
+  let previous: KernelTransaction | undefined
+  if (head.step_seq > 0) {
+    const headEntry = (await journal.readFrom(key, head.step_seq))[0]
+    if (!headEntry) {
+      // The head resolved from a pruned anchor: the typed successor check cannot run without the
+      // predecessor record. The legacy face has no bounded-tail replay, so refuse rather than skip.
+      throw new KernelLogIntegrityError(
+        "kernel transaction predecessor has been pruned; use the KernelJournal capability directly",
+      )
+    }
+    previous = decodeJournalRecord<KernelTransaction>(headEntry)
+  }
+  verifyKernelTransactionSuccessor(previous, transaction)
+  const receipt = await journal.compareAndAppend(
+    key,
+    expectedTransactionHead,
+    encodeJournalRecord(transaction, transaction.step_seq),
+  )
+  return { log_seq: receipt.step_seq, transaction_digest: transaction.transaction_digest }
+}
+
+async function journalReadTransactions(
+  journal: KernelJournal,
+  sessionId: string,
+  operationId: string,
+  fromStepSeq: number,
+): Promise<KernelTransactionEntry[]> {
+  const entries = await journal.readFrom(
+    journalOperationKey(sessionId, operationId),
+    Math.max(1, fromStepSeq),
+  )
+  return entries.map(entry => ({
+    log_seq: entry.step_seq,
+    transaction: decodeJournalRecord<KernelTransaction>(entry),
+  }))
+}
+
+/**
+ * **Single-isolate dev/test implementation** of both capabilities (spec §9.4: one class may
+ * implement several capabilities; the *interfaces* stay separate). Its `KernelJournal` half is
+ * `InMemoryKernelJournal`, whose CAS is atomic within one isolate only. A host whose journal must
+ * outlive its isolate — or be shared with another one — injects a `DriverKernelJournal` over a
+ * durable `JournalStorageDriver` instead.
+ */
 export class InMemorySessionLog implements SessionLog {
   private store = new Map<string, Array<{ seq: number; event: SessionEvent }>>()
+  /** Business event sequence space only — journal records number themselves by `step_seq`. */
   private seqCounters = new Map<string, number>()
-  private genesisStore = new Map<string, { log_seq: number; genesis: KernelOperationGenesis }>()
-  private transactionStore = new Map<string, KernelTransactionEntry[]>()
-
-  private operationKey(sessionId: string, operationId: string): string {
-    return `${sessionId}\u0000${operationId}`
-  }
+  /** The durable transaction capability, held rather than inherited (spec §9.1/§9.4). */
+  readonly kernelJournal: KernelJournal = new InMemoryKernelJournal()
 
   private nextSeq(sessionId: string): number {
     const seq = this.seqCounters.get(sessionId) ?? 0
@@ -208,66 +352,44 @@ export class InMemorySessionLog implements SessionLog {
     return (this.seqCounters.get(sessionId) ?? 0) - 1
   }
 
+  /** @deprecated Legacy journal face — forwards to {@link InMemorySessionLog.kernelJournal}. */
   async appendKernelGenesis(
     sessionId: string,
     genesis: KernelOperationGenesis,
   ): Promise<KernelGenesisReceipt> {
-    await verifyKernelOperationGenesis(genesis)
-    const operationKey = this.operationKey(sessionId, genesis.operation_id)
-    const existing = this.genesisStore.get(operationKey)
-    if (existing) {
-      if (existing.genesis.genesis_digest !== genesis.genesis_digest) {
-        throw new KernelLogConflictError("session already has a different kernel operation genesis")
-      }
-      return { log_seq: existing.log_seq, genesis_digest: genesis.genesis_digest }
-    }
-    const log_seq = this.nextSeq(sessionId)
-    this.genesisStore.set(operationKey, { log_seq, genesis })
-    return { log_seq, genesis_digest: genesis.genesis_digest }
+    return journalAppendGenesis(this.kernelJournal, sessionId, genesis)
   }
 
+  /** @deprecated Legacy journal face — forwards to {@link InMemorySessionLog.kernelJournal}. */
   async readKernelGenesis(sessionId: string, operationId: string): Promise<KernelOperationGenesis | undefined> {
-    return this.genesisStore.get(this.operationKey(sessionId, operationId))?.genesis
+    return journalReadGenesis(this.kernelJournal, sessionId, operationId)
   }
 
+  /** @deprecated Legacy journal face — forwards to {@link InMemorySessionLog.kernelJournal}. */
   async compareAndAppendKernelTransaction(
     sessionId: string,
     expectedTransactionHead: string,
     transaction: KernelTransaction,
   ): Promise<DurableAppendReceipt> {
-    await verifyKernelTransaction(transaction)
-    const operationKey = this.operationKey(sessionId, transaction.operation_id)
-    const genesis = this.genesisStore.get(operationKey)?.genesis
-    if (!genesis) throw new KernelLogIntegrityError("kernel transaction requires a durable genesis")
-    if (transaction.operation_id !== genesis.operation_id) {
-      throw new KernelLogIntegrityError("kernel transaction operation_id does not match genesis")
-    }
-    const head = await this.kernelTransactionHead(sessionId, transaction.operation_id)
-    if (head !== expectedTransactionHead || transaction.previous_transaction_digest !== head) {
-      throw new KernelLogConflictError("kernel transaction head changed before compare-and-append")
-    }
-    const entries = this.transactionStore.get(operationKey) ?? []
-    verifyKernelTransactionSuccessor(entries.at(-1)?.transaction, transaction)
-    const log_seq = this.nextSeq(sessionId)
-    entries.push({ log_seq, transaction })
-    this.transactionStore.set(operationKey, entries)
-    return { log_seq, transaction_digest: transaction.transaction_digest }
+    return journalCompareAndAppendTransaction(
+      this.kernelJournal,
+      sessionId,
+      expectedTransactionHead,
+      transaction,
+    )
   }
 
+  /** @deprecated Legacy journal face — forwards to {@link InMemorySessionLog.kernelJournal}. */
   async readKernelTransactions(
     sessionId: string,
     operationId: string,
     fromStepSeq = 1,
   ): Promise<KernelTransactionEntry[]> {
-    return (this.transactionStore.get(this.operationKey(sessionId, operationId)) ?? []).filter(
-      entry => entry.transaction.step_seq >= fromStepSeq,
-    )
+    return journalReadTransactions(this.kernelJournal, sessionId, operationId, fromStepSeq)
   }
 
+  /** @deprecated Legacy journal face — forwards to {@link InMemorySessionLog.kernelJournal}. */
   async kernelTransactionHead(sessionId: string, operationId: string): Promise<string | undefined> {
-    const operationKey = this.operationKey(sessionId, operationId)
-    const entries = this.transactionStore.get(operationKey) ?? []
-    return entries.at(-1)?.transaction.transaction_digest
-      ?? this.genesisStore.get(operationKey)?.genesis.genesis_digest
+    return (await this.kernelJournal.head(journalOperationKey(sessionId, operationId)))?.record_digest
   }
 }

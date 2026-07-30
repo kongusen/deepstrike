@@ -1,0 +1,28 @@
+{
+  "id": "cancel-terminal-rejects-all-state-changing-input",
+  "domain": "cancel",
+  "kind": "positive",
+  "title": "终态之后拒绝一切会改变状态的输入，包括外部信号投递",
+  "semantics": "终态闩锁必须覆盖全部输入类，而不只是业务变更。终态之后的信号投递走结构化控制拒绝：不入队、不写持久日志、不推进步序、不发出任何外部动作。现状相反——终态后的信号仍被接受、入队、发出待处理审计事实并计入已接受输入日志，该行为不保留。",
+  "given": [
+    "一个已提交终态（完成、取消或失败）的操作"
+  ],
+  "when": [
+    "宿主提交一条外部信号投递，以及一条业务变更输入"
+  ],
+  "then": [
+    "两者都被结构化拒绝",
+    "信号不入队、不写持久日志、不推进步序、不发出外部动作",
+    "拒绝本身不改变已提交的终态",
+    "只有语义相同的历史输入重放才返回既有步"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §6.1 不变量 9（DEC-4）",
+      "spec §3.3 第 18 条：现状终态后仍接受信号（crates/deepstrike-core/src/runtime/kernel/runtime.rs:2063-2069、:2159-2169、:1256-1263）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::terminal_runtime_accepts_signal_and_reports_pending_depth（现状反例，须反转）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::terminal_lifecycle_rejects_business_mutation"
+    ]
+  },
+  "target": "§6.1"
+}

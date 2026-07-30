@@ -1,0 +1,29 @@
+{
+  "id": "agent-root-start-is-atomic",
+  "domain": "agent",
+  "kind": "positive",
+  "title": "根启动是唯一且原子的事件，必须携带明确的根入口",
+  "semantics": "保留「根只能启动一次」的语义，并把启动收窄为原子事件：一条根启动输入同时给出根类别与初始上下文，不再由十几条独立输入拼装出一次启动。根类别在操作生命周期内不可改变；执行焦点只能按已提交的控制流改变。",
+  "given": [
+    "操作已完成配置",
+    "宿主持有目标根入口（代理或工作流）与初始上下文"
+  ],
+  "when": [
+    "宿主提交一条根启动输入，随后再提交第二条根启动输入"
+  ],
+  "then": [
+    "根类别与初始上下文在同一条被接受的输入中确定",
+    "第二条根启动输入被结构化拒绝，且零状态变更",
+    "根类别此后不可改变",
+    "初始上下文只携带内核需要的逻辑消息与知识，不携带宿主会话、供应商重放信封或文件路径"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §6.1 不变量 3–6",
+      "spec §7.4「Root entry」",
+      "spec §3.3 第 20 条：现状代理根启动前最多 12+ 条独立被接受输入（node/src/runtime/runner.ts:2114-2340）",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::provider_result_before_start_is_an_invalid_lifecycle_fault"
+    ]
+  },
+  "target": "§7.4"
+}

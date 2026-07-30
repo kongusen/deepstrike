@@ -19,6 +19,26 @@ export {
   verdictOutputSchema,
 } from "./runtime/index.js"
 export * from "./runtime/kernel-transaction-log.js"
+// ── Durable transaction capability (Canonical Kernel ABI §9.1) ──────────────
+export {
+  DriverKernelJournal,
+  InMemoryJournalDriver,
+  InMemoryKernelJournal,
+  JournalCasConflictError,
+  JournalIntegrityError,
+  JournalIoError,
+} from "./runtime/kernel-journal.js"
+export type {
+  CheckpointCandidate,
+  InstalledCheckpoint,
+  JournalAppendReceipt,
+  JournalEntry,
+  JournalHead,
+  JournalPruneReceipt,
+  JournalRecordInput,
+  JournalStorageDriver,
+  KernelJournal,
+} from "./runtime/kernel-journal.js"
 export type {
   ReplayProviderOpts,
   Criterion,

@@ -1,0 +1,30 @@
+{
+  "id": "agent-terminal-commits-once",
+  "domain": "agent",
+  "kind": "positive",
+  "title": "终态只提交一次，用量只在终态内汇报一次",
+  "semantics": "终态从「宿主必须执行的动作」中移出，成为已提交的根操作终态事实：不分配动作标识、不要求回灌、与终态相关的审计事实在同一次已提交的转移里。用量报告只在终态内提交一次；终态之后重投同一输入返回同一步，新输入被结构化拒绝。",
+  "given": [
+    "操作已以代理根入口运行",
+    "宿主已回灌足以让内核收敛的模型结果"
+  ],
+  "when": [
+    "内核提交根操作终态",
+    "宿主随后重投终态前的最后一条输入，并再提交一条新的业务输入"
+  ],
+  "then": [
+    "终态在整个操作生命周期内至多提交一次",
+    "终态不占用动作标识，也不要求宿主回灌",
+    "最终用量事实只随终态提交一次",
+    "重投的同一输入返回同一步；新的业务输入被结构化拒绝且零变更"
+  ],
+  "evidence": {
+    "sources": [
+      "spec §7.12「Terminal」不变量",
+      "spec §14.3「删除 KernelEffect::Done」",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::budget_grant_reports_correlated_terminal_usage_once",
+      "crates/deepstrike-core/src/runtime/kernel/tests.rs::terminal_lifecycle_rejects_business_mutation"
+    ]
+  },
+  "target": "§7.12"
+}

@@ -129,7 +129,10 @@ fn fatal_error_kind_commits_as_visible_error_result() {
     let rolled = obs
         .iter()
         .find(|o| matches!(o, KernelObservation::Rollbacked { .. }));
-    assert!(rolled.is_none(), "fatal errors commit, they do not roll back");
+    assert!(
+        rolled.is_none(),
+        "fatal errors commit, they do not roll back"
+    );
 }
 
 #[test]
@@ -215,7 +218,7 @@ fn replay_truncates_to_checkpoint_on_rollback() {
             criteria: vec![],
             agent_id: None,
             system_prompt: None,
-        attachments: vec![],
+            attachments: vec![],
         },
         SessionEvent::LlmCompleted {
             turn: 0,
@@ -265,7 +268,7 @@ fn replay_without_rollback_keeps_full_history() {
             criteria: vec![],
             agent_id: None,
             system_prompt: None,
-        attachments: vec![],
+            attachments: vec![],
         },
         SessionEvent::LlmCompleted {
             turn: 0,

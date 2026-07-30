@@ -202,7 +202,7 @@ fn critical_signal_goes_to_signals_not_history() {
         "fire",
     );
     let action = sm
-        .signal_event("op".into(), "delivery".into(), 1, sig)
+        .signal_event("op".into(), "delivery".into(), 1, sig, true)
         .expect("critical signal drives a turn");
     assert!(matches!(action, LoopAction::CallLLM { .. }));
     assert!(matches!(sm.phase, LoopPhase::Reason));
@@ -239,7 +239,7 @@ fn normal_signal_wakes_a_ready_nonterminal_loop() {
     );
 
     let action = sm
-        .signal_event("op".into(), "delivery".into(), 1, signal)
+        .signal_event("op".into(), "delivery".into(), 1, signal, true)
         .expect("normal signal should wake a ready loop");
 
     assert!(matches!(action, LoopAction::CallLLM { .. }));
@@ -261,7 +261,7 @@ fn terminal_signal_is_queued_and_reported_pending() {
         "late work",
     );
 
-    let action = sm.signal_event("op".into(), "delivery".into(), 1, signal);
+    let action = sm.signal_event("op".into(), "delivery".into(), 1, signal, true);
 
     assert!(action.is_none());
     assert_eq!(sm.signal_router.depth(), 1);
@@ -290,8 +290,8 @@ fn queue_displacement_and_expiration_are_observable() {
     )
     .with_timestamp(11);
     let newest_id = newest.id.to_string();
-    sm.signal_event("op".into(), "old".into(), 1, old);
-    sm.signal_event("op".into(), "newest".into(), 1, newest);
+    sm.signal_event("op".into(), "old".into(), 1, old, true);
+    sm.signal_event("op".into(), "newest".into(), 1, newest, true);
 
     let critical = RuntimeSignal::new(
         SignalSource::Gateway,
@@ -301,7 +301,7 @@ fn queue_displacement_and_expiration_are_observable() {
     )
     .with_timestamp(12);
     let admitted_id = critical.id.to_string();
-    sm.signal_event("op".into(), "critical".into(), 1, critical);
+    sm.signal_event("op".into(), "critical".into(), 1, critical, true);
     assert!(sm.take_observations().iter().any(|observation| matches!(
         observation,
         KernelObservation::SignalDisplaced {
@@ -319,7 +319,7 @@ fn queue_displacement_and_expiration_are_observable() {
         "fresh",
     )
     .with_timestamp(30);
-    sm.signal_event("op".into(), "fresh".into(), 1, fresh);
+    sm.signal_event("op".into(), "fresh".into(), 1, fresh, true);
     assert!(
         sm.take_observations()
             .iter()
@@ -342,7 +342,7 @@ fn queued_signal_expires_at_turn_boundary_without_another_ingest() {
     )
     .with_timestamp(10);
     assert!(
-        sm.signal_event("op".into(), "stale".into(), 1, stale)
+        sm.signal_event("op".into(), "stale".into(), 1, stale, true)
             .is_none()
     );
     sm.take_observations();
@@ -382,8 +382,8 @@ fn coalesced_queue_entry_renders_its_deterministic_count() {
     .with_timestamp(20)
     .with_coalesce("updates");
 
-    sm.signal_event("op".into(), "first".into(), 1, first);
-    sm.signal_event("op".into(), "second".into(), 1, second);
+    sm.signal_event("op".into(), "first".into(), 1, first, true);
+    sm.signal_event("op".into(), "second".into(), 1, second, true);
     assert_eq!(sm.signal_router.depth(), 1);
 
     sm.drain_queued_signals();
@@ -411,7 +411,7 @@ fn interrupt_now_preempts_awaited_subagent() {
         AgentRole::Implement,
         "child task",
     );
-    sm.spawn_sub_agent(spec, "parent-sess");
+    sm.spawn_sub_agent(spec);
     assert!(sm.is_suspended());
     sm.take_observations();
 
@@ -421,7 +421,7 @@ fn interrupt_now_preempts_awaited_subagent() {
         Urgency::Critical,
         "stop and handle this",
     );
-    let action = sm.signal_event("op".into(), "delivery".into(), 1, sig);
+    let action = sm.signal_event("op".into(), "delivery".into(), 1, sig, true);
     assert!(matches!(
         action,
         Some(LoopAction::PreemptSubAgents { ref agent_ids, .. })
@@ -466,7 +466,7 @@ fn interrupt_now_aborts_owning_workflow() {
         RuntimeTask::new("root node"),
         AgentRole::Implement,
     )]);
-    let action = sm.load_workflow(spec, "sess");
+    let action = sm.load_workflow(spec);
     if let LoopAction::SpawnWorkflow { nodes, .. } = action {
         sm.resolve_workflow_spawn(
             nodes.into_iter().map(|node| node.agent_id).collect(),
@@ -482,7 +482,7 @@ fn interrupt_now_aborts_owning_workflow() {
         Urgency::Critical,
         "abort",
     );
-    let action = sm.signal_event("op".into(), "delivery".into(), 1, sig);
+    let action = sm.signal_event("op".into(), "delivery".into(), 1, sig, true);
     assert!(matches!(action, Some(LoopAction::PreemptSubAgents { .. })));
     assert!(sm.workflow_active(), "request does not tear down workflow");
     assert!(
@@ -525,7 +525,7 @@ fn high_urgency_interrupt_does_not_preempt() {
         AgentRole::Implement,
         "child task",
     );
-    sm.spawn_sub_agent(spec, "parent-sess");
+    sm.spawn_sub_agent(spec);
     sm.take_observations();
 
     let sig = RuntimeSignal::new(
@@ -534,7 +534,7 @@ fn high_urgency_interrupt_does_not_preempt() {
         Urgency::High,
         "fyi handle soon",
     );
-    let action = sm.signal_event("op".into(), "delivery".into(), 1, sig);
+    let action = sm.signal_event("op".into(), "delivery".into(), 1, sig, true);
     assert!(action.is_none(), "soft Interrupt does not force a turn");
     assert!(sm.is_suspended(), "running sub-agent is NOT aborted");
     let obs = sm.take_observations();
@@ -574,7 +574,7 @@ fn signal_is_consumed_after_provider_commit_and_does_not_survive_renewal() {
         "do NOT modify the migration files",
     );
     let action = sm
-        .signal_event("op".into(), "delivery".into(), 1, sig)
+        .signal_event("op".into(), "delivery".into(), 1, sig, true)
         .expect("critical signal drives a turn");
     let LoopAction::CallLLM { context, .. } = action else {
         panic!("critical signal must create a provider request")
@@ -2522,7 +2522,7 @@ fn spawn_sub_agent_suspends_until_completed() {
         AgentRole::Implement,
         "child task",
     );
-    let action = sm.spawn_sub_agent(spec, "parent-sess");
+    let action = sm.spawn_sub_agent(spec);
     assert!(matches!(action, LoopAction::AwaitingResume));
     assert!(sm.is_suspended());
     assert!(matches!(
@@ -2629,7 +2629,7 @@ fn lifecycle_suspended_on_sub_agent_with_join_wait() {
         AgentRole::Implement,
         "child task",
     );
-    sm.spawn_sub_agent(spec, "parent-sess");
+    sm.spawn_sub_agent(spec);
     assert!(sm.is_suspended());
     assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
     assert!(matches!(
@@ -2763,11 +2763,11 @@ fn agent_process_view_shape_is_pinned_across_spawn_and_join() {
         AgentRole::Implement,
         "child task",
     );
-    sm.spawn_sub_agent(spec, "parent-sess");
+    sm.spawn_sub_agent(spec);
 
     let p = sm.agent_process("child").expect("process after spawn");
     assert_eq!(p.agent_id.as_str(), "child");
-    assert_eq!(p.parent_session_id.as_str(), "parent-sess");
+    assert_eq!(p.parent_task_id.as_str(), "root");
     assert_eq!(p.role, AgentRole::Implement);
     assert_eq!(p.state, ProcessState::Running);
     assert!(p.result.is_none());
@@ -2820,27 +2820,21 @@ fn spawn_quota_denies_beyond_concurrency_limit() {
     sm.take_observations();
 
     // First spawn is allowed; the loop suspends awaiting the join.
-    let a1 = sm.spawn_sub_agent(
-        AgentRunSpec::new(
-            AgentIdentity::sub_agent("a", "a-sess"),
-            AgentRole::Implement,
-            "t",
-        ),
-        "parent-sess",
-    );
+    let a1 = sm.spawn_sub_agent(AgentRunSpec::new(
+        AgentIdentity::sub_agent("a", "a-sess"),
+        AgentRole::Implement,
+        "t",
+    ));
     assert!(matches!(a1, LoopAction::AwaitingResume));
     assert_eq!(sm.task_table().children_of("root").len(), 1);
     sm.take_observations();
 
     // Second spawn while one is still Running: denied before execution, no new child.
-    let a2 = sm.spawn_sub_agent(
-        AgentRunSpec::new(
-            AgentIdentity::sub_agent("b", "b-sess"),
-            AgentRole::Implement,
-            "t",
-        ),
-        "parent-sess",
-    );
+    let a2 = sm.spawn_sub_agent(AgentRunSpec::new(
+        AgentIdentity::sub_agent("b", "b-sess"),
+        AgentRole::Implement,
+        "t",
+    ));
     assert!(matches!(a2, LoopAction::AwaitingResume));
     assert_eq!(sm.task_table().children_of("root").len(), 1);
     assert!(sm.agent_process("b").is_none());
@@ -2853,9 +2847,11 @@ fn spawn_quota_denies_beyond_concurrency_limit() {
             ..
         } if operation == "spawn_sub_agent" && subject == "b"
     )));
-    assert!(!observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
+    assert!(
+        !observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. }))
+    );
 }
 
 #[test]
@@ -2870,14 +2866,11 @@ fn spawn_quota_denies_when_depth_exceeds_limit() {
     sm.start(RuntimeTask::new("parent"));
     sm.take_observations();
 
-    let action = sm.spawn_sub_agent(
-        AgentRunSpec::new(
-            AgentIdentity::sub_agent("c", "c-sess"),
-            AgentRole::Implement,
-            "t",
-        ),
-        "parent-sess",
-    );
+    let action = sm.spawn_sub_agent(AgentRunSpec::new(
+        AgentIdentity::sub_agent("c", "c-sess"),
+        AgentRole::Implement,
+        "t",
+    ));
     assert!(matches!(action, LoopAction::AwaitingResume));
     assert!(!sm.is_suspended());
     assert!(sm.agent_process("c").is_none());
@@ -2890,9 +2883,11 @@ fn spawn_quota_denies_when_depth_exceeds_limit() {
             ..
         } if operation == "spawn_sub_agent" && subject == "c"
     )));
-    assert!(!observations
-        .iter()
-        .any(|o| matches!(o, KernelObservation::Rollbacked { .. })));
+    assert!(
+        !observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. }))
+    );
 }
 
 #[test]
@@ -2903,14 +2898,11 @@ fn no_quota_leaves_spawn_unconditionally_allowed() {
     let mut sm = sm();
     sm.start(RuntimeTask::new("parent"));
     sm.take_observations();
-    let action = sm.spawn_sub_agent(
-        AgentRunSpec::new(
-            AgentIdentity::sub_agent("d", "d-sess"),
-            AgentRole::Implement,
-            "t",
-        ),
-        "parent-sess",
-    );
+    let action = sm.spawn_sub_agent(AgentRunSpec::new(
+        AgentIdentity::sub_agent("d", "d-sess"),
+        AgentRole::Implement,
+        "t",
+    ));
     assert!(matches!(action, LoopAction::AwaitingResume));
     assert!(sm.is_suspended());
 }
@@ -3081,7 +3073,7 @@ fn task_table_tracks_sub_agent_lifecycle() {
         AgentRole::Implement,
         "child task",
     );
-    sm.spawn_sub_agent(spec, "parent-sess");
+    sm.spawn_sub_agent(spec);
 
     // Child task registered under root, running, mirroring the process row.
     let child = sm.task_table().get("child").expect("child task");
@@ -3189,9 +3181,8 @@ fn accept_workflow_spawn(sm: &mut LoopStateMachine, action: LoopAction) -> LoopA
 fn load_workflow_started(
     sm: &mut LoopStateMachine,
     spec: crate::orchestration::workflow::WorkflowSpec,
-    session_id: &str,
 ) -> LoopAction {
-    let action = sm.load_workflow(spec, session_id);
+    let action = sm.load_workflow(spec);
     accept_workflow_spawn(sm, action)
 }
 
@@ -3203,10 +3194,9 @@ fn feed_workflow(sm: &mut LoopStateMachine, event: LoopEvent) -> LoopAction {
 fn submit_workflow_started(
     sm: &mut LoopStateMachine,
     spec: crate::orchestration::workflow::WorkflowSpec,
-    session_id: &str,
     submitter_agent_id: Option<&str>,
 ) -> LoopAction {
-    let action = sm.submit_workflow(spec, session_id, submitter_agent_id);
+    let action = sm.submit_workflow(spec, submitter_agent_id);
     accept_workflow_spawn(sm, action)
 }
 
@@ -3235,7 +3225,7 @@ fn workflow_fanout_spawns_batch_then_synthesizes() {
         ],
         RuntimeTask::new("synth"),
     );
-    let action = load_workflow_started(&mut sm, spec, "sess");
+    let action = load_workflow_started(&mut sm, spec);
     assert!(matches!(action, LoopAction::AwaitingResume));
     assert!(sm.workflow_active());
     assert!(sm.is_suspended());
@@ -3321,7 +3311,7 @@ fn workflow_linear_chain_spawns_one_at_a_time() {
         WorkflowNode::new(RuntimeTask::new("B"), AgentRole::Implement).with_depends_on(vec![0]),
         WorkflowNode::new(RuntimeTask::new("C"), AgentRole::Implement).with_depends_on(vec![1]),
     ]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     assert_eq!(count_spawned(&sm.take_observations()), 1); // only A
 
     feed_workflow(
@@ -3372,7 +3362,7 @@ fn workflow_node_concurrency_limit_serializes_via_defer() {
         vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
         RuntimeTask::new("synth"),
     );
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     assert_eq!(count_spawned(&sm.take_observations()), 1); // only wf-node0 fits the slot
     assert!(sm.agent_process("wf-node0").is_some());
     assert!(sm.agent_process("wf-node1").is_none()); // deferred, not yet spawned
@@ -3432,7 +3422,7 @@ fn submit_workflow_nodes_appends_and_spawns_mid_run() {
         RuntimeTask::new("root"),
         AgentRole::Implement,
     )]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node0
     assert!(sm.agent_process("wf-node0").is_some());
 
@@ -3496,7 +3486,7 @@ fn submit_workflow_nodes_denied_past_max_workflow_nodes_quota() {
         RuntimeTask::new("root"),
         AgentRole::Implement,
     )]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node0
 
     // Submitting would grow the DAG to 2 > max(1) → denied; no wf-node1 spawns.
@@ -3545,7 +3535,6 @@ fn malformed_workflow_submission_emits_typed_rejection() {
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]),
-        "sess",
     );
     sm.take_observations();
 
@@ -3581,7 +3570,7 @@ fn invalid_loaded_workflow_emits_control_rejection_without_rollback() {
         WorkflowNode::new(RuntimeTask::new("self-cycle"), AgentRole::Implement)
             .with_depends_on(vec![0]),
     ]);
-    let action = load_workflow_started(&mut sm, spec, "sess");
+    let action = load_workflow_started(&mut sm, spec);
     assert!(matches!(action, LoopAction::CallLLM { .. }));
     let observations = sm.take_observations();
     assert!(
@@ -3592,9 +3581,11 @@ fn invalid_loaded_workflow_emits_control_rejection_without_rollback() {
         )),
         "expected typed load rejection, got {observations:?}"
     );
-    assert!(!observations
-        .iter()
-        .any(|observation| matches!(observation, KernelObservation::Rollbacked { .. })));
+    assert!(
+        !observations
+            .iter()
+            .any(|observation| matches!(observation, KernelObservation::Rollbacked { .. }))
+    );
     assert!(!sm.workflow_active());
 }
 
@@ -3615,7 +3606,7 @@ fn submit_workflow_bootstraps_dag_when_no_workflow_active() {
         WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement),
         WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement),
     ]);
-    let action = submit_workflow_started(&mut sm, spec, "sess", None);
+    let action = submit_workflow_started(&mut sm, spec, None);
     assert!(matches!(action, LoopAction::AwaitingResume { .. }));
     assert!(sm.workflow_active(), "spec bootstrapped the DAG");
     assert_eq!(count_spawned(&sm.take_observations()), 2); // wf-node0 + wf-node1
@@ -3652,7 +3643,7 @@ fn submit_workflow_flattens_onto_active_workflow() {
         RuntimeTask::new("root"),
         AgentRole::Implement,
     )]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node0
 
     // Author a second spec while wf-node0 runs → its nodes flatten onto the live DAG as wf-node1.
@@ -3660,7 +3651,7 @@ fn submit_workflow_flattens_onto_active_workflow() {
         RuntimeTask::new("more"),
         AgentRole::Implement,
     )]);
-    submit_workflow_started(&mut sm, more, "sess", None);
+    submit_workflow_started(&mut sm, more, None);
     assert_eq!(count_spawned(&sm.take_observations()), 1); // wf-node1 appended, not a new workflow
     assert!(
         sm.agent_process("wf-node1").is_some(),
@@ -3705,7 +3696,7 @@ fn submit_workflow_denied_past_max_workflow_nodes_quota() {
         WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement),
         WorkflowNode::new(RuntimeTask::new("c"), AgentRole::Implement),
     ]);
-    let action = submit_workflow_started(&mut sm, spec, "sess", None);
+    let action = submit_workflow_started(&mut sm, spec, None);
     assert!(matches!(action, LoopAction::CallLLM { .. }));
     let observations = sm.take_observations();
     assert_eq!(count_spawned(&observations), 0);
@@ -3736,7 +3727,7 @@ fn submit_workflow_bootstrap_announces_batch_with_submitter() {
         WorkflowNode::new(RuntimeTask::new("a"), AgentRole::Implement),
         WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement),
     ]);
-    submit_workflow_started(&mut sm, spec, "sess", Some("author-agent"));
+    submit_workflow_started(&mut sm, spec, Some("author-agent"));
     let obs = sm.take_observations();
     let submitted = obs
         .iter()
@@ -3757,7 +3748,7 @@ fn submit_workflow_bootstrap_announces_batch_with_submitter() {
         RuntimeTask::new("c"),
         AgentRole::Implement,
     )]);
-    submit_workflow_started(&mut sm, more, "sess", Some("wf-node0"));
+    submit_workflow_started(&mut sm, more, Some("wf-node0"));
     let obs = sm.take_observations();
     let flattened = obs
         .iter()
@@ -3793,7 +3784,7 @@ fn zero_concurrency_quota_denies_workflow_spawns_instead_of_stalling() {
         RuntimeTask::new("a"),
         AgentRole::Implement,
     )]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     let obs = sm.take_observations();
     assert_eq!(
         count_spawned(&obs),
@@ -3834,7 +3825,7 @@ fn workflow_batch_spawned_carries_remaining_budget_under_quota() {
         RuntimeTask::new("root"),
         AgentRole::Implement,
     )]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
 
     // The first batch (wf-node0) reports: 1/5 nodes used → 4 remaining; 1 running → 2 slots left.
     let budget = sm
@@ -3870,7 +3861,7 @@ fn workflow_batch_spawned_omits_budget_without_quota() {
         RuntimeTask::new("root"),
         AgentRole::Implement,
     )]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     let had_budget = sm.take_observations().into_iter().any(|o| {
         matches!(
             o,
@@ -3899,7 +3890,7 @@ fn quarantined_node_output_is_labeled_crossing_into_trusted_context() {
     let spec = WorkflowSpec::new(vec![
         WorkflowNode::new(RuntimeTask::new("read-untrusted"), AgentRole::Explore).quarantined(),
     ]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     sm.take_observations();
     assert!(
         sm.agent_process("wf-node0").is_some(),
@@ -3947,7 +3938,7 @@ fn quarantined_node_with_write_isolation_is_denied_in_kernel() {
         WorkflowNode::new(RuntimeTask::new("act on it"), AgentRole::Implement)
             .with_depends_on(vec![0]),
     ]);
-    let action = load_workflow_started(&mut sm, spec, "sess");
+    let action = load_workflow_started(&mut sm, spec);
 
     // Nothing spawns (node0 denied, node1 starved) → workflow finishes immediately.
     assert!(matches!(action, LoopAction::CallLLM { .. }));
@@ -3989,7 +3980,7 @@ fn loop_node_reruns_then_unblocks_dependent_via_drive_workflow() {
         WorkflowNode::new(RuntimeTask::new("finalize"), AgentRole::Implement)
             .with_depends_on(vec![0]),
     ]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
 
     // Iteration 0 spawns.
     assert_eq!(count_spawned(&sm.take_observations()), 1);
@@ -4058,7 +4049,7 @@ fn loop_node_stops_early_on_loop_continue_false() {
         WorkflowNode::new(RuntimeTask::new("probe"), AgentRole::Explore).with_loop(5),
         WorkflowNode::new(RuntimeTask::new("report"), AgentRole::Plan).with_depends_on(vec![0]),
     ]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     assert_eq!(count_spawned(&sm.take_observations()), 1); // i0
 
     // i0 → continue (no opinion); i1 spawns.
@@ -4130,7 +4121,7 @@ fn classify_node_routes_to_chosen_branch_and_prunes_others() {
         WorkflowNode::new(RuntimeTask::new("build the feature"), AgentRole::Implement)
             .with_depends_on(vec![0]),
     ]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     assert_eq!(count_spawned(&sm.take_observations()), 1); // the classifier (wf-node0)
 
     // Classifier returns "bug" → the bug branch (node 1) runs; the feature branch (node 2) is pruned.
@@ -4182,7 +4173,7 @@ fn tournament_node_drives_bracket_end_to_end_via_drive_workflow() {
         WorkflowNode::new(RuntimeTask::new("ship the winner"), AgentRole::Implement)
             .with_depends_on(vec![0]),
     ]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
 
     // Node 0 = controller, node 1 = the gated dependent ("ship the winner"). Entrant children are
     // appended after the static spec → wf-node2..5; the controller spawns no agent of its own.
@@ -4315,7 +4306,7 @@ fn quarantined_node_read_only_is_allowed() {
         .with_isolation(AgentIsolation::ReadOnly)
         .with_trust(NodeTrust::Quarantined),
     ]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     assert_eq!(
         count_spawned(&sm.take_observations()),
         1,
@@ -4344,7 +4335,7 @@ fn workflow_run_queue_unblocks_dependents_per_node() {
         WorkflowNode::new(RuntimeTask::new("C"), AgentRole::Implement).with_depends_on(vec![0, 1]),
         WorkflowNode::new(RuntimeTask::new("D"), AgentRole::Implement).with_depends_on(vec![0]),
     ]);
-    load_workflow_started(&mut sm, spec, "sess");
+    load_workflow_started(&mut sm, spec);
     // A and B have no deps → both spawn in the first round.
     assert_eq!(count_spawned(&sm.take_observations()), 2);
 
@@ -4377,14 +4368,11 @@ fn single_spawn_path_leaves_workflow_inactive() {
     let mut sm = sm();
     sm.start(RuntimeTask::new("parent"));
     sm.take_observations();
-    sm.spawn_sub_agent(
-        AgentRunSpec::new(
-            AgentIdentity::sub_agent("child", "child-session"),
-            AgentRole::Implement,
-            "child task",
-        ),
-        "parent-sess",
-    );
+    sm.spawn_sub_agent(AgentRunSpec::new(
+        AgentIdentity::sub_agent("child", "child-session"),
+        AgentRole::Implement,
+        "child task",
+    ));
     assert!(!sm.workflow_active());
     let done = feed_workflow(
         &mut sm,
@@ -4511,10 +4499,12 @@ fn milestone_retry_loop_is_bounded_by_the_token_budget() {
             matches!(action, LoopAction::CallLLM { .. }),
             "loop should keep re-calling until the budget fires, got {action:?}"
         );
-        if machine.observations.iter().any(|o| matches!(
-            o,
-            KernelObservation::BudgetExceeded { budget, .. } if budget == "token_budget"
-        )) {
+        if machine.observations.iter().any(|o| {
+            matches!(
+                o,
+                KernelObservation::BudgetExceeded { budget, .. } if budget == "token_budget"
+            )
+        }) {
             budget_fired = true;
             break;
         }
@@ -4695,7 +4685,6 @@ fn repeat_fuse_ignores_long_args_that_differ_past_the_display_cap() {
             "same-file edits with different content are progress, not a repeat (edit {i})"
         );
     }
-
 }
 
 #[test]

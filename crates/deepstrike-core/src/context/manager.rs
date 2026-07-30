@@ -270,6 +270,11 @@ impl ContextManager {
     /// per-turn `recompute_handle_residency` scan. Called at compaction/renewal boundaries, so the
     /// table tracks the working set, not the whole session. Handles with no `source` anchor (future
     /// non-tool-result kinds) are always kept — they can't be orphaned by this check.
+    ///
+    /// §25.9 · a handle whose body lives **outside** core is also always kept, whatever happened to
+    /// the message it was anchored to. The handle table is the kernel's only record of an external
+    /// payload: pruning one does not free the body, it only makes the body permanently unreachable
+    /// — and page-in is exactly the operation that outlives the preview's stay in working context.
     pub fn prune_orphaned_handles(&mut self) {
         let live: std::collections::HashSet<CompactString> = self
             .partitions
@@ -287,8 +292,10 @@ impl ContextManager {
                 _ => Vec::new(),
             })
             .collect();
-        self.handles
-            .retain(|h| h.source.as_ref().is_none_or(|s| live.contains(s)));
+        self.handles.retain(|h| {
+            h.residency.payload_ref().is_some()
+                || h.source.as_ref().is_none_or(|s| live.contains(s))
+        });
     }
 
     /// Mark the handle anchored to `call_id` as spooled to disk (Layer 1): the SDK persists the
@@ -304,6 +311,58 @@ impl ContextManager {
         {
             handle.residency = Residency::SpooledOut { r: spool_ref };
         }
+    }
+
+    /// §7.10 / §25.9 · move the payload residency of the handle addressed by `source`, minting the
+    /// handle when the kernel is hearing about this body for the first time (a page-out archive has
+    /// no anchored message: its handle *is* the address). Returns the residency it replaced, or
+    /// `None` when the handle was minted here.
+    ///
+    /// This is the **single** writer of the external/paged-out axis, which is what makes "the P3
+    /// handle table is the only kernel fact about where a body lives" checkable rather than
+    /// aspirational: every caller goes through here, and every caller therefore has a residency
+    /// transition to observe.
+    ///
+    /// `tokens` is the weight this handle contributes to working context, so it is `0` for every
+    /// body that lives outside core — an external result's anchored message holds the *preview*,
+    /// not the body, so unlike a `Collapsed` handle there is no over-count to discount — and the
+    /// body's real weight only when a page-in brought it home.
+    pub fn set_payload_residency(
+        &mut self,
+        source: &str,
+        kind: HandleKind,
+        tokens: u32,
+        residency: Residency,
+    ) -> Option<Residency> {
+        if let Some(handle) = self
+            .handles
+            .all_mut()
+            .iter_mut()
+            .find(|h| h.source.as_deref() == Some(source))
+        {
+            let previous = std::mem::replace(&mut handle.residency, residency);
+            handle.tokens = tokens;
+            return Some(previous);
+        }
+        let id = self.alloc_handle_id();
+        self.handles.insert(Handle {
+            id,
+            kind,
+            residency,
+            tokens,
+            source: Some(source.into()),
+        });
+        None
+    }
+
+    /// The payload residency of the handle addressed by `source`. The read half of
+    /// [`Self::set_payload_residency`] — a page-in asks this before it can address anything.
+    ///
+    /// `source` **is** the wire address of a handle: the tool `call_id` for a result, which is
+    /// exactly what the truncation marker tells the model to pass back to `read_result`, and the
+    /// kernel-minted archive id for a page-out.
+    pub fn payload_residency(&self, source: &str) -> Option<&Residency> {
+        self.handles.residency_for_source(source)
     }
 
     // ── Pressure ──────────────────────────────────────────────────────────────
@@ -484,6 +543,23 @@ impl ContextManager {
         let id = self.next_handle_id;
         self.next_handle_id = self.next_handle_id.wrapping_add(1);
         id
+    }
+
+    /// The next handle id this allocator will hand out.
+    ///
+    /// Read by the §12.1 checkpoint projection: a restored kernel that restarted the allocator
+    /// would re-issue an id an outstanding `LoadPayload` effect still addresses.
+    pub fn next_handle_id(&self) -> HandleId {
+        self.next_handle_id
+    }
+
+    /// §12.2 · reinstall the allocator a checkpoint recorded.
+    ///
+    /// The mirror of [`Self::next_handle_id`], and the reason handle identity survives a restore:
+    /// the handle *table* is repopulated by id, and this is what stops the next allocation from
+    /// colliding with one of them.
+    pub fn restore_next_handle_id(&mut self, next: HandleId) {
+        self.next_handle_id = next;
     }
 
     /// Push content into the Knowledge slot (memory retrievals, skill defs, artifacts).
@@ -742,6 +818,12 @@ impl ContextManager {
 
     pub fn skill_tool_schema(&self) -> Option<ToolSchema> {
         self.skills.build_tool_schema()
+    }
+
+    /// Whether the operation's catalog declares this skill (see
+    /// [`SkillCatalog::is_available`](crate::context::skill_catalog::SkillCatalog::is_available)).
+    pub fn skill_available(&self, name: &str) -> bool {
+        self.skills.is_available(name)
     }
 
     // ── Meta-tools ────────────────────────────────────────────────────────────

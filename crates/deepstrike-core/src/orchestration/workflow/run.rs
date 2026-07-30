@@ -289,8 +289,6 @@ pub struct WorkflowRun {
     graph: TaskGraph,
     nodes: Vec<WorkflowNode>,
     scheduler_policy: crate::scheduler::policy::SchedulerPolicyConfig,
-    /// Parent session id stamped onto each node's spawned-agent manifest.
-    parent_session_id: String,
     /// Completed-event lookup: kernel agent id → DAG node index.
     node_of_agent: HashMap<String, usize>,
     /// Completed-iteration count per `Loop` node (absent / 0 = no iterations finished yet). The
@@ -306,12 +304,11 @@ pub struct WorkflowRun {
 
 impl WorkflowRun {
     /// Build from a spec. Validates dependency indices + acyclicity (reuses `WorkflowSpec`).
-    pub fn new(spec: &WorkflowSpec, parent_session_id: &str) -> Result<Self> {
+    pub fn new(spec: &WorkflowSpec) -> Result<Self> {
         let mut run = Self {
             graph: spec.validate()?,
             nodes: spec.nodes.clone(),
             scheduler_policy: crate::scheduler::policy::SchedulerPolicyConfig::default(),
-            parent_session_id: parent_session_id.to_string(),
             node_of_agent: HashMap::new(),
             iter_counts: HashMap::new(),
             tournaments: HashMap::new(),
@@ -351,7 +348,6 @@ impl WorkflowRun {
     /// re-runs from its entrants — wasteful but faithful.
     pub fn resume(
         spec: &WorkflowSpec,
-        parent_session_id: &str,
         submissions: &[Vec<WorkflowNode>],
         submission_bases: &[u32],
         outcomes: &[ResumedNodeOutcome],
@@ -363,7 +359,7 @@ impl WorkflowRun {
                 submission_bases.len()
             )));
         }
-        let mut run = Self::new(spec, parent_session_id)?;
+        let mut run = Self::new(spec)?;
         for (i, batch) in submissions.iter().enumerate() {
             if let Some(&base) = submission_bases.get(i) {
                 let base = base as usize;
@@ -563,7 +559,6 @@ impl WorkflowRun {
         let n = &self.nodes[node];
         IsolationManifest {
             agent_id: self.current_agent_id(node).into(),
-            parent_session_id: self.parent_session_id.as_str().into(),
             role: n.role,
             isolation: n.isolation,
             context_inheritance: n.context_inheritance,
@@ -1155,6 +1150,22 @@ impl WorkflowRun {
             .is_some_and(|&node| matches!(self.nodes[node].trust, NodeTrust::Quarantined))
     }
 
+    /// Test instrument: mark a spawned node quarantined after the fact.
+    ///
+    /// Production quarantine is declared on the spec (`WorkflowNode::quarantined`). The canonical
+    /// wire `WorkflowNode` has no trust field yet — see the SPEC-ISSUE in the canonical driver — so
+    /// tests of the quarantine refusal reach the state through here instead of through the wire.
+    #[cfg(test)]
+    pub(crate) fn quarantine_agent(&mut self, agent_id: &str) -> bool {
+        match self.node_of_agent.get(agent_id).copied() {
+            Some(node) => {
+                self.nodes[node].trust = NodeTrust::Quarantined;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Test instrument: true when no node is currently `Running` — the spawned batch has
     /// fully reported back. Derived from the graph; the executor's in-flight truth is
     /// `SuspendState::SubAgentAwait.agent_ids`.
@@ -1292,7 +1303,7 @@ mod tests {
             vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
             RuntimeTask::new("synth"),
         );
-        WorkflowRun::new(&spec, "parent-sess").unwrap()
+        WorkflowRun::new(&spec).unwrap()
     }
 
     /// A judge completion reporting its winning entrant id.
@@ -1367,7 +1378,7 @@ mod tests {
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         let id0 = run.current_agent_id(0);
         run.mark_spawned(0, &id0);
         run.record_completion(&id0, done());
@@ -1405,7 +1416,7 @@ mod tests {
                 .with_reduce("dedupe_lines")
                 .with_depends_on(vec![0, 1]),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
 
         // Only the two workers are ready first (the reduce node waits on both).
         assert_eq!(run.ready_batch(), vec![0, 1]);
@@ -1448,7 +1459,7 @@ mod tests {
             WorkflowNode::new(RuntimeTask::new("judge"), AgentRole::Verify)
                 .with_output_schema(schema.clone()),
         ]);
-        let run = WorkflowRun::new(&spec, "sess").unwrap();
+        let run = WorkflowRun::new(&spec).unwrap();
         let info = run.spawn_info(0);
         assert_eq!(info.output_schema.as_ref(), Some(&schema));
 
@@ -1462,7 +1473,7 @@ mod tests {
             RuntimeTask::new("x"),
             AgentRole::Implement,
         )]);
-        let plain_info = WorkflowRun::new(&plain, "sess").unwrap().spawn_info(0);
+        let plain_info = WorkflowRun::new(&plain).unwrap().spawn_info(0);
         assert!(plain_info.output_schema.is_none());
         assert!(
             !serde_json::to_string(&plain_info)
@@ -1482,7 +1493,7 @@ mod tests {
         let spec = WorkflowSpec::new(vec![
             WorkflowNode::new(RuntimeTask::new("read-untrusted"), AgentRole::Explore).quarantined(),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         let id0 = run.current_agent_id(0);
         run.mark_spawned(0, &id0);
         run.record_completion(&id0, done());
@@ -1532,7 +1543,7 @@ mod tests {
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         let id0 = run.current_agent_id(0);
         run.mark_spawned(0, &id0);
         run.record_completion(&id0, done());
@@ -1568,7 +1579,7 @@ mod tests {
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         // Node 0 in the batch depends on node 1: a valid forward edge. Only node 1 starts.
         let ids = run
             .submit_nodes(vec![
@@ -1629,7 +1640,7 @@ mod tests {
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         let id0 = run.current_agent_id(0);
         run.mark_spawned(0, &id0);
         run.record_completion(&id0, done());
@@ -1676,7 +1687,7 @@ mod tests {
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         let id0 = run.current_agent_id(0);
         run.mark_spawned(0, &id0);
         run.record_completion(&id0, done());
@@ -1746,7 +1757,7 @@ mod tests {
             RuntimeTask::new("root"),
             AgentRole::Implement,
         )]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         let id0 = run.current_agent_id(0);
         run.mark_spawned(0, &id0);
         run.record_completion(&id0, done());
@@ -1825,7 +1836,7 @@ mod tests {
             WorkflowNode::new(RuntimeTask::new("finalize"), AgentRole::Implement)
                 .with_depends_on(vec![0]),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
 
         // Three iterations, each with a distinct agent id; the dependent stays unready throughout.
         for k in 0..3 {
@@ -1941,7 +1952,7 @@ mod tests {
                 RuntimeTask::new("node"),
                 AgentRole::Implement,
             )]);
-            let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+            let mut run = WorkflowRun::new(&spec).unwrap();
             run.mark_spawned(0, "wf-node0");
             run.record_completion("wf-node0", terminated(termination));
             let outcome = run.finish().remove(0);
@@ -1957,7 +1968,7 @@ mod tests {
                 .with_depends_on(vec![0])
                 .with_dependency_policy(DependencyPolicy::AcceptPartial),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         run.mark_spawned(0, "wf-node0");
         run.record_completion("wf-node0", terminated(TerminationReason::Timeout));
         assert_eq!(run.ready_batch(), vec![2]);
@@ -1981,7 +1992,7 @@ mod tests {
                 .with_depends_on(vec![0])
                 .with_dependency_policy(DependencyPolicy::Optional),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         assert_eq!(run.ready_batch(), vec![0, 2]);
         run.mark_spawned(0, "wf-node0");
         run.record_completion("wf-node0", terminated(TerminationReason::Error));
@@ -1996,7 +2007,7 @@ mod tests {
         let spec = WorkflowSpec::new(vec![
             WorkflowNode::new(RuntimeTask::new("loop"), AgentRole::Implement).with_loop(3),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         run.mark_spawned(0, "wf-node0-i0");
         run.record_completion("wf-node0-i0", terminated(TerminationReason::Timeout));
         assert!(run.ready_batch().is_empty());
@@ -2008,7 +2019,6 @@ mod tests {
         let run = fanout2();
         let m = run.manifest_for(0);
         assert_eq!(m.agent_id.as_str(), "wf-node0");
-        assert_eq!(m.parent_session_id.as_str(), "parent-sess");
         // fanout workers are Explore → ReadOnly + SystemOnly (workflow role_defaults)
         assert_eq!(m.isolation, crate::types::agent::AgentIsolation::ReadOnly);
         assert_eq!(
@@ -2032,7 +2042,6 @@ mod tests {
         );
         let mut run = WorkflowRun::resume(
             &spec,
-            "sess",
             &[],
             &[],
             &[ResumedNodeOutcome::completed(node_agent_id(0))],
@@ -2049,7 +2058,6 @@ mod tests {
         // both nodes (worker 0, synth 1) recovered as done.
         let mut run = WorkflowRun::resume(
             &spec,
-            "sess",
             &[],
             &[],
             &[
@@ -2085,7 +2093,7 @@ mod tests {
             tournament_winner: None,
             loop_continue: None,
         };
-        let mut resumed = WorkflowRun::resume(&spec, "sess", &[], &[], &[partial]).unwrap();
+        let mut resumed = WorkflowRun::resume(&spec, &[], &[], &[partial]).unwrap();
         assert_eq!(resumed.ready_batch(), vec![2]);
         assert_eq!(
             resumed.node_outcomes()[0].status,
@@ -2105,7 +2113,7 @@ mod tests {
             tournament_winner: None,
             loop_continue: None,
         };
-        let mut resumed = WorkflowRun::resume(&spec, "sess", &[], &[], &[failed]).unwrap();
+        let mut resumed = WorkflowRun::resume(&spec, &[], &[], &[failed]).unwrap();
         assert!(resumed.ready_batch().is_empty());
         assert_eq!(
             resumed.node_outcomes()[0].status,
@@ -2141,7 +2149,6 @@ mod tests {
         )];
         let mut run = WorkflowRun::resume(
             &spec,
-            "sess",
             &[submission],
             &[3],
             &[
@@ -2167,7 +2174,6 @@ mod tests {
         ]);
         let bad = WorkflowRun::resume(
             &spec2,
-            "sess",
             &[vec![WorkflowNode::new(
                 RuntimeTask::new("x"),
                 AgentRole::Implement,
@@ -2181,7 +2187,6 @@ mod tests {
         );
         let missing_base = WorkflowRun::resume(
             &spec2,
-            "sess",
             &[vec![WorkflowNode::new(
                 RuntimeTask::new("x"),
                 AgentRole::Implement,
@@ -2208,7 +2213,6 @@ mod tests {
         let spec = WorkflowSpec::new(vec![node]);
         let mut run = WorkflowRun::resume(
             &spec,
-            "sess",
             &[],
             &[],
             &[
@@ -2240,7 +2244,6 @@ mod tests {
         let spec = WorkflowSpec::new(vec![node]);
         let mut run = WorkflowRun::resume(
             &spec,
-            "sess",
             &[],
             &[],
             &[
@@ -2276,7 +2279,6 @@ mod tests {
         // root done, submission re-applied, but the appended node not yet completed.
         let mut run = WorkflowRun::resume(
             &spec,
-            "sess",
             &[submission.clone()],
             &[1],
             &[ResumedNodeOutcome::completed(node_agent_id(0))],
@@ -2293,7 +2295,6 @@ mod tests {
         // both recovered as done → resume finishes.
         let mut run2 = WorkflowRun::resume(
             &spec,
-            "sess",
             &[submission],
             &[1],
             &[
@@ -2317,7 +2318,7 @@ mod tests {
                 .with_model_hint("haiku"),
             WorkflowNode::new(RuntimeTask::new("act"), AgentRole::Implement),
         ]);
-        let run = WorkflowRun::new(&spec, "sess").unwrap();
+        let run = WorkflowRun::new(&spec).unwrap();
 
         // W3: quarantined node + W4: model hint both reach the spawn descriptor.
         let q = run.spawn_info(0);
@@ -2351,7 +2352,7 @@ mod tests {
             // 2: plain spawn → neither hint present.
             WorkflowNode::new(RuntimeTask::new("act"), AgentRole::Implement),
         ]);
-        let run = WorkflowRun::new(&spec, "sess").unwrap();
+        let run = WorkflowRun::new(&spec).unwrap();
 
         let l = run.spawn_info(0);
         assert_eq!(l.loop_max_iters, Some(3));
@@ -2380,7 +2381,7 @@ mod tests {
                 .with_token_budget(10_000),
             WorkflowNode::new(RuntimeTask::new("plain"), AgentRole::Implement),
         ]);
-        let run = WorkflowRun::new(&spec, "sess").unwrap();
+        let run = WorkflowRun::new(&spec).unwrap();
         assert_eq!(run.spawn_info(0).token_budget, Some(10_000));
         assert_eq!(run.spawn_info(1).token_budget, None);
     }
@@ -2406,7 +2407,7 @@ mod tests {
             WorkflowNode::new(RuntimeTask::new("ship the winner"), AgentRole::Implement)
                 .with_depends_on(vec![0]),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
 
         // Round 1 of spawning expands the controller into 4 entrant children (nodes 2..=5); the
         // controller spawns no agent of its own and the dependent stays gated.
@@ -2520,7 +2521,7 @@ mod tests {
                 RuntimeTask::new("z"),
             ]),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
 
         let entrants = spawn_round(&mut run); // nodes 1,2,3
         assert_eq!(entrants.len(), 3);
@@ -2561,7 +2562,7 @@ mod tests {
                 .quarantined()
                 .with_tournament(vec![RuntimeTask::new("a"), RuntimeTask::new("b")]),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
 
         let entrants = spawn_round(&mut run);
         for (node, _) in &entrants {
@@ -2595,7 +2596,7 @@ mod tests {
             WorkflowNode::new(RuntimeTask::new("c"), AgentRole::Plan)
                 .with_tournament(vec![RuntimeTask::new("a"), RuntimeTask::new("b")]),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         assert!(matches!(run.nodes[0].kind, NodeKind::Tournament { .. }));
         let first = spawn_round(&mut run);
         assert!(
@@ -2636,7 +2637,6 @@ mod tests {
         // from the recorded signal — without it the REJECTED branch would run after resume.
         let mut run = WorkflowRun::resume(
             &classify_spec(),
-            "sess",
             &[],
             &[],
             &[ResumedNodeOutcome {
@@ -2665,7 +2665,6 @@ mod tests {
         // "no recognizable choice" contract, and strictly safer than running a rejected branch.
         let mut run = WorkflowRun::resume(
             &classify_spec(),
-            "sess",
             &[],
             &[],
             &[ResumedNodeOutcome::completed("wf-node0")],
@@ -2686,7 +2685,6 @@ mod tests {
         let spec = WorkflowSpec::new(vec![node]);
         let mut run = WorkflowRun::resume(
             &spec,
-            "sess",
             &[],
             &[],
             &[ResumedNodeOutcome {
@@ -2713,7 +2711,7 @@ mod tests {
             WorkflowNode::new(RuntimeTask::new("use winner"), AgentRole::Implement)
                 .with_depends_on(vec![0]),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         let entrants = spawn_round(&mut run);
         assert_eq!(entrants.len(), 2);
         run.record_completion(&entrants[0].1, done());
@@ -2788,7 +2786,7 @@ mod tests {
                 .with_max_turns(4)
                 .with_max_wall_ms(30_000),
         ]);
-        let run = WorkflowRun::new(&spec, "sess").unwrap();
+        let run = WorkflowRun::new(&spec).unwrap();
         let info = run.spawn_info(1);
         assert_eq!(info.input_agent_ids, vec!["wf-node0"]);
         assert_eq!(info.max_turns, Some(4));
@@ -2818,10 +2816,12 @@ mod tests {
         let spec = WorkflowSpec::new(vec![
             WorkflowNode::new(RuntimeTask::new("leaf"), AgentRole::Implement),
             WorkflowNode::new(RuntimeTask::new("chain-root"), AgentRole::Implement),
-            WorkflowNode::new(RuntimeTask::new("mid"), AgentRole::Implement).with_depends_on(vec![1]),
-            WorkflowNode::new(RuntimeTask::new("tail"), AgentRole::Implement).with_depends_on(vec![2]),
+            WorkflowNode::new(RuntimeTask::new("mid"), AgentRole::Implement)
+                .with_depends_on(vec![1]),
+            WorkflowNode::new(RuntimeTask::new("tail"), AgentRole::Implement)
+                .with_depends_on(vec![2]),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         run.set_scheduler_policy(SchedulerPolicyConfig::default());
 
         assert_eq!(
@@ -2845,7 +2845,7 @@ mod tests {
             WorkflowNode::new(RuntimeTask::new("loop"), AgentRole::Implement).with_loop(5),
             WorkflowNode::new(RuntimeTask::new("independent"), AgentRole::Implement),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         run.set_scheduler_policy(SchedulerPolicyConfig::default());
 
         // Concurrency 1: run only the head of each ready batch. First round the loop wins the tie
@@ -2878,12 +2878,15 @@ mod tests {
             WorkflowNode::new(RuntimeTask::new("b"), AgentRole::Implement).with_depends_on(vec![0]),
             WorkflowNode::new(RuntimeTask::new("c"), AgentRole::Implement).with_depends_on(vec![1]),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         run.mark_spawned(0, "wf-node0");
         run.record_completion("wf-node0", terminated(TerminationReason::Error));
         let outcomes = run.finish();
         assert_eq!(outcomes[0].status, WorkflowNodeStatus::Failed);
-        assert_eq!(outcomes[1].status, WorkflowNodeStatus::SkippedUpstreamFailed);
+        assert_eq!(
+            outcomes[1].status,
+            WorkflowNodeStatus::SkippedUpstreamFailed
+        );
         assert_eq!(
             outcomes[2].status,
             WorkflowNodeStatus::SkippedUpstreamFailed,
@@ -2900,10 +2903,14 @@ mod tests {
                 .with_depends_on(vec![0])
                 .with_dependency_policy(DependencyPolicy::AcceptPartial),
         ]);
-        let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+        let mut run = WorkflowRun::new(&spec).unwrap();
         run.mark_spawned(0, "wf-node0");
         run.record_completion("wf-node0", terminated(TerminationReason::Timeout)); // partial
-        assert_eq!(run.ready_batch(), vec![2], "only the AcceptPartial dependent runs");
+        assert_eq!(
+            run.ready_batch(),
+            vec![2],
+            "only the AcceptPartial dependent runs"
+        );
         assert_eq!(
             run.node_outcomes()[1].status,
             WorkflowNodeStatus::SkippedUpstreamFailed,
@@ -2977,7 +2984,7 @@ mod tests {
                 );
             }
             let spec = WorkflowSpec::new(nodes);
-            let mut run = WorkflowRun::new(&spec, "sess").unwrap();
+            let mut run = WorkflowRun::new(&spec).unwrap();
 
             // Drive to a fixpoint: spawn each ready node, then either complete it with a random
             // termination or deny it. Bounded so a bug cannot hang the test.
@@ -2992,7 +2999,8 @@ mod tests {
                     if rng.below(5) == 0 {
                         run.mark_denied(node);
                     } else {
-                        let termination = terminations[rng.below(terminations.len() as u64) as usize];
+                        let termination =
+                            terminations[rng.below(terminations.len() as u64) as usize];
                         run.record_completion(&agent, terminated(termination));
                     }
                 }

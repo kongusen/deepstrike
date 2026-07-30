@@ -270,7 +270,7 @@ impl LlmEvalJudge {
 impl AttemptJudge for LlmEvalJudge {
     async fn judge(&self, context: &JudgeContext) -> Result<Option<JudgeResult>> {
         use deepstrike_core::harness::eval::{
-            build_eval_messages, parse_verdict, Criterion as EvalCriterion,
+            Criterion as EvalCriterion, build_eval_messages, parse_verdict,
         };
 
         let criteria: Vec<EvalCriterion> = context
