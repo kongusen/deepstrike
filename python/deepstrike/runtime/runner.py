@@ -62,7 +62,6 @@ from deepstrike.runtime.kernel_step import (
 )
 from deepstrike.runtime.replay_sanitize import sanitize_replay_text
 from deepstrike.runtime.session_repair import (
-  RecoveredNodeOutcome,
   build_llm_completed_event,
   build_run_terminal_event,
   repair_events_for_recovery,
@@ -838,10 +837,6 @@ class RuntimeRunner:
     self,
     spec: "WorkflowSpec",
     *,
-    # Typed recovered terminal outcomes, including control signals and output.
-    resumed_outcomes: list[RecoveredNodeOutcome] | None = None,
-    resumed_submissions: list | None = None,
-    resumed_submission_bases: list[int] | None = None,
     session_id: str | None = None,
     _initial_event: dict[str, Any] | None = None,
   ) -> WorkflowOutcome:
@@ -884,9 +879,6 @@ class RuntimeRunner:
         standalone_runtime = self._bootstrap_workflow_kernel(sid, group_budget_scope)
       outcome = await self._run_workflow_inner(
         spec,
-        resumed_outcomes=resumed_outcomes,
-        resumed_submissions=resumed_submissions,
-        resumed_submission_bases=resumed_submission_bases,
         _initial_event=_initial_event,
       )
       if bootstrapped:
@@ -921,8 +913,7 @@ class RuntimeRunner:
 
     Mirrors ``_execute``'s pre-run setup (governance / attention / scheduler-budget / resource-quota,
     then ``start_run``) so DAG-node spawns are gated and quota'd exactly as a mid-run spawn. The
-    caller (``run_workflow``) durably appends ``run_started`` before calling this method, so the
-    standalone run can be resumed via ``resume_workflow``.
+    caller (``run_workflow``) durably appends ``run_started`` before calling this method.
     """
     self._interrupted = False
     self._cancellation_reason = None
@@ -973,9 +964,6 @@ class RuntimeRunner:
     self,
     spec: "WorkflowSpec",
     *,
-    resumed_outcomes: list[RecoveredNodeOutcome] | None = None,
-    resumed_submissions: list | None = None,
-    resumed_submission_bases: list[int] | None = None,
     _initial_event: dict[str, Any] | None = None,
   ) -> WorkflowOutcome:
     """W0-ABI: run a declarative workflow DAG.
@@ -1044,25 +1032,6 @@ class RuntimeRunner:
         "spec": workflow_spec_to_kernel(spec),
         "parent_session_id": parent_session_id,
       }
-      # Exact typed terminal outcomes plus control-flow signals recovered from the journal.
-      if resumed_outcomes and len(resumed_outcomes) > 0:
-        load_event["resumed_outcomes"] = [
-          {
-            "agent_id": r.agent_id,
-            "status": r.status,
-            "termination": r.termination,
-            **({"output": r.output} if r.output is not None else {}),
-            **({"classify_branch": r.classify_branch} if r.classify_branch is not None else {}),
-            **({"tournament_winner": r.tournament_winner} if r.tournament_winner is not None else {}),
-            **({"loop_continue": r.loop_continue} if r.loop_continue is not None else {}),
-          }
-          for r in resumed_outcomes
-        ]
-      # R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
-      if resumed_submissions and len(resumed_submissions) > 0:
-        load_event["resumed_submissions"] = resumed_submissions
-      if resumed_submission_bases and len(resumed_submission_bases) > 0:
-        load_event["resumed_submission_bases"] = resumed_submission_bases
 
     observation_start = len(self._pending_observations)
     initial_action = kernel_maybe_action(runtime, self._pending_observations, load_event)
@@ -1087,16 +1056,9 @@ class RuntimeRunner:
         )
 
     # G2: each completed node's output keyed by agent id — a reduce node reads its dependencies'
-    # outputs from here. Deps always complete in an earlier round than the reduce node consuming
-    # them. W-1: on resume it is pre-seeded from the persisted node outputs, so post-resume
-    # dependents still see their (pre-crash) dependencies' outputs.
+    # outputs from here. Dependencies complete in an earlier round than the reduce node consuming
+    # them.
     outputs: dict[str, str] = {}
-    for recovered in resumed_outcomes or []:
-      if not recovered.output:
-        continue
-      content = str(recovered.output.get("content") or "")
-      outputs[recovered.agent_id] = content
-      outputs[re.sub(r"-i\d+$", "", recovered.agent_id)] = content
 
     def _run_reduce_node(raw: dict) -> Any:
       from deepstrike.runtime.reducers import resolve_reducer
@@ -1523,45 +1485,6 @@ class RuntimeRunner:
     if continuation is None or continuation.kind != "call_provider":
       raise RuntimeError("authored workflow completed without a provider continuation")
     return continuation
-
-  async def resume_workflow(
-    self, spec: "WorkflowSpec", *, session_id: str | None = None,
-  ) -> WorkflowOutcome:
-    """Resume a workflow from a session's completed nodes.
-
-    Reads the session log, extracts completed workflow node records (with their W-1 control
-    signals + outputs), and calls run_workflow so the kernel skips those nodes, replays control
-    flow (classify prune / loop stop), and the driver re-seeds its outputs map. Pass
-    ``session_id`` to resume an interrupted standalone run from a stateless handler; omit it to
-    resume the active session.
-    """
-    from deepstrike.runtime.session_repair import (
-      recover_workflow_node_outcomes,
-      recover_submitted_workflow_nodes,
-    )
-
-    sid = session_id or self._current_session_id
-    if sid is None:
-      raise RuntimeError("resume_workflow requires an active parent run or an explicit session_id")
-
-    events = await self._opts.session_log.read(sid)
-    resumed_outcomes = recover_workflow_node_outcomes(events)
-    completed_ids = {r.agent_id for r in resumed_outcomes}
-    submissions, bases, submitters = recover_submitted_workflow_nodes(events)
-    # W-N3: DROP batches whose submitter did NOT complete — that node re-runs on resume and will
-    # re-submit its batch; replaying the logged copy too would duplicate its nodes in the DAG.
-    # Exact bases keep later graph indices stable while dropped slots remain inert placeholders.
-    if len(submissions) > 0:
-      keep = [s is None or s in completed_ids for s in submitters]
-      submissions = [sub for sub, k in zip(submissions, keep) if k]
-      bases = [b for b, k in zip(bases, keep) if k]
-    return await self.run_workflow(
-      spec,
-      resumed_outcomes=resumed_outcomes,
-      resumed_submissions=submissions,
-      resumed_submission_bases=bases,
-      session_id=sid,
-    )
 
   def interrupt(self, reason: OperationCancellationReason = "user") -> None:
     self._interrupted = True

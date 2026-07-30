@@ -121,7 +121,7 @@ provider = ReplayProvider(ReplayProviderOpts(messages=messages))
 
 Pass `provider` to `RuntimeRunner` to test runtime behavior, tool execution, governance, and workflow driving with fixed assistant outputs.
 
-## Level 6: Repair Bad Events
+## Level 6: Repair Bad Events Offline
 
 Old logs may miss `token_count` or contain oversized replay text:
 
@@ -139,29 +139,12 @@ repaired = repair_events_for_recovery(events, max_bytes=100_000)
 - preserves original `provider_replay`
 - never synthesizes provider-specific replay shapes
 
-## Level 7: Recover Workflow Progress
+## Level 7: Workflow Recovery Boundary
 
-Dynamic workflows need two recovery inputs:
-
-```python
-from deepstrike.runtime.session_repair import (
-    recover_completed_workflow_nodes,
-    recover_submitted_workflow_nodes,
-)
-
-events = await session_log.read("wf-session")
-completed = recover_completed_workflow_nodes(events)
-submissions = recover_submitted_workflow_nodes(events)
-
-outcome = await runner.run_workflow(
-    spec,
-    session_id="wf-session",
-    resumed_completed=completed,
-    resumed_submissions=submissions,
-)
-```
-
-This skips completed nodes and reapplies runtime-appended nodes.
+`workflow_node_completed` and `workflow_nodes_submitted` are audit projections, not production
+recovery inputs. Callers must not scan SessionLog to assemble completed nodes or reapply dynamic
+nodes. The logical checkpoint scheduler partition owns the complete DAG and node runtime state and
+restores it together with the bounded journal tail.
 
 ## Level 8: OS Snapshot
 

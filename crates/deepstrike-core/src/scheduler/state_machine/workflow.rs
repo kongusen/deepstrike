@@ -330,28 +330,6 @@ impl LoopStateMachine {
         }
     }
 
-    /// Load a workflow whose typed terminal outcomes were recovered from the session journal.
-    /// `outcomes` carries status, termination, output and control signals so dependency semantics
-    /// faithfully — see [`crate::orchestration::workflow::ResumedNodeOutcome`].
-    pub fn load_workflow_resumed(
-        &mut self,
-        spec: crate::orchestration::workflow::WorkflowSpec,
-        submissions: &[Vec<crate::orchestration::workflow::WorkflowNode>],
-        submission_bases: &[u32],
-        outcomes: &[crate::orchestration::workflow::ResumedNodeOutcome],
-    ) -> LoopAction {
-        self.install_workflow(
-            crate::orchestration::workflow::WorkflowRun::resume(
-                &spec,
-                submissions,
-                submission_bases,
-                outcomes,
-            ),
-            "load_workflow",
-            None,
-        )
-    }
-
     fn install_workflow(
         &mut self,
         built: crate::types::error::Result<crate::orchestration::workflow::WorkflowRun>,

@@ -302,7 +302,7 @@ add("agent_os_workflow_dag.svg", {
     ${card({ x: 576, y: 516, w: 238, h: 94, title: "Trust & capability", body: ["Inherited or filtered tools", "Quarantine cannot escalate"] })}
     ${card({ x: 830, y: 516, w: 302, h: 94, title: "Budget & lineage", body: ["Per-node caps + RunGroup settlement", "modelHint resolved only by host"] })}
     ${section(680, "Recovery", "COMPLETED OUTPUTS AND RUNTIME APPENDS REBUILD FROM SESSIONLOG")}
-    ${text(48, 708, "resumeWorkflow skips completed nodes, restores submitted nodes, and schedules only the remaining ready frontier.", "body")}
+    ${text(48, 708, "Logical checkpoint restore rebuilds the DAG and schedules only the remaining ready frontier.", "body")}
   `,
 })
 

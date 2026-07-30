@@ -255,9 +255,8 @@ pub enum CapabilityKind {
 ///
 /// The node/edge vocabulary converges with the root-execution and dynamic-append work (Task 9 /
 /// Task 10). What Task 3 fixes is that a workflow root enters through [`RootEntry::Workflow`]
-/// and carries no resumed host state: the historical `resumed_submissions` /
-/// `resumed_submission_bases` / `resumed_outcomes` triplet is gone, because recovery is the
-/// kernel checkpoint's job (§12.4).
+/// and carries no host-authored recovery state, because recovery is the kernel checkpoint's job
+/// (§12.4).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowSpec {

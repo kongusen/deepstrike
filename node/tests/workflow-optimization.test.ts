@@ -1,7 +1,4 @@
-/**
- * Dynamic-workflow optimization batch (W-N1/N2, W-1 resume signal replay, per-node caps):
- * the node-observable halves of the kernel audit fixes.
- */
+/** Dynamic-workflow optimization batch: node-observable kernel behavior and per-node caps. */
 import { getKernel } from "../src/kernel.js"
 import { workflowNodeSpecToKernel, workflowNodeToSpec } from "../src/types/agent.js"
 import type { WorkflowSpawnInfo } from "../src/types/agent.js"
@@ -19,34 +16,6 @@ function step(rt: { step(json: string): string }, event: Record<string, unknown>
 }
 const batchOf = (obs: ReturnType<typeof step>["observations"]): WorkflowSpawnInfo[] =>
   obs.find(o => o.kind === "workflow_batch_spawned")?.nodes ?? []
-
-describe("W-1: resume replays classify control flow over the ABI", () => {
-  it("a recorded classify_branch re-prunes the rejected branch on resume", () => {
-    const kernel = getKernel()
-    const rt = new kernel.KernelRuntime({ maxTokens: 8000, maxTurns: 10 })
-    step(rt, { kind: "start_run", task: { goal: "resume classify", criteria: [] } })
-    const out = step(rt, {
-      kind: "load_workflow",
-      spec: {
-        nodes: [
-          {
-            task: { goal: "route", criteria: [] },
-            role: "plan", isolation: "shared", context_inheritance: "none",
-            kind: { type: "classify", branches: [{ label: "a", nodes: [1] }, { label: "b", nodes: [2] }] },
-          },
-          { task: { goal: "on a", criteria: [] }, role: "implement", isolation: "shared", context_inheritance: "none", depends_on: [0] },
-          { task: { goal: "on b", criteria: [] }, role: "implement", isolation: "shared", context_inheritance: "none", depends_on: [0] },
-        ],
-      },
-      parent_session_id: "sess",
-      // W-1: the signal-carrying record — the classifier chose "a" pre-crash.
-      resumed_outcomes: [{ agent_id: "wf-node0", status: "completed", termination: "completed", classify_branch: "a" }],
-    })
-    // Only the chosen branch spawns; the rejected branch stays pruned across resume.
-    const batch = batchOf(out.observations)
-    expect(batch.map(n => n.agent_id)).toEqual(["wf-node1"])
-  })
-})
 
 describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", () => {
   it("workflowNodeSpecToKernel emits max_turns/max_wall_ms and workflowNodeToSpec maps them back", () => {

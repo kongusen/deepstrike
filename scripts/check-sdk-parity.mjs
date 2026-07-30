@@ -7,6 +7,7 @@ import { readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 
 const root = new URL("..", import.meta.url).pathname
+const marker = (...parts) => parts.join("")
 
 const CHECKS = [
   {
@@ -198,13 +199,12 @@ const CHECKS = [
     path: "tests/fixtures/session/os_snapshot_ask_user.json",
     patterns: ["tool_gated_count", "ask_user"],
   },
-  // ── dynamic workflow surface (W-audit): pinned as live invariants across the 3 driver SDKs. ──
+  // ── dynamic workflow surface: checkpoint owns recovery; SDK drivers only execute live DAG work. ──
   {
-    // Index-faithful resume + W-1 signal replay + W-N3 submitter-aware batch drop.
-    id: "core-workflow-resume",
+    id: "core-workflow-checkpoint",
     lang: "core",
-    path: "crates/deepstrike-core/src/orchestration/workflow/run.rs",
-    patterns: ["ResumedNodeOutcome", "resumed_placeholder_result", "parse_loop_iteration_id"],
+    path: "crates/deepstrike-core/src/runtime/kernel/wire/driver.rs",
+    patterns: ["restore_checkpoint_workflow", "workflow_checkpoint_nodes", "an_active_workflow_and_its_child_restore_to_the_same_completion"],
   },
   {
     id: "core-workflow-submit-gate",
@@ -216,7 +216,7 @@ const CHECKS = [
     id: "node-workflow-driver",
     lang: "node",
     path: "node/src/runtime/runner.ts",
-    patterns: ["resumed_outcomes", "recoverSubmittedWorkflowNodes", "dependencyOutputsNote", "buildWorkflowNodeCompletedEvent"],
+    patterns: ["dependencyOutputsNote", "buildWorkflowNodeCompletedEvent"],
   },
   {
     id: "node-workflow-loop-pace",
@@ -234,7 +234,7 @@ const CHECKS = [
     id: "python-workflow-driver",
     lang: "python",
     path: "python/deepstrike/runtime/runner.py",
-    patterns: ["resumed_outcomes", "recover_submitted_workflow_nodes", "dependency_outputs_note"],
+    patterns: ["dependency_outputs_note", "build_workflow_node_completed_event"],
   },
   {
     id: "python-loop-driver",
@@ -246,7 +246,7 @@ const CHECKS = [
     id: "wasm-workflow-driver",
     lang: "wasm",
     path: "wasm/src/runtime/runner.ts",
-    patterns: ["resumed_outcomes", "recoverSubmittedWorkflowNodes", "dependencyOutputsNote"],
+    patterns: ["dependencyOutputsNote", "buildWorkflowNodeCompletedEvent"],
   },
   // wasm LoopDriver: EXPLICIT node+python-first decision (edge cron loops re-arm via wake_at_ms
   // from the host today); revisit when a wasm host needs in-process pacing.
@@ -293,6 +293,38 @@ const CHECKS = [
   },
 ]
 
+const FORBIDDEN = [
+  {
+    id: "workflow-session-repair",
+    paths: [
+      "crates/deepstrike-core/src/orchestration/workflow/run.rs",
+      "crates/deepstrike-core/src/runtime/kernel/protocol.rs",
+      "crates/deepstrike-core/src/runtime/kernel/runtime.rs",
+      "crates/deepstrike-core/src/scheduler/state_machine/workflow.rs",
+      "node/src/runtime/runner.ts",
+      "node/src/runtime/session-repair.ts",
+      "python/deepstrike/runtime/runner.py",
+      "python/deepstrike/runtime/session_repair.py",
+      "wasm/src/runtime/runner.ts",
+      "wasm/src/runtime/session-repair.ts",
+    ],
+    patterns: [
+      marker("resumed_", "outcomes"),
+      marker("resumed_", "submissions"),
+      marker("resumed_", "submission_bases"),
+      marker("resumed", "Outcomes"),
+      marker("resumed", "Submissions"),
+      marker("resumed", "SubmissionBases"),
+      marker("recover", "WorkflowNodeOutcomes"),
+      marker("recover", "SubmittedWorkflowNodes"),
+      marker("recover_", "workflow_node_outcomes"),
+      marker("recover_", "submitted_workflow_nodes"),
+      marker("Resumed", "NodeOutcome"),
+      marker("Recovered", "NodeOutcome"),
+    ],
+  },
+]
+
 let failed = 0
 for (const check of CHECKS) {
   const file = join(root, check.path)
@@ -308,6 +340,22 @@ for (const check of CHECKS) {
     failed += 1
   } else {
     console.log(`OK   ${check.id} (${check.lang})`)
+  }
+}
+
+for (const check of FORBIDDEN) {
+  const hits = []
+  for (const path of check.paths) {
+    const text = readFileSync(join(root, path), "utf8")
+    for (const pattern of check.patterns) {
+      if (text.includes(pattern)) hits.push(`${path}:${pattern}`)
+    }
+  }
+  if (hits.length > 0) {
+    console.error(`FAIL ${check.id}: forbidden recovery path(s): ${hits.join(", ")}`)
+    failed += 1
+  } else {
+    console.log(`OK   ${check.id} (forbidden source scan)`)
   }
 }
 

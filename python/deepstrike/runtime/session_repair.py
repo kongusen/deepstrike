@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any
 
 from deepstrike._kernel import ToolCall
@@ -91,8 +90,7 @@ def build_workflow_node_completed_event(
   loop_continue: bool | None = None,
   output: Any | None = None,
 ) -> dict[str, Any]:
-  """Build a workflow_node_completed event for persistence after a node finishes. W-1: carries the
-  result-borne control signals + output so resume replays control flow and re-seeds outputs."""
+  """Build the audit projection emitted after a workflow node finishes."""
   event: dict[str, Any] = {
     "kind": "workflow_node_completed",
     "turn": turn,
@@ -126,71 +124,13 @@ def _safe_tool_arguments(raw: str | None) -> dict[str, Any]:
     return {}
 
 
-@dataclass
-class RecoveredNodeOutcome:
-  """One recovered node completion: the agent id plus its persisted control signals and output."""
-
-  agent_id: str
-  status: str
-  termination: str
-  classify_branch: str | None = None
-  tournament_winner: str | None = None
-  loop_continue: bool | None = None
-  output: dict[str, Any] | None = None
-
-
-def recover_workflow_node_outcomes(events: list[Any]) -> list[RecoveredNodeOutcome]:
-  """Recover completed workflow node records from a session event stream. Scans for
-  workflow_node_completed events with termination "completed" and returns them WITH their
-  result-borne control signals (W-1) — resume_workflow lowers these to the kernel's
-  ``resumed_outcomes`` so a classifier re-prunes and a loop stop is honored, and re-seeds the
-  driver's outputs map from the persisted output text."""
-  completed: list[RecoveredNodeOutcome] = []
-  for entry in events:
-    event = entry.event if hasattr(entry, "event") else entry
-    if event.get("kind") == "workflow_node_completed":
-      agent_id = event.get("agent_id")
-      if agent_id:
-        completed.append(RecoveredNodeOutcome(
-          agent_id=agent_id,
-          status=event["status"],
-          termination=event["termination"],
-          classify_branch=event.get("classify_branch"),
-          tournament_winner=event.get("tournament_winner"),
-          loop_continue=event.get("loop_continue"),
-          output=event.get("output"),
-        ))
-  return completed
-
-
 def build_workflow_nodes_submitted_event(
   *, turn: int, nodes: list, base_index: int | None = None, submitter_agent_id: str | None = None,
 ) -> dict[str, Any]:
-  """R3-1: build a workflow_nodes_submitted event for persistence after a runtime submission, so
-  resume can re-apply it. ``nodes`` is the kernel-shape (snake_case) submitted node array;
-  ``base_index`` is the kernel-reported graph position (WorkflowNodesSubmitted observation).
-  W-N3: ``submitter_agent_id`` is the submitting node's agent id (absent = host/bootstrap) —
-  resume DROPS batches whose submitter re-runs (it will re-submit) instead of duplicating."""
+  """Build the audit projection emitted after a runtime workflow submission."""
   event: dict[str, Any] = {"kind": "workflow_nodes_submitted", "turn": turn, "nodes": nodes}
   if base_index is not None:
     event["base_index"] = base_index
   if submitter_agent_id is not None:
     event["submitter_agent_id"] = submitter_agent_id
   return event
-
-
-def recover_submitted_workflow_nodes(events: list[Any]) -> tuple[list, list[int], list[str | None]]:
-  """Recover runtime submission batches with one mandatory base index per batch.
-  ``submitters`` is parallel to ``submissions`` (None = host/bootstrap submission)."""
-  submissions: list = []
-  bases: list[int] = []
-  submitters: list[str | None] = []
-  for entry in events:
-    event = entry.event if hasattr(entry, "event") else entry
-    if event.get("kind") == "workflow_nodes_submitted":
-      submissions.append(event.get("nodes") or [])
-      submitters.append(event.get("submitter_agent_id"))
-      if event.get("base_index") is None:
-        raise ValueError("workflow_nodes_submitted is missing required base_index")
-      bases.append(int(event["base_index"]))
-  return submissions, bases, submitters

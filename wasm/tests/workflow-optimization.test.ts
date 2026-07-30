@@ -76,70 +76,7 @@ const idleProvider: LLMProvider = {
   },
 }
 
-describe("W-1: resume replays control flow over the ABI wire", () => {
-  it("resumeWorkflow lowers typed resumed outcomes and re-seeds dependent goals from persisted outputs", async () => {
-    const seen: Array<Record<string, unknown>> = []
-    // Scripted kernel: honors the resumed classify choice — only branch "a" spawns (branch "b"
-    // stays pruned), and the dependent carries its W-N2 data edge to the completed classifier.
-    const fake = {
-      turn: () => 0,
-      step(input: string): string {
-        const { event } = JSON.parse(input) as { event: Record<string, unknown> }
-        seen.push(event)
-        if (event.kind === "load_workflow") {
-          return reply([{
-            kind: "workflow_batch_spawned",
-            nodes: [spawn({ agent_id: "wf-node1", goal: "on a", input_agent_ids: ["wf-node0"] })],
-          }])
-        }
-        if (event.kind === "sub_agent_completed") {
-          return reply([{ kind: "workflow_completed", node_outcomes: ["wf-node0", "wf-node1"].map(node_id => ({ node_id, status: "completed" })) }])
-        }
-        return reply([])
-      },
-    }
-    const contexts: Array<{ goal: string; toolAccess?: string }> = []
-    const orchestrator = {
-      async run(ctx: { spec: { goal: string }; manifest: { agent_id: string }; toolAccess?: string }) {
-        contexts.push({ goal: ctx.spec.goal, toolAccess: ctx.toolAccess })
-        return {
-          agentId: ctx.manifest.agent_id,
-          result: { termination: "completed", finalMessage: { role: "assistant", content: "branch work done", toolCalls: [] }, turnsUsed: 1, totalTokensUsed: 1 },
-        }
-      },
-    }
-    const { runner, sessionLog } = createWorkflowRunner(
-      idleProvider, fake, "wfresume", [], { subAgentOrchestrator: orchestrator },
-    )
-    // Pre-crash history (W-1): the classifier completed, chose branch "a", output persisted.
-    await sessionLog.append("wfresume", {
-      kind: "workflow_node_completed", turn: 1, agent_id: "wf-node0",
-      status: "completed", termination: "completed", classify_branch: "a",
-      output: { role: "assistant", content: "routing notes: choose a" },
-    })
-
-    const spec: WorkflowSpec = {
-      nodes: [
-        { task: "route", role: "plan", classify: { branches: [{ label: "a", nodes: [1] }, { label: "b", nodes: [2] }] } },
-        { task: "on a", role: "implement", dependsOn: [0] },
-        { task: "on b", role: "implement", dependsOn: [0] },
-      ],
-    }
-    const outcome = await runner.resumeWorkflow(spec, { sessionId: "wfresume" })
-
-    // The signal-carrying record went over the wire — the kernel can re-prune the rejected branch.
-    const load = seen.find(e => e.kind === "load_workflow") as Record<string, unknown>
-    expect(load.resumed_outcomes).toEqual([{
-      agent_id: "wf-node0", status: "completed", termination: "completed", classify_branch: "a",
-      output: { role: "assistant", content: "routing notes: choose a", tool_calls: [] },
-    }])
-    // W-1 + W-N2: the post-resume dependent still sees its (pre-crash) dependency's output.
-    expect(contexts[0].goal).toContain("[dependency wf-node0 output]\nrouting notes: choose a")
-    // W-N1: a trusted workflow node asks for plane inheritance.
-    expect(contexts[0].toolAccess).toBe("inherit")
-    expect(outcome.nodeOutcomes.map(node => node.nodeId)).toEqual(["wf-node0", "wf-node1"])
-  })
-
+describe("workflow result wire projection", () => {
   it("subAgentResultToKernel strips the SDK-internal paceDecision but keeps loop_continue", () => {
     const wire = subAgentResultToKernel({
       agentId: "wf-node0-i1",

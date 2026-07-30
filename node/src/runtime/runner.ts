@@ -35,10 +35,7 @@ import {
   buildRunTerminalEvent,
   buildWorkflowNodeCompletedEvent,
   buildWorkflowNodesSubmittedEvent,
-  recoverWorkflowNodeOutcomes,
-  recoverSubmittedWorkflowNodes,
   repairEventsForRecovery,
-  type RecoveredNodeOutcome,
 } from "./session-repair.js"
 import { KernelPrimitivesDashboard } from "./kernel-primitives-dashboard.js"
 import {
@@ -1341,11 +1338,6 @@ export class RuntimeRunner {
   async runWorkflow(
     spec: WorkflowSpec,
     opts?: {
-      /** Typed recovered terminal outcomes, including control signals and output. */
-      resumedOutcomes?: RecoveredNodeOutcome[]
-      resumedSubmissions?: Record<string, unknown>[][]
-      /** R3-1: original base index per submission batch (parallel to resumedSubmissions). */
-      resumedSubmissionBases?: number[]
       /** Standalone session id when bootstrapping (no active parent run). Defaults to a fresh uuid. */
       sessionId?: string
     },
@@ -1388,23 +1380,6 @@ export class RuntimeRunner {
         kind: "load_workflow",
         spec: workflowSpecToKernel(spec),
         parent_session_id: parentSessionId,
-        // Exact typed terminal outcomes plus control-flow signals recovered from the journal.
-        ...(opts?.resumedOutcomes?.length
-          ? {
-              resumed_outcomes: opts.resumedOutcomes.map(r => ({
-                agent_id: r.agentId,
-                status: r.status,
-                termination: r.termination,
-                ...(r.output ? { output: messageToKernelMessage(r.output) } : {}),
-                ...(r.classifyBranch !== undefined ? { classify_branch: r.classifyBranch } : {}),
-                ...(r.tournamentWinner !== undefined ? { tournament_winner: r.tournamentWinner } : {}),
-                ...(r.loopContinue !== undefined ? { loop_continue: r.loopContinue } : {}),
-              })),
-            }
-          : {}),
-        // R3-1: re-apply recorded runtime submissions so dynamically-appended nodes are reconstructed.
-        ...(opts?.resumedSubmissions?.length ? { resumed_submissions: opts.resumedSubmissions } : {}),
-        ...(opts?.resumedSubmissionBases?.length ? { resumed_submission_bases: opts.resumedSubmissionBases } : {}),
       })
       const observations = this.pendingObservations.slice(observationStart)
       const outcome = await this.driveWorkflow(
@@ -1412,7 +1387,7 @@ export class RuntimeRunner {
         observations,
         parentSessionId,
         runtime,
-        recoveredOutputs(opts?.resumedOutcomes),
+        new Map(),
       )
       if (bootstrapped) {
         const terminal = await this.commitKernelAction(runtime, this.pendingObservations, { kind: "complete_run" })
@@ -1774,43 +1749,6 @@ export class RuntimeRunner {
       }
       nodes = nextNodes
     }
-  }
-
-  /**
-   * Resume a workflow from the parent session's completed nodes.
-   * Reads the session log, extracts completed workflow node records (with their W-1 control
-   * signals + outputs), and calls runWorkflow so the kernel skips those nodes, replays control
-   * flow (classify prune / loop stop), and the driver re-seeds its outputs map.
-   */
-  async resumeWorkflow(
-    spec: WorkflowSpec,
-    opts?: { sessionId?: string },
-  ): Promise<WorkflowOutcome> {
-    // Standalone resume: a stateless handler passes the prior `sessionId` to pick up an interrupted
-    // workflow from the session log. Mid-run callers omit it and resume the active session.
-    const sessionId = opts?.sessionId ?? this.currentSessionId
-    if (!sessionId) {
-      throw new Error("resumeWorkflow requires an active parent run or an explicit sessionId")
-    }
-    const events = await this.opts.sessionLog.read(sessionId)
-    const resumedOutcomes = recoverWorkflowNodeOutcomes(events)
-    const completedIds = new Set(resumedOutcomes.map(r => r.agentId))
-    const recovered = recoverSubmittedWorkflowNodes(events)
-    // W-N3: DROP batches whose submitter did NOT complete — that node re-runs on resume and will
-    // re-submit its batch; replaying the logged copy too would duplicate its nodes in the DAG.
-    // Exact bases keep later graph indices stable while dropped slots remain inert placeholders.
-    let { submissions, bases } = recovered
-    if (submissions.length > 0) {
-      const keep = recovered.submitters.map(s => s === undefined || completedIds.has(s))
-      submissions = submissions.filter((_, i) => keep[i])
-      bases = bases.filter((_, i) => keep[i])
-    }
-    return this.runWorkflow(spec, {
-      resumedOutcomes,
-      resumedSubmissions: submissions,
-      resumedSubmissionBases: bases,
-      sessionId,
-    })
   }
 
   interrupt(reason: OperationCancellationReason = "user"): void {
@@ -3683,18 +3621,6 @@ function parseStartWorkflowSpec(argsStr: string): WorkflowSpec | undefined {
     // Ignore parse error → undefined (fall back to flatten).
   }
   return undefined
-}
-
-/** M5 v2.1: render an authored-workflow outcome into a user-message note injected back into the
- *  agent's context, so the agent's next turn continues with the sub-workflow's results in view. */
-function recoveredOutputs(outcomes: RecoveredNodeOutcome[] | undefined): Map<string, string> {
-  const outputs = new Map<string, string>()
-  for (const outcome of outcomes ?? []) {
-    if (!outcome.output) continue
-    outputs.set(outcome.agentId, outcome.output.content)
-    outputs.set(outcome.agentId.replace(/-i\d+$/, ""), outcome.output.content)
-  }
-  return outputs
 }
 
 function authoredWorkflowOutcomeNote(outcome: WorkflowOutcome): string {

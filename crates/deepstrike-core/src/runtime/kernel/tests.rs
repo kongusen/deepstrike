@@ -1812,16 +1812,13 @@ fn host_session_named_trace(session: &str) -> serde_json::Value {
     };
 
     let loaded = runtime.step(next(
-        KernelInputEvent::LoadWorkflow {
+        KernelInputEvent::LoadWorkflow(LoadWorkflowInput {
             spec: fanout_synthesize(
                 vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
                 RuntimeTask::new("synth"),
             ),
             parent_session_id: format!("{session}-root"),
-            resumed_submissions: Vec::new(),
-            resumed_submission_bases: Vec::new(),
-            resumed_outcomes: Vec::new(),
-        },
+        }),
         &mut at,
     ));
     accept(&mut runtime, loaded, &mut steps, &mut at);
@@ -2437,16 +2434,15 @@ fn cancellation_cleans_pending_workflow_spawn() {
         task: RuntimeTask::new("workflow"),
         run_spec: None,
     }));
-    let spawning = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
-        spec: fanout_synthesize(
-            vec![RuntimeTask::new("a"), RuntimeTask::new("b")],
-            RuntimeTask::new("merge"),
-        ),
-        parent_session_id: "parent".into(),
-        resumed_submissions: Vec::new(),
-        resumed_submission_bases: Vec::new(),
-        resumed_outcomes: Vec::new(),
-    }));
+    let spawning = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow(
+        LoadWorkflowInput {
+            spec: fanout_synthesize(
+                vec![RuntimeTask::new("a"), RuntimeTask::new("b")],
+                RuntimeTask::new("merge"),
+            ),
+            parent_session_id: "parent".into(),
+        },
+    )));
     let spawn_effect = spawning.actions[0].effect_id.clone();
 
     let cancelled = cancel_local_operation(
@@ -4461,13 +4457,10 @@ fn load_workflow_input_drives_dag_to_completion() {
         vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
         RuntimeTask::new("synth"),
     );
-    let event = KernelInputEvent::LoadWorkflow {
+    let event = KernelInputEvent::LoadWorkflow(LoadWorkflowInput {
         spec,
         parent_session_id: "sess".to_string(),
-        resumed_submissions: Vec::new(),
-        resumed_submission_bases: Vec::new(),
-        resumed_outcomes: Vec::new(),
-    };
+    });
     let json = serde_json::to_string(&event).expect("serialize");
     let parsed: KernelInputEvent = serde_json::from_str(&json).expect("deserialize");
 
@@ -4544,6 +4537,28 @@ fn load_workflow_input_drives_dag_to_completion() {
 }
 
 #[test]
+fn load_workflow_rejects_host_authored_recovery_state() {
+    for suffix in ["outcomes", "submissions", "submission_bases"] {
+        let field = format!("resumed_{suffix}");
+        let mut value = serde_json::json!({
+            "kind": "load_workflow",
+            "spec": {"nodes": []},
+            "parent_session_id": "sess"
+        });
+        value
+            .as_object_mut()
+            .expect("load_workflow is an object")
+            .insert(field.clone(), serde_json::json!([]));
+        let error = serde_json::from_value::<KernelInputEvent>(value)
+            .expect_err("workflow recovery facts belong only to checkpoint state");
+        assert!(
+            error.to_string().contains("unknown field"),
+            "{field} must fail as an unknown production input field: {error}"
+        );
+    }
+}
+
+#[test]
 fn workflow_spawn_host_failure_reissues_effect_without_success_observation() {
     use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
     use crate::types::agent::AgentRole;
@@ -4553,16 +4568,15 @@ fn workflow_spawn_host_failure_reissues_effect_without_success_observation() {
         task: RuntimeTask::new("parent task"),
         run_spec: None,
     }));
-    let first = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
-        spec: WorkflowSpec::new(vec![WorkflowNode::new(
-            RuntimeTask::new("worker"),
-            AgentRole::Implement,
-        )]),
-        parent_session_id: "sess".to_string(),
-        resumed_submissions: Vec::new(),
-        resumed_submission_bases: Vec::new(),
-        resumed_outcomes: Vec::new(),
-    }));
+    let first = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow(
+        LoadWorkflowInput {
+            spec: WorkflowSpec::new(vec![WorkflowNode::new(
+                RuntimeTask::new("worker"),
+                AgentRole::Implement,
+            )]),
+            parent_session_id: "sess".to_string(),
+        },
+    )));
     let effect_id = first.actions[0].effect_id.clone();
 
     let failed = runtime.step(KernelInput::new(KernelInputEvent::WorkflowSpawnResult {
@@ -4601,13 +4615,12 @@ fn load_workflow_without_start_run_is_rejected() {
         vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
         RuntimeTask::new("synth"),
     );
-    let step = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
-        spec,
-        parent_session_id: "sess".to_string(),
-        resumed_submissions: Vec::new(),
-        resumed_submission_bases: Vec::new(),
-        resumed_outcomes: Vec::new(),
-    }));
+    let step = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow(
+        LoadWorkflowInput {
+            spec,
+            parent_session_id: "sess".to_string(),
+        },
+    )));
 
     assert!(step.actions.is_empty());
     assert!(step.observations.is_empty());
@@ -4641,13 +4654,12 @@ fn submit_workflow_nodes_input_appends_a_node_over_the_abi() {
         RuntimeTask::new("root"),
         AgentRole::Implement,
     )]);
-    let initial = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
-        spec,
-        parent_session_id: "sess".to_string(),
-        resumed_submissions: Vec::new(),
-        resumed_submission_bases: Vec::new(),
-        resumed_outcomes: Vec::new(),
-    }));
+    let initial = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow(
+        LoadWorkflowInput {
+            spec,
+            parent_session_id: "sess".to_string(),
+        },
+    )));
     accept_workflow_spawn(&mut runtime, initial);
     runtime.clear_test_observations();
 
@@ -4842,16 +4854,13 @@ fn snapshot_v2_restores_workflow_budget_and_terminal_cancellation() {
         "workflow-snapshot-op",
         "workflow-load",
         3,
-        KernelInputEvent::LoadWorkflow {
+        KernelInputEvent::LoadWorkflow(LoadWorkflowInput {
             spec: fanout_synthesize(
                 vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
                 RuntimeTask::new("synth"),
             ),
             parent_session_id: "parent-session".into(),
-            resumed_submissions: Vec::new(),
-            resumed_submission_bases: Vec::new(),
-            resumed_outcomes: Vec::new(),
-        },
+        }),
     ));
     let pending_ids = match &workflow.actions[0] {
         KernelAction {
@@ -5024,44 +5033,4 @@ fn snapshot_v2_preserves_u64_policy_across_json_hosts() {
             ..
         })
     ));
-}
-
-#[test]
-fn load_workflow_resumes_from_completed_nodes() {
-    use crate::orchestration::workflow::fanout_synthesize;
-
-    let mut runtime = KernelRuntime::new(SchedulerBudget::default());
-    runtime.step(KernelInput::new(KernelInputEvent::StartRun {
-        task: RuntimeTask::new("parent task"),
-        run_spec: None,
-    }));
-    runtime.clear_test_observations();
-
-    // Resume a 2-worker fanout where worker 0 already completed before the interruption.
-    let spec = fanout_synthesize(
-        vec![RuntimeTask::new("w0"), RuntimeTask::new("w1")],
-        RuntimeTask::new("synth"),
-    );
-    let step = runtime.step(KernelInput::new(KernelInputEvent::LoadWorkflow {
-        spec,
-        parent_session_id: "sess".to_string(),
-        resumed_outcomes: vec![
-            crate::orchestration::workflow::ResumedNodeOutcome::completed("wf-node0"),
-        ],
-        resumed_submissions: Vec::new(),
-        resumed_submission_bases: Vec::new(),
-    }));
-    let step = accept_workflow_spawn(&mut runtime, step);
-
-    // Only the remaining worker is re-spawned (node 0 is not re-run).
-    let batch = step
-        .observations
-        .iter()
-        .find_map(|o| match o {
-            KernelObservation::WorkflowBatchSpawned { nodes, .. } => Some(nodes.clone()),
-            _ => None,
-        })
-        .expect("workflow_batch_spawned");
-    assert_eq!(batch.len(), 1);
-    assert_eq!(batch[0].agent_id, "wf-node1");
 }

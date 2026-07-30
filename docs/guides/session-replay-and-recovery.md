@@ -122,7 +122,7 @@ provider = ReplayProvider(ReplayProviderOpts(messages=messages))
 
 然后把 `provider` 传给 `RuntimeRunner`，即可离线跑固定 assistant 输出的测试。适合回归测试 runtime 行为、工具执行、governance 和 workflow 驱动。
 
-## Level 6：修复坏事件
+## Level 6：离线修复坏事件
 
 如果旧日志缺少 `token_count` 或包含过大的 replay 文本，可先 normalize：
 
@@ -140,29 +140,11 @@ repaired = repair_events_for_recovery(events, max_bytes=100_000)
 - 保留原始 `provider_replay`
 - 不合成 provider-specific replay shape
 
-## Level 7：恢复 workflow 进度
+## Level 7：Workflow 恢复边界
 
-动态 workflow 需要恢复两类信息：
-
-```python
-from deepstrike.runtime.session_repair import (
-    recover_completed_workflow_nodes,
-    recover_submitted_workflow_nodes,
-)
-
-events = await session_log.read("wf-session")
-completed = recover_completed_workflow_nodes(events)
-submissions = recover_submitted_workflow_nodes(events)
-
-outcome = await runner.run_workflow(
-    spec,
-    session_id="wf-session",
-    resumed_completed=completed,
-    resumed_submissions=submissions,
-)
-```
-
-这会跳过已完成节点，并重新应用运行时 append 的节点。
+`workflow_node_completed` 与 `workflow_nodes_submitted` 是审计投影，不再作为生产恢复输入。
+调用方不应扫描 SessionLog、拼装已完成节点或重新应用动态节点；完整 DAG 与节点运行态由
+logical checkpoint 的 scheduler 分区持有，并与 bounded journal tail 一起恢复。
 
 ## Level 8：OS Snapshot
 

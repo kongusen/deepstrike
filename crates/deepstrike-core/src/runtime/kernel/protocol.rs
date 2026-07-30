@@ -436,6 +436,13 @@ pub(crate) fn build_governance_pipeline(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoadWorkflowInput {
+    pub spec: crate::orchestration::workflow::WorkflowSpec,
+    pub parent_session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum KernelInputEvent {
     SetTools {
@@ -710,23 +717,7 @@ pub enum KernelInputEvent {
     /// each node spawn passes the syscall trap and is reported via `workflow_batch_spawned`.
     /// Completions feed back through `SubAgentCompleted` (reused); finish emits
     /// `workflow_completed`.
-    LoadWorkflow {
-        spec: crate::orchestration::workflow::WorkflowSpec,
-        parent_session_id: String,
-        /// R3-1 resume: the runtime `submit_workflow_nodes` batches (in order) recovered from the log,
-        /// re-applied before completions so dynamically-appended nodes are reconstructed. Additive:
-        /// empty for a fresh run or a resume without dynamic submissions.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        resumed_submissions: Vec<Vec<crate::orchestration::workflow::WorkflowNode>>,
-        /// Exact base graph index for every recovered submission batch. Length must equal
-        /// `resumed_submissions`; mismatch rejects the resume atomically.
-        #[serde(default)]
-        resumed_submission_bases: Vec<u32>,
-        /// Typed recovered terminal outcomes plus control signals. Status, termination and output
-        /// are mandatory facts for exact dependency-policy replay; bare completed ids are invalid.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        resumed_outcomes: Vec<crate::orchestration::workflow::ResumedNodeOutcome>,
-    },
+    LoadWorkflow(LoadWorkflowInput),
     /// Feed a completed sub-agent result back into the parent loop.
     SubAgentCompleted {
         result: SubAgentResult,

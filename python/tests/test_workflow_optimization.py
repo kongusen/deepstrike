@@ -1,5 +1,4 @@
-"""Dynamic-workflow optimization batch (W-N1/N2, W-1 resume signal replay, per-node caps,
-DW-3/W-N6 loop pacing) — python parity with node/tests/workflow-optimization.test.ts."""
+"""Dynamic-workflow optimization batch: node caps and loop pacing parity."""
 
 import json
 
@@ -45,38 +44,6 @@ def _accept_batch(rt: KernelRuntime, step: dict) -> None:
         "started_agent_ids": [node["agent_id"] for node in action.get("nodes", [])],
         "failures": [],
     })
-
-
-# ── W-1: resume replays classify control flow over the ABI ──────────────────────────────────────
-
-
-def test_w1_recorded_classify_branch_reprunes_rejected_branch_on_resume():
-    rt = KernelRuntime(LoopPolicy(max_tokens=8000, max_turns=10))
-    _step(rt, {"kind": "start_run", "task": {"goal": "resume classify", "criteria": []}})
-    out = _step(rt, {
-        "kind": "load_workflow",
-        "spec": {
-            "nodes": [
-                {
-                    "task": {"goal": "route", "criteria": []},
-                    "role": "plan", "isolation": "shared", "context_inheritance": "none",
-                    "kind": {"type": "classify", "branches": [
-                        {"label": "a", "nodes": [1]}, {"label": "b", "nodes": [2]},
-                    ]},
-                },
-                {"task": {"goal": "on a", "criteria": []}, "role": "implement",
-                 "isolation": "shared", "context_inheritance": "none", "depends_on": [0]},
-                {"task": {"goal": "on b", "criteria": []}, "role": "implement",
-                 "isolation": "shared", "context_inheritance": "none", "depends_on": [0]},
-            ],
-        },
-        "parent_session_id": "sess",
-        # W-1: the signal-carrying record — the classifier chose "a" pre-crash.
-        "resumed_outcomes": [{"agent_id": "wf-node0", "status": "completed", "termination": "completed", "classify_branch": "a"}],
-    })
-    # Only the chosen branch spawns; the rejected branch stays pruned across resume.
-    batch = _batch_of(out)
-    assert [n["agent_id"] for n in batch] == ["wf-node1"]
 
 
 # ── W-N2 / W-N7: spawn descriptors carry data edges and per-node caps ────────────────────────────

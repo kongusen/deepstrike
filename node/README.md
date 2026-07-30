@@ -235,7 +235,7 @@ const failed = outcome.nodeOutcomes.filter(node => node.status === "failed")
 // outcome.rejection is present only when the whole workflow was rejected before any node ran.
 ```
 
-`runWorkflow` works **standalone** — call it on a freshly-constructed runner (e.g. inside a stateless HTTP handler) and it auto-bootstraps a kernel that owns the DAG, drives it under the same governance/quota/attention policies a full `run()` gets, and tears it down on completion. Called *during* a `run()`, it instead drives the workflow on the active kernel. Either way every node's final text comes back in `outputs`, keyed by node agent-id. To resume an interrupted standalone run, pass the prior session id: `runner.resumeWorkflow(spec, { sessionId })`.
+`runWorkflow` works **standalone** — call it on a freshly-constructed runner (e.g. inside a stateless HTTP handler) and it auto-bootstraps a kernel that owns the DAG, drives it under the same governance/quota/attention policies a full `run()` gets, and tears it down on completion. Called *during* a `run()`, it instead drives the workflow on the active kernel. Either way every node's final text comes back in `outputs`, keyed by node agent-id.
 
 A workflow node has no public `kind` field. Its control-flow shape is selected by one of four
 mutually exclusive fields; omit all four for a normal spawn. The same executor drives every shape,
@@ -255,7 +255,7 @@ how upstream terminal states gate the node (`all_success` by default, plus `acce
 
 ### Workflow capabilities (v0.2.50)
 
-- **Runtime fan-out** — register `submitWorkflowNodesTool` on the parent execution plane and a trusted node can append nodes to the live DAG mid-run (true loop-until-done; one verifier per discovered claim). The tool schema is exported from `@deepstrike/sdk/workflow`, not the package root. Submissions are recorded and replayed by `resumeWorkflow`; governance rejection fails the submitting node instead of acknowledging work that was never appended.
+- **Runtime fan-out** — register `submitWorkflowNodesTool` on the parent execution plane and a trusted node can append nodes to the live DAG mid-run (true loop-until-done; one verifier per discovered claim). The tool schema is exported from `@deepstrike/sdk/workflow`, not the package root. Submission events remain audit projections; checkpoint state owns recovery. Governance rejection fails the submitting node instead of acknowledging work that was never appended.
 - **Quarantine, no escape** — set `trust: "quarantined"` on a node that reads untrusted content; it's denied write-capable isolation in-kernel, and any nodes it submits are coerced to quarantined too (no privilege escalation).
 - **Structured output** — set `outputSchema` on a node; the runner instructs the agent, validates the result against the JSON-Schema subset, and re-runs once with the errors on mismatch. A node that never conforms fails (its dependents starve).
 - **Budget as signal** — set `resourceQuota.maxWorkflowNodes` and/or `resourceQuota.maxConcurrentSubagents`; each spawned node's goal carries its remaining headroom so a coordinator can size its fan-out to fit.

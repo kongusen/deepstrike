@@ -1952,24 +1952,10 @@ impl KernelRuntime {
                 spec,
                 parent_session_id: _,
             } => self.sm.spawn_sub_agent(spec),
-            KernelInputEvent::LoadWorkflow {
+            KernelInputEvent::LoadWorkflow(LoadWorkflowInput {
                 spec,
                 parent_session_id: _,
-                resumed_submissions,
-                resumed_submission_bases,
-                resumed_outcomes,
-            } => {
-                if resumed_outcomes.is_empty() && resumed_submissions.is_empty() {
-                    self.sm.load_workflow(spec)
-                } else {
-                    self.sm.load_workflow_resumed(
-                        spec,
-                        &resumed_submissions,
-                        &resumed_submission_bases,
-                        &resumed_outcomes,
-                    )
-                }
-            }
+            }) => self.sm.load_workflow(spec),
             KernelInputEvent::SubAgentCompleted { result } => {
                 self.sm.feed(LoopEvent::SubAgentCompleted { result })
             }
@@ -2211,7 +2197,7 @@ impl KernelRuntime {
             | KernelInputEvent::ProviderError { .. }
             | KernelInputEvent::ToolResults { .. }
             | KernelInputEvent::MilestoneResult { .. }
-            | KernelInputEvent::LoadWorkflow { .. }
+            | KernelInputEvent::LoadWorkflow(..)
             | KernelInputEvent::SpawnSubAgent { .. } => match self.lifecycle {
                 KernelLifecycle::Running => Ok(LifecycleTransition::Stay),
                 _ => Err(format!(

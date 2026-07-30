@@ -78,8 +78,7 @@ export function buildRunTerminalEvent(input: {
   }
 }
 
-/** Build workflow_node_completed for persistence after a node finishes. W-1: carries the
- *  result-borne control signals + output so resume replays control flow and re-seeds outputs. */
+/** Build the audit projection emitted after a workflow node finishes. */
 export function buildWorkflowNodeCompletedEvent(input: {
   turn: number
   agentId: string
@@ -103,46 +102,7 @@ export function buildWorkflowNodeCompletedEvent(input: {
   }
 }
 
-/** One recovered node completion: the agent id plus its persisted control signals and output. */
-export interface RecoveredNodeOutcome {
-  agentId: string
-  status: WorkflowNodeStatus
-  termination: string
-  classifyBranch?: string
-  tournamentWinner?: string
-  loopContinue?: boolean
-  output?: Message
-}
-
-/**
- * Recover completed workflow node records from a session event stream. Scans for
- * workflow_node_completed events with termination "completed" and returns them WITH their
- * result-borne control signals (W-1) — resumeWorkflow lowers these to the kernel's
- * `resumed_outcomes` so a classifier re-prunes and a loop stop is honored, and re-seeds the
- * driver's outputs map from the persisted output text.
- */
-export function recoverWorkflowNodeOutcomes(
-  events: Array<{ seq: number; event: SessionEvent }>,
-): RecoveredNodeOutcome[] {
-  const completed: RecoveredNodeOutcome[] = []
-  for (const { event } of events) {
-    if (event.kind === "workflow_node_completed") {
-      completed.push({
-        agentId: event.agent_id,
-        status: event.status,
-        termination: event.termination,
-        ...(event.classify_branch !== undefined ? { classifyBranch: event.classify_branch } : {}),
-        ...(event.tournament_winner !== undefined ? { tournamentWinner: event.tournament_winner } : {}),
-        ...(event.loop_continue !== undefined ? { loopContinue: event.loop_continue } : {}),
-        ...(event.output !== undefined ? { output: event.output } : {}),
-      })
-    }
-  }
-  return completed
-}
-
-/** R3-1: build workflow_nodes_submitted for persistence after a runtime submission, so resume can
- *  re-apply it. `nodes` is the kernel-shape (snake_case) submitted node array. */
+/** Build the audit projection emitted after a runtime workflow submission. */
 export function buildWorkflowNodesSubmittedEvent(input: {
   turn: number
   nodes: Record<string, unknown>[]
@@ -156,26 +116,4 @@ export function buildWorkflowNodesSubmittedEvent(input: {
     ...(input.baseIndex !== undefined ? { base_index: input.baseIndex } : {}),
     ...(input.submitterAgentId !== undefined ? { submitter_agent_id: input.submitterAgentId } : {}),
   }
-}
-
-/** R3-1: recover the runtime submission batches (in order) from a session event stream, to rebuild
- *  `resumed_submissions` for resumeWorkflow so dynamically-appended nodes are reconstructed.
- *  `submitters` is parallel to `submissions` (undefined = host/bootstrap submission). */
-export function recoverSubmittedWorkflowNodes(
-  events: Array<{ seq: number; event: SessionEvent }>,
-): { submissions: Record<string, unknown>[][]; bases: number[]; submitters: Array<string | undefined> } {
-  const submissions: Record<string, unknown>[][] = []
-  const bases: number[] = []
-  const submitters: Array<string | undefined> = []
-  for (const { event } of events) {
-    if (event.kind === "workflow_nodes_submitted") {
-      submissions.push(event.nodes)
-      submitters.push(event.submitter_agent_id)
-      if (event.base_index === undefined) {
-        throw new Error("workflow_nodes_submitted is missing required base_index")
-      }
-      bases.push(event.base_index)
-    }
-  }
-  return { submissions, bases, submitters }
 }

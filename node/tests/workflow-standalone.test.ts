@@ -152,30 +152,4 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
     expect(second.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
   })
 
-  it("resumes a standalone workflow from the session log by sessionId — completed nodes are not re-run", async () => {
-    let calls = 0
-    const sessionLog = new InMemorySessionLog()
-    const runner = new RuntimeRunner({
-      sessionLog,
-      maxTokens: 8000,
-      subAgentOrchestrator: stubOrchestrator(() => { calls++ }) as never,
-    } as never)
-
-    await runner.runWorkflow(fanoutSpec, { sessionId: "resume-me" })
-    expect(calls).toBe(3)
-
-    // Resume the same session: the kernel skips already-completed nodes, so no new agent calls.
-    const resumed = await runner.resumeWorkflow(fanoutSpec, { sessionId: "resume-me" })
-    expect(resumed.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
-    expect(calls).toBe(3)
-  })
-
-  it("still throws on resume with neither an active run nor a sessionId", async () => {
-    const runner = new RuntimeRunner({
-      sessionLog: new InMemorySessionLog(),
-      maxTokens: 8000,
-      subAgentOrchestrator: stubOrchestrator() as never,
-    } as never)
-    await expect(runner.resumeWorkflow(fanoutSpec)).rejects.toThrow(/active parent run or an explicit sessionId/)
-  })
 })
