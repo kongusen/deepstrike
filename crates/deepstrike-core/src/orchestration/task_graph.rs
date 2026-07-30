@@ -275,6 +275,53 @@ impl TaskGraph {
         }
     }
 
+    /// Restore the semantic node states of an already-validated graph.
+    ///
+    /// The checkpoint owns statuses and results; the heap, generations and residual in-degrees are
+    /// derived indexes. Rebuilding those indexes here keeps checkpoint code independent of the
+    /// graph's private scheduling layout.
+    pub(crate) fn restore_runtime_state(
+        &mut self,
+        states: &[(TaskStatus, Option<LoopResult>)],
+    ) -> std::result::Result<(), String> {
+        if states.len() != self.nodes.len() {
+            return Err(format!(
+                "workflow checkpoint carries {} node states for a {} node graph",
+                states.len(),
+                self.nodes.len()
+            ));
+        }
+
+        for (node, (status, result)) in self.nodes.iter_mut().zip(states) {
+            node.status = *status;
+            node.result = result.clone();
+        }
+        self.in_degree = self
+            .nodes
+            .iter()
+            .map(|node| {
+                node.dependencies
+                    .iter()
+                    .filter(|&&dependency| {
+                        self.nodes.get(dependency).map(|node| node.status)
+                            != Some(TaskStatus::Completed)
+                    })
+                    .count()
+            })
+            .collect();
+        self.ready_heap.clear();
+        self.ready_generation.fill(0);
+        self.enqueued_round.fill(0);
+        self.enqueue_sequence = 0;
+        self.ready_round = 0;
+        for node in 0..self.nodes.len() {
+            if self.nodes[node].status == TaskStatus::Ready {
+                self.enqueue_ready(node);
+            }
+        }
+        Ok(())
+    }
+
     pub fn get(&self, task_id: usize) -> Option<&TaskNode> {
         self.nodes.get(task_id)
     }

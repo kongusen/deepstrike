@@ -3,7 +3,7 @@ use std::collections::{HashSet, VecDeque};
 use compact_str::CompactString;
 
 use super::attention::UrgencyBasedPolicy;
-use super::queue::SignalQueue;
+use super::queue::{QueuedSignalRuntimeState, SignalQueue};
 use crate::scheduler::tcb::TaskLifecycle;
 use crate::types::policy::SignalDisposition;
 use crate::types::signal::RuntimeSignal;
@@ -17,6 +17,12 @@ pub struct SignalRouter {
     attention: UrgencyBasedPolicy,
     ttl_ms: Option<u64>,
     deadline_escalation: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SignalRouterRuntimeState {
+    pub queued: Vec<QueuedSignalRuntimeState>,
+    pub seen_order: Vec<CompactString>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -165,6 +171,59 @@ impl SignalRouter {
     /// Number of queued signals.
     pub fn depth(&self) -> usize {
         self.queue.len()
+    }
+
+    pub(crate) fn checkpoint_state(&self) -> SignalRouterRuntimeState {
+        SignalRouterRuntimeState {
+            queued: self.queue.checkpoint_entries(),
+            seen_order: self.seen_order.iter().cloned().collect(),
+        }
+    }
+
+    pub(crate) fn restore_state(&mut self, state: SignalRouterRuntimeState) -> Result<(), String> {
+        if state.seen_order.len() > self.dedupe_capacity {
+            return Err(format!(
+                "checkpoint carries {} signal dedupe keys for capacity {}",
+                state.seen_order.len(),
+                self.dedupe_capacity
+            ));
+        }
+        let mut seen = HashSet::with_capacity(state.seen_order.len());
+        for key in &state.seen_order {
+            if !seen.insert(key.clone()) {
+                return Err(format!(
+                    "checkpoint carries duplicate signal dedupe key {key:?}"
+                ));
+            }
+        }
+        let mut queued_keys = HashSet::new();
+        for queued in &state.queued {
+            if let Some(primary) = queued.signal.dedupe_key.as_ref()
+                && !queued.dedupe_keys.contains(primary)
+            {
+                return Err(format!(
+                    "queued signal {:?} omits its primary dedupe key {primary:?}",
+                    queued.signal.id
+                ));
+            }
+            for key in &queued.dedupe_keys {
+                if !seen.contains(key) {
+                    return Err(format!(
+                        "queued signal {:?} carries uncommitted dedupe key {key:?}",
+                        queued.signal.id
+                    ));
+                }
+                if !queued_keys.insert(key.clone()) {
+                    return Err(format!(
+                        "signal dedupe key {key:?} belongs to more than one queue entry"
+                    ));
+                }
+            }
+        }
+        self.queue.restore_entries(state.queued)?;
+        self.seen = seen;
+        self.seen_order = state.seen_order.into();
+        Ok(())
     }
 
     /// Clear the dedup set (call at session boundaries to prevent unbounded growth).

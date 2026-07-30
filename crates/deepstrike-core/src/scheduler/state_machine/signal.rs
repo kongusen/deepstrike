@@ -3,7 +3,7 @@
 use super::{
     KernelObservation, LoopAction, LoopPhase, LoopStateMachine, PendingPreempt, SuspendState,
 };
-use crate::signals::router::SignalRouter;
+use crate::signals::router::{SignalRouter, SignalRouterRuntimeState};
 use crate::types::policy::SignalDisposition;
 use crate::types::result::TerminationReason;
 use crate::types::signal::RuntimeSignal;
@@ -16,6 +16,21 @@ impl LoopStateMachine {
     /// be provably absent from it.
     pub fn signal_queue_depth(&self) -> usize {
         self.signal_router.depth()
+    }
+
+    pub(crate) fn signal_checkpoint_state(&self) -> SignalRouterRuntimeState {
+        self.signal_router.checkpoint_state()
+    }
+
+    pub(crate) fn restore_signal_checkpoint_state(
+        &mut self,
+        state: SignalRouterRuntimeState,
+    ) -> Result<(), String> {
+        self.signal_router.restore_state(state)
+    }
+
+    pub(crate) fn restore_pending_preempt(&mut self, agent_ids: Vec<String>, reason: String) {
+        self.pending_preempt = Some(PendingPreempt { agent_ids, reason });
     }
 
     /// Atomically replace the versioned signal policy after protocol validation. Keeping TTL in

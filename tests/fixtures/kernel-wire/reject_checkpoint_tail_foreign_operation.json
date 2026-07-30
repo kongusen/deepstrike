@@ -3,13 +3,14 @@
     "abi_version": 3,
     "base_record_digest": "sha256:7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4",
     "base_step_seq": "2",
-    "checkpoint_digest": "sha256:9cc0d488b1d520e4a41bb546b9962b01a0173037279cd56fdd93a4e30850388f",
+    "checkpoint_digest": "sha256:f1bf3ea4b967db62ab3a40a40ab00547201d7514d5fe5542d2ac839831120693",
     "checkpoint_version": 1,
     "covered_transaction_head_digest": "sha256:161fcc53e5674fa7b6660f0742c8e4d3eb8996bfd341b49bf57800a06b1d3e56",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
+        "frozen_history_len": 0,
         "handles": [],
         "history_len": 0,
         "knowledge": [],
@@ -42,8 +43,9 @@
       "scheduler": {
         "attempts": [],
         "milestone": null,
+        "queued_signals": [],
         "rounds_completed": 0,
-        "signal_queue_depth": 0,
+        "signal_dedupe_keys": [],
         "started_at_ms": null,
         "subagents_spawned": 0,
         "tasks": [],
@@ -194,7 +196,7 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:1c2eefe3072539b22b906a7cd96390b67a8a4ec54382289e70a59bdef992ef86",
+    "state_digest": "sha256:5646d52ecbb019ff38e91be1aa8e33000183198fdac45449446e942fcec3ee9d",
     "tail_digest": "sha256:9f2c207af60e663a927dc66800538294dd902a7d0da1ce6ca43c064316cd7fe8",
     "tail_inputs": [
       {

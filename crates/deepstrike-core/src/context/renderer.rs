@@ -259,8 +259,18 @@ fn normalize_turn_prefix(turns: &mut Vec<Message>) {
 /// Trained-convention truncation marker: says what was cut and how to get it back (the
 /// `read_result` tool + this result's `call_id`), instead of kernel-internal vocabulary
 /// ("projected out of view") the model has never seen in training.
-fn collapse_preview(output: &str, call_id: &str) -> String {
+pub(crate) fn collapse_preview(output: &str, call_id: &str) -> String {
     const PREVIEW_BYTES: usize = 160;
+    let retrieval = format!(
+        "Call the read_result tool with call_id \"{call_id}\" to re-read the full result.]"
+    );
+    if output
+        .lines()
+        .last()
+        .is_some_and(|line| line.starts_with("[Output truncated:") && line.ends_with(&retrieval))
+    {
+        return output.to_string();
+    }
     let mut end = PREVIEW_BYTES.min(output.len());
     while end > 0 && !output.is_char_boundary(end) {
         end -= 1;
@@ -303,8 +313,8 @@ fn project_assistant_narration(msg: &Message, enabled: bool) -> Option<Message> 
     Some(projected)
 }
 
-/// If any of `msg`'s tool-result parts is `Collapsed` per the handle table, return a projected
-/// copy with those parts previewed; `None` if nothing is collapsed (render the message as-is).
+/// If any tool-result body is not resident in working context (`Collapsed` or `PagedOut`), return
+/// a projected copy with those parts previewed; `None` if nothing is projected.
 fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
     let Content::Parts(parts) = &msg.content else {
         return None;
@@ -319,7 +329,7 @@ fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
                 is_error,
             } if matches!(
                 handles.residency_for_source(call_id),
-                Some(Residency::Collapsed)
+                Some(Residency::Collapsed | Residency::PagedOut { .. })
             ) =>
             {
                 changed = true;
@@ -368,7 +378,8 @@ pub(crate) fn render(
 }
 
 /// Render with Layer-4 read-time projection driven by `handles`: tool results whose handle is
-/// `Collapsed` render as previews (originals untouched), freeing budget for more recent turns.
+/// `Collapsed` or `PagedOut` render as previews (originals untouched), freeing budget for more
+/// recent turns.
 ///
 /// Token budget:
 ///   system_stable + system_knowledge tokens are subtracted first.
@@ -672,6 +683,41 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!(stored, long, "projection must not mutate stored history");
+    }
+
+    #[test]
+    fn paged_out_tool_result_uses_the_same_projection_as_collapsed() {
+        use crate::mm::handle::{Handle, HandleKind, HandleTable, Residency};
+
+        let mut c = ctx();
+        let long = "ARCHIVED ".repeat(200);
+        c.history.push(
+            Message::tool(vec![ContentPart::ToolResult {
+                call_id: "c-paged".into(),
+                output: long,
+                is_error: false,
+            }]),
+            300,
+        );
+
+        let render_with = |residency| {
+            let mut handles = HandleTable::new();
+            let mut handle = Handle::resident_for(1, HandleKind::ToolResult, 300, "c-paged");
+            handle.residency = residency;
+            handles.insert(handle);
+            render_projected(&c, 10_000, &engine(), 4, &handles, 0, false)
+        };
+        let collapsed = render_with(Residency::Collapsed);
+        let paged_out = render_with(Residency::PagedOut {
+            payload_ref: "payload:archive-c-paged".to_string(),
+            digest: format!("sha256:{}", "1".repeat(64)),
+        });
+
+        assert_eq!(
+            serde_json::to_value(paged_out.turns).unwrap(),
+            serde_json::to_value(collapsed.turns).unwrap(),
+            "PagedOut and Collapsed both retain only the read_result preview in working context",
+        );
     }
 
     #[test]

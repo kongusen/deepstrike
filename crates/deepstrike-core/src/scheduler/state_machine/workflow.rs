@@ -4,11 +4,65 @@ use super::super::tcb::{TaskLifecycle, Tcb, WaitReason};
 use super::{
     KernelObservation, LoopAction, LoopPhase, LoopStateMachine, PendingWorkflowSpawn, SuspendState,
 };
+use crate::orchestration::workflow::run::WorkflowRuntimeNodeState;
 use crate::proc::AgentProcess;
 use crate::syscall::{Disposition, Syscall};
 use crate::types::result::SubAgentResult;
 
 impl LoopStateMachine {
+    /// Stable-checkpoint projection of the active workflow.
+    pub(crate) fn workflow_checkpoint_nodes(&self) -> Option<Vec<WorkflowRuntimeNodeState>> {
+        self.workflow.as_ref().map(|run| run.checkpoint_nodes())
+    }
+
+    /// Install a workflow rebuilt from checkpoint source state and recreate the derived wait and
+    /// pending-spawn views that the next child completion/effect resolution reads.
+    pub(crate) fn restore_checkpoint_workflow(
+        &mut self,
+        mut run: crate::orchestration::workflow::WorkflowRun,
+    ) {
+        run.set_scheduler_policy(self.scheduler_policy);
+        let active: Vec<(String, crate::orchestration::workflow::WorkflowSpawnInfo)> = run
+            .checkpoint_nodes()
+            .iter()
+            .enumerate()
+            .filter_map(|(node, state)| {
+                state
+                    .active_agent_id
+                    .as_ref()
+                    .map(|agent_id| (agent_id.clone(), run.spawn_info(node)))
+            })
+            .collect();
+        self.workflow = Some(run);
+
+        let active_ids: Vec<String> = active
+            .iter()
+            .map(|(agent_id, _)| agent_id.clone())
+            .collect();
+        self.suspend_state = (!active_ids.is_empty()).then(|| SuspendState::SubAgentAwait {
+            agent_ids: active_ids,
+        });
+
+        let pending_nodes: Vec<_> = active
+            .into_iter()
+            .filter_map(|(agent_id, info)| {
+                self.tasks
+                    .get(&agent_id)
+                    .is_some_and(|task| {
+                        matches!(
+                            task.state,
+                            TaskLifecycle::PendingLaunch | TaskLifecycle::Starting
+                        )
+                    })
+                    .then_some(info)
+            })
+            .collect();
+        self.pending_workflow_spawn = (!pending_nodes.is_empty()).then(|| PendingWorkflowSpawn {
+            nodes: pending_nodes,
+            budget: self.workflow_budget(),
+        });
+    }
+
     pub(crate) fn validate_workflow_spawn_result(
         &self,
         started_agent_ids: &[String],

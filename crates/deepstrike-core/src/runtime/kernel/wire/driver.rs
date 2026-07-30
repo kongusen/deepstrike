@@ -52,13 +52,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use super::checkpoint::{
-    AuthoredMemoryQueryState, AuthoredMemoryWriteState, ContextVmStateV1, HandleState,
-    InlineMessageBody, KnowledgeSlotState, LogicalCompressionEntry, LogicalKernelState,
-    LogicalPlanStep, LogicalStateProjection, LogicalTaskState, LogicalToolCall, MessagePartition,
-    MilestoneState, PartitionTokenState, PendingPayloadLoadState, PendingProviderCallState,
-    ReferencedMessageBody, SchedulerStateV1, SkillLeaseState, StoredMessageBody,
-    StoredMessageState, StructuredMessageBody, SyscallStateV1, TaskAttemptState, TaskControlState,
-    WorkflowGraphState,
+    AuthoredMemoryQueryState, AuthoredMemoryWriteState, ChildProcessState, ContextVmStateV1,
+    HandleState, InlineMessageBody, KnowledgeSlotState, LogicalCompressionEntry,
+    LogicalKernelState, LogicalPlanStep, LogicalStateProjection, LogicalTaskState, LogicalToolCall,
+    MessagePartition, MilestoneState, PartitionTokenState, PendingPayloadLoadState,
+    PendingProviderCallState, QueuedSignalState, ReferencedMessageBody, SchedulerStateV1,
+    SkillLeaseState, StoredMessageBody, StoredMessageState, StructuredMessageBody, SyscallStateV1,
+    TaskAttemptState, TaskControlState, WorkflowGraphState, WorkflowNodeState,
 };
 use super::command::{
     ApplyCapabilityPatchCommand, ApplyKnowledgeMutationCommand, ApplyPolicyPatchCommand,
@@ -107,7 +107,8 @@ use super::transaction::{PlanContext, TransitionStep};
 use crate::context::manager::READ_RESULT_TOOL_NAME;
 use crate::context::task_state::{CompressionEntry, PlanStep, TaskState};
 use crate::mm::handle::{Handle, HandleKind, Residency};
-use crate::orchestration::workflow::run::WorkflowNodeStatus;
+use crate::orchestration::task_graph::TaskStatus;
+use crate::orchestration::workflow::run::{WorkflowNodeStatus, WorkflowRuntimeNodeState};
 use crate::orchestration::workflow::{
     WorkflowNode as CoreWorkflowNode, WorkflowSpec as CoreWorkflowSpec,
 };
@@ -116,13 +117,17 @@ use crate::scheduler::policy::SchedulerBudget;
 use crate::scheduler::state_machine::{
     AdjudicatedTurn, AnsweredCall, IdleContinuation, LoopAction, LoopEvent, LoopStateMachine,
 };
-use crate::scheduler::tcb::{BudgetLedger, TaskLifecycle, Tcb, WaitReason};
+use crate::scheduler::tcb::{BudgetLedger, ProcInfo, TaskLifecycle, Tcb, WaitReason};
+use crate::signals::queue::QueuedSignalRuntimeState;
+use crate::signals::router::SignalRouterRuntimeState;
 use crate::syscall::{Disposition, Syscall as CoreSyscall};
 use crate::types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
+    ContextInheritance,
 };
 use crate::types::message::{Content, ContentPart, Message, Role, ToolErrorKind, ToolResult};
 use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+use crate::types::signal::{RuntimeSignal, SignalSource, SignalType, Urgency};
 use crate::types::task::{RuntimeTask, TaskLane};
 
 // ---------------------------------------------------------------------------------------------
@@ -330,46 +335,238 @@ fn message_content(text: String, tool_call_id: Option<&str>, is_error: bool) -> 
     }
 }
 
+fn workflow_kind_label(state: &WorkflowRuntimeNodeState) -> &'static str {
+    match state.node.kind {
+        crate::orchestration::workflow::NodeKind::Spawn => "spawn",
+        crate::orchestration::workflow::NodeKind::Loop { .. } => "loop",
+        crate::orchestration::workflow::NodeKind::Classify { .. } => "classify",
+        crate::orchestration::workflow::NodeKind::Tournament { .. } => "tournament",
+        crate::orchestration::workflow::NodeKind::Reduce { .. } => "reduce",
+    }
+}
+
+fn workflow_status_label(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Pending => "pending",
+        TaskStatus::Ready => "ready",
+        TaskStatus::Running => "running",
+        TaskStatus::Completed => "completed",
+        TaskStatus::CompletedPartial => "completed_partial",
+        TaskStatus::Failed => "failed",
+        TaskStatus::SkippedUpstreamFailed => "skipped_upstream_failed",
+    }
+}
+
+fn restore_workflow_status(label: &str) -> Result<TaskStatus, KernelFault> {
+    match label {
+        "pending" => Ok(TaskStatus::Pending),
+        "ready" => Ok(TaskStatus::Ready),
+        "running" => Ok(TaskStatus::Running),
+        "completed" => Ok(TaskStatus::Completed),
+        "completed_partial" => Ok(TaskStatus::CompletedPartial),
+        "failed" => Ok(TaskStatus::Failed),
+        "skipped_upstream_failed" => Ok(TaskStatus::SkippedUpstreamFailed),
+        other => Err(KernelFault::new(
+            KernelFaultCode::CheckpointIncompatible,
+            format!("workflow checkpoint carries unknown node status {other:?}"),
+        )),
+    }
+}
+
+fn agent_role_label(role: AgentRole) -> &'static str {
+    match role {
+        AgentRole::Explore => "explore",
+        AgentRole::Plan => "plan",
+        AgentRole::Implement => "implement",
+        AgentRole::Verify => "verify",
+        AgentRole::Custom => "custom",
+    }
+}
+
+fn restore_agent_role(label: &str) -> Result<AgentRole, KernelFault> {
+    match label {
+        "explore" => Ok(AgentRole::Explore),
+        "plan" => Ok(AgentRole::Plan),
+        "implement" => Ok(AgentRole::Implement),
+        "verify" => Ok(AgentRole::Verify),
+        "custom" => Ok(AgentRole::Custom),
+        other => Err(KernelFault::new(
+            KernelFaultCode::CheckpointIncompatible,
+            format!("child process carries unknown role {other:?}"),
+        )),
+    }
+}
+
+fn agent_isolation_label(isolation: AgentIsolation) -> &'static str {
+    match isolation {
+        AgentIsolation::Shared => "shared",
+        AgentIsolation::ReadOnly => "read_only",
+        AgentIsolation::Worktree => "worktree",
+        AgentIsolation::Remote => "remote",
+    }
+}
+
+fn restore_agent_isolation(label: &str) -> Result<AgentIsolation, KernelFault> {
+    match label {
+        "shared" => Ok(AgentIsolation::Shared),
+        "read_only" => Ok(AgentIsolation::ReadOnly),
+        "worktree" => Ok(AgentIsolation::Worktree),
+        "remote" => Ok(AgentIsolation::Remote),
+        other => Err(KernelFault::new(
+            KernelFaultCode::CheckpointIncompatible,
+            format!("child process carries unknown isolation {other:?}"),
+        )),
+    }
+}
+
+fn context_inheritance_label(inheritance: ContextInheritance) -> &'static str {
+    match inheritance {
+        ContextInheritance::None => "none",
+        ContextInheritance::SystemOnly => "system_only",
+        ContextInheritance::Full => "full",
+    }
+}
+
+fn restore_context_inheritance(label: &str) -> Result<ContextInheritance, KernelFault> {
+    match label {
+        "none" => Ok(ContextInheritance::None),
+        "system_only" => Ok(ContextInheritance::SystemOnly),
+        "full" => Ok(ContextInheritance::Full),
+        other => Err(KernelFault::new(
+            KernelFaultCode::CheckpointIncompatible,
+            format!("child process carries unknown context inheritance {other:?}"),
+        )),
+    }
+}
+
+fn queued_signal_state(queued: &QueuedSignalRuntimeState) -> QueuedSignalState {
+    let signal = &queued.signal;
+    QueuedSignalState {
+        signal_id: super::scalar::SignalId::new(signal.id.as_str())
+            .expect("a canonical runtime signal keeps its branded id"),
+        source: signal_source_label(signal.source).to_string(),
+        signal_type: signal_type_label(signal.signal_type).to_string(),
+        urgency: urgency_label(signal.urgency).to_string(),
+        summary: signal.summary.to_string(),
+        payload: super::scalar::BoundedJson::new(signal.payload.clone())
+            .expect("a canonical signal payload remains bounded"),
+        dedupe_key: signal.dedupe_key.as_ref().map(ToString::to_string),
+        deadline_ms: signal.deadline_ms.map(WireU64::new),
+        coalesce_key: signal.coalesce_key.as_ref().map(ToString::to_string),
+        coalesced_count: signal.coalesced_count,
+        recipient: signal.recipient.as_ref().map(ToString::to_string),
+        timestamp_ms: WireU64::new(signal.timestamp_ms),
+        deadline_escalated: queued.deadline_escalated,
+        dedupe_keys: queued.dedupe_keys.iter().map(ToString::to_string).collect(),
+    }
+}
+
+fn restore_queued_signal(
+    queued: &QueuedSignalState,
+) -> Result<QueuedSignalRuntimeState, KernelFault> {
+    if queued.coalesced_count == 0 {
+        return Err(KernelFault::new(
+            KernelFaultCode::CheckpointIncompatible,
+            format!(
+                "queued signal {} carries a zero coalesced count",
+                queued.signal_id
+            ),
+        ));
+    }
+    Ok(QueuedSignalRuntimeState {
+        signal: RuntimeSignal {
+            id: queued.signal_id.as_str().into(),
+            source: restore_signal_source(&queued.source)?,
+            signal_type: restore_signal_type(&queued.signal_type)?,
+            urgency: restore_urgency(&queued.urgency)?,
+            summary: queued.summary.as_str().into(),
+            payload: queued.payload.get().clone(),
+            dedupe_key: queued.dedupe_key.as_deref().map(Into::into),
+            deadline_ms: queued.deadline_ms.map(WireU64::get),
+            coalesce_key: queued.coalesce_key.as_deref().map(Into::into),
+            coalesced_count: queued.coalesced_count,
+            recipient: queued.recipient.as_deref().map(Into::into),
+            timestamp_ms: queued.timestamp_ms.get(),
+        },
+        deadline_escalated: queued.deadline_escalated,
+        dedupe_keys: queued
+            .dedupe_keys
+            .iter()
+            .map(|key| key.as_str().into())
+            .collect(),
+    })
+}
+
+fn signal_source_label(source: SignalSource) -> &'static str {
+    match source {
+        SignalSource::Cron => "cron",
+        SignalSource::Gateway => "gateway",
+        SignalSource::Heartbeat => "heartbeat",
+        SignalSource::Custom => "custom",
+    }
+}
+
+fn restore_signal_source(label: &str) -> Result<SignalSource, KernelFault> {
+    match label {
+        "cron" => Ok(SignalSource::Cron),
+        "gateway" => Ok(SignalSource::Gateway),
+        "heartbeat" => Ok(SignalSource::Heartbeat),
+        "custom" => Ok(SignalSource::Custom),
+        other => Err(KernelFault::new(
+            KernelFaultCode::CheckpointIncompatible,
+            format!("queued signal carries unknown source {other:?}"),
+        )),
+    }
+}
+
+fn signal_type_label(signal_type: SignalType) -> &'static str {
+    match signal_type {
+        SignalType::Event => "event",
+        SignalType::Job => "job",
+        SignalType::Alert => "alert",
+    }
+}
+
+fn restore_signal_type(label: &str) -> Result<SignalType, KernelFault> {
+    match label {
+        "event" => Ok(SignalType::Event),
+        "job" => Ok(SignalType::Job),
+        "alert" => Ok(SignalType::Alert),
+        other => Err(KernelFault::new(
+            KernelFaultCode::CheckpointIncompatible,
+            format!("queued signal carries unknown type {other:?}"),
+        )),
+    }
+}
+
+fn urgency_label(urgency: Urgency) -> &'static str {
+    match urgency {
+        Urgency::Low => "low",
+        Urgency::Normal => "normal",
+        Urgency::High => "high",
+        Urgency::Critical => "critical",
+    }
+}
+
+fn restore_urgency(label: &str) -> Result<Urgency, KernelFault> {
+    match label {
+        "low" => Ok(Urgency::Low),
+        "normal" => Ok(Urgency::Normal),
+        "high" => Ok(Urgency::High),
+        "critical" => Ok(Urgency::Critical),
+        other => Err(KernelFault::new(
+            KernelFaultCode::CheckpointIncompatible,
+            format!("queued signal carries unknown urgency {other:?}"),
+        )),
+    }
+}
+
 /// §12.2 · put the scheduler partition back on the engine.
 fn restore_scheduler(
     engine: &mut LoopStateMachine,
     config: &ResolvedOperationConfig,
     state: &SchedulerStateV1,
 ) -> Result<(), KernelFault> {
-    if state.workflow.is_some() {
-        return Err(KernelFault::new(
-            KernelFaultCode::CheckpointIncompatible,
-            "this checkpoint carries a workflow graph, and §12.1's `WorkflowGraphState` records \
-             the workflow's identity and node ids but not its DAG — there is nothing here to \
-             rebuild the run from, so the restore fails closed rather than resuming a scheduler \
-             that forgot what it was scheduling (SPEC-ISSUE against §12.1)"
-                .to_string(),
-        ));
-    }
-    if state.signal_queue_depth > 0 {
-        return Err(KernelFault::new(
-            KernelFaultCode::CheckpointIncompatible,
-            format!(
-                "this checkpoint counts {} queued signals but does not carry them; §12.1 records \
-                 the queue's depth and not its contents, so a restore would silently drop them \
-                 (SPEC-ISSUE against §12.1)",
-                state.signal_queue_depth
-            ),
-        ));
-    }
-    if let Some(child) = state.tasks.iter().find(|task| task.is_subagent) {
-        return Err(KernelFault::new(
-            KernelFaultCode::CheckpointIncompatible,
-            format!(
-                "task {} is a sub-agent, and §12.1's `TaskControlState` records its schedulability \
-                 but not its process identity (role, isolation, context inheritance, join result); \
-                 a restore that invented those would hand the run a differently-permissioned child \
-                 (SPEC-ISSUE against §12.1)",
-                child.task_id
-            ),
-        ));
-    }
-
     engine.turn = state.turn;
     engine.restore_budget_usage(state.total_tokens.get(), state.rounds_completed);
     engine.restore_started_at_ms(state.started_at_ms.map(WireU64::get));
@@ -391,6 +588,44 @@ fn restore_scheduler(
         tcb.state = restore_task_lifecycle(task)?;
         tcb.wait = restore_task_wait(task)?;
         tcb.caps = task.capability_ids.iter().map(|cap| cap.into()).collect();
+        tcb.proc = task
+            .process
+            .as_ref()
+            .map(|process| {
+                let result = process
+                    .join_result
+                    .as_ref()
+                    .map(|value| {
+                        serde_json::from_value(value.get().clone()).map_err(|error| {
+                            KernelFault::new(
+                                KernelFaultCode::CheckpointIncompatible,
+                                format!(
+                                    "task {} carries an invalid child join result: {error}",
+                                    task.task_id
+                                ),
+                            )
+                        })
+                    })
+                    .transpose()?;
+                if result.as_ref().is_some_and(|result: &SubAgentResult| {
+                    result.agent_id.as_str() != task.task_id.as_str()
+                }) {
+                    return Err(KernelFault::new(
+                        KernelFaultCode::CheckpointIncompatible,
+                        format!(
+                            "task {} carries a join result for another child",
+                            task.task_id
+                        ),
+                    ));
+                }
+                Ok(ProcInfo {
+                    role: restore_agent_role(&process.role)?,
+                    isolation: restore_agent_isolation(&process.isolation)?,
+                    context_inheritance: restore_context_inheritance(&process.context_inheritance)?,
+                    result,
+                })
+            })
+            .transpose()?;
         tcb.budget = BudgetLedger {
             limits: limits.clone(),
             turns: task.turns_used,
@@ -398,6 +633,87 @@ fn restore_scheduler(
             started_at_ms: state.started_at_ms.map(WireU64::get),
         };
         table.insert(tcb);
+    }
+
+    let queued = state
+        .queued_signals
+        .iter()
+        .map(restore_queued_signal)
+        .collect::<Result<Vec<_>, _>>()?;
+    engine
+        .restore_signal_checkpoint_state(SignalRouterRuntimeState {
+            queued,
+            seen_order: state
+                .signal_dedupe_keys
+                .iter()
+                .map(|key| key.as_str().into())
+                .collect(),
+        })
+        .map_err(|error| {
+            KernelFault::new(
+                KernelFaultCode::CheckpointIncompatible,
+                format!("signal checkpoint could not be rebuilt: {error}"),
+            )
+        })?;
+
+    if let Some(workflow) = &state.workflow {
+        let wire_spec = WireSpec {
+            name: String::new(),
+            nodes: workflow
+                .nodes
+                .iter()
+                .map(|node| WireNode {
+                    node_id: node.node_id.clone(),
+                    task: node.task.clone(),
+                    depends_on: node.depends_on.clone(),
+                    run_spec: node.run_spec.clone(),
+                })
+                .collect(),
+        };
+        let core_spec = build_core_spec(&wire_spec).map_err(|fault| {
+            KernelFault::new(KernelFaultCode::CheckpointIncompatible, fault.message)
+        })?;
+        let runtime_states: Result<Vec<_>, KernelFault> = workflow
+            .nodes
+            .iter()
+            .enumerate()
+            .zip(core_spec.nodes.iter())
+            .map(|((index, node), core)| {
+                if node.kind != "spawn" {
+                    return Err(KernelFault::new(
+                        KernelFaultCode::CheckpointIncompatible,
+                        format!(
+                            "workflow node {} carries unsupported checkpoint kind {:?}",
+                            node.node_id, node.kind
+                        ),
+                    ));
+                }
+                let result = engine
+                    .task_table()
+                    .get(&crate::orchestration::workflow::node_agent_id(index))
+                    .and_then(|task| task.proc.as_ref())
+                    .and_then(|process| process.result.as_ref())
+                    .map(|result| result.result.clone());
+                Ok(WorkflowRuntimeNodeState {
+                    node: core.clone(),
+                    status: restore_workflow_status(&node.status)?,
+                    result,
+                    active_agent_id: node.active_agent_id.clone(),
+                    iterations_completed: node.iterations_completed as usize,
+                })
+            })
+            .collect();
+        let run = crate::orchestration::workflow::WorkflowRun::restore_from_checkpoint(
+            &core_spec,
+            &runtime_states?,
+        )
+        .map_err(|error| {
+            KernelFault::new(
+                KernelFaultCode::CheckpointIncompatible,
+                format!("workflow checkpoint could not be rebuilt: {error}"),
+            )
+        })?;
+        engine.restore_checkpoint_workflow(run);
     }
     Ok(())
 }
@@ -520,6 +836,13 @@ fn restore_context_vm(
         });
     }
     ctx.restore_next_handle_id(state.next_handle_id);
+    if !ctx.restore_frozen_history_len(state.frozen_history_len as usize) {
+        return Err(incompatible(format!(
+            "the checkpoint freezes {} history messages but restores only {}",
+            state.frozen_history_len,
+            ctx.partitions.history.messages.len()
+        )));
+    }
     Ok(())
 }
 
@@ -772,6 +1095,9 @@ pub struct CanonicalOperationDriver {
     /// Wire node identity by internal DAG index — the DAG the engine runs is index-addressed, the
     /// wire is not, and the mapping is what keeps a `SpawnTasks` effect nameable by the host.
     node_ids: Vec<NodeId>,
+    /// Canonical source DAG in the same index order as `node_ids`. Checkpoint projection pairs it
+    /// with the semantic node statuses without serializing the graph's private indexes.
+    workflow_nodes: Vec<WireNode>,
     /// The attempt the kernel minted for each **live** task. §10.4: a host may not create or
     /// rewrite child identity through a resolution or a completion, so a completion that names an
     /// attempt this kernel never issued is refused rather than folded in. A completed attempt is
@@ -826,6 +1152,7 @@ impl CanonicalOperationDriver {
             focus: None,
             workflow_id: None,
             node_ids: Vec::new(),
+            workflow_nodes: Vec::new(),
             attempts: BTreeMap::new(),
             provider_calls: BTreeMap::new(),
             pending_memory_writes: BTreeMap::new(),
@@ -951,6 +1278,35 @@ impl CanonicalOperationDriver {
             return SchedulerStateV1::default();
         };
         let (total_tokens, subagents_spawned, rounds_completed) = engine.local_budget_usage();
+        let signal_state = engine.signal_checkpoint_state();
+        let workflow = engine.workflow_checkpoint_nodes().map(|runtime_nodes| {
+            let workflow_id = self
+                .workflow_id
+                .as_ref()
+                .expect("an active canonical workflow has a logical identity");
+            assert_eq!(
+                runtime_nodes.len(),
+                self.workflow_nodes.len(),
+                "the semantic workflow and its canonical source DAG stay index-aligned"
+            );
+            WorkflowGraphState {
+                workflow_id: workflow_id.clone(),
+                nodes: runtime_nodes
+                    .into_iter()
+                    .zip(self.workflow_nodes.iter())
+                    .map(|(runtime, wire)| WorkflowNodeState {
+                        node_id: wire.node_id.clone(),
+                        task: wire.task.clone(),
+                        depends_on: wire.depends_on.clone(),
+                        run_spec: wire.run_spec.clone(),
+                        kind: workflow_kind_label(&runtime).to_string(),
+                        status: workflow_status_label(runtime.status).to_string(),
+                        active_agent_id: runtime.active_agent_id,
+                        iterations_completed: runtime.iterations_completed as u32,
+                    })
+                    .collect(),
+            }
+        });
         SchedulerStateV1 {
             turn: engine.turn,
             total_tokens: WireU64::new(total_tokens),
@@ -983,7 +1339,19 @@ impl CanonicalOperationDriver {
                         _ => Vec::new(),
                     },
                     capability_ids: tcb.caps.iter().map(|cap| cap.to_string()).collect(),
-                    is_subagent: tcb.proc.is_some(),
+                    process: tcb.proc.as_ref().map(|process| ChildProcessState {
+                        role: agent_role_label(process.role).to_string(),
+                        isolation: agent_isolation_label(process.isolation).to_string(),
+                        context_inheritance: context_inheritance_label(process.context_inheritance)
+                            .to_string(),
+                        join_result: process.result.as_ref().map(|result| {
+                            super::scalar::BoundedJson::new(
+                                serde_json::to_value(result)
+                                    .expect("a child join result is serializable"),
+                            )
+                            .expect("a child join result is bounded")
+                        }),
+                    }),
                     tokens_used: WireU64::new(tcb.budget.total_tokens),
                     turns_used: tcb.budget.turns,
                 })
@@ -998,15 +1366,17 @@ impl CanonicalOperationDriver {
                     })
                 })
                 .collect(),
-            workflow: self
-                .workflow_id
-                .as_ref()
-                .map(|workflow_id| WorkflowGraphState {
-                    workflow_id: workflow_id.clone(),
-                    node_ids: self.node_ids.clone(),
-                    node_count: engine.workflow_node_count() as u32,
-                }),
-            signal_queue_depth: engine.signal_queue_depth() as u32,
+            workflow,
+            queued_signals: signal_state
+                .queued
+                .into_iter()
+                .map(|queued| queued_signal_state(&queued))
+                .collect(),
+            signal_dedupe_keys: signal_state
+                .seen_order
+                .into_iter()
+                .map(|key| key.to_string())
+                .collect(),
             milestone: self
                 .loaded_contract_id
                 .as_ref()
@@ -1114,6 +1484,7 @@ impl CanonicalOperationDriver {
                 history: ctx.partitions.history.token_count,
             },
             history_len: ctx.partitions.history.messages.len() as u32,
+            frozen_history_len: ctx.frozen_history_len() as u32,
             last_activity_ms: WireU64::new(ctx.last_activity_ms),
             last_compact_ms: ctx.last_compact_ms.map(WireU64::new),
         }
@@ -1171,16 +1542,26 @@ impl CanonicalOperationDriver {
                 .iter()
                 .find(|handle| handle.source.as_deref() == Some(call_id))?;
             let digest = handle.residency.digest()?;
-            Some((handle.id, digest.to_string()))
+            Some((
+                handle.id,
+                digest.to_string(),
+                matches!(handle.residency, Residency::PagedOut { .. }),
+            ))
         });
         match referenced {
-            Some((handle_id, digest)) => StoredMessageBody::Reference(ReferencedMessageBody {
-                handle_id,
-                digest,
-                preview: truncate_on_char_boundary(&text, self.preview_bytes()),
-                tool_call_id,
-                is_error,
-            }),
+            Some((handle_id, digest, is_paged_out)) => {
+                StoredMessageBody::Reference(ReferencedMessageBody {
+                    handle_id,
+                    digest,
+                    preview: if is_paged_out {
+                        crate::context::renderer::collapse_preview(&text, call_id)
+                    } else {
+                        truncate_on_char_boundary(&text, self.preview_bytes())
+                    },
+                    tool_call_id,
+                    is_error,
+                })
+            }
             None => StoredMessageBody::Inline(InlineMessageBody {
                 text,
                 tool_call_id,
@@ -1206,17 +1587,10 @@ impl CanonicalOperationDriver {
     /// compares the digest. A field this function forgets therefore fails the restore rather than
     /// producing a runtime that is quietly one field short of the one that crashed.
     ///
-    /// Two partitions of §12.1 are *summaries* rather than restorable state, and both fail closed
-    /// instead of being approximated:
-    ///
-    /// * a workflow graph — [`WorkflowGraphState`] carries the workflow's identity and node ids, not
-    ///   its DAG, so there is nothing here to rebuild a `WorkflowRun` from;
-    /// * a non-empty signal queue — [`SchedulerStateV1::signal_queue_depth`] is a count, and the
-    ///   signals it counts are not in the checkpoint.
-    ///
-    /// Both are SPEC-ISSUEs against §12.1, not decisions: the state is real, it belongs in the
-    /// checkpoint, and until it is there a restore must refuse rather than resume a run whose
-    /// scheduler forgot what it was running.
+    /// Task 16b makes every scheduler branch invertible here: workflow source nodes rebuild their
+    /// private graph indexes, queued signals rebuild priority and dedupe state, and child process
+    /// identity is restored without re-running permission defaults. Unknown labels and inconsistent
+    /// relationships still fail closed as `CheckpointIncompatible`.
     pub fn restore_logical_state(
         genesis_config: &ResolvedOperationConfig,
         state: &LogicalKernelState,
@@ -1233,12 +1607,32 @@ impl CanonicalOperationDriver {
         // froze, live-mutable ones from the patched configuration the checkpoint carries.
         let mut engine = build_engine(genesis_config);
         install_live_policies(&mut engine, &live_config);
+        engine.set_root_workflow(state.transition.root_kind == Some(RootKind::Workflow));
         driver.policy = Some(LivePolicyState::restore(
             state.syscall.policy_revision.unwrap_or(WireU64::ZERO),
             live_config.clone(),
         ));
 
         restore_scheduler(&mut engine, &live_config, &state.scheduler)?;
+        if let Some(preempt) =
+            state
+                .transition
+                .pending_effects
+                .iter()
+                .find_map(|effect| match &effect.effect {
+                    EffectKind::PreemptTasks(preempt) => Some(preempt),
+                    _ => None,
+                })
+        {
+            engine.restore_pending_preempt(
+                preempt
+                    .attempts
+                    .iter()
+                    .map(|attempt| attempt.task_id.as_str().to_string())
+                    .collect(),
+                preempt.reason.clone(),
+            );
+        }
         restore_context_vm(&mut engine, &state.context_vm)?;
         engine.restore_memory_write_window(
             state
@@ -1281,6 +1675,24 @@ impl CanonicalOperationDriver {
         driver.engine = Some(engine);
         driver.root_kind = state.transition.root_kind;
         driver.focus = state.transition.focus.clone();
+        if let Some(workflow) = &state.scheduler.workflow {
+            driver.workflow_id = Some(workflow.workflow_id.clone());
+            driver.node_ids = workflow
+                .nodes
+                .iter()
+                .map(|node| node.node_id.clone())
+                .collect();
+            driver.workflow_nodes = workflow
+                .nodes
+                .iter()
+                .map(|node| WireNode {
+                    node_id: node.node_id.clone(),
+                    task: node.task.clone(),
+                    depends_on: node.depends_on.clone(),
+                    run_spec: node.run_spec.clone(),
+                })
+                .collect();
+        }
         driver.attempts = state
             .scheduler
             .attempts
@@ -1531,6 +1943,7 @@ impl CanonicalOperationDriver {
         engine.set_root_workflow(false);
         let action = engine.load_workflow(core_spec);
         self.node_ids = node_ids;
+        self.workflow_nodes = spec.nodes.clone();
         self.workflow_id = Some(workflow_id.clone());
         let disposition = self
             .disposition_for_at(context, action, RootKind::Agent, effect_index)
@@ -1920,6 +2333,7 @@ impl CanonicalOperationDriver {
         // falling back to the internal `wf-nodeN` id.
         self.node_ids
             .extend(nodes.iter().map(|node| node.node_id.clone()));
+        self.workflow_nodes.extend_from_slice(nodes);
         Ok(SyscallOutcome {
             effects: Vec::new(),
             focus: None,
@@ -2294,6 +2708,7 @@ impl CanonicalOperationDriver {
                 engine.set_root_workflow(true);
                 let action = engine.load_workflow(core_spec);
                 self.node_ids = node_ids;
+                self.workflow_nodes = workflow.spec.nodes.clone();
                 self.workflow_id = Some(workflow_id.clone());
                 let disposition = self.disposition_for(context, action, RootKind::Workflow)?;
                 if !publishes(&disposition, EffectKindTag::SpawnTasks) {
@@ -12253,6 +12668,318 @@ mod tests {
                 runtime.driver.project_logical_state().scheduler
             ).unwrap(),
         })
+    }
+
+    /// Task 16b · a checkpoint owns the active DAG and every child process identity needed to
+    /// continue it. Restoring while the first node is live must neither forget the second node nor
+    /// rebuild the child under different role/isolation/inheritance.
+    #[test]
+    fn an_active_workflow_and_its_child_restore_to_the_same_completion() {
+        let (mut uninterrupted, _) = workflow_with_live_child();
+        let checkpoint = uninterrupted.checkpoint().decode().expect("verifies");
+        let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
+
+        let first_done = child_done(
+            "in-done-1",
+            1_700_000_003_000,
+            "wf-node0",
+            "sources collected",
+        );
+        let uninterrupted_next = uninterrupted.submit(&first_done);
+        let restored_next = restored.submit(&first_done);
+        assert_eq!(
+            restored_next, uninterrupted_next,
+            "the restored DAG schedules the same second node",
+        );
+
+        let uninterrupted_spawn = effect_id(uninterrupted_next.step_seq);
+        let restored_spawn = effect_id(restored_next.step_seq);
+        uninterrupted.submit(&spawned(
+            "in-ack-2",
+            1_700_000_004_000,
+            &uninterrupted_spawn,
+            &["wf-node1"],
+        ));
+        restored.submit(&spawned(
+            "in-ack-2",
+            1_700_000_004_000,
+            &restored_spawn,
+            &["wf-node1"],
+        ));
+        let second_done = child_done("in-done-2", 1_700_000_005_000, "wf-node1", "brief written");
+        uninterrupted.submit(&second_done);
+        restored.submit(&second_done);
+
+        assert_eq!(
+            surface(&restored),
+            surface(&uninterrupted),
+            "workflow state and child permission identity are reversible",
+        );
+    }
+
+    /// Task 16b · queued signal source state and the router's business-dedupe memory survive a
+    /// checkpoint. The queued payload must drive the same follow-up provider request, while a new
+    /// delivery with the same key remains ignored on both sides.
+    #[test]
+    fn a_queued_signal_and_its_dedupe_key_restore_to_the_same_follow_up() {
+        let mut uninterrupted = Runtime::new();
+        uninterrupted.submit(&signal_config(8, None));
+        let started = uninterrupted.submit(&agent_start("in-start", 1_700_000_001_000));
+        uninterrupted.submit(&signal_delivery(
+            "in-sig-1",
+            1_700_000_002_000,
+            "delivery-a",
+            1,
+            LogicalSignal {
+                payload: super::super::scalar::BoundedJson::new(json!({
+                    "job": "nightly-index"
+                }))
+                .unwrap(),
+                dedupe_key: Some("nightly-index".to_string()),
+                ..logical_signal("sig-nightly", SignalUrgency::Normal)
+            },
+        ));
+
+        let checkpoint = uninterrupted.checkpoint().decode().expect("verifies");
+        let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
+
+        let duplicate = signal_delivery(
+            "in-sig-2",
+            1_700_000_003_000,
+            "delivery-b",
+            2,
+            LogicalSignal {
+                payload: super::super::scalar::BoundedJson::new(json!({
+                    "job": "nightly-index"
+                }))
+                .unwrap(),
+                dedupe_key: Some("nightly-index".to_string()),
+                ..logical_signal("sig-nightly", SignalUrgency::Normal)
+            },
+        );
+        assert_eq!(
+            restored.submit(&duplicate),
+            uninterrupted.submit(&duplicate),
+            "the restored router remembers the business dedupe key",
+        );
+
+        let provider = effect_id(started.step_seq);
+        let answer = provider_answer(
+            "in-answer",
+            1_700_000_004_000,
+            &provider,
+            "the first request completed",
+        );
+        assert_eq!(
+            restored.submit(&answer),
+            uninterrupted.submit(&answer),
+            "the queued payload produces the same follow-up provider request",
+        );
+        assert_eq!(surface(&restored), surface(&uninterrupted));
+    }
+
+    /// Task 16b · a completed child remains the same process fact after restore: its role,
+    /// isolation, context inheritance, capability ceiling and join result are not inferred anew.
+    #[test]
+    fn a_subagent_process_and_join_result_restore_without_permission_drift() {
+        let mut spec = two_node_spec();
+        spec.nodes[0].run_spec = Some(LogicalAgentSpec {
+            role: Some(WireRole::Verify),
+            isolation: Some(WireIsolation::ReadOnly),
+            ..LogicalAgentSpec::new("verify the collected sources")
+        });
+
+        let mut uninterrupted = Runtime::new();
+        uninterrupted.submit(&syscall_config());
+        let started = uninterrupted.submit(&workflow_start("in-start", 1_700_000_001_000, spec));
+        uninterrupted.submit(&spawned(
+            "in-ack-1",
+            1_700_000_002_000,
+            &effect_id(started.step_seq),
+            &["wf-node0"],
+        ));
+        let completed = uninterrupted.submit(&child_done(
+            "in-done-1",
+            1_700_000_003_000,
+            "wf-node0",
+            "sources verified",
+        ));
+
+        let checkpoint = uninterrupted.checkpoint().decode().expect("verifies");
+        let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
+        let original_task = uninterrupted
+            .driver
+            .project_logical_state()
+            .scheduler
+            .tasks
+            .into_iter()
+            .find(|task| task.task_id.as_str() == "wf-node0")
+            .expect("the completed child remains projected");
+        let restored_task = restored
+            .driver
+            .project_logical_state()
+            .scheduler
+            .tasks
+            .into_iter()
+            .find(|task| task.task_id.as_str() == "wf-node0")
+            .expect("the restored child remains projected");
+        assert_eq!(restored_task, original_task);
+        let process = restored_task.process.expect("it is still a child process");
+        assert_eq!(process.role, "verify");
+        assert_eq!(process.isolation, "read_only");
+        assert_eq!(process.context_inheritance, "none");
+        assert!(
+            process.join_result.is_some(),
+            "the join result is source state"
+        );
+
+        let next_spawn = effect_id(completed.step_seq);
+        let ack = spawned("in-ack-2", 1_700_000_004_000, &next_spawn, &["wf-node1"]);
+        assert_eq!(
+            restored.submit(&ack),
+            uninterrupted.submit(&ack),
+            "the restored process table authorizes the same next transition",
+        );
+        assert_eq!(surface(&restored), surface(&uninterrupted));
+    }
+
+    #[test]
+    fn a_pending_subagent_preemption_restores_from_the_transition_effect() {
+        let (mut uninterrupted, _) = workflow_with_live_child();
+        let requested = uninterrupted.submit(&signal_delivery(
+            "in-sig-critical",
+            1_700_000_003_000,
+            "delivery-critical",
+            1,
+            logical_signal("sig-critical", SignalUrgency::Critical),
+        ));
+        let checkpoint = uninterrupted.checkpoint().decode().expect("verifies");
+        let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
+
+        let resolved = resolved(
+            "in-preempted",
+            1_700_000_004_000,
+            &effect_id(requested.step_seq),
+            EffectSuccess::TasksPreempted(super::super::effect::TasksPreemptedSuccess {
+                attempts: vec![super::super::effect::TaskPreemptOutcome {
+                    task_id: TaskId::new("wf-node0").unwrap(),
+                    attempt_id: WireAttemptId::new("wf-node0:attempt:1").unwrap(),
+                    outcome: super::super::effect::TaskPreemptStatus::Preempted(
+                        super::super::effect::TaskPreempted {},
+                    ),
+                }],
+            }),
+        );
+        assert_eq!(
+            restored.submit(&resolved),
+            uninterrupted.submit(&resolved),
+            "the transition-owned preempt intent remains resolvable after restore",
+        );
+        assert_eq!(surface(&restored), surface(&uninterrupted));
+    }
+
+    /// Task 16b · a `PagedOut` handle restored from a checkpoint projects the archived tool body
+    /// exactly as the uninterrupted renderer does on the next provider call.
+    #[test]
+    fn a_paged_out_result_restores_to_the_same_rendered_provider_context() {
+        let mut uninterrupted = Runtime::new();
+        uninterrupted.submit(&syscall_config());
+        let started = uninterrupted.submit(&agent_start("in-start", 1_700_000_001_000));
+        let archived_body = "ARCHIVED TOOL OUTPUT ".repeat(300);
+        {
+            let engine = uninterrupted
+                .driver
+                .engine
+                .as_mut()
+                .expect("the configured agent has an engine");
+            let mut assistant = Message::assistant("I checked the archive.");
+            assistant.tool_calls = vec![crate::types::message::ToolCall {
+                id: "call-archived".into(),
+                name: "search".into(),
+                arguments: json!({"q": "archived evidence"}),
+            }];
+            engine.ctx.push_history(assistant, 8);
+            engine.ctx.push_history(
+                Message::tool(vec![ContentPart::ToolResult {
+                    call_id: "call-archived".into(),
+                    output: archived_body,
+                    is_error: false,
+                }]),
+                1_200,
+            );
+            let handle_id = engine
+                .ctx
+                .handles
+                .all()
+                .iter()
+                .find(|handle| handle.source.as_deref() == Some("call-archived"))
+                .expect("the tool result is addressable")
+                .id;
+            engine
+                .ctx
+                .handles
+                .get_mut(handle_id)
+                .expect("the handle remains live")
+                .residency = Residency::PagedOut {
+                payload_ref: "payload:checkpoint-archive".to_string(),
+                digest: format!("sha256:{}", "1".repeat(64)),
+            };
+        }
+        let checkpoint = uninterrupted.checkpoint().decode().expect("verifies");
+        let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
+        assert_eq!(
+            serde_json::to_value(
+                &restored
+                    .driver
+                    .engine()
+                    .expect("restored engine")
+                    .ctx
+                    .render()
+                    .turns
+            )
+            .unwrap(),
+            serde_json::to_value(
+                &uninterrupted
+                    .driver
+                    .engine()
+                    .expect("uninterrupted engine")
+                    .ctx
+                    .render()
+                    .turns
+            )
+            .unwrap(),
+            "the restored PagedOut preview itself matches before either run advances",
+        );
+
+        let acted = provider_result(
+            "in-acted",
+            1_700_000_002_000,
+            &effect_id(started.step_seq),
+            vec![tool_call(
+                "call-after-page-out",
+                "search",
+                json!({
+                    "q": "fresh evidence"
+                }),
+            )],
+        );
+        let uninterrupted_tools = uninterrupted.submit(&acted);
+        let restored_tools = restored.submit(&acted);
+        assert_eq!(restored_tools, uninterrupted_tools);
+
+        let results = tools_resolved(
+            "in-results",
+            1_700_000_003_000,
+            &effect_id(uninterrupted_tools.step_seq),
+            &[("call-after-page-out", "fresh evidence found", false)],
+        );
+        let uninterrupted_provider = uninterrupted.submit(&results);
+        let restored_provider = restored.submit(&results);
+        assert_eq!(
+            restored_provider, uninterrupted_provider,
+            "the post-restore renderer emits the same provider context with a PagedOut preview",
+        );
+        assert_eq!(surface(&restored), surface(&uninterrupted));
     }
 
     /// **Verification 1 (full-state form)** · an uninterrupted run and a restored one are

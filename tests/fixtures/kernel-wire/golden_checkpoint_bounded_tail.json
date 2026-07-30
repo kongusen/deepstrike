@@ -1,16 +1,17 @@
 {
-  "base_state_digest": "sha256:7bb9a2cea502246741a6b173d94184a77781715054fae602b5291ea44380abc7",
+  "base_state_digest": "sha256:a20e21a8338d40dc57b642876b8f4706ebfb8d32e59d68b8c4ba7921e94116ab",
   "checkpoint": {
     "abi_version": 3,
     "base_record_digest": "sha256:012440b11426553aaf9699ccc74c18643b4da00adb52df41fc48d201aa19fcc0",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:1f1b0dc1979e46319f0f1f3de0e3f255ae824d5faecf3817c20e948daaec6a11",
+    "checkpoint_digest": "sha256:a9858233d809094b7d0dd0d475067559ad720a0d090090ffc162bc25aa54be79",
     "checkpoint_version": 1,
     "covered_transaction_head_digest": "sha256:c8ee5d4e93f72d9c2a122787a490ca5a8bfead0f4eb4d2e06d8bf66d30da779f",
     "genesis_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
+        "frozen_history_len": 0,
         "handles": [],
         "history_len": 1,
         "knowledge": [],
@@ -56,16 +57,17 @@
       "scheduler": {
         "attempts": [],
         "milestone": null,
+        "queued_signals": [],
         "rounds_completed": 0,
-        "signal_queue_depth": 0,
+        "signal_dedupe_keys": [],
         "started_at_ms": "1700000001000",
         "subagents_spawned": 0,
         "tasks": [
           {
             "capability_ids": [],
-            "is_subagent": false,
             "lifecycle": "running",
             "parent_task_id": null,
+            "process": null,
             "task_id": "root",
             "termination": null,
             "tokens_used": "0",
@@ -497,7 +499,7 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:7bb9a2cea502246741a6b173d94184a77781715054fae602b5291ea44380abc7",
+    "state_digest": "sha256:a20e21a8338d40dc57b642876b8f4706ebfb8d32e59d68b8c4ba7921e94116ab",
     "tail_digest": "sha256:bd1792c71da6b755da60eacf66fe56916caf25294ef392108e7a960ca19b1719",
     "tail_inputs": [
       {

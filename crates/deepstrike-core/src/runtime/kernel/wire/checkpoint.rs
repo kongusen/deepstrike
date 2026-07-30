@@ -39,10 +39,10 @@ use super::effect::{Digest, KernelEffect, LaunchToken, wire_opaque_ref};
 use super::envelope::{AbiRevision, OperationLifecycle};
 use super::fault::{KernelFault, KernelFaultCode};
 use super::record::{NormalizedInput, RecordError, canonical_bytes, canonical_digest};
-use super::root::{ExecutionFocus, RootKind};
+use super::root::{ExecutionFocus, LogicalAgentSpec, LogicalTask, RootKind};
 use super::scalar::{
-    AttemptId, CanonicalBytes, EffectId, InputId, MemoryBindingId, NodeId, OperationId,
-    SCALAR_ERROR_MARKER, TaskId, WireScalarError, WireU64, WorkflowId,
+    AttemptId, BoundedJson, CanonicalBytes, EffectId, InputId, MemoryBindingId, NodeId,
+    OperationId, SCALAR_ERROR_MARKER, SignalId, TaskId, WireScalarError, WireU64, WorkflowId,
 };
 use super::syscall::MemoryKind;
 use super::terminal::KernelTerminal;
@@ -418,7 +418,7 @@ pub struct AuthoredMemoryQueryState {
 }
 
 /// §12.1 · the P2 plane: task control blocks and their attempts, budgets and waits, the workflow
-/// graph, signal queue depth and the milestone cascade.
+/// graph, queued signals plus dedupe memory, and the milestone cascade.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchedulerStateV1 {
@@ -445,7 +445,11 @@ pub struct SchedulerStateV1 {
     pub attempts: Vec<TaskAttemptState>,
     #[serde(default)]
     pub workflow: Option<WorkflowGraphState>,
-    pub signal_queue_depth: u32,
+    #[serde(default)]
+    pub queued_signals: Vec<QueuedSignalState>,
+    /// Router dedupe keys in eviction order, including keys for already-dispatched signals.
+    #[serde(default)]
+    pub signal_dedupe_keys: Vec<String>,
     #[serde(default)]
     pub milestone: Option<MilestoneState>,
 }
@@ -476,11 +480,22 @@ pub struct TaskControlState {
     pub waiting_on: Vec<TaskId>,
     #[serde(default)]
     pub capability_ids: Vec<String>,
-    /// Whether this task carries sub-agent process identity — the fact `subagents_spawned` counts.
+    /// Sub-agent process identity and join state. `None` only for the root task.
     #[serde(default)]
-    pub is_subagent: bool,
+    pub process: Option<ChildProcessState>,
     pub tokens_used: WireU64,
     pub turns_used: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChildProcessState {
+    pub role: String,
+    pub isolation: String,
+    pub context_inheritance: String,
+    /// Present once the child has joined; the task lifecycle alone does not reproduce its output.
+    #[serde(default)]
+    pub join_result: Option<BoundedJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -494,11 +509,58 @@ pub struct TaskAttemptState {
 #[serde(deny_unknown_fields)]
 pub struct WorkflowGraphState {
     pub workflow_id: WorkflowId,
-    /// Wire node identity by internal DAG index — the mapping that keeps a `SpawnTasks` effect
-    /// nameable by the host after a restore.
+    /// The complete, index-ordered DAG and its runtime state. The semantic scheduler rebuilds its
+    /// private reverse edges, ready heap and agent lookup from this projection during restore.
     #[serde(default)]
-    pub node_ids: Vec<NodeId>,
-    pub node_count: u32,
+    pub nodes: Vec<WorkflowNodeState>,
+}
+
+/// One workflow node as source state rather than a snapshot of `TaskGraph` internals.
+///
+/// `kind` is explicit even though the canonical ABI currently admits only `spawn`: a checkpoint
+/// must fail closed if a future producer writes a control-flow kind this revision cannot rebuild.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowNodeState {
+    pub node_id: NodeId,
+    pub task: LogicalTask,
+    #[serde(default)]
+    pub depends_on: Vec<NodeId>,
+    #[serde(default)]
+    pub run_spec: Option<LogicalAgentSpec>,
+    pub kind: String,
+    pub status: String,
+    /// The deterministic child identity while this node is running.
+    #[serde(default)]
+    pub active_agent_id: Option<String>,
+    #[serde(default)]
+    pub iterations_completed: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueuedSignalState {
+    pub signal_id: SignalId,
+    pub source: String,
+    pub signal_type: String,
+    pub urgency: String,
+    pub summary: String,
+    #[serde(default)]
+    pub payload: BoundedJson,
+    #[serde(default)]
+    pub dedupe_key: Option<String>,
+    #[serde(default)]
+    pub deadline_ms: Option<WireU64>,
+    #[serde(default)]
+    pub coalesce_key: Option<String>,
+    pub coalesced_count: u32,
+    #[serde(default)]
+    pub recipient: Option<String>,
+    pub timestamp_ms: WireU64,
+    pub deadline_escalated: bool,
+    /// Every business key represented by this queue entry after coalescing.
+    #[serde(default)]
+    pub dedupe_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -564,6 +626,9 @@ pub struct ContextVmStateV1 {
     pub task_state: LogicalTaskState,
     pub partition_tokens: PartitionTokenState,
     pub history_len: u32,
+    /// Message-count boundary projected as `frozen_prefix_len` on future provider effects.
+    #[serde(default)]
+    pub frozen_history_len: u32,
     pub last_activity_ms: WireU64,
     #[serde(default)]
     pub last_compact_ms: Option<WireU64>,

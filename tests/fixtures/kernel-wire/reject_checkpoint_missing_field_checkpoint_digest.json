@@ -9,6 +9,7 @@
     "logical_state": {
       "context_vm": {
         "active_skills": [],
+        "frozen_history_len": 0,
         "handles": [],
         "history_len": 0,
         "knowledge": [],
@@ -41,8 +42,9 @@
       "scheduler": {
         "attempts": [],
         "milestone": null,
+        "queued_signals": [],
         "rounds_completed": 0,
-        "signal_queue_depth": 0,
+        "signal_dedupe_keys": [],
         "started_at_ms": null,
         "subagents_spawned": 0,
         "tasks": [],
@@ -193,7 +195,7 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:1c2eefe3072539b22b906a7cd96390b67a8a4ec54382289e70a59bdef992ef86",
+    "state_digest": "sha256:5646d52ecbb019ff38e91be1aa8e33000183198fdac45449446e942fcec3ee9d",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"

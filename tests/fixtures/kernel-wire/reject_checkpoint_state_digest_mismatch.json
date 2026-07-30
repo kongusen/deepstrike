@@ -3,13 +3,14 @@
     "abi_version": 3,
     "base_record_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:7c425119d3b2226cd019ec110ef2f9b74657a39212438a44d6b4970cb560eb22",
+    "checkpoint_digest": "sha256:a1cc7103d19159011a7dac73cb5714942d11349014bd96aa8d45cacd906a82c4",
     "checkpoint_version": 1,
     "covered_transaction_head_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
+        "frozen_history_len": 0,
         "handles": [],
         "history_len": 0,
         "knowledge": [],
@@ -42,8 +43,9 @@
       "scheduler": {
         "attempts": [],
         "milestone": null,
+        "queued_signals": [],
         "rounds_completed": 0,
-        "signal_queue_depth": 0,
+        "signal_dedupe_keys": [],
         "started_at_ms": null,
         "subagents_spawned": 0,
         "tasks": [],

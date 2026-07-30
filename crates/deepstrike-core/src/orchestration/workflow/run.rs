@@ -302,6 +302,19 @@ pub struct WorkflowRun {
     judge_matches: HashMap<usize, JudgeMatch>,
 }
 
+/// Semantic workflow-node state used by logical checkpoint projection.
+///
+/// This is deliberately not serializable and exposes none of `TaskGraph`'s private indexes. The
+/// checkpoint layer maps it onto its own stable DTO; restore rebuilds the indexes from this state.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkflowRuntimeNodeState {
+    pub node: WorkflowNode,
+    pub status: TaskStatus,
+    pub result: Option<LoopResult>,
+    pub active_agent_id: Option<String>,
+    pub iterations_completed: usize,
+}
+
 impl WorkflowRun {
     /// Build from a spec. Validates dependency indices + acyclicity (reuses `WorkflowSpec`).
     pub fn new(spec: &WorkflowSpec) -> Result<Self> {
@@ -317,6 +330,45 @@ impl WorkflowRun {
         };
         run.refresh_scheduling();
         run.resolve_dependency_outcomes();
+        Ok(run)
+    }
+
+    /// Rebuild an active run from the semantic state carried by a logical checkpoint.
+    pub(crate) fn restore_from_checkpoint(
+        spec: &WorkflowSpec,
+        states: &[WorkflowRuntimeNodeState],
+    ) -> Result<Self> {
+        let mut run = Self::new(spec)?;
+        let graph_states: Vec<(TaskStatus, Option<LoopResult>)> = states
+            .iter()
+            .map(|state| (state.status, state.result.clone()))
+            .collect();
+        run.graph
+            .restore_runtime_state(&graph_states)
+            .map_err(DeepStrikeError::InvalidConfig)?;
+
+        for (node, state) in states.iter().enumerate() {
+            if state.iterations_completed > 0 {
+                run.iter_counts.insert(node, state.iterations_completed);
+            }
+            match (state.status, state.active_agent_id.as_deref()) {
+                (TaskStatus::Running, Some(agent_id)) => {
+                    run.node_of_agent.insert(agent_id.to_string(), node);
+                }
+                (TaskStatus::Running, None) => {
+                    return Err(DeepStrikeError::InvalidConfig(format!(
+                        "running workflow node {node} carries no active agent id"
+                    )));
+                }
+                (_, Some(agent_id)) => {
+                    return Err(DeepStrikeError::InvalidConfig(format!(
+                        "non-running workflow node {node} carries active agent id {agent_id:?}"
+                    )));
+                }
+                (_, None) => {}
+            }
+        }
+        run.refresh_scheduling();
         Ok(run)
     }
 
@@ -1267,6 +1319,29 @@ impl WorkflowRun {
     /// Total node count.
     pub fn len(&self) -> usize {
         self.graph.len()
+    }
+
+    /// Project the active DAG without exposing any private graph indexes.
+    pub(crate) fn checkpoint_nodes(&self) -> Vec<WorkflowRuntimeNodeState> {
+        (0..self.graph.len())
+            .filter_map(|node| {
+                let graph_node = self.graph.get(node)?;
+                let active_agent_id = (graph_node.status == TaskStatus::Running)
+                    .then(|| {
+                        self.node_of_agent.iter().find_map(|(agent_id, &owner)| {
+                            (owner == node).then(|| agent_id.clone())
+                        })
+                    })
+                    .flatten();
+                Some(WorkflowRuntimeNodeState {
+                    node: self.nodes[node].clone(),
+                    status: graph_node.status,
+                    result: graph_node.result.clone(),
+                    active_agent_id,
+                    iterations_completed: self.iter_counts.get(&node).copied().unwrap_or(0),
+                })
+            })
+            .collect()
     }
 }
 

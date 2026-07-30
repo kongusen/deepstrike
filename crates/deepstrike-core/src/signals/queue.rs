@@ -6,12 +6,20 @@ use compact_str::CompactString;
 use crate::types::signal::{RuntimeSignal, Urgency};
 
 /// Wrapper for priority ordering: higher urgency first, then older timestamp first.
+#[derive(Clone)]
 struct PrioritizedSignal {
     urgency: Urgency,
     timestamp_ms: u64,
     deadline_escalated: bool,
     dedupe_keys: Vec<CompactString>,
     signal: RuntimeSignal,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct QueuedSignalRuntimeState {
+    pub signal: RuntimeSignal,
+    pub deadline_escalated: bool,
+    pub dedupe_keys: Vec<CompactString>,
 }
 
 impl PartialEq for PrioritizedSignal {
@@ -229,6 +237,51 @@ impl SignalQueue {
 
     pub(super) fn len(&self) -> usize {
         self.heap.len()
+    }
+
+    pub(super) fn checkpoint_entries(&self) -> Vec<QueuedSignalRuntimeState> {
+        let mut heap = self.heap.clone();
+        let mut entries = Vec::with_capacity(heap.len());
+        while let Some(queued) = heap.pop() {
+            entries.push(QueuedSignalRuntimeState {
+                signal: queued.signal,
+                deadline_escalated: queued.deadline_escalated,
+                dedupe_keys: queued.dedupe_keys,
+            });
+        }
+        entries
+    }
+
+    pub(super) fn restore_entries(
+        &mut self,
+        entries: Vec<QueuedSignalRuntimeState>,
+    ) -> Result<(), String> {
+        if entries.len() > self.max_size {
+            return Err(format!(
+                "checkpoint carries {} queued signals for capacity {}",
+                entries.len(),
+                self.max_size
+            ));
+        }
+        let mut ids = std::collections::HashSet::with_capacity(entries.len());
+        let mut heap = BinaryHeap::with_capacity(entries.len());
+        for entry in entries {
+            if !ids.insert(entry.signal.id.clone()) {
+                return Err(format!(
+                    "checkpoint carries duplicate queued signal id {:?}",
+                    entry.signal.id
+                ));
+            }
+            heap.push(PrioritizedSignal {
+                urgency: entry.signal.urgency,
+                timestamp_ms: entry.signal.timestamp_ms,
+                deadline_escalated: entry.deadline_escalated,
+                dedupe_keys: entry.dedupe_keys,
+                signal: entry.signal,
+            });
+        }
+        self.heap = heap;
+        Ok(())
     }
 }
 

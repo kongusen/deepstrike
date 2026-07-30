@@ -125,8 +125,9 @@ pub struct ContextManager {
     /// P1-E: history length (message count) as of the last compaction/renewal. Messages below this
     /// index are the **frozen prefix** — byte-stable until the next compaction — so the renderer can
     /// hand providers a `frozen_prefix_len` for a long-lived deep cache breakpoint. 0 before any
-    /// compaction (no frozen region yet). Not snapshotted: on resume it resets to 0 and rebuilds at
-    /// the next compaction (graceful — only the deep-cache durability lapses, never correctness).
+    /// compaction (no frozen region yet). The canonical logical checkpoint projects this boundary:
+    /// it is part of the next provider effect (`frozen_prefix_len`) and therefore must survive a
+    /// restore even though it does not change model-visible text.
     frozen_history_len: usize,
 
     /// K1: boundary-sweep results awaiting drain into `KnowledgeSwept` observations. Not
@@ -560,6 +561,18 @@ impl ContextManager {
     /// colliding with one of them.
     pub fn restore_next_handle_id(&mut self, next: HandleId) {
         self.next_handle_id = next;
+    }
+
+    pub fn frozen_history_len(&self) -> usize {
+        self.frozen_history_len
+    }
+
+    pub fn restore_frozen_history_len(&mut self, len: usize) -> bool {
+        if len > self.partitions.history.messages.len() {
+            return false;
+        }
+        self.frozen_history_len = len;
+        true
     }
 
     /// Push content into the Knowledge slot (memory retrievals, skill defs, artifacts).
