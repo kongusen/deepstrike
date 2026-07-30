@@ -23,6 +23,26 @@ import {
 import { rebuildKernelRuntime } from "./kernel-rebuild.js"
 
 export const KERNEL_ABI_VERSION = 2
+const CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts:v1]]"
+
+export function encodeCanonicalContentParts(parts: unknown[]): string {
+  return `${CANONICAL_CONTENT_PARTS_PREFIX}${Buffer.from(JSON.stringify(parts)).toString("base64url")}`
+}
+
+function decodeCanonicalContentParts(content: string): Array<Record<string, unknown>> | undefined {
+  if (!content.startsWith(CANONICAL_CONTENT_PARTS_PREFIX)) return undefined
+  try {
+    const decoded = JSON.parse(
+      Buffer.from(content.slice(CANONICAL_CONTENT_PARTS_PREFIX.length), "base64url").toString("utf8"),
+    ) as unknown
+    return Array.isArray(decoded)
+      ? decoded.filter((part): part is Record<string, unknown> =>
+          Boolean(part) && typeof part === "object")
+      : undefined
+  } catch {
+    return undefined
+  }
+}
 
 export interface KernelRuntimeHandle {
   step(inputJson: string): string
@@ -118,6 +138,7 @@ export interface KernelLoopResult {
   termination: string
   turnsUsed: number
   totalTokensUsed: number
+  finalMessage?: Message
   /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */
   paceDecision?: PaceDecision
 }
@@ -137,8 +158,19 @@ export type KernelRunnerAction =
       effectId: string
       requests: Array<{ callId: string; tool: string; arguments: string; reason: string }>
     }
-  | { kind: "spawn_workflow"; effectId: string; nodes: Array<Record<string, unknown>>; budget?: Record<string, unknown> }
-  | { kind: "preempt_sub_agents"; effectId: string; agentIds: string[]; reason: string }
+  | {
+      kind: "spawn_workflow"
+      effectId: string
+      nodes: Array<Record<string, unknown>>
+      budget?: Record<string, unknown>
+    }
+  | {
+      kind: "preempt_sub_agents"
+      effectId: string
+      agentIds: string[]
+      attempts?: Array<{ task_id: string; attempt_id: string }>
+      reason: string
+    }
   | { kind: "persist_memory"; effectId: string; memory: Record<string, unknown> }
   | { kind: "query_memory"; effectId: string; query: Record<string, unknown>; requestedK: number }
   | {
@@ -153,12 +185,20 @@ export type KernelRunnerAction =
   | {
       kind: "archive_page_out"
       effectId: string
-      turn: number
-      action: string
+      turn?: number
+      action?: string
       summary?: string
-      archived: Message[]
-      tier: string
+      archived?: Message[]
+      tier?: string
+      handleId?: string
+      payload?: {
+        content: string
+        digest: string
+        original_size: string
+        preview?: string
+      }
     }
+  | { kind: "load_payload"; effectId: string; handleId: string; payloadRef: string }
   | {
       kind: "evaluate_milestone"
       effectId: string
@@ -199,6 +239,7 @@ export interface KernelObservation {
   // for `tool_gated` (governance AskUser) — consumers narrow by `kind`.
   reason?: RollbackReason | string
   agent_id?: string
+  parent_task_id?: string
   parent_session_id?: string
   role?: string
   isolation?: string
@@ -450,11 +491,20 @@ export function entropySampleFromObservation(obs: KernelObservation): EntropySam
   }
 }
 
-function kernelMessageToSdk(raw: Record<string, unknown>): Message {
+export function kernelMessageToSdk(raw: Record<string, unknown>): Message {
   const content = raw.content
+  const canonicalParts = typeof content === "string"
+    ? decodeCanonicalContentParts(content)
+    : undefined
+  const structuredContent = canonicalParts ?? (Array.isArray(content) ? content : undefined)
   const message: Message = {
     role: raw.role as Message["role"],
-    content: typeof content === "string"
+    content: canonicalParts
+      ? canonicalParts
+          .filter(part => part.type === "text")
+          .map(part => String(part.text ?? ""))
+          .join("")
+      : typeof content === "string"
       ? content
       : Array.isArray(content)
         ? content
@@ -465,16 +515,16 @@ function kernelMessageToSdk(raw: Record<string, unknown>): Message {
             .join("")
         : "",
     toolCalls: ((raw.tool_calls as Array<Record<string, unknown>>) ?? []).map(tc => ({
-      id: String(tc.id ?? ""),
+      id: String(tc.call_id ?? tc.id ?? ""),
       name: String(tc.name ?? ""),
       arguments: JSON.stringify(tc.arguments ?? {}),
     })),
   }
-  if (typeof raw.token_count === "number") {
-    message.tokenCount = raw.token_count
+  if (typeof (raw.tokens ?? raw.token_count) === "number") {
+    message.tokenCount = Number(raw.tokens ?? raw.token_count)
   }
-  if (Array.isArray(content)) {
-    message.contentParts = content
+  if (structuredContent) {
+    message.contentParts = structuredContent
       .filter((part): part is Record<string, unknown> => typeof part === "object" && part !== null)
       .map(part => {
         if (part.type === "text") {
@@ -506,11 +556,18 @@ function kernelMessageToSdk(raw: Record<string, unknown>): Message {
         }
         return { type: "text", text: "" }
       })
+  } else if (typeof raw.tool_call_id === "string") {
+    message.contentParts = [{
+      type: "tool_result",
+      callId: raw.tool_call_id,
+      output: message.content,
+      isError: false,
+    }]
   }
   return message
 }
 
-function renderedContextToSdk(raw: Record<string, unknown>): RenderedContext {
+export function renderedContextToSdk(raw: Record<string, unknown>): RenderedContext {
   const rawStateTurn = (raw.state_turn ?? raw.stateTurn) as Record<string, unknown> | undefined
   const frozenLen = (raw.frozen_prefix_len ?? raw.frozenPrefixLen) as number | undefined
   const ctx: RenderedContext = {

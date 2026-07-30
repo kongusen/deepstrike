@@ -180,6 +180,12 @@ export type SessionEvent =
       node_outcomes: import("../types/agent.js").KernelWorkflowNodeOutcome[]
       total_nodes: number
     }
+  | {
+      kind: "kernel_observation"
+      turn: number
+      observation_kind: string
+      raw: Record<string, unknown>
+    }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
   | { kind: "summary_upgraded"; compressed_seq: number; summary: string }
   // L1 (RunGroup): group-ledger events, appended under a group-anchor key (= the group id) so the

@@ -15,7 +15,6 @@
  * RecordingStore captures every reservation (mirrors run-group-budget.test.ts) so the child's
  * empty grant is directly assertable.
  */
-import { getKernel } from "../src/kernel.js"
 import {
   GroupBudgetScope,
   InMemoryGroupBudgetStore,
@@ -26,12 +25,10 @@ import {
   type GroupBudgetRequest,
   type GroupBudgetReservation,
   type RunGroup,
-  type StreamEvent,
 } from "../src/index.js"
 import type { LLMProvider, Message, RenderedContext, ToolSchema } from "../src/types.js"
 import { tool } from "../src/tools/index.js"
-import { capabilityCommandMount, capabilityTool } from "../src/runtime/kernel-step.js"
-import { durableStartKernelV2, durableStepKernelV2 } from "./helpers/kernel-v2.js"
+import { spawnStandalone } from "../src/runtime/sub-agent-orchestrator.js"
 
 /** Records the tool names it is handed on every LLM call, then completes the turn with plain text. */
 class RecordingProvider implements LLMProvider {
@@ -90,23 +87,7 @@ describe("nested vehicle group budget (SubAgentOrchestrator child)", () => {
       agentId: "parent",
     })
 
-    // Inject an active parent kernel (spawnSubAgent requires a live parent run). Mount `noop` as a
-    // capability so the kernel-computed spawn manifest can carry it through the capability filter —
-    // set_tools alone populates sm.tools, not the ctx.capabilities the spawn manifest reads.
-    const runtime = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    await durableStartKernelV2(runtime, sessionLog, "parent")
-    await durableStepKernelV2(
-      runtime,
-      sessionLog,
-      "parent",
-      capabilityCommandMount(capabilityTool(noopTool.schema)),
-    )
-    ;(runner as never as { activeKernel: unknown }).activeKernel = runtime
-    ;(runner as never as { currentSessionId: string }).currentSessionId = "parent"
-    ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
-
-    // (3) Spawn the child through the full kernel path. `capabilityFilter.allowedIds` gates the
-    // kernel spawn manifest's permitted_capability_ids to just `noop` (empty allow-list ⇒ deny-all).
+    // (3) Spawn the child through the canonical single-node root-workflow path.
     const spec: AgentRunSpec = {
       identity: { agentId: "worker", sessionId: "worker-child", isSubAgent: true },
       role: "implement",
@@ -114,16 +95,10 @@ describe("nested vehicle group budget (SubAgentOrchestrator child)", () => {
       goal: "do the work",
       capabilityFilter: { allowedIds: ["noop"] },
     }
-    const events: StreamEvent[] = []
-    for await (const event of runner.spawnSubAgent(spec)) events.push(event)
+    const result = await spawnStandalone(runner.hostOptions, "parent", spec)
 
-    // (a) The child completed cleanly — no error event, a terminal done with status "completed".
-    expect(events.some(e => (e as { type: string }).type === "error")).toBe(false)
-    const done = events.find(e => (e as { type: string }).type === "done") as
-      | { type: "done"; status: string }
-      | undefined
-    expect(done).toBeDefined()
-    expect(done!.status).toBe("completed")
+    // (a) The child completed cleanly.
+    expect(result.result.termination).toBe("completed")
 
     // (b) The child's FIRST LLM call still saw `noop` — the thing the zero-token grant used to strip.
     expect(provider.calls.length).toBeGreaterThan(0)

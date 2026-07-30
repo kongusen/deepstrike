@@ -452,6 +452,34 @@ pub struct SchedulerStateV1 {
     pub signal_dedupe_keys: Vec<String>,
     #[serde(default)]
     pub milestone: Option<MilestoneState>,
+    /// Session-disorder measurement and alert-gate state. These values intentionally survive a
+    /// canonical crash restore even though they do not participate in a same-process turn
+    /// rollback: otherwise the first post-restore sample forgets prior failures and rollbacks.
+    #[serde(default)]
+    pub entropy: EntropyState,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntropyState {
+    /// Oldest to newest, bounded by the kernel entropy window.
+    #[serde(default)]
+    pub window: Vec<EntropyTurnState>,
+    /// Rollbacks observed after the newest completed turn.
+    pub rollbacks_pending: u32,
+    /// Threshold watch hysteresis state.
+    pub disarmed: bool,
+    /// Most recent alert turn, retained after re-arming for cooldown enforcement.
+    #[serde(default)]
+    pub last_alert_turn: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EntropyTurnState {
+    pub errored_results: u32,
+    pub total_results: u32,
+    pub rollbacks: u32,
 }
 
 /// One task control block, projected. The lifecycle travels as its label rather than as the

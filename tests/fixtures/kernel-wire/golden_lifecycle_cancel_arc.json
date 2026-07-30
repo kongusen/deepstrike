@@ -1,7 +1,7 @@
 {
   "description": "The cancellation arc on the canonical wire (spec 7.5 / 7.7 / 11.1 · Task 12b): configure → workflow root start → spawn ack → a critical signal that preempts the running child → the host's preempt resolution → `HostControl::Cancel`, whose step is the cancelled terminal itself. Two things this chain fixes in place: the only host action a signal can cause is the preemption (its queueing/dropping/expiry are audit facts and publish nothing), and cancellation settles every downstream wait inside the same transition that commits the root terminal — §7.12 admits effects or a terminal and never both, so there is no second round trip in which the operation is neither running nor cancelled.",
   "genesis_digest": "sha256:ff471383ae00c8226e46b7ab321f3cdf1db47395abf16ac472a646510127204f",
-  "head_digest": "sha256:6f774bf0a6a89df23fc609fea2eed032a1700a12a065f8e64669c6fc1cd200a2",
+  "head_digest": "sha256:b1d793e83e8ead7ee9d71eea17ee60461a99ceba7a2be36b1101373a347958a3",
   "links": [
     {
       "envelope": {
@@ -138,8 +138,8 @@
         "input_id": "in-start",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:ff471383ae00c8226e46b7ab321f3cdf1db47395abf16ac472a646510127204f",
-        "record_digest": "sha256:3373562c5cbb2379b9c83ff175d1ee8a92091c5d6803da3eeb1df3f32ac837d6",
-        "step_digest": "sha256:5d9e20d9af4305831fbb0a00de80c33470bbe096cac0fa33119e2c58b5823406",
+        "record_digest": "sha256:515e9dd4c8c6f11e84ecef7d068ae6e80bdc2b2252e05672c59b28d6615c3291",
+        "step_digest": "sha256:1490b931340a5481f933e85c8dac85d01e3f37615539f2d93dc67ace08c4a680",
         "step_seq": "1"
       },
       "step": {
@@ -158,7 +158,8 @@
                     "launch_token": "op-driver-1:step:1:launch:wf-node0",
                     "node_id": "collect",
                     "spec": {
-                      "goal": "collect the sources"
+                      "goal": "collect the sources",
+                      "metadata": {}
                     },
                     "task_id": "wf-node0"
                   }
@@ -211,9 +212,9 @@
         "input_digest": "sha256:41d68b7f8fdb36c2930e44501e9a665497e301cbf66f166ce740f06dd52f725d",
         "input_id": "in-ack",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:3373562c5cbb2379b9c83ff175d1ee8a92091c5d6803da3eeb1df3f32ac837d6",
-        "record_digest": "sha256:2375d9b921a8b58242d39673dff7c691a9641b0aac969659f64856f7a9956bca",
-        "step_digest": "sha256:dc98bacb7dee19def54f74a57bc4af561282914d6c8c5bd5ebdb038d6bf7b895",
+        "previous_record_digest": "sha256:515e9dd4c8c6f11e84ecef7d068ae6e80bdc2b2252e05672c59b28d6615c3291",
+        "record_digest": "sha256:6e981df5456f9fe4baca37c3b061a3bc56e20cf6dfb6da40b6254615d2ff9b02",
+        "step_digest": "sha256:a4db654375bf12b5763eba593839ff9d7e892d1451d6c2214432bd1c15c282c1",
         "step_seq": "2"
       },
       "step": {
@@ -224,6 +225,49 @@
           "kind": "workflow_controller",
           "workflow_id": "op-driver-1:workflow:1"
         },
+        "observations": [
+          {
+            "agent_id": "wf-node0",
+            "context_inheritance": "none",
+            "isolation": "shared",
+            "kind": "agent_process_changed",
+            "parent_task_id": "root",
+            "role": "custom",
+            "state": "running",
+            "turn": 0
+          },
+          {
+            "budget": {
+              "nodes_max": 3,
+              "nodes_remaining": 1,
+              "nodes_used": 2,
+              "running_subagents": 1,
+              "tokens_max": 1000000,
+              "tokens_remaining": 1000000,
+              "tokens_used": 0
+            },
+            "kind": "workflow_batch_spawned",
+            "nodes": [
+              {
+                "agent_id": "wf-node0",
+                "context_inheritance": "none",
+                "goal": "collect the sources",
+                "isolation": "shared",
+                "role": "custom",
+                "trust": "trusted"
+              }
+            ],
+            "turn": 0
+          },
+          {
+            "kind": "suspended",
+            "pending_calls": [
+              "wf-node0"
+            ],
+            "reason": "workflow_batch",
+            "turn": 0
+          }
+        ],
         "root_kind": "workflow"
       }
     },
@@ -258,9 +302,9 @@
         "input_digest": "sha256:cd4d5f90cae5470ddc409700405cf12970614e17d942cda7011fb3aaf9ca59f7",
         "input_id": "in-sig",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:2375d9b921a8b58242d39673dff7c691a9641b0aac969659f64856f7a9956bca",
-        "record_digest": "sha256:164b2bbb154f599022faa022364dbfd1b665e7cb36d2e35783d868312979c801",
-        "step_digest": "sha256:2ecd88c5fa7795998796493e2b300c10d5ef86663347686431766bd8ce60bece",
+        "previous_record_digest": "sha256:6e981df5456f9fe4baca37c3b061a3bc56e20cf6dfb6da40b6254615d2ff9b02",
+        "record_digest": "sha256:0c5425816c49fa93deacfe124a5c6e44b72505c93eeccb7f81284cc201efff2d",
+        "step_digest": "sha256:adc28ba2b742488b363da46964f92e8323e973e6db0c4d9b7f189b1c90940a04",
         "step_seq": "3"
       },
       "step": {
@@ -287,6 +331,18 @@
           "kind": "workflow_controller",
           "workflow_id": "op-driver-1:workflow:1"
         },
+        "observations": [
+          {
+            "attempt": 1,
+            "delivery_id": "delivery-a",
+            "disposition": "interrupt_now",
+            "kind": "signal_delivery_disposed",
+            "operation_id": "op-driver-1",
+            "queue_depth": 0,
+            "signal_id": "sig-abort",
+            "turn": 0
+          }
+        ],
         "root_kind": "workflow"
       }
     },
@@ -325,9 +381,9 @@
         "input_digest": "sha256:9222177ab6c53791db6b0c87062572f75f4d7c08095b558239ada202842b2669",
         "input_id": "in-preempted",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:164b2bbb154f599022faa022364dbfd1b665e7cb36d2e35783d868312979c801",
-        "record_digest": "sha256:1fd418356f24fa65f50fb2e0762f9fcf60bec593e99f2ea45736a4bae05ba671",
-        "step_digest": "sha256:4c3710fd083b7e49d0122562c6c56060ee1d7242eaa63dc6abc95d082c70cb9a",
+        "previous_record_digest": "sha256:0c5425816c49fa93deacfe124a5c6e44b72505c93eeccb7f81284cc201efff2d",
+        "record_digest": "sha256:d5ea1829229e527c62e51228ccf1df51d0651f393512dfd669a73e6a07782bd5",
+        "step_digest": "sha256:772be24a010fc0d6e0e775ee0e6744b7b34fb311e5abd959e6ba3d8d8de99f90",
         "step_seq": "4"
       },
       "step": {
@@ -392,6 +448,46 @@
           "kind": "workflow_controller",
           "workflow_id": "op-driver-1:workflow:1"
         },
+        "observations": [
+          {
+            "agent_id": "wf-node0",
+            "context_inheritance": "none",
+            "isolation": "shared",
+            "kind": "agent_process_changed",
+            "parent_task_id": "root",
+            "role": "custom",
+            "state": "failed",
+            "turn": 0
+          },
+          {
+            "kind": "workflow_completed",
+            "node_outcomes": [
+              {
+                "node_id": "wf-node0",
+                "status": "failed",
+                "termination": "user_abort"
+              },
+              {
+                "node_id": "wf-node1",
+                "status": "skipped_upstream_failed"
+              }
+            ],
+            "turn": 0
+          },
+          {
+            "agent_ids": [
+              "wf-node0"
+            ],
+            "kind": "agent_preempted",
+            "reason": "sig-abort",
+            "turn": 0
+          },
+          {
+            "history_len": 0,
+            "kind": "checkpoint_taken",
+            "turn": 0
+          }
+        ],
         "root_kind": "workflow"
       }
     },
@@ -418,9 +514,9 @@
         "input_digest": "sha256:60cfefbc4075a3a5c5cc6dc8c930d9ca335e33f13d36c14c38a2072eee3c9c79",
         "input_id": "in-cancel",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:1fd418356f24fa65f50fb2e0762f9fcf60bec593e99f2ea45736a4bae05ba671",
-        "record_digest": "sha256:6f774bf0a6a89df23fc609fea2eed032a1700a12a065f8e64669c6fc1cd200a2",
-        "step_digest": "sha256:7e8194943371c81aaa02cbefbb4269c15d5f11f3667b491a86175a56839e98fb",
+        "previous_record_digest": "sha256:d5ea1829229e527c62e51228ccf1df51d0651f393512dfd669a73e6a07782bd5",
+        "record_digest": "sha256:b1d793e83e8ead7ee9d71eea17ee60461a99ceba7a2be36b1101373a347958a3",
+        "step_digest": "sha256:483ffe6de46707cc62c22bc1d004f8988eed085315b8df64163bff2b429593d9",
         "step_seq": "5"
       },
       "step": {
@@ -440,6 +536,14 @@
           "kind": "workflow_controller",
           "workflow_id": "op-driver-1:workflow:1"
         },
+        "observations": [
+          {
+            "kind": "operation_cancelled",
+            "operation_id": "op-driver-1",
+            "reason": "user",
+            "turn": 0
+          }
+        ],
         "root_kind": "workflow"
       }
     }

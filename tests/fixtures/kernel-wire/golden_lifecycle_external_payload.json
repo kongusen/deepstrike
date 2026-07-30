@@ -1,7 +1,7 @@
 {
   "description": "The §7.10 external-payload arc (Task 13): configure → agent start → a provider turn calling one host tool → an **external** tool result → the model's `read_result` page-in → the loaded body. Read the records: the persisted body appears in exactly one place on this whole chain — the `payload_loaded` outcome the host sent when the kernel asked for it. It is in no effect the kernel published and in no accepted input the kernel did not ask for, which is what §25.10 means by \"large bodies do not enter the journal\". What the kernel holds instead is the reference: an opaque `payload_ref` it never interprets, a digest it checks the restored body against, and a bounded preview that is the only part to occupy context.",
   "genesis_digest": "sha256:c9391dab55e9f610d307d2667a865cdfba36f8400777c5f379815bd4f9c81a9d",
-  "head_digest": "sha256:fabd7976baca66ff40ce0b884c223e497d555ac9463b6bb33c8b852f602df22f",
+  "head_digest": "sha256:44e443b1164fda000526aa16ecbf854db856932de250a7f56596fa398c8149be",
   "links": [
     {
       "envelope": {
@@ -123,8 +123,8 @@
         "input_id": "in-start",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:c9391dab55e9f610d307d2667a865cdfba36f8400777c5f379815bd4f9c81a9d",
-        "record_digest": "sha256:bf7f5aa84c36735919c642439f898393e237891144592dc0b99a282197e87272",
-        "step_digest": "sha256:b5d4d7d668631b5d382825c737a8f692e1a3198d720f5129f004bfb4c7b000c0",
+        "record_digest": "sha256:2fec437cf77f525e25664dbfed9cadb209ff322462d994d3965c55791720b866",
+        "step_digest": "sha256:27cc4be6cc9762669a232c95bf19ab24377abd109d6b171173224670e50f4159",
         "step_seq": "1"
       },
       "step": {
@@ -196,6 +196,13 @@
           "kind": "agent_turn",
           "task_id": "root"
         },
+        "observations": [
+          {
+            "history_len": 1,
+            "kind": "checkpoint_taken",
+            "turn": 0
+          }
+        ],
         "root_kind": "agent"
       }
     },
@@ -241,8 +248,8 @@
         "input_digest": "sha256:7ec1ff03040cc385a9c9cc3d67f7c1233a3e24cdc85abb8e6f1f0328fb0208e8",
         "input_id": "in-acted",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:bf7f5aa84c36735919c642439f898393e237891144592dc0b99a282197e87272",
-        "record_digest": "sha256:92111c897ccef37e918012082e7044fe5cb2f45bd4b49424ca8b24e72c36bae3",
+        "previous_record_digest": "sha256:2fec437cf77f525e25664dbfed9cadb209ff322462d994d3965c55791720b866",
+        "record_digest": "sha256:bbd3ea19e21e17b3051966da1c3648f94b747390273c33a679636dea79fb25d5",
         "step_digest": "sha256:fc4df7785f97d163e1d7579cd8a6d63f57eafa0b1ac102da9925500d64614b29",
         "step_seq": "2"
       },
@@ -312,9 +319,9 @@
         "input_digest": "sha256:b1af5d5870845a4e7839abf5053557a1521f0623902f6c11da5537ab57e31951",
         "input_id": "in-results",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:92111c897ccef37e918012082e7044fe5cb2f45bd4b49424ca8b24e72c36bae3",
-        "record_digest": "sha256:968c9b1f73a7796135d13b397b018556be288413b484f1490c648b468cd1ebc0",
-        "step_digest": "sha256:912891c3bd8245948ff5c18b6da2ba3dc6ac4b06bd9dff8aa753f4d114019de3",
+        "previous_record_digest": "sha256:bbd3ea19e21e17b3051966da1c3648f94b747390273c33a679636dea79fb25d5",
+        "record_digest": "sha256:390c5d883adb4494643fc1484c6ec2fae3a160ce2309f51fba3b272d88da6927",
+        "step_digest": "sha256:892b8d08fb60d750ba3cd181b4996cd80079c3677a817a977b9aaea0cb9ec0d3",
         "step_seq": "3"
       },
       "step": {
@@ -337,12 +344,22 @@
                     {
                       "content": "",
                       "role": "assistant",
-                      "tokens": 1
+                      "tokens": 1,
+                      "tool_calls": [
+                        {
+                          "arguments": {
+                            "q": "sources"
+                          },
+                          "call_id": "call-1",
+                          "name": "search"
+                        }
+                      ]
                     },
                     {
-                      "content": "",
+                      "content": "the full report body, far la…",
                       "role": "tool",
-                      "tokens": 7
+                      "tokens": 7,
+                      "tool_call_id": "call-1"
                     }
                   ]
                 },
@@ -368,6 +385,29 @@
                   },
                   {
                     "name": "search"
+                  },
+                  {
+                    "description": "Re-read the full content of a tool result that was truncated to save context (marked '[Output truncated: … call the read_result tool …]'). Pass that marker's call_id; use offset/max_bytes to page through large content.",
+                    "name": "read_result",
+                    "parameters": {
+                      "properties": {
+                        "call_id": {
+                          "type": "string"
+                        },
+                        "max_bytes": {
+                          "description": "Max bytes to return (default 4000).",
+                          "type": "integer"
+                        },
+                        "offset": {
+                          "description": "Byte offset to start from (default 0).",
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "call_id"
+                      ],
+                      "type": "object"
+                    }
                   },
                   {
                     "description": "Load a skill into your context to access specialized instructions for a task.\n\n<available_skills>\n  <skill>\n    <name>debug</name>\n    <description>debug helper</description>\n  </skill>\n</available_skills>",
@@ -396,6 +436,33 @@
           "kind": "agent_turn",
           "task_id": "root"
         },
+        "observations": [
+          {
+            "failure_rate": 0.0,
+            "kind": "entropy_sample",
+            "repeat_pressure": 0.0,
+            "rho": 0.000234375,
+            "rollbacks_in_window": 0,
+            "score": 0.000046875,
+            "score_version": 1,
+            "turn": 1,
+            "window_turns": 1
+          },
+          {
+            "history_len": 3,
+            "kind": "checkpoint_taken",
+            "turn": 1
+          },
+          {
+            "from": "resident",
+            "handle_id": "call-1",
+            "kind": "payload_residency_changed",
+            "original_size": 135,
+            "payload_ref": "payload:01J8Y2QK7C4N0V",
+            "to": "external",
+            "turn": 1
+          }
+        ],
         "root_kind": "agent"
       }
     },
@@ -441,8 +508,8 @@
         "input_digest": "sha256:e0d054b7f0dad5ba20d6c70f059386ddeca61b6beba0dc43d408f34db7bc187a",
         "input_id": "in-read",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:968c9b1f73a7796135d13b397b018556be288413b484f1490c648b468cd1ebc0",
-        "record_digest": "sha256:3019d46e2450f5b3b7358bce220de8514c6f5caa7111111ac556de3670be69eb",
+        "previous_record_digest": "sha256:390c5d883adb4494643fc1484c6ec2fae3a160ce2309f51fba3b272d88da6927",
+        "record_digest": "sha256:60300a0c2e3bad49fc016809b72092c1b08103cb13dd90a873121ff47744f430",
         "step_digest": "sha256:133a194cd855dc754907fc7174ca3da970c5c7ecfd3f86e180165afded54d338",
         "step_seq": "4"
       },
@@ -500,9 +567,9 @@
         "input_digest": "sha256:809ba3d009b10806ef390774fe832b9c78870dad70461666d3b4480b6a022966",
         "input_id": "in-loaded",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:3019d46e2450f5b3b7358bce220de8514c6f5caa7111111ac556de3670be69eb",
-        "record_digest": "sha256:fabd7976baca66ff40ce0b884c223e497d555ac9463b6bb33c8b852f602df22f",
-        "step_digest": "sha256:760d3868c523ef1a646a6927d1d4dba09bea89fbebe3c06008bfddaa8c7e7006",
+        "previous_record_digest": "sha256:60300a0c2e3bad49fc016809b72092c1b08103cb13dd90a873121ff47744f430",
+        "record_digest": "sha256:44e443b1164fda000526aa16ecbf854db856932de250a7f56596fa398c8149be",
+        "step_digest": "sha256:4dd7ffe1aad47ef6dc5950bd190e47dfd44f89591cdd9e799e5abeaa8c616ccc",
         "step_seq": "5"
       },
       "step": {
@@ -525,22 +592,42 @@
                     {
                       "content": "",
                       "role": "assistant",
-                      "tokens": 1
+                      "tokens": 1,
+                      "tool_calls": [
+                        {
+                          "arguments": {
+                            "q": "sources"
+                          },
+                          "call_id": "call-1",
+                          "name": "search"
+                        }
+                      ]
                     },
                     {
-                      "content": "",
+                      "content": "the full report body, far la…",
                       "role": "tool",
-                      "tokens": 7
+                      "tokens": 7,
+                      "tool_call_id": "call-1"
                     },
                     {
                       "content": "",
                       "role": "assistant",
-                      "tokens": 1
+                      "tokens": 1,
+                      "tool_calls": [
+                        {
+                          "arguments": {
+                            "call_id": "call-1"
+                          },
+                          "call_id": "call-2",
+                          "name": "read_result"
+                        }
+                      ]
                     },
                     {
-                      "content": "",
+                      "content": "page-in requested",
                       "role": "tool",
-                      "tokens": 4
+                      "tokens": 4,
+                      "tool_call_id": "call-2"
                     },
                     {
                       "content": "[PAYLOAD handle_id=call-1]\nthe full report body, far larger than this operation keeps resident, repeated so it clears the inline threshold by a comfortable margin",
@@ -599,6 +686,21 @@
           "kind": "agent_turn",
           "task_id": "root"
         },
+        "observations": [
+          {
+            "history_len": 6,
+            "kind": "checkpoint_taken",
+            "turn": 1
+          },
+          {
+            "from": "external",
+            "handle_id": "call-1",
+            "kind": "payload_residency_changed",
+            "original_size": 135,
+            "to": "resident",
+            "turn": 1
+          }
+        ],
         "root_kind": "agent"
       }
     }

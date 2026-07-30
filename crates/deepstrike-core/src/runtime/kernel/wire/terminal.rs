@@ -88,6 +88,27 @@ pub struct LoopResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_message: Option<ProviderMessage>,
     pub turns_used: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pace_decision: Option<PaceDecision>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaceDecision {
+    pub action: PaceAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_ms: Option<WireU64>,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coerced_from: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaceAction {
+    Continue,
+    Sleep,
+    Stop,
 }
 
 /// Why the loop stopped.
@@ -313,6 +334,7 @@ mod tests {
                     termination: TerminationReason::Completed,
                     final_message: None,
                     turns_used: 7,
+                    pace_decision: None,
                 },
                 usage: usage(),
             }),

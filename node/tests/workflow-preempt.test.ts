@@ -5,11 +5,9 @@
  * `AgentPreempted` + tears the workflow down → the matching child's `AbortSignal` fires, cancelling
  * its in-flight LLM call. Real native kernel; mock orchestrator whose child blocks until aborted.
  */
-import { getKernel } from "../src/kernel.js"
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/index.js"
 import { SignalGateway } from "../src/os/public.js"
 import type { WorkflowSpec } from "../src/index.js"
-import { durableStartKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("#2-B-ii mid-flight workflow preemption", () => {
   it("a Critical signal aborts the running node and tears the workflow down", async () => {
@@ -44,21 +42,73 @@ describe("#2-B-ii mid-flight workflow preemption", () => {
       signalSource: gateway,
     } as never)
 
-    const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    await durableStartKernelV2(rt, sessionLog, "wf-preempt")
-    ;(runner as never as { activeKernel: unknown }).activeKernel = rt
-    ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-preempt"
-    ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
-
     const spec: WorkflowSpec = { nodes: [{ task: "a long-running node", role: "implement" }] }
-    const outcome = await runner.runWorkflow(spec)
+    const outcome = await runner.runWorkflow(spec, { sessionId: "wf-preempt" })
 
     // The running node was aborted mid-flight and the workflow torn down.
     expect(orch.sawAbort).toBe(true)
     expect(outcome.nodeOutcomes).toContainEqual(expect.objectContaining({ nodeId: "wf-node0", status: "failed" }))
-    const pending = (runner as never as { pendingObservations: Array<{ kind: string; agent_ids?: string[] }> }).pendingObservations
-    const preempt = pending.find(o => o.kind === "agent_preempted")
+    const events = await sessionLog.read("wf-preempt")
+    const preempt = events.find(({ event }) =>
+      event.kind === "kernel_observation" && event.observation_kind === "agent_preempted")
     expect(preempt).toBeDefined()
-    expect(preempt?.agent_ids).toContain("wf-node0")
+    expect(preempt?.event).toEqual(expect.objectContaining({
+      raw: expect.objectContaining({ agent_ids: expect.arrayContaining(["wf-node0"]) }),
+    }))
+  })
+
+  it("interrupt() aborts a standalone workflow node through the canonical cancellation arc", async () => {
+    let childStarted!: () => void
+    const started = new Promise<void>(resolve => { childStarted = resolve })
+    const orch = {
+      sawAbort: false,
+      async run(ctx: { spec: { identity: { agentId: string } }; abortSignal?: AbortSignal }) {
+        childStarted()
+        await new Promise<void>(resolve => {
+          const signal = ctx.abortSignal
+          if (signal?.aborted) return resolve()
+          const timeout = setTimeout(resolve, 2000)
+          signal?.addEventListener("abort", () => {
+            clearTimeout(timeout)
+            resolve()
+          }, { once: true })
+        })
+        orch.sawAbort = ctx.abortSignal?.aborted ?? false
+        return {
+          agentId: ctx.spec.identity.agentId,
+          result: {
+            termination: "user_abort",
+            finalMessage: { role: "assistant", content: "aborted", toolCalls: [] },
+            turnsUsed: 0,
+            totalTokensUsed: 0,
+          },
+        }
+      },
+    }
+    const sessionLog = new InMemorySessionLog()
+    const runner = new RuntimeRunner({
+      sessionLog,
+      executionPlane: new LocalExecutionPlane(),
+      maxTokens: 8000,
+      subAgentOrchestrator: orch as never,
+    } as never)
+
+    const running = runner.runWorkflow(
+      { nodes: [{ task: "wait until the host stops this operation", role: "implement" }] },
+      { sessionId: "wf-host-interrupt" },
+    )
+    await started
+    runner.interrupt("host_shutdown")
+    const outcome = await running
+
+    expect(orch.sawAbort).toBe(true)
+    expect(outcome.nodeOutcomes).toContainEqual(expect.objectContaining({
+      nodeId: "wf-node0",
+      status: "failed",
+    }))
+    const cancellation = (await sessionLog.read("wf-host-interrupt"))
+      .map(entry => entry.event)
+      .find(event => event.kind === "operation_cancelled")
+    expect(cancellation).toMatchObject({ kind: "operation_cancelled", reason: "host_shutdown" })
   })
 })

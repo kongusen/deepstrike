@@ -4,11 +4,9 @@
  * workflow active the kernel BOOTSTRAPS the DAG in this same kernel (unified governance — one kernel,
  * one quota), then the shared driver runs it to completion. Exercises the real native ABI end-to-end.
  */
-import { getKernel } from "../src/kernel.js"
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import { submitWorkflowToKernel } from "../src/types/agent.js"
 import type { WorkflowSpec } from "../src/index.js"
-import { durableStartKernelV2, durableStepKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("submitWorkflowToKernel", () => {
   it("lowers a spec to the submit_workflow event with the parent session id", () => {
@@ -22,95 +20,18 @@ describe("submitWorkflowToKernel", () => {
   })
 })
 
-describe("bootstrapWorkflow drives an agent-authored DAG over the real kernel", () => {
-  it("bootstraps a workflow when none is active and runs every authored node to completion", async () => {
-    const ran: string[] = []
-    const orchestrator = {
-      async run(ctx: { manifest: { agent_id: string }; spec: { goal: string } }) {
-        ran.push(ctx.manifest.agent_id)
-        return {
-          agentId: ctx.manifest.agent_id,
-          result: {
-            termination: "completed",
-            finalMessage: { role: "assistant", content: "ok", toolCalls: [] },
-            turnsUsed: 1,
-            totalTokensUsed: 1,
-          },
-        }
-      },
-    }
-    const sessionLog = new InMemorySessionLog()
+describe("bootstrapWorkflow canonical cutover", () => {
+  it("rejects direct host authorship and points callers to the provider syscall", async () => {
     const runner = new RuntimeRunner({
-      sessionLog,
+      sessionLog: new InMemorySessionLog(),
       maxTokens: 8000,
-      subAgentOrchestrator: orchestrator as never,
     } as never)
-
-    // A real kernel with NO workflow loaded — the agent itself authors one via submit_workflow.
-    const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    await durableStartKernelV2(rt, sessionLog, "wf-boot")
-    ;(runner as never as { activeKernel: unknown }).activeKernel = rt
-    ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-boot"
-    ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
-
-    // Two independent nodes + one reduce dependent — a real little DAG the agent designed.
     const spec: WorkflowSpec = {
-      nodes: [
-        { task: "explore A", role: "implement" },
-        { task: "explore B", role: "implement" },
-      ],
+      nodes: [{ task: "explore A", role: "implement" }],
     }
 
-    const outcome = await runner.bootstrapWorkflow(spec)
-
-    // The authored nodes bootstrapped + ran in this same kernel (no separate child kernel).
-    expect(ran.sort()).toEqual(["wf-node0", "wf-node1"])
-    expect(outcome.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1"])
-    expect(outcome.nodeOutcomes.every(node => node.status === "completed")).toBe(true)
-  })
-
-  it("is denied when the authored spec would overgrow the workflow-node quota", async () => {
-    const ran: string[] = []
-    const orchestrator = {
-      async run(ctx: { manifest: { agent_id: string } }) {
-        ran.push(ctx.manifest.agent_id)
-        return {
-          agentId: ctx.manifest.agent_id,
-          result: { termination: "completed", finalMessage: { role: "assistant", content: "ok", toolCalls: [] }, turnsUsed: 1, totalTokensUsed: 1 },
-        }
-      },
-    }
-    const sessionLog = new InMemorySessionLog()
-    const runner = new RuntimeRunner({
-      sessionLog,
-      maxTokens: 8000,
-      subAgentOrchestrator: orchestrator as never,
-    } as never)
-
-    const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    await durableStartKernelV2(rt, sessionLog, "wf-boot-deny")
-    await durableStepKernelV2(rt, sessionLog, "wf-boot-deny", {
-      kind: "set_resource_quota",
-      quota: { max_workflow_nodes: 2 },
-    })
-    ;(runner as never as { activeKernel: unknown }).activeKernel = rt
-    ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-boot-deny"
-    ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
-
-    // 3 nodes > max(2) → the kernel denies the bootstrap; nothing runs.
-    const spec: WorkflowSpec = {
-      nodes: [
-        { task: "a", role: "implement" },
-        { task: "b", role: "implement" },
-        { task: "c", role: "implement" },
-      ],
-    }
-    const outcome = await runner.bootstrapWorkflow(spec)
-    expect(ran).toEqual([])
-    expect(outcome.nodeOutcomes).toEqual([])
-    expect(outcome.rejection).toMatchObject({
-      operation: "start_workflow",
-      reason: expect.stringContaining("would grow workflow"),
-    })
+    await expect(runner.bootstrapWorkflow(spec)).rejects.toThrow(
+      /canonical ABI v3.*provider syscall/,
+    )
   })
 })

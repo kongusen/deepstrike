@@ -28,7 +28,7 @@ class ResumeAwareProvider implements LLMProvider {
 }
 
 describe("RuntimeRunner wake recovery", () => {
-  it("wake executes pending tools when stopped after llm_completed", async () => {
+  it("does not execute a tool reconstructed only from SessionLog presentation rows", async () => {
     let pingExecutions = 0
     const provider = new ResumeAwareProvider()
     const { runner, sessionLog } = createRunner(
@@ -54,15 +54,16 @@ describe("RuntimeRunner wake recovery", () => {
       tool_calls: [{ id: "call_ping", name: "ping", arguments: "{}" }],
     })
 
-    const text = await collectText(runner.wake(sessionId))
-    expect(text).toBe("finished")
-    expect(pingExecutions).toBe(1)
+    await expect(collectText(runner.wake(sessionId))).rejects.toThrow(
+      "restored canonical operation has no pending effect or terminal",
+    )
+    expect(pingExecutions).toBe(0)
     const after = await sessionLog.read(sessionId)
-    expect(after.some(e => e.event.kind === "tool_completed")).toBe(true)
-    expect(after.some(e => e.event.kind === "run_terminal")).toBe(true)
+    expect(after.some(e => e.event.kind === "tool_completed")).toBe(false)
+    expect(after.some(e => e.event.kind === "run_terminal")).toBe(false)
   })
 
-  it("wake continues after tool_completed without re-running the tool", async () => {
+  it("does not continue from a SessionLog-only tool completion", async () => {
     let pingExecutions = 0
     const provider = new ResumeAwareProvider()
     const { runner, sessionLog } = createRunner(
@@ -94,13 +95,14 @@ describe("RuntimeRunner wake recovery", () => {
       results: [{ call_id: "call_ping", output: "pong", is_error: false }],
     })
 
-    const text = await collectText(runner.wake(sessionId))
-    expect(text).toBe("finished")
+    await expect(collectText(runner.wake(sessionId))).rejects.toThrow(
+      "restored canonical operation has no pending effect or terminal",
+    )
     expect(pingExecutions).toBe(0)
-    expect(provider.streamCalls).toBe(1)
+    expect(provider.streamCalls).toBe(0)
 
     const after = await sessionLog.read(sessionId)
-    expect(after.some(e => e.event.kind === "run_terminal")).toBe(true)
+    expect(after.some(e => e.event.kind === "run_terminal")).toBe(false)
   })
 
   it("wake is a no-op when session already has run_terminal", async () => {
@@ -119,7 +121,7 @@ describe("RuntimeRunner wake recovery", () => {
     expect(await sessionLog.latestSeq(sessionId)).toBe(seqBeforeWake)
   })
 
-  it("FileSessionLog wake survives a new runner instance (process restart)", async () => {
+  it("FileSessionLog rows alone cannot impersonate a canonical process restart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ds-wake-"))
     try {
       const sessionId = "file-wake"
@@ -164,8 +166,10 @@ describe("RuntimeRunner wake recovery", () => {
         maxTurns: 4,
       })
 
-      const text = await collectText(runner2.wake(sessionId))
-      expect(text).toBe("finished")
+      await expect(collectText(runner2.wake(sessionId))).rejects.toThrow(
+        "restored canonical operation has no pending effect or terminal",
+      )
+      expect(provider2.streamCalls).toBe(0)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

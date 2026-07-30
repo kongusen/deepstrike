@@ -91,6 +91,13 @@ export class LargeResultSpool {
     return this.hashContent(`${sessionId}\u0000${callId}`).slice(0, 32)
   }
 
+  private payloadPath(sessionId: string, payloadRef: string): string {
+    // PayloadRef is an opaque locator. Hash the complete, session-scoped value instead of
+    // interpreting any portion of it as a filesystem path.
+    const key = this.hashContent(`${sessionId}\u0000${payloadRef}`)
+    return this.getSpoolPath(`payload-${key}`)
+  }
+
   private async atomicWrite(spoolPath: string, content: string): Promise<void> {
     const tempPath = `${spoolPath}.${process.pid}.${crypto.randomUUID()}.tmp`
     let handle: fs.FileHandle | undefined
@@ -199,6 +206,51 @@ omitted: ${omitted} chars
       this.activeWrites.set(spoolPath, promise)
     }
     return promise
+  }
+
+  /**
+   * Persist an ABI-v3 external payload under the host-issued opaque locator. The call-id index is
+   * retained for audit tooling, while canonical page-in reads exclusively through `payloadRef`.
+   */
+  async persistPayload(
+    sessionId: string,
+    callId: string,
+    payloadRef: string,
+    content: string,
+  ): Promise<void> {
+    const payloadPath = this.payloadPath(sessionId, payloadRef)
+    await Promise.all([
+      this.persistOutput(sessionId, callId, content),
+      this.writeExactPath(payloadPath, content),
+    ])
+  }
+
+  /**
+   * Resolve an ABI-v3 payload locator without exposing or interpreting a backing filesystem path.
+   */
+  async loadPayload(sessionId: string, payloadRef: string): Promise<string | undefined> {
+    try {
+      return await fs.readFile(this.payloadPath(sessionId, payloadRef), 'utf-8')
+    } catch {
+      return undefined
+    }
+  }
+
+  private async writeExactPath(spoolPath: string, content: string): Promise<void> {
+    let promise = this.activeWrites.get(spoolPath)
+    if (!promise) {
+      promise = (async () => {
+        try {
+          await fs.mkdir(this.spoolDir, { recursive: true })
+          await this.atomicWrite(spoolPath, content)
+          return spoolPath
+        } finally {
+          this.activeWrites.delete(spoolPath)
+        }
+      })()
+      this.activeWrites.set(spoolPath, promise)
+    }
+    await promise
   }
 
   /**

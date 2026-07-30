@@ -53,12 +53,13 @@ use serde::Serialize;
 
 use super::checkpoint::{
     AuthoredMemoryQueryState, AuthoredMemoryWriteState, ChildProcessState, ContextVmStateV1,
-    HandleState, InlineMessageBody, KnowledgeSlotState, LogicalCompressionEntry,
-    LogicalKernelState, LogicalPlanStep, LogicalStateProjection, LogicalTaskState, LogicalToolCall,
-    MessagePartition, MilestoneState, PartitionTokenState, PendingPayloadLoadState,
-    PendingProviderCallState, QueuedSignalState, ReferencedMessageBody, SchedulerStateV1,
-    SkillLeaseState, StoredMessageBody, StoredMessageState, StructuredMessageBody, SyscallStateV1,
-    TaskAttemptState, TaskControlState, WorkflowGraphState, WorkflowNodeState,
+    EntropyState, EntropyTurnState, HandleState, InlineMessageBody, KnowledgeSlotState,
+    LogicalCompressionEntry, LogicalKernelState, LogicalPlanStep, LogicalStateProjection,
+    LogicalTaskState, LogicalToolCall, MessagePartition, MilestoneState, PartitionTokenState,
+    PendingPayloadLoadState, PendingProviderCallState, QueuedSignalState, ReferencedMessageBody,
+    SchedulerStateV1, SkillLeaseState, StoredMessageBody, StoredMessageState,
+    StructuredMessageBody, SyscallStateV1, TaskAttemptState, TaskControlState, WorkflowGraphState,
+    WorkflowNodeState,
 };
 use super::command::{
     ApplyCapabilityPatchCommand, ApplyKnowledgeMutationCommand, ApplyPolicyPatchCommand,
@@ -123,10 +124,12 @@ use crate::signals::router::SignalRouterRuntimeState;
 use crate::syscall::{Disposition, Syscall as CoreSyscall};
 use crate::types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
-    ContextInheritance,
+    ContextInheritance, LoopRoundSpec,
 };
 use crate::types::message::{Content, ContentPart, Message, Role, ToolErrorKind, ToolResult};
-use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+use crate::types::result::{
+    LoopResult, PaceAction as CorePaceAction, SubAgentResult, TerminationReason,
+};
 use crate::types::signal::{RuntimeSignal, SignalSource, SignalType, Urgency};
 use crate::types::task::{RuntimeTask, TaskLane};
 
@@ -144,14 +147,27 @@ use crate::types::task::{RuntimeTask, TaskLane};
 /// * `focus` — the execution focus after this step. Because it is inside the digest, a focus that
 ///   moved differently on a replay is a `RecordCorrupted` rebuild failure rather than a silent
 ///   divergence;
+/// * `observations` — facts produced by this exact transition, published only after commit;
 /// * `disposition` — effects **or** a terminal, never both (§7.12).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PlannedStep {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_kind: Option<RootKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus: Option<ExecutionFocus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub observations: Vec<KernelObservation>,
     pub disposition: StepDisposition,
+}
+
+impl PartialEq for PlannedStep {
+    fn eq(&self, other: &Self) -> bool {
+        self.root_kind == other.root_kind
+            && self.focus == other.focus
+            && self.disposition == other.disposition
+            && serde_json::to_vec(&self.observations).ok()
+                == serde_json::to_vec(&other.observations).ok()
+    }
 }
 
 impl PlannedStep {
@@ -159,6 +175,7 @@ impl PlannedStep {
         Self {
             root_kind,
             focus,
+            observations: Vec::new(),
             disposition: StepDisposition::Effects(EffectsDisposition::default()),
         }
     }
@@ -571,6 +588,28 @@ fn restore_scheduler(
     engine.restore_budget_usage(state.total_tokens.get(), state.rounds_completed);
     engine.restore_started_at_ms(state.started_at_ms.map(WireU64::get));
     engine.set_wall_budget(state.wall_budget_ms.map(WireU64::get));
+    engine
+        .restore_entropy_checkpoint_state(crate::scheduler::entropy::EntropyTrackerRuntimeState {
+            window: state
+                .entropy
+                .window
+                .iter()
+                .map(|entry| crate::scheduler::entropy::EntropyTurnRuntimeState {
+                    errored_results: entry.errored_results,
+                    total_results: entry.total_results,
+                    rollbacks: entry.rollbacks,
+                })
+                .collect(),
+            rollbacks_pending: state.entropy.rollbacks_pending,
+            disarmed: state.entropy.disarmed,
+            last_alert_turn: state.entropy.last_alert_turn,
+        })
+        .map_err(|error| {
+            KernelFault::new(
+                KernelFaultCode::CheckpointIncompatible,
+                format!("entropy checkpoint could not be rebuilt: {error}"),
+            )
+        })?;
 
     let limits = SchedulerBudget {
         max_tokens: config.execution_policy.max_context_tokens,
@@ -1279,6 +1318,7 @@ impl CanonicalOperationDriver {
         };
         let (total_tokens, subagents_spawned, rounds_completed) = engine.local_budget_usage();
         let signal_state = engine.signal_checkpoint_state();
+        let entropy_state = engine.entropy_checkpoint_state();
         let workflow = engine.workflow_checkpoint_nodes().map(|runtime_nodes| {
             let workflow_id = self
                 .workflow_id
@@ -1386,6 +1426,20 @@ impl CanonicalOperationDriver {
                     complete: engine.is_milestone_complete(),
                     blocked_count: engine.milestone_blocked_count(),
                 }),
+            entropy: EntropyState {
+                window: entropy_state
+                    .window
+                    .into_iter()
+                    .map(|entry| EntropyTurnState {
+                        errored_results: entry.errored_results,
+                        total_results: entry.total_results,
+                        rollbacks: entry.rollbacks,
+                    })
+                    .collect(),
+                rollbacks_pending: entropy_state.rollbacks_pending,
+                disarmed: entropy_state.disarmed,
+                last_alert_turn: entropy_state.last_alert_turn,
+            },
         }
     }
 
@@ -1790,7 +1844,12 @@ impl CanonicalOperationDriver {
                 ),
             )));
         }
-        let step = self.plan_inner(context)?;
+        let mut step = self.plan_inner(context)?;
+        step.observations = self
+            .engine
+            .as_mut()
+            .map(LoopStateMachine::take_observations)
+            .unwrap_or_default();
         self.staged = Some(StagedFocus {
             step_seq: context.step_seq,
             root_kind: step.root_kind,
@@ -1868,6 +1927,11 @@ impl CanonicalOperationDriver {
         let step = PlannedStep {
             root_kind: Some(RootKind::Agent),
             focus: outcome.focus,
+            observations: self
+                .engine
+                .as_mut()
+                .map(LoopStateMachine::take_observations)
+                .unwrap_or_default(),
             disposition: StepDisposition::Effects(EffectsDisposition {
                 effects: outcome.effects,
             }),
@@ -2680,6 +2744,7 @@ impl CanonicalOperationDriver {
                 Ok(PlannedStep {
                     root_kind: Some(RootKind::Agent),
                     focus: Some(ExecutionFocus::agent_turn(root_task_id())),
+                    observations: Vec::new(),
                     disposition,
                 })
             }
@@ -2722,6 +2787,7 @@ impl CanonicalOperationDriver {
                 Ok(PlannedStep {
                     root_kind: Some(RootKind::Workflow),
                     focus: Some(ExecutionFocus::workflow_controller(workflow_id, None)),
+                    observations: Vec::new(),
                     disposition,
                 })
             }
@@ -2785,8 +2851,9 @@ impl CanonicalOperationDriver {
                 let mut results: Vec<ToolResult> =
                     tools.results.iter().map(core_tool_result).collect();
                 results.extend(self.close_out_fatal_batch(&tools.results)?);
-                let action = self.engine_mut()?.feed(LoopEvent::ToolResults { results });
+                let mut action = self.engine_mut()?.feed(LoopEvent::ToolResults { results });
                 self.record_external_payloads(&tools.results)?;
+                self.engine_mut()?.refresh_call_llm_action(&mut action);
                 self.continue_after(context, action, root_kind)
             }
             EffectSuccess::Approval(approval) => {
@@ -3180,6 +3247,7 @@ impl CanonicalOperationDriver {
         Ok(PlannedStep {
             root_kind: Some(root_kind),
             focus: self.focus.clone(),
+            observations: Vec::new(),
             disposition: StepDisposition::Terminal(TerminalDisposition {
                 terminal: KernelTerminal::Failed(FailedTerminal {
                     failure: KernelFailure {
@@ -3209,6 +3277,7 @@ impl CanonicalOperationDriver {
         PlannedStep {
             root_kind: self.root_kind,
             focus: self.focus.clone(),
+            observations: Vec::new(),
             disposition: StepDisposition::Effects(EffectsDisposition::default()),
         }
     }
@@ -3773,6 +3842,7 @@ impl CanonicalOperationDriver {
         Ok(PlannedStep {
             root_kind,
             focus,
+            observations: Vec::new(),
             disposition: StepDisposition::Terminal(TerminalDisposition {
                 terminal: KernelTerminal::Cancelled(CancelledTerminal {
                     reason,
@@ -4005,6 +4075,7 @@ impl CanonicalOperationDriver {
         Ok(PlannedStep {
             root_kind: Some(root_kind),
             focus,
+            observations: Vec::new(),
             disposition,
         })
     }
@@ -4300,6 +4371,53 @@ impl CanonicalOperationDriver {
         .map_err(malformed)?;
         self.attempts
             .insert(info.agent_id.clone(), attempt_id.clone());
+        let mut metadata = serde_json::Map::new();
+        if let Some(model_hint) = &info.model_hint {
+            metadata.insert(
+                "model_hint".to_string(),
+                serde_json::Value::String(model_hint.clone()),
+            );
+        }
+        if let Some(output_schema) = &info.output_schema {
+            metadata.insert("output_schema".to_string(), output_schema.clone());
+        }
+        if !info.input_agent_ids.is_empty() {
+            metadata.insert(
+                "input_agent_ids".to_string(),
+                serde_json::Value::Array(
+                    info.input_agent_ids
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            );
+            let dependency_outputs = info
+                .input_agent_ids
+                .iter()
+                .filter_map(|agent_id| {
+                    let output = self
+                        .engine
+                        .as_ref()?
+                        .task_table()
+                        .get(agent_id)?
+                        .proc
+                        .as_ref()?
+                        .result
+                        .as_ref()?
+                        .result
+                        .final_message
+                        .as_ref()
+                        .and_then(message_body_parts)?
+                        .0;
+                    Some((agent_id.clone(), serde_json::Value::String(output)))
+                })
+                .collect();
+            metadata.insert(
+                "dependency_outputs".to_string(),
+                serde_json::Value::Object(dependency_outputs),
+            );
+        }
         Ok(TaskLaunch {
             task_id,
             attempt_id,
@@ -4312,7 +4430,9 @@ impl CanonicalOperationDriver {
                 verification_contract_id: None,
                 capability_filter: Default::default(),
                 exposure_baseline: None,
-                metadata: Default::default(),
+                loop_round: None,
+                metadata: super::scalar::BoundedJson::new(serde_json::Value::Object(metadata))
+                    .map_err(malformed)?,
             },
         })
     }
@@ -4665,6 +4785,22 @@ fn build_core_spec(spec: &WireSpec) -> Result<CoreWorkflowSpec, KernelFault> {
         if let Some(isolation) = node.run_spec.as_ref().and_then(|spec| spec.isolation) {
             core = core.with_isolation(core_isolation(isolation));
         }
+        if let Some(metadata) = node
+            .run_spec
+            .as_ref()
+            .map(|spec| spec.metadata.get())
+            .and_then(serde_json::Value::as_object)
+        {
+            if let Some(model_hint) = metadata
+                .get("model_hint")
+                .and_then(serde_json::Value::as_str)
+            {
+                core = core.with_model_hint(model_hint);
+            }
+            if let Some(output_schema) = metadata.get("output_schema") {
+                core = core.with_output_schema(output_schema.clone());
+            }
+        }
         let mut depends_on = Vec::with_capacity(node.depends_on.len());
         for dependency in &node.depends_on {
             let Some(&index) = index_of.get(dependency.as_str()) else {
@@ -4717,7 +4853,12 @@ fn agent_run_spec(spec: &LogicalAgentSpec) -> AgentRunSpec {
         },
         milestones: None,
         metadata: spec.metadata.get().clone(),
-        loop_round: None,
+        loop_round: spec.loop_round.as_ref().map(|round| LoopRoundSpec {
+            max_rounds: round.max_rounds,
+            min_sleep_ms: round.min_sleep_ms.map(WireU64::get),
+            max_sleep_ms: round.max_sleep_ms.map(WireU64::get),
+            default_action: round.default_action.clone(),
+        }),
         exposure_baseline: spec
             .exposure_baseline
             .as_ref()
@@ -4953,11 +5094,18 @@ fn rendered_context(context: &crate::context::renderer::RenderedContext) -> Wire
 }
 
 fn provider_message(message: &Message) -> ProviderMessage {
+    let (content, tool_call_id) = message_body_parts(message)
+        .map(|(text, tool_call_id, _is_error)| (text, tool_call_id))
+        .unwrap_or_default();
     ProviderMessage {
         role: wire_role_of(message.role),
-        content: message.content.as_text().unwrap_or_default().to_string(),
-        tool_calls: Vec::new(),
-        tool_call_id: None,
+        content,
+        tool_calls: message
+            .tool_calls
+            .iter()
+            .filter_map(|call| wire_tool_call(call).ok())
+            .collect(),
+        tool_call_id: tool_call_id.and_then(|call_id| super::scalar::CallId::new(call_id).ok()),
         tokens: message.token_count,
     }
 }
@@ -5056,6 +5204,18 @@ fn agent_terminal(result: &LoopResult) -> KernelTerminal {
             termination,
             final_message: result.final_message.as_ref().map(provider_message),
             turns_used: result.turns_used,
+            pace_decision: result.pace_decision.as_ref().map(|decision| {
+                super::terminal::PaceDecision {
+                    action: match decision.action {
+                        CorePaceAction::Continue => super::terminal::PaceAction::Continue,
+                        CorePaceAction::Sleep => super::terminal::PaceAction::Sleep,
+                        CorePaceAction::Stop => super::terminal::PaceAction::Stop,
+                    },
+                    delay_ms: decision.delay_ms.map(WireU64::new),
+                    reason: decision.reason.clone(),
+                    coerced_from: decision.coerced_from.clone(),
+                }
+            }),
         },
         usage,
     })
@@ -5428,6 +5588,13 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
         deny_after: execution.repeat_fuse.deny_after,
         terminate_after: execution.repeat_fuse.terminate_after,
     });
+    engine.set_entropy_watch(crate::scheduler::entropy::EntropyWatchConfig {
+        enabled: execution.entropy_watch.enabled,
+        threshold: f64::from(execution.entropy_watch.threshold_ppm.get()) / 1_000_000.0,
+        hysteresis: f64::from(execution.entropy_watch.hysteresis_ppm.get()) / 1_000_000.0,
+        cooldown_turns: execution.entropy_watch.cooldown_turns,
+        notify_model: execution.entropy_watch.notify_model,
+    });
     install_live_policies(&mut engine, config);
     engine.set_dispatch_gate_exposed(matches!(
         config.feature_policy.tool_dispatch_gate,
@@ -5638,7 +5805,8 @@ mod tests {
     use crate::runtime::kernel::wire::config::ConfigDefaults;
     use crate::runtime::kernel::wire::config::TailBounds;
     use crate::runtime::kernel::wire::config::{
-        ExecutionPolicy, HostEffectSupport, MilestonePhase as WireMilestonePhase, OperationConfig,
+        EntropyWatchPolicy, ExecutionPolicy, HostEffectSupport,
+        MilestonePhase as WireMilestonePhase, OperationConfig,
         VerificationContract as WireVerificationContract,
     };
     use crate::runtime::kernel::wire::effect::{
@@ -5661,7 +5829,7 @@ mod tests {
         RootAgentEntry, RootWorkflowEntry, WorkflowNode as WireNode,
     };
     use crate::runtime::kernel::wire::scalar::{
-        AttemptId as WireAttemptId, DeliveryId, InputId, SignalId,
+        AttemptId as WireAttemptId, DeliveryId, InputId, Ppm, SignalId,
     };
     use crate::runtime::kernel::wire::transaction::{
         CheckpointBoundary, CommittedTransition, InMemoryRecordIndex, KernelTransaction,
@@ -5683,6 +5851,7 @@ mod tests {
         tx: KernelTransaction<PlannedStep, InMemoryRecordIndex>,
         driver: CanonicalOperationDriver,
         journal: Vec<KernelRecord>,
+        last_observations: Vec<KernelObservation>,
         /// What the restore that produced this runtime read, when it came from one.
         restore_cost: Option<RestoreCost>,
     }
@@ -5693,6 +5862,7 @@ mod tests {
                 tx: KernelTransaction::new(ConfigDefaults::default(), InMemoryRecordIndex::new()),
                 driver: CanonicalOperationDriver::new(),
                 journal: Vec::new(),
+                last_observations: Vec::new(),
                 restore_cost: None,
             }
         }
@@ -5715,6 +5885,7 @@ mod tests {
             let head = preparation.record().unwrap().record_digest().clone();
             let committed = self.tx.commit(&token, &head).expect("commit must succeed");
             self.journal.push(committed.record.clone());
+            self.last_observations = committed.step.observations.clone();
             committed
         }
 
@@ -5788,6 +5959,7 @@ mod tests {
                 tx: transaction,
                 driver,
                 journal: Vec::new(),
+                last_observations: Vec::new(),
                 restore_cost: Some(cost),
             }
         }
@@ -5803,6 +5975,10 @@ mod tests {
 
         fn pending_effect_kinds(&self) -> Vec<EffectKindTag> {
             self.tx.pending_effects().map(|e| e.tag()).collect()
+        }
+
+        fn observations(&self) -> &[KernelObservation] {
+            &self.last_observations
         }
 
         /// §12.3 · exactly the host's call: project the driver's three partitions, hand them to
@@ -6136,24 +6312,18 @@ mod tests {
     /// `(operation, subject, reason)` of every structured rejection the last transition recorded.
     fn rejections(runtime: &Runtime) -> Vec<(String, Option<String>, String)> {
         runtime
-            .driver
-            .engine()
-            .map(|engine| {
-                engine
-                    .observations
-                    .iter()
-                    .filter_map(|observation| match observation {
-                        KernelObservation::ControlRequestRejected {
-                            operation,
-                            subject,
-                            reason,
-                            ..
-                        } => Some((operation.clone(), subject.clone(), reason.clone())),
-                        _ => None,
-                    })
-                    .collect()
+            .observations()
+            .iter()
+            .filter_map(|observation| match observation {
+                KernelObservation::ControlRequestRejected {
+                    operation,
+                    subject,
+                    reason,
+                    ..
+                } => Some((operation.clone(), subject.clone(), reason.clone())),
+                _ => None,
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     fn sole_effect(committed: &CommittedTransition<PlannedStep>) -> &KernelEffect {
@@ -7606,17 +7776,15 @@ mod tests {
         let mut runtime = Runtime::new();
         let mut effects = Vec::new();
         let mut observations = Vec::new();
-        let collect = |runtime: &Runtime,
+        let collect = |_runtime: &Runtime,
                        committed: &CommittedTransition<PlannedStep>,
                        effects: &mut Vec<Value>,
                        observations: &mut Vec<Value>| {
             for effect in committed.published_effects() {
                 effects.push(serde_json::to_value(effect).unwrap());
             }
-            if let Some(engine) = runtime.driver.engine() {
-                for observation in &engine.observations {
-                    observations.push(serde_json::to_value(observation).unwrap());
-                }
+            for observation in &committed.step.observations {
+                observations.push(serde_json::to_value(observation).unwrap());
             }
         };
 
@@ -8029,6 +8197,16 @@ mod tests {
             vec![EffectKindTag::CallProvider],
             "an external result resumes the turn exactly like an inline one"
         );
+        let EffectKind::CallProvider(provider) = &sole_effect(&committed).effect else {
+            panic!("external residency must resume through the provider");
+        };
+        assert!(
+            provider
+                .tools
+                .iter()
+                .any(|tool| tool.name.as_str() == READ_RESULT_TOOL_NAME),
+            "the refreshed provider projection must advertise the newly reachable payload"
+        );
 
         let engine = runtime.driver.engine().expect("the arc built an engine");
         assert_eq!(
@@ -8051,6 +8229,18 @@ mod tests {
             "the body must not be in context: {rendered}"
         );
         assert!(observation_kinds(&runtime).contains(&"payload_residency_changed"));
+        assert_eq!(
+            runtime
+                .observations()
+                .iter()
+                .filter(|observation| matches!(
+                    observation,
+                    KernelObservation::CheckpointTaken { .. }
+                ))
+                .count(),
+            1,
+            "re-projecting external residency must not execute the provider-call boundary twice",
+        );
     }
 
     /// §7.10 rule 2 · a digest this kernel cannot recompute is a payload it could never prove it
@@ -8559,13 +8749,11 @@ mod tests {
         for effect in runtime.tx.pending_effects() {
             surfaces.push(("effect".to_string(), serde_json::to_string(effect).unwrap()));
         }
-        if let Some(engine) = runtime.driver.engine() {
-            for observation in &engine.observations {
-                surfaces.push((
-                    "observation".to_string(),
-                    serde_json::to_string(observation).unwrap(),
-                ));
-            }
+        for observation in runtime.observations() {
+            surfaces.push((
+                "observation".to_string(),
+                serde_json::to_string(observation).unwrap(),
+            ));
         }
         assert!(surfaces.len() >= 4, "the arc produced nothing to scan");
         for (surface, text) in &surfaces {
@@ -8886,16 +9074,10 @@ mod tests {
     /// Every observation the last committed transition recorded, by variant name.
     fn observation_kinds(runtime: &Runtime) -> Vec<&'static str> {
         runtime
-            .driver
-            .engine()
-            .map(|engine| {
-                engine
-                    .observations
-                    .iter()
-                    .map(observation_label)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
+            .observations()
+            .iter()
+            .map(observation_label)
+            .collect()
     }
 
     fn observation_label(observation: &KernelObservation) -> &'static str {
@@ -8934,30 +9116,24 @@ mod tests {
     /// disposed of.
     fn dispositions(runtime: &Runtime) -> Vec<(String, String, String, u32)> {
         runtime
-            .driver
-            .engine()
-            .map(|engine| {
-                engine
-                    .observations
-                    .iter()
-                    .filter_map(|observation| match observation {
-                        KernelObservation::SignalDeliveryDisposed {
-                            disposition,
-                            signal_id,
-                            delivery_id,
-                            attempt,
-                            ..
-                        } => Some((
-                            disposition.clone(),
-                            signal_id.clone(),
-                            delivery_id.clone(),
-                            *attempt,
-                        )),
-                        _ => None,
-                    })
-                    .collect()
+            .observations()
+            .iter()
+            .filter_map(|observation| match observation {
+                KernelObservation::SignalDeliveryDisposed {
+                    disposition,
+                    signal_id,
+                    delivery_id,
+                    attempt,
+                    ..
+                } => Some((
+                    disposition.clone(),
+                    signal_id.clone(),
+                    delivery_id.clone(),
+                    *attempt,
+                )),
+                _ => None,
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     /// The rendered history of the operation, as text — what the model will read next turn.
@@ -9215,6 +9391,46 @@ mod tests {
             observation_kinds(&runtime).contains(&"compressed"),
             "the recovery ladder ran: {:?}",
             observation_kinds(&runtime)
+        );
+    }
+
+    #[test]
+    fn canonical_genesis_installs_the_entropy_watch_on_the_engine() {
+        let mut runtime = Runtime::new();
+        runtime.submit(&syscall_config_with(|config| {
+            config.execution_policy = Some(ExecutionPolicy {
+                max_turns: Some(12),
+                entropy_watch: Some(EntropyWatchPolicy {
+                    enabled: Some(true),
+                    threshold_ppm: Some(Ppm::new(100_000).unwrap()),
+                    hysteresis_ppm: Some(Ppm::ZERO),
+                    cooldown_turns: Some(0),
+                    notify_model: Some(true),
+                }),
+                ..ExecutionPolicy::default()
+            });
+        }));
+        let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+        let acted = runtime.submit(&provider_result(
+            "in-acted",
+            1_700_000_002_000,
+            &effect_id(started.step_seq),
+            vec![tool_call("call-1", "search", json!({ "q": "same" }))],
+        ));
+        let resolved = runtime.submit(&tools_resolved(
+            "in-results",
+            1_700_000_003_000,
+            &effect_id(acted.step_seq),
+            &[("call-1", "failed", true)],
+        ));
+
+        assert!(
+            resolved
+                .step
+                .observations
+                .iter()
+                .any(|observation| matches!(observation, KernelObservation::EntropyAlert { .. })),
+            "the resolved canonical execution policy must arm the semantic engine's entropy watch"
         );
     }
 
@@ -9951,6 +10167,7 @@ mod tests {
             Ok(PlannedStep {
                 root_kind: Some(RootKind::Workflow),
                 focus: driver.focus().cloned(),
+                observations: Vec::new(),
                 disposition: StepDisposition::Effects(EffectsDisposition {
                     effects: vec![effect],
                 }),
@@ -9993,6 +10210,7 @@ mod tests {
             Ok(PlannedStep {
                 root_kind: Some(RootKind::Workflow),
                 focus: driver.focus().cloned(),
+                observations: Vec::new(),
                 disposition: StepDisposition::Effects(EffectsDisposition {
                     effects: vec![effect],
                 }),
@@ -10108,10 +10326,7 @@ mod tests {
         ));
         assert_eq!(kinds(&advanced), vec![EffectKindTag::CallProvider]);
         let advance = runtime
-            .driver
-            .engine()
-            .expect("engine")
-            .observations
+            .observations()
             .iter()
             .find_map(|observation| match observation {
                 KernelObservation::MilestoneAdvanced {
@@ -10160,19 +10375,17 @@ mod tests {
                 },
             }),
         ));
-        let unlocked_by_phase_two = runtime
-            .driver
-            .engine()
-            .expect("engine")
-            .observations
-            .iter()
-            .find_map(|observation| match observation {
-                KernelObservation::MilestoneAdvanced {
-                    capabilities_unlocked,
-                    ..
-                } => Some(capabilities_unlocked.clone()),
-                _ => None,
-            });
+        let unlocked_by_phase_two =
+            runtime
+                .observations()
+                .iter()
+                .find_map(|observation| match observation {
+                    KernelObservation::MilestoneAdvanced {
+                        capabilities_unlocked,
+                        ..
+                    } => Some(capabilities_unlocked.clone()),
+                    _ => None,
+                });
         assert_eq!(unlocked_by_phase_two, Some(vec!["Skill:debug".to_string()]));
     }
 
@@ -10291,10 +10504,7 @@ mod tests {
             "a persisted record is a fact, not a new obligation"
         );
         let written = runtime
-            .driver
-            .engine()
-            .unwrap()
-            .observations
+            .observations()
             .iter()
             .find_map(|observation| match observation {
                 KernelObservation::MemoryWritten {
@@ -11954,6 +12164,14 @@ mod tests {
         ));
         assert_eq!(kinds(&compacted), vec![EffectKindTag::ArchivePageOut]);
         assert!(observation_kinds(&runtime).contains(&"compressed"));
+        assert!(
+            compacted
+                .step
+                .observations
+                .iter()
+                .any(|observation| matches!(observation, KernelObservation::Compressed { .. })),
+            "the committed planned step is the host publication channel for observations"
+        );
     }
 
     // -----------------------------------------------------------------------------------------
@@ -13022,7 +13240,6 @@ mod tests {
         );
 
         drive(&mut restored, &envelopes[4..]);
-
         assert_eq!(
             digests(&restored.journal),
             digests(&uninterrupted.journal[4..]),

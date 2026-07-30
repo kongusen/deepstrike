@@ -6,6 +6,7 @@ import {
   InMemoryKernelJournal,
   JournalCasConflictError,
   JournalIntegrityError,
+  MAX_CHAIN_POSITION,
 } from "../../src/runtime/kernel-journal.js"
 import type { CheckpointCandidate, JournalRecordInput, KernelJournal } from "../../src/runtime/kernel-journal.js"
 import { InMemorySessionLog, FileSessionLog, journalOperationKey } from "../../src/runtime/session-log.js"
@@ -15,6 +16,10 @@ import {
 } from "../../src/runtime/kernel-transaction-log.js"
 
 const OP = "op-journal"
+
+function operationDir(root: string, operationId = OP): string {
+  return join(root, `op-${Buffer.from(operationId, "utf8").toString("base64url")}`)
+}
 
 function bytes(text: string): Uint8Array {
   return new Uint8Array(Buffer.from(text, "utf8"))
@@ -115,6 +120,12 @@ describe.each([
     await expect(journal.compareAndAppend(OP, undefined, record(0, "d0"))).rejects.toBeInstanceOf(
       JournalCasConflictError,
     )
+  })
+
+  it("rejects chain positions at or above the cross-host namespace bound", async () => {
+    await expect(
+      journal.compareAndAppend(OP, undefined, record(MAX_CHAIN_POSITION, "too-large")),
+    ).rejects.toBeInstanceOf(JournalIntegrityError)
   })
 
   it("reads by step cursor and by digest cursor", async () => {
@@ -248,6 +259,17 @@ describe("FileKernelJournal — cross-process atomicity", () => {
     expect((await b.head(OP))?.record_digest).toBe(winner.record_digest)
   })
 
+  it("encodes hostile operation ids as one child segment", async () => {
+    const operationId = "../escape/../../records"
+    const journal = new FileKernelJournal(dir)
+    await journal.compareAndAppend(operationId, undefined, record(0, "safe"))
+
+    expect(await journal.head(operationId)).toEqual({ step_seq: 0, record_digest: "safe" })
+    expect(await readdir(dir)).toEqual([
+      `op-${Buffer.from(operationId, "utf8").toString("base64url")}`,
+    ])
+  })
+
   it("survives a wide concurrent append storm with a single winner per position", async () => {
     const writers = Array.from({ length: 8 }, () => new FileKernelJournal(dir))
     await writers[0].compareAndAppend(OP, undefined, record(0, "d0"))
@@ -280,7 +302,7 @@ describe("FileKernelJournal — cross-process atomicity", () => {
     const installed = await new FileKernelJournal(dir).latestCheckpoint(OP)
     expect(["ck-a", "ck-b"]).toContain(installed?.checkpoint_id)
     expect(installed?.ordinal).toBe(0)
-    expect(await readdir(join(dir, OP, "checkpoints"))).toEqual(["000000000000.ckpt"])
+    expect(await readdir(join(operationDir(dir), "checkpoints"))).toEqual(["000000000000.ckpt"])
   })
 
   it("lets the atomic claim — not the pre-check — decide the append", async () => {
@@ -329,10 +351,10 @@ describe("FileKernelJournal — cross-process atomicity", () => {
 
     // Residue a crash can actually leave: a staged-but-unlinked temp file, plus anything that does
     // not match the record naming rule. Neither may be mistaken for a committed record.
-    await mkdir(join(dir, OP, "tmp"), { recursive: true })
-    await writeFile(join(dir, OP, "tmp", "half-written.tmp"), '{"step_seq":4,"record_dig')
-    await writeFile(join(dir, OP, "records", "000000000004.rec.partial"), '{"step_seq":4')
-    await writeFile(join(dir, OP, "records", "notes.txt"), "scratch")
+    await mkdir(join(operationDir(dir), "tmp"), { recursive: true })
+    await writeFile(join(operationDir(dir), "tmp", "half-written.tmp"), '{"step_seq":4,"record_dig')
+    await writeFile(join(operationDir(dir), "records", "000000000004.rec.partial"), '{"step_seq":4')
+    await writeFile(join(operationDir(dir), "records", "notes.txt"), "scratch")
 
     const reopened = new FileKernelJournal(dir)
     const entries = await reopened.readFrom(OP)
@@ -362,7 +384,7 @@ describe("FileKernelJournal — cross-process atomicity", () => {
   it("raises an integrity fault when a committed record contradicts its own name", async () => {
     const journal = new FileKernelJournal(dir)
     await seedChain(journal, 1)
-    await writeFile(join(dir, OP, "records", "000000000002.rec"), JSON.stringify({ step_seq: 7 }))
+    await writeFile(join(operationDir(dir), "records", "000000000002.rec"), JSON.stringify({ step_seq: 7 }))
 
     await expect(new FileKernelJournal(dir).readFrom(OP)).rejects.toBeInstanceOf(JournalIntegrityError)
   })

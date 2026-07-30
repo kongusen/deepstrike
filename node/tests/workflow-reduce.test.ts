@@ -2,12 +2,10 @@
  * G2 deterministic compute: a `NodeKind::Reduce` node runs no LLM agent — the kernel hands the SDK a
  * reducer name + its dependency outputs, and the runner runs the registered pure function.
  */
-import { getKernel } from "../src/kernel.js"
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import { builtinReducers } from "../src/workflow/public.js"
 import type { WorkflowSpec } from "../src/index.js"
 import { workflowNodeSpecToKernel } from "../src/types/agent.js"
-import { durableStartKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("built-in reducers", () => {
   it("dedupe_lines unions lines first-seen across inputs", () => {
@@ -41,8 +39,8 @@ describe("workflowNodeSpecToKernel lowers a reducer to NodeKind::Reduce", () => 
   })
 })
 
-describe("runWorkflow runs a reduce node deterministically (no LLM)", () => {
-  it("fans out two workers, then a reduce node dedupes their outputs without an agent call", async () => {
+describe("canonical runWorkflow rejects unrepresentable reduce nodes", () => {
+  it("does not silently downgrade a reducer to an LLM node", async () => {
     let agentCalls = 0
     const orchestrator = {
       async run(ctx: { manifest: { agent_id: string } }) {
@@ -63,12 +61,6 @@ describe("runWorkflow runs a reduce node deterministically (no LLM)", () => {
       subAgentOrchestrator: orchestrator as never,
     } as never)
 
-    const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    await durableStartKernelV2(rt, sessionLog, "wf-g2")
-    ;(runner as never as { activeKernel: unknown }).activeKernel = rt
-    ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-g2"
-    ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
-
     const spec: WorkflowSpec = {
       nodes: [
         { task: "worker A", role: "explore" },
@@ -77,26 +69,26 @@ describe("runWorkflow runs a reduce node deterministically (no LLM)", () => {
       ],
     }
 
-    const outcome = await runner.runWorkflow(spec)
+    const outcome = await runner.runWorkflow(spec, { sessionId: "wf-g2" })
 
-    // All three nodes completed, but only the TWO workers called an agent — the reduce ran in-process.
-    expect(outcome.nodeOutcomes.map(node => node.nodeId).sort()).toEqual(["wf-node0", "wf-node1", "wf-node2"])
-    expect(agentCalls).toBe(2)
+    expect(outcome.nodeOutcomes).toEqual([])
+    expect(outcome.rejection).toMatchObject({
+      operation: "load_workflow",
+      reason: expect.stringContaining("absent from canonical WorkflowNode: kind"),
+    })
+    expect(agentCalls).toBe(0)
   })
 
-  it("fails the workflow when a reduce node names an unknown reducer", async () => {
+  it("rejects an unknown reducer before any child is launched", async () => {
+    let agentCalls = 0
     const orchestrator = {
       async run(ctx: { manifest: { agent_id: string } }) {
+        agentCalls += 1
         return { agentId: ctx.manifest.agent_id, result: { termination: "completed", finalMessage: { role: "assistant", content: "x", toolCalls: [] }, turnsUsed: 1, totalTokensUsed: 1 } }
       },
     }
     const sessionLog = new InMemorySessionLog()
     const runner = new RuntimeRunner({ sessionLog, maxTokens: 8000, subAgentOrchestrator: orchestrator as never } as never)
-    const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    await durableStartKernelV2(rt, sessionLog, "wf-g2b")
-    ;(runner as never as { activeKernel: unknown }).activeKernel = rt
-    ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-g2b"
-    ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
 
     const spec: WorkflowSpec = {
       nodes: [
@@ -104,7 +96,9 @@ describe("runWorkflow runs a reduce node deterministically (no LLM)", () => {
         { task: "merge", role: "implement", reducer: "does_not_exist", dependsOn: [0] },
       ],
     }
-    const outcome = await runner.runWorkflow(spec)
-    expect(outcome.nodeOutcomes).toContainEqual(expect.objectContaining({ nodeId: "wf-node1", status: "failed" }))
+    const outcome = await runner.runWorkflow(spec, { sessionId: "wf-g2b" })
+    expect(outcome.nodeOutcomes).toEqual([])
+    expect(outcome.rejection?.reason).toContain("absent from canonical WorkflowNode: kind")
+    expect(agentCalls).toBe(0)
   })
 })

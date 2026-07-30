@@ -15,7 +15,6 @@
  * a RecordingProvider captures the tool names handed to each LLM call.
  */
 import { jest } from "@jest/globals"
-import { getKernel } from "../src/kernel.js"
 import {
   InMemorySessionLog,
   LocalExecutionPlane,
@@ -27,7 +26,6 @@ import type { LLMProvider, Message, RenderedContext, ToolSchema } from "../src/t
 import { tool } from "../src/tools/index.js"
 import { defaultSubAgentOrchestrator, type SubAgentRunContext } from "../src/runtime/sub-agent-orchestrator.js"
 import type { RuntimeOptions } from "../src/runtime/runner.js"
-import { durableStartKernelV2 } from "./helpers/kernel-v2.js"
 
 /** Records the tool names it is handed on every LLM call, then completes the turn with plain text. */
 class RecordingProvider implements LLMProvider {
@@ -41,8 +39,8 @@ class RecordingProvider implements LLMProvider {
   }
 }
 
-/** Parent runner over a `noop`-bearing plane with an injected, already-started kernel (spawnSubAgent
- *  requires a live parent run). No capability is mounted — the two cases exercise the un-granted path. */
+/** Parent runner over a `noop`-bearing plane. Direct host spawn is deliberately unavailable under
+ *  canonical ABI v3; the runner is still useful as the parent-options source for orchestrator tests. */
 async function makeParent(): Promise<{ runner: RuntimeRunner; provider: RecordingProvider }> {
   const noopTool = tool("noop", "does nothing", { type: "object", properties: {} }, () => "ok")
   const provider = new RecordingProvider()
@@ -57,16 +55,11 @@ async function makeParent(): Promise<{ runner: RuntimeRunner; provider: Recordin
     maxTotalTokens: 100_000,
     agentId: "parent",
   })
-  const runtime = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-  await durableStartKernelV2(runtime, sessionLog, "parent")
-  ;(runner as never as { activeKernel: unknown }).activeKernel = runtime
-  ;(runner as never as { currentSessionId: string }).currentSessionId = "parent"
-  ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
   return { runner, provider }
 }
 
 describe("spawnSubAgent tool access (AgentRunSpec.toolAccess)", () => {
-  it("(a) toolAccess:'inherit' runs the child on the parent's plane — first-turn tools survive without a capability grant", async () => {
+  it("(a) direct host spawn fails closed even when toolAccess requests inheritance", async () => {
     const { runner, provider } = await makeParent()
 
     const spec: AgentRunSpec = {
@@ -76,20 +69,15 @@ describe("spawnSubAgent tool access (AgentRunSpec.toolAccess)", () => {
       goal: "do the work",
       toolAccess: "inherit",
     }
-    const events: StreamEvent[] = []
-    for await (const event of runner.spawnSubAgent(spec)) events.push(event)
-
-    // The child completed cleanly and its FIRST LLM call still saw the parent-plane `noop`.
-    expect(events.some(e => (e as { type: string }).type === "error")).toBe(false)
-    const done = events.find(e => (e as { type: string }).type === "done") as
-      | { type: "done"; status: string }
-      | undefined
-    expect(done?.status).toBe("completed")
-    expect(provider.calls.length).toBeGreaterThan(0)
-    expect(provider.calls[0]).toContain("noop")
+    await expect((async () => {
+      for await (const _event of runner.spawnSubAgent(spec)) {
+        // Rejected before a child stream exists.
+      }
+    })()).rejects.toThrow(/canonical ABI v3.*provider syscall/)
+    expect(provider.calls).toEqual([])
   })
 
-  it("(b) default 'filtered' with no capability resolves to zero tools — warns the host but still completes", async () => {
+  it("(b) direct host spawn also fails closed for default filtered access", async () => {
     const { runner } = await makeParent()
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
     try {
@@ -100,18 +88,12 @@ describe("spawnSubAgent tool access (AgentRunSpec.toolAccess)", () => {
         goal: "do the work",
         // toolAccess omitted ⇒ default "filtered"; no capabilityFilter ⇒ deny-all.
       }
-      const events: StreamEvent[] = []
-      for await (const event of runner.spawnSubAgent(spec)) events.push(event)
-
-      // The zero-tool warning fired, and it is advisory: the child still ran to a clean completion.
-      expect(warnSpy).toHaveBeenCalled()
-      const warned = warnSpy.mock.calls.map(c => String(c[0])).join("\n")
-      expect(warned).toContain("zero tools")
-      expect(warned).toContain("worker")
-      const done = events.find(e => (e as { type: string }).type === "done") as
-        | { type: "done"; status: string }
-        | undefined
-      expect(done?.status).toBe("completed")
+      await expect((async () => {
+        for await (const _event of runner.spawnSubAgent(spec)) {
+          // Rejected before a child stream exists.
+        }
+      })()).rejects.toThrow(/canonical ABI v3.*provider syscall/)
+      expect(warnSpy).not.toHaveBeenCalled()
     } finally {
       warnSpy.mockRestore()
     }

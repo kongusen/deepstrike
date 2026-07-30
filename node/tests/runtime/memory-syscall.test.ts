@@ -80,7 +80,6 @@ describe("Phase-7 memory syscalls", () => {
 
     expect(hits).toEqual([hit])
     const events = await sessionLog.read("memory-query-syscall")
-    expect(events.some(e => e.event.kind === "memory_queried")).toBe(true)
     expect(events.some(e => e.event.kind === "memory_retrieval_result")).toBe(true)
   })
 

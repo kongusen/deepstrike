@@ -110,7 +110,7 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
     expect(pings).toBe(1) // pre-W-N1 this was 0: the missing grant list ran every node TOOL-LESS
   })
 
-  it("a quarantined workflow node stays deny-all filtered", async () => {
+  it("fails closed until canonical WorkflowNode can represent quarantine", async () => {
     let pings = 0
     const ping = tool("ping", "ping the host", { type: "object", properties: {} }, async () => {
       pings += 1
@@ -120,8 +120,9 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
     const outcome = await runner.runWorkflow({
       nodes: [{ task: "try the ping tool", role: "explore", isolation: "read_only", trust: "quarantined" }],
     })
-    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
-    expect(pings).toBe(0) // untrusted-content reader: no tool reaches the host
+    expect(outcome.nodeOutcomes).toEqual([])
+    expect(outcome.rejection?.reason).toContain("absent from canonical WorkflowNode: trust")
+    expect(pings).toBe(0)
   })
 })
 
@@ -148,23 +149,18 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
     }
   }
 
-  it("pace continue→stop drives the iterations; the transcript accumulates under one session id", async () => {
+  it("fails closed instead of silently running a loop node once", async () => {
     const { runner, sessionLog } = createRunner(pacingLoopProvider(["continue", "stop"]))
     const outcome = await runner.runWorkflow(
       { nodes: [{ task: "polish until done", role: "implement", loop: { maxIters: 5 } }] },
       { sessionId: "wfloop" },
     )
-    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
-    // The pace verb ended the loop at 2 iterations, well before maxIters=5.
-    const loopSession = await sessionLog.read("wfloop-wf-node0")
-    const starts = loopSession.filter(e => e.event.kind === "run_started")
-    expect(starts.length).toBe(2) // W-N6: BOTH iterations ran under the ONE stable session id
-    // No per-iteration session fragments.
-    expect(await sessionLog.read("wfloop-wf-node0-i0")).toEqual([])
-    expect(await sessionLog.read("wfloop-wf-node0-i1")).toEqual([])
+    expect(outcome.nodeOutcomes).toEqual([])
+    expect(outcome.rejection?.reason).toContain("absent from canonical WorkflowNode: kind")
+    expect(await sessionLog.read("wfloop-wf-node0")).toEqual([])
   })
 
-  it("an iteration that never paces completes the loop (silence = done, not run-to-cap)", async () => {
+  it("also rejects a silent loop before starting its child", async () => {
     const silent: LLMProvider = {
       async complete(): Promise<Message> {
         return { role: "assistant", content: "done", toolCalls: [] }
@@ -178,10 +174,9 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
       { nodes: [{ task: "one-shot polish", role: "implement", loop: { maxIters: 4 } }] },
       { sessionId: "wfsilent" },
     )
-    expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
-    // default_action=stop: exactly ONE iteration ran (the kernel's pace fallback said stop).
-    const starts = (await sessionLog.read("wfsilent-wf-node0")).filter(e => e.event.kind === "run_started")
-    expect(starts.length).toBe(1)
+    expect(outcome.nodeOutcomes).toEqual([])
+    expect(outcome.rejection?.reason).toContain("absent from canonical WorkflowNode: kind")
+    expect(await sessionLog.read("wfsilent-wf-node0")).toEqual([])
   })
 })
 

@@ -153,7 +153,7 @@ describe("long-session memory paging integration", () => {
     expect(sawRecallInContext).toBe(true)
   })
 
-  it("wake after compression replays history; a memory tool call on wake still flows through history, not knowledge", async () => {
+  it("a SessionLog clone cannot rewind a terminal operation in the canonical journal", async () => {
     let compressCalls = 0
     let wakeStreamCalls = 0
     let sawRecallOnWake = false
@@ -255,11 +255,12 @@ describe("long-session memory paging integration", () => {
     ).runner
 
     const text = await collectText(wakeRunner.wake(wakeSession))
-    expect(text).toBe("woke")
+    expect(text).toBe("")
 
     const afterWake = await sharedLog.read(wakeSession)
     expect(afterWake.some(e => e.event.kind === "page_in")).toBe(false)
-    expect(sawRecallOnWake).toBe(true)
+    expect(sawRecallOnWake).toBe(false)
+    expect(wakeStreamCalls).toBe(0)
     expect(afterWake.some(e => e.event.kind === "run_terminal")).toBe(true)
   })
 })

@@ -858,6 +858,19 @@ impl LoopStateMachine {
         self.entropy_watch
     }
 
+    pub(crate) fn entropy_checkpoint_state(
+        &self,
+    ) -> crate::scheduler::entropy::EntropyTrackerRuntimeState {
+        self.entropy.checkpoint_state()
+    }
+
+    pub(crate) fn restore_entropy_checkpoint_state(
+        &mut self,
+        state: crate::scheduler::entropy::EntropyTrackerRuntimeState,
+    ) -> Result<(), String> {
+        self.entropy.restore_state(state, self.turn)
+    }
+
     /// O6: the active repeat-fuse config (for read-modify-write from the ABI event).
     pub fn repeat_fuse_config(&self) -> RepeatFuseConfig {
         self.repeat_fuse
@@ -2016,6 +2029,31 @@ impl LoopStateMachine {
         if self.pending_termination.is_some() {
             return self.call_llm_action(context, Vec::new());
         }
+        let tools = self.provider_tools();
+        self.call_llm_action(context, tools)
+    }
+
+    /// Rebuild the provider projection after a same-transition context mutation.
+    ///
+    /// External payload residency is committed after `ToolResults` has already produced its
+    /// continuation. That mutation can change both rendered handle state and the conditional
+    /// `read_result` meta-tool, but it must not cross a second scheduler boundary (budget verdict,
+    /// checkpoint, or observation). Refresh only the projection and advertised-tool authority.
+    pub(crate) fn refresh_call_llm_action(&mut self, action: &mut LoopAction) {
+        if !matches!(action, LoopAction::CallLLM { .. }) {
+            return;
+        }
+        let context = self.ctx.render();
+        let tools = if self.pending_termination.is_some() {
+            Vec::new()
+        } else {
+            self.provider_tools()
+        };
+        self.exposed_tool_names = Some(tools.iter().map(|tool| tool.name.clone()).collect());
+        *action = LoopAction::CallLLM { context, tools };
+    }
+
+    fn provider_tools(&self) -> Vec<ToolSchema> {
         let mut tools = self.tools.clone();
         tools.extend(self.ctx.meta_tool_schemas());
 
@@ -2121,7 +2159,7 @@ impl LoopStateMachine {
             tools.push(pace_tool_schema());
         }
 
-        self.call_llm_action(context, tools)
+        tools
     }
 
     /// The single exit for every provider call. Records the advertised toolset (P1 fail-closed

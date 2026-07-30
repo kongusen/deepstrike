@@ -1,7 +1,7 @@
 {
   "description": "One whole agent turn cycle on the canonical wire (spec 7.9 · Task 12): configure → atomic agent start → provider result carrying a tool call → tool results → final provider answer → agent terminal. Every step after the start is a single `ResolveEffect` input, and each one publishes exactly the next effect the loop is waiting on — until the last, whose disposition is the terminal itself and which publishes nothing.",
   "genesis_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
-  "head_digest": "sha256:c8ee5d4e93f72d9c2a122787a490ca5a8bfead0f4eb4d2e06d8bf66d30da779f",
+  "head_digest": "sha256:bb77d3702094d9f4294a889b1c29fecaf9ab69a0903ede4d981f2c22a63b4bc0",
   "links": [
     {
       "envelope": {
@@ -118,8 +118,8 @@
         "input_id": "in-start",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
-        "record_digest": "sha256:012440b11426553aaf9699ccc74c18643b4da00adb52df41fc48d201aa19fcc0",
-        "step_digest": "sha256:b5d4d7d668631b5d382825c737a8f692e1a3198d720f5129f004bfb4c7b000c0",
+        "record_digest": "sha256:9f2f4c6e3b06d578cdac04d71f98e2e1831ab1dced6e4e20b6572593dfb7d608",
+        "step_digest": "sha256:27cc4be6cc9762669a232c95bf19ab24377abd109d6b171173224670e50f4159",
         "step_seq": "1"
       },
       "step": {
@@ -191,6 +191,13 @@
           "kind": "agent_turn",
           "task_id": "root"
         },
+        "observations": [
+          {
+            "history_len": 1,
+            "kind": "checkpoint_taken",
+            "turn": 0
+          }
+        ],
         "root_kind": "agent"
       }
     },
@@ -236,8 +243,8 @@
         "input_digest": "sha256:7ec1ff03040cc385a9c9cc3d67f7c1233a3e24cdc85abb8e6f1f0328fb0208e8",
         "input_id": "in-acted",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:012440b11426553aaf9699ccc74c18643b4da00adb52df41fc48d201aa19fcc0",
-        "record_digest": "sha256:0a1f1f43e4f258f7ea62673c45d79d0ceb236e94ebf6826f8ee17675f30a7326",
+        "previous_record_digest": "sha256:9f2f4c6e3b06d578cdac04d71f98e2e1831ab1dced6e4e20b6572593dfb7d608",
+        "record_digest": "sha256:c11c4df0cac6f4fc6bc330ef35a771f68ea651ab032268bfbf708d2b8aaa3ac6",
         "step_digest": "sha256:fc4df7785f97d163e1d7579cd8a6d63f57eafa0b1ac102da9925500d64614b29",
         "step_seq": "2"
       },
@@ -306,9 +313,9 @@
         "input_digest": "sha256:bbe9558f3883229639c8b988c305adfc5b017dc83df923ee8ae929fef1a88fe1",
         "input_id": "in-results",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:0a1f1f43e4f258f7ea62673c45d79d0ceb236e94ebf6826f8ee17675f30a7326",
-        "record_digest": "sha256:272879a0366805fe6e49355a640fc0d914f5b48980c38963a80384ae32676936",
-        "step_digest": "sha256:a0395151dfd9d26c78e60655cd973a13c724a2fc2bb180a7989e687dc066322c",
+        "previous_record_digest": "sha256:c11c4df0cac6f4fc6bc330ef35a771f68ea651ab032268bfbf708d2b8aaa3ac6",
+        "record_digest": "sha256:26cad4ef6463aa2097b2c2e32fe527909e28cc853134afde49bfd6d08fba6e58",
+        "step_digest": "sha256:78181169c26b3ec3c3339f54daddf753146a18a192cdd8d3c89088d957003c35",
         "step_seq": "3"
       },
       "step": {
@@ -331,12 +338,22 @@
                     {
                       "content": "",
                       "role": "assistant",
-                      "tokens": 1
+                      "tokens": 1,
+                      "tool_calls": [
+                        {
+                          "arguments": {
+                            "q": "sources"
+                          },
+                          "call_id": "call-1",
+                          "name": "search"
+                        }
+                      ]
                     },
                     {
-                      "content": "",
+                      "content": "three sources found",
                       "role": "tool",
-                      "tokens": 4
+                      "tokens": 4,
+                      "tool_call_id": "call-1"
                     }
                   ]
                 },
@@ -390,6 +407,24 @@
           "kind": "agent_turn",
           "task_id": "root"
         },
+        "observations": [
+          {
+            "failure_rate": 0.0,
+            "kind": "entropy_sample",
+            "repeat_pressure": 0.0,
+            "rho": 0.0002109375,
+            "rollbacks_in_window": 0,
+            "score": 0.0000421875,
+            "score_version": 1,
+            "turn": 1,
+            "window_turns": 1
+          },
+          {
+            "history_len": 3,
+            "kind": "checkpoint_taken",
+            "turn": 1
+          }
+        ],
         "root_kind": "agent"
       }
     },
@@ -427,8 +462,8 @@
         "input_digest": "sha256:f51c75af72a802c9a83d92ee3dd5928bb1f41c77b9ac3583107aaf00ec4c8d99",
         "input_id": "in-answer",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:272879a0366805fe6e49355a640fc0d914f5b48980c38963a80384ae32676936",
-        "record_digest": "sha256:c8ee5d4e93f72d9c2a122787a490ca5a8bfead0f4eb4d2e06d8bf66d30da779f",
+        "previous_record_digest": "sha256:26cad4ef6463aa2097b2c2e32fe527909e28cc853134afde49bfd6d08fba6e58",
+        "record_digest": "sha256:bb77d3702094d9f4294a889b1c29fecaf9ab69a0903ede4d981f2c22a63b4bc0",
         "step_digest": "sha256:3d6a32f24ff725bb02fcef953c09b51547499de40b56f6966a5273e4d3a487df",
         "step_seq": "4"
       },

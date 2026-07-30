@@ -113,11 +113,10 @@ describe("M5 v2.1 top-level start_workflow auto-pivot", () => {
     }
 
     expect(events.some(event => event.type === "error")).toBe(false)
-    const toolResult = events.find(event => event.type === "tool_result") as
-      | { content?: string; isError?: boolean }
-      | undefined
-    expect(toolResult?.content).toContain("submitted for governance adjudication")
-    expect(toolResult?.isError).toBe(false)
+    // Canonical meta-tools are reduced inside the provider-result transition, so the host must not
+    // fabricate a tool_result stream event. The kernel's structured rejection is rendered into the
+    // next provider context instead.
+    expect(events.some(event => event.type === "tool_result")).toBe(false)
     const allContexts = provider.contexts.map(context => [
       context.systemText, context.systemStable, context.systemKnowledge,
       context.stateTurn?.content, ...context.turns.map(message => message.content),

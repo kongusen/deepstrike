@@ -1,15 +1,14 @@
 import type { DoneEvent, StreamEvent, TextDelta, WorkflowNodesSubmittedEvent } from "../types.js"
+import { randomUUID } from "node:crypto"
 import type {
   AgentRunSpec, AgentProcessChangedObservation, LoopResult, SubAgentResult, TerminationReason,
   KernelAgentRole, WorkflowNodeSpec,
 } from "../types/agent.js"
-import { agentRunSpecToKernel, findSpawnProcessObservation, spawnObservationToManifest } from "../types/agent.js"
 import type { RuntimeOptions } from "./runner.js"
 import type { SessionEvent, SessionLog } from "./session-log.js"
 import { FilteredExecutionPlane } from "./filtered-plane.js"
 import { WorktreeExecutionPlane } from "./worktree-plane.js"
 import type { ExecutionPlane } from "./execution-plane.js"
-import { durableKernelApply, type KernelObservation } from "./kernel-step.js"
 import type { AttemptOutcome } from "../harness/harness.js"
 
 export interface SubAgentRunContext {
@@ -303,7 +302,7 @@ export function attemptOutcomeToLoopResult(outcome: AttemptOutcome): LoopResult 
   }
 }
 
-/** Kernel spawn without an active parent run loop (harness / coordinator use). */
+/** Canonical single-node root workflow for harness / coordinator use. */
 export async function spawnStandalone(
   parentOpts: RuntimeOptions,
   parentSessionId: string,
@@ -311,51 +310,52 @@ export async function spawnStandalone(
   orchestrator: SubAgentOrchestrator = defaultSubAgentOrchestrator,
   contextInput?: string,
 ): Promise<SubAgentResult> {
-  const kernel = (await import("../kernel.js")).getKernel()
-  const runtime = new kernel.KernelRuntime({
-    maxTokens: parentOpts.maxTokens,
-    maxTurns: parentOpts.maxTurns ?? 25,
-    timeoutMs: parentOpts.timeoutMs !== undefined ? BigInt(parentOpts.timeoutMs) : undefined,
-  })
-  const pending: KernelObservation[] = []
-
-  await durableKernelApply(
-    runtime,
-    parentOpts.sessionLog,
-    parentSessionId,
-    pending,
-    { kind: "start_run", task: { goal: "coordinator", criteria: [] } },
-  )
-  const observations = await durableKernelApply(runtime, parentOpts.sessionLog, parentSessionId, pending, {
-    kind: "spawn_sub_agent",
-    spec: agentRunSpecToKernel(spec),
-    parent_session_id: parentSessionId,
-  })
-
-  const spawned = findSpawnProcessObservation(observations)
-  if (!spawned) {
-    throw new Error("spawn_sub_agent did not emit agent_process_changed")
+  if (spec.tokenBudget !== undefined || spec.maxTurns !== undefined || spec.maxWallMs !== undefined) {
+    throw new Error(
+      "spawnStandalone cannot represent per-node resource caps under canonical ABI v3",
+    )
   }
 
-  const manifest = spawnObservationToManifest(spawned, spec, parentSessionId)
-  await parentOpts.sessionLog.append(parentSessionId, {
-    kind: "agent_process_changed",
-    turn: manifest.turn ?? 0,
-    agent_id: manifest.agent_id,
-    parent_session_id: manifest.parent_session_id,
-    role: manifest.role,
-    isolation: manifest.isolation,
-    context_inheritance: manifest.context_inheritance,
-    state: "running",
-    permitted_capability_ids: manifest.permitted_capability_ids ?? [],
+  const { RuntimeRunner } = await import("./runner.js")
+  let captured: SubAgentResult | undefined
+  const bridge = {
+    async run(ctx: SubAgentRunContext) {
+      const child = await orchestrator.run({
+        ...ctx,
+        parentSessionId,
+        spec,
+        manifest: {
+          ...ctx.manifest,
+          agent_id: spec.identity.agentId,
+          parent_session_id: parentSessionId,
+        },
+        ...(contextInput ? { contextInput } : {}),
+      })
+      captured = child
+      return { ...child, agentId: ctx.manifest.agent_id }
+    },
+  } as unknown as SubAgentOrchestrator
+  const runner = new RuntimeRunner({
+    ...parentOpts,
+    subAgentOrchestrator: bridge,
+    nestedGroupVehicle: true,
   })
-
-  return orchestrator.run({
-    parentOpts,
-    parentSessionId,
-    spec,
-    manifest,
-    sessionLog: parentOpts.sessionLog,
-    ...(contextInput ? { contextInput } : {}),
-  })
+  const outcome = await runner.runWorkflow(
+    {
+      nodes: [{
+        task: spec.goal,
+        role: spec.role,
+        isolation: spec.isolation,
+        ...(spec.modelHint ? { modelHint: spec.modelHint } : {}),
+      }],
+    },
+    { sessionId: `${spec.identity.sessionId}:spawn-root:${randomUUID()}` },
+  )
+  if (outcome.rejection) {
+    throw new Error(`canonical standalone spawn rejected: ${outcome.rejection.reason}`)
+  }
+  if (!captured) {
+    throw new Error("canonical standalone spawn completed without a child result")
+  }
+  return captured
 }

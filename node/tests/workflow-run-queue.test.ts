@@ -6,81 +6,11 @@
  * must ACCUMULATE the nodes spawned across every feed in a round — the previous loop kept only the
  * last feed's batch and dropped nodes unblocked by earlier completions, stalling uneven DAGs.
  *
- * Uses a fully scripted fake kernel (no native core / no provider): the script reproduces the exact
- * observation sequence the Rust kernel test `workflow_run_queue_unblocks_dependents_per_node` proves
- * the kernel emits for the diamond DAG  A,B → C  and  A → D.
+ * The canonical workflow root now exercises the real journaled run queue for the diamond DAG
+ * A,B → C and A → D.
  */
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import type { WorkflowSpec } from "../src/index.js"
-import { scriptedKernelV2 } from "./helpers/scripted-kernel-v2.js"
-
-type Obs = { kind: string; nodes?: unknown[]; node_outcomes?: Array<{ node_id: string; status: string }> }
-
-function node(agent_id: string, goal: string) {
-  return {
-    agent_id,
-    goal,
-    role: "implement",
-    isolation: "shared",
-    context_inheritance: "none",
-    model_hint: null,
-    trust: "trusted",
-  }
-}
-
-/** Scripted kernel: maps each event to the run-queue observations for the diamond DAG. */
-function makeFakeKernel() {
-  const A = node("wf-node0", "A")
-  const B = node("wf-node1", "B")
-  const C = node("wf-node2", "C") // depends on A & B
-  const D = node("wf-node3", "D") // depends on A only
-
-  let pendingBatch: ReturnType<typeof node>[] = []
-  let nextEffect = 1
-  function reply(actions: unknown[], observations: Obs[]) {
-    return { actions: actions as Array<Record<string, unknown>>, observations }
-  }
-  function requestSpawn(nodes: ReturnType<typeof node>[]) {
-    pendingBatch = nodes
-    return reply([{
-      kind: "spawn_workflow",
-      effect_id: `fake-workflow-spawn-${nextEffect++}`,
-      nodes,
-    }], [])
-  }
-
-  return scriptedKernelV2(event => {
-      const typedEvent = event as { kind: string; result?: { agent_id: string } }
-      if (typedEvent.kind === "load_workflow") {
-        // A and B have no deps → both ready in the first round.
-        return requestSpawn([A, B])
-      }
-      if (typedEvent.kind === "workflow_spawn_result") {
-        const nodes = pendingBatch
-        pendingBatch = []
-        return reply([], [{ kind: "workflow_batch_spawned", nodes }])
-      }
-      if (typedEvent.kind === "sub_agent_completed") {
-        switch (typedEvent.result?.agent_id) {
-          // A done (B still running) → D unblocks immediately (per-node unblock).
-          case "wf-node0":
-            return requestSpawn([D])
-          // B done → C unblocks (both deps satisfied).
-          case "wf-node1":
-            return requestSpawn([C])
-          // D done → nothing new.
-          case "wf-node3":
-            return reply([], [])
-          // C done → DAG complete.
-          case "wf-node2":
-            return reply([], [
-              { kind: "workflow_completed", node_outcomes: ["wf-node0", "wf-node1", "wf-node2", "wf-node3"].map(node_id => ({ node_id, status: "completed" })) },
-            ])
-        }
-      }
-      return reply([], [])
-  })
-}
 
 describe("runWorkflow over the run-queue executor", () => {
   it("runs every node of an uneven DAG, including a dependent unblocked by a single early completion", async () => {
@@ -108,11 +38,6 @@ describe("runWorkflow over the run-queue executor", () => {
       subAgentOrchestrator: mockOrchestrator as never,
     } as never)
 
-    // Wire the scripted fake kernel as the active parent run (runWorkflow runs mid-run).
-    ;(runner as never as { activeKernel: unknown }).activeKernel = makeFakeKernel()
-    ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-rq"
-    ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
-
     const spec: WorkflowSpec = {
       nodes: [
         { task: "A", role: "implement" },
@@ -122,7 +47,7 @@ describe("runWorkflow over the run-queue executor", () => {
       ],
     }
 
-    const outcome = await runner.runWorkflow(spec)
+    const outcome = await runner.runWorkflow(spec, { sessionId: "wf-rq" })
 
     // The critical assertion: D (unblocked by A alone) is NOT dropped — all four nodes ran.
     expect(ran.sort()).toEqual(["wf-node0", "wf-node1", "wf-node2", "wf-node3"])

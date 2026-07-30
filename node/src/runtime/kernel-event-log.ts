@@ -129,7 +129,9 @@ export function kernelObservationToSessionEvent(
         kind: "agent_process_changed" as const,
         turn: t,
         agent_id: obs.agent_id ?? "",
-        parent_session_id: obs.parent_session_id ?? "",
+        // Session identity is host-only. Canonical observations name the logical parent task;
+        // the legacy SessionEvent field remains a presentation slot until Task 23 removes it.
+        parent_session_id: obs.parent_task_id ?? "",
         role: obs.role ?? "",
         isolation: obs.isolation ?? "",
         context_inheritance: obs.context_inheritance ?? "",
@@ -282,7 +284,12 @@ export function kernelObservationToSessionEvent(
       }
     }
     default:
-      return null
+      return {
+        kind: "kernel_observation" as const,
+        turn: t,
+        observation_kind: obs.kind,
+        raw: { ...obs },
+      }
   }
 }
 

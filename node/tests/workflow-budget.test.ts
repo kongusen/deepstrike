@@ -2,11 +2,9 @@
  * G4 budget-as-signal: the kernel reports remaining workflow headroom on `workflow_batch_spawned`,
  * and the runner surfaces it into a coordinator node's goal so it can size its submission.
  */
-import { getKernel } from "../src/kernel.js"
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import type { WorkflowSpec } from "../src/index.js"
 import { workflowBudgetNote, type WorkflowBudget } from "../src/types/agent.js"
-import { durableStartKernelV2, durableStepKernelV2 } from "./helpers/kernel-v2.js"
 
 describe("workflowBudgetNote", () => {
   it("formats bounded dimensions and omits unbounded ones", () => {
@@ -54,27 +52,17 @@ describe("runWorkflow surfaces the kernel budget into a node's goal", () => {
     const runner = new RuntimeRunner({
       sessionLog,
       maxTokens: 8000,
+      resourceQuota: { maxWorkflowNodes: 5, maxConcurrentSubagents: 3 },
       subAgentOrchestrator: orchestrator as never,
     } as never)
 
-    // A real kernel with a node/concurrency quota installed (so a budget is emitted).
-    const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    await durableStartKernelV2(rt, sessionLog, "wf-g4")
-    await durableStepKernelV2(rt, sessionLog, "wf-g4", {
-      kind: "set_resource_quota",
-      quota: { max_workflow_nodes: 5, max_concurrent_subagents: 3 },
-    })
-    ;(runner as never as { activeKernel: unknown }).activeKernel = rt
-    ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-g4"
-    ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
-
     const spec: WorkflowSpec = { nodes: [{ task: "coordinate", role: "implement" }] }
-    await runner.runWorkflow(spec)
+    await runner.runWorkflow(spec, { sessionId: "wf-g4" })
 
     expect(goals).toHaveLength(1)
     expect(goals[0]).toContain("[workflow budget]")
-    expect(goals[0]).toContain("nodes 1/5 used, 4 remaining")
-    // M4/G5: the kernel now also reports token headroom (cap always set on the scheduler budget).
-    expect(goals[0]).toMatch(/tokens \d+\/\d+ used, \d+ remaining/)
+    expect(goals[0]).toContain("concurrency capped at 3")
+    // Canonical v3 publishes the kernel-owned cap, not a host-authored remaining counter.
+    expect(goals[0]).toMatch(/tokens capped at \d+/)
   })
 })

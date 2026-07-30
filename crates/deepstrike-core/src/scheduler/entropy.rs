@@ -114,7 +114,93 @@ pub struct EntropyTracker {
     last_alert_turn: Option<u32>,
 }
 
+/// Private-layout-free runtime projection used by the canonical checkpoint adapter.
+///
+/// The checkpoint wire type deliberately lives under `runtime::kernel::wire`; this type only
+/// gives that adapter an invertible view of the tracker without making its two `VecDeque`s part of
+/// the public ABI.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EntropyTrackerRuntimeState {
+    pub window: Vec<EntropyTurnRuntimeState>,
+    pub rollbacks_pending: u32,
+    pub disarmed: bool,
+    pub last_alert_turn: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EntropyTurnRuntimeState {
+    pub errored_results: u32,
+    pub total_results: u32,
+    pub rollbacks: u32,
+}
+
 impl EntropyTracker {
+    pub(crate) fn checkpoint_state(&self) -> EntropyTrackerRuntimeState {
+        debug_assert_eq!(
+            self.turn_stats.len(),
+            self.rollback_stats.len(),
+            "entropy outcome and rollback windows advance together"
+        );
+        EntropyTrackerRuntimeState {
+            window: self
+                .turn_stats
+                .iter()
+                .zip(self.rollback_stats.iter())
+                .map(
+                    |(&(errored_results, total_results), &rollbacks)| EntropyTurnRuntimeState {
+                        errored_results,
+                        total_results,
+                        rollbacks,
+                    },
+                )
+                .collect(),
+            rollbacks_pending: self.rollbacks_pending,
+            disarmed: self.disarmed,
+            last_alert_turn: self.last_alert_turn,
+        }
+    }
+
+    pub(crate) fn restore_state(
+        &mut self,
+        state: EntropyTrackerRuntimeState,
+        current_turn: u32,
+    ) -> Result<(), String> {
+        if state.window.len() > ENTROPY_WINDOW_TURNS {
+            return Err(format!(
+                "entropy window carries {} turns; maximum is {ENTROPY_WINDOW_TURNS}",
+                state.window.len()
+            ));
+        }
+        if let Some(turn) = state.last_alert_turn
+            && turn > current_turn
+        {
+            return Err(format!(
+                "entropy alert turn {turn} is later than scheduler turn {current_turn}"
+            ));
+        }
+        if let Some(invalid) = state
+            .window
+            .iter()
+            .find(|entry| entry.errored_results > entry.total_results)
+        {
+            return Err(format!(
+                "entropy window carries {} errors for only {} results",
+                invalid.errored_results, invalid.total_results
+            ));
+        }
+
+        self.turn_stats = state
+            .window
+            .iter()
+            .map(|entry| (entry.errored_results, entry.total_results))
+            .collect();
+        self.rollback_stats = state.window.iter().map(|entry| entry.rollbacks).collect();
+        self.rollbacks_pending = state.rollbacks_pending;
+        self.disarmed = state.disarmed;
+        self.last_alert_turn = state.last_alert_turn;
+        Ok(())
+    }
+
     /// Record a rollback (any reason). Called from the state machine's `rollback()`.
     pub fn note_rollback(&mut self) {
         self.rollbacks_pending += 1;

@@ -333,6 +333,19 @@ fn absolute_depth_boundary_runs_before_json_parsing() {
 }
 
 #[test]
+fn bounded_json_accepts_tool_schema_depth_within_the_absolute_envelope_limit() {
+    let mut schema = json!({ "type": "string" });
+    for _ in 0..24 {
+        schema = json!({
+            "type": "object",
+            "properties": { "nested": schema },
+        });
+    }
+
+    BoundedJson::new(schema).expect("a finite nested tool schema remains a legal wire scalar");
+}
+
+#[test]
 fn absolute_collection_boundary_runs_before_json_parsing() {
     let narrow = KernelBootstrapLimits {
         absolute_max_collection_entries: 8,

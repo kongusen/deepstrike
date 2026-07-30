@@ -263,6 +263,9 @@ export function subAgentResultToKernel(result: SubAgentResult): Record<string, u
   const attempt = result.result.attempt
   return {
     agent_id: result.agentId,
+    ...(result.submittedNodes?.length
+      ? { submitted_nodes: result.submittedNodes.map(workflowNodeSpecToKernel) }
+      : {}),
     result: {
       termination: result.result.termination,
       final_message: finalMessage
@@ -464,6 +467,8 @@ export interface WorkflowSpawnInfo {
   /** The dependency agent ids for EVERY dependent node (W-N2: a DAG edge carries data). A reduce
    *  node's registered function consumes them; every other node gets its deps' outputs in context. */
   input_agent_ids?: string[]
+  /** Dependency outputs projected by canonical core so a post-crash launch keeps its data edges. */
+  dependency_outputs?: Record<string, string>
   /** A#2: present only for a tournament *judge* spawn — the two entrant agent ids whose produced
    *  outputs this judge compares. The runner looks them up and reports the winner as `tournamentWinner`. */
   judge_match?: { left: string; right: string }
@@ -484,10 +489,10 @@ export interface WorkflowSpawnInfo {
 /** G4 budget-as-signal: the workflow's remaining headroom under the active quota, carried on the
  *  `workflow_batch_spawned` observation so a coordinator node can scale its next submission. */
 export interface WorkflowBudget {
-  nodes_used: number
+  nodes_used?: number
   nodes_max?: number
   nodes_remaining?: number
-  running_subagents: number
+  running_subagents?: number
   max_concurrent_subagents?: number
   concurrency_remaining?: number
   /** M4/G5 token headroom: cumulative tokens used, the run-level cap, and tokens remaining before the
@@ -495,6 +500,10 @@ export interface WorkflowBudget {
   tokens_used?: number
   tokens_max?: number
   tokens_remaining?: number
+  /** Canonical ABI v3 publishes immutable caps rather than a host-authored remaining snapshot. */
+  max_total_tokens?: string | number
+  max_turns?: number
+  max_concurrency?: number
 }
 
 /** G4: a concise, human-readable budget note appended to a coordinator node's goal, so its agent can
@@ -513,6 +522,15 @@ export function workflowBudgetNote(budget: WorkflowBudget | undefined): string {
   }
   if (budget.tokens_remaining != null && budget.tokens_max != null) {
     parts.push(`tokens ${budget.tokens_used ?? 0}/${budget.tokens_max} used, ${budget.tokens_remaining} remaining`)
+  }
+  if (budget.max_total_tokens != null) {
+    parts.push(`tokens capped at ${budget.max_total_tokens}`)
+  }
+  if (budget.max_turns != null) {
+    parts.push(`turns capped at ${budget.max_turns}`)
+  }
+  if (budget.max_concurrency != null) {
+    parts.push(`concurrency capped at ${budget.max_concurrency}`)
   }
   if (parts.length === 0) return ""
   return (

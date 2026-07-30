@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::scalar::{BoundedJson, CallId, NodeId, TaskId, WorkflowId};
+use super::scalar::{BoundedJson, CallId, NodeId, TaskId, WireU64, WorkflowId};
 
 // ---------------------------------------------------------------------------------------------
 // root entry
@@ -186,8 +186,24 @@ pub struct LogicalAgentSpec {
     /// `Some([])` is a legitimate, distinct minimal surface.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure_baseline: Option<Vec<String>>,
+    /// Pure logical pacing policy for one loop round. It contains no host/session identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_round: Option<LogicalLoopRoundSpec>,
     #[serde(default, skip_serializing_if = "BoundedJson::is_null")]
     pub metadata: BoundedJson,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogicalLoopRoundSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rounds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_sleep_ms: Option<WireU64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_sleep_ms: Option<WireU64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_action: Option<String>,
 }
 
 impl LogicalAgentSpec {
@@ -199,6 +215,7 @@ impl LogicalAgentSpec {
             verification_contract_id: None,
             capability_filter: CapabilityFilter::default(),
             exposure_baseline: None,
+            loop_round: None,
             metadata: BoundedJson::null(),
         }
     }

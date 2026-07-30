@@ -1,12 +1,12 @@
 {
-  "base_state_digest": "sha256:a20e21a8338d40dc57b642876b8f4706ebfb8d32e59d68b8c4ba7921e94116ab",
+  "base_state_digest": "sha256:8e6af9ee8391f2539dc579f96c8023c009d92fb9b91cf5a87441cc5a5862a338",
   "checkpoint": {
     "abi_version": 3,
-    "base_record_digest": "sha256:012440b11426553aaf9699ccc74c18643b4da00adb52df41fc48d201aa19fcc0",
+    "base_record_digest": "sha256:9f2f4c6e3b06d578cdac04d71f98e2e1831ab1dced6e4e20b6572593dfb7d608",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:a9858233d809094b7d0dd0d475067559ad720a0d090090ffc162bc25aa54be79",
+    "checkpoint_digest": "sha256:84dac79c643f14f60c1057e3c934b8e1f3a28bbdf25a8572d7739df3c07baa6f",
     "checkpoint_version": 1,
-    "covered_transaction_head_digest": "sha256:c8ee5d4e93f72d9c2a122787a490ca5a8bfead0f4eb4d2e06d8bf66d30da779f",
+    "covered_transaction_head_digest": "sha256:bb77d3702094d9f4294a889b1c29fecaf9ab69a0903ede4d981f2c22a63b4bc0",
     "genesis_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
     "logical_state": {
       "context_vm": {
@@ -56,6 +56,12 @@
       },
       "scheduler": {
         "attempts": [],
+        "entropy": {
+          "disarmed": false,
+          "last_alert_turn": null,
+          "rollbacks_pending": 0,
+          "window": []
+        },
         "milestone": null,
         "queued_signals": [],
         "rounds_completed": 0,
@@ -267,7 +273,7 @@
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:012440b11426553aaf9699ccc74c18643b4da00adb52df41fc48d201aa19fcc0",
+            "record_digest": "sha256:9f2f4c6e3b06d578cdac04d71f98e2e1831ab1dced6e4e20b6572593dfb7d608",
             "step_seq": "1"
           }
         ],
@@ -499,8 +505,8 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:a20e21a8338d40dc57b642876b8f4706ebfb8d32e59d68b8c4ba7921e94116ab",
-    "tail_digest": "sha256:bd1792c71da6b755da60eacf66fe56916caf25294ef392108e7a960ca19b1719",
+    "state_digest": "sha256:8e6af9ee8391f2539dc579f96c8023c009d92fb9b91cf5a87441cc5a5862a338",
+    "tail_digest": "sha256:577baec426e3a1562ddd2b79d73e6c9ddd8df83906d8bd4d8c5aebd1e40d63e4",
     "tail_inputs": [
       {
         "input": {
@@ -535,7 +541,7 @@
           "observed_at_ms": "1700000002000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:0a1f1f43e4f258f7ea62673c45d79d0ceb236e94ebf6826f8ee17675f30a7326",
+        "record_digest": "sha256:c11c4df0cac6f4fc6bc330ef35a771f68ea651ab032268bfbf708d2b8aaa3ac6",
         "step_seq": "2"
       },
       {
@@ -565,7 +571,7 @@
           "observed_at_ms": "1700000003000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:272879a0366805fe6e49355a640fc0d914f5b48980c38963a80384ae32676936",
+        "record_digest": "sha256:26cad4ef6463aa2097b2c2e32fe527909e28cc853134afde49bfd6d08fba6e58",
         "step_seq": "3"
       },
       {
@@ -593,7 +599,7 @@
           "observed_at_ms": "1700000004000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:c8ee5d4e93f72d9c2a122787a490ca5a8bfead0f4eb4d2e06d8bf66d30da779f",
+        "record_digest": "sha256:bb77d3702094d9f4294a889b1c29fecaf9ab69a0903ede4d981f2c22a63b4bc0",
         "step_seq": "4"
       }
     ],

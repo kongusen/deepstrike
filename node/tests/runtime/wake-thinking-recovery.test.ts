@@ -35,7 +35,7 @@ class CapturingAnthropicProvider extends AnthropicProvider {
 }
 
 describe("RuntimeRunner thinking wake recovery", () => {
-  it("restores thinking blocks from provider_replay after a new provider instance wakes", async () => {
+  it("does not treat SessionLog provider_replay as canonical recovery state", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ds-thinking-wake-"))
     try {
       const sessionId = "thinking-wake"
@@ -77,24 +77,11 @@ describe("RuntimeRunner thinking wake recovery", () => {
         maxTurns: 4,
       })
 
-      const text = await collectText(runner.wake(sessionId))
-      expect(text).toBe("finished")
-      expect(provider.streamCalls).toBe(1)
-      expect(provider.capturedRequest?.messages).toEqual([
-        { role: "user", content: [{ type: "text", text: "use ping", cache_control: { type: "ephemeral" } }] },
-        {
-          role: "assistant",
-          content: [
-            { type: "thinking", thinking: "plan", signature: "sig" },
-            { type: "text", text: "checking" },
-            { type: "tool_use", id: "call_ping", name: "ping", input: {} },
-          ],
-        },
-        {
-          role: "user",
-          content: [{ type: "tool_result", tool_use_id: "call_ping", content: "pong", is_error: false, cache_control: { type: "ephemeral" } }],
-        },
-      ])
+      await expect(collectText(runner.wake(sessionId))).rejects.toThrow(
+        "restored canonical operation has no pending effect or terminal",
+      )
+      expect(provider.streamCalls).toBe(0)
+      expect(provider.capturedRequest).toBeUndefined()
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

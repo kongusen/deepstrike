@@ -1,10 +1,11 @@
 import type {
   LLMProvider, Message, ContentPart, ToolCall, ToolResult, ToolSchema,
-  StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, WorkflowNodesSubmittedEvent, DoneEvent, ErrorEvent,
+  StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
   PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, DreamSummarizer,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
 } from "../types.js"
+import { createHash } from "node:crypto"
 import type {
   DreamStore,
   MemoryRecord,
@@ -22,12 +23,13 @@ import type {
   SignalSource,
 } from "../signals/types.js"
 import type { SessionLog, SessionEvent, RollbackReason } from "./session-log.js"
+import type { KernelJournal } from "./kernel-journal.js"
 import type { ArchiveStore } from "./archive.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
 import { resolvePermissionRequest } from "./execution-plane.js"
 import { GroupBudgetScope } from "./run-group.js"
 import type { RunGroup, GroupBudgetRequest } from "./run-group.js"
-import { getKernel, type KernelRuntimeInstance, type MemoryPolicy, type ResourceQuota } from "../kernel.js"
+import { getKernel, type MemoryPolicy, type ResourceQuota } from "../kernel.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
 import {
@@ -35,7 +37,6 @@ import {
   buildRunTerminalEvent,
   buildWorkflowNodeCompletedEvent,
   buildWorkflowNodesSubmittedEvent,
-  repairEventsForRecovery,
 } from "./session-repair.js"
 import { KernelPrimitivesDashboard } from "./kernel-primitives-dashboard.js"
 import {
@@ -45,9 +46,6 @@ import {
   capabilityCommandMount,
   capabilityCommandUnmount,
   entropySampleFromObservation,
-  durableKernelAction,
-  durableKernelApply,
-  durableKernelMaybeAction,
   messageToKernelMessage,
   skillMetadataToKernel,
   taskUpdateToKernel,
@@ -56,22 +54,26 @@ import {
   type KernelObservation,
   type KernelRunnerAction,
 } from "./kernel-step.js"
+import {
+  CanonicalKernelRejectedError,
+  CanonicalRunnerRuntime,
+  canonicalKernelAction,
+  canonicalKernelApply,
+  canonicalKernelMaybeAction,
+} from "./canonical-kernel-step.js"
 import type {
   AgentRunSpec, AgentProcessChangedObservation, MilestoneCheckResult, MilestoneContract, MilestonePolicy, SubAgentResult,
-  WorkflowSpec, WorkflowSpawnInfo, WorkflowNodeSpec, WorkflowBudget, WorkflowOutcome,
+  WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome,
   WorkflowNodeOutcome, KernelWorkflowNodeOutcome,
 } from "../types/agent.js"
 import {
   agentRunSpecToKernel,
-  findSpawnProcessObservation,
   MILESTONE_UNVERIFIED_REASON,
   milestoneCheckFail,
   milestoneCheckPass,
   milestoneCheckResultToKernel,
-  spawnObservationToManifest,
   subAgentResultToKernel,
   submitWorkflowNodesToKernel,
-  submitWorkflowToKernel,
   workflowBudgetNote,
   workflowNodeOutcomeFromKernel,
   workflowNodeStatusFromTermination,
@@ -232,6 +234,8 @@ export interface RuntimeOptions {
    *  Undefined ⇒ worktree nodes fall back to the inherited plane (no isolation). */
   worktreeManager?: import("./worktree-plane.js").WorktreeManager
   sessionLog: SessionLog
+  /** ABI v3 transaction capability. Default session logs expose one; custom logs pass it explicitly. */
+  kernelJournal?: KernelJournal
   executionPlane: ExecutionPlane
   /** Receives failures from run-owned best-effort tasks after their semantic owner has committed. */
   onBackgroundTaskError?: BackgroundTaskErrorHandler
@@ -507,15 +511,6 @@ export interface RuntimeOptions {
   enableDiagnosticsDashboard?: boolean
 }
 
-/** Kernel observation kinds owned by the memory lifecycle consumer (journal + store mirror). */
-function isMemoryLifecycleObservation(obs: KernelObservation): boolean {
-  return obs.kind === "memory_written"
-    || obs.kind === "memory_queried"
-    || obs.kind === "memory_validation_failed"
-    || obs.kind === "memory_recalled"
-    || obs.kind === "promotion_suggested"
-}
-
 function controlRequestRejection(
   observations: KernelObservation[],
   operation?: string,
@@ -549,12 +544,21 @@ function pendingCallIds(action: KernelRunnerAction): string[] {
   }
 }
 
+function utf8Prefix(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ""
+  const bytes = Buffer.from(value, "utf8")
+  if (bytes.byteLength <= maxBytes) return value
+  let end = maxBytes
+  while (end > 0 && (bytes[end] & 0xC0) === 0x80) end -= 1
+  return bytes.subarray(0, end).toString("utf8")
+}
+
 export class RuntimeRunner {
   private interrupted = false
   private cancellationReason: OperationCancellationReason | undefined
   /** Aborts host-owned provider I/O before `cancel_operation` commits the kernel terminal fact. */
   private abortController: AbortController | null = null
-  private activeKernel: KernelRuntimeInstance | null = null
+  private activeKernel: CanonicalRunnerRuntime | null = null
   private activeGroupBudgetScope: GroupBudgetScope | undefined
   private pendingObservations: KernelObservation[] = []
   private currentSessionId: string | null = null
@@ -576,9 +580,6 @@ export class RuntimeRunner {
   private activePageOutArchive: { archiveStart: number; compressedSeq: number } | undefined
   /** K4: the active run's goal, kept for the renewal-boundary memory re-query. */
   private currentGoal = ""
-  /** M5 v2.1: sub-workflow specs a top-level agent authored via `start_workflow`, awaiting auto-drive
-   *  at the next safe point (after the tool turn resolves, kernel back in Reason — not suspended). */
-  private pendingAuthoredWorkflows: WorkflowSpec[] = []
   private workflowContinuation: Extract<KernelRunnerAction, { kind: "call_provider" }> | null = null
   private dashboard: KernelPrimitivesDashboard | null = null
   /** Most recent kernel entropy sample of the active/last run (see `latestEntropy`). */
@@ -635,48 +636,30 @@ export class RuntimeRunner {
   }
 
   private async commitKernelApply(
-    runtime: KernelRuntimeInstance,
+    runtime: CanonicalRunnerRuntime,
     pending: KernelObservation[],
     event: Record<string, unknown>,
-    sessionId?: string | null,
+    _sessionId?: string | null,
   ): Promise<KernelObservation[]> {
-    return durableKernelApply(
-      runtime,
-      this.opts.sessionLog,
-      this.durableSessionId(sessionId),
-      pending,
-      event,
-    )
+    return canonicalKernelApply(runtime, pending, event) as Promise<KernelObservation[]>
   }
 
   private async commitKernelMaybeAction(
-    runtime: KernelRuntimeInstance,
+    runtime: CanonicalRunnerRuntime,
     pending: KernelObservation[],
     event: Record<string, unknown>,
-    sessionId?: string | null,
+    _sessionId?: string | null,
   ): Promise<KernelRunnerAction | null> {
-    return durableKernelMaybeAction(
-      runtime,
-      this.opts.sessionLog,
-      this.durableSessionId(sessionId),
-      pending,
-      event,
-    )
+    return canonicalKernelMaybeAction(runtime, pending, event)
   }
 
   private async commitKernelAction(
-    runtime: KernelRuntimeInstance,
+    runtime: CanonicalRunnerRuntime,
     pending: KernelObservation[],
     event: Record<string, unknown>,
-    sessionId?: string | null,
+    _sessionId?: string | null,
   ): Promise<KernelRunnerAction> {
-    return durableKernelAction(
-      runtime,
-      this.opts.sessionLog,
-      this.durableSessionId(sessionId),
-      pending,
-      event,
-    )
+    return canonicalKernelAction(runtime, pending, event)
   }
 
   /** R-B32: the one spool this runner writes to and reads from. Host-configured when given,
@@ -704,44 +687,21 @@ export class RuntimeRunner {
   }
 
   /**
-   * T5: run one memory query through the kernel's `query_memory → memory_query_result`
-   * effect lifecycle on the given runtime. The kernel injects each routed hit into history
-   * itself and derives the recall lifecycle (`memory_recalled`, edge-triggered
-   * `promotion_suggested`) from the routed hits — the store stays a pure query.
-   *
-   * `seenRecordIds` is one dedupe horizon: a record hit by several queries of the same
-   * prefetch is routed (recalled, injected) once. The kernel derives counts statelessly from
-   * each hit's payload, so host-side pre-filtering is the only place duplicates can be stopped.
-   *
-   * The recall lifecycle is consumed immediately rather than via the per-turn drain: the store
-   * must be up to date before any same-turn re-query, and a renewal prefetch fires inside the
-   * drain loop where queued observations would not be consumed until the next boundary.
-   * Non-memory observations are forwarded to `leftovers` (the run's pending queue) when given,
-   * and discarded for detached syscall runtimes (their kernel is throwaway).
+   * Route a host-originated renewal prefetch into canonical knowledge commands. This is not an
+   * agent syscall: the host selects records from its store, then the kernel owns the only mutation
+   * of live semantic context. `seenRecordIds` is the prefetch's dedupe horizon.
    */
-  private async queryMemoryThroughKernel(
-    runtime: KernelRuntimeInstance,
+  private async prefetchMemoryIntoKnowledge(
+    runtime: CanonicalRunnerRuntime,
     query: MemoryQuery,
     agentId: string,
     sessionId: string | null | undefined,
     seenRecordIds?: Set<string>,
     leftovers?: KernelObservation[],
   ): Promise<{ hits: MemoryRecall[]; action: KernelRunnerAction | null }> {
-    const observations: KernelObservation[] = []
-    const action = await this.commitKernelAction(
-      runtime,
-      observations,
-      { kind: "query_memory", query },
-      sessionId,
-    )
-    if (action.kind !== "query_memory") {
-      throw new Error(`query_memory returned unexpected kernel effect: ${action.kind}`)
-    }
-
     let hits: MemoryRecall[] = []
-    let ioError: unknown
     try {
-      hits = await this.retrieveMemoryFromStore(query, action.requestedK, agentId)
+      hits = await this.retrieveMemoryFromStore(query, query.top_k, agentId)
       if (seenRecordIds) {
         hits = hits.filter(hit => {
           const id = hit.record.record_id
@@ -750,27 +710,20 @@ export class RuntimeRunner {
           return true
         })
       }
-    } catch (cause) {
-      ioError = cause
-    }
-    // Close the kernel effect even when the store failed — never leave a dangling query.
-    // The result commit resumes the kernel's reasoning path (`resume_after_preload`), which
-    // re-emits the next loop action with the routed hits now in history — callers on a live
-    // run kernel must adopt it (a query is a preload, not a detached side-channel).
-    const resumed = await this.commitKernelMaybeAction(runtime, observations, {
-      kind: "memory_query_result",
-      effect_id: action.effectId,
-      hits,
-      ...(ioError ? { error: formatToolError(ioError) } : {}),
-    }, sessionId)
-    await this.consumeMemoryLifecycleObservations(sessionId, observations)
-    if (leftovers) {
-      for (const obs of observations) {
-        if (!isMemoryLifecycleObservation(obs)) leftovers.push(obs)
+      for (const hit of hits) {
+        await this.commitKernelApply(runtime, leftovers ?? [], {
+          kind: "add_knowledge_message",
+          key: `memory:${hit.record.record_id}`,
+          content: hit.record.content,
+          tokens: Math.max(1, Math.ceil(hit.record.content.length / 4)),
+        }, sessionId)
       }
+      await this.applyHostMemoryRecallLifecycle(hits, agentId)
+      await this.logMemoryRetrievalResult(sessionId, hits)
+    } catch {
+      return { hits: [], action: runtime.resumeAction() }
     }
-    if (ioError) throw ioError
-    return { hits, action: resumed }
+    return { hits, action: runtime.resumeAction() }
   }
 
   async writeMemory(
@@ -780,37 +733,39 @@ export class RuntimeRunner {
     const sessionId = opts.sessionId ?? this.currentSessionId
     const agentId = opts.agentId ?? this.opts.agentId
     if (!this.opts.dreamStore || !agentId) return
-    const durableSessionId = this.durableSessionId(sessionId)
-
-    const observations: KernelObservation[] = []
-    const runtime = this.createSyscallRuntime()
-    const action = await this.commitKernelMaybeAction(
-      runtime,
-      observations,
-      { kind: "write_memory", memory },
-      durableSessionId,
-    )
-    if (!action) {
-      await this.consumeMemoryLifecycleObservations(sessionId, observations)
-      return
+    const policy = this.opts.memoryPolicy
+    if (policy?.validationEnabled !== false) {
+      const error = !memory.name.trim()
+        ? "memory name must not be empty"
+        : memory.name.length > (policy?.maxNameLength ?? 100)
+          ? `memory name exceeds ${policy?.maxNameLength ?? 100} characters`
+          : Buffer.byteLength(memory.content, "utf8") > (policy?.maxContentBytes ?? 10_000)
+            ? `memory content exceeds ${policy?.maxContentBytes ?? 10_000} bytes`
+            : undefined
+      if (error) {
+        if (sessionId) {
+          await this.opts.sessionLog.append(sessionId, {
+            kind: "memory_validation_failed",
+            turn: this.activeKernel?.turn() ?? 0,
+            record_id: memory.record_id,
+            error,
+          })
+        }
+        return
+      }
     }
-    if (action.kind !== "persist_memory") {
-      throw new Error(`write_memory returned unexpected kernel effect: ${action.kind}`)
+    await this.persistMemoryToStore(memory, agentId)
+    if (sessionId) {
+      await this.opts.sessionLog.append(sessionId, {
+        kind: "memory_written",
+        turn: this.activeKernel?.turn() ?? 0,
+        record_id: memory.record_id,
+        scope: memory.scope,
+        memory_kind: memory.kind,
+        name: memory.name,
+        size_bytes: Buffer.byteLength(memory.content, "utf8"),
+      })
     }
-
-    let ioError: unknown
-    try {
-      await this.persistMemoryToStore(action.memory as unknown as MemoryRecord, agentId)
-    } catch (cause) {
-      ioError = cause
-    }
-    await this.commitKernelApply(runtime, observations, {
-      kind: "memory_persist_result",
-      effect_id: action.effectId,
-      ...(ioError ? { error: formatToolError(ioError) } : {}),
-    }, durableSessionId)
-    await this.consumeMemoryLifecycleObservations(durableSessionId, observations)
-    if (ioError) throw ioError
   }
 
   async queryMemory(
@@ -820,15 +775,35 @@ export class RuntimeRunner {
     const sessionId = opts.sessionId ?? this.currentSessionId
     const agentId = opts.agentId ?? this.opts.agentId
     if (!this.opts.dreamStore || !agentId) return []
-    const durableSessionId = this.durableSessionId(sessionId)
-
-    // Detached syscall runtime: the kernel's history injection and resumed action are inert
-    // (the kernel is throwaway), but the recall lifecycle is identical to an in-run query
-    // (T5 parity).
-    const runtime = this.createSyscallRuntime()
-    const { hits } = await this.queryMemoryThroughKernel(runtime, query, agentId, durableSessionId)
-    await this.logMemoryRetrievalResult(durableSessionId, hits)
+    const hits = await this.retrieveMemoryFromStore(query, query.top_k, agentId)
+    await this.applyHostMemoryRecallLifecycle(hits, agentId)
+    await this.logMemoryRetrievalResult(sessionId, hits)
     return hits
+  }
+
+  private async applyHostMemoryRecallLifecycle(
+    hits: MemoryRecall[],
+    agentId: string,
+  ): Promise<void> {
+    if (hits.length === 0) return
+    const recalls = hits.map(hit => ({
+      record_id: hit.record.record_id,
+      recall_count: hit.record.recall_count + 1,
+      last_recalled_at: Date.now(),
+    }))
+    await this.opts.dreamStore?.recordRecall?.(agentId, recalls)
+    const threshold = this.opts.memoryPolicy?.promotionRecallThreshold
+    if (threshold === undefined) return
+    for (let index = 0; index < hits.length; index += 1) {
+      const before = hits[index].record.recall_count
+      const after = recalls[index].recall_count
+      if (before < threshold && after >= threshold) {
+        this.opts.onPromotionSuggested?.({
+          recordId: recalls[index].record_id,
+          recallCount: after,
+        })
+      }
+    }
   }
 
   private async logMemoryRetrievalResult(
@@ -844,15 +819,43 @@ export class RuntimeRunner {
     })
   }
 
-  private createSyscallRuntime(): KernelRuntimeInstance {
-    const { KernelRuntime } = getKernel()
-    return new KernelRuntime({
-      maxTokens: this.opts.maxTokens,
-      maxTurns: this.opts.maxTurns,
-      // M4/G5: per-node token cap → child run's cumulative token budget.
-      maxTotalTokens: this.opts.maxTotalTokens !== undefined ? BigInt(this.opts.maxTotalTokens) : undefined,
-      timeoutMs: this.opts.timeoutMs !== undefined ? BigInt(this.opts.timeoutMs) : undefined,
-    })
+  private createCanonicalRuntime(
+    runId: string = crypto.randomUUID(),
+    sessionId = this.durableSessionId(),
+  ): CanonicalRunnerRuntime {
+    const { CanonicalKernel } = getKernel()
+    return new CanonicalRunnerRuntime(
+      new CanonicalKernel(),
+      this.resolveKernelJournal(),
+      `node-operation-${runId}`,
+      {
+        maxContextTokens: this.opts.maxTokens,
+        maxTurns: this.opts.maxTurns,
+        maxTotalTokens: this.opts.maxTotalTokens,
+        maxWallMs: this.opts.timeoutMs,
+        memoryBindingId: `node-memory-${this.opts.agentId ?? "root"}`,
+        persistPayload: async (callId, content, previewBytes) => {
+          const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`
+          const payloadRef = `payload:${digest.slice("sha256:".length, "sha256:".length + 32)}`
+          await this.resultSpool().persistPayload(sessionId, callId, payloadRef, content)
+          return {
+            payloadRef,
+            digest,
+            originalSize: String(Buffer.byteLength(content, "utf8")),
+            preview: utf8Prefix(content, previewBytes),
+          }
+        },
+      },
+    )
+  }
+
+  private resolveKernelJournal(): KernelJournal {
+    const embedded = (this.opts.sessionLog as SessionLog & { kernelJournal?: KernelJournal }).kernelJournal
+    const journal = this.opts.kernelJournal ?? embedded
+    if (!journal) {
+      throw new Error("RuntimeOptions.kernelJournal is required when SessionLog has no canonical journal")
+    }
+    return journal
   }
 
   private groupBudgetRequest(includeTokens = true): GroupBudgetRequest {
@@ -893,11 +896,11 @@ export class RuntimeRunner {
    * Lower the declarative governance / attention / scheduler-budget / resource-quota policies into a
    * freshly-created kernel. Shared by `execute()` (full agent run) and `bootstrapWorkflowKernel()`
    * (standalone host-driven workflow) so a workflow's DAG-node spawns are gated, queued, and quota'd
-   * exactly as a mid-run spawn would be. Must run BEFORE `start_run` so the in-kernel gate enforces
+   * exactly as a mid-run spawn would be. Must run before the canonical root start so the gate enforces
    * every policy from the first spawn. No config ⇒ the native-profile defaults (铁律: defaults only).
    */
   private async applyKernelPolicies(
-    runtime: KernelRuntimeInstance,
+    runtime: CanonicalRunnerRuntime,
     groupBudgetScope?: GroupBudgetScope,
   ): Promise<void> {
     // K2: lower governance / attention / scheduler / quota in ONE `configure_run` event instead of
@@ -1034,9 +1037,7 @@ export class RuntimeRunner {
   }
 
   /**
-   * Mirror one kernel memory-lifecycle observation into the durable store / host callbacks.
-   * Shared by the main run drain, the prefetch path, and the host memory syscalls so every
-   * query route has identical recall + promotion semantics (T5).
+   * Mirror one agent-syscall memory-lifecycle observation into the durable store / host callbacks.
    *
    * M3: `memory_recalled` carries the kernel-derived count — the runner never computes
    * `recall_count + 1` itself. M4: `promotion_suggested` is advisory and already
@@ -1054,20 +1055,6 @@ export class RuntimeRunner {
         recordId: obs.record_id,
         recallCount: obs.recall_count ?? 0,
       })
-    }
-  }
-
-  private async consumeMemoryLifecycleObservations(
-    sessionId: string | null | undefined,
-    observations: KernelObservation[],
-  ): Promise<void> {
-    const turn = this.activeKernel?.turn() ?? 0
-    for (const obs of observations) {
-      if (!isMemoryLifecycleObservation(obs)) continue
-      await this.mirrorMemoryLifecycle(obs)
-      if (!sessionId) continue
-      const event = kernelObservationToSessionEvent(obs, turn)
-      if (event) await this.opts.sessionLog.append(sessionId, event)
     }
   }
 
@@ -1133,52 +1120,13 @@ export class RuntimeRunner {
     this.knowledgePushedSkills.delete(name)
   }
 
-  /**
-   * Spawn an isolated sub-agent via the kernel, run it on the host, and feed the result back.
-   * Requires an active parent run (`run()` / `wake()` in progress or paused at milestone).
-   */
+  /** Retired host-authoring entrypoint; child work must be authored by a canonical root/syscall. */
   async *spawnSubAgent(spec: AgentRunSpec): AsyncIterable<StreamEvent> {
-    if (!this.activeKernel || !this.currentSessionId) {
-      throw new Error("spawnSubAgent requires an active parent run")
-    }
-    const parentSessionId = this.currentSessionId
-    const runtime = this.activeKernel
-
-    const observations = await this.commitKernelApply(runtime, this.pendingObservations, {
-      kind: "spawn_sub_agent",
-      spec: agentRunSpecToKernel(spec),
-      parent_session_id: parentSessionId,
-    })
-    this.nextArchiveStart = await this.appendObservations(parentSessionId, runtime, this.nextArchiveStart)
-
-    const spawned = findSpawnProcessObservation(observations)
-    if (!spawned) {
-      const rejected = controlRequestRejection(observations, "spawn_sub_agent")
-      if (rejected) {
-        yield { type: "error", message: `spawn_sub_agent denied: ${rejected.reason}` } as ErrorEvent
-        return
-      }
-      throw new Error("spawn_sub_agent did not emit agent_process_changed")
-    }
-
-    const manifest = spawnObservationToManifest(spawned, spec, parentSessionId)
-
-    const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
-    const result = await orchestrator.run({
-      parentOpts: this.opts,
-      parentSessionId,
-      spec,
-      manifest,
-      sessionLog: this.opts.sessionLog,
-      toolAccess: spec.toolAccess,
-      ...(this.opts.subAgentHarness ? { harness: this.opts.subAgentHarness } : {}),
-    })
-
-    await this.commitKernelApply(runtime, this.pendingObservations, {
-      kind: "sub_agent_completed",
-      result: subAgentResultToKernel(result),
-    })
-    yield { type: "done", iterations: result.result.turnsUsed, totalTokens: result.result.totalTokensUsed, status: result.result.termination } as DoneEvent
+    void spec
+    throw new Error(
+      "spawnSubAgent is unavailable under canonical ABI v3: author child work through a provider " +
+      "syscall or start a root workflow",
+    )
   }
 
   /**
@@ -1343,7 +1291,7 @@ export class RuntimeRunner {
     },
   ): Promise<WorkflowOutcome> {
     // Standalone entry: with no active parent run (e.g. a stateless HTTP handler), auto-bootstrap a
-    // kernel that owns the DAG — start_run + the same governance/quota/attention policies a full run
+    // kernel that owns the DAG — canonical configure + root start with the same policies a full run
     // gets — then tear it down on completion so the runner is reusable. Mid-run callers (activeKernel
     // already set by an in-flight `run()`) keep the original in-place behavior with no teardown.
     const bootstrapped = !this.activeKernel || !this.currentSessionId
@@ -1352,6 +1300,7 @@ export class RuntimeRunner {
     try {
       if (bootstrapped) {
         const sessionId = opts?.sessionId ?? `wf-${crypto.randomUUID()}`
+        const runId = crypto.randomUUID()
         // A standalone workflow reserves a bounded slice before its kernel schedules any node.
         // Mid-run callers reuse their parent run's already-active reservation.
         if (this.opts.runGroup) {
@@ -1366,21 +1315,34 @@ export class RuntimeRunner {
         // Resume depends on this fact. Do not dispatch any node until it is durable.
         await this.opts.sessionLog.append(sessionId, {
           kind: "run_started",
-          run_id: crypto.randomUUID(),
+          run_id: runId,
           goal: `workflow:${spec.nodes.length} nodes`,
           criteria: [],
           agent_id: this.opts.agentId,
         })
-        await this.bootstrapWorkflowKernel(sessionId, groupBudgetScope)
+        await this.bootstrapWorkflowKernel(sessionId, runId, groupBudgetScope)
       }
       const parentSessionId = this.currentSessionId!
       const runtime = this.activeKernel!
       const observationStart = this.pendingObservations.length
-      const initialAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, {
-        kind: "load_workflow",
-        spec: workflowSpecToKernel(spec),
-        parent_session_id: parentSessionId,
-      })
+      let initialAction: KernelRunnerAction | null
+      try {
+        initialAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, {
+          kind: "load_workflow",
+          spec: workflowSpecToKernel(spec),
+          parent_session_id: parentSessionId,
+        })
+      } catch (error) {
+        if (!(error instanceof CanonicalKernelRejectedError)) throw error
+        return {
+          nodeOutcomes: [],
+          outputs: {},
+          rejection: {
+            operation: "load_workflow",
+            reason: String(error.fault.message ?? error.message),
+          },
+        }
+      }
       const observations = this.pendingObservations.slice(observationStart)
       const outcome = await this.driveWorkflow(
         initialAction,
@@ -1390,11 +1352,25 @@ export class RuntimeRunner {
         new Map(),
       )
       if (bootstrapped) {
-        const terminal = await this.commitKernelAction(runtime, this.pendingObservations, { kind: "complete_run" })
+        let terminal = await this.commitKernelAction(runtime, this.pendingObservations, { kind: "complete_run" })
+        if (terminal.kind !== "done" && this.interrupted) {
+          terminal = await this.commitKernelAction(runtime, this.pendingObservations, {
+            kind: "cancel_operation",
+            effect_id: terminal.effectId,
+            reason: this.cancellationReason ?? "user",
+          })
+        }
         if (terminal.kind !== "done") {
           throw new Error("complete_run did not produce a terminal kernel action")
         }
         await this.appendObservations(parentSessionId, runtime, 0)
+        if (groupBudgetScope && !groupBudgetScope.isClosed) {
+          await this.settleGroupBudget(groupBudgetScope, {
+            tokens: terminal.result.totalTokensUsed,
+            subagents: runtime.localSubagentsSpawned(),
+          })
+          this.activeGroupBudgetScope = undefined
+        }
       }
       return outcome
     } finally {
@@ -1416,14 +1392,15 @@ export class RuntimeRunner {
   /**
    * Bootstrap a standalone kernel for a host-driven workflow with NO active parent run — the path a
    * stateless request handler takes when it calls `runWorkflow(spec)` directly. Mirrors `execute()`'s
-   * pre-run kernel setup (governance / attention / quota via `applyKernelPolicies`, then `start_run`)
+   * pre-run kernel setup (governance / attention / quota via `applyKernelPolicies`, then root start)
    * after `runWorkflow` has durably recorded `run_started`. Sets `activeKernel` / `currentSessionId`;
    * `runWorkflow` is responsible for tearing them down.
    */
   private async bootstrapWorkflowKernel(
     sessionId: string,
+    runId: string,
     groupBudgetScope?: GroupBudgetScope,
-  ): Promise<KernelRuntimeInstance> {
+  ): Promise<CanonicalRunnerRuntime> {
     this.interrupted = false
     this.abortController = new AbortController()
     this.pendingObservations = []
@@ -1431,83 +1408,24 @@ export class RuntimeRunner {
     this.activePageOutArchive = undefined
     this.currentSessionId = sessionId
 
-    const runtime = this.createSyscallRuntime()
+    const runtime = this.createCanonicalRuntime(runId, sessionId)
     this.activeKernel = runtime
 
     await this.applyKernelPolicies(runtime, groupBudgetScope)
-    // ABI v2 has one lifecycle: standalone workflows start a real run before loading their DAG.
-    // The initial provider effect is superseded by the workflow load; no self-bootstrap escape hatch.
-    await this.commitKernelAction(runtime, this.pendingObservations, {
-      kind: "start_run",
-      task: { goal: `workflow session ${sessionId}`, criteria: [] },
-    })
     return runtime
   }
 
-  /**
-   * M5/G1: bootstrap an **agent-authored** workflow ("the model writes its own harness"). Unlike
-   * `runWorkflow` (the host fires the privileged `load_workflow`), this routes the spec through the
-   * agent-reachable `Syscall::LoadWorkflow` (the `submit_workflow` event): with no workflow active the
-   * kernel **bootstraps** the DAG; if one is already active it **flattens** the spec's nodes onto it
-   * (bootstrap-or-flatten — one kernel, one quota, never a workflow stack). Gated by the same
-   * `max_workflow_nodes` backstop as runtime submission, so an authored harness can't overgrow the run.
-   * The resulting batches are driven by the same shared driver as `runWorkflow`.
-   */
+  /** Retired host-authoring entrypoint; `start_workflow` must arrive as a provider syscall. */
   async bootstrapWorkflow(
     spec: WorkflowSpec,
     opts?: { submitterAgentId?: string },
   ): Promise<WorkflowOutcome> {
-    if (!this.activeKernel || !this.currentSessionId) {
-      throw new Error("bootstrapWorkflow requires an active parent run")
-    }
-    const parentSessionId = this.currentSessionId
-    const runtime = this.activeKernel
-    const observationStart = this.pendingObservations.length
-    const initialAction = await this.commitKernelMaybeAction(
-      runtime,
-      this.pendingObservations,
-      submitWorkflowToKernel(spec, parentSessionId, opts?.submitterAgentId),
+    void spec
+    void opts
+    throw new Error(
+      "bootstrapWorkflow is unavailable under canonical ABI v3: start_workflow must enter through " +
+      "the provider syscall channel",
     )
-    const observations = this.pendingObservations.slice(observationStart)
-    // W-3: persist the agent-authored batch (bootstrap base 0 / flatten base N — the kernel now
-    // announces BOTH) so an interrupted authored workflow reconstructs on resume; the host never
-    // had this spec, unlike the `runWorkflow` path.
-    const submitted = observations.find(o => o.kind === "workflow_nodes_submitted") as
-      | { base?: number }
-      | undefined
-    if (submitted) {
-      await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodesSubmittedEvent({
-        turn: runtime.turn(),
-        nodes: (workflowSpecToKernel(spec).nodes as Record<string, unknown>[]) ?? [],
-        baseIndex: submitted.base,
-        submitterAgentId: opts?.submitterAgentId,
-      }))
-    }
-    return this.driveWorkflow(initialAction, observations, parentSessionId, runtime)
-  }
-
-  /**
-   * M5 v2.1: drive the sub-workflow(s) a top-level agent authored via `start_workflow`. Called at the
-   * verified-safe point (right after the tool turn resolved to `call_provider` — kernel in Reason, not
-   * suspended). For each authored spec: `bootstrapWorkflow` runs it in THIS kernel (the kernel resumes
-   * the agent reason loop on `workflow_completed` — `finish_workflow` sets phase=Reason), then the
-   * outcome is injected as a user message so the agent's next turn sees the result. Returns a fresh
-   * `call_provider` synthesized from the updated context (the workflow drive consumed its own kernel
-   * actions, so we re-render — the same pattern as the reactive-compact retry path).
-   */
-  private async driveAuthoredWorkflows(
-    runtime: KernelRuntimeInstance,
-    action: Extract<KernelRunnerAction, { kind: "call_provider" }>,
-  ): Promise<Extract<KernelRunnerAction, { kind: "call_provider" }>> {
-    const specs = this.pendingAuthoredWorkflows
-    this.pendingAuthoredWorkflows = []
-    this.workflowContinuation = null
-    for (const spec of specs) {
-      await this.bootstrapWorkflow(spec)
-    }
-    const continuation = this.workflowContinuation
-    if (!continuation) throw new Error("authored workflow completed without a provider continuation")
-    return continuation
   }
 
   /**
@@ -1519,13 +1437,58 @@ export class RuntimeRunner {
    * source. Non-preempting signals (queue/observe/soft-interrupt) are still applied as they arrive.
    */
   private async monitorWorkflowPreemption(
-    runtime: KernelRuntimeInstance,
+    runtime: CanonicalRunnerRuntime,
     controllers: Map<string, AbortController>,
     batchState: { settled: boolean },
   ): Promise<WorkflowNodeOutcome[] | null> {
     const source = this.opts.signalSource
-    if (!source) return null
     while (!batchState.settled) {
+      if (this.interrupted) {
+        const observationStart = this.pendingObservations.length
+        let cancellation = await this.commitKernelAction(runtime, this.pendingObservations, {
+          kind: "cancel_operation",
+          reason: this.cancellationReason ?? "user",
+        })
+        let preemptedAgentIds = [...controllers.keys()]
+        if (cancellation.kind === "preempt_sub_agents") {
+          preemptedAgentIds = cancellation.agentIds
+          for (const id of cancellation.agentIds) {
+            controllers.get(id)?.abort(this.cancellationReason ?? "user")
+          }
+          cancellation = await this.commitKernelAction(runtime, this.pendingObservations, {
+            kind: "preempt_result",
+            effect_id: cancellation.effectId,
+          })
+        } else {
+          for (const controller of controllers.values()) {
+            controller.abort(this.cancellationReason ?? "user")
+          }
+        }
+        if (cancellation.kind !== "done") {
+          throw new Error(
+            `workflow cancellation returned unexpected effect: ${cancellation.kind}`,
+          )
+        }
+        const observations = this.pendingObservations.slice(observationStart)
+        const completed = observations.find(o => o.kind === "workflow_completed") as
+          | { node_outcomes?: KernelWorkflowNodeOutcome[] }
+          | undefined
+        if (completed) {
+          return (completed.node_outcomes ?? []).map(workflowNodeOutcomeFromKernel)
+        }
+        const preempted = observations.find(o => o.kind === "agent_preempted") as
+          | { agent_ids?: string[] }
+          | undefined
+        return (preempted?.agent_ids ?? preemptedAgentIds).map(nodeId => ({
+          nodeId,
+          status: "failed",
+          termination: "user_abort",
+        }))
+      }
+      if (!source) {
+        await new Promise(resolve => setTimeout(resolve, 5))
+        continue
+      }
       // O2: injected notes participate in the monitor too, so a host `injectNote` mid-batch is not
       // stranded until the batch settles (the drain order matches `nextInboundSignal`).
       const delivery = await this.nextInboundSignal()
@@ -1554,6 +1517,8 @@ export class RuntimeRunner {
       }
       const preempted = observations.find(o => o.kind === "agent_preempted") as { agent_ids?: string[] } | undefined
       if (preempted) {
+        this.interrupted = true
+        this.cancellationReason ??= "user"
         for (const id of preempted.agent_ids ?? []) controllers.get(id)?.abort()
         const wc = observations.find(o => o.kind === "workflow_completed") as
           | { node_outcomes?: KernelWorkflowNodeOutcome[] }
@@ -1565,16 +1530,14 @@ export class RuntimeRunner {
   }
 
   /**
-   * Shared workflow driver for `runWorkflow` (host `load_workflow`) and `bootstrapWorkflow` (agent
-   * `submit_workflow`): given the observations from the initial load/bootstrap, run each kernel-emitted
-   * batch in parallel, feed completions back (appending any agent-submitted nodes first), and loop
-   * until the kernel reports the workflow complete. Returns typed terminal node outcomes.
+   * Drive a canonical root or provider-authored workflow from kernel effects only: run each
+   * emitted batch, resolve its launch/completion/preemption effects, and stop at the kernel terminal.
    */
   private async driveWorkflow(
     initialAction: KernelRunnerAction | null,
     initial: KernelObservation[],
     parentSessionId: string,
-    runtime: KernelRuntimeInstance,
+    runtime: CanonicalRunnerRuntime,
     seedOutputs?: Map<string, string>,
   ): Promise<WorkflowOutcome> {
     let observations = initial
@@ -1624,9 +1587,15 @@ export class RuntimeRunner {
     // W-1: on resume it is pre-seeded from the persisted node outputs, so post-resume dependents
     // still see their (pre-crash) dependencies' outputs.
     const outputs = new Map<string, string>(seedOutputs ?? [])
+    const completedNodeOutcomes: WorkflowNodeOutcome[] = []
 
     for (;;) {
       if (nodes.length === 0) return { nodeOutcomes: [], outputs: Object.fromEntries(outputs) } // nothing to run (e.g. all gated)
+      for (const node of nodes) {
+        for (const [agentId, output] of Object.entries(node.dependency_outputs ?? {})) {
+          if (!outputs.has(agentId)) outputs.set(agentId, output)
+        }
+      }
 
       // Run the currently-runnable nodes in parallel — each is independent within a round.
       const roundBudget = budget
@@ -1642,7 +1611,9 @@ export class RuntimeRunner {
       )
       batchState.settled = true
       const preempted = await monitor
-      if (preempted) return { nodeOutcomes: preempted, outputs: Object.fromEntries(outputs) }
+      if (preempted !== null) {
+        return { nodeOutcomes: preempted, outputs: Object.fromEntries(outputs) }
+      }
 
       // Feed completions back one at a time. The kernel's run-queue executor may spawn a node's
       // dependents the moment *that* node completes (per-node unblock), so each feed can emit its
@@ -1657,59 +1628,16 @@ export class RuntimeRunner {
         const outContent = result.result.finalMessage?.content
         const outText = typeof outContent === "string" ? outContent : outContent != null ? JSON.stringify(outContent) : ""
         outputs.set(result.agentId, outText)
+        completedNodeOutcomes.push({
+          nodeId: result.agentId,
+          status: workflowNodeStatusFromTermination(result.result.termination),
+          termination: result.result.termination as WorkflowNodeOutcome["termination"],
+          ...(result.result.finalMessage ? { output: result.result.finalMessage } : {}),
+        })
         // A loop iteration completes under `wf-node{N}-i{k}` but its dependents consume the STABLE
         // node id `wf-node{N}` — alias it so the LAST iteration's output is what dependents see.
         const stableId = result.agentId.replace(/-i\d+$/, "")
         if (stableId !== result.agentId) outputs.set(stableId, outText)
-        // R3-1: if this node's agent submitted more nodes, append them to the parent DAG BEFORE
-        // reporting the node's completion — the workflow is still active (the kernel hasn't seen this
-        // node finish), so even a submission from the last running node keeps the DAG alive. The
-        // appended nodes' `workflow_batch_spawned` is collected into this round like any other.
-        if (result.submittedNodes?.length) {
-          // G1: stamp the submitting node's agent id so the kernel can coerce a quarantined
-          // submitter's nodes to quarantined (no topological privilege escalation).
-          const submitEvent = submitWorkflowNodesToKernel(result.submittedNodes, result.agentId)
-          const observationStart = this.pendingObservations.length
-          const submitAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, submitEvent)
-          const subObs = this.pendingObservations.slice(observationStart)
-          const rejected = controlRequestRejection(subObs, "submit_workflow_nodes")
-            ?? (subObs.find(o => o.kind === "nodes_rejected")
-              ? { operation: "submit_workflow_nodes", reason: String(subObs.find(o => o.kind === "nodes_rejected")?.reason ?? "request denied") }
-              : undefined)
-          if (rejected) {
-            const denial = `workflow node submission denied: ${rejected.reason}`
-            result.result = {
-              ...result.result,
-              termination: "error",
-              finalMessage: { role: "assistant", content: denial, toolCalls: [] },
-            }
-            outputs.set(result.agentId, denial)
-            if (stableId !== result.agentId) outputs.set(stableId, denial)
-          }
-          if (submitAction?.kind === "spawn_workflow") {
-            nextNodes.push(...submitAction.nodes as unknown as WorkflowSpawnInfo[])
-            budget = submitAction.budget as unknown as WorkflowBudget | undefined ?? budget
-            const accepted = await acceptSpawn(submitAction)
-            const submittedDone = findDone([...subObs, ...accepted])
-            if (submittedDone) done = submittedDone
-          } else if (submitAction) {
-            throw new Error(`workflow node submission returned unexpected effect: ${submitAction.kind}`)
-          }
-          // R3-1: persist the submission (kernel-shape nodes) + its kernel-reported base index
-          // so resume can re-apply the batch at the exact original graph position. W-N3: also the
-          // submitter, so resume drops batches whose submitter re-runs (it will re-submit).
-          const submitted = subObs.find(o => o.kind === "workflow_nodes_submitted") as
-            | { base?: number }
-            | undefined
-          if (submitted) {
-            await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodesSubmittedEvent({
-              turn: runtime.turn(),
-              nodes: (submitEvent.nodes as Record<string, unknown>[]) ?? [],
-              baseIndex: submitted.base,
-              submitterAgentId: result.agentId,
-            }))
-          }
-        }
         const observationStart = this.pendingObservations.length
         const completionAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, {
           kind: "sub_agent_completed",
@@ -1722,8 +1650,29 @@ export class RuntimeRunner {
           obs = [...obs, ...await acceptSpawn(completionAction)]
         } else if (completionAction?.kind === "call_provider") {
           this.workflowContinuation = completionAction
+        } else if (completionAction?.kind === "done") {
+          return {
+            nodeOutcomes: completedNodeOutcomes,
+            outputs: Object.fromEntries(outputs),
+          }
         } else if (completionAction) {
           throw new Error(`workflow completion returned unexpected effect: ${completionAction.kind}`)
+        }
+        // ABI v3: child-authored DAG additions ride on ChildCompleted.parent_requests. Admission is
+        // independent of the completion fact; only an admitted request emits this observation.
+        if (result.submittedNodes?.length) {
+          const submitted = obs.find(o => o.kind === "workflow_nodes_submitted") as
+            | { base?: number }
+            | undefined
+          if (submitted) {
+            const submittedEvent = submitWorkflowNodesToKernel(result.submittedNodes, result.agentId)
+            await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodesSubmittedEvent({
+              turn: runtime.turn(),
+              nodes: (submittedEvent.nodes as Record<string, unknown>[]) ?? [],
+              baseIndex: submitted.base,
+              submitterAgentId: result.agentId,
+            }))
+          }
         }
         const d = findDone(obs)
         if (d) done = d
@@ -1820,7 +1769,7 @@ export class RuntimeRunner {
         observation.kind === "signal_delivery_disposed"
         && observation.delivery_id === delivery.deliveryId
         && observation.attempt === delivery.deliveryAttempt)
-      if (dispositions.length !== 1) {
+      if (dispositions.length > 1) {
         throw new Error("kernel did not return the matching signal delivery disposition")
       }
       if (!await delivery.ack()) throw new Error("signal lease was lost before acknowledgement")
@@ -1878,11 +1827,29 @@ export class RuntimeRunner {
 
   async *wake(sessionId: string, extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
     const events = await this.opts.sessionLog.read(sessionId)
-    if (events.some(e => e.event.kind === "run_terminal")) return
-
-    const startEntry = [...events].reverse().find(e => e.event.kind === "run_started")
+    const startIndex = events.reduce(
+      (latest, entry, index) => entry.event.kind === "run_started" ? index : latest,
+      -1,
+    )
+    const startEntry = startIndex >= 0 ? events[startIndex] : undefined
     if (!startEntry) throw new Error(`No run_started event for session: ${sessionId}`)
     const start = startEntry.event as Extract<SessionEvent, { kind: "run_started" }>
+    const projectedTerminal = events
+      .slice(startIndex + 1)
+      .some(e => e.event.kind === "run_terminal")
+
+    if (projectedTerminal) {
+      const operationId = `node-operation-${start.run_id}`
+      const journal = this.resolveKernelJournal()
+      const head = await journal.head(operationId)
+      // A session without a canonical operation is a legacy completed run. Once a canonical
+      // chain exists, however, SessionLog is only an audit projection: a stale or forged
+      // run_terminal must not suppress recovery of a still-live kernel operation.
+      if (!head) return
+      const authoritative = this.createCanonicalRuntime(start.run_id, sessionId)
+      await authoritative.restore()
+      if (authoritative.isTerminal()) return
+    }
 
     yield* this.execute(sessionId, start.goal, start.criteria, extensions, events, true, start.attachments, start.run_id)
   }
@@ -1890,7 +1857,7 @@ export class RuntimeRunner {
   /** Execute a kernel-owned approval effect and return the correlated decision lists. */
   private async resolveApprovalRequests(
     requests: Array<{ callId: string; tool: string; arguments: string; reason: string }>,
-    runtime: KernelRuntimeInstance,
+    runtime: CanonicalRunnerRuntime,
     sessionId: string,
   ): Promise<{ approved: string[]; denied: string[]; events: StreamEvent[] }> {
     const approved: string[] = []
@@ -1971,65 +1938,6 @@ export class RuntimeRunner {
     return { approved, denied, events }
   }
 
-  /**
-   * O7: resolve a `read_result` meta-tool call to the full text of a previously-evicted tool
-   * output. Resolution order: (a) the on-disk result spool committed by the explicit
-   * `spool_large_result` host effect, then (b) a session-log scan for the original
-   * `tool_completed` event carrying that `call_id`. Slices the
-   * resolved text by `[offset, offset + maxBytes)` (plain string slice — "bytes-ish").
-   */
-  private async resolveReadResult(
-    sessionId: string,
-    argsJson: string,
-  ): Promise<{ text: string; isError: boolean }> {
-    let callId = ""
-    let offset = 0
-    let maxBytes = 4000
-    try {
-      const args = JSON.parse(argsJson || "{}") as { call_id?: string; offset?: number; max_bytes?: number }
-      callId = typeof args.call_id === "string" ? args.call_id : ""
-      if (typeof args.offset === "number" && Number.isFinite(args.offset)) offset = args.offset
-      if (typeof args.max_bytes === "number" && Number.isFinite(args.max_bytes)) maxBytes = args.max_bytes
-    } catch {
-      // malformed arguments — callId stays empty, falls through to "not found" below
-    }
-
-    let full: string | undefined
-    // R-B32: read from the SAME spool the `spool_large_result` effect wrote to — including the
-    // default in-memory one. A fresh instance here has never seen the key the kernel was handed.
-    const spool = this.resultSpool()
-    try {
-      full = await spool.findByCallId(sessionId, callId)
-    } catch {
-      full = undefined
-    }
-
-    if (full === undefined) {
-      try {
-        const events = await this.opts.sessionLog.read(sessionId)
-        for (const { event } of events) {
-          if (event.kind !== "tool_completed") continue
-          const match = event.results.find(r => r.call_id === callId)
-          if (match) full = match.output
-        }
-      } catch {
-        full = undefined
-      }
-    }
-
-    if (full === undefined) {
-      return { text: `no stored output for call_id "${callId}"`, isError: true }
-    }
-
-    const start = Math.max(0, offset)
-    const end = Math.min(full.length, start + Math.max(0, maxBytes))
-    const slice = full.slice(start, end)
-    return {
-      text: `[read_result ${callId}: chars ${start}–${end} of ${full.length}]\n${slice}`,
-      isError: false,
-    }
-  }
-
   private async *execute(
     sessionId: string,
     goal: string,
@@ -2050,7 +1958,6 @@ export class RuntimeRunner {
     if (this.opts.enableDiagnosticsDashboard) {
       this.dashboard = new KernelPrimitivesDashboard(sessionId)
     }
-    const kernel = getKernel()
     const ext = { ...this.opts.extensions, ...(extensions ?? {}) }
     const providerState = this.opts.provider.createRunState?.()
     let nextCompressedArchiveStart = nextArchivedSeqStart(priorEvents)
@@ -2069,15 +1976,12 @@ export class RuntimeRunner {
     let groupBudgetScope: GroupBudgetScope | undefined
 
     try {
-    const runtime = new kernel.KernelRuntime({
-      maxTokens: this.opts.maxTokens,
-      maxTurns: effectiveMaxTurns,
-      timeoutMs: effectiveTimeoutMs !== undefined ? BigInt(effectiveTimeoutMs) : undefined,
-      maxTotalTokens: this.opts.maxTotalTokens !== undefined ? BigInt(this.opts.maxTotalTokens) : undefined,
-    })
+    const runtime = this.createCanonicalRuntime(runId, sessionId)
+    if (resumeMidRun) await runtime.restore()
     this.activeKernel = runtime
     this.nextArchiveStart = nextCompressedArchiveStart
 
+    if (!resumeMidRun) {
     if (this.opts.tokenizer) {
       await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "set_tokenizer",
@@ -2178,56 +2082,23 @@ export class RuntimeRunner {
         },
       })
     }
-
-    const maxBytes = runtime.recoveryContentBytes()
+    }
 
     if (priorEvents && priorEvents.length > 0) {
-      const repaired = repairEventsForRecovery(priorEvents, maxBytes)
-      seedProviderReplayFromEvents(this.opts.provider, repaired)
-      const loadArchive = this.opts.compressionStore
-        ? (ref: string) => this.opts.compressionStore!.read(ref)
-        : undefined
-      const replayed = await replayMessagesAsync(repaired, maxBytes, loadArchive)
-      await this.commitKernelApply(runtime, this.pendingObservations, {
-        kind: "preload_history",
-        messages: replayed.map(messageToKernelMessage),
-      })
-      // P1-B B3: rebuild active-skill gating after a wake by re-emitting SkillActivated for each
-      // `skill` tool call in the replayed history (active_skills is not snapshotted — graceful).
-      // The catalog (set_available_skills) was already fed above, so allowed_tools resolves.
-      // `knowledge` isn't snapshotted either (same graceful-reset philosophy) — best-effort re-push
-      // the skill's content from its replayed tool_result so the durable copy survives a wake too.
-      const toolResultByCallId = new Map<string, string>()
-      for (const m of replayed) {
-        for (const part of m.contentParts ?? []) {
-          if (part.type === "tool_result") toolResultByCallId.set(part.callId, part.output)
-        }
-      }
-      for (const m of replayed) {
-        for (const tc of m.toolCalls ?? []) {
-          if (tc.name !== "skill") continue
-          try {
-            const name = (JSON.parse(tc.arguments || "{}") as { name?: string }).name
-            if (!name) continue
-            await this.commitKernelApply(runtime, this.pendingObservations, {
-              kind: "skill_activated",
-              name,
-              ...(this.opts.skillLeaseTurns !== undefined ? { lease_turns: this.opts.skillLeaseTurns } : {}),
-            })
-            const output = toolResultByCallId.get(tc.id)
-            if (output && !this.knowledgePushedSkills.has(name)) {
-              this.knowledgePushedSkills.add(name)
-              // K1: keyed — the kernel-side upsert is the authoritative dedup, so a wake re-push
-              // of a skill already pinned live can never double-pin (the in-run Set resets with
-              // each runner instance; the key does not).
-              await this.pushKnowledge(
-                { role: "system", content: output, toolCalls: [] },
-                undefined,
-                { key: `skill:${name}` },
-              )
-            }
-          } catch { /* malformed skill args — skip */ }
-        }
+      seedProviderReplayFromEvents(this.opts.provider, priorEvents)
+      if (!resumeMidRun) {
+        const loadArchive = this.opts.compressionStore
+          ? (ref: string) => this.opts.compressionStore!.read(ref)
+          : undefined
+        const replayed = await replayMessagesAsync(
+          priorEvents,
+          runtime.recoveryContentBytes(),
+          loadArchive,
+        )
+        await this.commitKernelApply(runtime, this.pendingObservations, {
+          kind: "preload_history",
+          messages: replayed.map(messageToKernelMessage),
+        })
       }
     }
 
@@ -2247,7 +2118,8 @@ export class RuntimeRunner {
     // (meta + stable-core only), so mere presence triggers the lowering.
     const baselineToolIds = this.opts.baselineToolIds
     const hasBaseline = baselineToolIds !== undefined
-    if (this.opts.runSpec || hasProfile || hasBaseline) {
+    const hasMilestoneContract = this.opts.milestoneContract !== undefined
+    if (this.opts.runSpec || hasProfile || hasBaseline || hasMilestoneContract) {
       const baseSpec: AgentRunSpec = this.opts.runSpec ?? {
         identity: { agentId: this.opts.agentId ?? "root", sessionId, isSubAgent: false },
         role: "custom",
@@ -2257,13 +2129,16 @@ export class RuntimeRunner {
         ? { ...baseSpec, capabilityFilter: { ...baseSpec.capabilityFilter, allowedIds: allowedToolIds } }
         : baseSpec
       if (hasBaseline) spec = { ...spec, exposureBaseline: baselineToolIds }
+      if (hasMilestoneContract && !spec.verificationContractId) {
+        spec = { ...spec, verificationContractId: "node-default" }
+      }
       startPayload.run_spec = agentRunSpecToKernel(spec)
     }
     // Reserve capacity before start_run. The kernel enforces only this vehicle's grant and reports
     // exact terminal usage against the same opaque reservation identity. A nested vehicle joins for
     // lineage/settlement only: it reserves no budget axes (group admission governs peer vehicles),
     // so the parent's held reservation cannot squeeze the child's grant to zero.
-    if (this.opts.runGroup) {
+    if (!resumeMidRun && this.opts.runGroup) {
       const g = this.opts.runGroup
       groupBudgetScope = await GroupBudgetScope.open(
         g,
@@ -2272,15 +2147,20 @@ export class RuntimeRunner {
       )
       this.activeGroupBudgetScope = groupBudgetScope
     }
-    try {
-      await this.applyKernelPolicies(runtime, groupBudgetScope)
-    } catch (err) {
-      // Admission failure (e.g. the kernel rejecting a zero-capacity grant): release the
-      // reservation so it cannot linger in the group ledger, then surface the error.
-      await groupBudgetScope?.release()
-      this.activeGroupBudgetScope = undefined
-      throw err
+    if (!resumeMidRun) {
+      try {
+        await this.applyKernelPolicies(runtime, groupBudgetScope)
+      } catch (err) {
+        // Admission failure (e.g. the kernel rejecting a zero-capacity grant): release the
+        // reservation so it cannot linger in the group ledger, then surface the error.
+        await groupBudgetScope?.release()
+        this.activeGroupBudgetScope = undefined
+        throw err
+      }
     }
+    this.currentGoal = goal
+    if (!resumeMidRun) await this.prefetchMemoryIntoInitialContext(runtime)
+
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before start_run pushes the "[TASK STATE]" anchor. init_task does not
     // clear history, so order becomes [attachment user msg, "Proceed…"] — both land
@@ -2291,24 +2171,14 @@ export class RuntimeRunner {
         message: attachmentsToKernelMessage(attachments),
       })
     }
-    this.currentGoal = goal
-
+    const resumedAction = resumeMidRun ? runtime.resumeAction() : null
     let action: KernelRunnerAction = resumeMidRun
-      ? await this.commitKernelAction(runtime, this.pendingObservations, { kind: "resume" })
+      ? resumedAction ?? (() => { throw new Error("restored canonical operation has no pending effect or terminal") })()
       : await this.commitKernelAction(runtime, this.pendingObservations, startPayload)
-    // I4/T5: pre-fetch memory before the first LLM turn so the model sees it on turn 1 instead
-    // of discovering it via the `memory` tool on turn 3+. It routes through the kernel's
-    // query_memory lifecycle and therefore runs AFTER start_run — a memory query is a kernel
-    // preload whose result resumes the reasoning path, so issuing it pre-run would leave the
-    // kernel Running and start_run would fault. The resumed action from the last query
-    // supersedes start_run's (same pull contract; it renders the injected hits). Hits land in
-    // `history` as ordinary turns — single-use retrieval content that decays with the
-    // compression pyramid, never pinned into `knowledge`. Skipped on resumes (already in
-    // prior context) and when dreamStore/agentId is absent.
-    if (!resumeMidRun) {
-      const resumed = await this.prefetchMemoryIntoHistory(runtime, "initial")
-      if (resumed) action = resumed
-    }
+    // I4/T5: pre-fetch memory before root start so the model sees it on turn 1 instead of
+    // discovering it via the `memory` tool later. Accepted hits enter `initial_context.messages`
+    // and are therefore frozen into the canonical start record. Skipped on restore (the checkpoint
+    // or journal already owns them) and when dreamStore/agentId is absent.
     // P0-C: the skill loaded and in effect going into the current turn (updated when the model's
     // `skill` tool call resolves). Drives the per-turn `activeSkill` metric → dwell measurement.
     let activeSkill: string | undefined
@@ -2352,15 +2222,6 @@ export class RuntimeRunner {
       if (runtime.isTerminal()) break
 
       if (action.kind === "call_provider") {
-        // M5 v2.1: top-level auto-pivot at the safe point. If the agent authored sub-workflow(s) via
-        // `start_workflow`, drive each in THIS kernel now (the kernel is in Reason / `call_provider`,
-        // NOT suspended — driving mid-suspend would clobber the single-slot suspend state), inject the
-        // outcome into context, and re-render. Loop-top placement (vs only after `tool_results`) catches
-        // EVERY path to `call_provider` — including resuming after an approval gate — so a queued spec
-        // is never stranded. Drains the queue; fires once per authored batch.
-        if (this.pendingAuthoredWorkflows.length > 0) {
-          action = await this.driveAuthoredWorkflows(runtime, action)
-        }
         const providerEffectId = action.effectId
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
@@ -2461,10 +2322,26 @@ export class RuntimeRunner {
           break
         }
 
+        const canonicalToolCalls = this.opts.skillLeaseTurns === undefined
+          ? finalToolCalls
+          : finalToolCalls.map(call => {
+              if (call.name !== "skill") return call
+              try {
+                return {
+                  ...call,
+                  arguments: JSON.stringify({
+                    ...(JSON.parse(call.arguments || "{}") as Record<string, unknown>),
+                    lease_turns: this.opts.skillLeaseTurns,
+                  }),
+                }
+              } catch {
+                return call
+              }
+            })
         const assistantMessage: Message = {
           role: "assistant",
           content: finalText,
-          toolCalls: finalToolCalls,
+          toolCalls: canonicalToolCalls,
           tokenCount: turnOutputTokens || turnTokens || undefined,
         }
         const providerEvent: Record<string, unknown> = {
@@ -2475,6 +2352,30 @@ export class RuntimeRunner {
           ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
           now_ms: Date.now(),
           ...(turnStopReason ? { stop_reason: turnStopReason } : {}),
+        }
+        if (this.opts.skillDir) {
+          const skillCalls = finalToolCalls.filter(call => call.name === "skill")
+          if (skillCalls.length > 0) {
+            const { readSkillFile } = await import("../skills/loader.js")
+            for (const call of skillCalls) {
+              try {
+                const name = String((JSON.parse(call.arguments || "{}") as { name?: unknown }).name ?? "")
+                if (!name) continue
+                if (this.opts.skillFilter && !this.opts.skillFilter.includes(name)) continue
+                const content = await readSkillFile(this.opts.skillDir, name)
+                if (!content) continue
+                await this.commitKernelApply(runtime, this.pendingObservations, {
+                  kind: "add_knowledge_message",
+                  key: `skill:${name}`,
+                  content,
+                  tokens: Math.max(1, Math.ceil(content.length / 4)),
+                  pinned: true,
+                })
+              } catch {
+                // A missing or malformed skill stays a model-visible syscall rejection.
+              }
+            }
+          }
         }
         action = await this.commitKernelAction(runtime, this.pendingObservations, providerEvent)
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
@@ -2524,20 +2425,53 @@ export class RuntimeRunner {
       } else if (action.kind === "persist_memory") {
         let error: string | undefined
         const agentId = this.opts.agentId
+        const canonicalMemory = action.memory
+        const record: MemoryRecord = {
+          record_id: `memory:${crypto.randomUUID()}`,
+          scope: this.opts.memoryScope ?? { tenant_id: "default", namespace: agentId ?? "default" },
+          name: String(canonicalMemory.name ?? ""),
+          kind: String(canonicalMemory.kind ?? "reference") as MemoryRecord["kind"],
+          content: String(canonicalMemory.content ?? ""),
+          description: String(canonicalMemory.description ?? ""),
+          provenance: {
+            author: "model",
+            trust: "untrusted",
+            evidence_refs: Array.isArray(canonicalMemory.evidence_refs)
+              ? canonicalMemory.evidence_refs.map(String)
+              : [],
+          },
+          created_at: Number(canonicalMemory.accepted_at_ms ?? Date.now()),
+          updated_at: Number(canonicalMemory.accepted_at_ms ?? Date.now()),
+          recall_count: 0,
+          confidence: 1,
+          links: [],
+          pinned: false,
+        }
         try {
           if (!agentId) throw new Error("memory persistence requires RuntimeOptions.agentId")
-          await this.persistMemoryToStore(action.memory as unknown as MemoryRecord, agentId)
+          await this.persistMemoryToStore(record, agentId)
         } catch (cause) {
           error = formatToolError(cause)
         }
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "memory_persist_result",
           effect_id: action.effectId,
+          record_ref: record.record_id,
           ...(error ? { error } : {}),
         })
 
       } else if (action.kind === "query_memory") {
-        const query = action.query as unknown as MemoryQuery
+        const query: MemoryQuery = {
+          scope: this.opts.memoryScope ?? {
+            tenant_id: "default",
+            namespace: this.opts.agentId ?? "default",
+          },
+          query: String(action.query.text ?? ""),
+          top_k: action.requestedK,
+          kinds: Array.isArray(action.query.kinds)
+            ? action.query.kinds.map(String) as MemoryQuery["kinds"]
+            : [],
+        }
         let hits: MemoryRecall[] = []
         let error: string | undefined
         const agentId = this.opts.agentId
@@ -2583,11 +2517,26 @@ export class RuntimeRunner {
         let archiveRef: string | undefined
         let error: string | undefined
         try {
-          if (this.opts.compressionStore) {
+          if (action.payload && action.handleId) {
+            archiveRef = this.opts.compressionStore
+              ? await this.opts.compressionStore.write(
+                  sessionId,
+                  archiveMeta.archiveStart,
+                  action.archived ?? [],
+                )
+              : undefined
+            archiveRef ??= `payload:${String(action.payload.digest).replace(/^sha256:/, "").slice(0, 32)}`
+            await this.resultSpool().persistPayload(
+              sessionId,
+              action.handleId,
+              archiveRef,
+              action.payload.content,
+            )
+          } else if (this.opts.compressionStore) {
             const ref = await this.opts.compressionStore.write(
               sessionId,
               archiveMeta.archiveStart,
-              action.archived,
+              action.archived ?? [],
             )
             if (ref) archiveRef = ref
           }
@@ -2595,7 +2544,7 @@ export class RuntimeRunner {
           error = formatToolError(cause)
         }
 
-        const archived = action.archived
+        const archived = action.archived ?? []
         const archiveAction = compressionAction(action.action) ?? "auto_compact"
         const archiveTier = action.tier
         const compressedSeq = archiveMeta.compressedSeq
@@ -2603,6 +2552,7 @@ export class RuntimeRunner {
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "page_out_archive_result",
           effect_id: action.effectId,
+          ...(archiveRef ? { payload_ref: archiveRef } : {}),
           ...(archiveRef ? { archive_ref: archiveRef } : {}),
           ...(error ? { error } : {}),
         })
@@ -2624,6 +2574,37 @@ export class RuntimeRunner {
               sessionId,
             ))
           }
+        }
+
+      } else if (action.kind === "load_payload") {
+        let content: string | undefined
+        let error: string | undefined
+        try {
+          content = await this.resultSpool().loadPayload(sessionId, action.payloadRef)
+          if (content === undefined) {
+            throw new Error(`payload not found for opaque locator ${action.payloadRef}`)
+          }
+        } catch (cause) {
+          error = formatToolError(cause)
+        }
+        if (error || content === undefined) {
+          action = await this.commitKernelAction(runtime, this.pendingObservations, {
+            kind: "payload_load_failed",
+            effect_id: action.effectId,
+            error,
+          })
+        } else {
+          const digestBytes = await crypto.subtle.digest("SHA-256", Buffer.from(content))
+          action = await this.commitKernelAction(runtime, this.pendingObservations, {
+            kind: "payload_loaded",
+            effect_id: action.effectId,
+            handle_id: action.handleId,
+            payload: {
+              content,
+              digest: `sha256:${Buffer.from(digestBytes).toString("hex")}`,
+              original_size: String(Buffer.byteLength(content, "utf8")),
+            },
+          })
         }
 
       } else if (action.kind === "execute_tool") {
@@ -2656,7 +2637,6 @@ export class RuntimeRunner {
         const submitCalls = allCalls.filter(c => c.name === "submit_workflow_nodes" || c.name === "start_workflow")
         // O7: `read_result` re-fetches a tool output the kernel evicted from context. Content is
         // host-resolved from the effect-committed spool, then from the durable session log.
-        const readResultCalls = allCalls.filter(c => c.name === "read_result")
 
         for (const call of planCalls) {
           const update = parseUpdatePlanArgs(call.arguments)
@@ -2669,40 +2649,10 @@ export class RuntimeRunner {
           yield { type: "tool_result", callId: call.id, content: "success", isError: false } as ToolResultEvent
         }
 
-        for (const call of readResultCalls) {
-          const out = await this.resolveReadResult(sessionId, call.arguments)
-          toolResults.push({ callId: call.id, output: out.text, isError: out.isError })
-          yield { type: "tool_result", callId: call.id, content: out.text, isError: out.isError } as ToolResultEvent
-        }
-
-        // R3-1: `submit_workflow_nodes` cannot be applied to this runner's kernel — when this runner
-        // is a workflow node, the workflow lives in the *parent* kernel. Surface the requested nodes
-        // as a stream event; the orchestrator collects them onto the node's result and `runWorkflow`
-        // sends `submit_workflow_nodes` to the parent kernel. (When not a workflow node, the event is
-        // simply unconsumed — a no-op.)
         for (const call of submitCalls) {
-          // M5 v2.1: a TOP-LEVEL agent authoring a whole sub-workflow via `start_workflow` — record the
-          // full spec and AUTO-PIVOT once this tool turn resolves (the loop drives it in this kernel and
-          // injects the outcome). A workflow-NODE's `start_workflow` (and every `submit_workflow_nodes`)
-          // instead FLATTENS: the batch is surfaced for the parent `runWorkflow` to append.
-          if (call.name === "start_workflow" && !this.opts.isWorkflowNode) {
-            const spec = parseStartWorkflowSpec(call.arguments)
-            if (spec) {
-              this.pendingAuthoredWorkflows.push(spec)
-              const out = "workflow submitted for governance adjudication"
-              toolResults.push({ callId: call.id, output: out, isError: false })
-              yield { type: "tool_result", callId: call.id, content: out, isError: false } as ToolResultEvent
-              continue
-            }
-          }
-          // `start_workflow` wraps the batch as `{ spec: { nodes } }`; `submit_workflow_nodes` is `{ nodes }`.
-          const nodes = call.name === "start_workflow"
-            ? parseStartWorkflowArgs(call.arguments)
-            : parseSubmitWorkflowNodesArgs(call.arguments)
-          yield { type: "workflow_nodes_submitted", nodes } as WorkflowNodesSubmittedEvent
-          const result = { callId: call.id, output: "workflow nodes submitted for parent governance adjudication", isError: false }
-          toolResults.push(result)
-          yield { type: "tool_result", callId: call.id, content: result.output, isError: false } as ToolResultEvent
+          throw new Error(
+            `canonical kernel published model syscall ${call.name} as a host tool effect`,
+          )
         }
 
         // O5 (PreToolUse-hook analog): give the host a STATEFUL veto over each kernel-approved
@@ -2950,6 +2900,17 @@ export class RuntimeRunner {
           return
         }
 
+      } else if (action.kind === "spawn_workflow") {
+        await this.driveWorkflow(
+          action,
+          [],
+          sessionId,
+          runtime,
+          new Map(),
+        )
+        action = runtime.resumeAction()
+          ?? (() => { throw new Error("canonical workflow completed without a terminal or continuation") })()
+
       } else if (action.kind === "done") {
         break
       } else {
@@ -3017,7 +2978,12 @@ export class RuntimeRunner {
     }))
 
     if (groupBudgetScope && !groupBudgetScope.isClosed) {
-      throw new Error("kernel terminated without a correlated budget_usage_reported observation")
+      await this.settleGroupBudget(groupBudgetScope, {
+        tokens: totalTokens,
+        subagents: runtime.localSubagentsSpawned(),
+        ...(this.opts.runSpec?.loopRound ? { rounds: 1 } : {}),
+      })
+      this.activeGroupBudgetScope = undefined
     }
 
     if (this.opts.dreamStore && this.opts.agentId) {
@@ -3081,7 +3047,7 @@ export class RuntimeRunner {
    *  after each sprint renewal (`phase: "renewal"`): renewal drops the old history INCLUDING the
    *  earlier memory hits, so the new sprint gets a fresh recall pass. Errs-open throughout. */
   private async prefetchMemoryIntoHistory(
-    runtime: KernelRuntimeInstance,
+    runtime: CanonicalRunnerRuntime,
     phase: "initial" | "renewal",
   ): Promise<KernelRunnerAction | undefined> {
     if (!this.opts.dreamStore || !this.opts.agentId || !this.opts.memoryScope) return undefined
@@ -3100,9 +3066,8 @@ export class RuntimeRunner {
         runSpec: this.opts.runSpec,
         phase,
       })
-      // T5: route each query through the kernel's query_memory lifecycle instead of calling
-      // the store directly — the kernel injects each routed hit into history itself and the
-      // recall lifecycle (recordRecall / promotion) fires exactly like an in-run query.
+      // Renewal prefetch is a host policy, not an agent syscall. Store selection stays host-side;
+      // each accepted hit enters the live run through a canonical seed-knowledge command.
       //
       // One prefetch = one dedupe horizon: a record hit by several short queries recalls and
       // injects once. A renewal prefetch starts a fresh horizon — renewal dropped the earlier
@@ -3111,7 +3076,7 @@ export class RuntimeRunner {
       let resumed: KernelRunnerAction | undefined
       for (const q of queries ?? []) {
         if (!q.query.trim()) continue
-        const { action } = await this.queryMemoryThroughKernel(
+        const { action } = await this.prefetchMemoryIntoKnowledge(
           runtime,
           q,
           this.opts.agentId,
@@ -3121,16 +3086,54 @@ export class RuntimeRunner {
         )
         resumed = action ?? resumed
       }
-      // Each memory_query_result resumes the reasoning path and re-emits the pending loop
-      // action; the caller must continue from the LAST one (it renders the injected hits).
+      // Every seed command leaves the pending provider action authoritative; use the last view.
       return resumed
     } catch { /* errs-open — a faulty pre-fetch never breaks the run */ }
     return undefined
   }
 
+  private async prefetchMemoryIntoInitialContext(runtime: CanonicalRunnerRuntime): Promise<void> {
+    if (!this.opts.dreamStore || !this.opts.agentId || !this.opts.memoryScope) return
+    const preQuery = this.opts.preQueryMemory
+      ?? ((ctx: { goal: string }) => [{
+        scope: this.opts.memoryScope!,
+        query: ctx.goal,
+        top_k: 5,
+        kinds: [],
+      }])
+    try {
+      const queries = await preQuery({
+        goal: this.currentGoal,
+        runSpec: this.opts.runSpec,
+        phase: "initial",
+      })
+      const seen = new Set<string>()
+      const accepted: MemoryRecall[] = []
+      for (const query of queries ?? []) {
+        if (!query.query.trim()) continue
+        const hits = await this.retrieveMemoryFromStore(query, query.top_k, this.opts.agentId)
+        for (const hit of hits) {
+          if (seen.has(hit.record.record_id)) continue
+          seen.add(hit.record.record_id)
+          accepted.push(hit)
+          await this.commitKernelApply(runtime, this.pendingObservations, {
+            kind: "add_history_message",
+            message: {
+              role: "user",
+              content: `[MEMORY record_id=${hit.record.record_id} kind=${hit.record.kind}] ${hit.record.content}`,
+            },
+          })
+        }
+      }
+      await this.applyHostMemoryRecallLifecycle(accepted, this.opts.agentId)
+    } catch {
+      // Prefetch is advisory; store/config failure never blocks the operation.
+    }
+  }
+
   private async appendObservations(
     sessionId: string,
-    runtime: KernelRuntimeInstance,
+    runtime: CanonicalRunnerRuntime,
     nextArchiveStart: number,
     _taskScope?: ManagedTaskScope,
   ): Promise<number> {
@@ -3228,7 +3231,7 @@ export class RuntimeRunner {
     compressedSeq: number,
     archived: Message[],
     action: string,
-    runtime?: KernelRuntimeInstance,
+    runtime?: CanonicalRunnerRuntime,
   ): Promise<void> {
     const summary = await this.opts.asyncSummarizer!.summarize(archived, action)
     await this.opts.sessionLog.append(sessionId, {
@@ -3579,62 +3582,6 @@ function parseUpdatePlanArgs(argsStr: string): import("../types.js").TaskUpdate 
       ? parsed.blockedOn as string[]
       : parsed.blocked_on as string[] | undefined,
   }
-}
-
-/** R3-1: parse the `submit_workflow_nodes` tool arguments (`{ nodes: WorkflowNodeSpec[] }`). Node
- *  shapes are trusted structurally here; the kernel validates them (dep range, quarantine, quota) on
- *  append. A malformed payload yields no nodes rather than throwing. */
-function parseSubmitWorkflowNodesArgs(argsStr: string): WorkflowNodeSpec[] {
-  let parsed: Record<string, unknown> = {}
-  try {
-    parsed = JSON.parse(argsStr) as Record<string, unknown>
-  } catch {
-    // Ignore parse error → no nodes submitted.
-  }
-  return Array.isArray(parsed.nodes) ? (parsed.nodes as WorkflowNodeSpec[]) : []
-}
-
-/** M5 v1: parse the `start_workflow` tool arguments (`{ spec: { nodes: WorkflowNodeSpec[] } }`) into
- *  the spec's node batch — flattened onto the running workflow via the same append path. A malformed
- *  payload yields no nodes rather than throwing. */
-function parseStartWorkflowArgs(argsStr: string): WorkflowNodeSpec[] {
-  let parsed: Record<string, unknown> = {}
-  try {
-    parsed = JSON.parse(argsStr) as Record<string, unknown>
-  } catch {
-    // Ignore parse error → no nodes.
-  }
-  const spec = parsed.spec as { nodes?: unknown } | undefined
-  return Array.isArray(spec?.nodes) ? (spec!.nodes as WorkflowNodeSpec[]) : []
-}
-
-/** M5 v2.1: parse the full `WorkflowSpec` from a top-level `start_workflow` call, for auto-pivot drive
- *  (vs `parseStartWorkflowArgs`, which returns only the node batch for the flatten path). Returns
- *  `undefined` on a malformed / empty payload so the caller falls back to the flatten path. */
-function parseStartWorkflowSpec(argsStr: string): WorkflowSpec | undefined {
-  try {
-    const parsed = JSON.parse(argsStr) as { spec?: { nodes?: unknown } }
-    if (Array.isArray(parsed.spec?.nodes) && parsed.spec!.nodes.length > 0) {
-      return { nodes: parsed.spec!.nodes as WorkflowNodeSpec[] }
-    }
-  } catch {
-    // Ignore parse error → undefined (fall back to flatten).
-  }
-  return undefined
-}
-
-function authoredWorkflowOutcomeNote(outcome: WorkflowOutcome): string {
-  const counts = new Map<string, number>()
-  for (const node of outcome.nodeOutcomes) counts.set(node.status, (counts.get(node.status) ?? 0) + 1)
-  const lines = [
-    `[authored workflow result] ${outcome.nodeOutcomes.length} terminal node(s): ` +
-      [...counts.entries()].map(([status, count]) => `${count} ${status}`).join(", ") + ".",
-  ]
-  for (const node of outcome.nodeOutcomes) {
-    const out = outcome.outputs[node.nodeId] ?? node.output?.content
-    if (out) lines.push(`- ${node.nodeId} (${node.status}): ${out.length > 500 ? out.slice(0, 500) + "…" : out}`)
-  }
-  return lines.join("\n")
 }
 
 /** Lower a host `RuntimeSignal` to the kernel's snake_case `signal` input event. Shared by the main

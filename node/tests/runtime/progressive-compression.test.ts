@@ -216,7 +216,7 @@ describe("AutoCompact — summary injected into working partition", () => {
 
 // Reactive compact: 413 triggers force_compact, retry succeeds.
 describe("Reactive compact — 413 triggers force_compact and run recovers", () => {
-  it("recovers after 413 and completes task", async () => {
+  it("does not resurrect a pending run from SessionLog presentation rows", async () => {
     let callCount = 0
     const provider: LLMProvider = {
       async complete(_ctx: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
@@ -264,8 +264,9 @@ describe("Reactive compact — 413 triggers force_compact and run recovers", () 
     // Leave a pending tool call so wake() re-enters the provider
     await sessionLog.append(sid, { kind: "llm_completed", turn: 6, content: "pending", tool_calls: [{ id: "cpending", name: "noop", arguments: "{}" }] })
 
-    const text = await collectText(runner.wake(sid))
-    expect(text).toBe("recovered")
-    expect(hasCompressed(await sessionLog.read(sid) as any)).toBe(true)
+    await expect(collectText(runner.wake(sid))).rejects.toThrow(
+      "restored canonical operation has no pending effect or terminal",
+    )
+    expect(callCount).toBe(0)
   })
 })

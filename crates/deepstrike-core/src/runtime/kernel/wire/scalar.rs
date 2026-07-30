@@ -497,7 +497,12 @@ fn base64_decode(text: &str) -> Result<Vec<u8>, WireScalarError> {
 // ---------------------------------------------------------------------------------------------
 
 /// Maximum nesting depth of an opaque JSON payload carried on the wire.
-pub const BOUNDED_JSON_MAX_DEPTH: usize = 16;
+///
+/// Keep this aligned with the runtime's absolute envelope depth. Tool parameters are JSON Schema
+/// documents, and a valid schema can naturally exceed sixteen levels before any model-authored
+/// arguments exist. The envelope preflight still enforces this same finite ceiling over the whole
+/// input, so widening the scalar-local guard does not create an unbounded parse path.
+pub const BOUNDED_JSON_MAX_DEPTH: usize = 64;
 /// Maximum number of entries in any single container of an opaque JSON payload.
 pub const BOUNDED_JSON_MAX_ENTRIES: usize = 1024;
 

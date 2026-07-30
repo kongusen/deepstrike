@@ -28,6 +28,8 @@ import { randomUUID } from "node:crypto"
 import { dirname, join } from "node:path"
 import { KernelLogConflictError, KernelLogIntegrityError } from "./kernel-transaction-log.js"
 
+export const MAX_CHAIN_POSITION = 1_000_000_000_000
+
 /* ------------------------------------------------------------------ *
  * Errors
  * ------------------------------------------------------------------ */
@@ -223,10 +225,16 @@ export interface KernelJournal {
  * Shared validation
  * ------------------------------------------------------------------ */
 
-function validateRecord(record: JournalRecordInput): void {
-  if (!Number.isSafeInteger(record.step_seq) || record.step_seq < 0) {
-    throw new JournalIntegrityError("journal record step_seq must be a non-negative safe integer")
+function validateChainPosition(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 0 || value >= MAX_CHAIN_POSITION) {
+    throw new JournalIntegrityError(
+      `${label} must be a non-negative integer below ${MAX_CHAIN_POSITION}`,
+    )
   }
+}
+
+function validateRecord(record: JournalRecordInput): void {
+  validateChainPosition(record.step_seq, "journal record step_seq")
   if (!record.record_digest) throw new JournalIntegrityError("journal record requires a record_digest")
   if (!(record.record_bytes instanceof Uint8Array)) {
     throw new JournalIntegrityError("journal record requires opaque record_bytes")
@@ -235,9 +243,7 @@ function validateRecord(record: JournalRecordInput): void {
 
 function validateCandidate(checkpoint: CheckpointCandidate): void {
   if (!checkpoint.checkpoint_id) throw new JournalIntegrityError("checkpoint requires a checkpoint_id")
-  if (!Number.isSafeInteger(checkpoint.through_step_seq) || checkpoint.through_step_seq < 0) {
-    throw new JournalIntegrityError("checkpoint through_step_seq must be a non-negative safe integer")
-  }
+  validateChainPosition(checkpoint.through_step_seq, "checkpoint through_step_seq")
   if (!checkpoint.state_digest) throw new JournalIntegrityError("checkpoint requires a state_digest")
   if (!(checkpoint.checkpoint_bytes instanceof Uint8Array)) {
     throw new JournalIntegrityError("checkpoint requires opaque checkpoint_bytes")
@@ -505,7 +511,7 @@ function pad(value: number): string {
 
 /** Filesystem-safe, injective encoding of an operation id. */
 function safeSegment(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]/g, char => `~${char.charCodeAt(0).toString(16)}`)
+  return `op-${Buffer.from(value, "utf8").toString("base64url")}`
 }
 
 interface PersistedRecord {

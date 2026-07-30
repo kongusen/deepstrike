@@ -6,9 +6,7 @@ import type { WorkflowSpec } from "../src/index.js"
 import {
   validateAgainstSchema,
   extractJsonValue,
-  schemaInstruction,
 } from "../src/runtime/output-schema.js"
-import { scriptedKernelV2 } from "./helpers/scripted-kernel-v2.js"
 
 describe("validateAgainstSchema (supported subset)", () => {
   const schema = {
@@ -57,50 +55,6 @@ describe("extractJsonValue", () => {
 
 const SCHEMA = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } } }
 
-function node(agent_id: string) {
-  return {
-    agent_id,
-    goal: "judge it",
-    role: "verify",
-    isolation: "read_only",
-    context_inheritance: "none",
-    trust: "trusted",
-    output_schema: SCHEMA,
-  }
-}
-
-/** Single-node workflow whose only node declares an output_schema; completes when node0 reports. */
-function makeFakeKernel() {
-  const reply = (actions: unknown[], observations: unknown[]) =>
-    ({ actions: actions as Array<Record<string, unknown>>, observations: observations as Array<Record<string, unknown>> })
-  const spawn = {
-    kind: "spawn_workflow",
-    effect_id: "fake-workflow-spawn-1",
-    nodes: [node("wf-node0")],
-  }
-  return scriptedKernelV2(event => {
-      const typedEvent = event as { kind: string; result?: { agent_id: string; result?: { termination?: string } } }
-      if (typedEvent.kind === "load_workflow") return reply([spawn], [])
-      if (typedEvent.kind === "workflow_spawn_result") {
-        return reply([], [{ kind: "workflow_batch_spawned", nodes: spawn.nodes }])
-      }
-      if (typedEvent.kind === "sub_agent_completed" && typedEvent.result?.agent_id === "wf-node0") {
-        const failed = typedEvent.result.result?.termination === "error"
-        return reply([], [{
-          kind: "workflow_completed",
-          node_outcomes: [{ node_id: "wf-node0", status: failed ? "failed" : "completed" }],
-        }])
-      }
-      return reply([], [])
-  })
-}
-
-function wire(runner: RuntimeRunner, kernel: unknown) {
-  ;(runner as never as { activeKernel: unknown }).activeKernel = kernel
-  ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-g3"
-  ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
-}
-
 const spec: WorkflowSpec = { nodes: [{ task: "judge it", role: "verify", outputSchema: SCHEMA }] }
 
 describe("runWorkflow enforces output_schema", () => {
@@ -121,11 +75,11 @@ describe("runWorkflow enforces output_schema", () => {
       },
     }
     const runner = new RuntimeRunner({ sessionLog: new InMemorySessionLog(), maxTokens: 8000, subAgentOrchestrator: orchestrator as never } as never)
-    wire(runner, makeFakeKernel())
-    const outcome = await runner.runWorkflow(spec)
+    const outcome = await runner.runWorkflow(spec, { sessionId: "wf-g3-valid" })
     expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
     expect(goals).toHaveLength(1)
-    expect(goals[0]).toContain(schemaInstruction(SCHEMA))
+    expect(goals[0]).toContain("You MUST return ONLY a single JSON value")
+    expect(goals[0]).toContain('"verdict"')
   })
 
   it("re-runs once with the validation errors when the first output is invalid, then accepts the fix", async () => {
@@ -148,8 +102,7 @@ describe("runWorkflow enforces output_schema", () => {
       },
     }
     const runner = new RuntimeRunner({ sessionLog: new InMemorySessionLog(), maxTokens: 8000, subAgentOrchestrator: orchestrator as never } as never)
-    wire(runner, makeFakeKernel())
-    const outcome = await runner.runWorkflow(spec)
+    const outcome = await runner.runWorkflow(spec, { sessionId: "wf-g3-retry" })
     expect(calls).toBe(2)
     expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "completed" })])
   })
@@ -171,8 +124,7 @@ describe("runWorkflow enforces output_schema", () => {
       },
     }
     const runner = new RuntimeRunner({ sessionLog: new InMemorySessionLog(), maxTokens: 8000, subAgentOrchestrator: orchestrator as never } as never)
-    wire(runner, makeFakeKernel())
-    const outcome = await runner.runWorkflow(spec)
+    const outcome = await runner.runWorkflow(spec, { sessionId: "wf-g3-invalid" })
     expect(calls).toBe(2) // tried, retried, still invalid
     expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "failed" })])
   })
@@ -199,8 +151,7 @@ describe("runWorkflow enforces output_schema", () => {
       subAgentOrchestrator: orchestrator as never,
       workflowSchemaValidationAttempts: 3,
     } as never)
-    wire(runner, makeFakeKernel())
-    const outcome = await runner.runWorkflow(spec)
+    const outcome = await runner.runWorkflow(spec, { sessionId: "wf-g3-attempt-bound" })
     expect(calls).toBe(3)
     expect(outcome.nodeOutcomes).toEqual([expect.objectContaining({ nodeId: "wf-node0", status: "failed" })])
   })

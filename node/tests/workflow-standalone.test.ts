@@ -1,6 +1,6 @@
 /**
  * Standalone `runWorkflow` — the stateless-handler path. With no active `run()`, `runWorkflow` must
- * auto-bootstrap a kernel that owns the DAG (start_run + governance/quota policies), drive it, then
+ * auto-bootstrap a kernel that owns the DAG (canonical root start + governance/quota policies), drive it, then
  * tear the kernel down so the runner is reusable. Previously this threw "requires an active parent
  * run" and callers had to poke `(runner as any).activeKernel` by hand.
  *
@@ -67,6 +67,24 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
     expect(calls).toBe(3)
     // Every node's output is surfaced back to the host.
     expect(outcome.outputs["wf-node2"]).toBe("wf-node2")
+  })
+
+  it("uses the durable run_id as the canonical workflow operation identity", async () => {
+    const sessionLog = new InMemorySessionLog()
+    const runner = new RuntimeRunner({
+      sessionLog,
+      maxTokens: 8000,
+      subAgentOrchestrator: stubOrchestrator() as never,
+    } as never)
+
+    await runner.runWorkflow(fanoutSpec, { sessionId: "workflow-operation-key" })
+
+    const started = (await sessionLog.read("workflow-operation-key"))
+      .find(entry => entry.event.kind === "run_started")?.event
+    expect(started?.kind).toBe("run_started")
+    const runId = started && "run_id" in started ? started.run_id : ""
+    expect(await sessionLog.kernelJournal.readFrom(`node-operation-${runId}`))
+      .not.toHaveLength(0)
   })
 
   it("returns a typed rejection for an invalid DAG instead of an unexpected-effect error", async () => {

@@ -154,7 +154,7 @@ describe("submit_workflow_nodes over the kernel ABI", () => {
     expect(completed?.node_outcomes?.map(node => node.node_id).sort()).toEqual(["wf-node0", "wf-node1"])
   })
 
-  it("marks the submitting node failed when the parent kernel rejects its proposed batch", async () => {
+  it("keeps the child completion and audits a parent-request rejection independently", async () => {
     const goals: string[] = []
     const orchestrator = {
       async run(ctx: { spec: { goal: string }; manifest: { agent_id: string } }) {
@@ -171,19 +171,34 @@ describe("submit_workflow_nodes over the kernel ABI", () => {
         }
       },
     }
+    const sessionLog = new InMemorySessionLog()
     const runner = new RuntimeRunner({
-      sessionLog: new InMemorySessionLog(),
+      sessionLog,
       maxTokens: 8000,
       resourceQuota: { maxWorkflowNodes: 1 },
       subAgentOrchestrator: orchestrator as never,
     } as never)
 
-    const outcome = await runner.runWorkflow({ nodes: [{ task: "root", role: "implement" }] })
+    const outcome = await runner.runWorkflow(
+      { nodes: [{ task: "root", role: "implement" }] },
+      { sessionId: "wf-parent-request-denied" },
+    )
 
     expect(goals).toEqual([expect.stringContaining("root")])
     expect(outcome.nodeOutcomes).toEqual([
-      expect.objectContaining({ nodeId: "wf-node0", status: "failed", termination: "error" }),
+      expect.objectContaining({ nodeId: "wf-node0", status: "completed", termination: "completed" }),
     ])
-    expect(outcome.outputs["wf-node0"]).toContain("workflow node submission denied")
+    expect(outcome.outputs["wf-node0"]).toBe("submitted")
+    const events = await sessionLog.read("wf-parent-request-denied")
+    expect(events).toContainEqual(expect.objectContaining({
+      event: expect.objectContaining({
+        kind: "kernel_observation",
+        observation_kind: "control_request_rejected",
+        raw: expect.objectContaining({
+          operation: "submit_workflow_nodes",
+          subject: "wf-node0",
+        }),
+      }),
+    }))
   })
 })
