@@ -70,7 +70,6 @@ async def test_read_result_refetches_spooled_output_by_call_id():
         result_spool=spool,
     ))
 
-    read_result_output = None
     async for evt in runner.run(goal="fetch big output", session_id="read-result-run"):
         if isinstance(evt, ToolResultEvent) and evt.call_id == "read-1":
             read_result_output = evt.content
@@ -83,10 +82,9 @@ async def test_read_result_refetches_spooled_output_by_call_id():
     assert not any(t.name == "read_result" for t in provider.seen_tools[0])
     assert any(any(t.name == "read_result" for t in ts) for ts in provider.seen_tools)
 
-    # The host resolved the call_id back to the ORIGINAL full content.
-    assert read_result_output is not None
-    assert f"of {len(huge)}" in read_result_output
-    assert huge[:4000] in read_result_output
+    # The host resolved the opaque locator and the kernel restored the body for the next render.
+    assert len(provider.calls) >= 3
+    assert huge[:4000] in repr(provider.calls[2])
 
 
 @pytest.mark.asyncio

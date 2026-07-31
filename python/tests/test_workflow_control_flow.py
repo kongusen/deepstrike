@@ -20,8 +20,7 @@ from deepstrike import (
     extract_judge_winner,
 )
 from deepstrike.types.agent import sub_agent_result_to_kernel
-from deepstrike._kernel import KernelRuntime, LoopPolicy, Message, ToolCall
-from deepstrike.runtime.kernel_step import kernel_action
+from deepstrike._kernel import Message, ToolCall
 
 
 # ── Pure mapping ─────────────────────────────────────────────────────────────
@@ -104,94 +103,51 @@ def test_extractors():
     assert "LEFTOUT" in judge_goal("criterion", "LEFTOUT", "RIGHTOUT")
 
 
-# ── End-to-end drive through the real kernel + runner + a content-aware stub ──
+# ── Canonical host fail-closed on advanced WorkflowNode kinds ─────────────────
 
 
-class _ControlFlowStub:
-    """Returns content the runner's extractors parse into control-flow signals, keyed off the goal's
-    injected instruction (loop / classify / judge), so a full run_workflow drive exercises the path."""
-
-    def __init__(self, *, classify_pick="a", loop_stop=True, judge_pick="left") -> None:
-        self.classify_pick = classify_pick
-        self.loop_stop = loop_stop
-        self.judge_pick = judge_pick
-        self.goals: list[str] = []
-
-    async def run(self, ctx) -> SubAgentResult:
-        goal = ctx.spec.goal
-        self.goals.append(goal)
-        if "CANDIDATE left" in goal:
-            content = json.dumps({"winner": self.judge_pick})
-        elif "Classify the input" in goal:
-            content = json.dumps({"branch": self.classify_pick})
-        elif "runs as a LOOP" in goal:
-            content = json.dumps({"loop_continue": not self.loop_stop})
-        else:
-            content = f"candidate::{ctx.spec.identity.agent_id}"
-        return SubAgentResult(
-            agent_id=ctx.spec.identity.agent_id,
-            result=LoopResult(
-                termination="completed",
-                turns_used=1,
-                total_tokens_used=1,
-                final_message=Message(role="assistant", content=content),
-            ),
-        )
-
-
-def _runner(orch):
-    r = RuntimeRunner(RuntimeOptions(
+def _standalone_runner():
+    return RuntimeRunner(RuntimeOptions(
         provider=None,
         session_log=InMemorySessionLog(),
         execution_plane=LocalExecutionPlane(),
-        sub_agent_orchestrator=orch,
         max_tokens=1000,
     ))
-    rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    kernel_action(rt, [], {"kind": "start_run", "task": {"goal": "parent", "criteria": []}})
-    r._active_kernel = rt
-    r._current_session_id = "sess"
-    return r
 
 
 @pytest.mark.asyncio
-async def test_loop_node_stops_early_via_signal():
-    orch = _ControlFlowStub(loop_stop=True)
-    runner = _runner(orch)
-    spec = WorkflowSpec(nodes=[
+async def test_loop_node_fails_closed_on_canonical_kind():
+    runner = _standalone_runner()
+    outcome = await runner.run_workflow(WorkflowSpec(nodes=[
         WorkflowNodeSpec(task="refine", role="implement", loop={"max_iters": 5}),
         WorkflowNodeSpec(task="ship", role="implement", depends_on=[0]),
-    ])
-    outcome = await runner.run_workflow(spec)
-    assert "wf-node0" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] and "wf-node1" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]
-    # The loop ran exactly once (stopped early) — only one iteration goal was dispatched.
-    assert sum(1 for g in orch.goals if "runs as a LOOP" in g) == 1
+    ]))
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason
 
 
 @pytest.mark.asyncio
-async def test_classify_node_routes_and_prunes():
-    orch = _ControlFlowStub(classify_pick="a")
-    runner = _runner(orch)
-    spec = WorkflowSpec(nodes=[
+async def test_classify_node_fails_closed_on_canonical_kind():
+    runner = _standalone_runner()
+    outcome = await runner.run_workflow(WorkflowSpec(nodes=[
         WorkflowNodeSpec(task="route", role="plan",
                          classify={"branches": [{"label": "a", "nodes": [1]}, {"label": "b", "nodes": [2]}]}),
         WorkflowNodeSpec(task="branch-a", role="implement", depends_on=[0]),
         WorkflowNodeSpec(task="branch-b", role="implement", depends_on=[0]),
-    ])
-    outcome = await runner.run_workflow(spec)
-    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1"]
-    assert [n.node_id for n in outcome.node_outcomes if n.status == "failed"] == ["wf-node2"]
+    ]))
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason
 
 
 @pytest.mark.asyncio
-async def test_tournament_node_picks_winner_and_promotes_dependent():
-    orch = _ControlFlowStub(judge_pick="left")
-    runner = _runner(orch)
-    spec = WorkflowSpec(nodes=[
+async def test_tournament_node_fails_closed_on_canonical_kind():
+    runner = _standalone_runner()
+    outcome = await runner.run_workflow(WorkflowSpec(nodes=[
         WorkflowNodeSpec(task="pick the best", role="plan", tournament={"entrants": ["x", "y"]}),
         WorkflowNodeSpec(task="use winner", role="implement", depends_on=[0]),
-    ])
-    outcome = await runner.run_workflow(spec)
-    # Controller (node0) + dependent (node1) both complete; a judge ran over the two candidates.
-    assert "wf-node0" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] and "wf-node1" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]
-    assert any("CANDIDATE left" in g for g in orch.goals)
+    ]))
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason

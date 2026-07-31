@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -14,6 +15,29 @@ from deepstrike.providers.base import ContextBudgetOverflow, RenderedContext
 
 
 KERNEL_ABI_VERSION = 2
+CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts:v1]]"
+
+
+def encode_canonical_content_parts(parts: list[Any]) -> str:
+  """Encode multimodal content parts for ABI-v3 wire (mirrors Node ``encodeCanonicalContentParts``)."""
+  payload = base64.urlsafe_b64encode(
+    json.dumps(parts, separators=(",", ":")).encode("utf-8"),
+  ).decode("ascii").rstrip("=")
+  return f"{CANONICAL_CONTENT_PARTS_PREFIX}{payload}"
+
+
+def decode_canonical_content_parts(content: str) -> list[dict[str, Any]] | None:
+  if not content.startswith(CANONICAL_CONTENT_PARTS_PREFIX):
+    return None
+  raw = content[len(CANONICAL_CONTENT_PARTS_PREFIX):]
+  pad = "=" * (-len(raw) % 4)
+  try:
+    decoded = json.loads(base64.urlsafe_b64decode(raw + pad).decode("utf-8"))
+  except (ValueError, json.JSONDecodeError):
+    return None
+  if not isinstance(decoded, list):
+    return None
+  return [part for part in decoded if isinstance(part, dict)]
 # Keyed by the runtime OBJECT, not id(runtime): a plain dict keyed by id() aliases recycled
 # addresses (a new runtime inherits a dead one's operation identity — fatal once a durable log
 # keys chains by that identity) and leaks an entry per runtime. WeakKeyDictionary mirrors the
@@ -68,6 +92,9 @@ class KernelRunnerAction:
   summary: str | None = None
   archived: list[Message] | None = None
   tier: str | None = None
+  handle_id: str | None = None
+  payload_ref: str | None = None
+  attempts: list[dict[str, Any]] | None = None
 
 
 def _try_parse_json(value: str) -> Any:
@@ -225,19 +252,24 @@ def _content_parts_from_kernel(parts: list[dict[str, Any]]) -> list[ContentPartO
 
 def _message_from_kernel(raw: dict[str, Any]) -> Message:
   content = raw.get("content", "")
-  content_parts = _content_parts_from_kernel(content) if isinstance(content, list) else None
-  text = (
-    "".join(str(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text")
-    if isinstance(content, list)
-    else str(content or "")
-  )
+  canonical_parts = decode_canonical_content_parts(content) if isinstance(content, str) else None
+  structured = canonical_parts if canonical_parts is not None else (content if isinstance(content, list) else None)
+  content_parts = _content_parts_from_kernel(structured) if isinstance(structured, list) else None
+  if canonical_parts is not None:
+    text = "".join(str(p.get("text") or "") for p in canonical_parts if p.get("type") == "text")
+  elif isinstance(content, list):
+    text = "".join(
+      str(p.get("text") or "") for p in content if isinstance(p, dict) and p.get("type") == "text"
+    )
+  else:
+    text = str(content or "")
   return Message(
     role=str(raw.get("role") or "user"),
     content=text,
-    token_count=raw.get("token_count"),
+    token_count=raw.get("token_count") if raw.get("token_count") is not None else raw.get("tokens"),
     tool_calls=[
       ToolCall(
-        id=str(c.get("id") or ""),
+        id=str(c.get("id") or c.get("call_id") or ""),
         name=str(c.get("name") or ""),
         arguments=json.dumps(c.get("arguments") or {}),
       )

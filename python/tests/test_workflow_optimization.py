@@ -168,15 +168,17 @@ async def test_trusted_workflow_node_can_call_parent_registered_tools():
 
 
 @pytest.mark.asyncio
-async def test_quarantined_workflow_node_stays_deny_all_filtered():
+async def test_quarantined_workflow_node_fails_closed_until_canonical_trust():
     pings = {"n": 0}
     runner = _tooled_runner(pings)
     outcome = await runner.run_workflow(WorkflowSpec(nodes=[
         WorkflowNodeSpec(task="try the ping tool", role="explore",
                          isolation="read_only", trust="quarantined"),
     ]))
-    assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == ["wf-node0"]
-    assert pings["n"] == 0  # untrusted-content reader: no tool reaches the host
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert "absent from canonical WorkflowNode: trust" in outcome.rejection.reason
+    assert pings["n"] == 0
 
 
 # ── DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable session ─────────────────────
@@ -208,7 +210,7 @@ class _PacingLoopProvider:
 
 
 @pytest.mark.asyncio
-async def test_pace_continue_then_stop_drives_iterations_on_one_stable_session():
+async def test_pace_continue_then_stop_fails_closed_on_loop_kind():
     session_log = InMemorySessionLog()
     runner = RuntimeRunner(RuntimeOptions(
         provider=_PacingLoopProvider(["continue", "stop"]),
@@ -222,19 +224,14 @@ async def test_pace_continue_then_stop_drives_iterations_on_one_stable_session()
         ]),
         session_id="wfloop",
     )
-    assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == ["wf-node0"]
-    # The pace verb ended the loop at 2 iterations, well before max_iters=5.
-    loop_session = await session_log.read("wfloop-wf-node0")
-    starts = [e for e in loop_session if e.event.get("kind") == "run_started"]
-    assert len(starts) == 2  # W-N6: BOTH iterations ran under the ONE stable session id
-    # No per-iteration session fragments.
-    assert await session_log.read("wfloop-wf-node0-i0") == []
-    assert await session_log.read("wfloop-wf-node0-i1") == []
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason
+    assert await session_log.read("wfloop-wf-node0") == []
 
 
 @pytest.mark.asyncio
-async def test_iteration_that_never_paces_completes_the_loop():
-    """Silence = done (the CC contract), not run-to-cap."""
+async def test_iteration_that_never_paces_also_fails_closed_on_loop_kind():
     class _Silent:
         async def complete(self, context, tools, extensions=None):
             return Message(role="assistant", content="done")
@@ -255,10 +252,10 @@ async def test_iteration_that_never_paces_completes_the_loop():
         ]),
         session_id="wfsilent",
     )
-    assert [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")] == ["wf-node0"]
-    # default_action=stop: exactly ONE iteration ran (the kernel's pace fallback said stop).
-    starts = [e for e in await session_log.read("wfsilent-wf-node0") if e.event.get("kind") == "run_started"]
-    assert len(starts) == 1
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason
+    assert await session_log.read("wfsilent-wf-node0") == []
 
 
 # ── W-N5: ReactiveSession.resume rebuilds peers, not vehicles ────────────────────────────────────

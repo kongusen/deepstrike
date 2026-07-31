@@ -48,6 +48,51 @@ class LargeResultSpool:
 
     return path_str
 
+  def _payload_path(self, session_id: str, payload_ref: str) -> Path:
+    # PayloadRef is an opaque locator — hash the session-scoped value instead of treating it as a path.
+    key = hashlib.sha256(f"{session_id}\x00{payload_ref}".encode("utf-8")).hexdigest()
+    return self._spool_dir / f"payload-{key}.txt"
+
+  async def persist_payload(
+    self, session_id: str, call_id: str, payload_ref: str, content: str,
+  ) -> None:
+    """Persist under the host-issued opaque locator; retain the call-id index for audit tooling."""
+    await asyncio.gather(
+      self.persist_output(session_id, call_id, content),
+      self._write_exact_path(self._payload_path(session_id, payload_ref), content),
+    )
+
+  async def _write_exact_path(self, path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path_str = str(path)
+    if path_str not in self._active_writes:
+      self._active_writes[path_str] = asyncio.Lock()
+
+    async with self._active_writes[path_str]:
+      def _write():
+        temp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+          with temp.open("x", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+          os.replace(temp, path)
+        finally:
+          temp.unlink(missing_ok=True)
+      await asyncio.get_running_loop().run_in_executor(None, _write)
+
+  async def load_payload(self, session_id: str, payload_ref: str) -> str | None:
+    """Resolve an ABI-v3 payload locator without exposing the backing filesystem path."""
+    path = self._payload_path(session_id, payload_ref)
+
+    def _read() -> str | None:
+      try:
+        return path.read_text(encoding="utf-8")
+      except FileNotFoundError:
+        return None
+
+    return await asyncio.get_running_loop().run_in_executor(None, _read)
+
   async def read_spooled_result(self, spool_ref: str) -> str:
     path = Path(spool_ref)
     if not path.is_file():

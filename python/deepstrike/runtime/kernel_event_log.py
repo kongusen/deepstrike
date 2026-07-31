@@ -256,6 +256,14 @@ def kernel_observation_to_session_event(
             "record_id": obs.get("record_id") or "",
             "error": obs.get("error") or "",
         }
+    if kind == "workflow_batch_spawned":
+        nodes = list(obs.get("nodes") or [])
+        return {
+            "kind": "workflow_batch_spawned",
+            "turn": t,
+            "node_count": len(nodes),
+            "node_ids": [str(node.get("agent_id") or "") for node in nodes if isinstance(node, dict)],
+        }
     if kind == "workflow_completed":
         node_outcomes = list(obs.get("node_outcomes") or [])
         return {
@@ -264,4 +272,11 @@ def kernel_observation_to_session_event(
             "node_outcomes": node_outcomes,
             "total_nodes": len(node_outcomes),
         }
-    return None
+    # Unknown / control-plane observations stay durable as opaque kernel_observation envelopes
+    # (mirrors Node) so audit consumers can see control_request_rejected and similar facts.
+    return {
+        "kind": "kernel_observation",
+        "turn": t,
+        "observation_kind": kind,
+        "raw": dict(obs),
+    }

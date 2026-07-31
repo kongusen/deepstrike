@@ -78,6 +78,47 @@ def journal(request, tmp_path: Path) -> KernelJournal:
     return FileKernelJournal(tmp_path / "journal")
 
 
+async def test_stages_an_outbound_envelope_until_clear(journal: KernelJournal):
+    assert await journal.read_outbound_envelope(OP) is None
+    envelope = json.dumps(
+        {
+            "abi_version": 3,
+            "operation_id": OP,
+            "input_id": "input-stage-1",
+            "observed_at_ms": "1753747200099",
+            "input": {"kind": "configure_operation", "config": {}},
+        },
+        separators=(",", ":"),
+    )
+    await journal.stage_outbound_envelope(OP, envelope)
+    assert await journal.read_outbound_envelope(OP) == envelope
+
+    await journal.stage_outbound_envelope(OP, envelope + "+v2")
+    assert await journal.read_outbound_envelope(OP) == envelope + "+v2"
+
+    await journal.clear_outbound_envelope(OP)
+    assert await journal.read_outbound_envelope(OP) is None
+    await journal.clear_outbound_envelope(OP)  # idempotent
+
+
+async def test_file_outbound_envelope_survives_remount(tmp_path: Path):
+    envelope = json.dumps(
+        {
+            "abi_version": 3,
+            "operation_id": OP,
+            "input_id": "input-remount",
+            "observed_at_ms": "1753747200888",
+            "input": {"kind": "configure_operation", "config": {}},
+        },
+        separators=(",", ":"),
+    )
+    root = tmp_path / "journal"
+    await FileKernelJournal(root).stage_outbound_envelope(OP, envelope)
+    assert await FileKernelJournal(root).read_outbound_envelope(OP) == envelope
+    await FileKernelJournal(root).clear_outbound_envelope(OP)
+    assert await FileKernelJournal(root).read_outbound_envelope(OP) is None
+
+
 async def test_genesis_append_starts_the_chain_and_advances_the_head(journal: KernelJournal):
     assert await journal.head(OP) is None
 

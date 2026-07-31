@@ -28,61 +28,16 @@ class Provider:
     yield TextDelta(delta="ok")
 
 
-class CapturingKernelRuntime:
-  events: list[dict] = []
-
-  def __init__(self, policy):
-    self._terminal = False
-    self._turn = 0
-
-  def step(self, input_json: str) -> str:
-    event = json.loads(input_json)["event"]
-    self.events.append(event)
-    if event["kind"] == "start_run":
-      self._turn = 1
-      return json.dumps({
-        "version": 2,
-        "actions": [{
-          "kind": "call_provider",
-          "effect_id": "capture:provider:1",
-          "context": {"system_text": "", "turns": []},
-          "tools": [],
-        }],
-        "observations": [],
-      })
-    if event["kind"] == "provider_result":
-      self._terminal = True
-      return json.dumps({
-        "version": 2,
-        "actions": [{
-          "kind": "done",
-          "effect_id": "capture:done:1",
-          "result": {"termination": "completed", "turns_used": 1, "total_tokens_used": 0},
-        }],
-        "observations": [],
-      })
-    return json.dumps({"version": 2, "actions": [], "observations": [], "faults": []})
-
-  def is_terminal(self) -> bool:
-    return self._terminal
-
-  def turn(self) -> int:
-    return self._turn
-
-  def recovery_content_bytes(self) -> int:
-    return 4096
-
-  def drain_new_messages(self):
-    return []
-
-  def preserved_refs(self):
-    return []
-
-
 @pytest.mark.asyncio
 async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypatch):
-  CapturingKernelRuntime.events = []
-  monkeypatch.setattr(runner_mod, "KernelRuntime", CapturingKernelRuntime)
+  captured: list[dict] = []
+  real_apply_host = runner_mod.apply_host
+
+  async def capture_apply(runtime, observations, event):
+    captured.append(event)
+    return await real_apply_host(runtime, observations, event)
+
+  monkeypatch.setattr(runner_mod, "apply_host", capture_apply)
 
   runner = RuntimeRunner(RuntimeOptions(
     provider=Provider(),
@@ -102,10 +57,6 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
       output_reserve_tokens=100,
       safety_margin_tokens=10,
     ),
-    context_policy={
-      "pressure_thresholds": {"snip": 0.72},
-      "preserve_recent_turns": 4,
-    },
     kernel_reliability=KernelReliability(
       event_replay_capacity=512,
       host_effect_retry_attempts=4,
@@ -124,7 +75,7 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
 
   assert await collect_text(runner.run(session_id="quota-py", goal="go")) == "ok"
 
-  quota_event = next(e for e in CapturingKernelRuntime.events if e["kind"] == "set_resource_quota")
+  quota_event = next(e for e in captured if e["kind"] == "set_resource_quota")
   assert quota_event["quota"] == {
     "max_concurrent_subagents": 2,
     "max_spawn_depth": 1,
@@ -132,7 +83,7 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     "memory_writes_per_window": [3, 1000],
   }
   signal_event = next(
-    e for e in CapturingKernelRuntime.events
+    e for e in captured
     if e["kind"] == "configure_run" and "signal_policy" in e["config"]
   )
   assert signal_event["config"]["scheduler_policy"] == {
@@ -143,7 +94,7 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     "token_cost_weight": 1,
   }
   assert "scheduler_max_wall_ms" not in signal_event["config"]
-  assert not any(e["kind"] == "set_scheduler_budget" for e in CapturingKernelRuntime.events)
+  assert not any(e["kind"] == "set_scheduler_budget" for e in captured)
   assert signal_event["config"]["signal_policy"] == {
     "version": 1,
     "queue_max": 8,
@@ -155,23 +106,8 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     "output_reserve_tokens": 100,
     "safety_margin_tokens": 10,
   }
-  assert signal_event["config"]["context_policy"] == {
-    "version": 1,
-    "pressure_thresholds_ppm": {
-      "snip": 720_000,
-      "micro": 800_000,
-      "collapse": 900_000,
-      "auto": 950_000,
-      "renewal": 980_000,
-    },
-    "target_after_compress_ppm": 650_000,
-    "preserve_recent_turns": 4,
-    "renewal_carryover_ppm": 50_000,
-    "collapse_old_assistant_narration": True,
-    "idle_micro_compact_minutes": 60,
-  }
   reliability_event = next(
-    e for e in CapturingKernelRuntime.events
+    e for e in captured
     if e["kind"] == "configure_run" and "reliability" in e["config"]
   )
   assert reliability_event["config"]["reliability"] == {

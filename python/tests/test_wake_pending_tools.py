@@ -44,6 +44,7 @@ class ResumeAwareProvider:
 
 @pytest.mark.asyncio
 async def test_wake_executes_pending_tools_after_llm_completed(tmp_path):
+  """SessionLog-only pending tools cannot drive wake execution (Node wake-recovery parity)."""
   ping_runs["n"] = 0
   session_id = "pending-tools"
   session_log = FileSessionLog(str(tmp_path))
@@ -67,9 +68,7 @@ async def test_wake_executes_pending_tools_after_llm_completed(tmp_path):
     max_turns=4,
   ))
 
-  text = await collect_text(runner.wake(session_id))
-  assert text == "finished"
-  assert ping_runs["n"] == 1
-  events = await session_log.read(session_id)
-  assert any(e.event.get("kind") == "tool_completed" for e in events)
-  assert any(e.event.get("kind") == "run_terminal" for e in events)
+  with pytest.raises(RuntimeError, match="restored canonical operation has no pending effect or terminal"):
+    await collect_text(runner.wake(session_id))
+  assert ping_runs["n"] == 0
+  assert provider.stream_calls == 0

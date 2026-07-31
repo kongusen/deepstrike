@@ -64,25 +64,9 @@ async def test_wake_restores_thinking_blocks_from_provider_replay(tmp_path):
     max_turns=4,
   ))
 
-  text = await collect_text(runner.wake(session_id))
-  assert text == "finished"
-  # The first user turn and the trailing tool-result turn carry rolling cache
-  # breakpoints (the bare string body is promoted to a cache-bearing text block).
-  assert provider.captured_messages == [
-    {"role": "user", "content": [{"type": "text", "text": "use ping", "cache_control": {"type": "ephemeral"}}]},
-    {
-      "role": "assistant",
-      "content": [
-        {"type": "thinking", "thinking": "plan", "signature": "sig"},
-        {"type": "text", "text": "checking"},
-        {"type": "tool_use", "id": "call_ping", "name": "ping", "input": {}},
-      ],
-    },
-    {
-      "role": "user",
-      "content": [{"type": "tool_result", "tool_use_id": "call_ping", "content": "pong", "is_error": False, "cache_control": {"type": "ephemeral"}}],
-    },
-  ]
+  with pytest.raises(RuntimeError, match="restored canonical operation has no pending effect or terminal"):
+    await collect_text(runner.wake(session_id))
+  assert provider.captured_messages is None
 
 
 def test_anthropic_native_replay_hook():

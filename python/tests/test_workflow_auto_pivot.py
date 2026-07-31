@@ -1,9 +1,8 @@
 """M5 v2.1: top-level auto-pivot (Python).
 
-When a TOP-LEVEL agent (not a workflow node) calls the ``start_workflow`` tool mid-conversation, the
-runner records the authored spec, drives it in its own (real) kernel at the safe point (after the tool
-turn resolves → kernel back in Reason, not suspended), injects the outcome into context, and resumes the
-reason loop. Pure SDK — no kernel change. Exercises the real native kernel end-to-end.
+Canonical host cutover (Task 20) fails closed on agent-authored workflow bootstrap — same posture as
+``test_bootstrap_workflow.py``. A top-level ``start_workflow`` tool call no longer drives an in-run
+sub-workflow; ``bootstrap_workflow`` raises at the canonical boundary.
 """
 
 import pytest
@@ -16,6 +15,8 @@ from deepstrike import (
     RuntimeOptions,
     RuntimeRunner,
     SubAgentResult,
+    WorkflowNodeSpec,
+    WorkflowSpec,
 )
 from deepstrike._kernel import ToolSchema
 from deepstrike.providers.base import RenderedContext
@@ -47,23 +48,8 @@ class AuthoringProvider:
 
 
 class _Stub:
-    """Mock workflow driver: each authored node returns a canned completion (no real LLM)."""
-
-    def __init__(self) -> None:
-        self.ran: list[str] = []
-
     async def run(self, ctx):
-        agent_id = ctx.spec.identity.agent_id
-        self.ran.append(agent_id)
-        return SubAgentResult(
-            agent_id=agent_id,
-            result=LoopResult(
-                termination="completed",
-                turns_used=1,
-                total_tokens_used=1,
-                final_message=Message(role="assistant", content=f"result of {agent_id}"),
-            ),
-        )
+        raise AssertionError("workflow nodes must not run under canonical auto-pivot cutover")
 
 
 async def _noop(**_kwargs) -> str:
@@ -71,11 +57,9 @@ async def _noop(**_kwargs) -> str:
 
 
 @pytest.mark.asyncio
-async def test_top_level_start_workflow_auto_pivots_and_resumes():
+async def test_top_level_start_workflow_does_not_auto_pivot_under_canonical_host():
     orch = _Stub()
     provider = AuthoringProvider()
-    # Register start_workflow so it's offered to the model (fail-closed dispatch executes only tools
-    # this run advertised); its execute never runs — the runner intercepts the call. Mirrors node.
     plane = LocalExecutionPlane().register(RegisteredTool(_noop, ToolSchema(
         name=start_workflow_tool["name"],
         description=start_workflow_tool["description"],
@@ -88,7 +72,6 @@ async def test_top_level_start_workflow_auto_pivots_and_resumes():
         sub_agent_orchestrator=orch,
         max_tokens=8000,
         max_turns=5,
-        # is_workflow_node defaults False ⇒ top-level run ⇒ start_workflow auto-pivots.
     ))
 
     text = ""
@@ -96,17 +79,27 @@ async def test_top_level_start_workflow_auto_pivots_and_resumes():
         if isinstance(evt, TextDelta):
             text += evt.delta
 
-    # The authored sub-workflow ran both nodes in THIS kernel (no separate child kernel).
-    assert sorted(orch.ran) == ["wf-node0", "wf-node1"]
-    # The agent got a 2nd turn AFTER the workflow, carrying the injected outcome in context.
-    assert len(provider.contexts) >= 2
-    ctx = provider.contexts[1]
-    blob = "\n".join(filter(None, [
-        ctx.system_text, ctx.system_stable, ctx.system_knowledge,
-        getattr(ctx.state_turn, "content", None) if ctx.state_turn else None,
-        *[m.content for m in ctx.turns if isinstance(m.content, str)],
-    ]))
-    # Node results are journaled individually; no synthetic summary marker is required.
-    assert "result of wf-node0" in blob
-    # The run continued past the authoring turn and produced the final synthesis text.
+    # Canonical host does not drive the authored sub-workflow in-run.
     assert "synthesized the sub-workflow results" in text
+    assert not any("result of wf-node" in (
+        "\n".join(filter(None, [
+            ctx.system_text, ctx.system_stable, ctx.system_knowledge,
+            getattr(ctx.state_turn, "content", None) if ctx.state_turn else None,
+            *[m.content for m in ctx.turns if isinstance(m.content, str)],
+        ]))
+    ) for ctx in provider.contexts)
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_workflow_still_raises_for_authored_spec():
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=None,
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        max_tokens=1000,
+    ))
+    with pytest.raises(RuntimeError, match="unsupported by the canonical host"):
+        await runner.bootstrap_workflow(WorkflowSpec(nodes=[
+            WorkflowNodeSpec(task="explore A", role="implement"),
+            WorkflowNodeSpec(task="explore B", role="implement"),
+        ]))

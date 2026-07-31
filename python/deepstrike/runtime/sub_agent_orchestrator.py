@@ -4,10 +4,8 @@ import warnings
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from deepstrike._kernel import KernelRuntime, LoopPolicy
 from deepstrike.providers.stream import DoneEvent, TextDelta, WorkflowNodesSubmittedEvent
 from deepstrike.runtime.filtered_plane import FilteredExecutionPlane
-from deepstrike.runtime.kernel_step import kernel_apply
 from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner, SubAgentHarnessConfig
 from deepstrike.runtime.session_log import SessionLog
 from deepstrike.types.agent import (
@@ -15,7 +13,6 @@ from deepstrike.types.agent import (
   AgentProcessChangedObservation,
   LoopResult,
   SubAgentResult,
-  agent_run_spec_to_kernel as spec_to_kernel,
 )
 
 @dataclass
@@ -398,32 +395,5 @@ async def spawn_standalone(
   orchestrator: SubAgentOrchestrator | None = None,
   context_input: str | None = None,
 ) -> SubAgentResult:
-  """Kernel spawn path without an active parent run loop (harness / coordinator use)."""
-  policy = LoopPolicy(max_tokens=parent_opts.max_tokens, max_turns=parent_opts.max_turns)
-  runtime = KernelRuntime(policy)
-  pending: list[dict] = []
-
-  kernel_apply(runtime, pending, {"kind": "start_run", "task": {"goal": "coordinator", "criteria": []}})
-  observations = kernel_apply(runtime, pending, {
-    "kind": "spawn_sub_agent",
-    "spec": spec_to_kernel(spec),
-    "parent_session_id": parent_session_id,
-  })
-
-  spawned_obs = _find_spawn_obs(observations)
-  if spawned_obs is None:
-    raise RuntimeError("spawn_sub_agent did not emit agent_process_changed")
-
-  await _log_agent_process_changed(parent_opts.session_log, parent_session_id, spawned_obs)
-  manifest = _manifest_from_obs(spawned_obs, parent_session_id, spec)
-
-  orch = orchestrator or default_sub_agent_orchestrator
-  return await orch.run(SubAgentRunContext(
-    parent_opts=parent_opts,
-    parent_session_id=parent_session_id,
-    spec=spec,
-    manifest=manifest,
-    session_log=parent_opts.session_log,
-    harness=parent_opts.sub_agent_harness,
-    context_input=context_input,
-  ))
+  """Fail closed: standalone spawning has no owning canonical workflow operation."""
+  raise RuntimeError("spawn_standalone requires a canonical workflow owner")

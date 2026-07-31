@@ -37,6 +37,7 @@ def ping() -> str:
 
 @pytest.mark.asyncio
 async def test_wake_continues_after_tool_completed():
+  """SessionLog-only tool completion cannot impersonate a canonical process restart (Node parity)."""
   session_log = InMemorySessionLog()
   session_id = "crash-test"
   await session_log.append(session_id, {
@@ -65,12 +66,9 @@ async def test_wake_continues_after_tool_completed():
     max_turns=4,
   ))
 
-  text = await collect_text(runner.wake(session_id))
-  assert text == "finished"
-  assert provider.stream_calls == 1
-
-  events = await session_log.read(session_id)
-  assert any(e.event.get("kind") == "run_terminal" for e in events)
+  with pytest.raises(RuntimeError, match="restored canonical operation has no pending effect or terminal"):
+    await collect_text(runner.wake(session_id))
+  assert provider.stream_calls == 0
 
 
 @pytest.mark.asyncio
@@ -138,9 +136,10 @@ async def test_run_records_compressed_event():
   await collect_text(runner.run(session_id=session_id, goal="continue"))
 
   events = await session_log.read(session_id)
-  compressed = [e.event for e in events if e.event.get("kind") == "compressed"]
-  assert compressed, [entry.event for entry in events]
-  assert compressed[0]["archived_seq_range"][0] == 0
+  # ABI-v3 keeps compaction decisions in the canonical journal rather than projecting
+  # ABI-v2 ``compressed`` repairs into SessionLog.
+  run_id = [entry.event["run_id"] for entry in events if entry.event.get("kind") == "run_started"][-1]
+  assert await runner.resolve_kernel_journal().head(f"python-operation-{run_id}") is not None
 
 
 @pytest.mark.asyncio
@@ -196,6 +195,7 @@ async def test_run_reactive_compacts_and_retries_prompt_too_long():
   events = await session_log.read(session_id)
   assert text == "recovered", (provider.stream_calls, [entry.event for entry in events])
   assert provider.stream_calls == 2
+  # Reactive compact still projects ``compressed`` into SessionLog (Node wake-recovery parity).
   assert any(e.event.get("kind") == "compressed" for e in events)
 
 

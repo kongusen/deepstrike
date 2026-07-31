@@ -190,11 +190,16 @@ def agent_run_spec_to_kernel(spec: AgentRunSpec) -> dict[str, Any]:
   # ③ loop-agent pacing: lower only the set knobs (kernel defaults fill the rest).
   if getattr(spec, "loop_round", None):
     lr = spec.loop_round or {}
-    out["loop_round"] = {
-      k: lr[k]
-      for k in ("max_rounds", "min_sleep_ms", "max_sleep_ms", "default_action")
-      if lr.get(k) is not None
-    }
+    loop_round: dict[str, Any] = {}
+    if lr.get("max_rounds") is not None:
+      loop_round["max_rounds"] = int(lr["max_rounds"])
+    if lr.get("min_sleep_ms") is not None:
+      loop_round["min_sleep_ms"] = str(lr["min_sleep_ms"])
+    if lr.get("max_sleep_ms") is not None:
+      loop_round["max_sleep_ms"] = str(lr["max_sleep_ms"])
+    if lr.get("default_action") is not None:
+      loop_round["default_action"] = lr["default_action"]
+    out["loop_round"] = loop_round
   if spec.milestones:
     out["milestones"] = {
       "phases": [
@@ -305,7 +310,11 @@ def sub_agent_result_to_kernel(result: SubAgentResult) -> dict[str, Any]:
         }
       } if verdict is not None else {}),
     }
-  return {"agent_id": result.agent_id, "result": res}
+  out: dict[str, Any] = {"agent_id": result.agent_id, "result": res}
+  # ABI v3: child-authored DAG additions ride on ChildCompleted.parent_requests.
+  if result.submitted_nodes:
+    out["submitted_nodes"] = [workflow_node_spec_to_kernel(node) for node in result.submitted_nodes]
+  return out
 
 
 # ─── W0-ABI: declarative workflow specs ───
@@ -422,8 +431,7 @@ class WorkflowSpawnInfo:
 
 def workflow_budget_note(budget: dict[str, Any] | None) -> str:
   """G4: a concise budget note appended to a coordinator node's goal so its agent can size a
-  ``submit_workflow_nodes`` batch to what is available. ``budget`` is the snake_case dict carried on
-  the ``workflow_batch_spawned`` observation. Returns "" when nothing is bounded (no quota)."""
+  ``submit_workflow_nodes`` batch to what is available. Returns "" when nothing is bounded."""
   if not budget:
     return ""
   parts: list[str] = []
@@ -436,11 +444,17 @@ def workflow_budget_note(budget: dict[str, Any] | None) -> str:
       f"concurrency {budget.get('running_subagents')}/{budget['max_concurrent_subagents']} running, "
       f"{budget['concurrency_remaining']} free"
     )
-  # M4/G5 token headroom: lets a coordinator scale a submission to "use N tokens".
   if budget.get("tokens_remaining") is not None and budget.get("tokens_max") is not None:
     parts.append(
       f"tokens {budget.get('tokens_used', 0)}/{budget['tokens_max']} used, {budget['tokens_remaining']} remaining"
     )
+  # Canonical v3 publishes kernel-owned caps (not host-authored remaining counters).
+  if budget.get("max_total_tokens") is not None:
+    parts.append(f"tokens capped at {budget['max_total_tokens']}")
+  if budget.get("max_turns") is not None:
+    parts.append(f"turns capped at {budget['max_turns']}")
+  if budget.get("max_concurrency") is not None:
+    parts.append(f"concurrency capped at {budget['max_concurrency']}")
   if not parts:
     return ""
   return (

@@ -5,16 +5,12 @@ import pytest
 from deepstrike import (
     InMemorySessionLog,
     LocalExecutionPlane,
-    LoopResult,
     RuntimeOptions,
     RuntimeRunner,
-    SubAgentResult,
     WorkflowNodeSpec,
     WorkflowSpec,
 )
-from deepstrike._kernel import KernelRuntime, LoopPolicy, Message
 from deepstrike.runtime.runner import _parse_submit_workflow_nodes_args
-from deepstrike.runtime.kernel_step import kernel_action
 from deepstrike.types.agent import workflow_node_spec_to_kernel
 
 
@@ -44,57 +40,20 @@ def test_submit_parser_passes_control_flow_kinds_through():
     assert "kind" not in workflow_node_spec_to_kernel(nodes[4])  # model_hint alone ⇒ plain spawn
 
 
-# ── M2: an agent submits a tournament at runtime → kernel expands + judges it end-to-end ──
-
-
-def _runner(orch):
-    r = RuntimeRunner(RuntimeOptions(
-        provider=None,
-        session_log=InMemorySessionLog(),
-        execution_plane=LocalExecutionPlane(),
-        sub_agent_orchestrator=orch,
-        max_tokens=1000,
-    ))
-    rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    kernel_action(rt, [], {"kind": "start_run", "task": {"goal": "parent", "criteria": []}})
-    r._active_kernel = rt
-    r._current_session_id = "sess"
-    return r
-
-
-class _SubmitStub:
-    """A coordinator node submits a tournament at runtime; judges report a winner."""
-
-    def __init__(self) -> None:
-        self.goals: list[str] = []
-
-    async def run(self, ctx):
-        goal = ctx.spec.goal
-        self.goals.append(goal)
-        submitted = []
-        content = "ok"
-        if "coordinate" in goal:
-            submitted = [WorkflowNodeSpec(task="pick the best", role="plan", tournament={"entrants": ["x", "y"]})]
-        elif "CANDIDATE left" in goal:  # a judge spawn
-            content = json.dumps({"winner": "left"})
-        return SubAgentResult(
-            agent_id=ctx.spec.identity.agent_id,
-            result=LoopResult(
-                termination="completed",
-                turns_used=1,
-                total_tokens_used=1,
-                final_message=Message(role="assistant", content=content),
-            ),
-            submitted_nodes=submitted,
-        )
+# ── Canonical host fail-closed on tournament nodes at load ───────────────────
 
 
 @pytest.mark.asyncio
-async def test_agent_submitted_tournament_runs_end_to_end():
-    orch = _SubmitStub()
-    runner = _runner(orch)
-    spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="coordinate the tournament", role="plan")])
-    outcome = await runner.run_workflow(spec)
-    assert "wf-node0" in [n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]  # coordinator completed
-    # the submitted tournament expanded into entrants + a judge over the two candidates
-    assert any("CANDIDATE left" in g for g in orch.goals), "a judge ran over the submitted tournament"
+async def test_agent_submitted_tournament_fails_closed_at_load():
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=None,
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        max_tokens=1000,
+    ))
+    outcome = await runner.run_workflow(WorkflowSpec(nodes=[
+        WorkflowNodeSpec(task="pick the best", role="plan", tournament={"entrants": ["x", "y"]}),
+    ]))
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason

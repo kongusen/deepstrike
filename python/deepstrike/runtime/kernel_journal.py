@@ -252,6 +252,22 @@ class KernelJournal(ABC):
         `head()` and the next CAS still resolve on a fully-pruned chain.
         """
 
+    @abstractmethod
+    async def stage_outbound_envelope(self, operation_id: str, envelope_json: str) -> None:
+        """Durably stage one outbound WireEnvelope JSON until append-ack (or abandon).
+
+        Overwrites any previous pending envelope. Required by Phase 6 host cutover
+        (adjudication 5e.3): retries must replay byte-identical envelopes.
+        """
+
+    @abstractmethod
+    async def read_outbound_envelope(self, operation_id: str) -> str | None:
+        """Read the staged outbound envelope, if any."""
+
+    @abstractmethod
+    async def clear_outbound_envelope(self, operation_id: str) -> None:
+        """Clear the staged outbound envelope. Idempotent."""
+
 
 # ------------------------------------------------------------------ #
 # Shared validation
@@ -390,6 +406,8 @@ class _OperationState:
     records: list[JournalEntry]
     checkpoints: list[InstalledCheckpoint]
     pruned: _PrunedAnchor | None = None
+    #: Byte-identical WireEnvelope JSON awaiting append-ack (at most one per operation).
+    outbound_envelope: str | None = None
 
 
 class InMemoryKernelJournal(KernelJournal):
@@ -566,6 +584,20 @@ class InMemoryKernelJournal(KernelJournal):
             pruned_through_step_seq=state.pruned.through_step_seq,
             pruned_count=before - len(state.records),
         )
+
+    async def stage_outbound_envelope(self, operation_id: str, envelope_json: str) -> None:
+        if not envelope_json:
+            raise JournalIntegrityError("outbound envelope must not be empty")
+        self._state(operation_id).outbound_envelope = envelope_json
+
+    async def read_outbound_envelope(self, operation_id: str) -> str | None:
+        state = self._operations.get(operation_id)
+        return None if state is None else state.outbound_envelope
+
+    async def clear_outbound_envelope(self, operation_id: str) -> None:
+        state = self._operations.get(operation_id)
+        if state is not None:
+            state.outbound_envelope = None
 
 
 # ------------------------------------------------------------------ #
@@ -985,27 +1017,74 @@ class FileKernelJournal(KernelJournal):
 
     def _write_anchor(self, operation_id: str, anchor: _PrunedAnchor) -> None:
         """The anchor only ever moves forward, so an atomic overwriting rename is the right primitive."""
+        self._write_replaceable(
+            operation_id,
+            self._pruned_path(operation_id),
+            json.dumps(
+                {
+                    "through_step_seq": anchor.through_step_seq,
+                    "covered_head": anchor.covered_head,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            "journal could not record its pruned anchor",
+        )
+
+    def _outbound_path(self, operation_id: str) -> Path:
+        return self._operation_dir(operation_id) / "outbound.json"
+
+    def _write_replaceable(
+        self,
+        operation_id: str,
+        target: Path,
+        payload: str,
+        error_message: str,
+    ) -> None:
+        """Overwriteable durable blob — write-tmp → fsync → rename (same as the pruned anchor)."""
         tmp_dir = self._tmp_dir(operation_id)
         tmp_path = tmp_dir / f"{uuid.uuid4().hex}.tmp"
         try:
             tmp_dir.mkdir(parents=True, exist_ok=True)
             descriptor = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
-                os.write(
-                    descriptor,
-                    json.dumps(
-                        {
-                            "through_step_seq": anchor.through_step_seq,
-                            "covered_head": anchor.covered_head,
-                        },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ).encode("utf-8"),
-                )
+                os.write(descriptor, payload.encode("utf-8"))
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-            os.replace(tmp_path, self._pruned_path(operation_id))
+            os.replace(tmp_path, target)
         except OSError as err:
             _unlink_quietly(tmp_path)
-            raise JournalIoError("journal could not record its pruned anchor") from err
+            raise JournalIoError(error_message) from err
+
+    async def stage_outbound_envelope(self, operation_id: str, envelope_json: str) -> None:
+        if not envelope_json:
+            raise JournalIntegrityError("outbound envelope must not be empty")
+        try:
+            self._operation_dir(operation_id).mkdir(parents=True, exist_ok=True)
+        except OSError as err:
+            raise JournalIoError("journal could not create its operation directory") from err
+        self._write_replaceable(
+            operation_id,
+            self._outbound_path(operation_id),
+            envelope_json,
+            "journal could not stage a durable outbound envelope",
+        )
+
+    async def read_outbound_envelope(self, operation_id: str) -> str | None:
+        path = self._outbound_path(operation_id)
+        try:
+            return path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except OSError as err:
+            raise JournalIoError("journal could not read its outbound envelope") from err
+
+    async def clear_outbound_envelope(self, operation_id: str) -> None:
+        path = self._outbound_path(operation_id)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as err:
+            raise JournalIoError("journal could not clear its outbound envelope") from err

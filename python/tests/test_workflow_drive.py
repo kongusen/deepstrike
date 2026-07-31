@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -16,14 +17,6 @@ from deepstrike import (
     generate_and_filter,
     verify_rules,
 )
-from deepstrike._kernel import KernelRuntime, LoopPolicy
-from deepstrike.runtime.kernel_step import kernel_action, kernel_apply, kernel_maybe_action
-
-
-def _start_runtime(runtime: KernelRuntime) -> None:
-    kernel_action(runtime, [], {"kind": "start_run", "task": {"goal": "parent", "criteria": []}})
-
-
 class _StubProvider:
     async def stream(self, context, tools, extensions=None, state=None):  # pragma: no cover
         from deepstrike.providers.stream import TextDelta
@@ -111,6 +104,7 @@ async def test_standalone_workflow_charges_node_count_to_group():
 
 @pytest.mark.asyncio
 async def test_run_workflow_drives_fanout_to_completion():
+    # Standalone path — no activeKernel hack (mirrors Node workflow-standalone).
     orch = _StubOrchestrator()
     runner = RuntimeRunner(RuntimeOptions(
         provider=_StubProvider(),
@@ -119,12 +113,6 @@ async def test_run_workflow_drives_fanout_to_completion():
         sub_agent_orchestrator=orch,
         max_tokens=1000,
     ))
-
-    # Establish an active parent run on a kernel (run_workflow runs mid-run).
-    rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    _start_runtime(rt)
-    runner._active_kernel = rt
-    runner._current_session_id = "sess"
 
     spec = WorkflowSpec(nodes=[
         WorkflowNodeSpec(task="w0", role="explore"),
@@ -138,6 +126,9 @@ async def test_run_workflow_drives_fanout_to_completion():
     # Workers ran first (parallel), then synth — all goals were dispatched.
     assert sorted(orch.goals) == ["synth", "w0", "w1"]
     assert orch.goals[-1] == "synth"  # synth only after both workers
+    assert runner._active_kernel is None
+
+
 from deepstrike.runtime.session_repair import build_workflow_node_completed_event
 
 
@@ -191,59 +182,24 @@ def test_submit_workflow_nodes_stamps_submitter_only_when_provided():
     assert stamped["submitter_agent_id"] == "wf-node0"
 
 
-def test_g1_quarantined_submitter_cannot_escalate_over_abi():
-    # G1: a quarantined submitter's node is coerced to quarantined in-kernel; the spawn-time gate
-    # then denies its (default, write-capable) isolation — so the escalated node never spawns.
-    from deepstrike import submit_workflow_nodes_to_kernel
-
-    rt = KernelRuntime(LoopPolicy(max_tokens=128000))
-    _start_runtime(rt)
-    initial = kernel_maybe_action(rt, [], {
-        "kind": "load_workflow",
-        "spec": {"nodes": [{
-            "task": {"goal": "read-untrusted", "criteria": []},
-            "role": "explore",
-            "isolation": "read_only",
-            "context_inheritance": "none",
-            "trust": "quarantined",
-        }]},
-        "parent_session_id": "sess",
-    })
-    assert initial is not None and initial.kind == "spawn_workflow"
-    kernel_apply(rt, [], {
-        "kind": "workflow_spawn_result", "effect_id": initial.effect_id,
-        "started_agent_ids": [n["agent_id"] for n in initial.nodes or []], "failures": [],
-    })
-
-    escalated = kernel_maybe_action(rt, [], submit_workflow_nodes_to_kernel(
-        [WorkflowNodeSpec(task="act-with-privilege", role="implement")], "wf-node0"
+@pytest.mark.asyncio
+async def test_g1_quarantined_workflow_fails_closed_until_canonical_trust():
+    """Canonical WorkflowNode has no trust field yet — quarantined nodes fail closed at load."""
+    runner = RuntimeRunner(RuntimeOptions(
+        provider=_StubProvider(),
+        session_log=InMemorySessionLog(),
+        execution_plane=LocalExecutionPlane(),
+        sub_agent_orchestrator=_StubOrchestrator(),
+        max_tokens=1000,
     ))
-    spawned = [n["agent_id"] for n in (escalated.nodes or [])] if escalated else []
-    assert "wf-node1" not in spawned, "quarantined submitter's write-capable node must be denied"
-
-    # Control: no submitter id → no coercion → the same node spawns.
-    rt2 = KernelRuntime(LoopPolicy(max_tokens=128000))
-    _start_runtime(rt2)
-    initial2 = kernel_maybe_action(rt2, [], {
-        "kind": "load_workflow",
-        "spec": {"nodes": [{
-            "task": {"goal": "root", "criteria": []},
-            "role": "implement",
-            "isolation": "shared",
-            "context_inheritance": "none",
-        }]},
-        "parent_session_id": "sess",
-    })
-    assert initial2 is not None and initial2.kind == "spawn_workflow"
-    kernel_apply(rt2, [], {
-        "kind": "workflow_spawn_result", "effect_id": initial2.effect_id,
-        "started_agent_ids": [n["agent_id"] for n in initial2.nodes or []], "failures": [],
-    })
-    ok = kernel_maybe_action(rt2, [], submit_workflow_nodes_to_kernel(
-        [WorkflowNodeSpec(task="act-with-privilege", role="implement")]
-    ))
-    spawned_ok = [n["agent_id"] for n in (ok.nodes or [])] if ok else []
-    assert "wf-node1" in spawned_ok
+    outcome = await runner.run_workflow(WorkflowSpec(nodes=[
+        WorkflowNodeSpec(
+            task="read-untrusted", role="explore", isolation="read_only", trust="quarantined",
+        ),
+    ]))
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert "absent from canonical WorkflowNode: trust" in outcome.rejection.reason
 
 
 @pytest.mark.asyncio
@@ -269,20 +225,17 @@ async def test_run_workflow_submit_nodes_appends_and_completes():
             )
 
     orch = _SubmitOnceOrchestrator()
+    session_log = InMemorySessionLog()
     runner = RuntimeRunner(RuntimeOptions(
         provider=_StubProvider(),
-        session_log=InMemorySessionLog(),
+        session_log=session_log,
         execution_plane=LocalExecutionPlane(),
         sub_agent_orchestrator=orch,
         max_tokens=1000,
     ))
-    rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    _start_runtime(rt)
-    runner._active_kernel = rt
-    runner._current_session_id = "sess"
 
     spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="root", role="implement")])
-    outcome = await runner.run_workflow(spec)
+    outcome = await runner.run_workflow(spec, session_id="wf-submit")
 
     # Both the root and the dynamically-submitted node completed.
     assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1"]
@@ -291,7 +244,8 @@ async def test_run_workflow_submit_nodes_appends_and_completes():
 
 
 @pytest.mark.asyncio
-async def test_run_workflow_rejected_submission_fails_the_submitting_node():
+async def test_run_workflow_rejected_submission_keeps_child_completion():
+    """ABI v3: parent-request admission is independent of ChildCompleted."""
     class _SubmitOnceOrchestrator:
         def __init__(self):
             self.goals: list[str] = []
@@ -305,9 +259,10 @@ async def test_run_workflow_rejected_submission_fails_the_submitting_node():
             )
 
     orch = _SubmitOnceOrchestrator()
+    session_log = InMemorySessionLog()
     runner = RuntimeRunner(RuntimeOptions(
         provider=_StubProvider(),
-        session_log=InMemorySessionLog(),
+        session_log=session_log,
         execution_plane=LocalExecutionPlane(),
         sub_agent_orchestrator=orch,
         resource_quota={"max_workflow_nodes": 1},
@@ -315,14 +270,21 @@ async def test_run_workflow_rejected_submission_fails_the_submitting_node():
     ))
 
     outcome = await runner.run_workflow(
-        WorkflowSpec(nodes=[WorkflowNodeSpec(task="root", role="implement")])
+        WorkflowSpec(nodes=[WorkflowNodeSpec(task="root", role="implement")]),
+        session_id="wf-parent-request-denied",
     )
 
     assert len(orch.goals) == 1
     assert [(node.node_id, node.status, node.termination) for node in outcome.node_outcomes] == [
-        ("wf-node0", "failed", "error")
+        ("wf-node0", "completed", "completed")
     ]
-    assert "workflow node submission denied" in outcome.outputs["wf-node0"]
+    events = await session_log.read("wf-parent-request-denied")
+    assert any(
+        e.event.get("kind") == "kernel_observation"
+        and e.event.get("observation_kind") == "control_request_rejected"
+        and (e.event.get("raw") or {}).get("operation") == "submit_workflow_nodes"
+        for e in events
+    )
 
 
 # ── G3 structured output ─────────────────────────────────────────────────────────────────────────
@@ -357,7 +319,7 @@ _G3_SCHEMA = {"type": "object", "required": ["verdict"], "properties": {"verdict
 
 
 def _g3_runner(orch, *, attempts=2):
-    runner = RuntimeRunner(RuntimeOptions(
+    return RuntimeRunner(RuntimeOptions(
         provider=_StubProvider(),
         session_log=InMemorySessionLog(),
         execution_plane=LocalExecutionPlane(),
@@ -365,11 +327,6 @@ def _g3_runner(orch, *, attempts=2):
         workflow_schema_validation_attempts=attempts,
         max_tokens=1000,
     ))
-    rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    _start_runtime(rt)
-    runner._active_kernel = rt
-    runner._current_session_id = "sess"
-    return runner
 
 
 @pytest.mark.asyncio
@@ -519,20 +476,18 @@ async def test_g4_run_workflow_surfaces_budget_into_node_goal():
         session_log=InMemorySessionLog(),
         execution_plane=LocalExecutionPlane(),
         sub_agent_orchestrator=orch,
+        resource_quota={"max_workflow_nodes": 5, "max_concurrent_subagents": 3},
         max_tokens=1000,
     ))
-    rt = KernelRuntime(LoopPolicy(max_tokens=128000))
-    _start_runtime(rt)
-    kernel_apply(rt, [], {"kind": "set_resource_quota",
-            "quota": {"max_workflow_nodes": 5, "max_concurrent_subagents": 3}})
-    runner._active_kernel = rt
-    runner._current_session_id = "sess"
 
     spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="coordinate", role="implement")])
     await runner.run_workflow(spec)
     assert len(orch.goals) == 1
     assert "[workflow budget]" in orch.goals[0]
-    assert "nodes 1/5 used, 4 remaining" in orch.goals[0]
+    assert "concurrency capped at 3" in orch.goals[0]
+    # Canonical v3 publishes the kernel-owned cap, not a host-authored remaining counter.
+    import re
+    assert re.search(r"tokens capped at \d+", orch.goals[0])
 
 
 # ── G2 deterministic compute (reduce nodes) ──────────────────────────────────────────────────────
@@ -563,73 +518,40 @@ def test_g2_reducer_lowers_to_kernel_node_kind():
 
 
 @pytest.mark.asyncio
-async def test_g2_run_workflow_runs_reduce_node_without_llm():
-    from deepstrike._kernel import Message
-
-    agent_calls = {"n": 0}
-
-    class _Orch:
-        async def run(self, ctx):
-            agent_calls["n"] += 1
-            content = "alpha\nshared" if ctx.spec.identity.agent_id == "wf-node0" else "shared\nbeta"
-            return SubAgentResult(
-                agent_id=ctx.spec.identity.agent_id,
-                result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1,
-                                  final_message=Message(role="assistant", content=content)),
-            )
-
+async def test_g2_run_workflow_fails_closed_on_reduce_node():
     runner = RuntimeRunner(RuntimeOptions(
         provider=_StubProvider(),
         session_log=InMemorySessionLog(),
         execution_plane=LocalExecutionPlane(),
-        sub_agent_orchestrator=_Orch(),
+        sub_agent_orchestrator=_StubOrchestrator(),
         max_tokens=1000,
     ))
-    rt = KernelRuntime(LoopPolicy(max_tokens=128000))
-    _start_runtime(rt)
-    runner._active_kernel = rt
-    runner._current_session_id = "sess"
-
-    spec = WorkflowSpec(nodes=[
+    outcome = await runner.run_workflow(WorkflowSpec(nodes=[
         WorkflowNodeSpec(task="worker A", role="explore"),
         WorkflowNodeSpec(task="worker B", role="explore"),
         WorkflowNodeSpec(task="merge", role="implement", reducer="dedupe_lines", depends_on=[0, 1]),
-    ])
-    outcome = await runner.run_workflow(spec)
-    assert sorted([n.node_id for n in outcome.node_outcomes if n.status in ("completed", "completed_partial")]) == ["wf-node0", "wf-node1", "wf-node2"]
-    assert agent_calls["n"] == 2  # only the two workers called an agent; the reduce ran in-process
+    ]))
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason
 
 
 @pytest.mark.asyncio
-async def test_g2_unknown_reducer_fails_node():
-    from deepstrike._kernel import Message
-
-    class _Orch:
-        async def run(self, ctx):
-            return SubAgentResult(
-                agent_id=ctx.spec.identity.agent_id,
-                result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1,
-                                  final_message=Message(role="assistant", content="x")),
-            )
-
+async def test_g2_unknown_reducer_also_fails_closed_at_load():
     runner = RuntimeRunner(RuntimeOptions(
         provider=_StubProvider(),
         session_log=InMemorySessionLog(),
         execution_plane=LocalExecutionPlane(),
-        sub_agent_orchestrator=_Orch(),
+        sub_agent_orchestrator=_StubOrchestrator(),
         max_tokens=1000,
     ))
-    rt = KernelRuntime(LoopPolicy(max_tokens=128000))
-    _start_runtime(rt)
-    runner._active_kernel = rt
-    runner._current_session_id = "sess"
-
-    spec = WorkflowSpec(nodes=[
+    outcome = await runner.run_workflow(WorkflowSpec(nodes=[
         WorkflowNodeSpec(task="worker", role="explore"),
         WorkflowNodeSpec(task="merge", role="implement", reducer="nope", depends_on=[0]),
-    ])
-    outcome = await runner.run_workflow(spec)
-    assert "wf-node1" in [n.node_id for n in outcome.node_outcomes if n.status == "failed"]
+    ]))
+    assert outcome.node_outcomes == []
+    assert outcome.rejection is not None
+    assert "absent from canonical WorkflowNode: kind" in outcome.rejection.reason
 
 
 @pytest.mark.asyncio

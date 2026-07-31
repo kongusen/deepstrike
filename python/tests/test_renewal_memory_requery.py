@@ -53,9 +53,8 @@ async def test_renewal_refires_prefetch_with_phase_and_lands_in_history():
 
         async def stream(self, context: RenderedContext, tools, extensions=None, state=None):
             st["call"] += 1
-            if st["saw_renewal"] and RECALL in repr(context.turns):
+            if st["saw_renewal"] and RECALL in (context.system_knowledge or ""):
                 st["saw_recall_after_renewal"] = True
-            assert RECALL not in (context.system_knowledge or "")
             if st["call"] <= 10 and not st["saw_recall_after_renewal"]:
                 yield ToolCallEvent(id=f"b{st['call']}", name="bulk", arguments={})
                 return

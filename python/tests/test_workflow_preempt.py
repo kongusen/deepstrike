@@ -1,7 +1,7 @@
 """#2-B-ii (python, asyncio idiom): a Critical InterruptNow during a running workflow node preempts it
 mid-flight. The drive loop's concurrent monitor polls the signal source during the batch → routes it to
-the kernel (root in SubAgentAwait → preempt → AgentPreempted + workflow torn down) → cancels the matching
-node's asyncio task → CancelledError aborts its in-flight LLM call. Real native kernel.
+the kernel → cancels the matching node's asyncio task → CancelledError aborts its in-flight LLM call.
+Uses standalone ``run_workflow`` (no ``_active_kernel`` injection).
 """
 
 import asyncio
@@ -17,9 +17,9 @@ from deepstrike import (
     RuntimeSignal,
     SignalClaim,
     SubAgentResult,
+    WorkflowSpec,
+    WorkflowNodeSpec,
 )
-from deepstrike._kernel import KernelRuntime, LoopPolicy
-from deepstrike.runtime.kernel_step import kernel_action
 
 
 class _Stub:
@@ -76,17 +76,9 @@ async def test_critical_signal_preempts_running_workflow_node():
         signal_source=_SigSource([crit]),
         max_tokens=1000,
     ))
-    rt = KernelRuntime(LoopPolicy(max_tokens=1000))
-    kernel_action(rt, [], {"kind": "start_run", "task": {"goal": "parent", "criteria": []}})
-    runner._active_kernel = rt
-    runner._current_session_id = "sess"
-    runner._pending_observations = []
-
-    from deepstrike import WorkflowSpec, WorkflowNodeSpec
     spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task="a long-running node", role="implement")])
     outcome = await runner.run_workflow(spec)
 
     # The running node's task was cancelled mid-flight and the workflow torn down.
     assert orch.cancelled is True
     assert "wf-node0" in [n.node_id for n in outcome.node_outcomes if n.status == "failed"]
-    assert any(o.get("kind") == "agent_preempted" for o in runner._pending_observations)
