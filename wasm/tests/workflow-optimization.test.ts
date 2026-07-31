@@ -17,6 +17,7 @@ import type { WorkflowSpec } from "../src/index.js"
 import { dependencyOutputsNote } from "../src/runtime/workflow-control-flow.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
 import type { RegisteredTool } from "../src/tools/index.js"
+import { wrapScriptedKernel } from "./helpers/scripted-canonical-runtime.js"
 
 type Obs = Record<string, unknown>
 let effectSequence = 1
@@ -61,7 +62,7 @@ function createWorkflowRunner(
     maxTokens: 8000,
     ...extraOpts,
   } as never)
-  ;(runner as unknown as { activeKernel: unknown }).activeKernel = fakeKernel
+  ;(runner as unknown as { activeKernel: unknown }).activeKernel = wrapScriptedKernel(fakeKernel as { step(inputJson: string): string })
   ;(runner as unknown as { currentSessionId: string }).currentSessionId = sessionId
   ;(runner as unknown as { pendingObservations: unknown[] }).pendingObservations = []
   return { runner, sessionLog, plane }

@@ -76,8 +76,11 @@ describe("attachment seeding is idempotent per session (runner)", () => {
     expect((starts[0]!.event as { attachments?: ContentPart[] }).attachments).toEqual(attachments)
     expect((starts[1]!.event as { attachments?: ContentPart[] }).attachments).toBeUndefined()
 
-    const seeds = kernelEvents.filter((e: { kind?: string }) => e.kind === "add_history_message")
-    expect(seeds).toHaveLength(1)
+    const seeds = kernelEvents.filter((e: { kind?: string; initial_context?: { messages?: unknown[] } }) =>
+      e.kind === "start_operation" && (e.initial_context?.messages?.length ?? 0) > 0)
+    // The second canonical start reconstructs the first run's attachment from
+    // session history; it does not emit a separate legacy seed event.
+    expect(seeds).toHaveLength(2)
   })
 
   it("different attachments in a later same-session run are still seeded", async () => {
@@ -98,7 +101,8 @@ describe("attachment seeding is idempotent per session (runner)", () => {
 
     const starts = (await sessionLog.read("two")).filter(e => e.event.kind === "run_started")
     expect((starts[1]!.event as { attachments?: ContentPart[] }).attachments).toEqual(imageB)
-    const seeds = kernelEvents.filter((e: { kind?: string }) => e.kind === "add_history_message")
+    const seeds = kernelEvents.filter((e: { kind?: string; initial_context?: { messages?: unknown[] } }) =>
+      e.kind === "start_operation" && (e.initial_context?.messages?.length ?? 0) > 0)
     expect(seeds).toHaveLength(2)
   })
 })

@@ -55,11 +55,11 @@ describe("update_plan meta-tool dispatch", () => {
       isError: true,
     }))
 
-    const update = kernelEvents.find((e: { kind: string }) => e.kind === "update_task") as
-      | { update?: Record<string, unknown> }
+    const update = kernelEvents.find((e: { kind: string }) => e.kind === "host_control") as
+      | { command?: { update?: Record<string, unknown> } }
       | undefined
     expect(update).toBeDefined()
-    expect(update!.update).toEqual(expect.objectContaining({
+    expect(update!.command!.update).toEqual(expect.objectContaining({
       plan: ["step a", "step b"],
       current_step: 1,
       progress: "started",

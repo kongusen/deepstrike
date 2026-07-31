@@ -31,6 +31,21 @@ export { RuntimeRunner, collectText } from "./runner.js"
 export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } from "./kernel-step.js"
 export type { KernelDiagnostics } from "./kernel-step.js"
 export type { KernelSnapshot } from "./kernel-step.js"
+export {
+  CanonicalKernelHost,
+  CanonicalKernelRejectedError,
+  CanonicalKernelRebuildRequiredError,
+  CanonicalRunnerRuntime,
+  canonicalActionFromPlannedStep,
+  sha256,
+} from "./canonical-kernel-step.js"
+export type {
+  CanonicalKernelInput,
+  CanonicalPlannedStep,
+  CanonicalRunnerRuntimeOptions,
+  CanonicalTransition,
+  CanonicalTransitionOptions,
+} from "./canonical-kernel-step.js"
 export { runAgent, runFanout } from "./facade.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./facade.js"
 export { builtinReducers, resolveReducer } from "./reducers.js"

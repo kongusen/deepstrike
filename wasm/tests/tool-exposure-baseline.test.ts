@@ -4,7 +4,7 @@ import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
 
 /**
  * WASM lowering for the exposure baseline (`baselineToolIds` → `run_spec.exposure_baseline`) and the
- * fail-closed dispatch selector (`toolDispatchGate` → `configure_run.tool_dispatch_gate`).
+ * fail-closed dispatch selector (`toolDispatchGate` → canonical operation config).
  *
  * The wasm suite runs against a MOCK kernel, so it cannot observe gate BEHAVIOR — that lives in the
  * kernel's own tests and in the node/python integration suites, which drive the real kernel. What is
@@ -31,11 +31,11 @@ async function runWith(opts: Record<string, unknown>) {
     ...opts,
   } as never)
   await collectText(runner.run({ sessionId: "exposure-wasm", goal: "go" }))
-  const configure = kernelEvents.find(e => e.kind === "configure_run") as
+  const configure = kernelEvents.find(e => e.kind === "configure_operation") as
     | { config: Record<string, unknown> }
     | undefined
-  const start = kernelEvents.find(e => e.kind === "start_run") as
-    | { run_spec?: Record<string, unknown> }
+  const start = kernelEvents.find(e => e.kind === "start_operation") as
+    | { entry?: { run_spec?: Record<string, unknown> } }
     | undefined
   return { configure, start }
 }
@@ -46,37 +46,37 @@ describe("wasm lowering: exposure baseline + dispatch gate", () => {
       allowedToolIds: ["read", "write"],
       baselineToolIds: ["read"],
     })
-    expect(start?.run_spec).toBeDefined()
-    expect(start!.run_spec!.exposure_baseline).toEqual(["read"])
-    expect(start!.run_spec!.capability_filter).toEqual({ allowed_kinds: [], allowed_ids: ["read", "write"] })
+    expect(start?.entry?.run_spec).toBeDefined()
+    expect(start!.entry!.run_spec!.exposure_baseline).toEqual(["read"])
+    expect(start!.entry!.run_spec!.capability_filter).toEqual({ allowed_ids: ["read", "write"] })
   })
 
   it("sends an EMPTY baseline as [] (the minimal surface), not as unset", async () => {
     // The presence semantics differ from `allowedToolIds` on purpose: `[]` there means "no gating",
     // here it means "meta-tools + stable-core only". A `length > 0` trigger would erase that.
     const { start } = await runWith({ baselineToolIds: [] })
-    expect(start?.run_spec).toBeDefined()
-    expect(start!.run_spec!.exposure_baseline).toEqual([])
+    expect(start?.entry?.run_spec).toBeDefined()
+    expect(start!.entry!.run_spec!.exposure_baseline).toEqual([])
   })
 
   it("omits exposure_baseline entirely when unset (no config = old behavior)", async () => {
     const { start } = await runWith({ allowedToolIds: ["read"] })
-    expect(start?.run_spec).toBeDefined()
-    expect(start!.run_spec).not.toHaveProperty("exposure_baseline")
+    expect(start?.entry?.run_spec).toBeDefined()
+    expect(start!.entry!.run_spec).not.toHaveProperty("exposure_baseline")
   })
 
   it("lowers toolDispatchGate onto configure_run.tool_dispatch_gate", async () => {
     const { configure } = await runWith({ toolDispatchGate: "registered" })
     expect(configure).toBeDefined()
-    expect(configure!.config.tool_dispatch_gate).toBe("registered")
+    expect((configure!.config.feature_policy as { tool_dispatch_gate?: string }).tool_dispatch_gate).toBe("registered")
 
     const exposed = await runWith({ toolDispatchGate: "exposed" })
-    expect(exposed.configure!.config.tool_dispatch_gate).toBe("exposed")
+    expect((exposed.configure!.config.feature_policy as { tool_dispatch_gate?: string }).tool_dispatch_gate).toBe("exposed")
   })
 
   it("omits tool_dispatch_gate when unset (kernel default stands)", async () => {
     const { configure } = await runWith({})
     expect(configure).toBeDefined()
-    expect(configure!.config).not.toHaveProperty("tool_dispatch_gate")
+    expect(configure!.config.feature_policy ?? {}).not.toHaveProperty("tool_dispatch_gate")
   })
 })

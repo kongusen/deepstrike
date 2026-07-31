@@ -436,6 +436,20 @@ describe("SessionLog / KernelJournal capability separation", () => {
     expect((await log.readKernelGenesis("s1", "op-1"))?.genesis_digest).toBe(operationGenesis.genesis_digest)
   })
 
+  it("stages and clears outbound envelopes (InMemory + Driver)", async () => {
+    const memory = new InMemoryKernelJournal()
+    await memory.stageOutboundEnvelope("op-out", "{\"kind\":\"start_operation\"}")
+    expect(await memory.readOutboundEnvelope("op-out")).toBe("{\"kind\":\"start_operation\"}")
+    await memory.clearOutboundEnvelope("op-out")
+    expect(await memory.readOutboundEnvelope("op-out")).toBeUndefined()
+
+    const driver = new DriverKernelJournal(new InMemoryJournalDriver())
+    await driver.stageOutboundEnvelope("op-out", "{\"kind\":\"resolve_effect\"}")
+    expect(await driver.readOutboundEnvelope("op-out")).toBe("{\"kind\":\"resolve_effect\"}")
+    await driver.clearOutboundEnvelope("op-out")
+    expect(await driver.readOutboundEnvelope("op-out")).toBeUndefined()
+  })
+
   it("keeps the same split when the journal is a host-injected driver", async () => {
     // A SessionLog whose journal half is durable: the capability is swappable precisely because the
     // interfaces are separate (§9.4).

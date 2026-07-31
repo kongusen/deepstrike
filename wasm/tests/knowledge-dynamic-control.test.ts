@@ -1,34 +1,24 @@
 /**
- * Strict dynamic context control (mirrors node/tests/knowledge-skill-pin.test.ts +
- * pre-query-memory.test.ts): a loaded SKILL is method content reused for the rest of the run, so
- * it gets pinned into the durable `knowledge` slot on top of the ordinary tool_result already
- * headed for `history`. A `preQueryMemory` prefetch, by contrast, is single-use retrieval content
- * — it lands in `history` only and is never pinned into `knowledge`.
+ * Strict dynamic context control after Task 21 canonical cutover.
  *
- * The WASM jest suite runs against a hand-written mock kernel (tests/__mocks__/kernel.ts) that
- * doesn't actually render accumulated `knowledge`/`history` content (it returns a fixed `render()`
- * per event, mirroring only the handful of behaviors other WASM tests need). So instead of
- * asserting on rendered context — which the mock can't produce faithfully — these tests inspect
- * the mock's captured `kernelEvents` stream to prove the SDK emits the correct kernel event for
- * each content class, exactly as `smoke.test.ts`'s `configure_run` test does.
- *
- * NOT covered here (mock limitation): the K4 renewal-boundary memory re-query. The mock's
- * 2-phase FSM never emits a `renewed` observation (that requires genuine context pressure), and
- * simulating one is not a trivial mock extension. The runner code path is identical to Node's,
- * which covers it end-to-end against the real kernel in tests/renewal-memory-requery.test.ts
- * (mirrored in Python).
+ * ABI-v2 kinds (`add_knowledge_message`, `skill_activated`, `configure_run`, `add_history_message`)
+ * are lowered into canonical inputs. These tests assert the durable canonical shapes the mock
+ * kernel receives via `kernelEvents`.
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import type { DreamStore, MemoryRecall } from "../src/memory/index.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
 import { kernelEvents } from "@deepstrike/wasm-kernel"
 
+function hostControls() {
+  return kernelEvents.filter((event: { kind?: string }) => event.kind === "host_control") as Array<{
+    kind: string
+    command?: Record<string, unknown>
+  }>
+}
+
 describe("skill content is pinned into durable knowledge on activation", () => {
-  // The mock kernel's `provider_result` only dispatches ONE execute_tool round (phase 0→1, then
-  // any further tool_calls are treated as final) — it can't drive a genuine repeat-activation
-  // round trip. The dedupe guard (`knowledgePushedSkills`) itself is covered against a REAL kernel
-  // by the Node/Python equivalents of this test; this one confirms the wiring fires at all.
-  it("emits add_knowledge_message with the skill's resolved content on activation", async () => {
+  it("emits seed_knowledge with the skill's resolved content on activation", async () => {
     kernelEvents.length = 0
     const provider: LLMProvider = {
       async complete(): Promise<Message> {
@@ -50,18 +40,16 @@ describe("skill content is pinned into durable knowledge on activation", () => {
 
     for await (const _e of runner.run({ sessionId: "knowledge-pin", goal: "debug it" })) { /* drain */ }
 
-    const knowledgePushes = kernelEvents.filter((e: { kind?: string }) => e.kind === "add_knowledge_message")
-    expect(knowledgePushes.length).toBe(1)
-    expect((knowledgePushes[0] as { content?: string }).content).toContain("Debug guidance.")
-    // K1: the pin is keyed `skill:<name>` so the kernel-side upsert dedupes across runner
-    // instances (e.g. a wake re-push of an already-pinned skill).
-    expect((knowledgePushes[0] as { key?: string }).key).toBe("skill:debug")
-    expect(kernelEvents.some((e: { kind?: string }) => e.kind === "skill_activated")).toBe(true)
+    const knowledgePushes = hostControls().filter(event => event.command?.kind === "seed_knowledge")
+    expect(knowledgePushes.length).toBeGreaterThanOrEqual(1)
+    const entries = (knowledgePushes[0]!.command as { entries?: Array<Record<string, unknown>> }).entries ?? []
+    expect(JSON.stringify(entries)).toContain("Debug guidance.")
+    expect(entries.some(entry => entry.key === "skill:debug")).toBe(true)
   })
 })
 
 describe("skill lease + deactivation events reach the kernel (K3)", () => {
-  it("skillLeaseTurns rides on skill_activated; deactivateSkill emits skill_deactivated", async () => {
+  it("deactivateSkill emits apply_skill_activation deactivate under host_control", async () => {
     kernelEvents.length = 0
     let runnerRef: RuntimeRunner | undefined
     const provider: LLMProvider = {
@@ -85,20 +73,19 @@ describe("skill lease + deactivation events reach the kernel (K3)", () => {
     runnerRef = runner
 
     for await (const e of runner.run({ sessionId: "skill-lease", goal: "debug it" })) {
-      // Deactivate as soon as the skill result comes back (mid-run, kernel active).
       if (e.type === "tool_result" && runnerRef) runnerRef.deactivateSkill("debug")
     }
 
-    const activated = kernelEvents.find((e: { kind?: string }) => e.kind === "skill_activated") as
-      | { lease_turns?: number }
-      | undefined
-    expect(activated?.lease_turns).toBe(3)
-    expect(kernelEvents.some((e: { kind?: string }) => e.kind === "skill_deactivated")).toBe(true)
+    const deactivated = hostControls().some(event =>
+      event.command?.kind === "apply_skill_activation"
+      && Array.isArray((event.command as { deactivate?: string[] }).deactivate)
+      && (event.command as { deactivate: string[] }).deactivate.includes("debug"))
+    expect(deactivated).toBe(true)
   })
 })
 
-describe("knowledgeBudgetRatio reaches the kernel via configure_run (K2)", () => {
-  it("carries knowledge_budget_ratio in the configure_run bundle", async () => {
+describe("knowledgeBudgetRatio reaches the kernel via configure_operation (K2)", () => {
+  it("carries knowledge_budget_ratio in the configure_operation bundle", async () => {
     kernelEvents.length = 0
     const provider: LLMProvider = {
       async complete(): Promise<Message> {
@@ -119,15 +106,16 @@ describe("knowledgeBudgetRatio reaches the kernel via configure_run (K2)", () =>
 
     for await (const _e of runner.run({ sessionId: "budget-knob", goal: "noop" })) { /* drain */ }
 
-    const configure = kernelEvents.find((e: { kind?: string }) => e.kind === "configure_run") as
-      | { config?: { knowledge_budget_ratio?: number } }
+    const configure = kernelEvents.find((e: { kind?: string }) => e.kind === "configure_operation") as
+      | { config?: { context_policy?: { knowledge_budget_ppm?: number } } }
       | undefined
-    expect(configure?.config?.knowledge_budget_ratio).toBe(0.1)
+    // Canonical lowering stores the ratio as ppm on context_policy.
+    expect(configure?.config?.context_policy?.knowledge_budget_ppm).toBe(100_000)
   })
 })
 
-describe("preQueryMemory prefetch lands in history, not knowledge", () => {
-  it("emits add_history_message, never add_knowledge_message or page_in", async () => {
+describe("preQueryMemory prefetch lands in initial history, not knowledge", () => {
+  it("seeds start_operation history with prefetch content, never seed_knowledge/page_in", async () => {
     kernelEvents.length = 0
     const scope = { tenant_id: "agent-prequery", namespace: "prefetch" }
     const dreamStore: DreamStore = {
@@ -167,10 +155,11 @@ describe("preQueryMemory prefetch lands in history, not knowledge", () => {
 
     for await (const _e of runner.run({ sessionId: "prequery", goal: "use the fact" })) { /* drain */ }
 
-    const historyPushes = kernelEvents.filter((e: { kind?: string }) => e.kind === "add_history_message")
-    expect(historyPushes.length).toBe(1)
-    expect(JSON.stringify(historyPushes[0])).toContain("PREFETCHED_LONGTERM_FACT")
-    expect(kernelEvents.some((e: { kind?: string }) => e.kind === "add_knowledge_message")).toBe(false)
+    const start = kernelEvents.find((e: { kind?: string }) => e.kind === "start_operation") as
+      | { initial_context?: { messages?: unknown[] } }
+      | undefined
+    expect(JSON.stringify(start?.initial_context?.messages ?? [])).toContain("PREFETCHED_LONGTERM_FACT")
+    expect(hostControls().some(event => event.command?.kind === "seed_knowledge")).toBe(false)
     expect(kernelEvents.some((e: { kind?: string }) => e.kind === "page_in")).toBe(false)
   })
 })

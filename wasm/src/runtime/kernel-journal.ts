@@ -31,6 +31,9 @@
 
 import { KernelLogConflictError, KernelLogIntegrityError } from "./kernel-transaction-log.js"
 
+/** Chain positions at or above this bound are rejected (parity with Node/Python/Rust). */
+export const MAX_CHAIN_POSITION = 1_000_000_000_000
+
 /* ------------------------------------------------------------------ *
  * Errors
  * ------------------------------------------------------------------ */
@@ -221,16 +224,37 @@ export interface KernelJournal {
    * next CAS still resolve on a fully-pruned chain.
    */
   pruneAckedPrefix(operationId: string): Promise<JournalPruneReceipt>
+
+  /**
+   * Durably stage one outbound WireEnvelope JSON for `operationId` until the matching record is
+   * append-acked (or the attempt is abandoned). Overwrites any previous pending envelope.
+   *
+   * Required by Phase 6 host cutover (adjudication 5e.3): retries must replay byte-identical
+   * envelopes — reminting `observed_at_ms` after a crash produces `DuplicateInputConflict`.
+   */
+  stageOutboundEnvelope(operationId: string, envelopeJson: string): Promise<void>
+
+  /** Read the staged outbound envelope, if any. */
+  readOutboundEnvelope(operationId: string): Promise<string | undefined>
+
+  /** Clear the staged outbound envelope. Idempotent. */
+  clearOutboundEnvelope(operationId: string): Promise<void>
 }
 
 /* ------------------------------------------------------------------ *
  * Shared validation
  * ------------------------------------------------------------------ */
 
-function validateRecord(record: JournalRecordInput): void {
-  if (!Number.isSafeInteger(record.step_seq) || record.step_seq < 0) {
-    throw new JournalIntegrityError("journal record step_seq must be a non-negative safe integer")
+function validateChainPosition(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 0 || value >= MAX_CHAIN_POSITION) {
+    throw new JournalIntegrityError(
+      `${label} must be a non-negative integer below ${MAX_CHAIN_POSITION}`,
+    )
   }
+}
+
+function validateRecord(record: JournalRecordInput): void {
+  validateChainPosition(record.step_seq, "journal record step_seq")
   if (!record.record_digest) throw new JournalIntegrityError("journal record requires a record_digest")
   if (!(record.record_bytes instanceof Uint8Array)) {
     throw new JournalIntegrityError("journal record requires opaque record_bytes")
@@ -239,9 +263,7 @@ function validateRecord(record: JournalRecordInput): void {
 
 function validateCandidate(checkpoint: CheckpointCandidate): void {
   if (!checkpoint.checkpoint_id) throw new JournalIntegrityError("checkpoint requires a checkpoint_id")
-  if (!Number.isSafeInteger(checkpoint.through_step_seq) || checkpoint.through_step_seq < 0) {
-    throw new JournalIntegrityError("checkpoint through_step_seq must be a non-negative safe integer")
-  }
+  validateChainPosition(checkpoint.through_step_seq, "checkpoint through_step_seq")
   if (!checkpoint.state_digest) throw new JournalIntegrityError("checkpoint requires a state_digest")
   if (!(checkpoint.checkpoint_bytes instanceof Uint8Array)) {
     throw new JournalIntegrityError("checkpoint requires opaque checkpoint_bytes")
@@ -357,6 +379,7 @@ interface OperationState {
   records: JournalEntry[]
   checkpoints: InstalledCheckpoint[]
   pruned?: PrunedAnchor
+  outboundEnvelope?: string
 }
 
 /**
@@ -492,6 +515,20 @@ export class InMemoryKernelJournal implements KernelJournal {
       pruned_through_step_seq: state.pruned.through_step_seq,
       pruned_count: before - state.records.length,
     }
+  }
+
+  async stageOutboundEnvelope(operationId: string, envelopeJson: string): Promise<void> {
+    if (!envelopeJson) throw new JournalIntegrityError("outbound envelope must not be empty")
+    this.state(operationId).outboundEnvelope = envelopeJson
+  }
+
+  async readOutboundEnvelope(operationId: string): Promise<string | undefined> {
+    return this.operations.get(operationId)?.outboundEnvelope
+  }
+
+  async clearOutboundEnvelope(operationId: string): Promise<void> {
+    const state = this.operations.get(operationId)
+    if (state) delete state.outboundEnvelope
   }
 }
 
@@ -679,6 +716,10 @@ export class DriverKernelJournal implements KernelJournal {
 
   private prunedKey(operationId: string): string {
     return `${this.operationPrefix(operationId)}/pruned`
+  }
+
+  private outboundKey(operationId: string): string {
+    return `${this.operationPrefix(operationId)}/outbound`
   }
 
   /** Every driver call funnels through these three so a driver fault is always a `JournalIoError`. */
@@ -966,6 +1007,27 @@ export class DriverKernelJournal implements KernelJournal {
       await this.driver.put(this.prunedKey(operationId), encoder.encode(JSON.stringify(anchor)))
     } catch (err) {
       throw new JournalIoError("journal could not record its pruned anchor", { cause: err })
+    }
+  }
+
+  async stageOutboundEnvelope(operationId: string, envelopeJson: string): Promise<void> {
+    if (!envelopeJson) throw new JournalIntegrityError("outbound envelope must not be empty")
+    try {
+      await this.driver.put(this.outboundKey(operationId), encoder.encode(envelopeJson))
+    } catch (err) {
+      throw new JournalIoError("journal could not stage a durable outbound envelope", { cause: err })
+    }
+  }
+
+  async readOutboundEnvelope(operationId: string): Promise<string | undefined> {
+    return this.load(this.outboundKey(operationId))
+  }
+
+  async clearOutboundEnvelope(operationId: string): Promise<void> {
+    try {
+      await this.driver.remove(this.outboundKey(operationId))
+    } catch (err) {
+      throw new JournalIoError("journal could not clear its outbound envelope", { cause: err })
     }
   }
 }

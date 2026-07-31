@@ -28,6 +28,33 @@ interface SkillMetadata {
 }
 
 export const KERNEL_ABI_VERSION = 2
+export const CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts:v1]]"
+
+/**
+ * Browser/worker-safe transport for typed content. `btoa` and `atob` operate on
+ * binary strings, so explicitly bridge UTF-8 bytes rather than assuming Latin-1.
+ */
+export function encodeCanonicalContentParts(parts: unknown[]): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(parts))
+  let binary = ""
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return `${CANONICAL_CONTENT_PARTS_PREFIX}${btoa(binary)}`
+}
+
+export function decodeCanonicalContentParts(content: string): Array<Record<string, unknown>> | undefined {
+  if (!content.startsWith(CANONICAL_CONTENT_PARTS_PREFIX)) return undefined
+  try {
+    const binary = atob(content.slice(CANONICAL_CONTENT_PARTS_PREFIX.length))
+    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
+    const decoded = JSON.parse(new TextDecoder().decode(bytes)) as unknown
+    return Array.isArray(decoded)
+      ? decoded.filter((part): part is Record<string, unknown> =>
+          Boolean(part) && typeof part === "object")
+      : undefined
+  } catch {
+    return undefined
+  }
+}
 
 export interface KernelRuntimeHandle {
   step(inputJson: string): string
@@ -123,6 +150,7 @@ export interface KernelLoopResult {
   termination: string
   turnsUsed: number
   totalTokensUsed: number
+  finalMessage?: Message
   /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */
   paceDecision?: PaceDecision
 }
@@ -132,11 +160,27 @@ export type KernelRunnerAction =
   | { kind: "execute_tool"; effectId: string; calls: ToolCall[] }
   | { kind: "request_approval"; effectId: string; requests: Array<{ callId: string; tool: string; arguments: string; reason: string }> }
   | { kind: "spawn_workflow"; effectId: string; nodes: Array<Record<string, unknown>>; budget?: Record<string, unknown> }
-  | { kind: "preempt_sub_agents"; effectId: string; agentIds: string[]; reason: string }
+  | { kind: "preempt_sub_agents"; effectId: string; agentIds: string[]; attempts?: Array<{ task_id: string; attempt_id: string }>; reason: string }
   | { kind: "persist_memory"; effectId: string; memory: Record<string, unknown> }
   | { kind: "query_memory"; effectId: string; query: Record<string, unknown>; requestedK: number }
   | { kind: "spool_large_result"; effectId: string; callId: string; tool: string; output: string; originalSize: number; previewSize: number }
-  | { kind: "archive_page_out"; effectId: string; turn: number; action: string; summary?: string; archived: Message[]; tier: string }
+  | {
+      kind: "archive_page_out"
+      effectId: string
+      turn?: number
+      action?: string
+      summary?: string
+      archived: Message[]
+      tier?: string
+      handleId?: string
+      payload?: {
+        content: string
+        digest: string
+        original_size: string
+        preview?: string
+      }
+    }
+  | { kind: "load_payload"; effectId: string; handleId: string; payloadRef: string }
   | { kind: "evaluate_milestone"; effectId: string; phaseId: string; criteria: string[]; requiredEvidence?: string[] }
   | { kind: "done"; effectId: string; result: KernelLoopResult }
 
@@ -357,7 +401,7 @@ function parseStep(raw: string): KernelStepJson {
   return JSON.parse(raw) as KernelStepJson
 }
 
-function kernelMessageToSdk(raw: Record<string, unknown>): Message {
+export function kernelMessageToSdk(raw: Record<string, unknown>): Message {
   const content = raw.content
   const message: Message = {
     role: raw.role as Message["role"],
@@ -380,10 +424,50 @@ function kernelMessageToSdk(raw: Record<string, unknown>): Message {
   if (typeof raw.token_count === "number") {
     message.tokenCount = raw.token_count
   }
+  if (typeof content === "string") {
+    const parts = decodeCanonicalContentParts(content)
+    if (parts) {
+      const contentParts: NonNullable<Message["contentParts"]> = []
+      for (const part of parts) {
+        switch (part.type) {
+          case "text":
+            contentParts.push({ type: "text", text: String(part.text ?? "") })
+            break
+          case "tool_result":
+            contentParts.push({
+            type: "tool_result" as const,
+            callId: String(part.call_id ?? ""),
+            output: String(part.output ?? ""),
+            isError: Boolean(part.is_error),
+            })
+            break
+          case "image":
+            contentParts.push({
+            type: "image" as const,
+            ...(part.url ? { url: String(part.url) } : {}),
+            ...(part.data ? { data: String(part.data) } : {}),
+            ...(part.media_type ? { mediaType: String(part.media_type) } : {}),
+            ...(part.detail === "auto" || part.detail === "low" || part.detail === "high"
+              ? { detail: part.detail }
+              : {}),
+            })
+            break
+          case "audio":
+            contentParts.push({
+            type: "audio" as const,
+            data: String(part.data ?? ""),
+            ...(part.media_type ? { mediaType: String(part.media_type) } : {}),
+            })
+            break
+        }
+      }
+      message.contentParts = contentParts
+    }
+  }
   return message
 }
 
-function renderedContextToSdk(raw: Record<string, unknown>): RenderedContext {
+export function renderedContextToSdk(raw: Record<string, unknown>): RenderedContext {
   const rawStateTurn = (raw.state_turn ?? raw.stateTurn) as Record<string, unknown> | undefined
   const frozenLen = (raw.frozen_prefix_len ?? raw.frozenPrefixLen) as number | undefined
   const ctx: RenderedContext = {

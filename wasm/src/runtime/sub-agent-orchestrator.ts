@@ -3,11 +3,9 @@ import type {
   AgentRunSpec, AgentProcessChangedObservation, LoopResult, SubAgentResult, TerminationReason,
   KernelAgentRole, WorkflowNodeSpec,
 } from "./types/agent.js"
-import { agentRunSpecToKernel, findSpawnProcessObservation, spawnObservationToManifest } from "./types/agent.js"
 import type { RuntimeOptions } from "./runner.js"
 import type { SessionEvent, SessionLog } from "./session-log.js"
 import { FilteredExecutionPlane } from "./filtered-plane.js"
-import { kernelApply, type KernelObservation } from "./kernel-step.js"
 
 export interface SubAgentRunContext {
   parentOpts: RuntimeOptions
@@ -199,51 +197,46 @@ export class SubAgentOrchestrator {
 
 export const defaultSubAgentOrchestrator = new SubAgentOrchestrator()
 
-/** Kernel spawn without an active parent run loop (harness / coordinator use). */
+/** Canonical single-node root workflow for harness / coordinator use. */
 export async function spawnStandalone(
   parentOpts: RuntimeOptions,
   parentSessionId: string,
   spec: AgentRunSpec,
   orchestrator: SubAgentOrchestrator = defaultSubAgentOrchestrator,
+  contextInput?: string,
 ): Promise<SubAgentResult> {
-  const kernel = await (await import("./kernel.js")).getKernel()
-  const runtime = new kernel.KernelRuntime({
-    maxTokens: parentOpts.maxTokens,
-    maxTurns: parentOpts.maxTurns ?? 25,
-    timeoutMs: parentOpts.timeoutMs,
-  })
-  const pending: KernelObservation[] = []
-
-  kernelApply(runtime, pending, { kind: "start_run", task: { goal: "coordinator", criteria: [] } })
-  const observations = kernelApply(runtime, pending, {
-    kind: "spawn_sub_agent",
-    spec: agentRunSpecToKernel(spec),
-    parent_session_id: parentSessionId,
-  })
-
-  const spawned = findSpawnProcessObservation(observations)
-  if (!spawned) {
-    throw new Error("spawn_sub_agent did not emit agent_process_changed")
+  if (spec.tokenBudget !== undefined || spec.maxTurns !== undefined || spec.maxWallMs !== undefined) {
+    throw new Error("spawnStandalone cannot represent per-node resource caps under canonical ABI v3")
   }
-
-  const manifest = spawnObservationToManifest(spawned, spec, parentSessionId)
-  await parentOpts.sessionLog.append(parentSessionId, {
-    kind: "agent_process_changed",
-    turn: manifest.turn ?? 0,
-    agent_id: manifest.agent_id,
-    parent_session_id: manifest.parent_session_id,
-    role: manifest.role,
-    isolation: manifest.isolation,
-    context_inheritance: manifest.context_inheritance,
-    state: "running",
-    permitted_capability_ids: manifest.permitted_capability_ids ?? [],
+  const { RuntimeRunner } = await import("./runner.js")
+  let captured: SubAgentResult | undefined
+  const bridge = {
+    async run(ctx: SubAgentRunContext): Promise<SubAgentResult> {
+      const child = await orchestrator.run({
+        ...ctx,
+        parentSessionId,
+        spec,
+        manifest: {
+          ...ctx.manifest,
+          agent_id: spec.identity.agentId,
+          parent_session_id: parentSessionId,
+        },
+        ...(contextInput ? { contextInput } : {}),
+      })
+      captured = child
+      return { ...child, agentId: ctx.manifest.agent_id }
+    },
+  } as unknown as SubAgentOrchestrator
+  const runner = new RuntimeRunner({ ...parentOpts, subAgentOrchestrator: bridge })
+  const outcome = await runner.runWorkflow({
+    nodes: [{
+      task: spec.goal,
+      role: spec.role,
+      isolation: spec.isolation,
+      ...(spec.modelHint ? { modelHint: spec.modelHint } : {}),
+    }],
   })
-
-  return orchestrator.run({
-    parentOpts,
-    parentSessionId,
-    spec,
-    manifest,
-    sessionLog: parentOpts.sessionLog,
-  })
+  if (outcome.rejection) throw new Error(`canonical standalone spawn rejected: ${outcome.rejection.reason}`)
+  if (!captured) throw new Error("canonical standalone spawn completed without a child result")
+  return captured
 }

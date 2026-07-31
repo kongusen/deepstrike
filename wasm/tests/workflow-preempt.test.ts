@@ -7,6 +7,7 @@
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
 import type { WorkflowSpec } from "../src/index.js"
+import { wrapScriptedKernel } from "./helpers/scripted-canonical-runtime.js"
 
 type Obs = {
   kind: string
@@ -85,7 +86,7 @@ describe("#2-B-ii wasm workflow preemption (scripted kernel)", () => {
       subAgentOrchestrator: orch as never,
       signalSource: signalSource as never,
     } as never)
-    ;(runner as never as { activeKernel: unknown }).activeKernel = makeFakeKernel()
+    ;(runner as never as { activeKernel: unknown }).activeKernel = wrapScriptedKernel(makeFakeKernel())
     ;(runner as never as { currentSessionId: string }).currentSessionId = "wf-preempt"
     ;(runner as never as { pendingObservations: unknown[] }).pendingObservations = []
 

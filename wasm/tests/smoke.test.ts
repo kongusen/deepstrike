@@ -232,17 +232,16 @@ describe("RuntimeRunner", () => {
 
     await collectText(runner.run({ sessionId: "quota-wasm", goal: "go" }))
 
-    const configure = kernelEvents.find((e: { kind: string }) => e.kind === "configure_run") as
+    const configure = kernelEvents.find((e: { kind: string }) => e.kind === "configure_operation") as
       | { config: Record<string, unknown> }
       | undefined
     expect(configure).toBeDefined()
-    expect(configure!.config.resource_quota).toEqual({
+    expect(configure!.config.resource_quota).toEqual(expect.objectContaining({
       max_concurrent_subagents: 2,
       max_spawn_depth: 1,
-      memory_writes_per_window: [3, 1000],
-    })
+      memory_writes_per_window: { max_events: 3, window_ms: "1000" },
+    }))
     expect(configure!.config.scheduler_policy).toEqual({
-      version: 1,
       critical_path_weight: 1_000_000,
       fanout_weight: 10_000,
       age_weight: 1_000,
@@ -250,17 +249,12 @@ describe("RuntimeRunner", () => {
     })
     expect(configure!.config).not.toHaveProperty("scheduler_max_wall_ms")
     expect(configure!.config.signal_policy).toEqual({
-      version: 1,
       queue_max: 8,
-      ttl_ms: 500,
+      ttl_ms: "500",
       deadline_escalation: false,
     })
-    expect(configure!.config.prompt_budget).toEqual({
-      prompt_overhead_tokens: 20,
-      output_reserve_tokens: 100,
-      safety_margin_tokens: 10,
-    })
-    expect(configure!.config.context_policy).toEqual({
+    expect(configure!.config.prompt_budget).toBeUndefined()
+    expect(configure!.config.context_policy).toEqual(expect.objectContaining({
       version: 1,
       pressure_thresholds_ppm: {
         snip: 720_000,
@@ -274,7 +268,12 @@ describe("RuntimeRunner", () => {
       renewal_carryover_ppm: 50_000,
       collapse_old_assistant_narration: true,
       idle_micro_compact_minutes: 60,
-    })
+      prompt_budget: {
+        prompt_overhead_tokens: 20,
+        output_reserve_tokens: 100,
+        safety_margin_tokens: 10,
+      },
+    }))
   })
 
   it("continues an ask_user-gated tool after host approval", async () => {

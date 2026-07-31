@@ -1,8 +1,8 @@
 import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
 import type { AgentRunSpec } from "../src/index.js"
 
-describe("RuntimeRunner.spawnSubAgent governance result (wasm)", () => {
-  it("returns an error result for a committed spawn rejection", async () => {
+describe("RuntimeRunner.spawnSubAgent (wasm)", () => {
+  it("fails closed outside the canonical provider syscall channel", async () => {
     const runner = new RuntimeRunner({ sessionLog: new InMemorySessionLog(), maxTokens: 8000 } as never)
     ;(runner as never as { activeKernel: unknown }).activeKernel = {
       turn: () => 0,
@@ -28,13 +28,8 @@ describe("RuntimeRunner.spawnSubAgent governance result (wasm)", () => {
       goal: "work",
     }
 
-    await expect(runner.spawnSubAgent(spec)).resolves.toMatchObject({
-      agentId: "worker",
-      result: {
-        termination: "error",
-        turnsUsed: 0,
-        finalMessage: { content: expect.stringContaining("max_spawn_depth") },
-      },
-    })
+    await expect(runner.spawnSubAgent(spec)).rejects.toThrow(
+      "spawnSubAgent is unavailable under canonical ABI v3",
+    )
   })
 })
