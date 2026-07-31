@@ -175,6 +175,70 @@ describe("Task 19 — Node canonical host cutover", () => {
     expect(executions).toBe(1)
   })
 
+  it("run() also refuses to orphan a live journal behind a forged SessionLog terminal", async () => {
+    const log = new InMemorySessionLog()
+    const runId = "live-kernel-run-authority"
+    const sessionId = "canonical-run-authority"
+    await log.append(sessionId, {
+      kind: "run_started",
+      run_id: runId,
+      goal: "ping then finish",
+      criteria: [],
+    })
+
+    const beforeCrash = runtime(log, runId)
+    await beforeCrash.applyHostEvent({
+      kind: "set_tools",
+      tools: [{ name: "ping", description: "ping", parameters: { type: "object" } }],
+    })
+    const first = await beforeCrash.applyHostEvent({
+      kind: "start_run",
+      task: { goal: "ping then finish", criteria: [] },
+    })
+    const pending = await beforeCrash.applyHostEvent({
+      kind: "provider_result",
+      effect_id: first?.effectId,
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "call-ping", name: "ping", arguments: {} }],
+      },
+      stop_reason: "tool_use",
+    })
+    expect(pending?.kind).toBe("execute_tool")
+    await log.append(sessionId, {
+      kind: "run_terminal",
+      reason: "completed",
+      turns_used: 1,
+      total_tokens: 0,
+    })
+
+    let executions = 0
+    const plane = new LocalExecutionPlane()
+    plane.register(tool("ping", "ping", { type: "object" }, () => {
+      executions += 1
+      return "pong"
+    }))
+    const afterRestart = new RuntimeRunner({
+      provider: new FinishAfterToolProvider(),
+      sessionLog: log,
+      executionPlane: plane,
+      maxTokens: 8_000,
+      maxTurns: 8,
+    })
+
+    expect(await collectText(afterRestart.run({
+      sessionId,
+      goal: "must resume, not mint a new operation",
+    }))).toBe("resumed-finish")
+    expect(executions).toBe(1)
+
+    const starts = (await log.read(sessionId)).filter(entry => entry.event.kind === "run_started")
+    expect(starts).toHaveLength(1)
+    expect(starts[0].event).toMatchObject({ run_id: runId })
+    expect(await log.kernelJournal.head(`node-operation-${runId}`)).toBeDefined()
+  })
+
   it("restores a downstream workflow spawn with its pre-crash dependency output", async () => {
     const log = new InMemorySessionLog()
     const runId = "crash-workflow-1"

@@ -117,6 +117,31 @@ describe("CanonicalKernelHost", () => {
     expect(Buffer.from(stored[0].record_bytes).toString("utf8")).toContain(
       '"observed_at_ms":"1753747200000"',
     )
+    expect(await host.journal.readOutboundEnvelope(OPERATION_ID)).toBeUndefined()
+  })
+
+  it("keeps a staged outbound envelope across append failure and drains the exact bytes", async () => {
+    const phases: string[] = []
+    const journal = new InMemoryKernelJournal()
+    jest.spyOn(journal, "compareAndAppend").mockRejectedValueOnce(new Error("disk full"))
+    const host = new CanonicalKernelHost(fakeKernel(phases), journal, OPERATION_ID)
+
+    const error = await host.transition(
+      { kind: "configure_operation", config: { host_effect_support: { supported: ["call_provider"] } } },
+      { inputId: "input-stage", observedAtMs: "1753747200042" },
+    ).catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(Error)
+    expect(phases).toContain("abort:token-0")
+
+    const staged = await journal.readOutboundEnvelope(OPERATION_ID)
+    expect(staged).toContain('"input_id":"input-stage"')
+    expect(staged).toContain('"observed_at_ms":"1753747200042"')
+
+    const drained = await host.drainOutboundEnvelope()
+    expect(drained?.replayed).toBe(false)
+    expect(phases.filter(phase => phase.startsWith("prepare:")).map(phase => phase.slice("prepare:".length)))
+      .toEqual([staged, staged])
+    expect(await journal.readOutboundEnvelope(OPERATION_ID)).toBeUndefined()
   })
 
   it("aborts on a CAS loss, restores the winner, and retries the exact same envelope bytes once", async () => {

@@ -219,6 +219,21 @@ export interface KernelJournal {
    * next CAS still resolve on a fully-pruned chain.
    */
   pruneAckedPrefix(operationId: string): Promise<JournalPruneReceipt>
+
+  /**
+   * Durably stage one outbound WireEnvelope JSON for `operationId` until the matching record is
+   * append-acked (or the attempt is abandoned). Overwrites any previous pending envelope.
+   *
+   * Required by Phase 6 host cutover (adjudication 5e.3): retries must replay byte-identical
+   * envelopes — reminting `observed_at_ms` after a crash produces `DuplicateInputConflict`.
+   */
+  stageOutboundEnvelope(operationId: string, envelopeJson: string): Promise<void>
+
+  /** Read the staged outbound envelope, if any. */
+  readOutboundEnvelope(operationId: string): Promise<string | undefined>
+
+  /** Clear the staged outbound envelope. Idempotent. */
+  clearOutboundEnvelope(operationId: string): Promise<void>
 }
 
 /* ------------------------------------------------------------------ *
@@ -312,6 +327,8 @@ interface OperationState {
   records: JournalEntry[]
   checkpoints: InstalledCheckpoint[]
   pruned?: PrunedAnchor
+  /** Byte-identical WireEnvelope JSON awaiting append-ack (at most one per operation). */
+  outboundEnvelope?: string
 }
 
 /**
@@ -446,6 +463,20 @@ export class InMemoryKernelJournal implements KernelJournal {
       pruned_through_step_seq: state.pruned.through_step_seq,
       pruned_count: before - state.records.length,
     }
+  }
+
+  async stageOutboundEnvelope(operationId: string, envelopeJson: string): Promise<void> {
+    if (!envelopeJson) throw new JournalIntegrityError("outbound envelope must not be empty")
+    this.state(operationId).outboundEnvelope = envelopeJson
+  }
+
+  async readOutboundEnvelope(operationId: string): Promise<string | undefined> {
+    return this.operations.get(operationId)?.outboundEnvelope
+  }
+
+  async clearOutboundEnvelope(operationId: string): Promise<void> {
+    const state = this.operations.get(operationId)
+    if (state) delete state.outboundEnvelope
   }
 }
 
@@ -932,6 +963,59 @@ export class FileKernelJournal implements KernelJournal {
     } catch (err) {
       await unlink(tmpPath).catch(() => undefined)
       throw new JournalIoError("journal could not record its pruned anchor", { cause: err })
+    }
+  }
+
+  private outboundPath(operationId: string): string {
+    return join(this.operationDir(operationId), "outbound.json")
+  }
+
+  /** Overwriteable durable blob — same write-tmp→fsync→rename pattern as the pruned anchor. */
+  private async writeReplaceable(operationId: string, target: string, payload: string): Promise<void> {
+    const tmpDir = this.tmpDir(operationId)
+    const tmpPath = join(tmpDir, `${randomUUID()}.tmp`)
+    try {
+      await mkdir(tmpDir, { recursive: true })
+      const handle = await openFile(tmpPath, "wx")
+      try {
+        await handle.writeFile(payload, "utf8")
+        await handle.sync()
+      } finally {
+        await handle.close()
+      }
+      await rename(tmpPath, target)
+      await this.syncDir(dirname(target))
+    } catch (err) {
+      await unlink(tmpPath).catch(() => undefined)
+      throw new JournalIoError("journal could not stage a durable outbound envelope", { cause: err })
+    }
+  }
+
+  async stageOutboundEnvelope(operationId: string, envelopeJson: string): Promise<void> {
+    if (!envelopeJson) throw new JournalIntegrityError("outbound envelope must not be empty")
+    try {
+      await mkdir(this.operationDir(operationId), { recursive: true })
+    } catch (err) {
+      throw new JournalIoError("journal could not create its operation directory", { cause: err })
+    }
+    await this.writeReplaceable(operationId, this.outboundPath(operationId), envelopeJson)
+  }
+
+  async readOutboundEnvelope(operationId: string): Promise<string | undefined> {
+    try {
+      return await readFile(this.outboundPath(operationId), "utf8")
+    } catch (err) {
+      if ((err as { code?: string }).code === "ENOENT") return undefined
+      throw new JournalIoError("journal could not read its outbound envelope", { cause: err })
+    }
+  }
+
+  async clearOutboundEnvelope(operationId: string): Promise<void> {
+    try {
+      await unlink(this.outboundPath(operationId))
+    } catch (err) {
+      if ((err as { code?: string }).code === "ENOENT") return
+      throw new JournalIoError("journal could not clear its outbound envelope", { cause: err })
     }
   }
 }

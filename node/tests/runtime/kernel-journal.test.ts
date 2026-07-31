@@ -71,6 +71,26 @@ describe.each([
     await cleanup()
   })
 
+  it("stages an outbound envelope until clear, surviving FileKernelJournal remount", async () => {
+    expect(await journal.readOutboundEnvelope(OP)).toBeUndefined()
+    const envelope = JSON.stringify({
+      abi_version: 3,
+      operation_id: OP,
+      input_id: "input-stage-1",
+      observed_at_ms: "1753747200099",
+      input: { kind: "configure_operation", config: {} },
+    })
+    await journal.stageOutboundEnvelope(OP, envelope)
+    expect(await journal.readOutboundEnvelope(OP)).toBe(envelope)
+
+    await journal.stageOutboundEnvelope(OP, `${envelope}+v2`)
+    expect(await journal.readOutboundEnvelope(OP)).toBe(`${envelope}+v2`)
+
+    await journal.clearOutboundEnvelope(OP)
+    expect(await journal.readOutboundEnvelope(OP)).toBeUndefined()
+    await journal.clearOutboundEnvelope(OP) // idempotent
+  })
+
   it("starts an empty chain with a genesis append and advances the head", async () => {
     expect(await journal.head(OP)).toBeUndefined()
 
@@ -467,6 +487,27 @@ describe("SessionLog / KernelJournal capability separation", () => {
       expect(await reopened.latestSeq("sess")).toBe(1)
       expect(await reopened.kernelTransactionHead("sess", "op-1")).toBe(first.transaction_digest)
       expect(await readdir(dir)).toEqual(expect.arrayContaining(["kernel-journal", "sess.jsonl"]))
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("FileKernelJournal — outbound envelope remount", () => {
+  it("survives process remount with identical envelope bytes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ds-outbound-"))
+    try {
+      const envelope = JSON.stringify({
+        abi_version: 3,
+        operation_id: OP,
+        input_id: "input-remount",
+        observed_at_ms: "1753747200888",
+        input: { kind: "configure_operation", config: {} },
+      })
+      await new FileKernelJournal(dir).stageOutboundEnvelope(OP, envelope)
+      expect(await new FileKernelJournal(dir).readOutboundEnvelope(OP)).toBe(envelope)
+      await new FileKernelJournal(dir).clearOutboundEnvelope(OP)
+      expect(await new FileKernelJournal(dir).readOutboundEnvelope(OP)).toBeUndefined()
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

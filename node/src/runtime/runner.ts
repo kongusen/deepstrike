@@ -1791,8 +1791,23 @@ export class RuntimeRunner {
     inheritEvents?: Array<{ seq: number; event: SessionEvent }>
   }): AsyncIterable<StreamEvent> {
     const prior = req.inheritEvents ?? await this.opts.sessionLog.read(req.sessionId)
-    const midRun = isMidRun(prior)
     const resumedStart = [...prior].reverse().find(entry => entry.event.kind === "run_started")
+    // SessionLog is an audit projection. A forged/stale run_terminal must not mint a new
+    // operation while the canonical journal still has a live chain — same authority as wake().
+    let midRun = isMidRun(prior)
+    if (
+      !midRun
+      && resumedStart?.event.kind === "run_started"
+      && !req.inheritEvents
+    ) {
+      const operationId = `node-operation-${resumedStart.event.run_id}`
+      const head = await this.resolveKernelJournal().head(operationId)
+      if (head) {
+        const authoritative = this.createCanonicalRuntime(resumedStart.event.run_id, req.sessionId)
+        await authoritative.restore()
+        if (!authoritative.isTerminal()) midRun = true
+      }
+    }
     const runId = midRun && resumedStart?.event.kind === "run_started"
       ? resumedStart.event.run_id
       : crypto.randomUUID()

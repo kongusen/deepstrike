@@ -383,7 +383,22 @@ export class CanonicalKernelHost {
       observed_at_ms: options.observedAtMs ?? String(Date.now()),
       input,
     })
-    return this.transitionEnvelope(inputJson, 1, 1)
+    await this.journal.stageOutboundEnvelope(this.operationId, inputJson)
+    try {
+      const transition = await this.transitionEnvelope(inputJson, 1, 1)
+      await this.journal.clearOutboundEnvelope(this.operationId)
+      return transition
+    } catch (error) {
+      // Append-acked records own the input; rejected inputs will not retry this envelope.
+      // Append-before failures leave the staged bytes so wake can drain byte-identical retries.
+      if (
+        error instanceof CanonicalKernelRebuildRequiredError
+        || error instanceof CanonicalKernelRejectedError
+      ) {
+        await this.journal.clearOutboundEnvelope(this.operationId)
+      }
+      throw error
+    }
   }
 
   /** Restore the latest installed checkpoint and its authoritative record tail in place. */
@@ -394,6 +409,28 @@ export class CanonicalKernelHost {
       checkpoint ? Buffer.from(checkpoint.checkpoint_bytes) : undefined,
       records.map(record => Buffer.from(record.record_bytes)),
     )
+  }
+
+  /**
+   * Replay a crash-window outbound envelope with identical bytes (adjudication 5e.3).
+   * No-op when nothing is staged. Clears the stage after commit/replay/reject.
+   */
+  async drainOutboundEnvelope(): Promise<CanonicalTransition | undefined> {
+    const pending = await this.journal.readOutboundEnvelope(this.operationId)
+    if (!pending) return undefined
+    try {
+      const transition = await this.transitionEnvelope(pending, 1, 1)
+      await this.journal.clearOutboundEnvelope(this.operationId)
+      return transition
+    } catch (error) {
+      if (
+        error instanceof CanonicalKernelRebuildRequiredError
+        || error instanceof CanonicalKernelRejectedError
+      ) {
+        await this.journal.clearOutboundEnvelope(this.operationId)
+      }
+      throw error
+    }
   }
 
   /** Execute the full §12.3 install/ack/reclaim boundary. */
@@ -820,6 +857,9 @@ export class CanonicalRunnerRuntime {
     await this.host.restore()
     this.configured = this.host.kernel.lifecycle() !== "created"
     this.started = !["created", "configured"].includes(this.host.kernel.lifecycle())
+    // A crash between stage and append-ack leaves a byte-identical envelope; drain it before
+    // the host effect loop so retries never remint observed_at_ms.
+    await this.host.drainOutboundEnvelope()
     this.lastAction = this.currentAction()
   }
 
