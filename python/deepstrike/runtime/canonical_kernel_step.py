@@ -653,8 +653,6 @@ class CanonicalRunnerRuntime:
     if kind == "skill_deactivated":
       return await self._commit({"kind": "host_control", "command": {
         "kind": "apply_skill_activation", "deactivate": [str(event.get("name") or "")]}})
-    if kind == "skill_activated":
-      return self._last_action
     if kind == "capability_command":
       return await self._commit({"kind": "host_control", "command": self._capability_command(_object(event.get("command")))})
     if kind == "add_history_message":

@@ -1249,9 +1249,6 @@ export class CanonicalRunnerRuntime {
           },
         }
         break
-      case "skill_activated":
-        // Model activations are already reduced inside the canonical provider resolution.
-        return this.lastAction
       case "unsupported_effect":
         input = canonicalUnsupportedEffectResolution(
           String(event.effect_id ?? ""),

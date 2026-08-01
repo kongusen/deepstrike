@@ -84,8 +84,8 @@ use super::fault::{KernelFault, KernelFaultCode};
 use super::record::NormalizedPayload;
 use super::root::{
     AgentIsolation as WireIsolation, AgentRole as WireRole, ExecutionFocus, InitialContext,
-    LogicalAgentSpec, LogicalContextInheritance as WireContextInheritance, LogicalTask, MessageRole,
-    RootEntry, RootKind, WorkflowNode as WireNode, WorkflowSpec as WireSpec,
+    LogicalAgentSpec, LogicalContextInheritance as WireContextInheritance, LogicalTask,
+    MessageRole, RootEntry, RootKind, WorkflowNode as WireNode, WorkflowSpec as WireSpec,
 };
 use super::scalar::{
     AttemptId, EffectId, MemoryBindingId, NodeId, OperationId, TaskId, WireU64, WorkflowId,
@@ -6564,11 +6564,7 @@ mod tests {
 
         let mut runtime = Runtime::new();
         runtime.submit(&configure());
-        let started = runtime.submit(&workflow_start(
-            "in-start",
-            1_700_000_001_000,
-            spec,
-        ));
+        let started = runtime.submit(&workflow_start("in-start", 1_700_000_001_000, spec));
 
         let EffectKind::SpawnTasks(spawn) = &sole_effect(&started).effect else {
             panic!("expected a task spawn");

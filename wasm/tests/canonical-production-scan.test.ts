@@ -12,6 +12,7 @@ const forbidden = [
   /CANONICAL_KERNEL_ABI_VERSION\s*=\s*3|["']abi_version["']\s*:\s*3/,
   /kernel-transaction-log|appendKernelGenesis|compareAndAppendKernelTransaction/,
   /submitWorkflowNodesToKernel|submitWorkflowToKernel|\bbootstrapWorkflow\b/,
+  /skill_activated/,
 ]
 
 describe("Task 21 canonical production cutover", () => {

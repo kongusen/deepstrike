@@ -31,6 +31,7 @@ FORBIDDEN = (
     "submit_workflow_nodes_to_kernel",
     "submit_workflow_to_kernel",
     "bootstrap_workflow",
+    "skill_activated",
 )
 
 

@@ -765,7 +765,6 @@ impl CanonicalRunnerRuntime {
                 }))
                 .await
             }
-            "skill_activated" => Ok(self.last_action.clone()),
             "capability_command" => {
                 self.commit(json!({
                     "kind": "host_control",
@@ -2179,6 +2178,13 @@ mod tests {
     use crate::runtime::canonical_kernel_step::CanonicalKernelHost;
     use crate::runtime::host_projection::HostEffect;
     use crate::runtime::kernel_journal::{InMemoryKernelJournal, KernelJournal};
+
+    #[test]
+    fn production_host_has_no_caller_asserted_skill_activation_pipeline() {
+        let forbidden = ["skill", "activated"].join("_");
+        assert!(!include_str!("runner.rs").contains(&forbidden));
+        assert!(!include_str!("canonical_runner_runtime.rs").contains(&forbidden));
+    }
 
     fn test_options() -> CanonicalRunnerOptions {
         CanonicalRunnerOptions {

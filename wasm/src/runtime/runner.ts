@@ -903,9 +903,8 @@ export class RuntimeRunner {
         kind: "preload_history",
         messages: replayed.map(messageToKernelMessage),
       })
-      // P1-B B3: rebuild active-skill gating after a wake (active_skills is not snapshotted).
-      // `knowledge` isn't snapshotted either (same graceful-reset philosophy) — best-effort re-push
-      // the skill's content from its replayed tool_result so the durable copy survives a wake too.
+      // Re-pin replayed skill content into knowledge for the fresh operation. Activation itself is
+      // owned by canonical provider-result reduction; the host must not assert it separately.
       const toolResultByCallId = new Map<string, string>()
       for (const m of replayed) {
         for (const part of m.contentParts ?? []) {
@@ -920,11 +919,6 @@ export class RuntimeRunner {
           try {
             const name = (JSON.parse(tc.arguments || "{}") as { name?: string }).name
             if (!name) continue
-            await this.commitKernelApply(runtime, this.pendingObservations, {
-              kind: "skill_activated",
-              name,
-              ...(this.opts.skillLeaseTurns !== undefined ? { lease_turns: this.opts.skillLeaseTurns } : {}),
-            })
             const output = toolResultByCallId.get(tc.id)
             if (output && !this.knowledgePushedSkills.has(name)) {
               this.knowledgePushedSkills.add(name)
@@ -1400,9 +1394,10 @@ export class RuntimeRunner {
             token_count: r.tokenCount,
           })),
         })
-        // P1-B B3: a successfully-resolved `skill` call activates that skill for the next turn.
+        // Canonical provider-result reduction activates a successfully resolved `skill` call. The
+        // host only pins its METHOD content — how to do something — for later turns.
         //
-        // Strict dynamic context control: a skill is METHOD content — how to do something — reused
+        // Strict dynamic context control: the skill text
         // for the rest of the run, unlike a one-off memory/knowledge lookup (fact content, relevant
         // for the moment it's used). So its text ALSO goes into the durable `knowledge` slot here
         // (in addition to the ordinary tool_result already headed for `history`, where it will decay
@@ -1414,11 +1409,6 @@ export class RuntimeRunner {
           try {
             const name = (JSON.parse(call.arguments || "{}") as { name?: string }).name
             if (!name) continue
-            await this.commitKernelApply(runtime, this.pendingObservations, {
-              kind: "skill_activated",
-              name,
-              ...(this.opts.skillLeaseTurns !== undefined ? { lease_turns: this.opts.skillLeaseTurns } : {}),
-            })
             // With a lease configured, skip the Set optimization: an expired-then-reloaded skill
             // must re-pin — only the kernel knows the lease state; its upsert dedupes anyway.
             if (this.opts.skillLeaseTurns !== undefined || !this.knowledgePushedSkills.has(name)) {

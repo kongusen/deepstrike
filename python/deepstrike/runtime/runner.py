@@ -1855,8 +1855,8 @@ class RuntimeRunner:
           "kind": "preload_history",
           "messages": [message_to_kernel(message) for message in replayed],
         })
-        # Rebuild skill gating only while constructing a new canonical operation. A restored
-        # operation already owns its active task/capability state in checkpoint + journal.
+        # Re-pin replayed skill content into knowledge for the fresh operation. Activation itself
+        # is owned by canonical provider-result reduction; the host must not assert it separately.
         tool_result_by_call_id: dict[str, str] = {}
         for message in replayed:
           for part in (getattr(message, "content_parts", None) or []):
@@ -1870,10 +1870,6 @@ class RuntimeRunner:
               name = json.loads(tc.arguments or "{}").get("name")
               if not name:
                 continue
-              activated: dict[str, Any] = {"kind": "skill_activated", "name": name}
-              if self._opts.skill_lease_turns is not None:
-                activated["lease_turns"] = int(self._opts.skill_lease_turns)
-              await apply_host(runtime, self._pending_observations, activated)
               output = tool_result_by_call_id.get(tc.id)
               if output and name not in self._knowledge_pushed_skills:
                 self._knowledge_pushed_skills.add(name)
@@ -2531,9 +2527,10 @@ class RuntimeRunner:
         await self._opts.session_log.append(session_id, {
           "kind": "tool_completed", "turn": runtime.turn(), "results": tool_results,
         })
-        # P1-B B3: a successfully-resolved `skill` call activates that skill for the next turn.
+        # Canonical provider-result reduction activates a successfully resolved `skill` call. The
+        # host only pins its METHOD content — how to do something — for later turns.
         #
-        # Strict dynamic context control: a skill is METHOD content — how to do something — reused
+        # Strict dynamic context control: the skill text
         # for the rest of the run, unlike a one-off memory/knowledge lookup (fact content, relevant
         # for the moment it's used). So its text ALSO goes into the durable `knowledge` slot here
         # (in addition to the ordinary tool_result already headed for `history`, where it will decay
@@ -2549,10 +2546,6 @@ class RuntimeRunner:
             name = json.loads(call.arguments or "{}").get("name")
             if not name:
               continue
-            activated: dict[str, Any] = {"kind": "skill_activated", "name": name}
-            if self._opts.skill_lease_turns is not None:
-              activated["lease_turns"] = int(self._opts.skill_lease_turns)
-            await apply_host(runtime, self._pending_observations, activated)
             # With a lease configured, skip the set optimization: an expired-then-reloaded skill
             # must re-pin, and only the kernel knows the lease state — its upsert dedupes anyway.
             if self._opts.skill_lease_turns is not None or name not in self._knowledge_pushed_skills:

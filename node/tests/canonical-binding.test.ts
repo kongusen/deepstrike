@@ -91,6 +91,7 @@ describe("CanonicalKernel native binding", () => {
       const source = readFileSync(join(process.cwd(), "src/runtime", file), "utf8")
       expect(source).not.toMatch(/start_run|load_workflow|complete_run|ABI[-_ ]?v[12]/i)
       expect(source).not.toMatch(/CANONICAL_KERNEL_ABI_VERSION\s*=\s*3|["']abi_version["']\s*:\s*3/)
+      expect(source).not.toMatch(/skill_activated/)
     }
 
     const bindingLoader = readFileSync(join(process.cwd(), "src/kernel.ts"), "utf8")

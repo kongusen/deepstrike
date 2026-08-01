@@ -1031,29 +1031,11 @@ impl RuntimeRunner {
                         replay_messages_with_cap(events, max_bytes)
                     };
 
-                    // P1-B B3: collect skill activations from the replayed history before `messages` is
-                    // moved, then re-emit them after preload to rebuild gating (active_skills is not
-                    // snapshotted — graceful).
-                    let reactivate: Vec<String> = messages
-                        .iter()
-                        .flat_map(|m| m.tool_calls.iter())
-                        .filter(|c| c.name.as_str() == "skill")
-                        .filter_map(|c| c.arguments.get("name").and_then(|v| v.as_str()).map(str::to_string))
-                        .collect();
-
                     kernel_apply(
                         &kernel,
                         &mut pending_observations,
                         serde_json::json!({ "kind": "preload_history", "messages": messages }),
                     ).await?;
-
-                    for name in reactivate {
-                        kernel_apply(
-                            &kernel,
-                            &mut pending_observations,
-                            serde_json::json!({ "kind": "skill_activated", "name": name }),
-                        ).await?;
-                    }
                 }
             } else if let Some(ref events) = prior_events {
                 seed_provider_replay_from_events(self.opts.provider.as_ref(), events);
@@ -2022,30 +2004,6 @@ impl RuntimeRunner {
                             },
                         )
                         .await;
-
-                        // P1-B B3: a successfully-resolved `skill` call activates that skill for the
-                        // next turn (fed before ToolResults, which computes the next action).
-                        for call in &tool_calls {
-                            if call.name.as_str() != "skill" {
-                                continue;
-                            }
-                            let ok = tool_results
-                                .iter()
-                                .any(|r| r.call_id.as_str() == call.id.as_str() && !r.is_error);
-                            if !ok {
-                                continue;
-                            }
-                            if let Some(name) = call.arguments.get("name").and_then(|v| v.as_str()) {
-                                kernel_apply(
-                                    &kernel,
-                                    &mut pending_observations,
-                                    serde_json::json!({
-                                        "kind": "skill_activated",
-                                        "name": name,
-                                    }),
-                                ).await?;
-                            }
-                        }
 
                         action = kernel_action(
                             &kernel,

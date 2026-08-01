@@ -2724,11 +2724,11 @@ export class RuntimeRunner {
             token_count: r.tokenCount,
           })),
         })
-        // P1-B B3: a `skill` call that resolved successfully activates that skill in the kernel, so
-        // the next `call_provider` narrows the toolset to its declared tools. Fed before `tool_results`
-        // (which computes the next action). Errs-open: a failed/missing skill load doesn't activate.
+        // The canonical provider resolution already activates a successfully resolved `skill` call.
+        // The host's remaining responsibility is to pin the resolved METHOD content — how to do
+        // something — for reuse throughout the run, unlike a one-off memory/knowledge lookup.
         //
-        // Strict dynamic context control: a skill is METHOD content — how to do something — reused
+        // Strict dynamic context control: the skill text
         // for the rest of the run, unlike a one-off memory/knowledge lookup (fact content, relevant
         // for the moment it's used). So its text ALSO goes into the durable `knowledge` slot here
         // (in addition to the ordinary tool_result already headed for `history`, where it will decay
@@ -2741,11 +2741,6 @@ export class RuntimeRunner {
           try {
             const name = (JSON.parse(call.arguments || "{}") as { name?: string }).name
             if (!name) continue
-            await this.commitKernelApply(runtime, this.pendingObservations, {
-              kind: "skill_activated",
-              name,
-              ...(this.opts.skillLeaseTurns !== undefined ? { lease_turns: this.opts.skillLeaseTurns } : {}),
-            })
             // K1: keyed `skill:<name>` — the kernel-side upsert dedupes across runner instances
             // (wake re-push of an already-pinned skill upserts instead of duplicating). With a
             // lease configured, the Set optimization is skipped: an expired-then-reloaded skill
@@ -2758,7 +2753,7 @@ export class RuntimeRunner {
                 { key: `skill:${name}` },
               )
             }
-          } catch { /* malformed skill args — skip activation */ }
+          } catch { /* malformed skill args — skip the knowledge pin */ }
         }
         const entropyObsStart = this.pendingObservations.length
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
