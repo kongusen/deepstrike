@@ -149,8 +149,6 @@ export class SubAgentOrchestrator {
       dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
       knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
       enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
-      // M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
-      isWorkflowNode: ctx.isWorkflowNode,
       // The child runs under ITS OWN spec, never the parent's: the spread above would otherwise
       // leak the parent's `runSpec` (identity, capability filter — and an armed `loopRound`,
       // giving every child a phantom pace tool). A loop-node iteration carries its own minimal

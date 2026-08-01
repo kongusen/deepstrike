@@ -1,7 +1,7 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
-  rust: [KernelInput, KernelAction, KernelObservation, TaskTable, Tcb, AgentProcess, TaskLifecycle]
+  rust: [KernelInput, PlannedStep, KernelObservation, TaskTable, Tcb, AgentProcess, TaskLifecycle]
 ---
 
 # 内核与宿主分层
@@ -30,7 +30,7 @@ code_refs:
 | **内存管理** | `mm/`、`memory/` | Handle 表、residency、semantic memory、idle pipeline |
 | **作业调度** | `orchestration/` | Workflow DAG、Loop/Classify/Tournament、Reduce |
 | **信号** | `signals/` | 路由到 context signals 分区 |
-| **ABI** | `runtime/kernel.rs` | `KernelInput` / `KernelAction` / `KernelObservation` |
+| **ABI** | `runtime/kernel/wire.rs` | `KernelInput` / `PlannedStep` / `KernelObservation` |
 
 ## L* 执行循环（单任务 turn 内）
 
@@ -38,7 +38,7 @@ code_refs:
 
 ```text
 Reason   →  kernel 渲染 Context，返回 CallLLM
-Act      →  模型 tool_calls → ExecuteTools / Spawn / LoadWorkflow
+Act      →  模型 tool_calls → ExecuteTools / Spawn / AppendWorkflowNodes
 Observe  →  SDK 回灌 provider_result、tool_results
 Delta    →  压力评估、压缩、renewal、capability 更新
 ```
@@ -65,29 +65,29 @@ WorkflowSpec
 
 每个节点 spawn = 一次 `Syscall::Spawn` + 子 TCB；`depends_on` 未满足时内核 **挂起** 该节点，不消耗 LLM。
 
-运行时 `SubmitNodes` / `LoadWorkflow` = 动态扩展 DAG，仍过 `max_workflow_nodes` quota。
+运行时 `AppendWorkflowNodes` = 动态扩展 DAG，仍过 `max_workflow_nodes` quota。
 
 ## 宿主循环（RuntimeRunner）
 
-SDK 侧是经典的 **解释器循环**：
+SDK 侧是一个 **durable effect loop**：
 
 ```python
 # 概念性伪代码 — 见 python/deepstrike/runtime/runner.py
 while not done:
-    action = kernel_step(runtime, observations)
-    match action.kind:
-        case "call_llm":
+    transition = canonical_host.apply(envelope)  # prepare → journal append → commit
+    for effect in transition.effects:
+        match effect.kind:
+        case "call_provider":
             async for ev in provider.stream(rendered_context, tools):
                 yield ev
-            feed provider_result to kernel
+            submit ResolveEffect(ProviderOutcome)
         case "execute_tools":
             results = await plane.execute(tool_calls)
-            feed tool_results to kernel
-        case "spawn_sub_agent":
+            submit ResolveEffect(ToolsExecuted)
+        case "spawn_tasks":
             result = await orchestrator.run(spec)
-            feed sub_agent_result to kernel
-        case "awaiting_resume":
-            break
+            submit ResolveEffect(TasksSpawned)
+    done = transition.terminal is not None
 ```
 
 每次 feed 产生 `KernelObservation` → 写入 `SessionLog`（可重放证据链）。

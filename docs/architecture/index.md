@@ -43,7 +43,7 @@ DeepStrike 的架构叙事以 **Agent OS** 为中心：把「动态工作流 har
 | 谁能发起副作用 | 每个 SDK / 示例各自判断 | 所有 effect 统一进入 syscall trap |
 | 谁能 spawn 子 agent | harness 里临时 new client | TCB + TaskTable + quota / trust gate |
 | 谁负责上下文窗口 | append messages 后截断 | Context VM 分区、handle、压缩、renewal |
-| 谁证明跑过什么 | 日志与编排状态分散 | SessionLog + KernelSnapshot |
+| 谁证明跑过什么 | 日志与编排状态分散 | SessionLog 证据 + canonical checkpoint/journal 恢复 |
 | 谁跨语言保持一致 | Python / Node 各写一套 loop | 同一 `deepstrike-core` 驱动多宿主 |
 
 因此 DeepStrike 的核心不是「帮你调用 LLM」，而是给长期运行的 agent 提供一个 **可审计的控制平面**。

@@ -73,7 +73,7 @@ describe("canonical runWorkflow rejects unrepresentable reduce nodes", () => {
 
     expect(outcome.nodeOutcomes).toEqual([])
     expect(outcome.rejection).toMatchObject({
-      operation: "load_workflow",
+      operation: "start_workflow",
       reason: expect.stringContaining("absent from canonical WorkflowNode: kind"),
     })
     expect(agentCalls).toBe(0)

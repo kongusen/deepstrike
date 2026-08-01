@@ -74,7 +74,7 @@ pub enum Syscall {
     WriteMemory(MemoryWriteRequest),
     QueryMemory(MemoryQuery),
     SubmitNodes { count: usize },
-    LoadWorkflow { node_count: usize },
+    AppendWorkflowNodes { node_count: usize },
 }
 ```
 
@@ -118,7 +118,7 @@ See [Dynamic workflows](/en/guides/workflow).
 
 | Property | Script harness | Agent OS |
 |----------|----------------|----------|
-| Replayable | Ad-hoc state | SessionLog + KernelSnapshot |
+| Replayable | Ad-hoc state | SessionLog records evidence; canonical checkpoints/journals restore execution |
 | Governed | Manual if/else | Unified syscall gate + audit |
 | Resumable | Often restart from scratch | wake/resume + dynamic DAG nodes |
 | Cross-language | One runtime | Same `deepstrike-core` → Py/Node/WASM |

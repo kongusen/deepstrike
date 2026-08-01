@@ -36,11 +36,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from deepstrike.runtime.kernel_transaction_log import (
-    KernelLogConflictError,
-    KernelLogIntegrityError,
-)
-
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 
 
@@ -49,16 +44,15 @@ MAX_SAFE_INTEGER = 9_007_199_254_740_991
 # ------------------------------------------------------------------ #
 
 
-class JournalCasConflictError(KernelLogConflictError):
+class JournalCasConflictError(RuntimeError):
     """The CAS precondition did not hold: the journal head (or checkpoint pointer) moved.
 
     Retryable — the protocol response is `abort(token)` → re-read head → rebuild → replay the input
-    (spec §8.3, row "CAS conflict"). Subclasses the legacy `KernelLogConflictError` so existing
-    callers keep working while gaining the sharper type.
+    (spec §8.3, row "CAS conflict").
     """
 
 
-class JournalIntegrityError(KernelLogIntegrityError):
+class JournalIntegrityError(RuntimeError):
     """The journal contents contradict themselves or the caller's claim.
 
     A broken digest chain, a `step_seq` that does not follow its predecessor, a checkpoint whose

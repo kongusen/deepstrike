@@ -46,13 +46,15 @@ pub use mm::{
     PageInEntry, Residency, plan_eviction,
 };
 pub use proc::{AgentProcess, ProcessState};
+pub use runtime::kernel::wire::{
+    KernelEffect, KernelInput, KernelTerminal, KernelTransaction, PlannedStep, SyscallRequest,
+    WireEnvelope,
+};
 pub use runtime::session::SessionEvent;
 pub use runtime::{
-    CancellationReason, KERNEL_ABI_VERSION, KERNEL_SNAPSHOT_VERSION, KernelAction,
-    KernelEventCategory, KernelInput, KernelInputEvent, KernelObservation, KernelPreparationStatus,
-    KernelPreparedStep, KernelPressureAction, KernelRuntime, KernelSnapshot, KernelSnapshotPolicy,
-    KernelStep, OsSnapshot, Primitive, category_for_kind, primitive_for_kind,
-    rebuild_os_snapshot_from_events, reconstruct_messages_with_fallback,
+    KERNEL_ABI_VERSION, KernelEventCategory, KernelObservation, KernelPressureAction, OsSnapshot,
+    Primitive, category_for_kind, primitive_for_kind, rebuild_os_snapshot_from_events,
+    reconstruct_messages_with_fallback,
 };
 pub use scheduler::entropy::{EntropySample, EntropyTracker, EntropyWatchConfig};
 pub use scheduler::tcb::{BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason};

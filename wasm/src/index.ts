@@ -18,7 +18,6 @@ export {
   parseVerdict,
   verdictOutputSchema,
 } from "./runtime/index.js"
-export * from "./runtime/kernel-transaction-log.js"
 // ── Durable transaction capability (Canonical Kernel ABI §9.1) ──────────────
 export {
   DriverKernelJournal,
@@ -58,7 +57,6 @@ export type {
   SignalPolicy,
   SessionEvent,
   SessionLog,
-  KernelTransactionEntry,
   RunContext,
   ExecutionPlane,
   KernelEventCategory,
@@ -92,7 +90,7 @@ export type {
   WorkflowTaskSpec,
   WorkflowSpawnInfo,
 } from "./runtime/types/agent.js"
-export { workflowSpecToKernel, workflowNodeSpecToKernel, submitWorkflowNodesToKernel, submitWorkflowToKernel, submitWorkflowNodesTool, startWorkflowTool, fanoutSynthesize, generateAndFilter, genEval, verifyRules } from "./runtime/types/agent.js"
+export { workflowSpecToKernel, workflowNodeSpecToKernel, submitWorkflowNodesTool, startWorkflowTool, fanoutSynthesize, generateAndFilter, genEval, verifyRules } from "./runtime/types/agent.js"
 export {
   loopInstruction, classifyInstruction, judgeGoal,
   extractLoopContinue, extractClassifyBranch, extractJudgeWinner,

@@ -30,7 +30,6 @@ if TYPE_CHECKING:
   from deepstrike.governance import Governance
   from deepstrike.knowledge.source import KnowledgeSource
   from deepstrike.memory.protocols import DreamStore, MemoryScope
-  from deepstrike.runtime.large_result_spool import LargeResultSpool
   from deepstrike.runtime.reliability import OperationContext
 
 
@@ -82,7 +81,6 @@ class RunContext:
   knowledge_source: "KnowledgeSource | None" = None
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
   on_permission_request: Callable[[PermissionRequestEvent], Awaitable[PermissionResponse | bool | dict[str, Any]] | PermissionResponse | bool | dict[str, Any]] | None = None
-  result_spool: "LargeResultSpool | None" = None
   # M3/G4: the working directory a sub-agent's tools should run in (the git worktree created for an
   # ``isolation: "worktree"`` node). Injected by ``WorktreeExecutionPlane``; a cwd-aware tool reads it.
   cwd: str | None = None
@@ -188,29 +186,7 @@ class LocalExecutionPlane:
           pending -= 1
       await asyncio.gather(*tasks)
 
-  async def _try_read_spooled_argument(self, call: ToolCall, ctx: RunContext) -> str | None:
-    is_read_tool = call.name in ("read", "read_file", "view_file", "read_spooled_result")
-    if not is_read_tool:
-      return None
-
-    try:
-      args = json.loads(call.arguments or "{}")
-      for val in args.values():
-        if isinstance(val, str) and (val.startswith(".spool/") or "/.spool/" in val):
-          from deepstrike.runtime.large_result_spool import LargeResultSpool
-          spool = ctx.result_spool or LargeResultSpool()
-          content = await spool.read_spooled_result(val)
-          return content
-    except Exception:
-      pass
-    return None
-
   async def _execute_single(self, call: ToolCall, ctx: RunContext) -> AsyncIterator[StreamEvent]:
-    spooled_content = await self._try_read_spooled_argument(call, ctx)
-    if spooled_content is not None:
-      yield ToolResultEvent(call_id=call.id, name=call.name, content=spooled_content, is_error=False)
-      return
-
     registered = self._tools.get(call.name)
     if registered is None:
       yield ToolResultEvent(
@@ -243,7 +219,6 @@ class LocalExecutionPlane:
       knowledge_source=ctx.knowledge_source,
       on_tool_suspend=ctx.on_tool_suspend,
       on_permission_request=ctx.on_permission_request,
-      result_spool=ctx.result_spool,
       cwd=ctx.cwd,
       audit=_audit,
     )

@@ -31,15 +31,9 @@ function runtime(log: InMemorySessionLog, runId: string): CanonicalRunnerRuntime
 
 describe("Task 19 — Node canonical host cutover", () => {
   it("uses KernelJournal record bytes and never calls the legacy SessionLog transaction face", async () => {
-    class NoLegacyTransactionsLog extends InMemorySessionLog {
-      override async appendKernelGenesis(): Promise<never> {
-        throw new Error("legacy genesis must not be called")
-      }
-      override async compareAndAppendKernelTransaction(): Promise<never> {
-        throw new Error("legacy transaction append must not be called")
-      }
-    }
-    const log = new NoLegacyTransactionsLog()
+    const log = new InMemorySessionLog()
+    expect(log).not.toHaveProperty("appendKernelGenesis")
+    expect(log).not.toHaveProperty("compareAndAppendKernelTransaction")
     const runner = new RuntimeRunner({
       provider: new FinishAfterToolProvider(),
       sessionLog: log,
@@ -84,10 +78,7 @@ describe("Task 19 — Node canonical host cutover", () => {
       kind: "set_tools",
       tools: [{ name: "ping", description: "ping", parameters: { type: "object" } }],
     })
-    const first = await beforeCrash.applyHostEvent({
-      kind: "start_run",
-      task: { goal: "ping then finish", criteria: [] },
-    })
+    const first = await beforeCrash.startAgent({ goal: "ping then finish", criteria: [] })
     expect(first?.kind).toBe("call_provider")
     const pending = await beforeCrash.applyHostEvent({
       kind: "provider_result",
@@ -135,10 +126,7 @@ describe("Task 19 — Node canonical host cutover", () => {
       kind: "set_tools",
       tools: [{ name: "ping", description: "ping", parameters: { type: "object" } }],
     })
-    const first = await beforeCrash.applyHostEvent({
-      kind: "start_run",
-      task: { goal: "ping then finish", criteria: [] },
-    })
+    const first = await beforeCrash.startAgent({ goal: "ping then finish", criteria: [] })
     const pending = await beforeCrash.applyHostEvent({
       kind: "provider_result",
       effect_id: first?.effectId,
@@ -191,10 +179,7 @@ describe("Task 19 — Node canonical host cutover", () => {
       kind: "set_tools",
       tools: [{ name: "ping", description: "ping", parameters: { type: "object" } }],
     })
-    const first = await beforeCrash.applyHostEvent({
-      kind: "start_run",
-      task: { goal: "ping then finish", criteria: [] },
-    })
+    const first = await beforeCrash.startAgent({ goal: "ping then finish", criteria: [] })
     const pending = await beforeCrash.applyHostEvent({
       kind: "provider_result",
       effect_id: first?.effectId,
@@ -251,20 +236,17 @@ describe("Task 19 — Node canonical host cutover", () => {
     })
 
     const beforeCrash = runtime(log, runId)
-    const pending = await beforeCrash.applyHostEvent({
-      kind: "load_workflow",
-      spec: {
-        nodes: [
-          { task: { goal: "first" }, role: "explore", isolation: "shared", context_inheritance: "none" },
-          {
-            task: { goal: "second" },
-            role: "plan",
-            isolation: "shared",
-            context_inheritance: "none",
-            depends_on: [0],
-          },
-        ],
-      },
+    const pending = await beforeCrash.startWorkflow({
+      nodes: [
+        { task: { goal: "first" }, role: "explore", isolation: "shared", context_inheritance: "none" },
+        {
+          task: { goal: "second" },
+          role: "plan",
+          isolation: "shared",
+          context_inheritance: "none",
+          depends_on: [0],
+        },
+      ],
     })
     expect(pending?.kind).toBe("spawn_workflow")
     await beforeCrash.applyHostEvent({

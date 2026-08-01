@@ -25,15 +25,6 @@ from deepstrike.runtime.kernel_journal import (
     JournalRecordInput,
     KernelJournal,
 )
-from deepstrike.runtime.kernel_transaction_log import (
-    create_kernel_operation_genesis,
-    create_kernel_transaction,
-)
-from deepstrike.runtime.session_log import (
-    FileSessionLog,
-    InMemorySessionLog,
-    journal_operation_key,
-)
 
 OP = "op-journal"
 
@@ -494,88 +485,3 @@ async def test_raises_an_integrity_fault_when_a_record_contradicts_its_own_name(
 
     with pytest.raises(JournalIntegrityError):
         await FileKernelJournal(root).read_from(OP)
-
-
-# ------------------------------------------------------------------ #
-# SessionLog / KernelJournal capability separation
-# ------------------------------------------------------------------ #
-
-
-def operation_genesis(operation_id: str = "op-1"):
-    return create_kernel_operation_genesis(
-        abi_version=2,
-        operation_id=operation_id,
-        initial_scheduler_policy={"max_tokens": 8_000},
-        resolved_runtime_defaults={"max_input_bytes": 16_777_216},
-        default_policy_version=1,
-    )
-
-
-def transaction(previous_transaction_digest: str, step_seq: int = 1):
-    return create_kernel_transaction(
-        operation_id="op-1",
-        step_seq=step_seq,
-        base_generation=step_seq - 1,
-        input={"version": 2, "operation_id": "op-1", "event_id": f"event-{step_seq}"},
-        step={"version": 2, "operation_id": "op-1", "step_seq": step_seq, "actions": []},
-        previous_transaction_digest=previous_transaction_digest,
-    )
-
-
-async def test_journal_is_exposed_as_its_own_capability_not_as_session_log_methods():
-    log = InMemorySessionLog()
-    genesis = operation_genesis()
-    await log.append_kernel_genesis("s1", genesis)
-
-    # The same durable chain is reachable through the separated capability.
-    head = await log.kernel_journal.head(journal_operation_key("s1", "op-1"))
-    assert head == JournalHead(step_seq=0, record_digest=genesis["genesis_digest"])
-
-
-async def test_journal_records_and_business_events_use_independent_sequence_spaces():
-    log = InMemorySessionLog()
-    genesis = operation_genesis()
-
-    # Interleave: genesis, event, transaction, event, transaction.
-    genesis_receipt = await log.append_kernel_genesis("s1", genesis)
-    event0 = await log.append("s1", {"kind": "run_started", "run_id": "r1", "goal": "a", "criteria": []})
-    first = transaction(genesis["genesis_digest"])
-    first_receipt = await log.compare_and_append_kernel_transaction(
-        "s1", genesis["genesis_digest"], first
-    )
-    event1 = await log.append("s1", {"kind": "llm_completed", "turn": 0, "content": "b", "tool_calls": []})
-    second = transaction(first["transaction_digest"], 2)
-    second_receipt = await log.compare_and_append_kernel_transaction(
-        "s1", first["transaction_digest"], second
-    )
-
-    # Business events: a dense 0,1 — journal appends never consumed a business number.
-    assert [event0, event1] == [0, 1]
-    assert await log.latest_seq("s1") == 1
-    assert [entry.seq for entry in await log.read("s1")] == [0, 1]
-
-    # Journal records: their own dense chain positions, unaffected by the interleaved events.
-    assert genesis_receipt["log_seq"] == 0
-    assert first_receipt["log_seq"] == 1
-    assert second_receipt["log_seq"] == 2
-
-
-async def test_file_backed_pair_keeps_the_same_sequence_space_split(tmp_path: Path):
-    log = FileSessionLog(tmp_path)
-    genesis = operation_genesis()
-    genesis_receipt = await log.append_kernel_genesis("sess", genesis)
-    event0 = await log.append("sess", {"kind": "run_started", "run_id": "r1", "goal": "a", "criteria": []})
-    first = transaction(genesis["genesis_digest"])
-    receipt = await log.compare_and_append_kernel_transaction("sess", genesis["genesis_digest"], first)
-    event1 = await log.append("sess", {"kind": "llm_completed", "turn": 0, "content": "b", "tool_calls": []})
-
-    assert [event0, event1] == [0, 1]
-    assert genesis_receipt["log_seq"] == 0
-    assert receipt["log_seq"] == 1
-
-    # The projection file holds only business events; the journal lives beside it.
-    reopened = FileSessionLog(tmp_path)
-    assert [entry.seq for entry in await reopened.read("sess")] == [0, 1]
-    assert await reopened.latest_seq("sess") == 1
-    assert await reopened.kernel_transaction_head("sess", "op-1") == first["transaction_digest"]
-    assert {"kernel-journal", "sess.jsonl"} <= set(os.listdir(tmp_path))

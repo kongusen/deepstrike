@@ -7,13 +7,9 @@ use super::milestone::MilestoneContract;
 /// Unified agent identity — shared across scheduler, memory, and governance.
 ///
 /// § Task 11 · the two session fields below are **host projection only**. No kernel decision reads
-/// them and no kernel output echoes them — locked by
-/// `runtime::kernel::tests::identical_kernel_trace_under_different_host_session_ids`, which drives
-/// the same logical arc under two disjoint host namings and compares the traces byte for byte. The
-/// canonical wire has no slot for them at all (`LogicalAgentSpec` carries no identity), so the
-/// canonical driver builds this struct with an empty session. They survive only because
-/// `AgentRunSpec` rides the legacy `KernelInputEvent::SpawnSubAgent` input, and they are deleted
-/// with that enum in Task 23.
+/// them and no kernel output echoes them. The canonical wire has no slot for them at all
+/// (`LogicalAgentSpec` carries no identity), so the canonical driver builds this struct with an
+/// empty session. Hosts retain these fields only for their own persistence and audit projection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentIdentity {
     pub agent_id: CompactString,

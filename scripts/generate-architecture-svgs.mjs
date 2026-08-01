@@ -113,7 +113,7 @@ function addRuntimeMap({ zh = false } = {}) {
   const t = zh ? {
     file: "readme_agent_os_map_zh.svg",
     title: "DeepStrike 运行机制",
-    desc: "DeepStrike 0.2.48 的完整运行边界：宿主拥有真实 I/O，RuntimeRunner 驱动 ABI v2，Rust 内核治理控制流，Self-Harness v2 在隔离外环中改进下一次运行。",
+    desc: "DeepStrike 当前运行边界：宿主拥有真实 I/O，RuntimeRunner 驱动 Canonical Kernel ABI，Rust 内核治理控制流，Self-Harness v2 在隔离外环中改进下一次运行。",
     eyebrow: "运行机制",
     headline: "所有 Agent 副作用，共用一个受治理的控制环。",
     subtitle: "内核负责控制流 · 宿主负责真实 I/O",
@@ -126,7 +126,7 @@ function addRuntimeMap({ zh = false } = {}) {
   } : {
     file: "readme_agent_os_map.svg",
     title: "DeepStrike runtime mechanism",
-    desc: "The complete DeepStrike 0.2.48 runtime boundary: host-owned I/O, RuntimeRunner driving ABI v2, a Rust kernel governing control flow, and an isolated Self-Harness v2 outer loop improving the next run.",
+    desc: "The current DeepStrike runtime boundary: host-owned I/O, RuntimeRunner driving the Canonical Kernel ABI, a Rust kernel governing control flow, and an isolated Self-Harness v2 outer loop improving the next run.",
     eyebrow: "RUNTIME MECHANISM",
     headline: "One governed loop for every agent effect.",
     subtitle: "CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST",
@@ -141,24 +141,24 @@ function addRuntimeMap({ zh = false } = {}) {
   const hostCards = zh ? [
     ["Provider 适配器", "流式 LLM · 模型路由", "文本 · 图像 · 音频序列化"],
     ["ExecutionPlane", "工具 · 流式 · 挂起 / 恢复", "Worktree · Sandbox · Remote VPC"],
-    ["证据与持久存储", "SessionLog · ABI 事务 · 快照", "DreamStore · Archive · 大结果 spool"],
+    ["证据与持久存储", "SessionLog · ABI 事务 · checkpoint", "DreamStore · Archive · 外置 payload"],
     ["外部控制", "审批 · 信号 · Webhook · Cron", "取消 · Deadline · 宿主策略"],
   ] : [
     ["Provider adapters", "Streaming LLM calls · model routing", "Text · image · audio serialization"],
     ["ExecutionPlane", "Tools · streaming · suspend / resume", "Worktrees · sandboxes · remote VPC"],
-    ["Evidence & durable stores", "SessionLog · ABI transactions · snapshots", "DreamStore · archives · large-result spool"],
+    ["Evidence & durable stores", "SessionLog · ABI transactions · checkpoints", "DreamStore · archives · external payloads"],
     ["External control", "Approvals · signals · webhooks · cron", "Cancellation · deadlines · host policy"],
   ]
   const kernelCards = zh ? [
-    ["Syscall Gate 与治理", "Invoke · Spawn · Memory", "SubmitNodes · LoadWorkflow", "允许 · 拒绝 · 询问 · 限流"],
+    ["Syscall Gate 与治理", "Invoke · Spawn · Memory", "AppendWorkflowNodes", "允许 · 拒绝 · 询问 · 限流"],
     ["调度器、进程树与 DAG", "TCB · 子 Agent · 依赖屏障", "预算 · 配额 · 信任 · 隔离", "LOOP · CLASSIFY · REDUCE"],
     ["Context VM 与知识", "稳定 · 知识 · 历史 · 状态", "压缩 · Handle · Cache 边界", "SKILL LEASE · KNOWLEDGE BUDGET"],
-    ["Observation 与恢复", "Provider / Tool 结果 · 可见拒绝", "信号 · 事务 · 快照 · 唤醒", "APPEND-ONLY EVIDENCE"],
+    ["Observation 与恢复", "Provider / Tool 结果 · 可见拒绝", "信号 · 事务 · checkpoint · 唤醒", "APPEND-ONLY EVIDENCE"],
   ] : [
-    ["Syscall gate & governance", "Invoke · Spawn · memory", "SubmitNodes · LoadWorkflow", "ALLOW · DENY · ASK · RATE LIMIT"],
+    ["Syscall gate & governance", "Invoke · Spawn · memory", "AppendWorkflowNodes", "ALLOW · DENY · ASK · RATE LIMIT"],
     ["Scheduler, process tree & DAG", "TCBs · child agents · dependency barriers", "Budgets · quota · trust · isolation", "LOOP · CLASSIFY · REDUCE"],
     ["Context VM & knowledge", "stable · knowledge · history · state", "Compression · handles · cache boundaries", "SKILL LEASE · KNOWLEDGE BUDGET"],
-    ["Observation & recovery", "Provider / tool results · visible denials", "Signals · transactions · snapshots · wake", "APPEND-ONLY EVIDENCE"],
+    ["Observation & recovery", "Provider / tool results · visible denials", "Signals · transactions · checkpoints · wake", "APPEND-ONLY EVIDENCE"],
   ]
 
   const body = `
@@ -177,7 +177,7 @@ function addRuntimeMap({ zh = false } = {}) {
     ${text(720, 350, zh ? "OBSERVATION 向内" : "OBSERVATIONS IN", "micro")}
     ${rect(48, 370, 1104, 214, "kernel", 7)}
     ${text(68, 400, t.kernel, "section-title")}
-    ${text(205, 400, zh ? "纯 Rust · 可序列化状态机 · ABI v2 · 零 Provider I/O" : "PURE RUST · SERIALIZABLE STATE MACHINE · ABI v2 · ZERO PROVIDER I/O", "section-note")}
+    ${text(205, 400, zh ? "纯 Rust · 可序列化状态机 · Canonical ABI · 零 Provider I/O" : "PURE RUST · SERIALIZABLE STATE MACHINE · CANONICAL ABI · ZERO PROVIDER I/O", "section-note")}
     ${pill(1067, 384, 66, zh ? "内核" : "KERNEL")}
     ${kernelCards.map((c, i) => {
       const x = 68 + i * 261
@@ -207,7 +207,7 @@ addRuntimeMap({ zh: true })
 
 add("agent_os_architecture.svg", {
   title: "DeepStrike Agent OS architecture",
-  desc: "Layered system architecture showing application APIs, the host runtime and I/O adapters, the ABI v2 boundary, the pure Rust kernel, and durable evidence stores.",
+  desc: "Layered system architecture showing application APIs, the host runtime and I/O adapters, the Canonical Kernel ABI boundary, the pure Rust kernel, and durable evidence stores.",
   eyebrow: "SYSTEM ARCHITECTURE",
   headline: "A narrow kernel boundary keeps authority explicit.",
   subtitle: "FIVE LAYERS · ONE EVIDENCE CHAIN",
@@ -222,22 +222,22 @@ add("agent_os_architecture.svg", {
     ${card({ x: 48, y: 272, w: 210, h: 100, title: "RuntimeRunner", body: ["Drive effects", "Append observations"], accent: true })}
     ${card({ x: 274, y: 272, w: 210, h: 100, title: "Provider adapters", body: ["Vendor wire formats", "Streaming + replay"] })}
     ${card({ x: 500, y: 272, w: 210, h: 100, title: "ExecutionPlane", body: ["Local · worktree", "sandbox · remote"] })}
-    ${card({ x: 726, y: 272, w: 210, h: 100, title: "Stores", body: ["SessionLog · DreamStore", "archive · spool"] })}
+    ${card({ x: 726, y: 272, w: 210, h: 100, title: "Stores", body: ["SessionLog · DreamStore", "archive · payload"] })}
     ${card({ x: 952, y: 272, w: 200, h: 100, title: "External control", body: ["Approvals · signals", "cancel · deadlines"] })}
 
     ${arrow("M600 372V408", true)}
     ${text(618, 398, "KernelEffect ↓     ↑ KernelObservation", "micro")}
     ${rect(48, 414, 1104, 210, "kernel", 7)}
     ${text(68, 444, "deepstrike-core", "section-title")}
-    ${text(207, 444, "PURE STATE MACHINE · ABI v2 · NO NETWORK / FILESYSTEM / CREDENTIALS", "section-note")}
+    ${text(207, 444, "PURE STATE MACHINE · CANONICAL ABI · NO NETWORK / FILESYSTEM / CREDENTIALS", "section-note")}
     ${pill(1064, 428, 69, "KERNEL")}
     ${card({ x: 68, y: 466, w: 250, h: 130, title: "Syscall & governance", body: ["Effects enter one trap", "Policy + quota + constraints"], tag: "P1" })}
     ${card({ x: 330, y: 466, w: 250, h: 130, title: "TCB scheduler & DAG", body: ["Lifecycle · joins · budgets", "Loop · classify · tournament"], tag: "P2" })}
     ${card({ x: 592, y: 466, w: 250, h: 130, title: "Context VM", body: ["Four slots · compression", "handles · skills · knowledge"], tag: "P3" })}
-    ${card({ x: 854, y: 466, w: 278, h: 130, title: "Transactions & recovery", body: ["Accepted input journal", "snapshots · replay · repair"] })}
+    ${card({ x: 854, y: 466, w: 278, h: 130, title: "Transactions & recovery", body: ["Canonical journal", "checkpoint · replay · CAS"] })}
 
     ${section(666, "Durable evidence plane", "AUDIT · REPLAY · RECOVERY · EVAL")}
-    ${text(48, 694, "SessionLog records host events; KernelSnapshot rebuilds accepted ABI state; OS Snapshot folds observations for dashboards.", "body")}
+    ${text(48, 694, "SessionLog records evidence; logical checkpoints restore canonical state; OS Snapshot folds observations for dashboards.", "body")}
   `,
 })
 
@@ -301,7 +301,7 @@ add("agent_os_workflow_dag.svg", {
     ${card({ x: 322, y: 516, w: 238, h: 94, title: "Dependency barrier", body: ["Advance only on durable output", "Schema failure starves dependents"] })}
     ${card({ x: 576, y: 516, w: 238, h: 94, title: "Trust & capability", body: ["Inherited or filtered tools", "Quarantine cannot escalate"] })}
     ${card({ x: 830, y: 516, w: 302, h: 94, title: "Budget & lineage", body: ["Per-node caps + RunGroup settlement", "modelHint resolved only by host"] })}
-    ${section(680, "Recovery", "COMPLETED OUTPUTS AND RUNTIME APPENDS REBUILD FROM SESSIONLOG")}
+    ${section(680, "Recovery", "LOGICAL CHECKPOINT OWNS THE COMPLETE DAG AND NODE STATE")}
     ${text(48, 708, "Logical checkpoint restore rebuilds the DAG and schedules only the remaining ready frontier.", "body")}
   `,
 })
@@ -316,7 +316,7 @@ add("workflow_mechanisms.svg", {
     ${section(124, "1 · Author and grow", "WORKFLOWS CAN START IN THE HOST OR BE AUTHORED BY THE AGENT")}
     ${card({ x: 48, y: 144, w: 258, h: 102, title: "WorkflowSpec", body: ["Static nodes + dependsOn edges", "Standalone or inside an active run"], accent: true })}
     ${card({ x: 324, y: 144, w: 258, h: 102, title: "submit_workflow_nodes", body: ["Append to active DAG", "Syscall::SubmitNodes"] })}
-    ${card({ x: 600, y: 144, w: 258, h: 102, title: "start_workflow", body: ["Bootstrap or flatten into parent", "Syscall::LoadWorkflow"] })}
+    ${card({ x: 600, y: 144, w: 258, h: 102, title: "append_workflow_nodes", body: ["Extend the governed DAG", "Syscall::AppendWorkflowNodes"] })}
     ${card({ x: 876, y: 144, w: 276, h: 102, title: "Growth ceiling", body: ["maxWorkflowNodes + quota", "Rejected control request is durable"] })}
     ${arrow("M306 195H322")}${arrow("M582 195H598")}${arrow("M858 195H874", true)}
 
@@ -332,7 +332,7 @@ add("workflow_mechanisms.svg", {
     ${card({ x: 68, y: 510, w: 250, h: 98, title: "Ready frontier", body: ["TaskGraph computes runnable nodes", "Scheduler policy chooses order"] })}
     ${card({ x: 330, y: 510, w: 250, h: 98, title: "Spawn gate", body: ["Depth · concurrency · total count", "Trust + capability subset"] })}
     ${card({ x: 592, y: 510, w: 250, h: 98, title: "Output boundary", body: ["Schema validation + retry", "Dependents receive durable output"] })}
-    ${card({ x: 854, y: 510, w: 278, h: 98, title: "Session recovery", body: ["Fold completions + submissions", "Resume remaining frontier only"] })}
+    ${card({ x: 854, y: 510, w: 278, h: 98, title: "Checkpoint recovery", body: ["Restore graph + node status", "Schedule remaining frontier"] })}
     ${section(680, "Templates", "FAN-OUT / SYNTHESIZE · VERIFY RULES · GENERATE / FILTER · TOURNAMENT")}
   `,
 })
@@ -464,7 +464,7 @@ add("context_vm_mechanisms.svg", {
     ${card({ x: 734, y: 374, w: 418, h: 108, title: "Renewal boundary", body: ["Re-query memory · sweep knowledge · expire leases", "Recompute cache generation and frozen prefix"] })}
 
     ${section(532, "Residency and content lifetimes", "LARGE VALUES USE HANDLES · DIFFERENT FACTS HAVE DIFFERENT LIFETIMES")}
-    ${card({ x: 48, y: 552, w: 258, h: 102, title: "Large tool output", body: ["Inline preview + H# descriptor", "Payload pages to host spool"] })}
+    ${card({ x: 48, y: 552, w: 258, h: 102, title: "Large tool output", body: ["Inline preview + H# descriptor", "Body in host PayloadStore"] })}
     ${card({ x: 324, y: 552, w: 258, h: 102, title: "Skill body", body: ["Key: skill:<name>", "Resident until deactivate / lease expiry"] })}
     ${card({ x: 600, y: 552, w: 258, h: 102, title: "Retrieval hit", body: ["Ordinary history turn", "Decays through compaction"] })}
     ${card({ x: 876, y: 552, w: 276, h: 102, title: "Pinned knowledge", body: ["Host-keyed + pinned", "Exempt from knowledge-budget eviction"] })}
@@ -474,10 +474,10 @@ add("context_vm_mechanisms.svg", {
 
 add("execution_plane_mechanisms.svg", {
   title: "DeepStrike ExecutionPlane",
-  desc: "Approved tool calls move through host decision hooks into local, worktree, sandbox, or remote execution, with streaming, suspension, result redaction, and large-result spooling.",
+  desc: "Approved tool calls move through host decision hooks into local, worktree, sandbox, or remote execution, with streaming, suspension, result redaction, and external payload storage.",
   eyebrow: "EXECUTION PLANE",
   headline: "The kernel grants authority; the host performs the effect.",
-  subtitle: "TOOLS · STREAMING · ISOLATION · SUSPEND · SPOOL",
+  subtitle: "TOOLS · STREAMING · ISOLATION · SUSPEND · PAYLOAD",
   body: `
     ${section(124, "Approved-call path", "NO TOOL FUNCTION RUNS INSIDE deepstrike-core")}
     ${card({ x: 48, y: 146, w: 220, h: 112, title: "KernelEffect", body: ["ExecuteTool(calls)", "Already passed kernel governance"], accent: true })}
@@ -497,7 +497,7 @@ add("execution_plane_mechanisms.svg", {
     ${section(480, "Long-running and large-result paths", "STREAM PROGRESS WITHOUT FLOODING CONTEXT")}
     ${card({ x: 48, y: 500, w: 344, h: 116, title: "Streaming tool", body: ["Async chunks become progress events", "Final chunk closes the tool-call pair"] })}
     ${card({ x: 428, y: 500, w: 344, h: 116, title: "Suspend / resume", body: ["Tool yields a suspend token", "Host callback resolves external work"] })}
-    ${card({ x: 808, y: 500, w: 344, h: 116, title: "LargeResultSpool", body: ["Inline preview + content handle", "Payload stored on disk / DB and paged"] })}
+    ${card({ x: 808, y: 500, w: 344, h: 116, title: "PayloadStore", body: ["Opaque locator + content handle", "Body stored on disk / DB and paged"] })}
     ${section(666, "Cancellation boundary", "USER · DEADLINE · LEASE LOST · HOST SHUTDOWN COMPOSE INTO THE OPERATION SIGNAL")}
   `,
 })
@@ -541,7 +541,7 @@ add("multimodal_mechanisms.svg", {
   title: "DeepStrike multimodal input path",
   desc: "Image and audio attachments enter as typed content parts, receive kernel token weighting and durable persistence, then serialize to provider-native formats or fail explicitly when unsupported.",
   eyebrow: "MULTIMODAL INPUT",
-  headline: "Attachments survive pressure accounting, replay, and resume.",
+  headline: "Attachments survive pressure accounting, replay, and checkpoint restore.",
   subtitle: "TYPED PARTS · TOKEN WEIGHT · VENDOR SERIALIZATION",
   body: `
     ${section(124, "Ingress and kernel contract", "run({ attachments }) WORKS ACROSS NODE.JS · PYTHON · RUST · WASM")}
@@ -564,8 +564,8 @@ add("multimodal_mechanisms.svg", {
     ${card({ x: 500, y: 488, w: 210, h: 118, title: "OpenAI Responses", body: ["input_image", "audio unsupported"] })}
     ${card({ x: 726, y: 488, w: 210, h: 118, title: "Gemini", body: ["inlineData / fileData", "audio inlineData"] })}
     ${card({ x: 952, y: 488, w: 200, h: 118, title: "Ollama", body: ["images[]", "audio unsupported"] })}
-    ${section(654, "Crash and resume", "SESSION RECONSTRUCTION RESTORES Content::Parts, NOT A TEXT-ONLY APPROXIMATION")}
-    ${text(48, 686, "Attachments are durable run evidence and are rebuilt into the initial multimodal turn before provider replay or live continuation.", "body")}
+    ${section(654, "Crash and resume", "LOGICAL CHECKPOINT RESTORES Content::Parts, NOT A TEXT-ONLY APPROXIMATION")}
+    ${text(48, 686, "Attachments remain in canonical logical state and are restored before provider replay or live continuation.", "body")}
   `,
 })
 
@@ -641,77 +641,77 @@ add("skills_mechanisms.svg", {
 
 add("session_replay_mechanisms.svg", {
   title: "DeepStrike session replay and recovery",
-  desc: "The append-only SessionLog evidence stream records provider, tool, governance, workflow, memory, multimodal, and lifecycle events for audit, provider replay, workflow resume, repair, and OS snapshots.",
+  desc: "The append-only SessionLog records audit evidence, provider replay envelopes, and OS snapshot inputs; production control-state recovery uses canonical checkpoints and journals.",
   eyebrow: "SESSION EVIDENCE",
-  headline: "Recovery folds durable observations instead of guessing state.",
-  subtitle: "APPEND-ONLY LOG · REPLAY · REPAIR · RESUME",
+  headline: "Evidence replay and execution recovery have separate sources of truth.",
+  subtitle: "SESSIONLOG EVIDENCE · CANONICAL CHECKPOINT · KERNEL JOURNAL",
   body: `
     ${section(124, "Live evidence stream", "HOST APPENDS EVENTS AFTER SEMANTIC BOUNDARIES COMMIT")}
     ${card({ x: 48, y: 146, w: 208, h: 116, title: "Run lifecycle", body: ["run_started + attachments", "suspended · resumed · terminal"], accent: true })}
     ${card({ x: 272, y: 146, w: 208, h: 116, title: "Provider", body: ["text · tool calls", "protocol-shaped replay envelope"] })}
     ${card({ x: 496, y: 146, w: 208, h: 116, title: "Tools & governance", body: ["requested · gated · completed", "permission request + resolution"] })}
     ${card({ x: 720, y: 146, w: 208, h: 116, title: "Workflow & process", body: ["node output · submissions", "agent_process_changed lineage"] })}
-    ${card({ x: 944, y: 146, w: 208, h: 116, title: "Memory & context", body: ["write · query · recall", "compression · renewal · spool"] })}
+    ${card({ x: 944, y: 146, w: 208, h: 116, title: "Memory & context", body: ["write · query · recall", "compression · renewal · payload"] })}
 
     ${section(310, "Four consumers of the same evidence", "ONE LOG · DIFFERENT FOLDS")}
     ${card({ x: 48, y: 330, w: 258, h: 126, title: "Audit & primitive view", body: ["Filter by category / kernel primitive", "Explain who requested and who executed", "No claim of filesystem rollback"] })}
     ${card({ x: 324, y: 330, w: 258, h: 126, title: "Provider replay", body: ["ReplayProvider reads envelopes", "No live network or model tokens", "Validate deterministic host behavior"] })}
-    ${card({ x: 600, y: 330, w: 258, h: 126, title: "Workflow resume", body: ["Fold completed node outputs", "Restore runtime submissions", "Schedule remaining frontier"] })}
+    ${card({ x: 600, y: 330, w: 258, h: 126, title: "Offline diagnostics", body: ["Inspect workflow observations", "Repair historical projections", "Never author production state"] })}
     ${card({ x: 876, y: 330, w: 276, h: 126, title: "OS Snapshot", body: ["Fold processes · budgets · signals", "Permissions · paging · memory", "Dashboard state, not restore state"] })}
 
-    ${section(504, "Kernel recovery path", "PORTABLE SNAPSHOT REPLAYS ACCEPTED PUBLIC ABI TRANSACTIONS")}
+    ${section(504, "Kernel recovery path", "OPAQUE LOGICAL STATE + BOUNDED JOURNAL TAIL")}
     ${rect(48, 524, 1104, 118, "kernel", 7)}
-    ${text(68, 554, "Session / transaction stream", "label")}
+    ${text(68, 554, "Checkpoint bytes + records", "label")}
     ${arrow("M258 551H356", true)}
-    ${text(376, 554, "validate + repair", "label")}
+    ${text(376, 554, "verify digest + head", "label")}
     ${arrow("M500 551H598", true)}
-    ${text(618, 554, "fold public ABI", "label")}
+    ${text(618, 554, "install logical state", "label")}
     ${arrow("M742 551H840", true)}
-    ${text(860, 554, "restore lifecycle / operation / effect ids", "label")}
-    ${text(68, 602, "Malformed events can be sanitized or rejected; bounded snapshot journals fail explicitly instead of emitting partial checkpoints.", "body")}
-    ${section(686, "Boundary", "SESSIONLOG RECOVERS CONTROL STATE · TOOL SIDE EFFECTS STILL REQUIRE IDEMPOTENCY OR COMPENSATION")}
+    ${text(860, 554, "replay bounded tail", "label")}
+    ${text(68, 602, "Candidate → durable install → ack gates prefix reclamation; a hard tail limit returns retryable CheckpointRequired.", "body")}
+    ${section(686, "Boundary", "SESSIONLOG DOES NOT AUTHOR CONTROL STATE · TOOL SIDE EFFECTS STILL REQUIRE IDEMPOTENCY")}
   `,
 })
 
 add("snapshots_mechanisms.svg", {
-  title: "DeepStrike OS profiles and snapshots",
-  desc: "OS Profile configures validated runtime policy; OS Snapshot folds observable SessionLog state; KernelSnapshot restores exact accepted ABI state; ContextSnapshot restores context partitions only.",
-  eyebrow: "PROFILES & SNAPSHOTS",
+  title: "DeepStrike OS profiles, snapshots, and checkpoints",
+  desc: "OS Profile configures validated runtime policy; OS Snapshot folds SessionLog observations; the canonical Kernel Checkpoint restores execution; ContextSnapshot restores context partitions only.",
+  eyebrow: "PROFILES · SNAPSHOTS · CHECKPOINTS",
   headline: "Configuration, observability, and recovery are different artifacts.",
-  subtitle: "PROFILE ≠ OS SNAPSHOT ≠ KERNEL SNAPSHOT",
+  subtitle: "PROFILE ≠ OS SNAPSHOT ≠ KERNEL CHECKPOINT",
   body: `
     ${section(124, "Before the run", "PROFILE SELECTS POLICY · VALIDATION FAILS BEFORE STARTUP")}
     ${card({ x: 48, y: 146, w: 344, h: 112, title: "OS Profile", body: ["SignalPolicy + GovernancePolicy defaults", "Host-selectable native or custom profile", "Not a complete production safety boundary"], accent: true })}
     ${arrow("M392 202H456", true)}
     ${card({ x: 458, y: 146, w: 284, h: 112, title: "Declarative validation", body: ["Actions · patterns · queue bounds · TTL", "Invalid policy never reaches the kernel"] })}
     ${arrow("M742 202H806", true)}
-    ${card({ x: 808, y: 146, w: 344, h: 112, title: "Runtime configuration", body: ["ConfigureRun + granular updates", "Compose profile with ResourceQuota", "KernelReliability bounds recovery"] })}
+    ${card({ x: 808, y: 146, w: 344, h: 112, title: "Runtime configuration", body: ["BootConfig + typed live commands", "Compose profile with ResourceQuota", "Tail bounds recovery cost"] })}
 
     ${section(306, "After or during the run", "CHOOSE THE ARTIFACT FOR THE QUESTION YOU ARE ASKING")}
-    ${card({ x: 48, y: 326, w: 344, h: 146, title: "OS Snapshot · observe", body: ["Folded from SessionLog events", "Processes · budget · signals · paging", "Permissions · spool · memory counters", "Cannot restore execution"], accent: true })}
-    ${card({ x: 428, y: 326, w: 344, h: 146, title: "KernelSnapshot · restore", body: ["Accepted ABI transaction journal", "Lifecycle + operation + effect identity", "Strict single-version ABI v2", "Bounded; incompatible fails explicitly"] })}
+    ${card({ x: 48, y: 326, w: 344, h: 146, title: "OS Snapshot · observe", body: ["Folded from SessionLog events", "Processes · budget · signals · paging", "Permissions · memory counters", "Cannot restore execution"], accent: true })}
+    ${card({ x: 428, y: 326, w: 344, h: 146, title: "Kernel Checkpoint · restore", body: ["Opaque logical state by owner", "Bounded journal tail", "state + tail digests", "Candidate · install · ack"] })}
     ${card({ x: 808, y: 326, w: 344, h: 146, title: "ContextSnapshot · context only", body: ["Four context partitions", "Token and cache metadata", "Partial restore surface", "Not process / workflow recovery"] })}
 
     ${section(520, "Dashboard fold", "OS SNAPSHOT MAKES KERNEL PRIMITIVES OPERATIONALLY VISIBLE")}
     ${rect(48, 540, 1104, 104, "panel-strong", 7)}
-    ${text(68, 570, "health", "label")}${text(178, 570, "queue", "label")}${text(288, 570, "permissions", "label")}${text(430, 570, "process tree", "label")}${text(580, 570, "budget", "label")}${text(690, 570, "signals", "label")}${text(800, 570, "paging / spool", "label")}${text(972, 570, "memory", "label")}
+    ${text(68, 570, "health", "label")}${text(178, 570, "queue", "label")}${text(288, 570, "permissions", "label")}${text(430, 570, "process tree", "label")}${text(580, 570, "budget", "label")}${text(690, 570, "signals", "label")}${text(800, 570, "paging", "label")}${text(972, 570, "memory", "label")}
     ${rule(68, 590, 1132, "rule-coral")}
     ${text(68, 620, "session_log_has_required_categories verifies category and primitive completeness before dashboard ingest.", "body")}
-    ${section(692, "Production rule", "PROFILE SETS BOUNDARIES · QUOTA LIMITS RESOURCES · SNAPSHOT REPORTS OR RESTORES STATE")}
+    ${section(692, "Production rule", "PROFILE SETS POLICY · OS SNAPSHOT REPORTS · KERNEL CHECKPOINT RESTORES")}
   `,
 })
 
 add("reliability_mechanisms.svg", {
   title: "DeepStrike runtime reliability mechanisms",
-  desc: "Bounded input and snapshot journals, replay deduplication, provider and durability recovery attempts, cancellation, repeat fuse, criteria gate, entropy watch, and explicit terminal reasons.",
+  desc: "Bounded canonical journal tails, replay deduplication, provider and durability recovery attempts, cancellation, repeat fuse, criteria gate, entropy watch, and explicit terminal reasons.",
   eyebrow: "RUNTIME RELIABILITY",
   headline: "Every recovery path has a bound and an observable outcome.",
   subtitle: "LIMITS · RETRIES · FUSES · CANCELLATION · EVIDENCE",
   body: `
     ${section(124, "ABI and durability bounds", "STRICT INPUTS PREVENT SILENTLY PARTIAL RECOVERY")}
-    ${card({ x: 48, y: 146, w: 258, h: 116, title: "Input validation", body: ["Canonical JSON byte limit", "Unknown ABI v2 fields rejected"] })}
+    ${card({ x: 48, y: 146, w: 258, h: 116, title: "Input validation", body: ["Canonical JSON byte limit", "Unknown canonical fields rejected"] })}
     ${card({ x: 324, y: 146, w: 258, h: 116, title: "Replay windows", body: ["Input-event dedupe capacity", "Completed-effect replay capacity"] })}
-    ${card({ x: 600, y: 146, w: 258, h: 116, title: "Snapshot journal", body: ["Input-count + byte bounds", "Overflow → snapshot_incompatible"], accent: true })}
+    ${card({ x: 600, y: 146, w: 258, h: 116, title: "Checkpoint tail", body: ["Record + byte watermarks", "Hard limit → retryable required"], accent: true })}
     ${card({ x: 876, y: 146, w: 276, h: 116, title: "Durability retry", body: ["Host effect retry attempts", "Best-effort failures surface to handler"] })}
 
     ${section(310, "Loop recovery and termination", "NO UNBOUNDED RETRY LADDER")}

@@ -1,5 +1,6 @@
 use super::LoopStateMachine;
-use crate::runtime::kernel::{CancellationReason, KernelObservation};
+use crate::runtime::kernel::KernelObservation;
+use crate::runtime::kernel::wire::CancellationReason;
 use crate::scheduler::state_machine::LoopAction;
 use crate::scheduler::tcb::TaskLifecycle;
 use crate::types::result::TerminationReason;
@@ -35,7 +36,6 @@ impl LoopStateMachine {
         self.pending_preempt = None;
         self.pending_host_effects.clear();
         self.active_host_effect = None;
-        self.active_host_effect_failures = 0;
         self.deferred_action = None;
         self.pending_termination = None;
         self.pending_pace = None;

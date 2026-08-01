@@ -1,8 +1,7 @@
 """M5 v2.1: top-level auto-pivot (Python).
 
-Canonical host cutover (Task 20) fails closed on agent-authored workflow bootstrap — same posture as
-``test_bootstrap_workflow.py``. A top-level ``start_workflow`` tool call no longer drives an in-run
-sub-workflow; ``bootstrap_workflow`` raises at the canonical boundary.
+Canonical host cutover (Task 20) routes model syscalls through core instead of a host-authored
+workflow bootstrap path.
 """
 
 import pytest
@@ -15,8 +14,6 @@ from deepstrike import (
     RuntimeOptions,
     RuntimeRunner,
     SubAgentResult,
-    WorkflowNodeSpec,
-    WorkflowSpec,
 )
 from deepstrike._kernel import ToolSchema
 from deepstrike.providers.base import RenderedContext
@@ -88,18 +85,3 @@ async def test_top_level_start_workflow_does_not_auto_pivot_under_canonical_host
             *[m.content for m in ctx.turns if isinstance(m.content, str)],
         ]))
     ) for ctx in provider.contexts)
-
-
-@pytest.mark.asyncio
-async def test_bootstrap_workflow_still_raises_for_authored_spec():
-    runner = RuntimeRunner(RuntimeOptions(
-        provider=None,
-        session_log=InMemorySessionLog(),
-        execution_plane=LocalExecutionPlane(),
-        max_tokens=1000,
-    ))
-    with pytest.raises(RuntimeError, match="unsupported by the canonical host"):
-        await runner.bootstrap_workflow(WorkflowSpec(nodes=[
-            WorkflowNodeSpec(task="explore A", role="implement"),
-            WorkflowNodeSpec(task="explore B", role="implement"),
-        ]))

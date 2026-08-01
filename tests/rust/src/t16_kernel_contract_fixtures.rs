@@ -1,8 +1,8 @@
 #![cfg(test)]
 //! Canonical Kernel ABI — version-neutral semantic fixtures (Phase 0 · Task 2).
 //!
-//! These fixtures freeze *semantics*, not wire bytes: `tests/fixtures/abi/*.json` are v2 wire
-//! goldens and are deliberately NOT the shape used here. Each fixture states one scenario in
+//! These fixtures freeze *semantics*, not wire bytes. Canonical wire goldens live under
+//! `tests/fixtures/kernel-wire`; each fixture here states one scenario in
 //! version-neutral vocabulary; every historical anchor (v1/v2 wire name, `file:line`, test name)
 //! is confined to `evidence.sources`.
 //!

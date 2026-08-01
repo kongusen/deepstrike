@@ -10,13 +10,13 @@ Accepted
 
 ## Context
 
-ABI v2 moved operation, event, effect, signal, budget, cancellation, and portable replay semantics into the kernel. A full input journal still makes restore cost linear in total run length, while large tool outputs cross the ABI and enter the journal before the host spools them. Count limits protect memory but do not provide sustainable checkpoints for long-running operations.
+superseded ABI moved operation, event, effect, signal, budget, cancellation, and portable replay semantics into the kernel. A full input journal still makes restore cost linear in total run length, while large tool outputs cross the ABI and enter the journal before host externalization. Count limits protect memory but do not provide sustainable checkpoints for long-running operations.
 
 ## Decision
 
 ### 1. One transaction path
 
-Kernel event handling converges on `normalize -> validate -> plan -> commit -> journal`. Runtime lifecycle, pending effects, step sequence, actions, and observations commit from one transition plan. Faults commit no runtime-owned state. The state machine does not expose a second lifecycle adjudication path.
+Kernel event handling converges on `normalize -> validate -> plan/prepare -> durable journal CAS append -> commit/publish`. Runtime lifecycle, pending effects, step sequence, actions, and observations commit from one transition plan, and the durable append is the publish gate. Faults commit no runtime-owned state. The state machine does not expose a second lifecycle adjudication path.
 
 ### 2. Tool results are inline or external
 
@@ -25,7 +25,7 @@ Kernel event handling converges on `normalize -> validate -> plan -> commit -> j
 - `inline`: the body of a small result;
 - `external`: `blob_ref`, digest, original size, and preview.
 
-The SDK atomically persists an external body before submitting the input, and the kernel validates the payload against configured policy. The old `SpoolLargeResult` action/result, pending kind, and retry branch are deleted rather than retained as a compatibility path. Files, object storage, encryption, and secrets remain host-owned.
+The SDK atomically persists an external body before submitting the input, and the kernel validates the payload against configured policy. The old post-submit persistence action/result, pending kind, and retry branch are deleted rather than retained as a compatibility path. Files, object storage, encryption, and secrets remain host-owned.
 
 ### 3. Logical checkpoints with a bounded tail
 
@@ -35,17 +35,17 @@ The new format directly replaces the full-journal snapshot. Hosts persist the ch
 
 ### 4. Count and byte resource boundaries
 
-SDKs configure only limits with host resource semantics. `max_input_bytes`, `snapshot_input_limit`, `snapshot_journal_bytes_limit`, and read-only `KernelDiagnostics` are implemented first. The bounded checkpoint tail will reuse these byte watermarks; container capacities remain implementation details.
+SDKs configure only limits with host resource semantics. Current limits use `max_input_bytes` and `recovery_policy.tail_bounds`: the tail has record/byte soft watermarks and hard limits. Crossing a hard limit returns retryable `CheckpointRequired` without accepting the input. Read-only diagnostics have no setters, and container capacities remain implementation details.
 
 ## Delivery order
 
 1. Restore hot path and byte diagnostics;
 2. transition plan and one lifecycle source;
-3. external tool-result payload and removal of spool legacy;
+3. external tool-result payload and removal of the legacy persistence path;
 4. logical checkpoint, bounded tail, and digests;
 5. incremental render caching only after end-to-end benchmarks prove value.
 
-Each step is tested, verified, and committed independently. Wire payload and snapshot schema are not rewritten in one unreviewable commit.
+Each step is tested and verified independently. Wire payload and checkpoint schema have separate contract and golden coverage.
 
 ## Consequences
 
@@ -59,5 +59,5 @@ Each step is tested, verified, and committed independently. Wire payload and sna
 
 - Core performs no file, network, database, or object-store I/O;
 - core stores no API keys, lease tokens, encryption keys, or executable handles;
-- no adapter is provided for the old spool or full-journal snapshot;
+- no adapter is provided for the old post-submit persistence protocol or full-journal snapshot;
 - recovery and render performance do not use unbounded caches.

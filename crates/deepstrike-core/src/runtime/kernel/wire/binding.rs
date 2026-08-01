@@ -240,6 +240,57 @@ impl CanonicalKernel {
         self.transaction.terminal()
     }
 
+    /// Return the live kernel-issued attempt for a child task, including after checkpoint restore.
+    pub fn attempt_id(&self, task_id: &str) -> Option<super::scalar::AttemptId> {
+        self.driver.attempt_id(task_id).cloned()
+    }
+
+    /// Current scheduler turn, restored from the canonical journal/checkpoint state.
+    pub fn turn(&self) -> u32 {
+        self.driver.engine().map_or(0, |engine| engine.turn)
+    }
+
+    /// Recovery replay budget in bytes, when the operation has been configured.
+    pub fn recovery_content_bytes(&self) -> Option<usize> {
+        self.driver.engine().map(|engine| {
+            let tokens = engine
+                .ctx
+                .config
+                .recovery_content_tokens(engine.ctx.max_tokens);
+            engine.ctx.engine.token_budget_to_bytes(tokens)
+        })
+    }
+
+    /// Task-state references that context pressure must keep resident.
+    pub fn preserved_refs(&self) -> Vec<String> {
+        self.driver
+            .engine()
+            .map(|engine| engine.ctx.partitions.task_state.preserved_refs.clone())
+            .unwrap_or_default()
+    }
+
+    /// Count text using the configured canonical context token engine.
+    pub fn count_tokens(&self, text: &str) -> Option<u32> {
+        self.driver
+            .engine()
+            .map(|engine| engine.ctx.engine.count(text))
+    }
+
+    /// Cumulative kernel-owned child spawn count for this operation.
+    pub fn local_subagents_spawned(&self) -> u32 {
+        self.driver
+            .engine()
+            .map_or(0, |engine| engine.local_subagents_spawned())
+    }
+
+    /// Messages added to the canonical operation history.
+    pub fn new_messages(&self) -> Vec<crate::types::message::Message> {
+        self.driver
+            .engine()
+            .map(|engine| engine.drain_new_messages())
+            .unwrap_or_default()
+    }
+
     pub fn poison(&self) -> Option<&KernelFault> {
         self.transaction.poison().or_else(|| self.driver.poison())
     }
@@ -303,7 +354,7 @@ mod tests {
         .expect("golden fixture")
     }
 
-    fn commit_prepared(kernel: &mut CanonicalKernel, input: &str) {
+    fn commit_input(kernel: &mut CanonicalKernel, input: &str) {
         let prepared = kernel.prepare_json(input);
         let KernelPreparation::Prepared(prepared) = prepared else {
             panic!("expected prepared transition");
@@ -336,7 +387,7 @@ mod tests {
     fn abort_restores_the_driver_before_the_next_prepare() {
         let fixture = golden_agent_root();
         let mut kernel = CanonicalKernel::default();
-        commit_prepared(&mut kernel, &fixture["links"][0]["envelope"].to_string());
+        commit_input(&mut kernel, &fixture["links"][0]["envelope"].to_string());
 
         let start = fixture["links"][1]["envelope"].clone();
         let first = kernel.prepare_json(&start.to_string());
@@ -379,7 +430,7 @@ mod tests {
     fn restore_replaces_the_same_typed_handle() {
         let fixture = golden_agent_root();
         let mut kernel = CanonicalKernel::default();
-        commit_prepared(&mut kernel, &fixture["links"][0]["envelope"].to_string());
+        commit_input(&mut kernel, &fixture["links"][0]["envelope"].to_string());
         let checkpoint = kernel
             .checkpoint_candidate()
             .expect("configured operation checkpoints")

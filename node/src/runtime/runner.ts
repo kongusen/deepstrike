@@ -60,6 +60,8 @@ import {
   canonicalKernelAction,
   canonicalKernelApply,
   canonicalKernelMaybeAction,
+  canonicalStartAgent,
+  canonicalStartWorkflow,
 } from "./canonical-kernel-step.js"
 import type {
   AgentRunSpec, AgentProcessChangedObservation, MilestoneCheckResult, MilestoneContract, MilestonePolicy, SubAgentResult,
@@ -73,8 +75,8 @@ import {
   milestoneCheckPass,
   milestoneCheckResultToKernel,
   subAgentResultToKernel,
-  submitWorkflowNodesToKernel,
   workflowBudgetNote,
+  workflowNodeSpecToKernel,
   workflowNodeOutcomeFromKernel,
   workflowNodeStatusFromTermination,
   workflowNodeToManifest,
@@ -96,7 +98,7 @@ import {
 import { governancePolicyToKernelEvent, governanceFilterSchema, type GovernancePolicy } from "../governance.js"
 import { kernelObservationToSessionEvent } from "./kernel-event-log.js"
 import { assertNativeProfile, type NativeOsProfile, type OsProfileId, type SignalPolicy } from "./os-profile.js"
-import { LargeResultSpool } from "./large-result-spool.js"
+import { PayloadStore } from "./payload-store.js"
 import { formatToolError } from "../tools/errors.js"
 import { ManagedTaskScope } from "./reliability.js"
 import type { BackgroundTaskErrorHandler, OperationContext } from "./reliability.js"
@@ -194,26 +196,54 @@ export interface ToolResultHookDecision {
 
 /** Bounded kernel reliability policy. Omitted fields retain kernel defaults. */
 export interface KernelReliabilityOptions {
-  /** Deduplicated input-event replay window, 1..65536. */
-  eventReplayCapacity?: number
-  /** Completed effect-result replay window, 1..65536. */
-  completedEffectReplayCapacity?: number
   /** Provider overflow recovery retries, 0..16. */
   providerRecoveryAttempts?: number
   /** Truncated-output recovery retries, 0..16. */
   outputRecoveryAttempts?: number
-  /** Host durability-effect retries, 0..16. */
-  hostEffectRetryAttempts?: number
-  /** Tool-result spool threshold in bytes; must be positive. */
-  spoolThresholdBytes?: number
-  /** Inline spool preview bytes; positive and no larger than the threshold. */
-  spoolPreviewBytes?: number
-  /** Max accepted ABI transactions retained for a portable KernelSnapshot rebuild. */
-  snapshotInputLimit?: number
   /** Max canonical JSON bytes accepted for one kernel input, 256..64MiB. */
   maxInputBytes?: number
-  /** Max canonical JSON bytes retained by the snapshot journal, 256..1GiB. */
-  snapshotJournalBytesLimit?: number
+}
+
+function kernelReliabilityToKernel(policy: KernelReliabilityOptions): Record<string, number> {
+  const allowed = new Set(["providerRecoveryAttempts", "outputRecoveryAttempts", "maxInputBytes"])
+  const unknown = Object.keys(policy).filter(key => !allowed.has(key))
+  if (unknown.length > 0) {
+    throw new TypeError(`unknown kernel reliability field(s): ${unknown.join(", ")}`)
+  }
+  return {
+    ...(policy.providerRecoveryAttempts !== undefined
+      ? { provider_recovery_attempts: policy.providerRecoveryAttempts }
+      : {}),
+    ...(policy.outputRecoveryAttempts !== undefined
+      ? { output_recovery_attempts: policy.outputRecoveryAttempts }
+      : {}),
+    ...(policy.maxInputBytes !== undefined ? { max_input_bytes: policy.maxInputBytes } : {}),
+  }
+}
+
+function memoryPolicyToKernel(policy: MemoryPolicy): Record<string, unknown> {
+  const allowed = new Set([
+    "staleWarningDays",
+    "retrievalTopK",
+    "validationEnabled",
+    "maxContentBytes",
+    "maxNameLength",
+    "promotionRecallThreshold",
+  ])
+  const unknown = Object.keys(policy).filter(key => !allowed.has(key))
+  if (unknown.length > 0) {
+    throw new TypeError(`unknown memory policy field(s): ${unknown.join(", ")}`)
+  }
+  return {
+    ...(policy.staleWarningDays !== undefined ? { stale_warning_days: policy.staleWarningDays } : {}),
+    ...(policy.retrievalTopK !== undefined ? { retrieval_top_k: policy.retrievalTopK } : {}),
+    ...(policy.validationEnabled !== undefined ? { validation_enabled: policy.validationEnabled } : {}),
+    ...(policy.maxContentBytes !== undefined ? { max_content_bytes: policy.maxContentBytes } : {}),
+    ...(policy.maxNameLength !== undefined ? { max_name_length: policy.maxNameLength } : {}),
+    ...(policy.promotionRecallThreshold !== undefined
+      ? { promotion_recall_threshold: policy.promotionRecallThreshold }
+      : {}),
+  }
 }
 
 export type OperationCancellationReason = "user" | "deadline" | "lease_lost" | "host_shutdown"
@@ -309,7 +339,7 @@ export interface RuntimeOptions {
    * and memory-write syscalls are admitted unconditionally (pre-M2 behavior).
    */
   resourceQuota?: ResourceQuota
-  /** Host-selectable bounded replay/recovery/durability policy. */
+  /** Canonical provider/output recovery and input-bound policy. */
   kernelReliability?: KernelReliabilityOptions
   /** Attempts allowed for a workflow node to satisfy its output schema, 1..16. Default: 2. */
   workflowSchemaValidationAttempts?: number
@@ -377,6 +407,8 @@ export interface RuntimeOptions {
    * concurrency stays vehicle-scoped (spec §2.5).
    */
   runGroup?: RunGroup
+  /** Host-only retries for settling the run-group ledger; never enters the canonical ABI. */
+  groupBudgetSettlementRetries?: number
   /**
    * Set by the SubAgentOrchestrator for host-derived child runs: the child still joins the
    * `runGroup` (lineage) and settles its actual terminal usage into the group ledger, but reserves
@@ -385,18 +417,14 @@ export interface RuntimeOptions {
    */
   nestedGroupVehicle?: boolean
   /**
-   * Optional long-term memory policy (`set_memory_policy`). Tunes the kernel's memory subsystem
-   * (retrieval top-k, stale-warning age, write validation, memory path). Unset leaves the kernel
-   * defaults. Enabling memory still requires `dreamStore` + `agentId`.
+   * Optional canonical long-term memory policy. Enabling memory still requires `dreamStore` +
+   * `agentId`; storage location is configured on that host store, not in the kernel contract.
    */
   memoryPolicy?: MemoryPolicy
   tokenizer?: string
   enablePlanTool?: boolean
-  /**
-   * Persist full tool outputs when the kernel emits `large_result_spooled`.
-   * Defaults to `.spool/` under the process cwd.
-   */
-  resultSpool?: LargeResultSpool
+  /** Storage for canonical opaque external payload locators. */
+  payloadStore?: PayloadStore
   compressionStore?: ArchiveStore
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
@@ -408,7 +436,7 @@ export interface RuntimeOptions {
     criteria: string[]
     requiredEvidence: string[]
   }) => Promise<MilestoneCheckResult> | MilestoneCheckResult
-  /** Passed to kernel start_run for role/isolation metadata. */
+  /** Passed to the canonical agent root for role/isolation metadata. */
   runSpec?: AgentRunSpec
   /**
    * The run's **exposure ceiling** — the outer bound on what this run may EVER advertise to the
@@ -446,7 +474,7 @@ export interface RuntimeOptions {
    * `undefined` ⇒ legacy behavior, byte-identical (ceiling + errs-open skill narrowing). `[]` is a
    * legitimate, distinct value: the minimal surface (meta-tools + `stableCoreToolIds` only) — the
    * `allowedToolIds` "empty means no gating" trap does NOT recur here. Entries outside the ceiling
-   * silently intersect away (no start_run error), the same fold every id-list surface uses.
+   * silently intersect away (no root-start error), the same fold every id-list surface uses.
    */
   baselineToolIds?: string[]
   /**
@@ -472,13 +500,6 @@ export interface RuntimeOptions {
   milestoneContract?: MilestoneContract
   /** Custom sub-agent host driver; defaults to SubAgentOrchestrator. */
   subAgentOrchestrator?: SubAgentOrchestrator
-  /** M5 v2.1: marks this runner as executing AS a workflow node (a child spawned by the workflow
-   *  driver). A workflow node's `start_workflow` FLATTENS to the parent kernel (emits
-   *  `workflow_nodes_submitted` for `runWorkflow` to append). A top-level run (this flag unset)
-   *  instead AUTO-PIVOTS: it bootstraps + drives the authored workflow in its own kernel and resumes
-   *  the reason loop with the outcome. The orchestrator sets this on workflow-node children so a
-   *  nested `start_workflow` flattens rather than recursing. */
-  isWorkflowNode?: boolean
   /**
    * When set, sub-agents run through AttemptLoop with a RuntimeAttemptBody and LLM judge.
    * The eval provider evaluates the sub-agent's output against the criteria
@@ -562,13 +583,7 @@ export class RuntimeRunner {
   private activeGroupBudgetScope: GroupBudgetScope | undefined
   private pendingObservations: KernelObservation[] = []
   private currentSessionId: string | null = null
-  /** R-B32: the spool used when the host configured no `resultSpool`. It must be ONE instance for
-   *  the runner's lifetime: the default `MemorySpoolDriver` holds content *in the instance*, so a
-   *  `new LargeResultSpool()` per callsite is garbage the moment that callsite returns — the kernel
-   *  gets a well-formed `spool_ref` whose content no longer exists anywhere, and every later
-   *  `read_result` has to fall back to scanning the session log. Always go through `resultSpool()`
-   *  so the write side (`spool_large_result`, tool `RunContext`) and the read side share a driver. */
-  private fallbackResultSpool: LargeResultSpool | null = null
+  private fallbackPayloadStore: PayloadStore | null = null
   /** O2 (system-reminder channel): host-pushed notes awaiting the next turn-boundary drain. */
   private injectedSignals: RuntimeSignal[] = []
   /** Skill names whose content has already been pushed into the durable `knowledge` slot this
@@ -595,6 +610,8 @@ export class RuntimeRunner {
     if (!Number.isInteger(schemaAttempts) || schemaAttempts < 1 || schemaAttempts > 16) {
       throw new RangeError("workflowSchemaValidationAttempts must be an integer between 1 and 16")
     }
+    if (opts.kernelReliability) kernelReliabilityToKernel(opts.kernelReliability)
+    if (opts.memoryPolicy) memoryPolicyToKernel(opts.memoryPolicy)
     this.composedSystemPrompt = composeSystemPrompt(opts.systemPrompt, opts.instructions)
     if (opts.enableDiagnosticsDashboard) {
       const originalAppend = opts.sessionLog.append.bind(opts.sessionLog)
@@ -662,13 +679,19 @@ export class RuntimeRunner {
     return canonicalKernelAction(runtime, pending, event)
   }
 
-  /** R-B32: the one spool this runner writes to and reads from. Host-configured when given,
-   *  otherwise a lazily created runner-lifetime fallback (never a per-callsite throwaway — see
-   *  `fallbackResultSpool`). */
-  private resultSpool(): LargeResultSpool {
-    if (this.opts.resultSpool) return this.opts.resultSpool
-    this.fallbackResultSpool ??= new LargeResultSpool()
-    return this.fallbackResultSpool
+  private async startKernelAgent(
+    runtime: CanonicalRunnerRuntime,
+    pending: KernelObservation[],
+    task: Record<string, unknown>,
+    runSpec?: Record<string, unknown>,
+  ): Promise<KernelRunnerAction> {
+    return canonicalStartAgent(runtime, pending, task, runSpec)
+  }
+
+  private payloadStore(): PayloadStore {
+    if (this.opts.payloadStore) return this.opts.payloadStore
+    this.fallbackPayloadStore ??= new PayloadStore()
+    return this.fallbackPayloadStore
   }
 
   private async persistMemoryToStore(memory: MemoryRecord, agentId: string): Promise<void> {
@@ -837,7 +860,7 @@ export class RuntimeRunner {
         persistPayload: async (callId, content, previewBytes) => {
           const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`
           const payloadRef = `payload:${digest.slice("sha256:".length, "sha256:".length + 32)}`
-          await this.resultSpool().persistPayload(sessionId, callId, payloadRef, content)
+          await this.payloadStore().persistPayload(sessionId, payloadRef, content)
           return {
             payloadRef,
             digest,
@@ -881,7 +904,10 @@ export class RuntimeRunner {
     scope: GroupBudgetScope,
     actual: { tokens?: number; subagents?: number; rounds?: number },
   ): Promise<void> {
-    const retries = this.opts.kernelReliability?.hostEffectRetryAttempts ?? 3
+    const retries = this.opts.groupBudgetSettlementRetries ?? 3
+    if (!Number.isInteger(retries) || retries < 0 || retries > 16) {
+      throw new RangeError("groupBudgetSettlementRetries must be an integer in 0..16")
+    }
     for (let attempt = 0; ; attempt += 1) {
       try {
         await scope.settle(actual)
@@ -894,7 +920,7 @@ export class RuntimeRunner {
 
   /**
    * Lower the declarative governance / attention / scheduler-budget / resource-quota policies into a
-   * freshly-created kernel. Shared by `execute()` (full agent run) and `bootstrapWorkflowKernel()`
+   * freshly-created kernel. Shared by `execute()` (full agent run) and `initializeWorkflowKernel()`
    * (standalone host-driven workflow) so a workflow's DAG-node spawns are gated, queued, and quota'd
    * exactly as a mid-run spawn would be. Must run before the canonical root start so the gate enforces
    * every policy from the first spawn. No config ⇒ the native-profile defaults (铁律: defaults only).
@@ -920,39 +946,7 @@ export class RuntimeRunner {
       config.context_policy = normalizeContextPolicyV1(contextPolicyV1(this.opts.contextPolicy))
     }
     if (this.opts.kernelReliability) {
-      const reliability = this.opts.kernelReliability
-      config.reliability = {
-        ...(reliability.eventReplayCapacity !== undefined
-          ? { event_replay_capacity: reliability.eventReplayCapacity }
-          : {}),
-        ...(reliability.completedEffectReplayCapacity !== undefined
-          ? { completed_effect_replay_capacity: reliability.completedEffectReplayCapacity }
-          : {}),
-        ...(reliability.providerRecoveryAttempts !== undefined
-          ? { provider_recovery_attempts: reliability.providerRecoveryAttempts }
-          : {}),
-        ...(reliability.outputRecoveryAttempts !== undefined
-          ? { output_recovery_attempts: reliability.outputRecoveryAttempts }
-          : {}),
-        ...(reliability.hostEffectRetryAttempts !== undefined
-          ? { host_effect_retry_attempts: reliability.hostEffectRetryAttempts }
-          : {}),
-        ...(reliability.spoolThresholdBytes !== undefined
-          ? { spool_threshold_bytes: reliability.spoolThresholdBytes }
-          : {}),
-        ...(reliability.spoolPreviewBytes !== undefined
-          ? { spool_preview_bytes: reliability.spoolPreviewBytes }
-          : {}),
-        ...(reliability.snapshotInputLimit !== undefined
-          ? { snapshot_input_limit: reliability.snapshotInputLimit }
-          : {}),
-        ...(reliability.maxInputBytes !== undefined
-          ? { max_input_bytes: reliability.maxInputBytes }
-          : {}),
-        ...(reliability.snapshotJournalBytesLimit !== undefined
-          ? { snapshot_journal_bytes_limit: reliability.snapshotJournalBytesLimit }
-          : {}),
-      }
+      config.reliability = kernelReliabilityToKernel(this.opts.kernelReliability)
     }
     config.signal_policy = {
       version: 1,
@@ -1120,15 +1114,6 @@ export class RuntimeRunner {
     this.knowledgePushedSkills.delete(name)
   }
 
-  /** Retired host-authoring entrypoint; child work must be authored by a canonical root/syscall. */
-  async *spawnSubAgent(spec: AgentRunSpec): AsyncIterable<StreamEvent> {
-    void spec
-    throw new Error(
-      "spawnSubAgent is unavailable under canonical ABI v3: author child work through a provider " +
-      "syscall or start a root workflow",
-    )
-  }
-
   /**
    * G3: run one workflow node, enforcing its `output_schema` (if any). Without a schema this is a
    * plain `orchestrator.run`. With one, the node's agent is instructed to emit conforming JSON, its
@@ -1167,8 +1152,8 @@ export class RuntimeRunner {
       spec: { ...baseSpec, goal: withBudget(goal) },
       manifest,
       sessionLog: this.opts.sessionLog,
-      // M5 v2.1: this child IS a workflow node — its `start_workflow` flattens to this kernel (the
-      // workflow it would author joins the running DAG) rather than bootstrapping a nested pivot.
+      // This child is a workflow node, so capability resolution applies workflow-node quarantine
+      // semantics instead of treating it as an independently spawned agent.
       isWorkflowNode: true,
       // W-N1: trusted workflow nodes run on the parent's execution plane (they carry no grant list
       // by design — filtering on the missing list ran every DAG node TOOL-LESS); quarantined nodes
@@ -1320,25 +1305,25 @@ export class RuntimeRunner {
           criteria: [],
           agent_id: this.opts.agentId,
         })
-        await this.bootstrapWorkflowKernel(sessionId, runId, groupBudgetScope)
+        await this.initializeWorkflowKernel(sessionId, runId, groupBudgetScope)
       }
       const parentSessionId = this.currentSessionId!
       const runtime = this.activeKernel!
       const observationStart = this.pendingObservations.length
       let initialAction: KernelRunnerAction | null
       try {
-        initialAction = await this.commitKernelMaybeAction(runtime, this.pendingObservations, {
-          kind: "load_workflow",
-          spec: workflowSpecToKernel(spec),
-          parent_session_id: parentSessionId,
-        })
+        initialAction = await canonicalStartWorkflow(
+          runtime,
+          this.pendingObservations,
+          workflowSpecToKernel(spec),
+        )
       } catch (error) {
         if (!(error instanceof CanonicalKernelRejectedError)) throw error
         return {
           nodeOutcomes: [],
           outputs: {},
           rejection: {
-            operation: "load_workflow",
+            operation: "start_workflow",
             reason: String(error.fault.message ?? error.message),
           },
         }
@@ -1352,7 +1337,8 @@ export class RuntimeRunner {
         new Map(),
       )
       if (bootstrapped) {
-        let terminal = await this.commitKernelAction(runtime, this.pendingObservations, { kind: "complete_run" })
+        let terminal = runtime.resumeAction()
+        if (!terminal) throw new Error("completed canonical workflow has no terminal action")
         if (terminal.kind !== "done" && this.interrupted) {
           terminal = await this.commitKernelAction(runtime, this.pendingObservations, {
             kind: "cancel_operation",
@@ -1361,7 +1347,7 @@ export class RuntimeRunner {
           })
         }
         if (terminal.kind !== "done") {
-          throw new Error("complete_run did not produce a terminal kernel action")
+          throw new Error("canonical workflow did not produce a terminal kernel action")
         }
         await this.appendObservations(parentSessionId, runtime, 0)
         if (groupBudgetScope && !groupBudgetScope.isClosed) {
@@ -1396,7 +1382,7 @@ export class RuntimeRunner {
    * after `runWorkflow` has durably recorded `run_started`. Sets `activeKernel` / `currentSessionId`;
    * `runWorkflow` is responsible for tearing them down.
    */
-  private async bootstrapWorkflowKernel(
+  private async initializeWorkflowKernel(
     sessionId: string,
     runId: string,
     groupBudgetScope?: GroupBudgetScope,
@@ -1413,19 +1399,6 @@ export class RuntimeRunner {
 
     await this.applyKernelPolicies(runtime, groupBudgetScope)
     return runtime
-  }
-
-  /** Retired host-authoring entrypoint; `start_workflow` must arrive as a provider syscall. */
-  async bootstrapWorkflow(
-    spec: WorkflowSpec,
-    opts?: { submitterAgentId?: string },
-  ): Promise<WorkflowOutcome> {
-    void spec
-    void opts
-    throw new Error(
-      "bootstrapWorkflow is unavailable under canonical ABI v3: start_workflow must enter through " +
-      "the provider syscall channel",
-    )
   }
 
   /**
@@ -1665,10 +1638,9 @@ export class RuntimeRunner {
             | { base?: number }
             | undefined
           if (submitted) {
-            const submittedEvent = submitWorkflowNodesToKernel(result.submittedNodes, result.agentId)
             await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodesSubmittedEvent({
               turn: runtime.turn(),
-              nodes: (submittedEvent.nodes as Record<string, unknown>[]) ?? [],
+              nodes: result.submittedNodes.map(workflowNodeSpecToKernel),
               baseIndex: submitted.base,
               submitterAgentId: result.agentId,
             }))
@@ -1857,10 +1829,9 @@ export class RuntimeRunner {
       const operationId = `node-operation-${start.run_id}`
       const journal = this.resolveKernelJournal()
       const head = await journal.head(operationId)
-      // A session without a canonical operation is a legacy completed run. Once a canonical
-      // chain exists, however, SessionLog is only an audit projection: a stale or forged
-      // run_terminal must not suppress recovery of a still-live kernel operation.
-      if (!head) return
+      if (!head) {
+        throw new Error("run_terminal projection has no canonical journal")
+      }
       const authoritative = this.createCanonicalRuntime(start.run_id, sessionId)
       await authoritative.restore()
       if (authoritative.isTerminal()) return
@@ -2065,18 +2036,9 @@ export class RuntimeRunner {
     // Install optional memory policy. Maps the ergonomic camelCase option onto the kernel's
     // snake_case `set_memory_policy` event; omitted fields fall back to kernel defaults.
     if (this.opts.memoryPolicy) {
-      const m = this.opts.memoryPolicy
       await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "set_memory_policy",
-        ...(m.memoryPath !== undefined ? { memory_path: m.memoryPath } : {}),
-        ...(m.staleWarningDays !== undefined ? { stale_warning_days: m.staleWarningDays } : {}),
-        ...(m.retrievalTopK !== undefined ? { retrieval_top_k: m.retrievalTopK } : {}),
-        ...(m.validationEnabled !== undefined ? { validation_enabled: m.validationEnabled } : {}),
-        ...(m.maxContentBytes !== undefined ? { max_content_bytes: m.maxContentBytes } : {}),
-        ...(m.maxNameLength !== undefined ? { max_name_length: m.maxNameLength } : {}),
-        ...(m.promotionRecallThreshold !== undefined
-          ? { promotion_recall_threshold: m.promotionRecallThreshold }
-          : {}),
+        ...memoryPolicyToKernel(this.opts.memoryPolicy),
       })
     }
     if (this.opts.knowledgeSource) {
@@ -2118,10 +2080,8 @@ export class RuntimeRunner {
     }
 
     const sessionStart = Date.now()
-    const startPayload: Record<string, unknown> = {
-      kind: "start_run",
-      task: { goal, criteria },
-    }
+    const startTask: Record<string, unknown> = { goal, criteria }
+    let startRunSpec: Record<string, unknown> | undefined
     // P0-A: lower an explicit `runSpec`, the `allowedToolIds` ceiling, and/or the `baselineToolIds`
     // pre-activation surface to the kernel run spec. Each augments an explicit spec, else
     // synthesizes a minimal top-level spec carrying just the exposure config (reuses the existing
@@ -2147,9 +2107,9 @@ export class RuntimeRunner {
       if (hasMilestoneContract && !spec.verificationContractId) {
         spec = { ...spec, verificationContractId: "node-default" }
       }
-      startPayload.run_spec = agentRunSpecToKernel(spec)
+      startRunSpec = agentRunSpecToKernel(spec)
     }
-    // Reserve capacity before start_run. The kernel enforces only this vehicle's grant and reports
+    // Reserve capacity before the canonical root start. The kernel enforces only this vehicle's grant and reports
     // exact terminal usage against the same opaque reservation identity. A nested vehicle joins for
     // lineage/settlement only: it reserves no budget axes (group admission governs peer vehicles),
     // so the parent's held reservation cannot squeeze the child's grant to zero.
@@ -2177,7 +2137,7 @@ export class RuntimeRunner {
     if (!resumeMidRun) await this.prefetchMemoryIntoInitialContext(runtime)
 
     // Multimodal upload: seed the user's attachments (images/audio) as a history
-    // message before start_run pushes the "[TASK STATE]" anchor. init_task does not
+    // message before root start pushes the "[TASK STATE]" anchor. init_task does not
     // clear history, so order becomes [attachment user msg, "Proceed…"] — both land
     // in the first render. On resume the message is already in the replayed history.
     if (!resumeMidRun && attachments?.length) {
@@ -2189,7 +2149,7 @@ export class RuntimeRunner {
     const resumedAction = resumeMidRun ? runtime.resumeAction() : null
     let action: KernelRunnerAction = resumeMidRun
       ? resumedAction ?? (() => { throw new Error("restored canonical operation has no pending effect or terminal") })()
-      : await this.commitKernelAction(runtime, this.pendingObservations, startPayload)
+      : await this.startKernelAgent(runtime, this.pendingObservations, startTask, startRunSpec)
     // I4/T5: pre-fetch memory before root start so the model sees it on turn 1 instead of
     // discovering it via the `memory` tool later. Accepted hits enter `initial_context.messages`
     // and are therefore frozen into the canonical start record. Skipped on restore (the checkpoint
@@ -2365,7 +2325,6 @@ export class RuntimeRunner {
           message: messageToKernelMessage(assistantMessage),
           ...(turnInputTokens > 0 ? { observed_input_tokens: turnInputTokens } : {}),
           ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
-          now_ms: Date.now(),
           ...(turnStopReason ? { stop_reason: turnStopReason } : {}),
         }
         if (this.opts.skillDir) {
@@ -2504,22 +2463,6 @@ export class RuntimeRunner {
         })
         if (!error) await this.logMemoryRetrievalResult(sessionId, hits)
 
-      } else if (action.kind === "spool_large_result") {
-        const spool = this.resultSpool()
-        let spoolRef: string | undefined
-        let error: string | undefined
-        try {
-          spoolRef = await spool.persistOutput(sessionId, action.callId, action.output)
-        } catch (cause) {
-          error = formatToolError(cause)
-        }
-        action = await this.commitKernelAction(runtime, this.pendingObservations, {
-          kind: "large_result_spool_result",
-          effect_id: action.effectId,
-          ...(spoolRef ? { spool_ref: spoolRef } : {}),
-          ...(error ? { error } : {}),
-        })
-
       } else if (action.kind === "archive_page_out") {
         const archiveMeta: { archiveStart: number; compressedSeq: number } = this.activePageOutArchive
           ?? this.pendingPageOutArchives.shift()
@@ -2541,12 +2484,7 @@ export class RuntimeRunner {
                 )
               : undefined
             archiveRef ??= `payload:${String(action.payload.digest).replace(/^sha256:/, "").slice(0, 32)}`
-            await this.resultSpool().persistPayload(
-              sessionId,
-              action.handleId,
-              archiveRef,
-              action.payload.content,
-            )
+            await this.payloadStore().persistPayload(sessionId, archiveRef, action.payload.content)
           } else if (this.opts.compressionStore) {
             const ref = await this.opts.compressionStore.write(
               sessionId,
@@ -2595,7 +2533,7 @@ export class RuntimeRunner {
         let content: string | undefined
         let error: string | undefined
         try {
-          content = await this.resultSpool().loadPayload(sessionId, action.payloadRef)
+          content = await this.payloadStore().loadPayload(sessionId, action.payloadRef)
           if (content === undefined) {
             throw new Error(`payload not found for opaque locator ${action.payloadRef}`)
           }
@@ -2636,22 +2574,16 @@ export class RuntimeRunner {
           knowledgeSource: this.opts.knowledgeSource,
           onToolSuspend: this.opts.onToolSuspend,
           onPermissionRequest: this.opts.onPermissionRequest,
-          // R-B32: the plane's `.spool/…` argument read must hit the runner's spool, not a fresh
-          // throwaway whose in-memory driver has never seen the key.
-          resultSpool: this.resultSpool(),
         }
 
         const toolResults: ToolResult[] = []
         const normalCalls = allCalls.filter(
-          c => c.name !== "update_plan" && c.name !== "submit_workflow_nodes" && c.name !== "start_workflow"
-            && c.name !== "read_result",
+          c => c.name !== "update_plan" && c.name !== "submit_workflow_nodes" && c.name !== "start_workflow",
         )
         const planCalls = allCalls.filter(c => c.name === "update_plan")
-        // M5 v1: `start_workflow` (author a sub-workflow) flattens to the same append path as
-        // `submit_workflow_nodes` — a `WorkflowSpec` is a node batch. (v2 adds top-level bootstrap.)
+        // Syscall tools are consumed by core from the provider result. If one reaches this host
+        // effect projection, the canonical boundary has drifted and must fail closed.
         const submitCalls = allCalls.filter(c => c.name === "submit_workflow_nodes" || c.name === "start_workflow")
-        // O7: `read_result` re-fetches a tool output the kernel evicted from context. Content is
-        // host-resolved from the effect-committed spool, then from the durable session log.
 
         for (const call of planCalls) {
           const update = parseUpdatePlanArgs(call.arguments)

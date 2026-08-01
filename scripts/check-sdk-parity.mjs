@@ -108,7 +108,7 @@ const CHECKS = [
     id: "rust-resource-quota",
     lang: "rust",
     path: "rust/src/runtime/runner.rs",
-    patterns: ["resource_quota", "SetResourceQuota", "ResourceQuota", "scheduler_policy"],
+    patterns: ["resource_quota", "set_resource_quota", "ResourceQuota", "CanonicalRunnerRuntime"],
   },
   {
     id: "rust-public-api-shape",
@@ -131,9 +131,8 @@ const CHECKS = [
   {
     id: "core-resource-quota",
     lang: "core",
-    // kernel.rs split into kernel/{runtime,protocol}.rs; the event arm + setter live in runtime.rs.
-    path: "crates/deepstrike-core/src/runtime/kernel/runtime.rs",
-    patterns: ["SetResourceQuota", "set_resource_quota"],
+    path: "crates/deepstrike-core/src/runtime/kernel/wire/driver.rs",
+    patterns: ["config.resource_quota", "set_resource_quota"],
   },
   {
     // Memory policy — Node is the reference: memory config flows into the kernel via the JSON
@@ -153,7 +152,7 @@ const CHECKS = [
     id: "rust-memory-policy",
     lang: "rust",
     path: "rust/src/runtime/runner.rs",
-    patterns: ["memory_policy", "SetMemoryPolicy", "MemoryPolicy", "max_content_bytes"],
+    patterns: ["memory_policy", "memory_policy_host_fact", "MemoryPolicy", "CanonicalRunnerRuntime"],
   },
   {
     id: "wasm-memory-policy",
@@ -162,13 +161,12 @@ const CHECKS = [
     patterns: ["memoryPolicy", "set_memory_policy", "retrieval_top_k", "max_content_bytes"],
   },
   {
-    // Memory policy is kernel-enforced: the handler installs it via sm.set_memory_policy and the
-    // WriteMemory / QueryMemory traps read it back.
+    // Canonical memory policy is parsed, defaulted, and validated by the core-owned config type.
+    // Execution reads only the resolved policy; host storage paths never enter this contract.
     id: "core-memory-policy",
     lang: "core",
-    // kernel.rs split into kernel/{runtime,protocol}.rs; the event arm + setter live in runtime.rs.
-    path: "crates/deepstrike-core/src/runtime/kernel/runtime.rs",
-    patterns: ["SetMemoryPolicy", "set_memory_policy", "memory_policy()"],
+    path: "crates/deepstrike-core/src/runtime/kernel/wire/config.rs",
+    patterns: ["resolve_memory_policy", "retrieval_top_k", "max_content_bytes"],
   },
   {
     id: "wasm-os-profile",
@@ -186,7 +184,7 @@ const CHECKS = [
     id: "wasm-runner-native",
     lang: "wasm",
     path: "wasm/src/runtime/runner.ts",
-    patterns: ["osProfile", "assertNativeProfile", "kernelMaybeAction", "prefetchMemoryIntoHistory"],
+    patterns: ["osProfile", "assertNativeProfile", "canonicalKernelMaybeAction", "prefetchMemoryIntoHistory"],
   },
   {
     id: "python-os-profile",
@@ -204,7 +202,7 @@ const CHECKS = [
     id: "python-runner-native",
     lang: "python",
     path: "python/deepstrike/runtime/runner.py",
-    patterns: ["os_profile", "assert_native_profile", "kernel_maybe_action", "_prefetch_memory_into_history"],
+    patterns: ["assert_native_profile", "CanonicalRunnerRuntime", "maybe_action_host", "_prefetch_memory_into_initial_context"],
   },
   {
     id: "core-replay",
@@ -287,20 +285,20 @@ const CHECKS = [
   {
     id: "node-operation-identity",
     lang: "node",
-    path: "node/src/runtime/kernel-step.ts",
-    patterns: ["node-operation-${crypto.randomUUID()}"],
+    path: "node/src/runtime/runner.ts",
+    patterns: ["crypto.randomUUID()", "CanonicalRunnerRuntime"],
   },
   {
     id: "python-operation-identity",
     lang: "python",
-    path: "python/deepstrike/runtime/kernel_step.py",
-    patterns: ["python-operation-{uuid.uuid4()}"],
+    path: "python/deepstrike/runtime/runner.py",
+    patterns: ["uuid.uuid4()", "CanonicalRunnerRuntime"],
   },
   {
     id: "wasm-operation-identity",
     lang: "wasm",
-    path: "wasm/src/runtime/kernel-step.ts",
-    patterns: ["wasm-operation-${crypto.randomUUID()}"],
+    path: "wasm/src/runtime/runner.ts",
+    patterns: ["crypto.randomUUID()", "CanonicalRunnerRuntime"],
   },
   // ── multimodal attempt parity: AttemptLoop forwards attachments unconditionally; each driver
   // runner seeds them idempotently per session (dedupe against prior run_started records). ──
@@ -329,8 +327,6 @@ const FORBIDDEN = [
     id: "workflow-session-repair",
     paths: [
       "crates/deepstrike-core/src/orchestration/workflow/run.rs",
-      "crates/deepstrike-core/src/runtime/kernel/protocol.rs",
-      "crates/deepstrike-core/src/runtime/kernel/runtime.rs",
       "crates/deepstrike-core/src/scheduler/state_machine/workflow.rs",
       "node/src/runtime/runner.ts",
       "node/src/runtime/session-repair.ts",
@@ -377,6 +373,7 @@ for (const check of CHECKS) {
 for (const check of FORBIDDEN) {
   const hits = []
   for (const path of check.paths) {
+    if (!existsSync(join(root, path))) continue
     const text = readFileSync(join(root, path), "utf8")
     for (const pattern of check.patterns) {
       if (text.includes(pattern)) hits.push(`${path}:${pattern}`)

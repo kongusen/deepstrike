@@ -210,6 +210,22 @@ pub struct JournalPruneReceipt {
 /// - checkpoint pointer and prefix pruning have an explicit acknowledgement boundary.
 #[async_trait]
 pub trait KernelJournal: Send + Sync {
+    /// Persist the byte-identical canonical input envelope before attempting its record append.
+    ///
+    /// A wake replays this value rather than constructing a fresh envelope, preserving the
+    /// caller's idempotency key and observed clock across the append crash window.
+    async fn stage_outbound_envelope(
+        &self,
+        operation_id: &str,
+        envelope_json: &str,
+    ) -> JournalResult<()>;
+
+    /// Return the staged outbound envelope, if an append-before crash left one behind.
+    async fn read_outbound_envelope(&self, operation_id: &str) -> JournalResult<Option<String>>;
+
+    /// Clear a staged outbound envelope after its input is durably owned or rejected.
+    async fn clear_outbound_envelope(&self, operation_id: &str) -> JournalResult<()>;
+
     /// Atomically append `record` iff the operation's head is exactly `expected_head`.
     ///
     /// `expected_head == None` starts the chain (genesis; `record.step_seq` must be 0).
@@ -464,6 +480,7 @@ struct OperationState {
     records: Vec<JournalEntry>,
     checkpoints: Vec<InstalledCheckpoint>,
     pruned: Option<PrunedAnchor>,
+    outbound_envelope: Option<String>,
 }
 
 impl OperationState {
@@ -531,6 +548,32 @@ impl InMemoryKernelJournal {
 
 #[async_trait]
 impl KernelJournal for InMemoryKernelJournal {
+    async fn stage_outbound_envelope(
+        &self,
+        operation_id: &str,
+        envelope_json: &str,
+    ) -> JournalResult<()> {
+        self.lock()
+            .entry(operation_id.to_string())
+            .or_default()
+            .outbound_envelope = Some(envelope_json.to_string());
+        Ok(())
+    }
+
+    async fn read_outbound_envelope(&self, operation_id: &str) -> JournalResult<Option<String>> {
+        Ok(self
+            .lock()
+            .get(operation_id)
+            .and_then(|state| state.outbound_envelope.clone()))
+    }
+
+    async fn clear_outbound_envelope(&self, operation_id: &str) -> JournalResult<()> {
+        if let Some(state) = self.lock().get_mut(operation_id) {
+            state.outbound_envelope = None;
+        }
+        Ok(())
+    }
+
     async fn compare_and_append(
         &self,
         operation_id: &str,
@@ -717,6 +760,7 @@ impl KernelJournal for InMemoryKernelJournal {
 const RECORD_SUFFIX: &str = ".rec";
 const CHECKPOINT_SUFFIX: &str = ".ckpt";
 const ACK_SUFFIX: &str = ".ack";
+const OUTBOUND_ENVELOPE_FILE: &str = "outbound-envelope.json";
 
 fn pad(value: u64) -> String {
     format!("{value:0SEQ_DIGITS$}")
@@ -833,6 +877,11 @@ impl FileKernelJournal {
 
     fn pruned_path(&self, operation_id: &str) -> PathBuf {
         self.operation_dir(operation_id).join("pruned.json")
+    }
+
+    fn outbound_envelope_path(&self, operation_id: &str) -> PathBuf {
+        self.operation_dir(operation_id)
+            .join(OUTBOUND_ENVELOPE_FILE)
     }
 
     /// Write `payload` to a temp file, fsync it, then atomically claim `target` by hard link.
@@ -1075,6 +1124,52 @@ impl FileKernelJournal {
 
 #[async_trait]
 impl KernelJournal for FileKernelJournal {
+    async fn stage_outbound_envelope(
+        &self,
+        operation_id: &str,
+        envelope_json: &str,
+    ) -> JournalResult<()> {
+        let tmp_dir = self.tmp_dir(operation_id);
+        fs::create_dir_all(&tmp_dir)
+            .await
+            .map_err(|err| JournalError::io("journal could not stage an outbound envelope", err))?;
+        let tmp_path = tmp_dir.join(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let result = async {
+            stage(&tmp_path, envelope_json).await?;
+            fs::rename(&tmp_path, self.outbound_envelope_path(operation_id))
+                .await
+                .map_err(|err| {
+                    JournalError::io("journal could not publish an outbound envelope", err)
+                })?;
+            sync_dir(&self.operation_dir(operation_id)).await;
+            Ok(())
+        }
+        .await;
+        if result.is_err() {
+            let _ = fs::remove_file(&tmp_path).await;
+        }
+        result
+    }
+
+    async fn read_outbound_envelope(&self, operation_id: &str) -> JournalResult<Option<String>> {
+        read_optional(
+            &self.outbound_envelope_path(operation_id),
+            "a staged outbound envelope",
+        )
+        .await
+    }
+
+    async fn clear_outbound_envelope(&self, operation_id: &str) -> JournalResult<()> {
+        match fs::remove_file(self.outbound_envelope_path(operation_id)).await {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(JournalError::io(
+                "journal could not clear a staged outbound envelope",
+                err,
+            )),
+        }
+    }
+
     async fn compare_and_append(
         &self,
         operation_id: &str,
@@ -1764,6 +1859,31 @@ mod tests {
         assert_integrity(journal.ack_checkpoint(OP, "ck-missing").await);
     }
 
+    async fn stages_reads_and_clears_an_outbound_envelope(journal: &dyn KernelJournal) {
+        assert_eq!(journal.read_outbound_envelope(OP).await.unwrap(), None);
+        journal
+            .stage_outbound_envelope(OP, r#"{"input_id":"stable","kind":"configure_operation"}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            journal.read_outbound_envelope(OP).await.unwrap().as_deref(),
+            Some(r#"{"input_id":"stable","kind":"configure_operation"}"#)
+        );
+        // Staging replaces the prior envelope atomically: only the most recently attempted,
+        // not-yet-owned input can be replayed after wake.
+        journal
+            .stage_outbound_envelope(OP, r#"{"input_id":"replacement"}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            journal.read_outbound_envelope(OP).await.unwrap().as_deref(),
+            Some(r#"{"input_id":"replacement"}"#)
+        );
+        journal.clear_outbound_envelope(OP).await.unwrap();
+        journal.clear_outbound_envelope(OP).await.unwrap();
+        assert_eq!(journal.read_outbound_envelope(OP).await.unwrap(), None);
+    }
+
     /// Every contract case above runs against both implementations — the taxonomy they promise is
     /// the capability's contract, not one implementation's behaviour.
     macro_rules! contract_suite {
@@ -1804,6 +1924,7 @@ mod tests {
         advances_the_checkpoint_pointer_monotonically,
         gates_prefix_reclamation_on_the_acknowledgement,
         refuses_to_acknowledge_an_uninstalled_checkpoint,
+        stages_reads_and_clears_an_outbound_envelope,
     );
 
     /* ---------- FileKernelJournal: cross-process atomicity ---------- */

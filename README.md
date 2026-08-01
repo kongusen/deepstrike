@@ -107,7 +107,7 @@ Read the [full curriculum map](./example/README.md) for prerequisites, provider 
 | **Unified syscall governance** | Tool calls, sub-agent spawn, workflow growth, and memory writes pass one gate with allow / deny / ask-user / rate-limit / quota dispositions. |
 | **Context VM** | Four-slot rendering (`system_stable`, `system_knowledge`, `turns`, `state_turn`), pressure compression, handle paging for large tool results, prompt-cache-aware stable prefixes, and a governed knowledge lifecycle (keyed entries, boundary-deferred eviction, knowledge budget, skill leases). |
 | **Sub-agent isolation** | Roles, context inheritance, capability filters, worktree / read-only / remote isolation, process lineage, contracts, and handoff artifacts. |
-| **Replay and recovery** | Append-only `SessionLog`, provider replay envelopes, kernel observations, workflow resume, `wake(session_id)`, OS snapshots, and repair utilities. |
+| **Replay and recovery** | Append-only `SessionLog` evidence, provider replay, canonical checkpoint/journal resume, `wake(session_id)`, OS snapshots, and offline repair utilities. |
 | **Memory as an OS device** | Kernel-validated `write_memory` / `query_memory`, DreamStore integration, retrieval closure, idle consolidation, and memory write quotas. |
 | **Self-improving harness lab** | Node-first, content-addressed `HarnessManifest` profiles, declarative instruction and nudge surfaces, verifier-anchored failure mining, held-in/held-out validation, and auditable propose–validate–promote lineage. |
 | **Provider routing** | Kernel carries `model_hint`; the host resolves it to OpenAI, Anthropic, Gemini, DeepSeek, Kimi, Qwen, GLM, Minimax, Ollama, or your own provider. |
@@ -137,7 +137,7 @@ That boundary gives you properties a one-off orchestrator script does not:
 | :--- | :--- | :--- |
 | Replay | State is usually closure variables or temporary files | Control-flow observations and snapshots rebuild the run |
 | Governance | Each tool path implements checks differently | One syscall gate covers tools, spawn, memory, and workflow append |
-| Recovery | Interruptions often restart the harness | SessionLog + `KernelSnapshot` restore suspended workflows |
+| Recovery | Interruptions often restart the harness | Opaque logical checkpoints + bounded journal tails restore suspended workflows |
 | Cross-language | Semantics drift across SDKs | Rust kernel drives every host |
 | I/O ownership | Control flow and credentials mix together | Kernel is pure compute; host owns credentials and side effects |
 
@@ -148,7 +148,7 @@ That boundary gives you properties a one-off orchestrator script does not:
 | **Kernel (`deepstrike-core`)** | State machine, scheduling, syscall disposition, governance, workflow DAGs, budget ledger, context rendering, memory validation, observations | HTTP, filesystem, provider clients, vector stores, subprocesses |
 | **Host SDK** | Runtime loop, provider calls, tool execution, session persistence, DreamStore, archive store, worktree and sandbox integration | Reimplementing spawn gates or workflow semantics |
 | **Provider** | Vendor protocol adaptation, streaming, replay envelopes, model-specific runtime policy | Policy decisions |
-| **ExecutionPlane** | Local tools, streaming tools, suspend/resume, worktree cwd injection, process sandbox, remote VPC tools, large result spool | Context compression |
+| **ExecutionPlane** | Local tools, streaming tools, suspend/resume, worktree cwd injection, process sandbox, remote VPC tools, external payload storage | Context compression |
 
 ### Mechanisms You Can Inspect
 
@@ -347,7 +347,7 @@ DeepStrike treats reliability as runtime state, not a prompt-writing convention:
 
 | Concern | Mechanism |
 | :--- | :--- |
-| Interrupted execution | Append-only `SessionLog`, kernel observations, `KernelSnapshot`, `wake(session_id)`, and workflow resume |
+| Interrupted execution | Append-only `SessionLog` evidence plus canonical checkpoint/journal recovery and `wake(session_id)` |
 | Provider nondeterminism | Recorded provider replay envelopes and `ReplayProvider` paths for network-free validation |
 | Unsafe capabilities | Schema pre-filtering, one syscall gate, parameter constraints, quotas, and suspendable ask-user decisions |
 | Context overflow | Four-slot Context VM, token-pressure compaction, large-result handles, and prompt-cache-aware stable prefixes |

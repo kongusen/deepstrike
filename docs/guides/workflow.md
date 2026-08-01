@@ -144,7 +144,7 @@ Agent 可在 run 中调用 meta-tools：
 | `submit_workflow_nodes` | 向进行中的 DAG append 节点 |
 | `start_workflow` | Top-level：bootstrap 新 DAG；Workflow 内：flatten 到父 DAG |
 
-受 `Syscall::SubmitNodes` / `LoadWorkflow` 治理，`max_workflow_nodes` 配额防 runaway。
+受 canonical `AppendWorkflowNodes` syscall 治理，`max_workflow_nodes` 配额防 runaway。
 
 Top-level agent 通过 `start_workflow` **auto-pivot**：bootstrap 新 kernel 驱动 workflow，完成后 resume 原 reason loop。
 

@@ -130,13 +130,6 @@ pub enum LoopAction {
         query: crate::mm::memory::MemoryQuery,
         requested_k: usize,
     },
-    SpoolLargeResult {
-        call_id: String,
-        tool: String,
-        output: String,
-        original_size: u32,
-        preview_size: u32,
-    },
     ArchivePageOut {
         turn: u32,
         action: crate::runtime::kernel::KernelPressureAction,
@@ -183,13 +176,6 @@ pub(super) struct PendingPreempt {
 
 #[derive(Debug, Clone)]
 pub(super) enum PendingHostEffect {
-    SpoolLargeResult {
-        call_id: String,
-        tool: String,
-        output: String,
-        original_size: u32,
-        preview_size: u32,
-    },
     ArchivePageOut {
         turn: u32,
         action: crate::runtime::kernel::KernelPressureAction,
@@ -202,19 +188,6 @@ pub(super) enum PendingHostEffect {
 impl PendingHostEffect {
     fn action(&self) -> LoopAction {
         match self {
-            Self::SpoolLargeResult {
-                call_id,
-                tool,
-                output,
-                original_size,
-                preview_size,
-            } => LoopAction::SpoolLargeResult {
-                call_id: call_id.clone(),
-                tool: tool.clone(),
-                output: output.clone(),
-                original_size: *original_size,
-                preview_size: *preview_size,
-            },
             Self::ArchivePageOut {
                 turn,
                 action,
@@ -306,8 +279,8 @@ pub struct TurnCheckpoint {
 
 /// Pure state machine for the L* execution loop. No I/O — only state transitions.
 ///
-/// Internal engine backing [`crate::runtime::KernelRuntime`]. Exposed for in-crate
-/// use and tests; external callers should drive the kernel through `KernelRuntime`.
+/// Internal engine backing the canonical operation driver. Exposed for in-crate use and tests;
+/// external callers drive it through [`crate::runtime::kernel::wire::CanonicalKernel`].
 #[doc(hidden)]
 pub struct LoopStateMachine {
     pub phase: LoopPhase,
@@ -320,7 +293,7 @@ pub struct LoopStateMachine {
     pub(super) total_tokens: u64,
     /// Reservation-backed hard limits for this operation. Shared accounting stays in the host;
     /// the kernel tracks only this run's local usage.
-    pub(super) budget_grant: Option<crate::runtime::kernel::BudgetGrant>,
+    pub(super) budget_grant: Option<crate::runtime::kernel::wire::BudgetGrant>,
     pub(super) local_rounds_completed: u32,
     /// ③ the adjudicated `pace` decision awaiting attachment to this round's LoopResult.
     pub(super) pending_pace: Option<crate::types::result::PaceDecision>,
@@ -340,16 +313,14 @@ pub struct LoopStateMachine {
     /// MAX_OUTPUT_TOKENS_RECOVERY_LIMIT). Resets to 0 on any non-truncated response.
     pub(super) output_recovery_attempts: u8,
     pub(crate) output_recovery_attempt_limit: u8,
-    pub(crate) host_effect_retry_attempt_limit: u8,
     /// Whether the in-flight response was cut off at the provider's output cap. Set just before
     /// `feed(LLMResponse)` and taken (cleared) inside it.
     ///
-    /// A **classified** fact, never vendor text (§22.8): the legacy wire's free-form `stop_reason`
-    /// is classified at the boundary in [`Self::set_pending_stop_reason`], the canonical wire's
-    /// typed `ProviderStopReason` in [`Self::set_output_truncated`]. The loop itself reads neither.
+    /// A **classified** fact, never vendor text (§22.8): the canonical provider outcome supplies a
+    /// typed stop reason and [`Self::set_output_truncated`] stages the derived boolean.
     pub(super) pending_output_truncated: bool,
     /// §7.6 · what the canonical driver adjudicated for the provider turn about to be fed. Consumed
-    /// (and cleared) inside `feed(LLMResponse)`; `None` for every legacy caller.
+    /// (and cleared) inside `feed(LLMResponse)`; `None` until the canonical driver stages a turn.
     pub(super) adjudicated_turn: Option<AdjudicatedTurn>,
     /// Number of history messages present at session start (after preload_history).
     /// drain_new_messages() returns the slice from this offset onward.
@@ -384,9 +355,6 @@ pub struct LoopStateMachine {
     /// Timestamps of recent allowed `WriteMemory` syscalls, for the rolling-window rate limit.
     /// Only populated when `resource_quota.memory_writes_per_window` is set.
     pub(super) memory_write_times: Vec<u64>,
-    /// Optional long-term memory policy (`set_memory_policy`). `None` (default) preserves
-    /// pre-policy behavior: default-rule validation + verbatim retrieval `top_k`.
-    pub(super) memory_policy: Option<crate::mm::memory::MemoryPolicy>,
     /// Kernel-owned signal routing: dedup set + attention policy + bounded queue.
     /// Always initialized; `set_attention` rebuilds it with a new queue size.
     pub(super) signal_router: SignalRouter,
@@ -394,10 +362,10 @@ pub struct LoopStateMachine {
     /// A correlated `ProviderResult` consumes exactly this prefix; signals arriving while the
     /// provider is in flight remain for the next request.
     pub(super) delivered_signals_len: usize,
-    /// Wall-clock timestamp of the first `ProviderResult.now_ms` received.
+    /// Accepted envelope time of the operation's first timed transition.
     /// Used by the wall-time budget axis in `SchedulerBudget::should_terminate`.
     pub(super) started_at_ms: Option<u64>,
-    /// Most-recent `now_ms` value from `ProviderResult`, forwarded to the budget check.
+    /// Most-recent accepted envelope time, forwarded to the budget check.
     pub(super) last_now_ms: Option<u64>,
     /// Tool batch awaiting `Resume` after an AskUser suspend.
     pub(super) suspend_state: Option<SuspendState>,
@@ -410,20 +378,15 @@ pub struct LoopStateMachine {
     /// Whether the in-flight workflow **is** this operation's root (spec §6.1 invariant 7).
     ///
     /// Immutable for the lifetime of a run: it mirrors the canonical `RootKind`, which no committed
-    /// transition may change. `false` (the default, and every legacy caller) keeps the historical
-    /// behaviour — a workflow nested inside an agent loop, whose completion resumes the parent
+    /// transition may change. `false` means a workflow nested inside an agent loop, whose completion resumes the parent
     /// agent with another provider call. `true` makes that completion the operation's terminal
     /// instead, which is what deletes the host-side `CompleteRun` race (§10.1 现状注记).
     pub(super) root_workflow: bool,
     /// Spec §10.4 / §15.3 · whether a spawned child waits for the host's launch acknowledgement
     /// before it counts as `Running`.
     ///
-    /// `false` (the default, and every legacy caller) keeps the historical behaviour: `Tcb::spawned`
-    /// seeds `Running` at insert time, *before* the spawn effect is even published. `true` — set by
-    /// the canonical driver — runs the real arc: `PendingLaunch` when the kernel mints identity,
-    /// `Starting` when the launch effect is published, `Running` only once `TasksSpawned` names the
-    /// task as started.
-    pub(super) ack_gated_launch: bool,
+    /// Child launch follows the single canonical arc: `PendingLaunch` when the kernel mints
+    /// identity, `Starting` when it publishes the effect, and `Running` only after `TasksSpawned`.
     /// Workflow batch reserved by the kernel and awaiting the host's correlated
     /// spawn result. This is intent, not an observed external fact.
     pub(super) pending_workflow_spawn: Option<PendingWorkflowSpawn>,
@@ -432,7 +395,6 @@ pub struct LoopStateMachine {
     /// transition. The normal continuation is held until every effect commits.
     pub(super) pending_host_effects: VecDeque<PendingHostEffect>,
     pub(super) active_host_effect: Option<PendingHostEffect>,
-    pub(super) active_host_effect_failures: u8,
     pub(super) deferred_action: Option<Box<LoopAction>>,
     /// O6: repeat-fuse thresholds (the hard rungs above the 2c soft STOP). Default enabled with
     /// generous thresholds; tune/disable via `SetRepeatFuse` / `ConfigureRun.repeat_fuse`.
@@ -498,7 +460,6 @@ impl LoopStateMachine {
             provider_recovery_attempt_limit: 2,
             output_recovery_attempts: 0,
             output_recovery_attempt_limit: 3,
-            host_effect_retry_attempt_limit: 3,
             pending_output_truncated: false,
             adjudicated_turn: None,
             session_history_baseline: 0,
@@ -511,7 +472,6 @@ impl LoopStateMachine {
             dispatch_gate_exposed: true,
             resource_quota: None,
             memory_write_times: Vec::new(),
-            memory_policy: None,
             signal_router: SignalRouter::new(64),
             delivered_signals_len: 0,
             started_at_ms: None,
@@ -520,12 +480,10 @@ impl LoopStateMachine {
             pending_denied_results: Vec::new(),
             workflow: None,
             root_workflow: false,
-            ack_gated_launch: false,
             pending_workflow_spawn: None,
             pending_preempt: None,
             pending_host_effects: VecDeque::new(),
             active_host_effect: None,
-            active_host_effect_failures: 0,
             deferred_action: None,
             repeat_fuse: RepeatFuseConfig::default(),
             repeat_sig: None,
@@ -556,25 +514,14 @@ impl LoopStateMachine {
         self.root_workflow
     }
 
-    /// §10.4 · make a spawned child wait for the host's launch acknowledgement before it is
-    /// `Running`. Set once by the canonical driver; every legacy caller leaves it `false` and keeps
-    /// the historical insert-as-`Running` behaviour.
-    pub fn set_ack_gated_launch(&mut self, gated: bool) {
-        self.ack_gated_launch = gated;
-    }
-
     /// The schedulability state of one task, for host projections and tests.
     pub fn task_lifecycle(&self, task_id: &str) -> Option<TaskLifecycle> {
         self.tasks.get(task_id).map(|task| task.state)
     }
 
     /// §10.4 · the launch effect for these tasks has been published. Moves each of them from
-    /// `PendingLaunch` to `Starting`; a no-op when the run is not ack-gated, and never a downgrade
-    /// of a task that already advanced.
+    /// `PendingLaunch` to `Starting`, and never downgrades a task that already advanced.
     pub fn mark_tasks_starting(&mut self, task_ids: &[String]) {
-        if !self.ack_gated_launch {
-            return;
-        }
         for id in task_ids {
             if let Some(task) = self.tasks.get_mut(id)
                 && task.state == TaskLifecycle::PendingLaunch
@@ -622,35 +569,11 @@ impl LoopStateMachine {
     }
 
     /// Install the two semantic recovery ladders the kernel owns (§13.2 `ReplaceRecoveryPolicy`).
-    ///
-    /// Separate from [`Self::set_reliability_config`] because that one is the legacy bundle: it
-    /// also carries host transport retry and spool thresholds, which the canonical contract splits
-    /// across other policies. Both ladders are always stated here — a resolved policy has no
-    /// "unset" — so a patch can lower *and* raise within the validated ceiling.
+    /// Both ladders are always stated here — a resolved policy has no "unset" — so a patch can
+    /// lower *and* raise within the validated ceiling.
     pub fn set_recovery_limits(&mut self, provider_attempts: u8, output_attempts: u8) {
         self.provider_recovery_attempt_limit = provider_attempts;
         self.output_recovery_attempt_limit = output_attempts;
-    }
-
-    pub(crate) fn set_reliability_config(
-        &mut self,
-        config: &crate::runtime::kernel::KernelReliabilityConfig,
-    ) {
-        if let Some(limit) = config.provider_recovery_attempts {
-            self.provider_recovery_attempt_limit = limit;
-        }
-        if let Some(limit) = config.output_recovery_attempts {
-            self.output_recovery_attempt_limit = limit;
-        }
-        if let Some(limit) = config.host_effect_retry_attempts {
-            self.host_effect_retry_attempt_limit = limit;
-        }
-        if let Some(bytes) = config.spool_threshold_bytes {
-            self.ctx.config.spool_threshold_bytes = bytes;
-        }
-        if let Some(bytes) = config.spool_preview_bytes {
-            self.ctx.config.spool_preview_bytes = bytes;
-        }
     }
 
     pub(crate) fn externalize_pending_host_effect(
@@ -669,7 +592,6 @@ impl LoopStateMachine {
         );
         self.deferred_action = Some(Box::new(continuation));
         self.active_host_effect = Some(pending);
-        self.active_host_effect_failures = 0;
         self.active_host_effect
             .as_ref()
             .expect("host effect was just activated")
@@ -679,7 +601,6 @@ impl LoopStateMachine {
     fn next_after_host_effect(&mut self) -> LoopAction {
         if let Some(pending) = self.pending_host_effects.pop_front() {
             self.active_host_effect = Some(pending);
-            self.active_host_effect_failures = 0;
             self.active_host_effect
                 .as_ref()
                 .expect("host effect was just activated")
@@ -695,86 +616,6 @@ impl LoopStateMachine {
         }
     }
 
-    pub(crate) fn resolve_large_result_spool(
-        &mut self,
-        spool_ref: Option<String>,
-        error: Option<String>,
-    ) -> LoopAction {
-        let pending = self
-            .active_host_effect
-            .as_ref()
-            .expect("spool result requires an active host effect");
-        let PendingHostEffect::SpoolLargeResult {
-            call_id,
-            tool,
-            original_size,
-            preview_size,
-            ..
-        } = pending
-        else {
-            panic!("spool result does not match active page-out effect");
-        };
-        if let Some(error) = error {
-            self.observations
-                .push(KernelObservation::LargeResultSpoolFailed {
-                    turn: self.turn,
-                    call_id: call_id.clone(),
-                    tool: tool.clone(),
-                    error,
-                });
-            self.active_host_effect_failures = self.active_host_effect_failures.saturating_add(1);
-            if self.active_host_effect_failures > self.host_effect_retry_attempt_limit {
-                self.active_host_effect = None;
-                self.pending_host_effects.clear();
-                self.deferred_action = None;
-                return self.terminate(TerminationReason::Error, None);
-            }
-            return pending.action();
-        }
-        let spool_ref = spool_ref.expect("successful spool result requires spool_ref");
-        let call_id = call_id.clone();
-        let tool = tool.clone();
-        let original_size = *original_size;
-        let preview_size = *preview_size;
-        self.ctx.mark_spooled(&call_id, spool_ref.clone());
-        self.observations
-            .push(KernelObservation::LargeResultSpooled {
-                turn: self.turn,
-                call_id,
-                tool,
-                original_size,
-                preview_size,
-                spool_ref: Some(spool_ref),
-            });
-        self.active_host_effect = None;
-        self.active_host_effect_failures = 0;
-        self.next_after_host_effect()
-    }
-
-    pub(crate) fn resolve_page_out_archive(
-        &mut self,
-        archive_ref: Option<String>,
-        error: Option<String>,
-    ) -> LoopAction {
-        let Some(error) = error else {
-            return self.commit_page_out_archive(archive_ref);
-        };
-        // Legacy wire only: reissue the same intent as a fresh effect, bounded by the retry limit.
-        // DEC-5 deletes this ladder on the canonical wire — see `abandon_page_out_archive`.
-        self.push_page_out_archive_failure(error);
-        self.active_host_effect_failures = self.active_host_effect_failures.saturating_add(1);
-        if self.active_host_effect_failures > self.host_effect_retry_attempt_limit {
-            self.active_host_effect = None;
-            self.pending_host_effects.clear();
-            self.deferred_action = None;
-            return self.terminate(TerminationReason::Error, None);
-        }
-        self.active_host_effect
-            .as_ref()
-            .expect("page-out failure requires an active host effect")
-            .action()
-    }
-
     /// Commit the archive the host performed and release the continuation it was holding.
     pub(crate) fn commit_page_out_archive(&mut self, archive_ref: Option<String>) -> LoopAction {
         let pending = self
@@ -787,10 +628,7 @@ impl LoopStateMachine {
             summary,
             archived,
             tier,
-        } = pending
-        else {
-            panic!("page-out result does not match active spool effect");
-        };
+        } = pending;
         self.observations.push(KernelObservation::PageOutArchived {
             turn: *turn,
             action: *action,
@@ -800,7 +638,6 @@ impl LoopStateMachine {
             archive_ref,
         });
         self.active_host_effect = None;
-        self.active_host_effect_failures = 0;
         self.next_after_host_effect()
     }
 
@@ -814,7 +651,6 @@ impl LoopStateMachine {
     pub(crate) fn abandon_page_out_archive(&mut self, error: String) -> LoopAction {
         self.push_page_out_archive_failure(error);
         self.active_host_effect = None;
-        self.active_host_effect_failures = 0;
         self.next_after_host_effect()
     }
 
@@ -829,10 +665,7 @@ impl LoopStateMachine {
             archived,
             tier,
             ..
-        } = pending
-        else {
-            panic!("page-out failure does not match active spool effect");
-        };
+        } = pending;
         self.observations
             .push(KernelObservation::PageOutArchiveFailed {
                 turn: *turn,
@@ -930,7 +763,12 @@ impl LoopStateMachine {
         let mut tcb = Tcb::root("root", self.policy.clone());
         tcb.budget.turns = self.turn;
         tcb.budget.total_tokens = self.total_tokens;
-        if let Some(tokens) = self.budget_grant.as_ref().and_then(|grant| grant.tokens) {
+        if let Some(tokens) = self
+            .budget_grant
+            .as_ref()
+            .and_then(|grant| grant.tokens)
+            .map(crate::runtime::kernel::wire::WireU64::get)
+        {
             tcb.budget.limits.max_total_tokens = tcb.budget.limits.max_total_tokens.min(tokens);
         }
         tcb.budget.started_at_ms = self.started_at_ms;
@@ -1001,7 +839,7 @@ impl LoopStateMachine {
         self.resource_quota = Some(quota);
     }
 
-    pub fn set_budget_grant(&mut self, grant: crate::runtime::kernel::BudgetGrant) {
+    pub fn set_budget_grant(&mut self, grant: crate::runtime::kernel::wire::BudgetGrant) {
         self.budget_grant = Some(grant);
     }
 
@@ -1020,20 +858,8 @@ impl LoopStateMachine {
         )
     }
 
-    pub fn budget_grant(&self) -> Option<&crate::runtime::kernel::BudgetGrant> {
+    pub fn budget_grant(&self) -> Option<&crate::runtime::kernel::wire::BudgetGrant> {
         self.budget_grant.as_ref()
-    }
-
-    /// Install the long-term memory policy (`set_memory_policy`). Once set it gates `write_memory`
-    /// validation and bounds `query_memory` retrieval breadth. Not setting it (the default)
-    /// preserves pre-policy behavior.
-    pub fn set_memory_policy(&mut self, policy: crate::mm::memory::MemoryPolicy) {
-        self.memory_policy = Some(policy);
-    }
-
-    /// The installed memory policy, if any. `None` means default-rule validation + verbatim top_k.
-    pub fn memory_policy(&self) -> Option<&crate::mm::memory::MemoryPolicy> {
-        self.memory_policy.as_ref()
     }
 
     /// Timestamps of the recent allowed memory writes — the rolling window the syscall-gate rate
@@ -1075,19 +901,8 @@ impl LoopStateMachine {
         }
     }
 
-    /// Legacy wire: classify the vendor's own `stop_reason` label into the one fact the loop uses.
-    ///
-    /// The classification lives here, at the boundary, and nowhere else — §22.8 forbids core from
-    /// branching on vendor text, and this is the single point where that text is read.
-    pub fn set_pending_stop_reason(&mut self, stop_reason: Option<String>) {
-        self.set_output_truncated(matches!(
-            stop_reason.as_deref(),
-            Some("max_tokens") | Some("length")
-        ));
-    }
-
-    /// Canonical wire: the provider's typed stop reason already says whether the response was cut
-    /// off at the output cap, so no string is read at all.
+    /// The provider's typed stop reason says whether the response was cut off at the output cap;
+    /// core never parses vendor-specific text.
     pub fn set_output_truncated(&mut self, truncated: bool) {
         self.pending_output_truncated = truncated;
     }
@@ -1197,7 +1012,11 @@ impl LoopStateMachine {
         // A zero-token grant is the same exhausted admission on the token axis, but it binds
         // every vehicle, loop or not. Both axes can race to zero on one reservation; report
         // each before terminating so no provider call is ever dispatched.
-        let zero_token_grant = self.budget_grant.as_ref().and_then(|grant| grant.tokens) == Some(0);
+        let zero_token_grant = self
+            .budget_grant
+            .as_ref()
+            .and_then(|grant| grant.tokens)
+            .is_some_and(|tokens| tokens.get() == 0);
         if zero_round_grant || zero_token_grant {
             if zero_round_grant {
                 self.observations.push(KernelObservation::BudgetExceeded {
@@ -1502,47 +1321,13 @@ impl LoopStateMachine {
                 // including fatal and timeout results, accrue at this committed boundary.
                 let errored_results = results.iter().filter(|r| r.is_error).count() as u32;
                 let total_results = results.len() as u32;
-                let tool_by_call_id: HashMap<String, String> = match &self.phase {
-                    LoopPhase::Act { tool_calls } => tool_calls
-                        .iter()
-                        .map(|call| (call.id.to_string(), call.name.to_string()))
-                        .collect(),
-                    LoopPhase::Reason => HashMap::new(),
-                };
-
                 for r in &results {
                     self.total_tokens += r.token_count.unwrap_or(0) as u64;
                     // Preserve Content::Parts (structured / multimodal tool output).
                     // Parts are serialised to JSON so the text can be restored faithfully.
-                    let raw_output = match &r.output {
+                    let output = match &r.output {
                         Content::Text(s) => s.clone(),
                         Content::Parts(parts) => serde_json::to_string(parts).unwrap_or_default(),
-                    };
-                    // Layer 1 spool: oversized results keep only a preview in context. The full
-                    // output becomes a host effect and no success fact is recorded until its
-                    // correlated result commits.
-                    let (output, spooled) = match crate::mm::plan_spool(
-                        &raw_output,
-                        r.call_id.as_str(),
-                        self.ctx.config.spool_threshold_bytes,
-                        self.ctx.config.spool_preview_bytes,
-                    ) {
-                        Some(decision) => {
-                            self.pending_host_effects.push_back(
-                                PendingHostEffect::SpoolLargeResult {
-                                    call_id: r.call_id.to_string(),
-                                    tool: tool_by_call_id
-                                        .get(r.call_id.as_str())
-                                        .cloned()
-                                        .unwrap_or_default(),
-                                    output: raw_output.clone(),
-                                    original_size: decision.original_size,
-                                    preview_size: decision.preview.len() as u32,
-                                },
-                            );
-                            (decision.preview, true)
-                        }
-                        None => (raw_output, false),
                     };
                     let parts = vec![ContentPart::ToolResult {
                         call_id: r.call_id.clone(),
@@ -1550,13 +1335,9 @@ impl LoopStateMachine {
                         is_error: r.is_error,
                     }];
                     let tool_msg = Message::tool(parts);
-                    // When spooled, `r.token_count` reflects the full output — recount the preview.
-                    let tokens = if spooled {
-                        self.ctx.engine.count_message(&tool_msg)
-                    } else {
-                        r.token_count
-                            .unwrap_or_else(|| self.ctx.engine.count_message(&tool_msg))
-                    };
+                    let tokens = r
+                        .token_count
+                        .unwrap_or_else(|| self.ctx.engine.count_message(&tool_msg));
                     self.ctx.push_history(tool_msg, tokens);
                 }
                 self.turn += 1;

@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from deepstrike import (
@@ -10,31 +8,24 @@ from deepstrike import (
     WorkflowNodeSpec,
     WorkflowSpec,
 )
-from deepstrike.runtime.runner import _parse_submit_workflow_nodes_args
 from deepstrike.types.agent import workflow_node_spec_to_kernel
 
 
-# ── M2: the submit parser passes control-flow kinds through (no longer downgraded to spawn) ──
+# ── Canonical node construction preserves control-flow kinds ──
 
 
-def test_submit_parser_passes_control_flow_kinds_through():
-    args = json.dumps({
-        "nodes": [
-            {"task": "refine", "role": "implement", "loop": {"max_iters": 3}},
-            {"task": "route", "role": "plan", "classify": {"branches": [{"label": "a", "nodes": [0]}]}},
-            {"task": "pick", "role": "plan", "tournament": {"entrants": ["x", "y"]}},
-            {"task": "merge", "role": "custom", "reducer": "concat"},
-            {"task": "explore", "role": "explore", "model_hint": "haiku"},
-        ]
-    })
-    nodes = _parse_submit_workflow_nodes_args(args)
-    assert len(nodes) == 5
-    assert nodes[0].loop == {"max_iters": 3}
-    assert nodes[1].classify == {"branches": [{"label": "a", "nodes": [0]}]}
-    assert nodes[2].tournament == {"entrants": ["x", "y"]}
-    assert nodes[3].reducer == "concat"
-    assert nodes[4].model_hint == "haiku"
-    # …and each lowers to the right kernel NodeKind.
+def test_canonical_node_builder_preserves_control_flow_kinds():
+    nodes = [
+        WorkflowNodeSpec(task="refine", role="implement", loop={"max_iters": 3}),
+        WorkflowNodeSpec(
+            task="route",
+            role="plan",
+            classify={"branches": [{"label": "a", "nodes": [0]}]},
+        ),
+        WorkflowNodeSpec(task="pick", role="plan", tournament={"entrants": ["x", "y"]}),
+        WorkflowNodeSpec(task="merge", role="custom", reducer="concat"),
+        WorkflowNodeSpec(task="explore", role="explore", model_hint="haiku"),
+    ]
     assert workflow_node_spec_to_kernel(nodes[0])["kind"] == {"type": "loop", "max_iters": 3}
     assert workflow_node_spec_to_kernel(nodes[2])["kind"]["type"] == "tournament"
     assert "kind" not in workflow_node_spec_to_kernel(nodes[4])  # model_hint alone ⇒ plain spawn

@@ -1,10 +1,8 @@
 //! Canonical Kernel ABI — wire contract (revision 3).
 //!
-//! This module is the target contract of the 0.2.51 refactor: one envelope, five input classes,
-//! one root entry, strict tagged unions and cross-language scalar rules. It is deliberately
-//! **self-contained** — it borrows no type from the legacy [`protocol`](super::protocol) module
-//! and offers no adapter between the two. The legacy protocol keeps running the kernel until the
-//! migration reaches it; the two coexist as construction scaffolding, nothing more.
+//! One envelope, five input classes, one root entry, strict tagged unions and cross-language
+//! scalar rules. This is the only host/kernel input contract; no compatibility adapter or
+//! inferred revision exists.
 //!
 //! Layout:
 //!
@@ -69,9 +67,8 @@ pub const KERNEL_ABI_VERSION: u32 = 3;
 
 /// Revision of the logical checkpoint format, carried on the wire as `checkpoint_version`.
 ///
-/// Named apart from the legacy `KERNEL_SNAPSHOT_VERSION` on purpose (DEC-6): reusing that name
-/// would make this value a *decrease* (2 → 1) that collides with a historical v1 value and slips
-/// past the restore boundary check.
+/// This remains a separate revision axis so retired recovery-format values cannot collide with the
+/// logical checkpoint boundary check.
 pub const KERNEL_CHECKPOINT_VERSION: u32 = 1;
 
 /// Absolute structural boundary applied **before** any JSON is parsed (§7.3).

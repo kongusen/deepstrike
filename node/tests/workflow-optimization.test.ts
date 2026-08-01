@@ -1,21 +1,10 @@
 /** Dynamic-workflow optimization batch: node-observable kernel behavior and per-node caps. */
-import { getKernel } from "../src/kernel.js"
 import { workflowNodeSpecToKernel, workflowNodeToSpec } from "../src/types/agent.js"
-import type { WorkflowSpawnInfo } from "../src/types/agent.js"
 import { dependencyOutputsNote } from "../src/runtime/workflow-control-flow.js"
 import { createRunner, tool } from "./runtime/helpers.js"
 import { ReactiveSession } from "../src/runtime/reactive-session.js"
 import { InMemoryGroupBudgetStore } from "../src/runtime/run-group.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
-import { stepKernelV2WithHostEffects } from "./helpers/kernel-v2.js"
-
-function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
-  return stepKernelV2WithHostEffects(rt as never, event) as {
-    observations: Array<{ kind: string; nodes?: WorkflowSpawnInfo[]; node_outcomes?: Array<{ node_id: string; status: string }> }>
-  }
-}
-const batchOf = (obs: ReturnType<typeof step>["observations"]): WorkflowSpawnInfo[] =>
-  obs.find(o => o.kind === "workflow_batch_spawned")?.nodes ?? []
 
 describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", () => {
   it("workflowNodeSpecToKernel emits max_turns/max_wall_ms and workflowNodeToSpec maps them back", () => {
@@ -35,35 +24,6 @@ describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", ()
     expect(spec.maxTurns).toBe(4)
     expect(spec.maxWallMs).toBe(30_000)
     expect(spec.tokenBudget).toBe(5000)
-  })
-
-  it("a plain dependent node's spawn info carries its dependencies' agent ids", () => {
-    const kernel = getKernel()
-    const rt = new kernel.KernelRuntime({ maxTokens: 8000, maxTurns: 10 })
-    step(rt, { kind: "start_run", task: { goal: "deps", criteria: [] } })
-    const out = step(rt, {
-      kind: "load_workflow",
-      spec: {
-        nodes: [
-          { task: { goal: "w0", criteria: [] }, role: "explore", isolation: "read_only", context_inheritance: "none" },
-          { task: { goal: "w1", criteria: [] }, role: "explore", isolation: "read_only", context_inheritance: "none" },
-          { task: { goal: "synth", criteria: [] }, role: "plan", isolation: "shared", context_inheritance: "none", depends_on: [0, 1] },
-        ],
-      },
-      parent_session_id: "sess",
-    })
-    const workers = batchOf(out.observations)
-    expect(workers.map(n => n.input_agent_ids ?? [])).toEqual([[], []])
-    // Complete both workers → the synthesizer spawns WITH its data edges.
-    const mkResult = (agentId: string) => ({
-      kind: "sub_agent_completed",
-      result: { agent_id: agentId, result: { termination: "completed", final_message: { role: "assistant", content: `${agentId} out` }, turns_used: 1, total_tokens_used: 1 } },
-    })
-    step(rt, mkResult("wf-node0"))
-    const after = step(rt, mkResult("wf-node1"))
-    const synth = batchOf(after.observations)
-    expect(synth.map(n => n.agent_id)).toEqual(["wf-node2"])
-    expect(synth[0].input_agent_ids).toEqual(["wf-node0", "wf-node1"])
   })
 
   it("dependencyOutputsNote formats, clips, and skips empty outputs", () => {

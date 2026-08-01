@@ -98,7 +98,7 @@ The handle's `Residency` controls render-time projection:
 |-----------|----------|
 | `Resident` | full content remains in working context |
 | `Collapsed` | original stays in history, rendered copy becomes a preview |
-| `SpooledOut` | SDK persists full result, context keeps preview / ref |
+| `External` | host persists the body before submit; context keeps a verified preview / locator |
 | `PagedOut` | content is archived to a memory tier |
 
 `Collapsed` is non-destructive: stored history remains full, while the rendered copy shrinks. Old tool results can leave the prompt without losing recoverable data.
@@ -172,7 +172,7 @@ Anthropic adapters can attribute cache reads by slot. OpenAI-family automatic ca
 2. **Load Skill bodies on demand**: avoid frequent `system_knowledge` churn.
 3. **Use `allowed_tool_ids` static profiles**: stable tool schemas help cache reuse.
 4. **Avoid rewriting early history in place**: append is more cache-friendly than rewrite.
-5. **Route large tool results through handles / spool / collapse**: do not keep huge outputs resident in the prompt.
+5. **Route large tool results through external handles / collapse**: do not keep huge outputs resident in the prompt.
 6. **Put dynamic state in task_state / signals**: let it enter `state_turn`, not cacheable history.
 
 ## Further Reading

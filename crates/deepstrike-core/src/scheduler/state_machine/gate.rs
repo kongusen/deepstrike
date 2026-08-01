@@ -110,6 +110,7 @@ impl LoopStateMachine {
             .budget_grant
             .as_ref()
             .and_then(|grant| grant.tokens)
+            .map(crate::runtime::kernel::wire::WireU64::get)
             .unwrap_or(self.policy.max_total_tokens)
             .min(self.policy.max_total_tokens);
         let tokens_used = self.total_tokens;

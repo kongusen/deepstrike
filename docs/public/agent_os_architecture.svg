@@ -1,7 +1,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike Agent OS architecture</title>
-  <desc id="desc">Layered system architecture showing application APIs, the host runtime and I/O adapters, the ABI v2 boundary, the pure Rust kernel, and durable evidence stores.</desc>
+  <desc id="desc">Layered system architecture showing application APIs, the host runtime and I/O adapters, the Canonical Kernel ABI boundary, the pure Rust kernel, and durable evidence stores.</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
@@ -117,7 +117,7 @@
 
     <text x="744" y="301" class="card-title" text-anchor="start">Stores</text>
     <text x="744" y="325" class="card-text" text-anchor="start">SessionLog · DreamStore</text>
-<text x="744" y="343" class="card-text" text-anchor="start">archive · spool</text>
+<text x="744" y="343" class="card-text" text-anchor="start">archive · payload</text>
 
   </g>
 
@@ -134,7 +134,7 @@
     <text x="618" y="398" class="micro" text-anchor="start">KernelEffect ↓     ↑ KernelObservation</text>
     <rect x="48" y="414" width="1104" height="210" rx="7" class="kernel"/>
     <text x="68" y="444" class="section-title" text-anchor="start">deepstrike-core</text>
-    <text x="207" y="444" class="section-note" text-anchor="start">PURE STATE MACHINE · ABI v2 · NO NETWORK / FILESYSTEM / CREDENTIALS</text>
+    <text x="207" y="444" class="section-note" text-anchor="start">PURE STATE MACHINE · CANONICAL ABI · NO NETWORK / FILESYSTEM / CREDENTIALS</text>
 
   <rect x="1064" y="428" width="69" height="22" rx="11" class="pill coral"/>
   <text x="1098.5" y="443" class="pill-text" text-anchor="middle">KERNEL</text>
@@ -170,15 +170,15 @@
     <rect x="854" y="466" width="278" height="130" rx="6" class="panel"/>
 
     <text x="872" y="495" class="card-title" text-anchor="start">Transactions &amp; recovery</text>
-    <text x="872" y="519" class="card-text" text-anchor="start">Accepted input journal</text>
-<text x="872" y="537" class="card-text" text-anchor="start">snapshots · replay · repair</text>
+    <text x="872" y="519" class="card-text" text-anchor="start">Canonical journal</text>
+<text x="872" y="537" class="card-text" text-anchor="start">checkpoint · replay · CAS</text>
 
   </g>
 
 
   <text x="48" y="666" class="section-title" text-anchor="start">Durable evidence plane</text>
   <text x="1152" y="666" class="section-note" text-anchor="end">AUDIT · REPLAY · RECOVERY · EVAL</text>
-    <text x="48" y="694" class="body" text-anchor="start">SessionLog records host events; KernelSnapshot rebuilds accepted ABI state; OS Snapshot folds observations for dashboards.</text>
+    <text x="48" y="694" class="body" text-anchor="start">SessionLog records evidence; logical checkpoints restore canonical state; OS Snapshot folds observations for dashboards.</text>
 
   <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

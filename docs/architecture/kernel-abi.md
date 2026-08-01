@@ -1,127 +1,92 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
-  rust: [KernelInput, KernelObservation, KernelRuntime, Syscall, Disposition]
-  python: [RenderedContext, MemoryPolicy, ResourceQuota, SchedulerPolicy]
+  rust: [WireEnvelope, KernelInput, KernelEffect, KernelTerminal, KernelTransaction, SyscallRequest]
+  python: [RuntimeRunner, KernelJournal, PayloadStore]
 ---
 
-# Kernel ABI
+# Canonical Kernel ABI
 
-Kernel ABI 是 **宿主与 Agent OS 微内核** 之间的稳定边界——类似用户态与内核态的 syscall 接口。版本：`KERNEL_ABI_VERSION = 1`（`crates/deepstrike-core/src/runtime/kernel.rs`）。
+Canonical Kernel ABI 是宿主与 Agent OS 内核之间唯一的稳定边界。宿主拥有 provider、工具、凭据、文件系统、payload 和持久化 I/O；内核拥有 operation lifecycle、effect identity、权限、调度、Context VM 和终止裁决。
 
-## 设计意图
+## Envelope
 
-| 原则 | 说明 |
-|------|------|
-| **Versioned** | 每个 `KernelInput` 带 `version` 字段 |
-| **Event-driven** | SDK 只 append event，不直接 mutate 内核 struct |
-| **Observable** | 每个决策产出 `KernelObservation` 进 SessionLog |
-| **Language-neutral** | 同一 ABI 绑定 Py / Node / WASM |
-
-内核 **never** 在 ABI 里携带 provider API key 或文件路径——那些是宿主配置。
-
-## 三类消息
-
-```text
-SDK ──KernelInput(event)──► Kernel
-SDK ◄──KernelAction────────── Kernel   （下一步做什么）
-SDK ◄──KernelObservation────── Kernel   （审计 / replay）
-```
-
-### KernelInput（宿主 → 内核）
+每次输入都带 operation、input 和观测时间的关联标识。`WireU64` 使用十进制字符串，union 严格拒绝未知字段和未知 variant。
 
 ```json
 {
-  "version": 1,
-  "event": { "kind": "start_run", "goal": "..." }
+  "abi_version": 3,
+  "operation_id": "op-42",
+  "input_id": "input-7",
+  "observed_at_ms": "1785542400000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-42:step:1:effect:0",
+    "outcome": {
+      "status": "failed",
+      "failure": {
+        "kind": "transport_exhausted",
+        "message": "provider unavailable",
+        "retryable": true
+      }
+    }
+  }
 }
 ```
 
-按 Agent OS 子系统分类的 event kind：
+内核只接受当前 revision，不协商、不降级，也不通过 adapter 恢复旧 operation。
 
-| 子系统 | kind | 用途 |
-|--------|------|------|
-| **调度** | `start_run` | 创建根 TCB，进入 Reason |
-| **调度** | `provider_result` | LLM 响应（text + tool_calls） |
-| **调度** | `tool_results` | 工具执行结果 |
-| **调度** | `sub_agent_result` | 子 agent / workflow 节点完成 |
-| **Syscall 回灌** | `permission_resolved` | AskUser 人工裁决 |
-| **Syscall 回灌** | `milestone_result` | 里程碑 verifier 结果 |
-| **治理** | `load_governance_policy` | 安装 GovernanceConfig |
-| **治理** | `set_resource_quota` | spawn / memory write 配额 |
-| **Workflow** | `load_workflow` | 安装 DAG |
-| **Memory** | `write_memory` / `query_memory` | 长期记忆 syscall |
-| **Memory** | `set_memory_policy` | 校验与 retrieval 策略 |
-| **Context** | `signal` | 外部信号注入 |
-| **恢复** | `resume` / snapshot events | 从 SessionLog 重建 |
+## 五类输入
 
-### KernelAction（内核 → 宿主）
+| 输入 | authority | 用途 |
+|---|---|---|
+| `ConfigureOperation` | host | 一次性安装 resolved operation config，并形成 genesis record |
+| `StartOperation` | host | 以 `RootEntry::Agent` 或 `RootEntry::Workflow` 原子启动 root，并携带 initial context |
+| `ResolveEffect` | host executor | 回灌任意 effect 的成功结果或统一 typed failure |
+| `DeliverExternalEvent` | external | 递送 signal 或 child completion，causation 由 kernel 校验 |
+| `HostControl` | host | cancel、deadline、task update、封闭 policy patch 等 live mutation |
 
-宿主 **必须** 执行或显式挂起；不可静默丢弃。
+`StartOperation` 是唯一 root 入口。Agent root 的首个 effect 是 `CallProvider`；Workflow root 的首个 effect 是 `SpawnTasks`。session identity 不进入 wire，由宿主 runner 自行映射。
 
-| action | 宿主行为 |
-|--------|----------|
-| `CallLLM` | `provider.stream(RenderedContext, tools)` |
-| `ExecuteTools` | `ExecutionPlane.execute(calls)` |
-| `SpawnSubAgent` | `SubAgentOrchestrator.run(AgentRunSpec)` |
-| `Synthesize` | idle pipeline 等需 LLM 的内核请求 |
-| `AwaitingResume` | 停止 stepping，等待外部 event |
+## Effect 与 Terminal
 
-`CallLLM` 携带的 `RenderedContext` 是 Context VM 的 **序列化视图**；`tools` 已过 governance 预过滤（若启用 I5）。
+`KernelEffect` 只表达待宿主执行的意图。宿主按 effect ID 幂等执行，并通过 `ResolveEffect` 回灌：
 
-### KernelObservation（内核 → SessionLog）
+- `CallProvider`
+- `ExecuteTools`
+- `RequestApproval`
+- `SpawnTasks` / `PreemptTasks`
+- `PersistMemory` / `QueryMemory`
+- `ArchivePageOut` / `LoadPayload`
+- `EvaluateMilestone`
 
-可 JSON 序列化、可 replay 的 **事实记录**：
+Terminal 不是 effect。每个 transition 的 disposition 要么是一组 effects，要么是一个 `KernelTerminal`，两者不能同时出现。
 
-- `tool_invoked` / `tool_denied`
-- `agent_process_changed`
-- `workflow_batch_spawned` / `workflow_node_completed`
-- `memory_written` / `memory_queried`
-- `pressure_compact` / `prefix_invalidated`
-- `governance_denied`
+## Durable Transition
 
-Replay 时 SDK 用 observation 流 **重建** `KernelRuntime`，而非重跑 LLM。
-
-## RunConfig _bundle
-
-一次 run 的「OS 策略」通过 event 注入：
-
-| 结构 | Agent OS 含义 |
-|------|---------------|
-| `GovernanceConfig` | syscall 默认策略 |
-| `MemoryPolicy` | WriteMemory 校验规则 |
-| `ResourceQuota` | spawn 深度、并发、DAG 节点上限 |
-| `SchedulerPolicy` | 版本化 DAG 调度权重；不混入墙钟预算 |
-
-Python 侧多数通过 `RuntimeOptions` 在 boot 时转为 kernel events（见 [RuntimeOptions 参考](../reference/runtime-options)）。
-
-## 与 Syscall 的关系
-
-ABI event 是 **wire format**；内核内部统一收敛为 `Syscall` + `Disposition`：
+宿主不直接 step：
 
 ```text
-tool_results 里的每个 call  ← 已 Allow 的 Invoke
-spawn 请求                  ← Spawn
-write_memory event          ← WriteMemory
+prepare canonical envelope
+  -> append core-owned record bytes with CAS
+  -> commit using record digest
+  -> publish effects or terminal
 ```
 
-未来 milestone 也会走 trap，保持 **one gate** 叙事。
+record 保存 normalized input、previous digest、record digest 和 step digest，不保存完整 step。append 成功后 commit 失败时，runner 从 journal rebuild；append 前失败才允许 abort prepared candidate。
 
-## Python 绑定
+## Checkpoint 与 Payload
 
-```python
-from deepstrike.runtime.kernel_step import kernel_apply, kernel_action
+恢复使用 logical checkpoint + bounded journal tail。checkpoint 按 transition、P1 syscall、P2 scheduler、P3 context VM 分区；candidate、install、ack 和 prefix prune 都使用明确的 CAS/ack 边界。
 
-observations: list[dict] = []
-runtime = KernelRuntime(...)
-kernel_apply(runtime, observations, {"kind": "write_memory", "memory": {...}})
+大结果正文先由宿主写入 `PayloadStore`，内核只接收 opaque locator、digest、size 和 bounded preview。page-in 只能由对应 handle 产生 `LoadPayload` effect；SessionLog 不参与 payload lookup。
 
-for obs in observations:
-    session_log.append(session_id, obs)
-```
+## Syscall Causation
+
+模型发出的工具调用通过 pending provider effect 推导 caller。Canonical syscall 包括 invoke、spawn、`AppendWorkflowNodes`、memory proposal 和 page-in；host 不能补写 actor，也不能伪造 root workflow 或 child attempt。
 
 ## 延伸阅读
 
-- [执行模型](./execution-model) — action 在 turn 中的顺序
-- [Session 与重放](./session-replay)
-- 源码：`crates/deepstrike-core/src/runtime/kernel.rs`
+- [执行模型](./execution-model)
+- [Session 与恢复](./session-replay)
+- [Canonical Kernel ABI ADR](../decisions/005-canonical-kernel-abi)

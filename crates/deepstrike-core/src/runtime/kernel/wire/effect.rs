@@ -1199,7 +1199,7 @@ pub struct ToolResult {
 /// The historical `is_fatal` + six-way `ToolErrorKind` collapsed to these two values because only
 /// two distinctions ever changed a kernel decision. `user_interrupt` in particular is **not** here:
 /// cancellation travels on `HostControl::Cancel` and nothing else (§7.9), so the rollback rung it
-/// used to trigger dies with the legacy wire rather than being re-expressible as a tool result.
+/// used to trigger was retired rather than being re-expressible as a tool result.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -1988,7 +1988,7 @@ mod tests {
 
         // the legacy taxonomy's other four rungs are gone. `user_interrupt` in particular:
         // cancellation is `HostControl::Cancel` and nothing else (§7.9), so the rollback rung it
-        // used to trigger dies with the legacy wire.
+        // used to trigger was retired with its protocol path.
         for gone in [
             "user_interrupt",
             "governance_denied",

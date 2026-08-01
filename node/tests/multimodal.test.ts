@@ -1,8 +1,6 @@
 import { buildContents } from "../src/providers/gemini.js"
 import { toOpenAIMessageParams, toAnthropicMessages, UnsupportedModalityError } from "../src/providers/base.js"
-import { getKernel } from "../src/kernel.js"
 import type { ContentPart, LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
-import { stepKernelV2 } from "./helpers/kernel-v2.js"
 import { createRunner } from "./runtime/helpers.js"
 
 describe("multimodal image input", () => {
@@ -42,18 +40,6 @@ describe("multimodal image input", () => {
     expect(aContent.find(p => p.type === "image").source).toEqual({ type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" })
   })
 
-  it("upload: add_history_message lands the image in the rendered context (real kernel)", () => {
-    const k = new (getKernel().KernelRuntime)({ maxTokens: 4096 })
-    const step = (event: Record<string, unknown>) => stepKernelV2(k, event)
-    step({ kind: "add_history_message", message: { role: "user", content: [
-      { type: "text", text: "describe" },
-      { type: "image", data: "iVBORw0KGgo=", media_type: "image/png" },
-    ] } })
-    step({ kind: "start_run", task: { goal: "describe the image", criteria: [] } })
-    const ctx = k.render() as any
-    const hasImage = ctx.turns.some((m: any) => (m.contentParts ?? []).some((p: any) => p.type === "image"))
-    expect(hasImage).toBe(true)
-  })
 })
 
 describe("attachment seeding is idempotent per session (runner)", () => {

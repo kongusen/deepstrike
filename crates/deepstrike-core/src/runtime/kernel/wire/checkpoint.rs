@@ -1,14 +1,14 @@
 //! The logical checkpoint and its bounded tail (spec §12).
 //!
 //! A checkpoint is *not* a snapshot of the kernel's internals. It is a stable, versioned DTO whose
-//! shape is a contract in its own right, and every design rule below exists because the historical
-//! `KernelSnapshot` broke it:
+//! shape is a contract in its own right, and every design rule below corrects the retired
+//! full-journal recovery format:
 //!
 //! 1. **Nothing here is derived from a private layout.** [`LogicalKernelState`] is built by an
 //!    explicit projection — [`LogicalStateProjection`] from the semantic driver, the transition
 //!    partition from the transaction — so a field added to `LoopStateMachine` cannot silently
 //!    change the checkpoint format, and a field this DTO needs cannot silently disappear. The old
-//!    snapshot serialised `last_step` (a whole `KernelStep`, `RenderedContext` and all), which made
+//!    snapshot serialised the whole last planned step, rendered context and all, which made
 //!    the blob a function of the *rendered prompt* rather than of the state.
 //! 2. **Every piece of correctness state has exactly one home.** The four partitions of §12.1 —
 //!    transition / syscall / scheduler / context_vm — partition the state, they do not overlap it:
@@ -127,8 +127,8 @@ impl From<RecordError> for CheckpointError {
 /// The checkpoint format revision, fail-closed on the wire.
 ///
 /// A separate axis from [`AbiRevision`] on purpose: the wire contract and the checkpoint layout
-/// can move independently, and DEC-6 renamed the field to `checkpoint_version` precisely so this
-/// value could start at 1 without colliding with the historical `KERNEL_SNAPSHOT_VERSION` values.
+/// can move independently, and DEC-6 renamed the field to `checkpoint_version` so this value could
+/// start at 1 without colliding with retired recovery-format revisions.
 /// Deserialising anything else fails at the boundary, so "an unrecognised checkpoint version" can
 /// never reach a restore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -618,7 +618,7 @@ pub struct MilestoneState {
 /// a tail that starts above genesis never replays the inputs that produced the older messages. And
 /// as long as the bodies were unrecoverable, acking a checkpoint and pruning the journal prefix
 /// destroyed the rendering input for good. So they are here — as [`StoredMessageState`], a *source*
-/// projection. §15.2's ban is on the derived artefacts, the `KernelStep` and the `RenderedContext`;
+/// projection. §15.2's ban is on derived planned steps and rendered context;
 /// nothing here is either. A body that is over §7.10's inline threshold is **not** inlined: an
 /// `External`/`PagedOut` residency travels as its handle reference and digest, exactly as it does in
 /// working context.
@@ -1991,8 +1991,8 @@ mod tests {
             (
                 "reject_checkpoint_unknown_field_last_step.json",
                 "malformed_envelope",
-                "Spec 12.4 deleted `last_step`; a blob that still carries one is an ABI-v2 \
-                 snapshot and is refused rather than partially read.",
+                "Spec 12.4 deleted `last_step`; a legacy blob that still carries one is refused \
+                 rather than partially read.",
                 (
                     full(),
                     Box::new(|d: &mut serde_json::Map<String, Value>| {

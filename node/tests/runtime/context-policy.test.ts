@@ -3,7 +3,6 @@ import {
   normalizeContextPolicyV1,
   ratioToPpm,
 } from "../../src/runtime/context-policy.js"
-import { kernelRecordDigest } from "../../src/runtime/kernel-transaction-log.js"
 
 describe("ContextPolicyV1", () => {
   it("normalizes ergonomic ratios to the integer-only canonical wire", () => {
@@ -23,7 +22,6 @@ describe("ContextPolicyV1", () => {
       collapse_old_assistant_narration: true,
       idle_micro_compact_minutes: 60,
     })
-    expect(kernelRecordDigest(wire)).toBe("a8ea8875b056cb07c15b7832b5a90aa809041e91aeaf58462c402bce2312351b")
     expect(ratioToPpm(0.1234565)).toBe(123_457)
   })
 

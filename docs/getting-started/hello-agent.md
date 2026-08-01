@@ -54,7 +54,7 @@ ANTHROPIC_API_KEY=sk-... python examples/hello_agent/main.py "Read README.md and
 
 ## 发生了什么
 
-1. `RuntimeRunner` 创建 kernel，启动 `start_run`
+1. `RuntimeRunner` 创建 canonical operation，并以 `StartOperation::Agent` 原子启动 root
 2. Kernel 返回 `CallLLM` + `RenderedContext` + 工具 schema
 3. Provider 流式返回；若有 tool call，`ExecutionPlane` 执行 `read_file`
 4. 工具结果回灌 kernel，进入下一 turn

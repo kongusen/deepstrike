@@ -1,7 +1,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike runtime mechanism</title>
-  <desc id="desc">The complete DeepStrike 0.2.48 runtime boundary: host-owned I/O, RuntimeRunner driving ABI v2, a Rust kernel governing control flow, and an isolated Self-Harness v2 outer loop improving the next run.</desc>
+  <desc id="desc">The current DeepStrike runtime boundary: host-owned I/O, RuntimeRunner driving the Canonical Kernel ABI, a Rust kernel governing control flow, and an isolated Self-Harness v2 outer loop improving the next run.</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
@@ -71,8 +71,8 @@
     <rect x="600" y="140" width="258" height="82" rx="6" class="panel"/>
 
     <text x="618" y="169" class="card-title" text-anchor="start">Evidence &amp; durable stores</text>
-    <text x="618" y="193" class="card-text" text-anchor="start">SessionLog · ABI transactions · snapshots</text>
-<text x="618" y="211" class="card-text" text-anchor="start">DreamStore · archives · large-result spool</text>
+    <text x="618" y="193" class="card-text" text-anchor="start">SessionLog · ABI transactions · checkpoints</text>
+<text x="618" y="211" class="card-text" text-anchor="start">DreamStore · archives · external payloads</text>
 
   </g>
 
@@ -106,7 +106,7 @@
     <text x="720" y="350" class="micro" text-anchor="start">OBSERVATIONS IN</text>
     <rect x="48" y="370" width="1104" height="214" rx="7" class="kernel"/>
     <text x="68" y="400" class="section-title" text-anchor="start">deepstrike-core</text>
-    <text x="205" y="400" class="section-note" text-anchor="start">PURE RUST · SERIALIZABLE STATE MACHINE · ABI v2 · ZERO PROVIDER I/O</text>
+    <text x="205" y="400" class="section-note" text-anchor="start">PURE RUST · SERIALIZABLE STATE MACHINE · CANONICAL ABI · ZERO PROVIDER I/O</text>
 
   <rect x="1067" y="384" width="66" height="22" rx="11" class="pill coral"/>
   <text x="1100" y="399" class="pill-text" text-anchor="middle">KERNEL</text>
@@ -116,7 +116,7 @@
 
     <text x="86" y="451" class="card-title" text-anchor="start">Syscall gate &amp; governance</text>
     <text x="86" y="475" class="card-text" text-anchor="start">Invoke · Spawn · memory</text>
-<text x="86" y="493" class="card-text" text-anchor="start">SubmitNodes · LoadWorkflow</text>
+<text x="86" y="493" class="card-text" text-anchor="start">AppendWorkflowNodes</text>
 
   </g>
         <path d="M86 509H299" class="rule"/>
@@ -149,7 +149,7 @@
 
     <text x="869" y="451" class="card-title" text-anchor="start">Observation &amp; recovery</text>
     <text x="869" y="475" class="card-text" text-anchor="start">Provider / tool results · visible denials</text>
-<text x="869" y="493" class="card-text" text-anchor="start">Signals · transactions · snapshots · wake</text>
+<text x="869" y="493" class="card-text" text-anchor="start">Signals · transactions · checkpoints · wake</text>
 
   </g>
         <path d="M869 509H1114" class="rule"/>

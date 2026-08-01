@@ -1,7 +1,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike session replay and recovery</title>
-  <desc id="desc">The append-only SessionLog evidence stream records provider, tool, governance, workflow, memory, multimodal, and lifecycle events for audit, provider replay, workflow resume, repair, and OS snapshots.</desc>
+  <desc id="desc">The append-only SessionLog records audit evidence, provider replay envelopes, and OS snapshot inputs; production control-state recovery uses canonical checkpoints and journals.</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
@@ -41,8 +41,8 @@
   <rect width="1200" height="760" fill="#111318"/>
   <path d="M0 94H1200M0 724H1200" class="rule"/>
   <text x="48" y="33" class="eyebrow" text-anchor="start">SESSION EVIDENCE / v0.2.48</text>
-  <text x="48" y="68" class="title" text-anchor="start">Recovery folds durable observations instead of guessing state.</text>
-  <text x="1152" y="39" class="subtitle" text-anchor="end">APPEND-ONLY LOG · REPLAY · REPAIR · RESUME</text>
+  <text x="48" y="68" class="title" text-anchor="start">Evidence replay and execution recovery have separate sources of truth.</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">SESSIONLOG EVIDENCE · CANONICAL CHECKPOINT · KERNEL JOURNAL</text>
   <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
 
@@ -90,7 +90,7 @@
 
     <text x="962" y="175" class="card-title" text-anchor="start">Memory &amp; context</text>
     <text x="962" y="199" class="card-text" text-anchor="start">write · query · recall</text>
-<text x="962" y="217" class="card-text" text-anchor="start">compression · renewal · spool</text>
+<text x="962" y="217" class="card-text" text-anchor="start">compression · renewal · payload</text>
 
   </g>
 
@@ -121,10 +121,10 @@
   <g>
     <rect x="600" y="330" width="258" height="126" rx="6" class="panel"/>
 
-    <text x="618" y="359" class="card-title" text-anchor="start">Workflow resume</text>
-    <text x="618" y="383" class="card-text" text-anchor="start">Fold completed node outputs</text>
-<text x="618" y="401" class="card-text" text-anchor="start">Restore runtime submissions</text>
-<text x="618" y="419" class="card-text" text-anchor="start">Schedule remaining frontier</text>
+    <text x="618" y="359" class="card-title" text-anchor="start">Offline diagnostics</text>
+    <text x="618" y="383" class="card-text" text-anchor="start">Inspect workflow observations</text>
+<text x="618" y="401" class="card-text" text-anchor="start">Repair historical projections</text>
+<text x="618" y="419" class="card-text" text-anchor="start">Never author production state</text>
 
   </g>
 
@@ -140,19 +140,19 @@
 
 
   <text x="48" y="504" class="section-title" text-anchor="start">Kernel recovery path</text>
-  <text x="1152" y="504" class="section-note" text-anchor="end">PORTABLE SNAPSHOT REPLAYS ACCEPTED PUBLIC ABI TRANSACTIONS</text>
+  <text x="1152" y="504" class="section-note" text-anchor="end">OPAQUE LOGICAL STATE + BOUNDED JOURNAL TAIL</text>
     <rect x="48" y="524" width="1104" height="118" rx="7" class="kernel"/>
-    <text x="68" y="554" class="label" text-anchor="start">Session / transaction stream</text>
+    <text x="68" y="554" class="label" text-anchor="start">Checkpoint bytes + records</text>
     <path d="M258 551H356" class="flow flow-coral"/>
-    <text x="376" y="554" class="label" text-anchor="start">validate + repair</text>
+    <text x="376" y="554" class="label" text-anchor="start">verify digest + head</text>
     <path d="M500 551H598" class="flow flow-coral"/>
-    <text x="618" y="554" class="label" text-anchor="start">fold public ABI</text>
+    <text x="618" y="554" class="label" text-anchor="start">install logical state</text>
     <path d="M742 551H840" class="flow flow-coral"/>
-    <text x="860" y="554" class="label" text-anchor="start">restore lifecycle / operation / effect ids</text>
-    <text x="68" y="602" class="body" text-anchor="start">Malformed events can be sanitized or rejected; bounded snapshot journals fail explicitly instead of emitting partial checkpoints.</text>
+    <text x="860" y="554" class="label" text-anchor="start">replay bounded tail</text>
+    <text x="68" y="602" class="body" text-anchor="start">Candidate → durable install → ack gates prefix reclamation; a hard tail limit returns retryable CheckpointRequired.</text>
 
   <text x="48" y="686" class="section-title" text-anchor="start">Boundary</text>
-  <text x="1152" y="686" class="section-note" text-anchor="end">SESSIONLOG RECOVERS CONTROL STATE · TOOL SIDE EFFECTS STILL REQUIRE IDEMPOTENCY OR COMPENSATION</text>
+  <text x="1152" y="686" class="section-note" text-anchor="end">SESSIONLOG DOES NOT AUTHOR CONTROL STATE · TOOL SIDE EFFECTS STILL REQUIRE IDEMPOTENCY</text>
 
   <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>
 </svg>

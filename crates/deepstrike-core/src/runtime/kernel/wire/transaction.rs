@@ -339,7 +339,7 @@ pub struct KernelTransaction<Step, Index> {
     ///
     /// Steps are never durable (§22.12), so this is the only place a committed step exists. It is
     /// repopulated wholesale by [`KernelTransaction::rebuild_from_records`], which is what keeps
-    /// `Replayed` answerable after a crash without the journal ever storing a `KernelStep`.
+    /// `Replayed` answerable after a crash without the journal storing a derived planned step.
     ///
     /// Deliberately **not** a bounded window: the bounded window is the thing DEC-2 removed, and a
     /// miss here cannot be answered with a fabricated replay — it is reported as
@@ -539,6 +539,19 @@ where
             && self.below_replay_floor(entry.step_seq)
         {
             return Ok(self.replay_by_reference(entry));
+        }
+
+        if let Some(config) = &self.config
+            && canonical_input.len() > config.kernel_limits.max_input_bytes as usize
+        {
+            return Err(KernelFault::new(
+                KernelFaultCode::ResourceLimitExceeded,
+                format!(
+                    "canonical input carries {} bytes; the operation limit is {}",
+                    canonical_input.len(),
+                    config.kernel_limits.max_input_bytes
+                ),
+            ));
         }
 
         if envelope.observed_at_ms.get() < self.last_observed_at_ms.get() {
@@ -2633,6 +2646,40 @@ mod tests {
         // an exact retry of the original input id is the other, isomorphic replay source
         let exact = tx.prepare(&cancel_at("in-cancel", 1_700_000_003_000), plan);
         assert_eq!(exact.step_seq(), Some(cancelled.step_seq));
+        assert_eq!(tx, before);
+    }
+
+    #[test]
+    fn configured_input_byte_limit_rejects_later_inputs_without_mutation() {
+        let mut tx = transaction();
+        let mut config = boot_config([EffectKindTag::CallProvider]);
+        config.kernel_limits = Some(KernelLimits {
+            max_input_bytes: Some(1_024),
+            ..KernelLimits::default()
+        });
+        let configure = envelope(
+            "in-configure-limited",
+            1_700_000_000_000,
+            KernelInput::ConfigureOperation(ConfigureOperation { config }),
+        );
+        run(&mut tx, &configure);
+
+        let oversized = envelope(
+            "in-oversized",
+            1_700_000_001_000,
+            KernelInput::StartOperation(StartOperation {
+                entry: RootEntry::Agent(RootAgentEntry {
+                    task: LogicalTask::new("x".repeat(4_096)),
+                    run_spec: None,
+                }),
+                initial_context: InitialContext::default(),
+            }),
+        );
+        let before = tx.clone();
+        let rejected = tx.prepare(&oversized, plan);
+
+        assert_eq!(fault_of(&rejected), KernelFaultCode::ResourceLimitExceeded);
+        assert!(rejected.is_zero_mutation());
         assert_eq!(tx, before);
     }
 

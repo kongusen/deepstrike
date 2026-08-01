@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::runtime::kernel::CancellationReason;
+use crate::runtime::kernel::wire::CancellationReason;
 use crate::runtime::session::SessionEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

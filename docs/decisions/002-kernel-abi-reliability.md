@@ -2,7 +2,7 @@
 
 ## 状态
 
-Accepted
+Accepted historically; concrete wire shape superseded by ADR-005
 
 ## 日期
 
@@ -11,10 +11,10 @@ Accepted
 ## 前置假设
 
 1. 本切片基于 `codex/runtime-contract-refactor` 建立 stacked branch；它独立评审，但依赖上一切片已经定义的 operation scope、delivery lease 与 budget reservation 契约。
-2. 这是一次明确的破坏性升级：`KERNEL_ABI_VERSION` 提升为 `2`，ABI v1 input 不再接受。
+2. 这是一次明确的破坏性升级：切换到新的单一 revision，早期 input 不再接受。
 3. Rust core 只拥有确定性状态转换、裁决、关联与用量核算；持久化、分布式原子性和真实 I/O 取消继续由宿主拥有。
 4. `group_*_base`、legacy `signal`、`signal_disposed` 与 accounting-only group budget fallback 直接移除，不保留双路径。
-5. Node、Python 与 WASM 都是本切片同步切换并验证的宿主；三端只公开 ABI v2 上层 API。
+5. Node、Python 与 WASM 都是本切片同步切换并验证的宿主；三端只公开当时唯一的上层 API。
 
 若这些假设被调整，应先更新本 ADR，再进入实现计划。
 
@@ -49,7 +49,7 @@ Accepted
 
 ## 决策
 
-### 1. ABI v2 使用统一 event、step、effect identity
+### 1. 已废弃 ABI 使用统一 event、step、effect identity
 
 新增的 ABI 值只携带不可变标识和纯数据：
 
@@ -112,7 +112,7 @@ RunGroup 执行路径只接受具备 `reserve -> settle | release` 的 store，�
 
 ### 5. Action 是命令，Observation 只记录事实
 
-所有要求宿主执行动作的输出统一建模为 `KernelAction`，包括 provider/tool/milestone、workflow spawn、sub-agent preempt、approval request、memory persist/query、result spool 与 page-out archive。宿主通过带 `effect_id` 的结果 input 回灌；只有成功或失败结果被内核消费后，才输出对应 observation。
+所有要求宿主执行动作的输出统一建模为 `KernelAction`，包括 provider/tool/milestone、workflow spawn、sub-agent preempt、approval request、memory persist/query、payload load 与 page-out archive。宿主通过带 `effect_id` 的结果 input 回灌；只有成功或失败结果被内核消费后，才输出对应 observation。
 
 禁止再用 `MemoryWritten`、`MemoryQueried`、`WorkflowBatchSpawned`、`AgentPreempted` 等 observation 触发尚未发生的宿主副作用。
 
@@ -129,12 +129,12 @@ ABI 拒绝不再伪装成 `ToolGated`，而是进入结构化 `KernelFault`：`v
 新的 input、observation 和 session event 必须：
 
 - JSON round-trip 不丢字段；
-- ABI v1 fixture 明确以 version mismatch 被拒绝，ABI v2 fixture 成为唯一 wire contract；
+- 早期 ABI fixture 明确以 version mismatch 被拒绝，已废弃 ABI fixture 成为唯一 wire contract；
 - OS snapshot 可按 delivery/reservation/operation ID 重建审计记录；
 - uninterrupted 与 snapshot/restore 后的下一步 action/observation 等价；
 - 不把 lease token、API key、路径或宿主 cancellation handle 写入 snapshot。
 
-当前 `OsSnapshot` 仅保留为审计投影；新增稳定的 `KernelSnapshot` 恢复真实运行状态、event/effect 去重窗口与 terminal-report latch，不直接序列化内部 state-machine struct。
+该切片当时保留 `OsSnapshot` 作为审计投影，并以 v2 full-journal snapshot 恢复运行状态、event/effect 去重窗口与 terminal-report latch。ADR-005 后续删除该 snapshot 格式，现行恢复使用 opaque logical checkpoint + bounded journal tail。
 
 ### 8. 有界状态与性能纪律
 
@@ -150,7 +150,7 @@ signal delivery/event dedupe 使用固定容量 replay window，不保留无界 
 4. budget grant enforcement 与 usage report；
 5. operation cancellation state transition；
 6. snapshot/replay/golden hardening 及 Node/Python host cutover；
-7. 删除 ABI v1、legacy signal、base budget、observation-command 与 SDK fallback 残留。
+7. 删除 早期 ABI、legacy signal、base budget、observation-command 与 SDK fallback 残留。
 
 每个子切片都必须先添加失败的契约测试，再做最小实现，并保持 workspace 可构建。
 
@@ -202,7 +202,7 @@ docs/decisions/                                    ADR 与规格
 
 ## 代码风格
 
-- ABI v2 直接表达最终契约，不为 v1 保留适配字段或分支。
+- 已废弃 ABI 直接表达最终契约，不为 v1 保留适配字段或分支。
 - wire enum 使用 tagged union 与 `snake_case`；可选字段使用 `default + skip_serializing_if`。
 - 状态机只接受事实并返回 action/observation；禁止在 core 内添加 I/O。
 - Rust 内部只有一个 adjudication path，不维护 legacy/new 两套逻辑。
@@ -213,7 +213,7 @@ docs/decisions/                                    ADR 与规格
 1. **RED：ABI contract**——先为每个新 JSON input/observation 添加 round-trip/golden 测试。
 2. **RED：state transition**——覆盖 signal accepted/queued/deduped/dropped、grant boundary、各 loop phase cancellation 和重复取消。
 3. **GREEN：最小 core 实现**——先让 Rust 单元与 integration 通过。
-4. **Binding parity**——Node/Python 对同一 ABI v2 fixture 生成等价 wire shape，并拒绝 v1 fixture。
+4. **Binding parity**——Node/Python 对同一 已废弃 ABI fixture 生成等价 wire shape，并拒绝 早期 revision fixture。
 5. **Replay differential**——比较 uninterrupted 与 restore 后的 action、observation 和 usage/correlation。
 6. **Regression**——运行完整 Rust、Node、Python 与 docs 验证。
 
@@ -223,7 +223,7 @@ docs/decisions/                                    ADR 与规格
 
 ### 始终执行
 
-- ABI v1 input 必须稳定返回 version mismatch，不做隐式升级或降级。
+- 早期 ABI input 必须稳定返回 version mismatch，不做隐式升级或降级。
 - 所有外部副作用先产生带 `effect_id` 的 action，结果回灌后才记录事实 observation。
 - 新行为先写失败测试；每个子切片保持 core、Node、Python 可构建。
 - operation/delivery/reservation ID 只作 opaque correlation，日志中不包含凭证。
@@ -231,7 +231,7 @@ docs/decisions/                                    ADR 与规格
 
 ### 需要先确认
 
-- ABI v2 发布后再次改变其已确认的 public shape。
+- 已废弃 ABI 发布后再次改变其已确认的 public shape。
 - 新增依赖、改 CI、改变 snapshot 持久化格式的破坏性部分。
 - 将某种 store、数据库、网络或进程控制逻辑移入 core。
 
@@ -240,22 +240,22 @@ docs/decisions/                                    ADR 与规格
 - 在 Rust core 内实现 delivery claim/ack、budget reserve/settle 或外部 I/O cancellation。
 - 把 lease token、API key、文件路径或可执行 handle 持久化进 kernel snapshot。
 - 用 timeout 或 critical signal 冒充所有取消原因。
-- 静默接受 ABI v1，或在 Node/Python 中保留绕过 v2 contract 的隐藏 fallback。
+- 静默接受 早期 ABI，或在 Node/Python 中保留绕过 已废弃 revision contract 的隐藏 fallback。
 - 通过 observation 或 public mutable state-machine API 驱动宿主副作用。
 
 ## 成功标准
 
-- `KERNEL_ABI_VERSION == 2`，ABI v1 input 一律返回 version mismatch。
+- `KERNEL_ABI_VERSION == 2`，早期 ABI input 一律返回 version mismatch。
 - core、Node、Python public surface 不再包含 legacy `signal`、`signal_disposed` 或 `group_*_base`。
 - 每个 input、step、action/result 均可沿 operation/event/effect identity 追溯；重复输入和结果幂等，冲突重放产生结构化 fault。
 - public surface 不再暴露 `state_machine_mut()`；配置与事件顺序受 lifecycle 约束。
-- memory/workflow/preempt/approval/spool/page-out 等宿主 I/O 全部使用 action/result，不再用 observation 充当命令。
+- memory/workflow/preempt/approval/payload/page-out 等宿主 I/O 全部使用 action/result，不再用 observation 充当命令。
 - 每次 `deliver_signal` 都能得到带同一 `delivery_id` 的唯一 disposition，redelivery 可区分。
 - kernel 对 `budget_grant` 的三个轴执行本地硬限制，并输出与 `reservation_id` 关联的实际用量。
 - `cancel_operation` 在 Reason、ToolAwait、SubAgentAwait、Workflow 等 phase 中幂等地产生同一取消终态。
 - snapshot/restore 不丢 delivery/reservation/operation correlation，恢复后的下一步与不中断执行等价。
-- `KernelSnapshot` 可恢复真实内核状态；signal/event dedupe 状态有界。
-- Node 与 Python 只公开 ABI v2，并对 v1 rejection 与 v2 parity 有契约测试；完整 Rust/Node/Python/docs 验证通过。
+- 该切片当时的 v2 snapshot 可恢复真实内核状态；现行实现由 ADR-005 的 logical checkpoint 取代，signal/event dedupe 状态仍有界。
+- Node 与 Python 只公开 已废弃 ABI，并对 早期 revision rejection 与 已废弃 revision parity 有契约测试；完整 Rust/Node/Python/docs 验证通过。
 - core 中没有新增持久化、网络、文件、provider 或 process side effect。
 
 ## 非目标
@@ -263,10 +263,10 @@ docs/decisions/                                    ADR 与规格
 - 不在本切片中提供生产级 Redis/PostgreSQL budget store 或 signal store。
 - 不改变 ReactiveSession 的产品级 turn policy；它只消费新的内核裁决。
 - 不统一所有 session event 命名，也不重写整个 scheduler。
-- 不为 ABI v1 提供 adapter、shim 或 deprecation window。
+- 不为 早期 ABI 提供 adapter、shim 或 deprecation window。
 
 ## 已确认事项
 
 1. 该分支作为基于 `codex/runtime-contract-refactor` 的 stacked slice。
 2. 实现顺序为 signal correlation、budget grant、cancellation/replay。
-3. 已确认：直接切换 ABI v2，不做向后兼容。
+3. 已确认：直接切换 已废弃 ABI，不做向后兼容。

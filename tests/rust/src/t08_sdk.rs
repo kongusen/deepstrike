@@ -152,7 +152,7 @@ fn runtime_options_can_be_constructed() {
         execution_plane: Some(Box::new(LocalExecutionPlane::new())),
         session_log: Some(Arc::new(InMemorySessionLog::new())),
         compression_store: None,
-        spool_dir: None,
+        payload_store: None,
         kernel_reliability: None,
         session_id: None,
         max_tokens: 4096,

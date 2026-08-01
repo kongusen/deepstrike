@@ -177,8 +177,6 @@ export class SubAgentOrchestrator {
       dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
       knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
       enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
-      // M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
-      isWorkflowNode: ctx.isWorkflowNode,
       // Nested vehicle: the child joins the inherited runGroup for lineage/settlement only — it
       // must NOT re-reserve budget axes the parent already holds (that double-reserve squeezed the
       // child's grant to 0 and the kernel stripped its first-turn tools).

@@ -44,7 +44,7 @@ fn contains_standalone_413(msg: &str) -> bool {
 }
 
 impl LoopStateMachine {
-    /// Reactive recovery for a provider error the SDK reports via [`KernelInputEvent::ProviderError`].
+    /// Reactive recovery for a provider failure reported through the canonical effect outcome.
     /// Owns the policy the SDK runners used to duplicate: classify → compact-and-retry on overflow
     /// (bounded, anti-spiral) → honest terminal when the ladder is exhausted. Returns the next
     /// [`LoopAction`] so the kernel's normal action tail dispatches it: `CallLLM` to retry the
@@ -156,9 +156,6 @@ impl LoopStateMachine {
     pub(super) fn execute_eviction_op(&mut self, op: &crate::mm::EvictionOp) {
         use crate::mm::EvictionOp;
         match op {
-            EvictionOp::Spool(_) => {
-                // Layer 1: handled at tool-result ingestion, not here. No-op in this path.
-            }
             EvictionOp::Snip { per_msg_ratio: _ } => {
                 // Layer 2: route to SnipCompact via the pipeline (behavior-preserving shim).
                 // Use the public `compress_with_time` which already wires target_tokens from config.

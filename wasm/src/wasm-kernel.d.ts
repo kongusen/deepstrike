@@ -68,23 +68,6 @@ declare module "@deepstrike/wasm-kernel" {
 
   export function kernelAbiVersion(): number
 
-  export class KernelRuntime {
-    constructor(policy: { maxTokens: number; maxTurns?: number; maxTotalTokens?: number; timeoutMs?: number })
-    step(inputJson: string): string
-    prepareStep(inputJson: string): string
-    commitPrepared(prepareToken: string): string
-    abortPrepared(prepareToken: string): void
-    snapshot(): string
-    restore(snapshotJson: string): void
-    diagnostics(): string
-    isTerminal(): boolean
-    turn(): number
-    recoveryContentBytes(): number
-    render(): import("./types.js").RenderedContext
-    drainNewMessages(): import("./types.js").Message[]
-    preservedRefs(): string[]
-  }
-
   export class SignalRouter {
     constructor(maxQueueSize: number)
     ingest(signal: unknown, lifecycle: SignalRouterLifecycle): string

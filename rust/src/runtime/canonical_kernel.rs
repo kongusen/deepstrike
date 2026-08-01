@@ -7,8 +7,10 @@
 
 pub use deepstrike_core::runtime::kernel::wire::{
     CanonicalKernel, CheckpointAdvice, CheckpointBoundary, ConfigDefaults, Digest, DurableHead,
-    KernelEffect, KernelFault, KernelFaultCode, KernelPreparation, KernelRecord, KernelTerminal,
-    OperationLifecycle, PlannedStep, PrepareToken, RestoreCost, TailUsage, WireEnvelope, WireU64,
+    EffectKind, EffectsDisposition, InputId, KernelEffect, KernelFault, KernelFaultCode,
+    KernelInput, KernelPreparation, KernelRecord, KernelTerminal, OperationId, OperationLifecycle,
+    PlannedStep, PrepareToken, RestoreCost, StepDisposition, TailUsage, TerminalDisposition,
+    WireEnvelope, WireU64, canonical_digest,
 };
 
 pub type CanonicalPreparation = KernelPreparation<KernelRecord, PlannedStep>;

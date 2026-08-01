@@ -15,8 +15,8 @@ type CanonicalLifecycle =
   | "failed"
 
 /**
- * Minimal ABI-v3 CanonicalKernel stand-in for Jest (no .wasm). Mirrors the legacy KernelRuntime
- * mock's agent loop so existing runner tests keep working after Task 21 cutover.
+ * Minimal CanonicalKernel stand-in for Jest (no .wasm). It models the agent loop used by runner
+ * tests while the real binding contract remains covered by the wasm-pack smoke test.
  */
 export class CanonicalKernel {
   private life: CanonicalLifecycle = "created"
@@ -317,7 +317,11 @@ export class CanonicalKernel {
       stepSeq: String(stepSeq),
       ...(this.head ? { expectedHead: this.head } : {}),
       recordDigest,
-      recordBytes: new TextEncoder().encode(`record:${inputJson}`),
+      recordBytes: new TextEncoder().encode(JSON.stringify({
+        inputJson,
+        plannedStepJson,
+        recordDigest,
+      })),
       plannedStepJson,
     }
   }
@@ -372,10 +376,34 @@ export class CanonicalKernel {
 
   restore(_checkpointBytes: Uint8Array | null | undefined, recordBytes: Uint8Array[]) {
     this.nextStep = recordBytes.length
-    this.head = recordBytes.length ? `digest-${recordBytes.length - 1}` : undefined
-    this.life = recordBytes.length ? "running" : "created"
     this.pendingEffects = []
     this.terminalPayload = undefined
+    this.life = "created"
+    this.head = undefined
+    if (recordBytes.length > 0) {
+      const restored = JSON.parse(new TextDecoder().decode(recordBytes[recordBytes.length - 1])) as {
+        inputJson: string
+        plannedStepJson: string
+        recordDigest: string
+      }
+      const input = (JSON.parse(restored.inputJson) as { input?: { kind?: string } }).input ?? {}
+      const planned = JSON.parse(restored.plannedStepJson) as {
+        disposition: {
+          kind: string
+          effects?: Array<Record<string, unknown>>
+          terminal?: Record<string, unknown>
+        }
+      }
+      this.head = restored.recordDigest
+      if (planned.disposition.kind === "terminal") {
+        this.terminalPayload = planned.disposition.terminal
+        const kind = String(planned.disposition.terminal?.kind ?? "completed")
+        this.life = kind === "cancelled" ? "cancelled" : kind === "failed" ? "failed" : "completed"
+      } else {
+        this.pendingEffects = planned.disposition.effects ?? []
+        this.life = input.kind === "configure_operation" ? "configured" : "running"
+      }
+    }
     return {
       recordsBeforeCheckpoint: "0",
       tailInputsReplayed: String(recordBytes.length),
@@ -395,241 +423,6 @@ export class CanonicalKernel {
   terminalJson(): string | undefined {
     return this.terminalPayload ? JSON.stringify(this.terminalPayload) : undefined
   }
-}
-
-export class KernelRuntime {
-  private terminal = false
-  private phase = 0
-  private maxTurns: number
-  private rendered = { systemText: "", turns: [] as unknown[] }
-  private messages: unknown[] = []
-  private governanceAskUser = false
-  private resumedAfterAsk = false
-  // Mirrors the real kernel's bounded reactive-recovery ladder (see eviction.rs
-  // MAX_RECOVERY_ATTEMPTS): compact-and-retry up to the cap, then terminate ContextOverflow.
-  private recoveryAttempts = 0
-  // ③ loop-agent pacing trap (DW-3): armed by `start_run.run_spec.loop_round`. A `pace` tool call
-  // is trapped in-kernel (never forwarded to the host plane); the adjudicated decision rides the
-  // done result as `pace_decision`. Silence = the spec's default_action ("stop" = CC contract).
-  private loopRound: { default_action?: string } | null = null
-  private paceProposal: { action: string; reason: string } | null = null
-  private nextEffect = 1
-  private operationId: string | undefined
-  private acceptedInputs: Array<Record<string, unknown>> = []
-
-  private effect(kind: string, payload: Record<string, unknown>): Record<string, unknown> {
-    return { effect_id: `mock-effect-${this.nextEffect++}`, kind, ...payload }
-  }
-
-  constructor(policy: { maxTokens: number; maxTurns?: number; maxTotalTokens?: number; timeoutMs?: number }) {
-    if (policy.timeoutMs !== undefined && typeof policy.timeoutMs !== "number") {
-      throw new TypeError("WASM LoopPolicy.timeoutMs must be a number")
-    }
-    this.maxTurns = policy.maxTurns ?? 25
-  }
-
-  step(inputJson: string): string {
-    const input = JSON.parse(inputJson) as { event?: Record<string, unknown> }
-    const envelope = JSON.parse(inputJson) as Record<string, unknown>
-    this.operationId = String(envelope.operation_id ?? this.operationId ?? "") || undefined
-    this.acceptedInputs.push(envelope)
-    const event = input.event ?? {}
-    kernelEvents.push(event)
-    const actions: Array<Record<string, unknown>> = []
-    const observations: Array<Record<string, unknown>> = []
-
-    switch (event.kind) {
-      case "load_governance_policy": {
-        const rules = (event.rules as Array<{ action?: string }>) ?? []
-        this.governanceAskUser = rules.some(r => r.action === "ask_user")
-        break
-      }
-      case "configure_run": {
-        // K2: the SDK now bundles governance (+ attention/scheduler/quota — no-ops in this mock) into
-        // one event. Apply governance the same way `load_governance_policy` does.
-        const config = (event.config as Record<string, unknown>) ?? {}
-        const governance = (config.governance as { rules?: Array<{ action?: string }> }) ?? {}
-        const rules = governance.rules ?? []
-        this.governanceAskUser = rules.some(r => r.action === "ask_user")
-        break
-      }
-      case "start_run":
-        this.phase = 0
-        this.terminal = false
-        this.resumedAfterAsk = false
-        // DW-3: arm the pacing trap when the run spec carries `loop_round` (loop-node iterations).
-        this.loopRound = ((event.run_spec as { loop_round?: { default_action?: string } } | undefined)?.loop_round) ?? null
-        this.paceProposal = null
-        this.rendered = { systemText: "", turns: [{ role: "user", content: "test" }] }
-        actions.push(this.effect("call_provider", { context: this.rendered, tools: [] }))
-        break
-      case "approval_result": {
-        this.resumedAfterAsk = true
-        const approved = (event.approved_calls as string[]) ?? []
-        if (approved.length > 0) {
-          actions.push(this.effect("execute_tool", {
-            calls: [{ id: approved[0], name: "needs_approval", arguments: "{}" }],
-          }))
-        } else {
-          this.rendered = { systemText: "", turns: [{ role: "user", content: "resume" }] }
-          actions.push(this.effect("call_provider", { context: this.rendered, tools: [] }))
-        }
-        break
-      }
-      case "provider_error": {
-        // Reactive recovery mirror of the real kernel: classify the error, compact-and-retry on a
-        // bounded overflow ladder, else terminate with an honest reason.
-        const msg = String(event.message ?? "").toLowerCase()
-        const isOverflow =
-          msg.includes("413") || msg.includes("too long") ||
-          msg.includes("context length exceeded") || msg.includes("context_length_exceeded")
-        if (!isOverflow) {
-          this.terminal = true
-          actions.push(this.effect("done", { result: { turns_used: this.turn(), total_tokens_used: 0, termination: "error" } }))
-        } else if (this.recoveryAttempts >= 2) {
-          this.terminal = true
-          actions.push(this.effect("done", { result: { turns_used: this.turn(), total_tokens_used: 0, termination: "context_overflow" } }))
-        } else {
-          this.recoveryAttempts += 1
-          observations.push({ kind: "compressed", action: "auto_compact", rho_after: 0.4, summary: null, archived_count: 0 })
-          this.rendered = { systemText: "", turns: [{ role: "user", content: "retry" }] }
-          actions.push(this.effect("call_provider", { context: this.rendered, tools: [] }))
-        }
-        break
-      }
-      case "provider_result": {
-        const message = (event.message as Record<string, unknown>) ?? {}
-        this.messages.push(message)
-        // A response arrived ⇒ the prompt fit ⇒ reset the overflow recovery ladder.
-        this.recoveryAttempts = 0
-        const toolCalls = (message.tool_calls as Array<{ id?: string; name?: string; arguments?: unknown }>) ?? []
-        // ③ pacing trap: a `pace` call on an armed run is adjudicated in-kernel — record the
-        // proposal and resume the reason loop; the verb never reaches the host execution plane.
-        const paceCall = this.loopRound ? toolCalls.find(tc => tc.name === "pace") : undefined
-        if (paceCall) {
-          const rawArgs = paceCall.arguments
-          const args = (typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : rawArgs ?? {}) as { next?: string; reason?: string }
-          this.paceProposal = { action: args.next ?? "stop", reason: args.reason ?? "" }
-          this.rendered = { systemText: "", turns: [{ role: "user", content: "paced" }] }
-          actions.push(this.effect("call_provider", { context: this.rendered, tools: [] }))
-          break
-        }
-        if (this.phase === 0 && toolCalls.length > 0 && this.governanceAskUser && !this.resumedAfterAsk) {
-          const call = toolCalls[0]
-          actions.push(this.effect("request_approval", { requests: [{
-            call_id: call.id ?? "c1", tool: call.name ?? "needs_approval",
-            arguments: call.arguments ?? {}, reason: "ask_user",
-          }] }))
-          break
-        }
-        if (this.phase === 0 && toolCalls.length > 0) {
-          this.phase = 1
-          actions.push(this.effect("execute_tool", { calls: toolCalls }))
-        } else {
-          this.terminal = true
-          actions.push(this.effect("done", {
-            result: {
-              turns_used: 2,
-              total_tokens_used: 100,
-              termination: "completed",
-              // ③ armed run: the adjudicated pace decision rides the done result. Silence = the
-              // default action (stop for loop-node iterations — the CC silence-is-done contract).
-              ...(this.loopRound
-                ? {
-                    pace_decision: this.paceProposal
-                      ? { action: this.paceProposal.action, reason: this.paceProposal.reason }
-                      : { action: this.loopRound.default_action ?? "stop", reason: "no pace call (default)" },
-                  }
-                : {}),
-            },
-          }))
-        }
-        break
-      }
-      case "tool_results":
-        actions.push(this.effect("call_provider", { context: { systemText: "", turns: [] }, tools: [] }))
-        break
-      case "cancel_operation":
-        this.terminal = true
-        observations.push({
-          kind: "operation_cancelled",
-          turn: this.turn(),
-          operation_id: event.operation_id,
-          reason: event.reason,
-          pending_call_ids: event.pending_call_ids ?? [],
-        })
-        actions.push(this.effect("done", {
-          result: { turns_used: this.turn(), total_tokens_used: 0, termination: "user_abort" },
-        }))
-        break
-      case "spawn_sub_agent":
-        return JSON.stringify({
-          version: 2,
-          actions: [],
-          observations: [
-            {
-              kind: "agent_process_changed",
-              turn: 1,
-              agent_id: "worker",
-              parent_session_id: "parent-session-001",
-              role: "implement",
-              isolation: "shared",
-              context_inheritance: "full",
-              state: "running",
-              permitted_capability_ids: ["read_file"],
-            },
-            { kind: "suspended", turn: 1, reason: "sub_agent_await", pending_calls: ["worker"] },
-          ],
-        })
-      default:
-        break
-    }
-
-    return JSON.stringify({ version: 2, actions, observations, faults: [] })
-  }
-
-  isTerminal(): boolean { return this.terminal }
-  snapshot(): string {
-    return JSON.stringify({
-      snapshot_version: 2,
-      abi_version: 2,
-      initial_policy: {},
-      lifecycle: this.terminal ? "completed" : (this.operationId ? "running" : "created"),
-      operation_id: this.operationId,
-      next_step_seq: this.nextEffect,
-      snapshot_input_limit: 10_000,
-      max_input_bytes: 16 * 1024 * 1024,
-      snapshot_journal_bytes_limit: 64 * 1024 * 1024,
-      accepted_input_bytes: JSON.stringify(this.acceptedInputs).length,
-      accepted_inputs: this.acceptedInputs,
-    })
-  }
-  diagnostics(): string {
-    return JSON.stringify({
-      lifecycle: this.terminal ? "completed" : (this.operationId ? "running" : "created"),
-      next_step_seq: this.nextEffect,
-      accepted_input_count: this.acceptedInputs.length,
-      accepted_input_bytes: JSON.stringify(this.acceptedInputs).length,
-      snapshot_input_limit: 10_000,
-      snapshot_journal_bytes_limit: 64 * 1024 * 1024,
-      max_input_bytes: 16 * 1024 * 1024,
-      snapshot_overflowed: false,
-      recorded_event_count: this.acceptedInputs.length,
-      completed_effect_count: 0,
-      pending_effect_count: 0,
-    })
-  }
-  restore(snapshotJson: string): void {
-    const snapshot = JSON.parse(snapshotJson) as { operation_id?: string; lifecycle?: string; accepted_inputs?: Array<Record<string, unknown>> }
-    this.operationId = snapshot.operation_id
-    this.terminal = ["completed", "cancelled", "failed"].includes(snapshot.lifecycle ?? "")
-    this.acceptedInputs = snapshot.accepted_inputs ?? []
-  }
-  turn(): number { return this.phase }
-  recoveryContentBytes(): number { return 32_768 }
-  render(): unknown { return this.rendered }
-  drainNewMessages(): unknown[] { return this.messages }
-  preservedRefs(): string[] { return [] }
 }
 
 export class IdlePipeline {

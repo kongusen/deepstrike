@@ -57,7 +57,7 @@ pub struct SchedulerBudget {
     /// Accumulated token budget across all turns.
     pub max_total_tokens: u64,
     /// Optional wall-clock run budget in milliseconds. Evaluated from
-    /// `started_at_ms` using the `now_ms` timestamps fed via `ProviderResult`.
+    /// `started_at_ms` using accepted envelope time.
     /// `None` means no wall-clock limit (existing behavior).
     pub max_wall_ms: Option<u64>,
 }

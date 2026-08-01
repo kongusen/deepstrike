@@ -76,7 +76,7 @@ pub enum Syscall {
     WriteMemory(MemoryWriteRequest),
     QueryMemory(MemoryQuery),
     SubmitNodes { count: usize },
-    LoadWorkflow { node_count: usize },
+    AppendWorkflowNodes { node_count: usize },
 }
 ```
 
@@ -131,7 +131,7 @@ Anthropic 文章中的六种可组合模式，在 DeepStrike 里都是 **Workflo
 
 | 性质 | 脚本 harness | Agent OS |
 |------|--------------|----------|
-| 可重放 | 编排状态在内存/文件里，难对齐 LLM 消息 | SessionLog + KernelSnapshot 可重建 |
+| 可重放 | 编排状态在内存/文件里，难对齐 LLM 消息 | SessionLog 留证；canonical checkpoint/journal 恢复 |
 | 受治理 | 自行 if/else 拦工具 | 统一 syscall gate + audit event |
 | 可恢复 | 中断常需重头 | wake/resume workflow + 运行时 append 的节点 |
 | 跨语言 | 绑定一种运行时 | 同一 `deepstrike-core` → Py / Node / WASM |

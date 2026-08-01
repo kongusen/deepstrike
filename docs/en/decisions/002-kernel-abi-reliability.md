@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted historically; concrete wire shape superseded by ADR-005
 
 ## Date
 
@@ -11,10 +11,10 @@ Accepted
 ## Assumptions
 
 1. This slice is a stacked branch based on `codex/runtime-contract-refactor`; it is reviewed separately but depends on the operation-scope, delivery-lease, and budget-reservation contracts from that slice.
-2. This is an explicit breaking upgrade: `KERNEL_ABI_VERSION` becomes `2`, and ABI v1 inputs are no longer accepted.
+2. This is an explicit breaking upgrade to one newly selected revision; earlier inputs are no longer accepted.
 3. Rust core owns deterministic state transitions, adjudication, correlation, and usage accounting. Persistence, distributed atomicity, and real I/O cancellation remain host responsibilities.
 4. `group_*_base`, legacy `signal`, `signal_disposed`, and the accounting-only group-budget fallback are removed directly; no dual path remains.
-5. Node, Python, and WASM are all required host targets for the cutover and validation; each exposes only the ABI v2 high-level API.
+5. Node, Python, and WASM are all required host targets for the cutover and validation; each exposes only the then-current high-level API.
 
 If these assumptions change, update this ADR before implementation planning.
 
@@ -49,7 +49,7 @@ The ABI has timeout, critical signal, provider error, and process preemption pat
 
 ## Decision
 
-### 1. ABI v2 carries uniform event, step, and effect identity
+### 1. superseded ABI carries uniform event, step, and effect identity
 
 New ABI values carry only immutable identifiers and pure data:
 
@@ -112,7 +112,7 @@ The host first cancels real provider/tool/sub-agent work and supplies known pend
 
 ### 5. Actions are commands; observations record facts only
 
-Every output that requires host work is a `KernelAction`, including provider/tool/milestone, workflow spawn, sub-agent preemption, approval request, memory persistence/query, result spool, and page-out archive. The host feeds back a result carrying `effect_id`; core emits the corresponding observation only after consuming success or failure.
+Every output that requires host work is a `KernelAction`, including provider/tool/milestone, workflow spawn, sub-agent preemption, approval request, memory persistence/query, payload loading, and page-out archive. The host feeds back a result carrying `effect_id`; core emits the corresponding observation only after consuming success or failure.
 
 `MemoryWritten`, `MemoryQueried`, `WorkflowBatchSpawned`, `AgentPreempted`, and similar observations may no longer trigger host side effects that have not happened yet.
 
@@ -129,12 +129,12 @@ Remove public `state_machine_mut()` and host dependencies on internal structs. R
 New inputs, observations, and session events must:
 
 - round-trip through JSON without losing fields;
-- reject ABI v1 fixtures with a version mismatch and make ABI v2 fixtures the only wire contract;
+- reject earlier ABI fixtures with a version mismatch and make superseded ABI fixtures the only wire contract;
 - let OS snapshots rebuild audit records by delivery/reservation/operation ID;
 - produce equivalent next actions/observations after snapshot/restore and uninterrupted execution;
 - never persist lease tokens, API keys, paths, or host cancellation handles.
 
-The current `OsSnapshot` remains an audit projection. A stable `KernelSnapshot` restores real run state, event/effect replay windows, and the terminal-report latch without directly serializing the internal state-machine struct.
+This slice kept `OsSnapshot` as an audit projection and introduced a v2 full-journal snapshot for run state, event/effect replay windows, and the terminal-report latch. ADR-005 later removed that format; current recovery uses an opaque logical checkpoint plus a bounded journal tail.
 
 ### 8. Bound state and optimize only from measurements
 
@@ -150,7 +150,7 @@ The implementation order is fixed:
 4. budget grant enforcement and usage report;
 5. operation cancellation state transition;
 6. snapshot/replay/golden hardening and Node/Python host cutover;
-7. removal of ABI v1, legacy signal, base-budget, observation-command, and SDK fallback residue.
+7. removal of earlier ABI, legacy signal, base-budget, observation-command, and SDK fallback residue.
 
 Each sub-slice starts with a failing contract test, then adds the minimum implementation, and leaves the workspace buildable.
 
@@ -196,7 +196,7 @@ docs/decisions/                                    ADR and specification
 
 ## Code Style
 
-- Express the final ABI v2 contract directly; keep no v1 adapter fields or branches.
+- Express the final superseded ABI contract directly; keep no earlier-revision adapter fields or branches.
 - Use tagged unions and `snake_case` on the wire; optional fields use `default + skip_serializing_if`.
 - State machines accept facts and return actions/observations; core performs no I/O.
 - Rust core maintains one adjudication path, not parallel legacy/new implementations.
@@ -207,7 +207,7 @@ docs/decisions/                                    ADR and specification
 1. **RED: ABI contract** — add round-trip/golden tests for each new JSON input/observation.
 2. **RED: state transition** — cover signal accepted/queued/deduped/dropped, grant boundaries, cancellation in each loop phase, and repeated cancellation.
 3. **GREEN: minimum core implementation** — make Rust unit and integration tests pass first.
-4. **Binding parity** — Node and Python produce equivalent wire shapes for the same ABI v2 fixtures and reject v1 fixtures.
+4. **Binding parity** — Node and Python produce equivalent wire shapes for the same superseded ABI fixtures and reject earlier-revision fixtures.
 5. **Replay differential** — compare actions, observations, usage, and correlation between uninterrupted and restored runs.
 6. **Regression** — run complete Rust, Node, Python, and documentation verification.
 
@@ -217,7 +217,7 @@ Large snapshot updates do not replace precise assertions; each golden change mus
 
 ### Always
 
-- ABI v1 inputs return a stable version mismatch; no implicit upgrade or downgrade is allowed.
+- earlier ABI inputs return a stable version mismatch; no implicit upgrade or downgrade is allowed.
 - Every external side effect first emits an action with `effect_id`; facts are observed only after result feedback.
 - Write failing tests first; keep core, Node, and Python buildable after each sub-slice.
 - Treat operation/delivery/reservation IDs as opaque correlation and never log credentials.
@@ -225,7 +225,7 @@ Large snapshot updates do not replace precise assertions; each golden change mus
 
 ### Ask First
 
-- Change an approved ABI v2 public shape after it is published.
+- Change an approved superseded ABI public shape after it is published.
 - Add dependencies, change CI, or introduce a breaking snapshot format change.
 - Move a store, database, network, or process-control responsibility into core.
 
@@ -234,22 +234,22 @@ Large snapshot updates do not replace precise assertions; each golden change mus
 - Implement delivery claim/ack, budget reserve/settle, or external I/O cancellation in Rust core.
 - Persist lease tokens, API keys, file paths, or executable handles in kernel snapshots.
 - Overload timeout or critical signal as every cancellation reason.
-- Silently accept ABI v1 or keep a hidden Node/Python fallback that bypasses the v2 contract.
+- Silently accept earlier ABI or keep a hidden Node/Python fallback that bypasses the superseded-revision contract.
 - Drive host side effects through observations or a public mutable state-machine API.
 
 ## Success Criteria
 
-- `KERNEL_ABI_VERSION == 2`, and every ABI v1 input returns a version mismatch.
+- `KERNEL_ABI_VERSION == 2`, and every earlier ABI input returns a version mismatch.
 - Core, Node, and Python public surfaces no longer contain legacy `signal`, `signal_disposed`, or `group_*_base`.
 - Every input, step, action/result is traceable by operation/event/effect identity; duplicates are idempotent and conflicting replay produces a structured fault.
 - Public surfaces no longer expose `state_machine_mut()`; lifecycle rules constrain configuration and event order.
-- Memory/workflow/preemption/approval/spool/page-out host I/O uses action/result rather than observations as commands.
+- Memory/workflow/preemption/approval/payload/page-out host I/O uses action/result rather than observations as commands.
 - Every `deliver_signal` produces one disposition carrying the same `delivery_id`; redeliveries remain distinguishable.
 - Core enforces all three `budget_grant` axes locally and reports actual usage correlated with `reservation_id`.
 - `cancel_operation` idempotently produces the same terminal cancellation state in Reason, ToolAwait, SubAgentAwait, and Workflow phases.
 - Snapshot/restore preserves delivery/reservation/operation correlation and produces the same next step as uninterrupted execution.
-- `KernelSnapshot` restores real kernel state and signal/event dedupe remains bounded.
-- Node and Python expose only ABI v2, with contract tests for v1 rejection and v2 parity; full Rust/Node/Python/docs verification passes.
+- The v2 snapshot introduced by this slice restored real kernel state. ADR-005 replaces it with logical checkpoints; signal/event dedupe remains bounded.
+- Node and Python expose only superseded ABI, with contract tests for earlier-revision rejection and superseded-revision parity; full Rust/Node/Python/docs verification passes.
 - Core gains no persistence, network, filesystem, provider, or process side effects.
 
 ## Non-goals
@@ -257,10 +257,10 @@ Large snapshot updates do not replace precise assertions; each golden change mus
 - No production Redis/PostgreSQL budget or signal store in this slice.
 - No product-level ReactiveSession turn-policy change; it only consumes the new kernel decisions.
 - No global session-event rename or scheduler rewrite.
-- No adapter, shim, or deprecation window for ABI v1.
+- No adapter, shim, or deprecation window for earlier ABI.
 
 ## Confirmed Decisions
 
 1. This remains a stacked slice on `codex/runtime-contract-refactor`.
 2. Implementation order is signal correlation, budget grant, then cancellation/replay.
-3. Confirmed: cut directly to ABI v2 with no backward compatibility.
+3. Confirmed: cut directly to superseded ABI with no backward compatibility.

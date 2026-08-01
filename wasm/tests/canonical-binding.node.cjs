@@ -50,6 +50,7 @@ assert.equal(rejected.status, "rejected")
 assert.equal(JSON.parse(rejected.faultJson).code, "malformed_envelope")
 
 assert.equal(typeof native.CanonicalKernel.prototype.step, "undefined")
+assert.equal(typeof native.KernelRuntime, "undefined")
 assert.match(
   declarations,
   /export type CanonicalPreparation = \{ status: "prepared";.*recordBytes: Uint8Array;.*status: "rejected"; faultJson: string \};/,

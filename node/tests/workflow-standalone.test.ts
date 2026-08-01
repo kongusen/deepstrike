@@ -100,7 +100,7 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
 
     expect(outcome.nodeOutcomes).toEqual([])
     expect(outcome.rejection).toMatchObject({
-      operation: "load_workflow",
+      operation: "start_workflow",
       reason: expect.stringContaining("depends on itself"),
     })
   })
@@ -128,13 +128,9 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
       sessionLog: new InMemorySessionLog(),
       maxTokens: 8000,
       kernelReliability: {
-        eventReplayCapacity: 512,
-        completedEffectReplayCapacity: 256,
-        hostEffectRetryAttempts: 4,
-        spoolThresholdBytes: 2048,
-        spoolPreviewBytes: 256,
+        providerRecoveryAttempts: 4,
+        outputRecoveryAttempts: 2,
         maxInputBytes: 1024 * 1024,
-        snapshotJournalBytesLimit: 16 * 1024 * 1024,
       },
       subAgentOrchestrator: stubOrchestrator() as never,
     } as never)
@@ -142,15 +138,22 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
     await expect(runner.runWorkflow(fanoutSpec)).resolves.toMatchObject({ nodeOutcomes: expect.any(Array) })
   })
 
-  it("rejects out-of-bounds SDK reliability policy atomically", async () => {
-    const runner = new RuntimeRunner({
+  it("rejects removed replay-window policy instead of silently adapting it", () => {
+    expect(() => new RuntimeRunner({
       sessionLog: new InMemorySessionLog(),
       maxTokens: 8000,
-      kernelReliability: { eventReplayCapacity: 0 },
+      kernelReliability: { eventReplayCapacity: 512 } as never,
       subAgentOrchestrator: stubOrchestrator() as never,
-    } as never)
+    } as never)).toThrow(/unknown kernel reliability field/)
+  })
 
-    await expect(runner.runWorkflow(fanoutSpec)).rejects.toThrow(/invalid_config/)
+  it("rejects the removed kernel memory path instead of silently dropping it", () => {
+    expect(() => new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      memoryPolicy: { memoryPath: ".memory" } as never,
+      subAgentOrchestrator: stubOrchestrator() as never,
+    } as never)).toThrow(/unknown memory policy field/)
   })
 
   it("tears the bootstrapped kernel down so the runner is reusable across sequential runs", async () => {

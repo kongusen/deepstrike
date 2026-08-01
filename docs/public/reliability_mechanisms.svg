@@ -1,7 +1,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike runtime reliability mechanisms</title>
-  <desc id="desc">Bounded input and snapshot journals, replay deduplication, provider and durability recovery attempts, cancellation, repeat fuse, criteria gate, entropy watch, and explicit terminal reasons.</desc>
+  <desc id="desc">Bounded canonical journal tails, replay deduplication, provider and durability recovery attempts, cancellation, repeat fuse, criteria gate, entropy watch, and explicit terminal reasons.</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
@@ -54,7 +54,7 @@
 
     <text x="66" y="175" class="card-title" text-anchor="start">Input validation</text>
     <text x="66" y="199" class="card-text" text-anchor="start">Canonical JSON byte limit</text>
-<text x="66" y="217" class="card-text" text-anchor="start">Unknown ABI v2 fields rejected</text>
+<text x="66" y="217" class="card-text" text-anchor="start">Unknown canonical fields rejected</text>
 
   </g>
 
@@ -70,9 +70,9 @@
   <g>
     <rect x="600" y="146" width="258" height="116" rx="6" class="panel"/>
     <rect x="600" y="146" width="5" height="116" rx="2.5" class="accent-fill"/>
-    <text x="618" y="175" class="card-title" text-anchor="start">Snapshot journal</text>
-    <text x="618" y="199" class="card-text" text-anchor="start">Input-count + byte bounds</text>
-<text x="618" y="217" class="card-text" text-anchor="start">Overflow → snapshot_incompatible</text>
+    <text x="618" y="175" class="card-title" text-anchor="start">Checkpoint tail</text>
+    <text x="618" y="199" class="card-text" text-anchor="start">Record + byte watermarks</text>
+<text x="618" y="217" class="card-text" text-anchor="start">Hard limit → retryable required</text>
 
   </g>
 

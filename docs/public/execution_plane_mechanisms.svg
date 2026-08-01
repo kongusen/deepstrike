@@ -1,7 +1,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike ExecutionPlane</title>
-  <desc id="desc">Approved tool calls move through host decision hooks into local, worktree, sandbox, or remote execution, with streaming, suspension, result redaction, and large-result spooling.</desc>
+  <desc id="desc">Approved tool calls move through host decision hooks into local, worktree, sandbox, or remote execution, with streaming, suspension, result redaction, and external payload storage.</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
@@ -42,7 +42,7 @@
   <path d="M0 94H1200M0 724H1200" class="rule"/>
   <text x="48" y="33" class="eyebrow" text-anchor="start">EXECUTION PLANE / v0.2.48</text>
   <text x="48" y="68" class="title" text-anchor="start">The kernel grants authority; the host performs the effect.</text>
-  <text x="1152" y="39" class="subtitle" text-anchor="end">TOOLS · STREAMING · ISOLATION · SUSPEND · SPOOL</text>
+  <text x="1152" y="39" class="subtitle" text-anchor="end">TOOLS · STREAMING · ISOLATION · SUSPEND · PAYLOAD</text>
   <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>
 
 
@@ -153,9 +153,9 @@
   <g>
     <rect x="808" y="500" width="344" height="116" rx="6" class="panel"/>
 
-    <text x="826" y="529" class="card-title" text-anchor="start">LargeResultSpool</text>
-    <text x="826" y="553" class="card-text" text-anchor="start">Inline preview + content handle</text>
-<text x="826" y="571" class="card-text" text-anchor="start">Payload stored on disk / DB and paged</text>
+    <text x="826" y="529" class="card-title" text-anchor="start">PayloadStore</text>
+    <text x="826" y="553" class="card-text" text-anchor="start">Opaque locator + content handle</text>
+<text x="826" y="571" class="card-text" text-anchor="start">Body stored on disk / DB and paged</text>
 
   </g>
 

@@ -1,5 +1,5 @@
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
-from deepstrike.runtime.kernel_step import restore_kernel_runtime, snapshot_kernel_runtime
+from deepstrike.runtime.payload_store import PayloadStore
 from deepstrike.runtime.facade import run_agent, run_fanout
 from deepstrike.runtime.runner import (
   MemoryPolicy,
@@ -21,7 +21,6 @@ from deepstrike.runtime.session_log import (
   SessionEntry,
   SessionEvent,
   SessionLog,
-  journal_operation_key,
 )
 # Durable transaction capability (Canonical Kernel ABI §9.1).
 from deepstrike.runtime.kernel_journal import (
@@ -39,26 +38,6 @@ from deepstrike.runtime.kernel_journal import (
   JournalRecordInput,
   KernelJournal,
 )
-from deepstrike.runtime.kernel_transaction_log import (
-  KERNEL_LOG_RECORD_VERSION,
-  DurableAppendReceipt,
-  KernelGenesisReceipt,
-  KernelLogConflictError,
-  KernelLogIntegrityError,
-  KernelOperationCursor,
-  KernelOperationGenesis,
-  KernelTransaction,
-  KernelTransactionEntry,
-  canonical_kernel_json,
-  create_kernel_operation_genesis,
-  create_kernel_transaction,
-  kernel_record_digest,
-  verify_kernel_operation_genesis,
-  verify_kernel_transaction,
-  verify_kernel_transaction_stream,
-  verify_kernel_transaction_successor,
-)
-from deepstrike.runtime.kernel_rebuild import KernelRebuildResult, rebuild_kernel_runtime
 from deepstrike.runtime.context_policy import (
   CONTEXT_POLICY_VERSION,
   DEFAULT_CONTEXT_POLICY_V1,
@@ -205,8 +184,6 @@ __all__ = [
   "MemoryPolicy",
   "KernelReliability",
   "OperationCancellationReason",
-  "restore_kernel_runtime",
-  "snapshot_kernel_runtime",
   "MemoryWriteRateLimit",
   "SchedulerPolicy",
   "PromptBudget",
@@ -237,7 +214,6 @@ __all__ = [
   "InMemorySessionLog",
   "FileSessionLog",
   "SessionLog",
-  "journal_operation_key",
   "KernelJournal",
   "InMemoryKernelJournal",
   "FileKernelJournal",
@@ -251,25 +227,6 @@ __all__ = [
   "JournalPruneReceipt",
   "CheckpointCandidate",
   "InstalledCheckpoint",
-  "KERNEL_LOG_RECORD_VERSION",
-  "DurableAppendReceipt",
-  "KernelGenesisReceipt",
-  "KernelLogConflictError",
-  "KernelLogIntegrityError",
-  "KernelOperationCursor",
-  "KernelOperationGenesis",
-  "KernelTransaction",
-  "KernelTransactionEntry",
-  "canonical_kernel_json",
-  "create_kernel_operation_genesis",
-  "create_kernel_transaction",
-  "kernel_record_digest",
-  "verify_kernel_operation_genesis",
-  "verify_kernel_transaction",
-  "verify_kernel_transaction_stream",
-  "verify_kernel_transaction_successor",
-  "KernelRebuildResult",
-  "rebuild_kernel_runtime",
   "CONTEXT_POLICY_VERSION",
   "DEFAULT_CONTEXT_POLICY_V1",
   "PPM_SCALE",

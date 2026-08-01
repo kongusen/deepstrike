@@ -107,7 +107,7 @@ npx tsx 08-editorial-room/main.ts --dry-run
 | **统一 syscall 治理** | 工具调用、子 Agent spawn、workflow 增长、memory 写入都走同一个 gate，得到 allow / deny / ask-user / rate-limit / quota 裁决。 |
 | **Context VM** | 四槽位渲染（`system_stable`、`system_knowledge`、`turns`、`state_turn`）、压力压缩、大工具结果 handle 分页、prompt-cache 友好的稳定前缀，以及受治理的 knowledge 生命周期（键控条目、边界延迟驱逐、知识预算、skill 租约）。 |
 | **Sub-agent 隔离** | role、上下文继承、capability filter、worktree / read-only / remote 隔离、进程 lineage、contract 与 handoff artifact。 |
-| **重放与恢复** | append-only `SessionLog`、provider replay envelope、kernel observation、workflow resume、`wake(session_id)`、OS snapshot 与 repair 工具。 |
+| **重放与恢复** | append-only `SessionLog` 证据、provider replay、canonical checkpoint/journal resume、`wake(session_id)`、OS snapshot 与离线 repair 工具。 |
 | **Memory 作为 OS 设备** | 内核校验的 `write_memory` / `query_memory`、DreamStore 集成、检索闭环、idle consolidation、memory 写入配额。 |
 | **自改进 Harness 实验室** | Node-first、内容寻址的 `HarnessManifest` profile、声明式 instruction/nudge 编辑面、验证器锚定的失败挖掘、held-in/held-out 验证，以及可审计的 propose–validate–promote 谱系。 |
 | **Provider 路由** | 内核只携带 `model_hint`；宿主把它解析到 OpenAI、Anthropic、Gemini、DeepSeek、Kimi、Qwen、GLM、Minimax、Ollama 或自定义 provider。 |
@@ -137,7 +137,7 @@ Observation 回到内核与 SessionLog
 | :--- | :--- | :--- |
 | 可重放 | 状态常在闭包变量或临时文件里 | control-flow observation 与 snapshot 可重建运行 |
 | 受治理 | 每条工具路径各自写检查逻辑 | 一个 syscall gate 覆盖工具、spawn、memory、workflow append |
-| 可恢复 | 中断后常要重跑 | SessionLog + `KernelSnapshot` 恢复挂起的 workflow |
+| 可恢复 | 中断后常要重跑 | opaque logical checkpoint + bounded journal tail 恢复挂起的 workflow |
 | 跨语言 | SDK 之间语义容易漂移 | Rust 内核驱动所有宿主 |
 | I/O 归属 | 控制流与凭据、副作用混在一起 | 内核纯计算；凭据和副作用归宿主 |
 
@@ -148,7 +148,7 @@ Observation 回到内核与 SessionLog
 | **Kernel (`deepstrike-core`)** | 状态机、调度、syscall disposition、governance、workflow DAG、预算账本、context 渲染、memory 校验、observation | HTTP、文件系统、provider client、向量存储、子进程 |
 | **宿主 SDK** | runtime loop、provider 调用、工具执行、session 持久化、DreamStore、ArchiveStore、worktree 与 sandbox 集成 | 重写 spawn gate 或 workflow 语义 |
 | **Provider** | 厂商协议适配、流式事件、replay envelope、模型 runtime policy | 策略裁决 |
-| **ExecutionPlane** | 本地工具、流式工具、suspend/resume、worktree cwd 注入、进程沙箱、远程 VPC 工具、大结果 spool | Context 压缩 |
+| **ExecutionPlane** | 本地工具、流式工具、suspend/resume、worktree cwd 注入、进程沙箱、远程 VPC 工具、外置 payload 存储 | Context 压缩 |
 
 ### 可以直接检查的机制
 
@@ -347,7 +347,7 @@ DeepStrike 把可靠性表示为运行时状态，而不是 prompt 编写约定�
 
 | 关注点 | 对应机制 |
 | :--- | :--- |
-| 执行被中断 | Append-only `SessionLog`、kernel observation、`KernelSnapshot`、`wake(session_id)` 与 workflow resume |
+| 执行被中断 | Append-only `SessionLog` 证据、canonical checkpoint/journal 恢复与 `wake(session_id)` |
 | Provider 非确定性 | 记录 provider replay envelope，并通过 `ReplayProvider` 在无网络条件下验证 |
 | 不安全能力 | Schema 预过滤、统一 syscall gate、参数约束、配额与可挂起的 ask-user 裁决 |
 | 上下文溢出 | 四槽位 Context VM、token 压力压缩、大结果 handle 与 prompt-cache 友好稳定前缀 |

@@ -1039,8 +1039,8 @@ mod tests {
         let model: SyscallRequest =
             serde_json::from_value(json!({ "kind": "update_task", "update": update })).unwrap();
 
-        // Same mutation payload, two different authority paths — which is exactly the distinction
-        // the legacy single `KernelInputEvent::UpdateTask` could not express.
+        // Same mutation payload, two different authority paths — the distinction the retired
+        // shared task-update input could not express.
         match (host, model) {
             (HostCommand::UpdateTask(host), SyscallRequest::UpdateTask(model)) => {
                 assert_eq!(host.update, model.update);

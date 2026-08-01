@@ -98,7 +98,7 @@ handle 的 `Residency` 决定 render 时如何投影：
 |-----------|------|
 | `Resident` | full content 仍在工作上下文中 |
 | `Collapsed` | 原文保留在 history，但 render 成 preview |
-| `SpooledOut` | SDK 持久化完整结果，context 留 preview / ref |
+| `External` | host 提交前持久化正文，context 留经过校验的 preview / locator |
 | `PagedOut` | 内容归档到 memory tier |
 
 `Collapsed` 是非破坏性的：stored history 不改，rendered copy 变短。这让旧工具结果能在压力下退出 prompt，同时保留可恢复数据。
@@ -172,7 +172,7 @@ Anthropic adapter 还会对 slot 做归因；OpenAI-family 自动缓存时不一
 2. **按需加载 Skill 正文**：避免频繁 churn `system_knowledge`。
 3. **使用 `allowed_tool_ids` 静态 profile**：工具 schema 稳定更利于 cache。
 4. **不要原地改写早期 history**：append 比 rewrite 更 cache-friendly。
-5. **大工具结果优先走 handle / spool / collapse**：不要把超大结果长期常驻 prompt。
+5. **大工具结果优先走 external handle / collapse**：不要把超大结果长期常驻 prompt。
 6. **把动态状态放进 task_state / signals**：让它进入 `state_turn`，不要污染 cacheable history。
 
 ## 延伸阅读

@@ -6,11 +6,12 @@ This page traces **one agent turn** through Agent OS — what the kernel and hos
 
 | Role | Implementation |
 |------|----------------|
-| **Kernel** | `KernelRuntime` / `LoopStateMachine` |
+| **Kernel** | `CanonicalKernel` / `CanonicalOperationDriver` |
 | **Host** | `RuntimeRunner` |
-| **Evidence** | `SessionLog` |
+| **Durability** | `KernelJournal` canonical record chain |
+| **Evidence** | `SessionLog` business-observation projection |
 
-## Lifecycle: start_run → Done
+## Lifecycle: StartOperation To Terminal
 
 ```mermaid
 sequenceDiagram
@@ -21,21 +22,22 @@ sequenceDiagram
     participant Tools as ExecutionPlane
 
     User->>SDK: run(goal)
-    SDK->>K: start_run
-    K->>SDK: CallLLM
+    SDK->>K: ConfigureOperation + StartOperation(Agent)
+    K->>SDK: CallProvider effect
 
     loop Each turn
         SDK->>LLM: stream(context, tools)
         LLM-->>SDK: text / tool_calls
-        SDK->>K: provider_result
+        SDK->>K: ResolveEffect(ProviderCompleted)
         alt tool_calls
-            K->>SDK: ExecuteTools
+            K->>SDK: ExecuteTools effect
             SDK->>Tools: execute
             Tools-->>SDK: results
-            SDK->>K: tool_results
+            SDK->>K: ResolveEffect(Tools)
         end
     end
 
+    K-->>SDK: KernelTerminal
     SDK-->>User: DoneEvent
 ```
 
@@ -45,7 +47,7 @@ sequenceDiagram
 
 1. `ContextManager` renders `RenderedContext` (four slots)
 2. Skill gating + governance **narrow** exposed tools
-3. Return `CallLLM`
+3. Return `CallProvider`
 
 Kernel decides **what the model sees**; SDK forwards to provider.
 
@@ -63,7 +65,7 @@ Meta-tools (`skill`, `memory`, `submit_workflow_nodes`) handled **inside** the k
 
 ## Phase 3 — Observe
 
-Host feeds `ToolResult` / provider text back. History grows; handles register large payloads; pressure sampled.
+Host answers provider/tool effects through `ResolveEffect`. History grows; handles register large payloads; pressure is sampled.
 
 ## Phase 4 — Delta
 
@@ -72,7 +74,7 @@ If pressure exceeds threshold → compression pipeline (Snip → Drop → Summar
 ## Sub-agent spawn
 
 ```text
-Syscall::Spawn → quota + trust checks → SDK orchestrator → sub_agent_result → DAG advances
+Syscall::Spawn → quota + trust checks → SDK orchestrator → ChildCompleted event → DAG advances
 ```
 
 ![Dynamic Workflow Orchestration DAG](/agent_os_workflow_dag.svg)

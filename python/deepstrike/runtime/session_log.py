@@ -14,22 +14,7 @@ from deepstrike.runtime.kernel_event_log import (
 from deepstrike.runtime.kernel_journal import (
     FileKernelJournal,
     InMemoryKernelJournal,
-    JournalCasConflictError,
-    JournalEntry,
-    JournalRecordInput,
     KernelJournal,
-)
-from deepstrike.runtime.kernel_transaction_log import (
-    DurableAppendReceipt,
-    KernelGenesisReceipt,
-    KernelLogConflictError,
-    KernelLogIntegrityError,
-    KernelOperationGenesis,
-    KernelTransaction,
-    KernelTransactionEntry,
-    verify_kernel_operation_genesis,
-    verify_kernel_transaction,
-    verify_kernel_transaction_successor,
 )
 
 
@@ -187,6 +172,8 @@ class AgentProcessChangedEvent(TypedDict, total=False):
     kind: Literal["agent_process_changed"]
     turn: int
     agent_id: str
+    parent_task_id: str
+    # Host audit identity; canonical kernel observations never populate it.
     parent_session_id: str
     role: str
     isolation: str
@@ -210,16 +197,6 @@ class PageInEvent(TypedDict, total=False):
     kind: Literal["page_in"]
     turn: int
     entry_count: int
-
-
-class LargeResultSpooledEvent(TypedDict, total=False):
-    kind: Literal["large_result_spooled"]
-    turn: int
-    call_id: str
-    tool: str
-    original_size: int
-    preview_size: int
-    spool_ref: str
 
 
 class SuspendedEvent(TypedDict, total=False):
@@ -367,7 +344,6 @@ SessionEvent = (
     | AgentProcessChangedEvent
     | PageOutEvent
     | PageInEvent
-    | LargeResultSpooledEvent
     | SuspendedEvent
     | ResumedEvent
     | ToolGatedEvent
@@ -395,14 +371,8 @@ class SessionEntry:
 
 class SessionLog(Protocol):
     """The business-projection log (spec §9.2): run started/terminal, stream events, observations,
-    provider/tool presentation, audit metadata.
-
-    The five ``*kernel*`` methods below are the **legacy journal face**. The durable transaction
-    capability now lives in its own interface — :class:`~deepstrike.runtime.kernel_journal.KernelJournal`
-    (spec §9.1) — so a custom ``SessionLog`` is no longer forced to masquerade as a transactional
-    journal (§9.4). These methods remain on ``SessionLog`` only so existing callers keep working;
-    both default implementations forward them to an internally held ``KernelJournal`` whose sequence
-    space is separate from business event ``seq``.
+    provider/tool presentation, and audit metadata. Canonical durable records live exclusively in
+    :class:`~deepstrike.runtime.kernel_journal.KernelJournal` (spec §9.1).
     """
 
     async def append(self, session_id: str, event: SessionEvent) -> int: ...
@@ -413,145 +383,6 @@ class SessionLog(Protocol):
         primitive_filter: KernelPrimitive | None = None,
     ) -> list[SessionEntry]: ...
     async def latest_seq(self, session_id: str) -> int: ...
-    async def append_kernel_genesis(
-        self, session_id: str, genesis: KernelOperationGenesis
-    ) -> KernelGenesisReceipt:
-        """.. deprecated:: use ``KernelJournal.compare_and_append`` with an empty expected head."""
-        ...
-
-    async def read_kernel_genesis(
-        self, session_id: str, operation_id: str
-    ) -> KernelOperationGenesis | None:
-        """.. deprecated:: use ``KernelJournal.read_from`` from step 0."""
-        ...
-
-    async def compare_and_append_kernel_transaction(
-        self,
-        session_id: str,
-        expected_transaction_head: str,
-        transaction: KernelTransaction,
-    ) -> DurableAppendReceipt:
-        """.. deprecated:: use ``KernelJournal.compare_and_append``."""
-        ...
-
-    async def read_kernel_transactions(
-        self, session_id: str, operation_id: str, from_step_seq: int = 1
-    ) -> list[KernelTransactionEntry]:
-        """.. deprecated:: use ``KernelJournal.read_from`` or ``KernelJournal.records_after``."""
-        ...
-
-    async def kernel_transaction_head(self, session_id: str, operation_id: str) -> str | None:
-        """.. deprecated:: use ``KernelJournal.head``."""
-        ...
-
-
-# ------------------------------------------------------------------ #
-# Legacy journal face → KernelJournal adapter
-#
-# The legacy face speaks typed `KernelOperationGenesis` / `KernelTransaction` records; the journal
-# speaks opaque bytes + a digest it was given. The adapter is the translation, and it keeps the
-# *typed* integrity checks (tamper detection, successor continuity) on this side — the journal only
-# ever guarantees chain-of-digest and CAS. Genesis is chain position 0, so genesis and transactions
-# share one uniform record chain, exactly as core models it (§8.1).
-# ------------------------------------------------------------------ #
-
-
-def journal_operation_key(session_id: str, operation_id: str) -> str:
-    """Journals are scoped per operation; the legacy ``SessionLog`` face is scoped per
-    (session, operation). Public so a host migrating off the deprecated methods can address the
-    same durable chain through the :class:`KernelJournal` capability directly.
-    """
-    return f"{session_id}\0{operation_id}"
-
-
-def _encode_journal_record(
-    value: KernelOperationGenesis | KernelTransaction, step_seq: int
-) -> JournalRecordInput:
-    digest = value["genesis_digest"] if "genesis_digest" in value else value["transaction_digest"]
-    return JournalRecordInput(
-        step_seq=step_seq,
-        record_digest=digest,
-        record_bytes=json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
-    )
-
-
-def _decode_journal_record(entry: JournalEntry) -> Any:
-    return json.loads(bytes(entry.record_bytes).decode("utf-8"))
-
-
-async def _journal_append_genesis(
-    journal: KernelJournal, session_id: str, genesis: KernelOperationGenesis
-) -> KernelGenesisReceipt:
-    verify_kernel_operation_genesis(genesis)
-    key = journal_operation_key(session_id, genesis["operation_id"])
-    try:
-        receipt = await journal.compare_and_append(key, None, _encode_journal_record(genesis, 0))
-        return {"log_seq": receipt.step_seq, "genesis_digest": genesis["genesis_digest"]}
-    except JournalCasConflictError:
-        # A chain already exists: idempotent for the same genesis, a conflict for a different one.
-        existing = await _journal_read_genesis(journal, session_id, genesis["operation_id"])
-        if existing is None or existing["genesis_digest"] != genesis["genesis_digest"]:
-            raise KernelLogConflictError(
-                "session already has a different kernel operation genesis"
-            ) from None
-        return {"log_seq": 0, "genesis_digest": genesis["genesis_digest"]}
-
-
-async def _journal_read_genesis(
-    journal: KernelJournal, session_id: str, operation_id: str
-) -> KernelOperationGenesis | None:
-    entries = await journal.read_from(journal_operation_key(session_id, operation_id), 0)
-    genesis = next((entry for entry in entries if entry.step_seq == 0), None)
-    return _decode_journal_record(genesis) if genesis is not None else None
-
-
-async def _journal_compare_and_append_transaction(
-    journal: KernelJournal,
-    session_id: str,
-    expected_transaction_head: str,
-    transaction: KernelTransaction,
-) -> DurableAppendReceipt:
-    verify_kernel_transaction(transaction)
-    key = journal_operation_key(session_id, transaction["operation_id"])
-    head = await journal.head(key)
-    if head is None:
-        raise KernelLogIntegrityError("kernel transaction requires a durable genesis")
-    if (
-        head.record_digest != expected_transaction_head
-        or transaction["previous_transaction_digest"] != head.record_digest
-    ):
-        raise KernelLogConflictError("kernel transaction head changed before compare-and-append")
-    # step 0 is the genesis record, which has no `KernelTransaction` predecessor.
-    previous: KernelTransaction | None = None
-    if head.step_seq > 0:
-        tail = await journal.read_from(key, head.step_seq)
-        if not tail:
-            # The head resolved from a pruned anchor: the typed successor check cannot run without
-            # the predecessor record. The legacy face has no bounded-tail replay, so refuse rather
-            # than skip.
-            raise KernelLogIntegrityError(
-                "kernel transaction predecessor has been pruned; use the KernelJournal capability directly"
-            )
-        previous = _decode_journal_record(tail[0])
-    verify_kernel_transaction_successor(previous, transaction)
-    receipt = await journal.compare_and_append(
-        key,
-        expected_transaction_head,
-        _encode_journal_record(transaction, transaction["step_seq"]),
-    )
-    return {"log_seq": receipt.step_seq, "transaction_digest": transaction["transaction_digest"]}
-
-
-async def _journal_read_transactions(
-    journal: KernelJournal, session_id: str, operation_id: str, from_step_seq: int
-) -> list[KernelTransactionEntry]:
-    entries = await journal.read_from(
-        journal_operation_key(session_id, operation_id), max(1, from_step_seq)
-    )
-    return [
-        {"log_seq": entry.step_seq, "transaction": _decode_journal_record(entry)}
-        for entry in entries
-    ]
 
 
 class InMemorySessionLog:
@@ -594,43 +425,6 @@ class InMemorySessionLog:
 
     async def latest_seq(self, session_id: str) -> int:
         return self._seq_counters.get(session_id, 0) - 1
-
-    async def append_kernel_genesis(
-        self, session_id: str, genesis: KernelOperationGenesis
-    ) -> KernelGenesisReceipt:
-        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
-        return await _journal_append_genesis(self.kernel_journal, session_id, genesis)
-
-    async def read_kernel_genesis(
-        self, session_id: str, operation_id: str
-    ) -> KernelOperationGenesis | None:
-        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
-        return await _journal_read_genesis(self.kernel_journal, session_id, operation_id)
-
-    async def compare_and_append_kernel_transaction(
-        self,
-        session_id: str,
-        expected_transaction_head: str,
-        transaction: KernelTransaction,
-    ) -> DurableAppendReceipt:
-        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
-        return await _journal_compare_and_append_transaction(
-            self.kernel_journal, session_id, expected_transaction_head, transaction
-        )
-
-    async def read_kernel_transactions(
-        self, session_id: str, operation_id: str, from_step_seq: int = 1
-    ) -> list[KernelTransactionEntry]:
-        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
-        return await _journal_read_transactions(
-            self.kernel_journal, session_id, operation_id, from_step_seq
-        )
-
-    async def kernel_transaction_head(self, session_id: str, operation_id: str) -> str | None:
-        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
-        head = await self.kernel_journal.head(journal_operation_key(session_id, operation_id))
-        return head.record_digest if head is not None else None
-
 
 class FileSessionLog:
     """File-backed ``SessionLog``. Business appends are single-writer per session: safe within one
@@ -692,42 +486,6 @@ class FileSessionLog:
     async def latest_seq(self, session_id: str) -> int:
         records = self._read_records(session_id)
         return max((int(record["seq"]) for record in records), default=-1)
-
-    async def append_kernel_genesis(
-        self, session_id: str, genesis: KernelOperationGenesis
-    ) -> KernelGenesisReceipt:
-        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
-        return await _journal_append_genesis(self.kernel_journal, session_id, genesis)
-
-    async def read_kernel_genesis(
-        self, session_id: str, operation_id: str
-    ) -> KernelOperationGenesis | None:
-        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
-        return await _journal_read_genesis(self.kernel_journal, session_id, operation_id)
-
-    async def compare_and_append_kernel_transaction(
-        self,
-        session_id: str,
-        expected_transaction_head: str,
-        transaction: KernelTransaction,
-    ) -> DurableAppendReceipt:
-        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
-        return await _journal_compare_and_append_transaction(
-            self.kernel_journal, session_id, expected_transaction_head, transaction
-        )
-
-    async def read_kernel_transactions(
-        self, session_id: str, operation_id: str, from_step_seq: int = 1
-    ) -> list[KernelTransactionEntry]:
-        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
-        return await _journal_read_transactions(
-            self.kernel_journal, session_id, operation_id, from_step_seq
-        )
-
-    async def kernel_transaction_head(self, session_id: str, operation_id: str) -> str | None:
-        """.. deprecated:: legacy journal face — forwards to :attr:`kernel_journal`."""
-        head = await self.kernel_journal.head(journal_operation_key(session_id, operation_id))
-        return head.record_digest if head is not None else None
 
     def _append_record(self, session_id: str, record: dict) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)

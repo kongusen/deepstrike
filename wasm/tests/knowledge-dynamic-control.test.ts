@@ -1,7 +1,7 @@
 /**
  * Strict dynamic context control after Task 21 canonical cutover.
  *
- * ABI-v2 kinds (`add_knowledge_message`, `skill_activated`, `configure_run`, `add_history_message`)
+ * legacy kinds (`add_knowledge_message`, `skill_activated`, `configure_run`, `add_history_message`)
  * are lowered into canonical inputs. These tests assert the durable canonical shapes the mock
  * kernel receives via `kernelEvents`.
  */

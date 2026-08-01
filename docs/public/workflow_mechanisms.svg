@@ -70,9 +70,9 @@
   <g>
     <rect x="600" y="144" width="258" height="102" rx="6" class="panel"/>
 
-    <text x="618" y="173" class="card-title" text-anchor="start">start_workflow</text>
-    <text x="618" y="197" class="card-text" text-anchor="start">Bootstrap or flatten into parent</text>
-<text x="618" y="215" class="card-text" text-anchor="start">Syscall::LoadWorkflow</text>
+    <text x="618" y="173" class="card-title" text-anchor="start">append_workflow_nodes</text>
+    <text x="618" y="197" class="card-text" text-anchor="start">Extend the governed DAG</text>
+<text x="618" y="215" class="card-text" text-anchor="start">Syscall::AppendWorkflowNodes</text>
 
   </g>
 
@@ -170,9 +170,9 @@
   <g>
     <rect x="854" y="510" width="278" height="98" rx="6" class="panel"/>
 
-    <text x="872" y="539" class="card-title" text-anchor="start">Session recovery</text>
-    <text x="872" y="563" class="card-text" text-anchor="start">Fold completions + submissions</text>
-<text x="872" y="581" class="card-text" text-anchor="start">Resume remaining frontier only</text>
+    <text x="872" y="539" class="card-title" text-anchor="start">Checkpoint recovery</text>
+    <text x="872" y="563" class="card-text" text-anchor="start">Restore graph + node status</text>
+<text x="872" y="581" class="card-text" text-anchor="start">Schedule remaining frontier</text>
 
   </g>
 

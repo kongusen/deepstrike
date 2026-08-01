@@ -112,19 +112,19 @@ async for event in runner.run(session_id="readme-1", goal="Summarize README.md")
 │  RuntimeRunner (Layer 1.5)                              │
 │  LLMProvider · ExecutionPlane · SessionLog · DreamStore │
 └───────────────────────────┬─────────────────────────────┘
-                            │ step(JSON event) ↔ actions / observations
+                            │ durable prepare / append / commit
 ┌───────────────────────────▼─────────────────────────────┐
-│  deepstrike._kernel KernelRuntime                       │
+│  deepstrike._kernel Canonical Kernel ABI                │
 │  P1 Syscall · P2 Sched · P3 MM · Proc · IPC             │
 └─────────────────────────────────────────────────────────┘
 ```
 
-The runner drives a single loop:
+The runner drives one durable operation loop:
 
-1. Kernel returns an **action** — `call_provider`, `execute_tool`, `evaluate_milestone`, or `done`.
-2. SDK executes the action (stream LLM, run tools, call milestone verifier).
-3. SDK feeds the result back as a kernel **event** (`provider_result`, `tool_results`, …).
-4. Kernel **observations** (compression, page-out, spool, signals, …) are drained into `SessionLog`.
+1. The host prepares one canonical envelope and durably appends the exact core-produced record.
+2. After commit, the kernel publishes typed **effects** such as provider, tool, or task work.
+3. The SDK executes those effects and returns each outcome through the single `resolve_effect` input.
+4. Typed observations and the terminal disposition are projected into `SessionLog` and the public stream.
 
 Kernel session events carry an optional `category` tag (`syscall` · `sched` · `mm` · `proc` · `ipc`) for diagnostics and OS snapshot rebuilds.
 
@@ -135,8 +135,8 @@ The mechanisms above are not internal refactors — they change what you can bui
 **Kernel-mediated runtime (M0–M4)**  
 Tool calls, spawns, compression, and signals pass through one kernel gate with an explicit lifecycle (Ready / Running / Blocked / Suspended). You implement I/O; the kernel decides *when* and *whether*. Node, Python, and Rust share the same decision path, so `wake(session_id)` and cross-language tooling see consistent behavior.
 
-**Longer, sturdier sessions (Layer-1 spool + semantic page-out)**  
-Oversized tool results (> 50 KB) stay in context as a preview plus a `.spool/` reference — the model reads the full payload on demand via ordinary file tools. When pressure triggers semantic eviction, the SDK summarizes archived content into `DreamStore`. Long tasks survive token pressure instead of failing mid-run.
+**Longer, sturdier sessions (external payloads + semantic page-out)**
+The host atomically persists oversized tool results before submitting an `External` result. Core journals only the opaque locator, digest, size, and preview; `read_result` becomes a correlated `LoadPayload` effect. When pressure triggers semantic eviction, the SDK summarizes archived content into `DreamStore`.
 
 **Safety and governance by default (OS native profile)**  
 Every run loads declarative `governance_policy` (deny / ask_user / rate-limit / param rules) and in-kernel signal routing (`signal_policy`, default queue 64). Dangerous tools, external interrupts, and approval flows are policy — not ad-hoc checks in your handlers.
@@ -148,14 +148,14 @@ Every run loads declarative `governance_policy` (deny / ask_user / rate-limit / 
 Sub-agents register in the kernel process table (`agent_process_changed`); parent runs suspend explicitly until `sub_agent_completed`. Signals get disposition (Interrupt / Queue / Observe / Dropped) in-kernel, so gateways, cron, and heartbeats compose with the main loop instead of racing it.
 
 **Observable like an OS log**  
-Spool, page-out, signals, processes, budgets, and memory events land in `SessionLog` with categories. Rebuild an OS snapshot (`page_out_count`, `spool_count`, `process_by_agent`, memory counters) from one event stream — replay still strips audit events when reconstructing LLM messages.
+Page-out, signals, processes, budgets, and memory events land in `SessionLog` with categories. Rebuild an OS snapshot (`page_out_count`, `process_by_agent`, memory counters) from one event stream; payload residency stays in the canonical journal.
 
 | You need… | Use… |
 |---|---|
 | Policy before tools run | `governance_policy` (default: allow-all native profile) |
 | External interrupts | `signal_source` + in-kernel `signal_policy` |
 | Spawn / memory-write quotas | `resource_quota` (`set_resource_quota`) |
-| Huge tool output | Automatic Layer-1 spool; optional custom `result_spool` |
+| Huge tool output | Canonical external payload; optional custom `payload_store` |
 | Durable recall across runs | `DreamStore` + semantic `page_out` via `dream_summarizer` |
 | Programmatic memory I/O | `runner.write_memory()` / `runner.query_memory()` |
 | Debug / compliance | `SessionLog` events + OS snapshot helpers |
@@ -317,7 +317,7 @@ runner = RuntimeRunner(RuntimeOptions(
     run_spec=AgentRunSpec(
         identity=AgentIdentity(agent_id="my-agent", session_id="session-1"),
         role="orchestrator",
-        goal="...",  # overridden by run() goal on start_run
+        goal="...",  # overridden by the run() goal on canonical root start
     ),
     milestone_contract=my_contract,
     milestone_policy="require_verifier",
@@ -331,14 +331,14 @@ runner = RuntimeRunner(RuntimeOptions(
 
 | Option | Purpose |
 |--------|---------|
-| `governance_policy` | Declarative deny / ask_user / rate-limit / param rules loaded into the kernel before `start_run` |
+| `governance_policy` | Declarative deny / ask_user / rate-limit / param rules installed before canonical root start |
 | `signal_policy` | Versioned in-kernel signal queue/TTL policy (default queue 64) |
 | `prompt_budget` | Provider-envelope overhead, output reserve, and safety margin deducted from the context window |
 | `on_permission_request` | Resolves `tool_gated` + `suspended` → kernel `resume` with approved/denied call IDs |
 | `compression_store` | Writes archived messages on `compressed` observations |
 | `dream_summarizer` | Summarizes `page_out { tier_hint: "semantic" }` into `DreamStore` during a run |
 | `dream_provider` | Separate LLM for `dream()` idle consolidation (falls back to `provider`) |
-| `result_spool` | Custom large-result spool (default: `.spool/` under cwd) |
+| `payload_store` | Canonical opaque payload storage (default: `.payloads/`) |
 
 Validate policies before starting a run:
 
@@ -357,23 +357,18 @@ from deepstrike.runtime.os_snapshot import rebuild_os_snapshot_from_session_even
 
 events = [e.event for e in await session_log.read(session_id)]
 snap = rebuild_os_snapshot_from_session_events(events)
-# snap["page_out_count"], snap["spool_count"], snap["signals"], …
+# snap["page_out_count"], snap["signals"], …
 ```
 
 ---
 
-## Large result spool (Layer 1)
+## External tool payloads
 
-When a single tool result exceeds **50 KB**, the kernel keeps a short preview in context and emits `large_result_spooled`. The SDK writes the full payload to `.spool/` under the process cwd and logs `spool_ref` in the session.
+When a tool result exceeds the configured inline threshold, the SDK persists the full body before sending the canonical `External` result. The kernel receives only `payload_ref`, `digest`, `original_size`, and a bounded preview.
 
-`LocalExecutionPlane` transparently resolves read-tool arguments that point at `.spool/` paths:
+`payload_ref` is opaque and never passed to ordinary file tools. The model calls `read_result`; core authorizes the reachable handle and emits `LoadPayload`, which the runner resolves through `PayloadStore`.
 
-```python
-# Kernel context shows a preview + spool reference.
-# LLM calls read_file(path=".spool/abc123…") → full content returned.
-```
-
-No configuration is required. Pass a custom `result_spool` on `RuntimeOptions` to change the directory (see `tests/test_semantic_page_out_dream.py` and spool-related tests).
+No configuration is required. Pass a `PayloadStore` through `RuntimeOptions.payload_store` to use a different filesystem root or storage adapter.
 
 ---
 
@@ -383,7 +378,7 @@ No configuration is required. Pass a custom `result_spool` on `RuntimeOptions` t
 from deepstrike import tool, read_file
 
 plane.register(tool(name="search", description="Search.", parameters=schema)(my_fn))
-plane.register(read_file)     # built-in: read files (also resolves .spool/ refs)
+plane.register(read_file)     # built-in: read files explicitly named by the caller
 plane.unregister("search")
 ```
 

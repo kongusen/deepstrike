@@ -40,13 +40,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use compact_str::CompactString;
-
-use deepstrike_core::context::renderer::{
-    ContextBudgetOverflow as RustContextBudgetOverflow,
-    ContextBudgetOverflowKind as RustContextBudgetOverflowKind,
-    RenderedContext as RustRenderedContext,
-};
 use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
@@ -55,20 +48,12 @@ use deepstrike_core::harness::eval::{
     Criterion as RustCriterion, build_eval_messages as rust_build_eval_messages,
     parse_verdict as rust_parse_verdict, verdict_output_schema as rust_verdict_output_schema,
 };
-use deepstrike_core::memory::durable::SessionData as RustSessionData;
-use deepstrike_core::mm::memory::{
-    MemoryAuthor as RustMemoryAuthor, MemoryKind as RustMemoryKind,
-    MemoryProvenance as RustMemoryProvenance, MemoryRecord as RustMemoryRecord,
-    MemoryScope as RustMemoryScope, MemoryTrustLevel as RustMemoryTrustLevel,
-};
-use deepstrike_core::runtime::KernelRuntime as RustKernelRuntime;
 use deepstrike_core::runtime::kernel::wire::{
     CanonicalKernel as RustCanonicalKernel, CheckpointBoundary as RustCheckpointBoundary,
     Digest as RustDigest, KernelCheckpoint as RustKernelCheckpoint,
     KernelPreparation as RustKernelPreparation, OperationLifecycle as RustOperationLifecycle,
     PrepareToken as RustPrepareToken, WireU64 as RustWireU64,
 };
-use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
 use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
@@ -174,15 +159,6 @@ pub struct VerificationContract {
     pub acceptance: Vec<AcceptanceCriterion>,
     pub anti_patterns: Vec<String>,
     pub evidence_required: Vec<String>,
-}
-
-#[napi(object)]
-#[derive(Clone)]
-pub struct LoopPolicy {
-    pub max_tokens: u32,
-    pub max_turns: Option<u32>,
-    pub max_total_tokens: Option<BigInt>,
-    pub timeout_ms: Option<BigInt>,
 }
 
 #[napi(object)]
@@ -316,39 +292,6 @@ pub struct SkillMetadata {
     pub estimated_tokens: u32,
 }
 
-// ────────────────────────────── Provider context ──────────────────────────────
-
-/// Structured context for a provider call — emitted with `kind === "call_llm"`.
-/// Separates system configuration from the conversation transcript so providers
-/// can map each field to their own API contract without role-filtering.
-#[napi(object)]
-#[derive(Clone)]
-pub struct RenderedContext {
-    /// Identity + Knowledge combined — for providers with a single system slot (OpenAI).
-    pub system_text: String,
-    /// Identity only (system partition). Anthropic system[0] with cache_control.
-    pub system_stable: String,
-    /// Knowledge (memory retrievals, skill definitions, artifacts). Anthropic system[1] with cache_control.
-    pub system_knowledge: String,
-    /// History turns only — the stable, cacheable message prefix.
-    pub turns: Vec<Message>,
-    /// Volatile State turn (task_state + signals), rendered after the cacheable history.
-    pub state_turn: Option<Message>,
-    /// P1-E: count of leading `turns` forming the frozen prefix (byte-stable until the next
-    /// compaction). Providers pin a deep cache breakpoint here; absent ⇒ rolling-pair fallback.
-    pub frozen_prefix_len: Option<u32>,
-    /// Fail-closed evidence: this projection must not be submitted to a provider.
-    pub budget_overflow: Option<ContextBudgetOverflow>,
-}
-
-#[napi(object)]
-#[derive(Clone)]
-pub struct ContextBudgetOverflow {
-    pub kind: String,
-    pub required_tokens: u32,
-    pub max_tokens: u32,
-}
-
 // ────────────────────────────────── FFI panic guard ──────────────────────────────────
 
 /// Run `f` with a `catch_unwind` net so a Rust panic becomes a catchable JS error
@@ -380,48 +323,12 @@ fn ffi_guard<T>(what: &str, f: impl FnOnce() -> Result<T>) -> Result<T> {
 
 // ────────────────────────────────── conversion helpers ──────────────────────────────────
 
-fn role_str_to_rust(role: &str) -> Result<Role> {
-    match role {
-        "system" => Ok(Role::System),
-        "user" => Ok(Role::User),
-        "assistant" => Ok(Role::Assistant),
-        "tool" => Ok(Role::Tool),
-        other => Err(Error::new(
-            Status::InvalidArg,
-            format!("invalid role: {other}"),
-        )),
-    }
-}
-
 fn role_to_str(role: Role) -> &'static str {
     match role {
         Role::System => "system",
         Role::User => "user",
         Role::Assistant => "assistant",
         Role::Tool => "tool",
-    }
-}
-
-fn content_part_to_rust(p: ContentPartObj) -> ContentPart {
-    match p.r#type.as_str() {
-        "image" => ContentPart::Image {
-            url: p.url,
-            data: p.data,
-            media_type: p.media_type,
-            detail: p.detail,
-        },
-        "audio" => ContentPart::Audio {
-            data: p.data.unwrap_or_default(),
-            media_type: p.media_type.unwrap_or_else(|| "audio/wav".into()),
-        },
-        "tool_result" => ContentPart::ToolResult {
-            call_id: CompactString::new(&p.call_id.unwrap_or_default()),
-            output: p.output.unwrap_or_default(),
-            is_error: p.is_error.unwrap_or(false),
-        },
-        _ => ContentPart::Text {
-            text: p.text.unwrap_or_default(),
-        },
     }
 }
 
@@ -483,27 +390,6 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
     }
 }
 
-fn message_to_rust(m: Message) -> Result<RustMessage> {
-    let role = role_str_to_rust(&m.role)?;
-    let tool_calls: Vec<RustToolCall> = m
-        .tool_calls
-        .into_iter()
-        .map(tool_call_to_rust)
-        .collect::<Result<_>>()?;
-    let content = match m.content_parts {
-        Some(parts) if !parts.is_empty() => {
-            Content::Parts(parts.into_iter().map(content_part_to_rust).collect())
-        }
-        _ => Content::Text(m.content),
-    };
-    Ok(RustMessage {
-        role,
-        content,
-        tool_calls,
-        token_count: m.token_count,
-    })
-}
-
 fn message_from_rust(m: &RustMessage) -> Message {
     let (content, content_parts) = match &m.content {
         Content::Text(s) => (s.clone(), None),
@@ -527,16 +413,6 @@ fn message_from_rust(m: &RustMessage) -> Message {
         token_count: m.token_count,
         tool_calls: m.tool_calls.iter().map(tool_call_from_rust).collect(),
     }
-}
-
-fn tool_call_to_rust(c: ToolCall) -> Result<RustToolCall> {
-    let args: serde_json::Value = serde_json::from_str(&c.arguments)
-        .map_err(|e| Error::new(Status::InvalidArg, format!("invalid JSON arguments: {e}")))?;
-    Ok(RustToolCall {
-        id: CompactString::new(&c.id),
-        name: CompactString::new(&c.name),
-        arguments: args,
-    })
 }
 
 fn tool_call_from_rust(c: &RustToolCall) -> ToolCall {
@@ -568,45 +444,6 @@ fn verification_contract_to_rust(v: VerificationContract) -> RustVerificationCon
             .collect(),
         anti_patterns: v.anti_patterns,
         evidence_required: v.evidence_required,
-    }
-}
-
-fn policy_to_rust(p: LoopPolicy) -> RustLoopPolicy {
-    RustLoopPolicy {
-        max_tokens: p.max_tokens,
-        max_turns: p.max_turns.unwrap_or(25),
-        max_total_tokens: p
-            .max_total_tokens
-            .map(|b| b.get_u64().1)
-            .unwrap_or(1_000_000),
-        max_wall_ms: p.timeout_ms.map(|b| b.get_u64().1),
-    }
-}
-
-fn rendered_context_from_rust(rc: RustRenderedContext) -> RenderedContext {
-    RenderedContext {
-        system_text: rc.system_text,
-        system_stable: rc.system_stable,
-        system_knowledge: rc.system_knowledge,
-        turns: rc.turns.iter().map(message_from_rust).collect(),
-        state_turn: rc.state_turn.as_ref().map(message_from_rust),
-        frozen_prefix_len: rc.frozen_prefix_len.map(|n| n as u32),
-        budget_overflow: rc
-            .budget_overflow
-            .as_ref()
-            .map(context_budget_overflow_from_rust),
-    }
-}
-
-fn context_budget_overflow_from_rust(value: &RustContextBudgetOverflow) -> ContextBudgetOverflow {
-    ContextBudgetOverflow {
-        kind: match value.kind {
-            RustContextBudgetOverflowKind::FixedContext => "fixed_context",
-            RustContextBudgetOverflowKind::ProtectedTail => "protected_tail",
-        }
-        .to_string(),
-        required_tokens: value.required_tokens,
-        max_tokens: value.max_tokens,
     }
 }
 
@@ -908,171 +745,6 @@ fn json_error(error: serde_json::Error) -> Error {
     Error::new(Status::GenericFailure, error.to_string())
 }
 
-// ─────────────────────────────────────────── KernelRuntime ───────────────────────────────────────────
-
-/// Versioned kernel ABI runtime. Accepts/returns JSON encoded
-/// `KernelInput`/`KernelStep` payloads from deepstrike-core.
-#[napi]
-pub struct KernelRuntime {
-    inner: RustKernelRuntime,
-}
-
-#[napi]
-impl KernelRuntime {
-    #[napi(constructor)]
-    pub fn new(policy: LoopPolicy) -> Self {
-        Self {
-            inner: RustKernelRuntime::new(policy_to_rust(policy)),
-        }
-    }
-
-    #[napi]
-    pub fn step(&mut self, input_json: String) -> Result<String> {
-        // Guard the core step (context compaction, rendering, scheduling) — a panic
-        // in here must not abort the whole Node process. See `ffi_guard`.
-        ffi_guard("KernelRuntime.step", || {
-            let step = self.inner.step_json(&input_json).map_err(|e| {
-                Error::new(Status::InvalidArg, format!("invalid KernelInput JSON: {e}"))
-            })?;
-            serde_json::to_string(&step).map_err(|e| {
-                Error::new(
-                    Status::GenericFailure,
-                    format!("failed to encode KernelStep: {e}"),
-                )
-            })
-        })
-    }
-
-    /// Stage a KernelInput so the host can durably persist it before publishing the transition.
-    #[napi(js_name = "prepareStep")]
-    pub fn prepare_step(&mut self, input_json: String) -> Result<String> {
-        ffi_guard("KernelRuntime.prepareStep", || {
-            let prepared = self.inner.prepare_step_json(&input_json).map_err(|e| {
-                Error::new(Status::InvalidArg, format!("invalid KernelInput JSON: {e}"))
-            })?;
-            serde_json::to_string(&prepared).map_err(|e| {
-                Error::new(
-                    Status::GenericFailure,
-                    format!("failed to encode KernelPreparedStep: {e}"),
-                )
-            })
-        })
-    }
-
-    /// Publish a previously staged transition after durable host persistence succeeds.
-    #[napi(js_name = "commitPrepared")]
-    pub fn commit_prepared(&mut self, prepare_token: String) -> Result<String> {
-        ffi_guard("KernelRuntime.commitPrepared", || {
-            let step = self
-                .inner
-                .commit_prepared(&prepare_token)
-                .map_err(|fault| {
-                    Error::new(
-                        Status::InvalidArg,
-                        serde_json::to_string(&fault).unwrap_or(fault.message),
-                    )
-                })?;
-            serde_json::to_string(&step).map_err(|e| {
-                Error::new(
-                    Status::GenericFailure,
-                    format!("failed to encode KernelStep: {e}"),
-                )
-            })
-        })
-    }
-
-    /// Roll back a staged transition when durable host persistence fails.
-    #[napi(js_name = "abortPrepared")]
-    pub fn abort_prepared(&mut self, prepare_token: String) -> Result<()> {
-        ffi_guard("KernelRuntime.abortPrepared", || {
-            self.inner.abort_prepared(&prepare_token).map_err(|fault| {
-                Error::new(
-                    Status::InvalidArg,
-                    serde_json::to_string(&fault).unwrap_or(fault.message),
-                )
-            })
-        })
-    }
-
-    /// Encode a portable ABI-v2 runtime checkpoint.
-    #[napi]
-    pub fn snapshot(&self) -> Result<String> {
-        self.inner.snapshot_json().map_err(|fault| {
-            Error::new(
-                Status::InvalidArg,
-                serde_json::to_string(&fault).unwrap_or(fault.message),
-            )
-        })
-    }
-
-    /// Replace this runtime with a checkpoint restored by deterministic ABI replay.
-    #[napi]
-    pub fn restore(&mut self, snapshot_json: String) -> Result<()> {
-        self.inner = RustKernelRuntime::restore_snapshot_json(&snapshot_json).map_err(|fault| {
-            Error::new(
-                Status::InvalidArg,
-                serde_json::to_string(&fault).unwrap_or(fault.message),
-            )
-        })?;
-        Ok(())
-    }
-
-    /// Return a read-only JSON resource projection without mutating kernel state.
-    #[napi]
-    pub fn diagnostics(&self) -> Result<String> {
-        serde_json::to_string(&self.inner.diagnostics()).map_err(|error| {
-            Error::new(
-                Status::GenericFailure,
-                format!("failed to encode kernel diagnostics: {error}"),
-            )
-        })
-    }
-
-    #[napi]
-    pub fn is_terminal(&self) -> bool {
-        self.inner.is_terminal()
-    }
-
-    #[napi]
-    pub fn turn(&self) -> u32 {
-        self.inner.turn()
-    }
-
-    /// L1 (RunGroup): cumulative sub-agent spawns this run, for charging the group ledger at run end.
-    #[napi]
-    pub fn local_subagents_spawned(&self) -> u32 {
-        self.inner.local_subagents_spawned()
-    }
-
-    #[napi]
-    pub fn recovery_content_bytes(&self) -> u32 {
-        self.inner.recovery_content_bytes() as u32
-    }
-
-    #[napi]
-    pub fn render(&self) -> Result<RenderedContext> {
-        // Guard render's truncation/projection — any mis-sliced string must throw,
-        // not abort the process. `Result<T>` maps to the same TS shape as `T`.
-        ffi_guard("KernelRuntime.render", || {
-            Ok(rendered_context_from_rust(self.inner.render()))
-        })
-    }
-
-    #[napi]
-    pub fn drain_new_messages(&mut self) -> Vec<Message> {
-        self.inner
-            .drain_new_messages()
-            .iter()
-            .map(message_from_rust)
-            .collect()
-    }
-
-    #[napi]
-    pub fn preserved_refs(&self) -> Vec<String> {
-        self.inner.preserved_refs()
-    }
-}
-
 // ─────────────────────────────────────────── SignalRouter ───────────────────────────────────────────
 
 #[napi]
@@ -1291,171 +963,6 @@ impl Governance {
         };
         let caller = AgentIdentity::new(self.agent_id.as_str(), self.session_id.as_str());
         Ok(verdict_to_js(self.inner.evaluate(&call, &caller)))
-    }
-}
-
-// ──────────────────────────────── Dream / idle-pipeline POD types ────────────────────────────────
-
-/// A completed session transcript for durable-memory extraction.
-#[napi(object)]
-#[derive(Clone)]
-pub struct SessionData {
-    pub session_id: String,
-    pub agent_id: String,
-    /// Messages from this session.
-    pub messages: Vec<Message>,
-    /// JSON-encoded metadata blob.
-    pub metadata: String,
-    /// Unix ms timestamp.
-    pub created_at_ms: f64,
-    /// Unix ms timestamp.
-    pub updated_at_ms: f64,
-}
-
-#[napi(object)]
-#[derive(Clone)]
-pub struct MemoryScope {
-    pub tenant_id: String,
-    pub namespace: String,
-}
-
-#[napi(object)]
-#[derive(Clone)]
-pub struct MemoryProvenance {
-    pub session_id: Option<String>,
-    pub author: String,
-    pub trust: String,
-    pub evidence_refs: Vec<String>,
-}
-
-/// The single public long-term memory wire.
-#[napi(object)]
-#[derive(Clone)]
-pub struct MemoryRecord {
-    pub record_id: String,
-    pub scope: MemoryScope,
-    pub name: String,
-    pub kind: String,
-    pub content: String,
-    pub description: String,
-    pub provenance: MemoryProvenance,
-    pub created_at: f64,
-    pub updated_at: f64,
-    pub last_recalled_at: Option<f64>,
-    pub recall_count: f64,
-    pub confidence: f64,
-    pub links: Vec<String>,
-    pub pinned: bool,
-    pub ttl_days: Option<u32>,
-}
-
-// ─────────────────────── Dream conversion helpers ───────────────────────
-
-fn session_data_to_rust(s: SessionData) -> Result<RustSessionData> {
-    let messages: Vec<RustMessage> = s
-        .messages
-        .into_iter()
-        .map(message_to_rust)
-        .collect::<Result<_>>()?;
-    let metadata: serde_json::Value =
-        serde_json::from_str(&s.metadata).unwrap_or(serde_json::Value::Null);
-    Ok(RustSessionData {
-        session_id: s.session_id,
-        agent_id: s.agent_id,
-        messages,
-        metadata,
-        created_at_ms: s.created_at_ms as u64,
-        updated_at_ms: s.updated_at_ms as u64,
-    })
-}
-
-fn memory_record_to_rust(record: MemoryRecord) -> Result<RustMemoryRecord> {
-    let kind = match record.kind.as_str() {
-        "user" => RustMemoryKind::User,
-        "feedback" => RustMemoryKind::Feedback,
-        "project" => RustMemoryKind::Project,
-        "reference" => RustMemoryKind::Reference,
-        other => return Err(Error::from_reason(format!("invalid memory kind {other:?}"))),
-    };
-    let author = match record.provenance.author.as_str() {
-        "model" => RustMemoryAuthor::Model,
-        "host" => RustMemoryAuthor::Host,
-        "extraction" => RustMemoryAuthor::Extraction,
-        other => {
-            return Err(Error::from_reason(format!(
-                "invalid memory author {other:?}"
-            )));
-        }
-    };
-    let trust = match record.provenance.trust.as_str() {
-        "untrusted" => RustMemoryTrustLevel::Untrusted,
-        "user_asserted" => RustMemoryTrustLevel::UserAsserted,
-        "host_verified" => RustMemoryTrustLevel::HostVerified,
-        other => {
-            return Err(Error::from_reason(format!(
-                "invalid memory trust {other:?}"
-            )));
-        }
-    };
-    Ok(RustMemoryRecord {
-        record_id: record.record_id,
-        scope: RustMemoryScope::new(record.scope.tenant_id, record.scope.namespace),
-        name: record.name,
-        kind,
-        content: record.content,
-        description: record.description,
-        provenance: RustMemoryProvenance {
-            session_id: record.provenance.session_id,
-            author,
-            trust,
-            evidence_refs: record.provenance.evidence_refs,
-        },
-        created_at: record.created_at as u64,
-        updated_at: record.updated_at as u64,
-        last_recalled_at: record.last_recalled_at.map(|value| value as u64),
-        recall_count: record.recall_count as u64,
-        confidence: record.confidence,
-        links: record.links,
-        pinned: record.pinned,
-        ttl_days: record.ttl_days,
-    })
-}
-
-fn memory_record_from_rust(record: &RustMemoryRecord) -> MemoryRecord {
-    MemoryRecord {
-        record_id: record.record_id.clone(),
-        scope: MemoryScope {
-            tenant_id: record.scope.tenant_id.clone(),
-            namespace: record.scope.namespace.clone(),
-        },
-        name: record.name.clone(),
-        kind: record.kind.label().into(),
-        content: record.content.clone(),
-        description: record.description.clone(),
-        provenance: MemoryProvenance {
-            session_id: record.provenance.session_id.clone(),
-            author: match record.provenance.author {
-                RustMemoryAuthor::Model => "model",
-                RustMemoryAuthor::Host => "host",
-                RustMemoryAuthor::Extraction => "extraction",
-            }
-            .into(),
-            trust: match record.provenance.trust {
-                RustMemoryTrustLevel::Untrusted => "untrusted",
-                RustMemoryTrustLevel::UserAsserted => "user_asserted",
-                RustMemoryTrustLevel::HostVerified => "host_verified",
-            }
-            .into(),
-            evidence_refs: record.provenance.evidence_refs.clone(),
-        },
-        created_at: record.created_at as f64,
-        updated_at: record.updated_at as f64,
-        last_recalled_at: record.last_recalled_at.map(|value| value as f64),
-        recall_count: record.recall_count as f64,
-        confidence: record.confidence,
-        links: record.links.clone(),
-        pinned: record.pinned,
-        ttl_days: record.ttl_days,
     }
 }
 

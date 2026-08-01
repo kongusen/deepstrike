@@ -43,7 +43,7 @@ export function createLiveAdapter(config) {
     tasks,
     systemPrompt = "You are an agent operating under a self-improving harness.",
     maxTurns = 12,
-    maxTokens = 32_000, // RuntimeOptions.maxTokens is REQUIRED by KernelRuntime (context budget)
+    maxTokens = 32_000, // Canonical OperationConfig requires an explicit context budget.
     mkTools,
     timeoutMs = 300_000,
   } = config

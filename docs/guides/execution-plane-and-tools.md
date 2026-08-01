@@ -9,7 +9,7 @@ ExecutionPlane 是 DeepStrike 的工具执行层。kernel 只裁决 tool syscall
 - `python/deepstrike/runtime/worktree_plane.py`
 - `python/deepstrike/runtime/process_sandbox_plane.py`
 - `python/deepstrike/runtime/remote_vpc_plane.py`
-- `python/deepstrike/runtime/large_result_spool.py`
+- `python/deepstrike/runtime/payload_store.py`
 
 ## 在 Agent OS 中的位置
 
@@ -18,7 +18,7 @@ ExecutionPlane 是 DeepStrike 的工具执行层。kernel 只裁决 tool syscall
 | 对 kernel | 接收已批准的 tool call，并把结果作为 observation 回写 |
 | 对 host | 绑定 Python 函数、进程、worktree、远程 VPC 或客户环境 |
 | 对治理面 | 尊重 schema filtering、permission、quota、sandbox 决策 |
-| 对 Context VM | 大结果通过 spool / handle 投影，避免直接污染上下文 |
+| 对 Context VM | 大结果通过 external payload handle 投影，避免直接污染上下文 |
 
 ExecutionPlane 是 OS 的“设备驱动层”：kernel 不直接读写外部世界，而是通过这个平面把批准后的动作交给宿主执行。
 
@@ -32,7 +32,7 @@ ExecutionPlane 是 OS 的“设备驱动层”：kernel 不直接读写外部世
 | 工具需要流式输出 | `streaming_tool` / async iterable chunk |
 | 工具需要等待外部恢复 | yield `{"type": "suspend", ...}` 并配置 `on_tool_suspend` |
 | 工具会写文件 | 让工具读取 `ctx.cwd`，配合 worktree / sandbox |
-| 工具输出很大 | 配置 `LargeResultSpool` |
+| 工具输出很大 | 配置 `PayloadStore` |
 | 工具在客户 VPC 执行 | `RemoteVpcPlane` |
 | 工具只应暴露一部分 | `FilteredExecutionPlane`、Skill gating、Governance |
 
@@ -191,20 +191,20 @@ response: { "output": "...", "isError": false }
 
 凭据由 `CredentialVault` 在调用时注入 HTTP headers，不会进入模型上下文或 session log。
 
-## 大结果 spool
+## 外置 PayloadStore
 
-当 kernel emit `large_result_spooled` observation 时，SDK 用 `LargeResultSpool` 持久化完整输出，并把 preview / ref 留在上下文中：
+SDK 在提交 canonical `External` descriptor 前先持久化超大结果。descriptor 只携带有界 preview 和 opaque locator，正文不会进入 journal 或 checkpoint：
 
 ```python
-from deepstrike.runtime.large_result_spool import LargeResultSpool
+from deepstrike import PayloadStore
 
 RuntimeOptions(
     ...,
-    result_spool=LargeResultSpool(".spool", max_age_seconds=7 * 24 * 3600),
+    payload_store=PayloadStore(".payloads", max_age_seconds=7 * 24 * 3600),
 )
 ```
 
-读取工具如果参数里包含 `.spool/...` 路径，`LocalExecutionPlane` 会尝试自动读取 spooled result。
+`read_result` 在 core 中归约为 reachable-handle `PageIn` 和相关 `LoadPayload` effect；`LocalExecutionPlane` 不会把 locator 解释为文件路径。
 
 ## Kernel / Host 边界
 
@@ -214,13 +214,13 @@ RuntimeOptions(
 | tool call 是否允许 | kernel syscall / governance |
 | Python 函数调用 | SDK ExecutionPlane |
 | subprocess / HTTP / 文件写入 | SDK / 工具 |
-| 大结果是否需要 spool | kernel 决策，SDK 落盘 |
+| external 正文持久化 | SDK 提交前写入，kernel 校验 descriptor |
 | worktree 生命周期 | SDK |
 
 ## 验证入口
 
 - `python/tests/test_streaming_tools.py`
 - `python/tests/test_tool_argument_repair.py`
-- `python/tests/test_large_result_spool.py`
+- `python/tests/test_read_result.py`
 - `python/tests/test_worktree_isolation.py`
 - `node/tests/remote-vpc-plane.test.ts`

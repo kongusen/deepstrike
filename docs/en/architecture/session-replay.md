@@ -1,18 +1,18 @@
 # Session & Replay
 
-Agent OS **replayability** comes from serializable control-flow state in the kernel plus append-only SessionLog events from the host — not from saving chat history alone.
+Agent OS **replayability** comes from logical kernel checkpoints, canonical transaction records in the host-owned KernelJournal, and append-only SessionLog evidence, not from saving chat history alone.
 
 ## Recoverable boundary
 
 ```text
 SessionLog (append-only evidence)
     +
-KernelSnapshot / event replay
+opaque logical checkpoint + bounded KernelJournal tail
     +
 Host stores (DreamStore, ArchiveStore, FileSessionLog)
 ```
 
-The kernel never writes disk; the SDK owns I/O. The kernel **emits** persistable observations.
+The kernel never writes disk; the SDK owns I/O. The kernel emits checkpoint candidates, canonical records, and observations. SessionLog is audit and offline diagnostic evidence, not the production source of truth for reconstructing workflow graphs.
 
 ## SessionLog implementations
 
@@ -28,11 +28,12 @@ Typical kinds: `run_started`, `tool_invoked`, `agent_process_changed`, `workflow
 Suspended when: AskUser, sub-agent join, workflow barrier.
 
 ```python
+# The SDK restores the canonical kernel from its checkpoint + KernelJournal.
 async for event in runner.run(goal, session_id=existing_id):
     ...
 ```
 
-Runtime `SubmitNodes` append is logged — resumed DAG includes dynamic extensions.
+The host loads the latest installed checkpoint and records after it, then invokes canonical restore. The checkpoint owns the complete workflow DAG, node state, and pending effect identities, so restore cost is bounded by the tail rather than total run length. Runtime `SubmitNodes` extensions are restored from workflow graph state; production resume does not accept or synthesize workflow `resumed_*` inputs.
 
 ## Replay & deterministic tests
 

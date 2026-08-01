@@ -46,46 +46,6 @@ def _termination_from_status(status: str) -> str:
   return normalized if normalized in known else status
 
 
-def _manifest_from_obs(obs: dict, parent_session_id: str, spec: AgentRunSpec) -> AgentProcessChangedObservation:
-  return AgentProcessChangedObservation(
-    agent_id=str(obs.get("agent_id") or spec.identity.agent_id),
-    parent_session_id=str(obs.get("parent_session_id") or parent_session_id),
-    role=str(obs.get("role") or spec.role),
-    isolation=str(obs.get("isolation") or spec.isolation),
-    context_inheritance=str(obs.get("context_inheritance") or "none"),
-    permitted_capability_ids=list(obs.get("permitted_capability_ids") or []),
-    turn=obs.get("turn"),
-    state=str(obs.get("state") or "running"),
-    result_termination=obs.get("result_termination"),
-  )
-
-
-def _find_spawn_obs(observations: list[dict]) -> dict | None:
-  for o in observations:
-    kind = o.get("kind")
-    if kind in ("agent_process_changed", "agent_spawned") and o.get("agent_id"):
-      return o
-  return None
-
-
-async def _log_agent_process_changed(session_log: SessionLog, parent_session_id: str, obs: dict) -> None:
-  turn = obs.get("turn") or 0
-  entry: dict = {
-    "kind": "agent_process_changed",
-    "turn": turn,
-    "agent_id": obs.get("agent_id") or "",
-    "parent_session_id": obs.get("parent_session_id") or parent_session_id,
-    "role": obs.get("role") or "",
-    "isolation": obs.get("isolation") or "",
-    "context_inheritance": obs.get("context_inheritance") or "",
-    "state": obs.get("state") or "running",
-    "permitted_capability_ids": obs.get("permitted_capability_ids") or [],
-  }
-  if obs.get("result_termination"):
-    entry["result_termination"] = obs["result_termination"]
-  await session_log.append(parent_session_id, entry)
-
-
 def _harness_criteria(spec: AgentRunSpec) -> list:
   from deepstrike.harness.harness import Criterion
 
@@ -209,8 +169,6 @@ def _build_child_opts(
     dream_store=ctx.parent_opts.dream_store if "memory" in meta_tools else None,
     knowledge_source=ctx.parent_opts.knowledge_source if "knowledge" in meta_tools else None,
     enable_plan_tool=ctx.parent_opts.enable_plan_tool if "update_plan" in meta_tools else None,
-    # M5 v2.1: a workflow node's `start_workflow` flattens to the parent kernel (no nested pivot).
-    is_workflow_node=ctx.is_workflow_node,
     # Nested vehicle: the child joins the inherited run_group for lineage/settlement only — it
     # must NOT re-reserve budget axes the parent already holds (that double-reserve squeezed the
     # child's grant to 0 and the kernel stripped its first-turn tools).

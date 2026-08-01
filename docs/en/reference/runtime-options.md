@@ -3,7 +3,7 @@
 code_refs:
   node: [RuntimeRunner, LLMProvider, SessionLog, Governance]
   fields:
-    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, result_spool, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, dream_store, memory_policy, pre_query_memory, knowledge_source, dream_provider, dream_summarizer, governance, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, is_workflow_node, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
+    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, dream_store, memory_policy, pre_query_memory, knowledge_source, dream_provider, dream_summarizer, governance, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
 ---
 
 # RuntimeOptions Reference
@@ -35,7 +35,7 @@ Configuration hub for Python `RuntimeRunner`. Definition: `python/deepstrike/run
 | Field | Description |
 |-------|-------------|
 | `compression_store` | Compaction archive `ArchiveStore` |
-| `result_spool` | Large tool result spool |
+| `payload_store` | Canonical opaque payload storage |
 | `initial_memory` | Knowledge injected at startup |
 | `tokenizer` | Token counter selection |
 | `enable_plan_tool` | Enable `update_plan` meta-tool |
@@ -79,7 +79,6 @@ Configuration hub for Python `RuntimeRunner`. Definition: `python/deepstrike/run
 | `worktree_manager` | Worktree isolation |
 | `sub_agent_orchestrator` | Custom spawn logic |
 | `sub_agent_harness` | Sub-agent harness retries |
-| `is_workflow_node` | Mark workflow node runner |
 | `reducers` | Custom reduce nodes |
 | `milestone_policy` | Milestone policy |
 | `milestone_contract` | Top-level milestone |

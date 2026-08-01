@@ -11,7 +11,7 @@ Governance 是 Agent OS 的 **Syscall Governance Plane**。它在工具执行、
 | 裁决点 | 说明 |
 |--------|------|
 | Tool syscall | 工具 schema 暴露和实际调用前都可被过滤或拒绝 |
-| Workflow syscall | `SubmitNodes` / `LoadWorkflow` 受节点数、深度和资源配额限制 |
+| Workflow syscall | `AppendWorkflowNodes` 受节点数、深度和资源配额限制 |
 | Memory syscall | 写入频率、内容大小和 metadata 由 policy 控制 |
 | Process spawn | sub-agent 并发、总数、隔离模式可被拦截 |
 | Context feedback | deny / ask_user 决策作为可见的 error tool result 进入下一轮上下文 |
@@ -96,10 +96,10 @@ RuntimeOptions(
 Workflow 增长走内核 syscall：
 
 - `SubmitNodes { count }` — append 节点
-- `LoadWorkflow { node_count }` — bootstrap / flatten DAG
+- `AppendWorkflowNodes { nodes }` — 在 kernel 派生 caller 后扩展 DAG
 
 超 `max_workflow_nodes` 时，kernel 提交 `control_request_rejected` observation；请求从未执行，
-因此不会 rollback。顶层 `bootstrap_workflow` 通过 `WorkflowOutcome.rejection` 返回原因；运行中
+因此不会 rollback。顶层 `run_workflow` 通过 `WorkflowOutcome.rejection` 返回原因；运行中
 的节点提交被拒时，该提交者节点以失败 outcome 结束，root agent 可直接看到真实结果。
 
 ---

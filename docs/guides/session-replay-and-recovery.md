@@ -2,9 +2,11 @@
 
 SessionLog 是 DeepStrike 的证据链：每个 run 的 LLM 输出、工具请求、工具结果、压缩、权限、进程、memory、workflow 事件都会 append 到同一个 session stream。它支撑三件事：
 
-- **恢复**：从 session events 重建状态或 workflow 进度
+- **诊断**：从 session events 折叠 OS Snapshot 或离线检查历史 workflow 投影
 - **审计**：按 kernel primitive 过滤关键事件
 - **复现**：用 provider replay / ReplayProvider 重放模型输出
+
+生产恢复是另一条路径：宿主持久化 opaque logical checkpoint 与 canonical KernelJournal，恢复时安装 checkpoint 并只回放 bounded tail。SessionLog 不重建 production control state。
 
 **代码入口**：
 
@@ -20,12 +22,12 @@ SessionLog 是 DeepStrike 的证据链：每个 run 的 LLM 输出、工具请�
 | 职责 | 说明 |
 |------|------|
 | 事件日志 | SessionLog 是 run 的 append-only evidence stream |
-| 恢复 | workflow、memory、permission、tool、provider 事件可折叠成当前状态 |
+| 恢复 | canonical checkpoint + KernelJournal 恢复完整 logical state；SessionLog 不参与 state authority |
 | 审计 | 可按 kernel primitive 过滤关键事件，定位哪个平面发生了什么 |
 | 复现 | provider replay / ReplayProvider 让测试不依赖真实模型调用 |
 | 运维 | OS Snapshot 从 session events 汇总 dashboard 所需状态 |
 
-Session 面相当于 Agent OS 的 journal：没有它，系统只能“跑完一次”；有了它，才能解释、恢复、重放和运营。
+Session 面是 Agent OS 的 evidence stream；KernelJournal 是 transaction authority。前者负责解释、复现和运营，后者与 logical checkpoint 负责生产恢复。
 
 ![Session Replay & Recovery Mechanisms](/session_replay_mechanisms.svg)
 
@@ -63,7 +65,7 @@ async for event in runner.run("修复支付 bug", session_id="pay-bug-42"):
 events = await session_log.read("pay-bug-42")
 ```
 
-不传 `session_id` 时 SDK 会生成新 id；想恢复 / 审计 / 对齐 RunGroup membership 时应显式传入。
+不传 `session_id` 时 SDK 会生成新 id；需要关联 checkpoint/journal、审计或对齐 RunGroup membership 时应显式传入。
 
 ## Level 3：读事件与过滤
 
@@ -82,13 +84,13 @@ memory_events = await session_log.read(
 
 | kind | 用途 |
 |------|------|
-| `run_started` / `run_terminal` | run 生命周期；`run_started` 还携带任何多模态 `attachments`，在恢复时还原为一个 `Content::Parts` turn |
+| `run_started` / `run_terminal` | run 生命周期与多模态 attachment 审计投影；恢复权威状态位于 logical checkpoint |
 | `llm_completed` | assistant 文本、tool_calls、provider_replay |
 | `tool_requested` / `tool_completed` | 工具证据 |
 | `compressed` / `context_renewed` | Context VM 压缩与 renewal |
 | `tool_gated` / `permission_requested` / `permission_resolved` | 权限路径 |
 | `agent_process_changed` | sub-agent lineage |
-| `workflow_node_completed` / `workflow_nodes_submitted` | workflow 恢复 |
+| `workflow_node_completed` / `workflow_nodes_submitted` | workflow 审计与离线诊断投影 |
 | `memory_written` / `memory_queried` / `memory_validation_failed` | memory syscall |
 
 ## Level 4：Provider replay
@@ -133,7 +135,7 @@ events = await session_log.read("pay-bug-42")
 repaired = repair_events_for_recovery(events, max_bytes=100_000)
 ```
 
-`repair_events_for_recovery` 会：
+`repair_events_for_recovery` 是保留历史名称的离线日志 repair helper，不会生成 canonical input 或恢复 kernel。它会：
 
 - sanitize `llm_completed.content`
 - backfill `token_count`
@@ -159,7 +161,7 @@ print(snapshot.process_by_agent)
 print(snapshot.tool_gated_count)
 ```
 
-它适合 dashboard / debug 页面，不是 kernel snapshot 的替代品。
+它适合 dashboard / debug 页面，不是 canonical Kernel Checkpoint 的替代品。
 
 ## 边界
 
@@ -168,8 +170,8 @@ print(snapshot.tool_gated_count)
 | append-only 证据链 | 是 |
 | 多进程强一致写入 | 取决于你的 `SessionLog` 实现 |
 | provider native replay | 取决于 provider 是否实现 descriptor / replay hooks |
-| workflow completed node 恢复 | 是，基于 `workflow_node_completed` |
-| 动态 append 恢复 | 是，基于 `workflow_nodes_submitted` |
+| workflow completed node 恢复 | 否；由 logical checkpoint + KernelJournal 保证 |
+| 动态 append 恢复 | 否；由 checkpoint 的 workflow graph state 保证 |
 | 文件系统 / tool side effects 回滚 | 否；需要工具自己设计幂等或补偿 |
 
 ## 验证入口

@@ -30,16 +30,10 @@ from deepstrike.kernel.canonical import (
     CanonicalRestoreCost,
 )
 
-try:
-    from deepstrike._kernel import KernelRuntime
-except ImportError:
-    KernelRuntime = None  # type: ignore[assignment]
-
 __all__ = [
     "RuntimeTask",
     "LoopPolicy",
     "LoopResult",
-    "KernelRuntime",
     "KERNEL_ABI_VERSION",
     "CanonicalKernel",
     "CanonicalKernelError",

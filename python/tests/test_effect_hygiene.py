@@ -88,22 +88,20 @@ async def test_unhandled_effect_terminates_instead_of_busy_waiting(monkeypatch):
     # only ever driven inside the workflow driver arrives at the main-loop position. Swapping the
     # mapped action (not the kernel's own step) keeps the kernel transaction chain intact while
     # reproducing exactly what the loop sees.
-    original = runner_module.action_host
+    original = runner_module.start_agent_host
     forged = []
 
-    async def forging_action_host(runtime, pending, event):
-        action = await original(runtime, pending, event)
-        if not forged and action.kind == "call_provider":
-            forged.append(True)
-            return KernelRunnerAction(
-                kind="preempt_sub_agents",
-                effect_id=action.effect_id,
-                agent_ids=["ghost-agent"],
-                reason="test",
-            )
-        return action
+    async def forging_start_agent(runtime, pending, task, run_spec=None):
+        action = await original(runtime, pending, task, run_spec)
+        forged.append(True)
+        return KernelRunnerAction(
+            kind="preempt_sub_agents",
+            effect_id=action.effect_id,
+            agent_ids=["ghost-agent"],
+            reason="test",
+        )
 
-    monkeypatch.setattr(runner_module, "action_host", forging_action_host)
+    monkeypatch.setattr(runner_module, "start_agent_host", forging_start_agent)
 
     async def drain():
         return [evt async for evt in runner.run(goal="test", session_id="unhandled_effect")]

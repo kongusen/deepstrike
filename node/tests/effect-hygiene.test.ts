@@ -79,22 +79,19 @@ describe("R-B28: the main loop cannot busy-wait on an effect it has no branch fo
     // mapped action (not the kernel's own step) keeps the kernel/session-log transaction chain
     // intact while reproducing exactly what the loop sees.
     const priv = runner as unknown as {
-      commitKernelAction: (...args: unknown[]) => Promise<{ kind: string; effectId: string }>
+      startKernelAgent: (...args: unknown[]) => Promise<{ kind: string; effectId: string }>
     }
-    const original = priv.commitKernelAction.bind(runner)
+    const original = priv.startKernelAgent.bind(runner)
     let forged = false
-    priv.commitKernelAction = async (...args: unknown[]) => {
+    priv.startKernelAgent = async (...args: unknown[]) => {
       const action = await original(...args)
-      if (!forged && action.kind === "call_provider") {
-        forged = true
-        return {
-          kind: "preempt_sub_agents",
-          effectId: action.effectId,
-          agentIds: ["ghost-agent"],
-          reason: "test",
-        }
+      forged = true
+      return {
+        kind: "preempt_sub_agents",
+        effectId: action.effectId,
+        agentIds: ["ghost-agent"],
+        reason: "test",
       }
-      return action
     }
 
     const events: StreamEvent[] = []

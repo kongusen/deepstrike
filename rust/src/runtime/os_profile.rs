@@ -1,7 +1,7 @@
-use deepstrike_core::runtime::kernel::{
-    ConstraintSpec, KernelInputEvent, PolicyAction, PolicyRule, RateLimitSpec,
-    SIGNAL_POLICY_VERSION, SignalPolicyConfig,
+pub use deepstrike_core::runtime::kernel::wire::{
+    ParamConstraint as ConstraintSpec, PolicyAction, PolicyRule, RateLimitSpec,
 };
+use deepstrike_core::runtime::kernel::wire::{SignalPolicy as WireSignalPolicy, WireU64};
 pub use deepstrike_core::scheduler::policy::SchedulerPolicyConfig;
 
 use crate::{Error, Result};
@@ -14,11 +14,10 @@ pub struct SignalPolicy {
 }
 
 impl SignalPolicy {
-    pub(crate) fn into_kernel(self) -> SignalPolicyConfig {
-        SignalPolicyConfig {
-            version: SIGNAL_POLICY_VERSION,
+    pub(crate) fn into_kernel(self) -> WireSignalPolicy {
+        WireSignalPolicy {
             queue_max: self.queue_max,
-            ttl_ms: self.ttl_ms,
+            ttl_ms: self.ttl_ms.map(WireU64::new),
             deadline_escalation: self.deadline_escalation,
         }
     }
@@ -62,14 +61,15 @@ impl GovernancePolicy {
         }
     }
 
-    pub fn into_kernel_event(self) -> KernelInputEvent {
-        KernelInputEvent::LoadGovernancePolicy {
-            default_action: self.default_action,
-            rules: self.rules,
-            vetoed_tools: self.vetoed_tools,
-            rate_limits: self.rate_limits,
-            constraints: self.constraints,
-        }
+    pub(crate) fn into_host_fact(self) -> serde_json::Value {
+        serde_json::json!({
+            "kind": "load_governance_policy",
+            "default_action": self.default_action,
+            "rules": self.rules,
+            "vetoed_tools": self.vetoed_tools,
+            "rate_limits": self.rate_limits,
+            "constraints": self.constraints,
+        })
     }
 }
 

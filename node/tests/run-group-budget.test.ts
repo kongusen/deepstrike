@@ -28,7 +28,7 @@ const noopTool = tool("noop", "does nothing", { type: "object", properties: {} }
 function makeRunner(
   runGroup?: RunGroup,
   agentId?: string,
-  kernelReliability?: { hostEffectRetryAttempts: number },
+  groupBudgetSettlementRetries?: number,
 ): RuntimeRunner {
   const plane = new LocalExecutionPlane()
   plane.register(noopTool)
@@ -40,7 +40,7 @@ function makeRunner(
     maxTotalTokens: 100_000,
     agentId,
     runGroup,
-    kernelReliability,
+    groupBudgetSettlementRetries,
   })
 }
 
@@ -119,11 +119,21 @@ describe("RunGroup reservation-backed budgets", () => {
     const runner = makeRunner(
       { id: "host-retry", budgetStore: store },
       undefined,
-      { hostEffectRetryAttempts: 1 },
+      1,
     )
 
     expect((await runToDone(runner, "member")).status).toBe("completed")
     expect(store.attempts).toBe(2)
+  })
+
+  it("rejects an unbounded host settlement retry policy", async () => {
+    const runner = makeRunner(
+      { id: "invalid-host-retry", budgetStore: new InMemoryGroupBudgetStore() },
+      undefined,
+      17,
+    )
+
+    await expect(runToDone(runner, "member")).rejects.toThrow(/groupBudgetSettlementRetries/)
   })
 
   it("enforces an exhausted group through a zero-capacity admission rejection", async () => {

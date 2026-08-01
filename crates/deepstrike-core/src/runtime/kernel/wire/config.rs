@@ -277,7 +277,7 @@ pub struct BudgetGrant {
 /// Stable, replayable context behaviour. Every ratio is fixed-point ppm.
 ///
 /// Two §13.3 rows land here: `SetKnowledgeBudget` (whose `f64` ratio becomes
-/// [`Self::knowledge_budget_ppm`]) and `RunConfig.prompt_budget` (the U2 field that had no live
+/// [`Self::knowledge_budget_ppm`]) and the retired split prompt-budget input (the U2 field that had no live
 /// setter and no §7.3 home).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -678,7 +678,7 @@ pub struct ResolvedRecoveryPolicy {
 ///
 /// The hard limit is what makes [`KernelFaultCode::CheckpointRequired`] reachable, and reaching it
 /// is a **retryable, zero-mutation rejection** — not the historical overflow latch, which
-/// permanently disabled snapshots *and* permanently refused `prepare_step` once it tripped.
+/// permanently disabled snapshots and all later staged transitions once it tripped.
 ///
 /// Both axes exist because either one alone is escapable: a run of many tiny inputs blows the
 /// record count long before the byte budget, and a single oversized payload blows the byte budget

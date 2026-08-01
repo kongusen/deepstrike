@@ -422,34 +422,35 @@ pub fn render_projected(
 
     let units = unit_boundaries(&partitions.history.messages);
     let protected_from = units.len().saturating_sub(preserve_recent_units);
-    let mut kept_units_rev: Vec<Vec<Message>> = Vec::new();
+    let mut kept_messages_rev = Vec::with_capacity(partitions.history.messages.len());
+    let mut kept_unit_ranges = Vec::with_capacity(units.len());
 
     for (unit_index, unit) in units.iter().enumerate().rev() {
         let is_protected = unit_index >= protected_from;
-        let effective = partitions.history.messages[unit.clone()]
-            .iter()
-            .map(|msg| {
-                project_message(msg, handles)
-                    .or_else(|| {
-                        if is_protected {
-                            None
-                        } else {
-                            project_assistant_narration(msg, collapse_narration)
-                        }
-                    })
-                    .unwrap_or_else(|| msg.clone())
-            })
-            .collect::<Vec<_>>();
-        let tokens = effective
-            .iter()
-            .map(|msg| msg.token_count.unwrap_or_else(|| engine.count_message(msg)))
-            .sum::<u32>();
+        let unit_start = kept_messages_rev.len();
+        let mut tokens = 0u32;
+        for msg in &partitions.history.messages[unit.clone()] {
+            let effective = project_message(msg, handles)
+                .or_else(|| {
+                    if is_protected {
+                        None
+                    } else {
+                        project_assistant_narration(msg, collapse_narration)
+                    }
+                })
+                .unwrap_or_else(|| msg.clone());
+            tokens += effective
+                .token_count
+                .unwrap_or_else(|| engine.count_message(&effective));
+            kept_messages_rev.push(effective);
+        }
         if tokens == 0 {
+            kept_messages_rev.truncate(unit_start);
             continue;
         }
 
         if is_protected || tokens <= remaining {
-            kept_units_rev.push(effective);
+            kept_unit_ranges.push(unit_start..kept_messages_rev.len());
             remaining = remaining.saturating_sub(tokens);
             used_tokens = used_tokens.saturating_add(tokens);
             if is_protected && used_tokens > budget && budget_overflow.is_none() {
@@ -460,12 +461,18 @@ pub fn render_projected(
                 });
             }
         } else {
+            kept_messages_rev.truncate(unit_start);
             break;
         }
     }
 
-    kept_units_rev.reverse();
-    let mut turns = kept_units_rev.into_iter().flatten().collect::<Vec<_>>();
+    let mut turns = Vec::with_capacity(kept_messages_rev.len());
+    for unit in kept_unit_ranges.into_iter().rev() {
+        // Units were appended newest-first, so every reverse-ordered range is the current suffix.
+        // Draining suffixes restores chronological unit order without cloning messages or allocating
+        // one temporary Vec per unit.
+        turns.extend(kept_messages_rev.drain(unit));
+    }
     normalize_turn_prefix(&mut turns);
     debug_assert!(
         !strict_tool_pairing_is_valid(&partitions.history.messages)

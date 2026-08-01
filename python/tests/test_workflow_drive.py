@@ -145,43 +145,6 @@ def test_build_workflow_node_completed_event_shape():
     assert event["termination"] == "completed"
 
 
-def test_submit_workflow_nodes_to_kernel_shape():
-    from deepstrike import submit_workflow_nodes_to_kernel
-
-    event = submit_workflow_nodes_to_kernel([WorkflowNodeSpec(task="more", role="implement")])
-    assert event == {
-        "kind": "submit_workflow_nodes",
-        "nodes": [
-            {"task": {"goal": "more", "criteria": []}, "role": "implement",
-             "isolation": "shared", "context_inheritance": "none",
-             "dep_policy": "all_success"},
-        ],
-    }
-
-
-def test_submit_workflow_nodes_carries_trust_and_deps():
-    from deepstrike import submit_workflow_nodes_to_kernel
-
-    event = submit_workflow_nodes_to_kernel([
-        WorkflowNodeSpec(task="scrape", role="explore", isolation="read_only", trust="quarantined"),
-        WorkflowNodeSpec(task="verify", role="verify", depends_on=[0]),
-    ])
-    assert event["nodes"][0]["trust"] == "quarantined"
-    assert "trust" not in event["nodes"][1]  # default "trusted" omitted on the wire
-    assert event["nodes"][1]["depends_on"] == [0]
-
-
-def test_submit_workflow_nodes_stamps_submitter_only_when_provided():
-    from deepstrike import submit_workflow_nodes_to_kernel
-
-    plain = submit_workflow_nodes_to_kernel([WorkflowNodeSpec(task="x", role="implement")])
-    assert "submitter_agent_id" not in plain
-    stamped = submit_workflow_nodes_to_kernel(
-        [WorkflowNodeSpec(task="x", role="implement")], "wf-node0"
-    )
-    assert stamped["submitter_agent_id"] == "wf-node0"
-
-
 @pytest.mark.asyncio
 async def test_g1_quarantined_workflow_fails_closed_until_canonical_trust():
     """Canonical WorkflowNode has no trust field yet — quarantined nodes fail closed at load."""
@@ -629,5 +592,5 @@ async def test_standalone_invalid_workflow_returns_typed_rejection():
 
     assert outcome.node_outcomes == []
     assert outcome.rejection is not None
-    assert outcome.rejection.operation == "load_workflow"
+    assert outcome.rejection.operation == "start_workflow"
     assert "depends on itself" in outcome.rejection.reason

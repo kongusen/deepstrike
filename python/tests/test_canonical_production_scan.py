@@ -1,4 +1,4 @@
-"""Task 20: production path must not call ABI-v2 direct step."""
+"""Task 20: production path must not call the legacy direct-step API."""
 
 from __future__ import annotations
 
@@ -19,6 +19,18 @@ FORBIDDEN = (
     "kernel_apply(",
     "kernel_action(",
     "kernel_maybe_action(",
+    '"start_run"',
+    '"load_workflow"',
+    '"complete_run"',
+    "ABI-v1",
+    "ABI-v2",
+    "CANONICAL_KERNEL_ABI_VERSION = 3",
+    "kernel_transaction_log",
+    "append_kernel_genesis",
+    "compare_and_append_kernel_transaction",
+    "submit_workflow_nodes_to_kernel",
+    "submit_workflow_to_kernel",
+    "bootstrap_workflow",
 )
 
 

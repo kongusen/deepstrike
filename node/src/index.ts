@@ -19,19 +19,12 @@ export type { LoopSpec, LoopOutcome } from "./runtime/loop-driver.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./runtime/facade.js"
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationReason, PromptBudget, SchedulerPolicy } from "./runtime/runner.js"
+export { PayloadStore } from "./runtime/payload-store.js"
+export type { PayloadStoreConfig } from "./runtime/payload-store.js"
 // Self-Harness H1 instruction/nudge surfaces named on `RuntimeOptions`; the full manifest API lives
 // on the `@deepstrike/sdk/harness` subpath.
 export type { InstructionProfile, NudgeRule, NudgeTrigger } from "./harness/public.js"
 export type { SignalPolicy } from "./runtime/os-profile.js"
-export {
-  DurableKernelRebuildRequiredError,
-  readKernelDiagnostics,
-  restoreKernelRuntime,
-  snapshotKernelRuntime,
-} from "./runtime/kernel-step.js"
-export type { KernelDiagnostics, KernelSnapshot } from "./runtime/kernel-step.js"
-export { rebuildKernelRuntime } from "./runtime/kernel-rebuild.js"
-export type { KernelRebuildResult } from "./runtime/kernel-rebuild.js"
 export {
   CONTEXT_POLICY_VERSION,
   DEFAULT_CONTEXT_POLICY_V1,
@@ -51,7 +44,7 @@ export type {
 export { LocalExecutionPlane } from "./runtime/execution-plane.js"
 export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
 export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
-export type { KernelTransactionEntry, SessionLog, SessionEvent } from "./runtime/session-log.js"
+export type { SessionLog, SessionEvent } from "./runtime/session-log.js"
 // ── Durable transaction capability (Canonical Kernel ABI §9.1) ──────────────
 export {
   FileKernelJournal,
@@ -70,28 +63,6 @@ export type {
   JournalRecordInput,
   KernelJournal,
 } from "./runtime/kernel-journal.js"
-export {
-  KERNEL_LOG_RECORD_VERSION,
-  KernelLogConflictError,
-  KernelLogIntegrityError,
-  canonicalKernelJson,
-  createKernelOperationGenesis,
-  createKernelTransaction,
-  kernelRecordDigest,
-  verifyKernelOperationGenesis,
-  verifyKernelTransaction,
-  verifyKernelTransactionStream,
-  verifyKernelTransactionSuccessor,
-} from "./runtime/kernel-transaction-log.js"
-export type {
-  DurableAppendReceipt,
-  KernelGenesisReceipt,
-  KernelOperationCursor,
-  KernelOperationGenesis,
-  KernelOperationGenesisBody,
-  KernelTransaction,
-  KernelTransactionBody,
-} from "./runtime/kernel-transaction-log.js"
 export { InMemoryGroupBudgetStore, GroupBudgetScope } from "./runtime/run-group.js"
 export type {
   RunGroup, GroupBudgetStore, GroupLedger, GroupCharge, GroupMember,

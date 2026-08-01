@@ -1,8 +1,7 @@
-"""ABI-v3 canonical kernel host and compatibility lowering for the Python runner.
+"""Canonical kernel host and production-runner projection for Python.
 
-This module deliberately never invokes the legacy ABI-v2 runtime.  Core prepares
-opaque bytes, the journal makes them authoritative, and only then can a planned
-step become visible to the host.
+Core prepares opaque bytes, the journal makes them authoritative, and only then can
+a planned step become visible to the host.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from typing import Any
 
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from deepstrike.kernel.canonical import (
+    KERNEL_ABI_VERSION,
     CanonicalCheckpoint,
     CanonicalKernel,
     CanonicalRejected,
@@ -37,7 +37,6 @@ from deepstrike.runtime.kernel_step import (
 )
 
 
-CANONICAL_KERNEL_ABI_VERSION = 3
 MAX_CHAIN_POSITION = 9_007_199_254_740_991
 
 
@@ -89,7 +88,7 @@ def _advice(raw: str | None) -> dict[str, Any] | None:
 
 
 class CanonicalKernelHost:
-  """Durable direct-step host for :class:`CanonicalKernel`."""
+  """Durable staged-transition host for :class:`CanonicalKernel`."""
 
   def __init__(self, kernel: CanonicalKernel | Any, journal: KernelJournal, operation_id: str) -> None:
     if not operation_id:
@@ -106,7 +105,7 @@ class CanonicalKernelHost:
     observed_at_ms: str | None = None,
   ) -> CanonicalTransition:
     envelope = json.dumps({
-      "abi_version": CANONICAL_KERNEL_ABI_VERSION,
+      "abi_version": KERNEL_ABI_VERSION,
       "operation_id": self.operation_id,
       "input_id": input_id or f"python-input-{uuid.uuid4()}",
       "observed_at_ms": observed_at_ms or str(int(time.time() * 1000)),
@@ -373,7 +372,7 @@ def canonical_action_from_planned_step(planned_step: dict[str, Any]) -> KernelRu
 
 
 class CanonicalRunnerRuntime:
-  """Minimal ABI-v3 compatibility surface for production runner callsites."""
+  """Canonical operation surface used by production runner callsites."""
 
   def __init__(
     self, kernel: CanonicalKernel, journal: KernelJournal, operation_id: str, *,
@@ -460,27 +459,33 @@ class CanonicalRunnerRuntime:
     self._last_action = self._current_action()
     return self._last_action
 
+  async def start_agent(
+    self,
+    task: dict[str, Any],
+    run_spec: dict[str, Any] | None = None,
+  ) -> KernelRunnerAction | None:
+    await self._ensure_configured()
+    goal = str(task.get("goal") or "")
+    action = await self._commit({"kind": "start_operation", "entry": {
+      "kind": "agent",
+      "task": {"goal": goal, "criteria": task.get("criteria") or []},
+      **({"run_spec": self._logical_run_spec(run_spec, goal)} if run_spec is not None else {}),
+    }, "initial_context": self._initial_context})
+    self._started = True
+    return action
+
+  async def start_workflow(self, spec: dict[str, Any]) -> KernelRunnerAction | None:
+    await self._ensure_configured()
+    action = await self._commit({"kind": "start_operation", "entry": {
+      "kind": "workflow", "spec": self._workflow_spec(spec),
+    }, "initial_context": self._initial_context})
+    self._started = True
+    return action
+
   async def apply_host_event(self, event: dict[str, Any]) -> KernelRunnerAction | None:
-    if self._apply_bootstrap(event):
+    if not self._started and self._apply_bootstrap(event):
       return None
     kind = event.get("kind")
-    if kind in {"resume", "complete_run"}:
-      return self.resume_action()
-    if kind == "start_run":
-      await self._ensure_configured()
-      task = _object(event.get("task"))
-      self._started = True
-      return await self._commit({"kind": "start_operation", "entry": {
-        "kind": "agent", "task": {"goal": str(task.get("goal") or ""), "criteria": task.get("criteria") or []},
-        **({"run_spec": self._logical_run_spec(_object(event["run_spec"]), str(task.get("goal") or ""))}
-           if event.get("run_spec") else {}),
-      }, "initial_context": self._initial_context})
-    if kind == "load_workflow":
-      await self._ensure_configured()
-      self._started = True
-      return await self._commit({"kind": "start_operation", "entry": {
-        "kind": "workflow", "spec": self._workflow_spec(_object(event.get("spec"))),
-      }, "initial_context": self._initial_context})
     if kind == "provider_result":
       message = _object(event.get("message"))
       self._turns += 1
@@ -508,10 +513,6 @@ class CanonicalRunnerRuntime:
         self._new_messages.append(Message(role="tool", content=output))
         if len(output.encode()) > self._payload_inline_threshold and self._persist_payload is not None:
           persisted = await self._persist_payload(call_id, output, self._payload_preview_bytes)
-          self._observations.append({"kind": "large_result_spooled", "call_id": call_id,
-                                     "spool_ref": persisted["payload_ref"],
-                                     "original_size": len(output.encode()),
-                                     "preview_size": len(str(persisted.get("preview") or "").encode())})
           results.append({"kind": "external", "call_id": call_id,
                           "payload_ref": persisted["payload_ref"], "digest": persisted["digest"],
                           "original_size": str(persisted["original_size"]),
@@ -651,7 +652,7 @@ class CanonicalRunnerRuntime:
       return action
     if kind == "update_task":
       return await self._commit({"kind": "host_control", "command": {"kind": "update_task", "update": event.get("update")}})
-    raise CanonicalKernelRejectedError("unsupported_host_event", f"ABI v3 has no lowering for {kind}")
+    raise CanonicalKernelRejectedError("unsupported_host_event", f"canonical ABI has no input for {kind}")
 
   async def _ensure_configured(self) -> None:
     if not self._configured:
@@ -915,7 +916,7 @@ class CanonicalRunnerRuntime:
       self._initial_context["messages"].append(self._initial_message(_object(event.get("message"))))
       return True
     if kind == "configure_run":
-      self._merge_legacy_config(_object(event.get("config")))
+      self._merge_host_config(_object(event.get("config")))
       return True
     return False
 
@@ -944,7 +945,7 @@ class CanonicalRunnerRuntime:
     message.pop("tool_calls", None)
     return message
 
-  def _merge_legacy_config(self, config: dict[str, Any]) -> None:
+  def _merge_host_config(self, config: dict[str, Any]) -> None:
     if config.get("governance") is not None:
       governance = dict(_object(config["governance"]))
       rate_limits = governance.get("rate_limits")
@@ -1007,17 +1008,6 @@ class CanonicalRunnerRuntime:
         recovery["output_recovery_attempts"] = reliability["output_recovery_attempts"]
       if recovery:
         self._config["recovery_policy"] = recovery
-      if reliability.get("spool_threshold_bytes") is not None or reliability.get("spool_preview_bytes") is not None:
-        self._config["payload_policy"] = {
-          **({"inline_threshold_bytes": reliability["spool_threshold_bytes"]}
-             if reliability.get("spool_threshold_bytes") is not None else {}),
-          **({"preview_bytes": reliability["spool_preview_bytes"]}
-             if reliability.get("spool_preview_bytes") is not None else {}),
-        }
-      if reliability.get("spool_threshold_bytes") is not None:
-        self._payload_inline_threshold = int(reliability["spool_threshold_bytes"])
-      if reliability.get("spool_preview_bytes") is not None:
-        self._payload_preview_bytes = int(reliability["spool_preview_bytes"])
       if reliability.get("max_input_bytes") is not None:
         limits = dict(_object(self._config.get("kernel_limits")))
         limits["max_input_bytes"] = reliability["max_input_bytes"]
@@ -1058,4 +1048,27 @@ async def host_action(
   action = await maybe_host_action(runtime, pending, event)
   if action is None:
     raise RuntimeError("canonical kernel transition must return one host action")
+  return action
+
+
+async def start_agent(
+  runtime: CanonicalRunnerRuntime,
+  pending: list[dict[str, Any]],
+  task: dict[str, Any],
+  run_spec: dict[str, Any] | None = None,
+) -> KernelRunnerAction:
+  action = await runtime.start_agent(task, run_spec)
+  pending.extend(runtime.drain_host_observations())
+  if action is None:
+    raise RuntimeError("canonical agent root must return one host action")
+  return action
+
+
+async def start_workflow(
+  runtime: CanonicalRunnerRuntime,
+  pending: list[dict[str, Any]],
+  spec: dict[str, Any],
+) -> KernelRunnerAction | None:
+  action = await runtime.start_workflow(spec)
+  pending.extend(runtime.drain_host_observations())
   return action

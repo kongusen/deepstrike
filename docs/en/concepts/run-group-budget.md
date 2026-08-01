@@ -30,7 +30,7 @@ The former `group_tokens_base`, `group_spawns_base`, `group_rounds_base`, host `
 | Component | Responsibility |
 |-----------|----------------|
 | `GroupBudgetStore` | Atomically account for settled + held capacity, reserve, idempotently settle/release, and keep member lineage |
-| SDK runner | Reserve before `start_run`, configure the kernel grant, and settle only a correlated usage report |
+| SDK runner | Reserve before canonical root start, configure the kernel grant, and settle only a correlated usage report |
 | Kernel | Enforce the local grant and correlate exceeded/usage events with operation and reservation identities |
 
 A store must implement `join`, `members`, `reserve`, `settle`, and `release`. Multi-replica implementations should use a Redis script, database transaction, or equivalent atomic primitive. A generic append-only session log has no CAS and is not a reservation store.
@@ -50,7 +50,7 @@ An unrequested axis is omitted from `budget_grant`, meaning that admission does 
 
 ## Standalone workflows
 
-With no active parent, `runWorkflow()` creates a real kernel run. The SDK reserves first and starts the workflow. When the DAG finishes, it sends `complete_run`; the kernel then emits the ordinary `done` effect and one correlated `budget_usage_reported`. Workflow-node usage therefore comes from the kernel TaskTable rather than host-side counting.
+With no active parent, `runWorkflow()` creates a canonical operation. The SDK reserves first and starts a workflow root. When the DAG finishes, the kernel commits the terminal and one correlated usage report directly. Workflow-node usage therefore comes from the kernel TaskTable rather than host-side counting.
 
 ## Nested vehicles
 

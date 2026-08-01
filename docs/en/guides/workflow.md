@@ -152,7 +152,7 @@ Agents can call meta-tools during a run:
 | `submit_workflow_nodes` | Append nodes to an in-flight DAG |
 | `start_workflow` | Top-level: bootstrap a new DAG; inside workflow: flatten to parent DAG |
 
-Governed by `Syscall::SubmitNodes` / `LoadWorkflow`; `max_workflow_nodes` quota prevents runaway growth.
+Governed by the canonical `AppendWorkflowNodes` syscall; `max_workflow_nodes` quota prevents runaway growth.
 
 Top-level agents **auto-pivot** via `start_workflow`: bootstrap a new kernel-driven workflow, then resume the original reason loop when done.
 

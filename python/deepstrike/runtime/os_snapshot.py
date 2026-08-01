@@ -13,7 +13,6 @@ _KERNEL_KINDS = frozenset({
     "compressed",
     "page_out",
     "page_in",
-    "large_result_spooled",
     "capability_changed",
     "context_renewed",
     "suspended",
@@ -45,7 +44,6 @@ class OsSnapshot:
     signals: list[dict[str, Any]] = field(default_factory=list)
     page_out_count: int = 0
     page_in_count: int = 0
-    spool_count: int = 0
     tool_gated_count: int = 0
     memory_written_count: int = 0
     memory_queried_count: int = 0
@@ -77,8 +75,17 @@ def rebuild_os_snapshot_from_session_events(events: list[dict[str, Any]]) -> OsS
             record = {
                 "turn": event.get("turn"),
                 "agent_id": event.get("agent_id"),
-                "parent_session_id": event.get("parent_session_id"),
                 "state": event.get("state") or "running",
+                **(
+                    {"parent_task_id": event["parent_task_id"]}
+                    if event.get("parent_task_id")
+                    else {}
+                ),
+                **(
+                    {"parent_session_id": event["parent_session_id"]}
+                    if event.get("parent_session_id")
+                    else {}
+                ),
             }
             agent_id = event.get("agent_id") or ""
             idx = index.get(agent_id)
@@ -124,8 +131,6 @@ def rebuild_os_snapshot_from_session_events(events: list[dict[str, Any]]) -> OsS
             snap.page_out_count += 1
         elif kind == "page_in":
             snap.page_in_count += 1
-        elif kind == "large_result_spooled":
-            snap.spool_count += 1
         elif kind == "memory_written":
             snap.memory_written_count += 1
         elif kind == "memory_queried":

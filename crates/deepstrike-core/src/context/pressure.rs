@@ -53,7 +53,7 @@ impl PressureMonitor {
     /// Uses provider-reported prompt tokens when available; otherwise estimates from partitions.
     ///
     /// This is the **raw** rho (full partition weight). Making rho paging-aware — i.e. subtracting
-    /// non-resident (`Collapsed`/`SpooledOut`/`PagedOut`) handle tokens so paging immediately relieves
+    /// non-resident (`Collapsed`/`External`/`PagedOut`) handle tokens so paging immediately relieves
     /// pressure — is **not** a drop-in here: [`crate::context::manager::ContextManager::recompute_handle_residency`]
     /// decides the Resident↔Collapsed projection from this very rho, so subtracting collapsed tokens
     /// would drop rho below `collapse_threshold` and immediately un-collapse (oscillation). That needs

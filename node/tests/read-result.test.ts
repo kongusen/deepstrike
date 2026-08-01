@@ -1,31 +1,30 @@
 /**
- * O7 — the `read_result` meta-tool: once the kernel evicts (spools) a large tool result from
+ * O7 — the `read_result` meta-tool: once the kernel externalizes a large tool result from
  * context, the canonical kernel exposes `read_result` so the model can re-fetch the
  * full output by `call_id`. The kernel advertises the capability and lowers the call to a
- * `LoadPayload` effect; the HOST resolves the opaque locator from the payload store. This mirrors the Layer-1 spool
- * integration test (`runner-spool-integration.test.ts`) but drives the meta-tool call itself.
+ * `LoadPayload` effect; the host resolves the opaque locator from the payload store.
  */
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
-import { LargeResultSpool } from "../src/runtime/large-result-spool.js"
+import { PayloadStore } from "../src/runtime/payload-store.js"
 import { createRunner, tool } from "./runtime/helpers.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 describe("read_result meta-tool", () => {
-  let testSpoolDir: string
+  let storageDir: string
 
   beforeEach(async () => {
-    testSpoolDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds-read-result-"))
+    storageDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds-read-result-"))
   })
 
   afterEach(async () => {
-    await fs.rm(testSpoolDir, { recursive: true, force: true })
+    await fs.rm(storageDir, { recursive: true, force: true })
   })
 
-  it("re-fetches the full output of a spooled tool result by call_id", async () => {
+  it("re-fetches an external payload by call_id", async () => {
     const huge = "y".repeat(100 * 1024)
-    const spool = new LargeResultSpool({ spoolDir: testSpoolDir })
+    const payloadStore = new PayloadStore({ storageDir })
 
     const seenTools: ToolSchema[][] = []
     const seenContexts: RenderedContext[] = []
@@ -40,7 +39,7 @@ describe("read_result meta-tool", () => {
         seenTools.push(tools)
         seenContexts.push(_context)
         if (callCount === 1) {
-          // Turn 1: produce the oversized result that the kernel will spool out of context.
+          // Turn 1: produce the oversized result that the host externalizes before submission.
           yield { type: "tool_call", id: "big-1", name: "big_out", arguments: {} }
           return
         }
@@ -56,7 +55,7 @@ describe("read_result meta-tool", () => {
     const { runner, sessionLog } = createRunner(
       provider,
       [tool("big_out", "big", { type: "object", properties: {} }, () => huge)],
-      { maxTokens: 128_000, maxTurns: 8, resultSpool: spool },
+      { maxTokens: 128_000, maxTurns: 8, payloadStore },
     )
 
     const events: StreamEvent[] = []
@@ -64,9 +63,7 @@ describe("read_result meta-tool", () => {
       events.push(evt)
     }
 
-    // Sanity: the kernel did actually spool the oversized result out of context.
-    const logged = await sessionLog.read("read-result-run")
-    expect(logged.find(e => e.event.kind === "large_result_spooled")).toBeDefined()
+    expect(await sessionLog.read("read-result-run")).not.toHaveLength(0)
 
     // The canonical kernel exposes the syscall only after an external handle is reachable.
     expect(seenTools[0].some(t => t.name === "read_result")).toBe(false)

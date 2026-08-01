@@ -121,6 +121,19 @@ describe("RuntimeRunner wake recovery", () => {
     expect(await sessionLog.latestSeq(sessionId)).toBe(seqBeforeWake)
   })
 
+  it("rejects a terminal projection without a canonical journal", async () => {
+    const { runner, sessionLog } = createRunner(new ResumeAwareProvider(), [], { maxTurns: 2 })
+    const sessionId = "projection-only-terminal"
+    await sessionLog.append(sessionId, {
+      kind: "run_started", run_id: "projection-only", goal: "done", criteria: [],
+    })
+    await sessionLog.append(sessionId, { kind: "run_terminal", termination: "completed" })
+
+    await expect(collectText(runner.wake(sessionId))).rejects.toThrow(
+      "run_terminal projection has no canonical journal",
+    )
+  })
+
   it("FileSessionLog rows alone cannot impersonate a canonical process restart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ds-wake-"))
     try {

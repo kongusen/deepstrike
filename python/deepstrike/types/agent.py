@@ -499,7 +499,7 @@ def _node_kind_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any] | None:
 
 
 def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
-  """Map one host ``WorkflowNodeSpec`` to its snake_case kernel JSON. Shared by ``load_workflow`` and
+  """Map one host ``WorkflowNodeSpec`` to its snake_case canonical JSON. Shared by the workflow root and
   ``submit_workflow_nodes`` (R3-1) so the two encodings never drift."""
   node: dict[str, Any] = {
     "task": _workflow_task_to_kernel(n.task),
@@ -532,45 +532,8 @@ def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
 
 
 def workflow_spec_to_kernel(spec: WorkflowSpec) -> dict[str, Any]:
-  """Map a host ``WorkflowSpec`` to the snake_case kernel JSON (``load_workflow.spec``)."""
+  """Map a host ``WorkflowSpec`` to the canonical workflow-root JSON."""
   return {"nodes": [workflow_node_spec_to_kernel(n) for n in spec.nodes]}
-
-
-def submit_workflow_nodes_to_kernel(
-  nodes: list[WorkflowNodeSpec], submitter_agent_id: str | None = None
-) -> dict[str, Any]:
-  """R3-1: map a batch of host nodes to the ``submit_workflow_nodes`` kernel event body.
-
-  G1: ``submitter_agent_id`` (the node that requested the append) lets the kernel enforce
-  no-privilege-escalation — a quarantined submitter's nodes are coerced to quarantined. Omitted ⇒
-  no coercion.
-  """
-  body: dict[str, Any] = {
-    "kind": "submit_workflow_nodes",
-    "nodes": [workflow_node_spec_to_kernel(n) for n in nodes],
-  }
-  if submitter_agent_id:
-    body["submitter_agent_id"] = submitter_agent_id
-  return body
-
-
-def submit_workflow_to_kernel(
-  spec: WorkflowSpec, parent_session_id: str, submitter_agent_id: str | None = None
-) -> dict[str, Any]:
-  """M5/G1: map an agent-authored spec to the ``submit_workflow`` kernel event body.
-
-  The agent-reachable ``Syscall::LoadWorkflow``: the kernel bootstraps the DAG when none is active,
-  else flattens the spec's nodes onto the running one. ``parent_session_id`` seeds child session ids
-  on bootstrap; ``submitter_agent_id`` carries G1 trust coercion on the flatten case.
-  """
-  body: dict[str, Any] = {
-    "kind": "submit_workflow",
-    "spec": workflow_spec_to_kernel(spec),
-    "parent_session_id": parent_session_id,
-  }
-  if submitter_agent_id:
-    body["submitter_agent_id"] = submitter_agent_id
-  return body
 
 
 # R3-1: the tool a workflow-coordinator node's agent calls to append work to the running DAG (true

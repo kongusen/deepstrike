@@ -3,6 +3,7 @@ import type {
   CanonicalPreparation,
   CanonicalRestoreCost,
 } from "@deepstrike/wasm-kernel"
+import { kernelAbiVersion } from "@deepstrike/wasm-kernel"
 import type { Message } from "../types.js"
 import {
   JournalCasConflictError,
@@ -18,7 +19,6 @@ import {
   type KernelRunnerAction,
 } from "./kernel-step.js"
 
-export const CANONICAL_KERNEL_ABI_VERSION = 3
 export const MAX_CHAIN_POSITION = JOURNAL_MAX_CHAIN_POSITION
 
 const utf8ByteLength = (value: string): number => new TextEncoder().encode(value).byteLength
@@ -359,7 +359,7 @@ function isCheckpointRequired(preparation: CanonicalPreparation): boolean {
 }
 
 /**
- * WASM's canonical direct-step host.
+ * WASM's canonical durable staged-transition host.
  *
  * It owns no scheduler truth. Core prepares opaque record bytes; `KernelJournal` makes those bytes
  * authoritative; only then may core commit and expose the planned effects/terminal to the runner.
@@ -378,7 +378,7 @@ export class CanonicalKernelHost {
     options: CanonicalTransitionOptions = {},
   ): Promise<CanonicalTransition> {
     const inputJson = JSON.stringify({
-      abi_version: CANONICAL_KERNEL_ABI_VERSION,
+      abi_version: kernelAbiVersion(),
       operation_id: this.operationId,
       input_id: options.inputId ?? `wasm-input-${crypto.randomUUID()}`,
       observed_at_ms: options.observedAtMs ?? String(Date.now()),
@@ -779,9 +779,9 @@ function providerStopReason(value: unknown): string | undefined {
 }
 
 /**
- * Compatibility surface used only inside the WASM host while its runner callsites are cut over.
- * Every durable transition below is one of ABI v3's five input classes; no ABI-v2 envelope or
- * synthesized host transaction reaches core or storage.
+ * Canonical operation runtime used by the WASM host.
+ * Every durable transition below is one of the canonical ABI's five input classes; no legacy
+ * envelope or synthesized host transaction reaches core or storage.
  */
 export class CanonicalRunnerRuntime {
   private readonly host: CanonicalKernelHost
@@ -902,48 +902,49 @@ export class CanonicalRunnerRuntime {
     return this.lastAction
   }
 
+  async startAgent(
+    taskValue: Record<string, unknown>,
+    runSpecValue?: Record<string, unknown>,
+  ): Promise<KernelRunnerAction | null> {
+    await this.ensureConfigured()
+    const goal = String(taskValue.goal ?? "")
+    const action = await this.commit({
+      kind: "start_operation",
+      entry: {
+        kind: "agent",
+        task: {
+          goal,
+          ...(Array.isArray(taskValue.criteria) && taskValue.criteria.length > 0
+            ? { criteria: taskValue.criteria }
+            : {}),
+        },
+        ...(runSpecValue ? { run_spec: logicalRunSpec(runSpecValue, goal) } : {}),
+      },
+      initial_context: this.initialContext,
+    })
+    this.started = true
+    return action
+  }
+
+  async startWorkflow(specValue: Record<string, unknown>): Promise<KernelRunnerAction | null> {
+    await this.ensureConfigured()
+    const action = await this.commit({
+      kind: "start_operation",
+      entry: {
+        kind: "workflow",
+        spec: canonicalWorkflowSpec(specValue),
+      },
+      initial_context: this.initialContext,
+    })
+    this.started = true
+    return action
+  }
+
   async applyHostEvent(event: Record<string, unknown>): Promise<KernelRunnerAction | null> {
     if (!this.started && this.applyBootstrapEvent(event)) return null
 
     let input: CanonicalKernelInput | undefined
     switch (event.kind) {
-      case "start_run": {
-        await this.ensureConfigured()
-        const task = asObject(event.task)
-        const goal = String(task.goal ?? "")
-        input = {
-          kind: "start_operation",
-          entry: {
-            kind: "agent",
-            task: {
-              goal,
-              ...(Array.isArray(task.criteria) && task.criteria.length > 0 ? { criteria: task.criteria } : {}),
-            },
-            ...(event.run_spec
-              ? { run_spec: logicalRunSpec(asObject(event.run_spec), goal) }
-              : {}),
-          },
-          initial_context: this.initialContext,
-        }
-        this.started = true
-        break
-      }
-      case "load_workflow": {
-        await this.ensureConfigured()
-        input = {
-          kind: "start_operation",
-          entry: {
-            kind: "workflow",
-            spec: canonicalWorkflowSpec(asObject(event.spec)),
-          },
-          initial_context: this.initialContext,
-        }
-        this.started = true
-        break
-      }
-      case "resume":
-      case "complete_run":
-        return this.resumeAction()
       case "provider_result": {
         const message = canonicalProviderMessage(asObject(event.message))
         this.newMessages.push({
@@ -1014,13 +1015,6 @@ export class CanonicalRunnerRuntime {
               output,
               this.payloadPreviewBytes,
             )
-            this.hostObservations.push({
-              kind: "large_result_spooled",
-              call_id: callId,
-              spool_ref: persisted.payloadRef,
-              original_size: bytes,
-              preview_size: utf8ByteLength(persisted.preview),
-            })
             results.push({
               kind: "external",
               call_id: callId,
@@ -1164,8 +1158,6 @@ export class CanonicalRunnerRuntime {
           ? this.failedEffect(event, "storage_unavailable", String(event.error), true)
           : this.pageOutResolution(event)
         break
-      case "large_result_spool_result":
-        throw new Error("ABI v3 externalises tool results before resolve_effect; no spool result input exists")
       case "milestone_result": {
         const result = asObject(event.result)
         input = this.succeededEffect(event, {
@@ -1245,7 +1237,7 @@ export class CanonicalRunnerRuntime {
       case "add_history_message":
         throw new Error("running ABI v3 operations accept history only through effects or external events")
       default:
-        throw new Error(`legacy Node host event has no canonical ABI v3 lowering: ${String(event.kind)}`)
+        throw new Error(`WASM host fact has no canonical ABI input: ${String(event.kind)}`)
     }
     return this.commit(input)
   }
@@ -1470,7 +1462,7 @@ export class CanonicalRunnerRuntime {
         this.initialContext.messages.push(canonicalInitialMessage(asObject(event.message)))
         return true
       case "configure_run":
-        this.mergeLegacyConfig(asObject(event.config))
+        this.mergeHostConfig(asObject(event.config))
         return true
       default:
         return false
@@ -1487,7 +1479,7 @@ export class CanonicalRunnerRuntime {
     return asObject(this.config.execution_policy)
   }
 
-  private mergeLegacyConfig(config: Record<string, unknown>): void {
+  private mergeHostConfig(config: Record<string, unknown>): void {
     if (config.governance) {
       const governance = asObject(config.governance)
       this.config.governance_policy = {
@@ -1568,14 +1560,6 @@ export class CanonicalRunnerRuntime {
     }
     if (config.reliability) {
       const reliability = asObject(config.reliability)
-      if (
-        (reliability.event_replay_capacity !== undefined &&
-          Number(reliability.event_replay_capacity) < 1) ||
-        (reliability.completed_effect_replay_capacity !== undefined &&
-          Number(reliability.completed_effect_replay_capacity) < 1)
-      ) {
-        throw new Error("invalid_config: legacy replay capacity must be positive during WASM cutover")
-      }
       this.config.recovery_policy = {
         ...(reliability.provider_recovery_attempts !== undefined
           ? { provider_recovery_attempts: reliability.provider_recovery_attempts }
@@ -1583,23 +1567,6 @@ export class CanonicalRunnerRuntime {
         ...(reliability.output_recovery_attempts !== undefined
           ? { output_recovery_attempts: reliability.output_recovery_attempts }
           : {}),
-      }
-      if (
-        reliability.spool_threshold_bytes !== undefined ||
-        reliability.spool_preview_bytes !== undefined
-      ) {
-        this.config.payload_policy = {
-          ...(reliability.spool_threshold_bytes !== undefined
-            ? { inline_threshold_bytes: reliability.spool_threshold_bytes }
-            : {}),
-          ...(reliability.spool_preview_bytes !== undefined
-            ? { preview_bytes: reliability.spool_preview_bytes }
-            : {}),
-        }
-        this.payloadInlineThreshold = Number(
-          reliability.spool_threshold_bytes ?? this.payloadInlineThreshold,
-        )
-        this.payloadPreviewBytes = Number(reliability.spool_preview_bytes ?? this.payloadPreviewBytes)
       }
       if (reliability.max_input_bytes !== undefined) {
         this.config.kernel_limits = {
@@ -1639,6 +1606,28 @@ export async function canonicalKernelAction(
 ): Promise<KernelRunnerAction> {
   const action = await canonicalKernelMaybeAction(runtime, pending, event)
   if (!action) throw new Error("canonical kernel transition must return one host action")
+  return action
+}
+
+export async function canonicalStartAgent(
+  runtime: CanonicalRunnerRuntime,
+  pending: KernelObservationLike[],
+  task: Record<string, unknown>,
+  runSpec?: Record<string, unknown>,
+): Promise<KernelRunnerAction> {
+  const action = await runtime.startAgent(task, runSpec)
+  pending.push(...runtime.drainHostObservations())
+  if (!action) throw new Error("canonical agent root must return one host action")
+  return action
+}
+
+export async function canonicalStartWorkflow(
+  runtime: CanonicalRunnerRuntime,
+  pending: KernelObservationLike[],
+  spec: Record<string, unknown>,
+): Promise<KernelRunnerAction | null> {
+  const action = await runtime.startWorkflow(spec)
+  pending.push(...runtime.drainHostObservations())
   return action
 }
 

@@ -145,7 +145,7 @@
   </g>
 
   <text x="48" y="680" class="section-title" text-anchor="start">Recovery</text>
-  <text x="1152" y="680" class="section-note" text-anchor="end">COMPLETED OUTPUTS AND RUNTIME APPENDS REBUILD FROM SESSIONLOG</text>
+  <text x="1152" y="680" class="section-note" text-anchor="end">LOGICAL CHECKPOINT OWNS THE COMPLETE DAG AND NODE STATE</text>
     <text x="48" y="708" class="body" text-anchor="start">Logical checkpoint restore rebuilds the DAG and schedules only the remaining ready frontier.</text>
 
   <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>

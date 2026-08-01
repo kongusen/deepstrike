@@ -28,16 +28,16 @@ mkdirSync(artifactsDir, { recursive: true })
 
 const sdk = await loadSdk()
 const {
-  FileArchiveStore,
   FileSessionLog,
   LocalExecutionPlane,
   OllamaProvider,
+  PayloadStore,
   RuntimeRunner,
   createProvider,
   rebuildOsSnapshotFromSessionEvents,
   tool,
 } = sdk
-const { LargeResultSpool } = await loadSdkModule("runtime/large-result-spool.js")
+const { FileArchiveStore } = await loadSdkModule("planes/public.js")
 
 const sessionLog = new FileSessionLog(path.join(runRoot, "sessions"))
 const dreamStore = createJsonDreamStore(path.join(runRoot, "memory"))
@@ -81,11 +81,7 @@ const runtimeOptions = {
       windowMs: config.memoryWriteWindowMs,
     },
   },
-  resultSpool: new LargeResultSpool({
-    spoolDir: path.join(runRoot, "spool"),
-    spoolThresholdBytes: config.spoolThresholdBytes,
-    previewTokens: config.spoolPreviewTokens,
-  }),
+  payloadStore: new PayloadStore({ storageDir: path.join(runRoot, "payloads") }),
   compressionStore: new FileArchiveStore(path.join(runRoot, "archives")),
   enablePlanTool: true,
   milestonePolicy: "auto_pass",
@@ -191,8 +187,6 @@ function readConfig() {
     maxSpawnDepth: intEnv("DEEPSTRIKE_MAX_SPAWN_DEPTH", 2, 0, 20),
     memoryWritesPerWindow: intEnv("DEEPSTRIKE_MEMORY_WRITES_PER_WINDOW", 200, 0, 100000),
     memoryWriteWindowMs: intEnv("DEEPSTRIKE_MEMORY_WRITE_WINDOW_MS", 60000, 1, 24 * 60 * 60 * 1000),
-    spoolThresholdBytes: intEnv("DEEPSTRIKE_SPOOL_THRESHOLD_BYTES", 50 * 1024, 1024, 10 * 1024 * 1024),
-    spoolPreviewTokens: intEnv("DEEPSTRIKE_SPOOL_PREVIEW_TOKENS", 500, 1, 10000),
     diagnostics: boolEnv("DEEPSTRIKE_DIAGNOSTICS", false),
   }
 }
@@ -286,7 +280,7 @@ function buildGoal(config) {
     `After every ${config.checkpointEvery}th step, call verify_checkpoint.`,
     largeRule,
     "Do not skip ahead. If a checkpoint reports missing steps, fill the missing steps before continuing.",
-    "After the final checkpoint, answer with a concise stability summary, including any skipped, missing, spooled, compressed, or budget events you observed.",
+    "After the final checkpoint, answer with a concise stability summary, including any skipped, missing, external-payload, compressed, or budget events you observed.",
   ].join("\n")
 }
 
@@ -336,7 +330,7 @@ function buildRecordStepTool(config, filePath) {
 function buildEmitLargePayloadTool(config, dir) {
   return tool(
     "emit_large_payload",
-    "Emit and persist a large deterministic payload to exercise large-result spooling.",
+    "Emit and persist a large deterministic payload to exercise canonical external payload handling.",
     {
       type: "object",
       properties: {
@@ -432,7 +426,7 @@ async function seedMemory(store, agentId, sessionId) {
       scope: { tenant_id: "examples", namespace: agentId },
       name: "stability_seed",
       kind: "project",
-      content: "Previous stability runs should verify ordered tool calls, checkpoint continuity, large-result spooling, and wake replay.",
+      content: "Previous stability runs should verify ordered tool calls, checkpoint continuity, external payload handling, and wake recovery.",
       description: "Stability-run verification checklist",
       provenance: {
         author: "host",
@@ -504,10 +498,10 @@ function createJsonDreamStore(root) {
 
 function createStaticKnowledgeSource() {
   const docs = [
-    "DeepStrike stability validation should exercise LLM turns, tool calls, session log replay, skill loading, memory retrieval, knowledge retrieval, compression, and large-result spooling.",
+    "DeepStrike stability validation should exercise LLM turns, tool calls, canonical journal recovery, skill loading, memory retrieval, knowledge retrieval, compression, and external payload handling.",
     "A healthy long run records monotonic progress, preserves checkpoint evidence, and terminates with run_terminal rather than provider timeout or malformed replay.",
-    "Large tool outputs above the spool threshold should be represented in context as previews while the full content is persisted under the configured spool directory.",
-    "Wake replay should rebuild context from the JSONL session log and continue a mid-run session without duplicating earlier completed tool results.",
+    "Large tool outputs above the inline threshold should be represented in context as previews while the full content is persisted through the configured PayloadStore.",
+    "Wake recovery should restore from the canonical checkpoint and KernelJournal tail without duplicating earlier completed tool results.",
   ]
   return {
     async retrieve(query, topK = 5) {

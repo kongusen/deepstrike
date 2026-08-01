@@ -21,9 +21,10 @@ pub use deepstrike_core::governance::quota::ResourceQuota;
 // configuring the watch (`set_entropy_watch` / `configure_run.entropy_watch`) or folding
 // their own samples when driving the kernel manually.
 pub use deepstrike_core::mm::memory::{
-    MemoryAuthor, MemoryKind, MemoryPolicy, MemoryProvenance, MemoryQuery, MemoryRecall,
-    MemoryRecord, MemoryScope, MemoryTrustLevel,
+    MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
+    MemoryScope, MemoryTrustLevel,
 };
+pub use deepstrike_core::runtime::kernel::wire::MemoryPolicy;
 pub use deepstrike_core::{EntropySample, EntropyTracker, EntropyWatchConfig};
 // Workflow surface (DELIBERATE floor, not a gap): the Rust SDK has no `run_workflow` driver — the
 // node/python/wasm SDKs own async node execution. These re-exports are for MANUAL driving: build a
@@ -70,10 +71,11 @@ pub use runtime::{
     default_native_governance_policy, os_profile,
 };
 pub use runtime::{ExecutionPlane, LocalExecutionPlane};
+pub use runtime::{FilePayloadStore, PayloadStore};
 pub use runtime::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
 pub use runtime::{
-    MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy, RuntimeOptions,
-    RuntimeRunner, collect_text,
+    KernelReliability, MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy,
+    RuntimeOptions, RuntimeRunner, collect_text,
 };
 // Durable transaction capability (Canonical Kernel ABI §9.1). `FileKernelJournal` is the
 // cross-process-atomic reference implementation; `InMemoryKernelJournal` is dev/test only.

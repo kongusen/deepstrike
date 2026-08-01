@@ -13,7 +13,7 @@ Context 工程是 Agent OS 的 **Context VM 运行面**。它不只是把 messag
 | 对 kernel | 提供每轮 `CallLLM` 前的确定性 render 结果 |
 | 对 provider | 保持 stable prefix，提升 prompt cache 命中 |
 | 对 memory / skill / signals | 把长期知识、按需能力和外部事件放入不同槽位 |
-| 对工具结果 | 通过 handle / spool 控制大结果驻留方式，避免上下文被工具输出撑爆 |
+| 对工具结果 | 通过 inline/external handle 控制大结果驻留方式，避免上下文被工具输出撑爆 |
 
 这意味着 Context VM 是 agent 的“虚拟内存管理器”：它决定哪些信息 inline、哪些信息归档、哪些信息只作为下一轮状态注入。
 
@@ -67,11 +67,12 @@ RuntimeOptions(
 
 ```python
 from deepstrike.runtime.archive import ArchiveStore
+from deepstrike import PayloadStore
 
 RuntimeOptions(
     ...,
     compression_store=ArchiveStore("./archives"),
-    result_spool=large_result_spool,  # Layer-1 大工具结果 spool
+    payload_store=PayloadStore("./payloads"),
 )
 ```
 
@@ -141,7 +142,7 @@ runner.deactivate_skill("debug")                                    # K3：显�
 
 ## 延伸阅读
 
-- [执行平面与工具](./execution-plane-and-tools) — 大工具结果、spool、handle 投影
+- [执行平面与工具](./execution-plane-and-tools) — 大工具结果、external payload、handle 投影
 - [Skill 门控](./skills) — `active_skills` 收窄工具暴露
 - [Memory](./memory) — knowledge 分区注入
 - 源码：`context/manager.rs`、`context/renderer.rs`

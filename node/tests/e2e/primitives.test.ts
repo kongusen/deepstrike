@@ -14,9 +14,7 @@ import {
   LocalExecutionPlane,
 } from "../../src/index.js"
 import type { WorkflowSpec } from "../../src/index.js"
-import { getKernel } from "../../src/kernel.js"
 import { loadProviders, anyProvider } from "./providers.js"
-import { startKernelV2 } from "../helpers/kernel-v2.js"
 
 const provider = anyProvider(loadProviders())
 const maybe = provider ? describe : describe.skip
@@ -30,12 +28,6 @@ maybe("real-model workflow DAG", () => {
       maxTokens: 8000,
       maxTurns: 4,
     })
-    const kernel = new (getKernel().KernelRuntime)({ maxTokens: 8000 })
-    startKernelV2(kernel, "review")
-    ;(runner as any).activeKernel = kernel
-    ;(runner as any).currentSessionId = "verify-e2e"
-    ;(runner as any).pendingObservations = []
-
     // The shape verify_rules(rules, skeptic) produces: one verify node per rule + a skeptic
     // depending on all of them. Verifiers run with no inherited author context (bias-resistant).
     const spec: WorkflowSpec = {

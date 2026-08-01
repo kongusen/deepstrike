@@ -1,10 +1,8 @@
-import { getKernel } from "../src/kernel.js"
 import {
-  workflowSpecToKernel,
   workflowNodeSpecToKernel,
   subAgentResultToKernel,
 } from "../src/types/agent.js"
-import type { WorkflowSpec, WorkflowSpawnInfo, SubAgentResult } from "../src/types/agent.js"
+import type { SubAgentResult } from "../src/types/agent.js"
 import {
   loopInstruction,
   classifyInstruction,
@@ -13,38 +11,6 @@ import {
   extractClassifyBranch,
   extractJudgeWinner,
 } from "../src/runtime/workflow-control-flow.js"
-import { stepKernelV2WithHostEffects } from "./helpers/kernel-v2.js"
-
-function step(rt: { step(json: string): string }, event: Record<string, unknown>) {
-  return stepKernelV2WithHostEffects(rt as never, event) as {
-    actions: Array<Record<string, unknown>>
-    observations: Array<{ kind: string; nodes?: WorkflowSpawnInfo[]; node_outcomes?: Array<{ node_id: string; status: string }> }>
-  }
-}
-
-const batchOf = (obs: ReturnType<typeof step>["observations"]): WorkflowSpawnInfo[] =>
-  (obs.find(o => o.kind === "workflow_batch_spawned")?.nodes ?? [])
-const doneOf = (obs: ReturnType<typeof step>["observations"]) =>
-  obs.find(o => o.kind === "workflow_completed")
-
-/** Feed a sub_agent_completed carrying optional control-flow signals. */
-function complete(
-  rt: { step(json: string): string },
-  agentId: string,
-  signals: { loopContinue?: boolean; classifyBranch?: string; tournamentWinner?: string } = {},
-) {
-  const result: SubAgentResult = {
-    agentId,
-    result: {
-      termination: "completed",
-      finalMessage: { role: "assistant", content: "ok", toolCalls: [] },
-      turnsUsed: 1,
-      totalTokensUsed: 1,
-      ...signals,
-    },
-  }
-  return step(rt, { kind: "sub_agent_completed", result: subAgentResultToKernel(result) })
-}
 
 describe("workflowNodeSpecToKernel: control-flow kinds", () => {
   it("maps loop / classify / tournament / reduce to serde-tagged NodeKind JSON", () => {
@@ -139,92 +105,5 @@ describe("control-flow extractors", () => {
     expect(loopInstruction(4)).toContain("4")
     expect(classifyInstruction(["bug", "feature"])).toContain('"bug"')
     expect(judgeGoal("which is best", "LEFTOUT", "RIGHTOUT")).toContain("LEFTOUT")
-  })
-})
-
-describe("LoadWorkflow ABI drives control-flow kinds end-to-end", () => {
-  const newRt = () => new (getKernel().KernelRuntime)({ maxTokens: 128_000 }) as { step(json: string): string }
-  const start = (rt: { step(json: string): string }, spec: WorkflowSpec) => {
-    step(rt, { kind: "start_run", task: { goal: "parent", criteria: [] } })
-    return step(rt, { kind: "load_workflow", spec: workflowSpecToKernel(spec), parent_session_id: "sess" })
-  }
-
-  it("loop: descriptor carries loop_max_iters; loop_continue=false stops early and promotes the dependent", () => {
-    const rt = newRt()
-    const spec: WorkflowSpec = {
-      nodes: [
-        { task: "refine", role: "implement", loop: { maxIters: 5 } },
-        { task: "ship", role: "implement", dependsOn: [0] },
-      ],
-    }
-    const loaded = start(rt, spec)
-    const b1 = batchOf(loaded.observations)
-    expect(b1).toHaveLength(1)
-    expect(b1[0].agent_id).toBe("wf-node0-i0")
-    expect(b1[0].loop_max_iters).toBe(5)
-
-    // iteration 0 signals "done" early → loop stops before max_iters → dependent unblocks.
-    const after = complete(rt, "wf-node0-i0", { loopContinue: false })
-    const b2 = batchOf(after.observations)
-    expect(b2.map(n => n.agent_id)).toEqual(["wf-node1"])
-
-    const fin = complete(rt, "wf-node1")
-    // The loop node's completed entry is its base node id (`wf-node0`), not the iteration id.
-    expect(doneOf(fin.observations)?.node_outcomes?.map(node => node.node_id)).toEqual(expect.arrayContaining(["wf-node0", "wf-node1"]))
-  })
-
-  it("classify: descriptor carries classify_labels; the chosen branch runs and the rest are pruned", () => {
-    const rt = newRt()
-    const spec: WorkflowSpec = {
-      nodes: [
-        { task: "route", role: "plan", classify: { branches: [{ label: "a", nodes: [1] }, { label: "b", nodes: [2] }] } },
-        { task: "branch-a", role: "implement", dependsOn: [0] },
-        { task: "branch-b", role: "implement", dependsOn: [0] },
-      ],
-    }
-    const loaded = start(rt, spec)
-    const b1 = batchOf(loaded.observations)
-    expect(b1[0].agent_id).toBe("wf-node0")
-    expect(b1[0].classify_labels).toEqual(["a", "b"])
-
-    // classifier picks "a" → only branch-a (node 1) spawns; branch-b (node 2) is pruned/failed.
-    const after = complete(rt, "wf-node0", { classifyBranch: "a" })
-    expect(batchOf(after.observations).map(n => n.agent_id)).toEqual(["wf-node1"])
-
-    const fin = complete(rt, "wf-node1")
-    const done = doneOf(fin.observations)
-    expect(done?.node_outcomes?.filter(node => node.status === "completed").map(node => node.node_id)).toEqual(expect.arrayContaining(["wf-node0", "wf-node1"]))
-    expect(done?.node_outcomes?.filter(node => node.status === "failed").map(node => node.node_id)).toEqual(["wf-node2"])
-  })
-
-  it("tournament: entrants carry no judge_match; judges do; the winner promotes the dependent", () => {
-    const rt = newRt()
-    const spec: WorkflowSpec = {
-      nodes: [
-        { task: "pick the best", role: "plan", tournament: { entrants: ["x", "y"] } },
-        { task: "use winner", role: "implement", dependsOn: [0] },
-      ],
-    }
-    const loaded = start(rt, spec)
-    // The controller expands into 2 entrant children (no judge_match on entrants).
-    const entrants = batchOf(loaded.observations)
-    expect(entrants).toHaveLength(2)
-    expect(entrants.every(n => n.judge_match == null)).toBe(true)
-    const entrantIds = entrants.map(n => n.agent_id)
-
-    // Finish both entrants → a judge with a judge_match over the two candidates is emitted.
-    let judges: WorkflowSpawnInfo[] = []
-    for (const id of entrantIds) judges = batchOf(complete(rt, id).observations)
-    expect(judges).toHaveLength(1)
-    const jm = judges[0].judge_match
-    expect(jm).toBeDefined()
-    expect([jm!.left, jm!.right].sort()).toEqual([...entrantIds].sort())
-
-    // The judge reports a winner → bracket resolves → the controller completes → dependent unblocks.
-    const afterJudge = complete(rt, judges[0].agent_id, { tournamentWinner: jm!.left })
-    expect(batchOf(afterJudge.observations).map(n => n.agent_id)).toEqual(["wf-node1"])
-
-    const fin = complete(rt, "wf-node1")
-    expect(doneOf(fin.observations)?.node_outcomes?.map(node => node.node_id)).toEqual(expect.arrayContaining(["wf-node0", "wf-node1"]))
   })
 })

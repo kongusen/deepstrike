@@ -1,6 +1,6 @@
 # Session 与重放
 
-Agent OS 的 **可重放性** 来自：控制流状态在内核可序列化 + 宿主把每一步写成 SessionLog event。这不是「保存 chat history」那么简单。
+Agent OS 的 **可重放性** 来自：内核把控制流投影为可持久化的 logical checkpoint，宿主把 canonical transaction record 写入 KernelJournal，并把运行证据写入 SessionLog。这不是「保存 chat history」那么简单。
 
 ## 为什么 Session 是 OS 级能力
 
@@ -15,12 +15,12 @@ DeepStrike 把 **可恢复边界** 定义为：
 ```text
 SessionLog (append-only evidence)
     +
-KernelSnapshot / event replay
+opaque logical checkpoint + bounded KernelJournal tail
     +
 宿主侧 store (DreamStore, ArchiveStore, FileSessionLog)
 ```
 
-内核 **不** 持久化到磁盘——SDK 拥有 I/O——但内核 **产出** 可持久化的 observation。
+内核 **不** 持久化到磁盘——SDK 拥有 I/O——但内核产出 checkpoint candidate、canonical record 和 observation。SessionLog 是审计与离线诊断证据，不是恢复 workflow graph 的生产事实源。
 
 ## SessionLog
 
@@ -50,17 +50,17 @@ KernelSnapshot / event replay
 - 等待 sub-agent join
 - Workflow barrier 未齐
 
-恢复路径：
+恢复路径由宿主加载最近一次已安装 checkpoint 及其后的 journal records，再调用 canonical restore。checkpoint 携带完整 workflow DAG、节点状态和 pending effect identity；恢复成本只取决于 bounded tail，不取决于运行总长度。
 
 ```python
-# 同一 session_id 继续 — SDK 从 log 重建 kernel
+# 同一 session_id 继续；SDK 从 checkpoint + KernelJournal 恢复 canonical kernel
 async for event in runner.run(goal, session_id=existing_id):
     ...
 ```
 
 测试参考：`python/tests/test_runtime_wake.py`
 
-**Workflow 特有能力**：运行时 `SubmitNodes` append 的节点也写入 log，resume 后 DAG 包含动态扩展部分。
+**Workflow 特有能力**：运行时 `SubmitNodes` append 的节点属于 checkpoint 的 workflow graph state，恢复后的 DAG 包含动态扩展部分。SessionLog 可记录相应 observation，但 production resume 不接收或合成 `resumed_*` workflow 输入。
 
 ## Replay 与确定性测试
 

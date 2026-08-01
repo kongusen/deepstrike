@@ -1,9 +1,8 @@
 use deepstrike_core::runtime::repair::{
-    reconstruct_messages_with_fallback, repair_events, repair_events_with_cap,
-    repair_llm_completed, sanitize_recovery_text, sanitize_recovery_text_bounded,
+    reconstruct_messages_with_fallback, repair_events_with_cap,
 };
 use deepstrike_core::runtime::session::SessionEvent;
-use deepstrike_core::types::message::{Content, ContentPart, Message, Role};
+use deepstrike_core::types::message::Message;
 
 use super::session_log::SessionEntry;
 
@@ -24,10 +23,13 @@ pub fn repair_entries_with_cap(entries: &[SessionEntry], max_bytes: usize) -> Ve
 }
 
 pub fn is_mid_run(entries: &[SessionEntry]) -> bool {
-    !entries.is_empty()
-        && !entries
-            .iter()
-            .any(|e| matches!(e.event, SessionEvent::RunTerminal { .. }))
+    let latest_start = entries
+        .iter()
+        .rposition(|entry| matches!(entry.event, SessionEvent::RunStarted { .. }));
+    let latest_terminal = entries
+        .iter()
+        .rposition(|entry| matches!(entry.event, SessionEvent::RunTerminal { .. }));
+    latest_start.is_some_and(|start| latest_terminal.map_or(true, |terminal| start > terminal))
 }
 
 pub fn replay_messages(entries: &[SessionEntry]) -> Vec<Message> {
@@ -61,7 +63,7 @@ where
 mod tests {
     use super::*;
     use deepstrike_core::runtime::session::SessionEvent;
-    use deepstrike_core::types::message::{Content, ToolCall, ToolResult};
+    use deepstrike_core::types::message::{Content, Role, ToolResult};
 
     #[test]
     fn is_mid_run_when_no_terminal() {
@@ -77,6 +79,53 @@ mod tests {
             },
         }];
         assert!(is_mid_run(&entries));
+    }
+
+    #[test]
+    fn is_mid_run_uses_the_latest_run_segment() {
+        let mut entries = vec![
+            SessionEntry {
+                seq: 0,
+                event: SessionEvent::RunStarted {
+                    run_id: "r1".into(),
+                    goal: "first".into(),
+                    criteria: vec![],
+                    agent_id: None,
+                    system_prompt: None,
+                    attachments: vec![],
+                },
+            },
+            SessionEntry {
+                seq: 1,
+                event: SessionEvent::RunTerminal {
+                    reason: "completed".into(),
+                    turns_used: 1,
+                    total_tokens: 0,
+                },
+            },
+            SessionEntry {
+                seq: 2,
+                event: SessionEvent::RunStarted {
+                    run_id: "r2".into(),
+                    goal: "second".into(),
+                    criteria: vec![],
+                    agent_id: None,
+                    system_prompt: None,
+                    attachments: vec![],
+                },
+            },
+        ];
+        assert!(is_mid_run(&entries));
+
+        entries.push(SessionEntry {
+            seq: 3,
+            event: SessionEvent::RunTerminal {
+                reason: "completed".into(),
+                turns_used: 1,
+                total_tokens: 0,
+            },
+        });
+        assert!(!is_mid_run(&entries));
     }
 
     #[test]

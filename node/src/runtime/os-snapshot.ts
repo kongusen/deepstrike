@@ -5,7 +5,6 @@ const KERNEL_KINDS = new Set([
   "compressed",
   "page_out",
   "page_in",
-  "large_result_spooled",
   "capability_changed",
   "context_renewed",
   "suspended",
@@ -28,7 +27,13 @@ const KERNEL_KINDS = new Set([
 export interface OsSnapshot {
   lastSuspend?: { turn: number; reason: string; pending_calls: string[] }
   lastResumedTurn?: number
-  processByAgent: Array<{ turn: number; agent_id: string; parent_session_id: string; state: string }>
+  processByAgent: Array<{
+    turn: number
+    agent_id: string
+    parent_task_id?: string
+    parent_session_id?: string
+    state: string
+  }>
   budgetExceeded: Array<{ turn: number; operation_id: string; reservation_id?: string; budget: string }>
   budgetUsageReported: Array<{
     turn: number
@@ -55,7 +60,6 @@ export interface OsSnapshot {
   }>
   pageOutCount: number
   pageInCount: number
-  spoolCount: number
   toolGatedCount: number
   memoryWrittenCount: number
   memoryQueriedCount: number
@@ -74,7 +78,6 @@ export function rebuildOsSnapshotFromSessionEvents(
     signals: [],
     pageOutCount: 0,
     pageInCount: 0,
-    spoolCount: 0,
     toolGatedCount: 0,
     memoryWrittenCount: 0,
     memoryQueriedCount: 0,
@@ -109,7 +112,8 @@ export function rebuildOsSnapshotFromSessionEvents(
         const record = {
           turn: event.turn,
           agent_id: event.agent_id,
-          parent_session_id: event.parent_session_id,
+          ...(event.parent_task_id ? { parent_task_id: event.parent_task_id } : {}),
+          ...(event.parent_session_id ? { parent_session_id: event.parent_session_id } : {}),
           state: event.state ?? "running",
         }
         const idx = index.get(event.agent_id)
@@ -162,9 +166,6 @@ export function rebuildOsSnapshotFromSessionEvents(
         break
       case "page_in":
         snap.pageInCount += 1
-        break
-      case "large_result_spooled":
-        snap.spoolCount += 1
         break
       case "memory_written":
         snap.memoryWrittenCount += 1

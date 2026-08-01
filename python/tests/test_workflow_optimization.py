@@ -1,7 +1,5 @@
 """Dynamic-workflow optimization batch: node caps and loop pacing parity."""
 
-import json
-
 import pytest
 
 from deepstrike import (
@@ -17,34 +15,12 @@ from deepstrike import (
     WorkflowSpawnInfo,
     workflow_node_spec_to_kernel,
 )
-from deepstrike._kernel import KernelRuntime, LoopPolicy
 from deepstrike.providers.base import Message
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.runtime.run_group import GroupMember
 from deepstrike.runtime.workflow_control_flow import dependency_outputs_note
-from deepstrike.runtime.kernel_step import _kernel_step
 from deepstrike.tools import tool
 from deepstrike.types.agent import workflow_node_to_spec
-
-
-def _step(rt: KernelRuntime, event: dict) -> dict:
-    return _kernel_step(rt, event)
-
-
-def _batch_of(step: dict) -> list:
-    action = next((a for a in step.get("actions", []) if a.get("kind") == "spawn_workflow"), None)
-    return (action or {}).get("nodes") or []
-
-
-def _accept_batch(rt: KernelRuntime, step: dict) -> None:
-    action = next(a for a in step.get("actions", []) if a.get("kind") == "spawn_workflow")
-    _step(rt, {
-        "kind": "workflow_spawn_result",
-        "effect_id": action["effect_id"],
-        "started_agent_ids": [node["agent_id"] for node in action.get("nodes", [])],
-        "failures": [],
-    })
-
 
 # ── W-N2 / W-N7: spawn descriptors carry data edges and per-node caps ────────────────────────────
 
@@ -66,45 +42,6 @@ def test_node_spec_to_kernel_emits_caps_and_node_to_spec_maps_them_back():
     assert spec.max_turns == 4
     assert spec.max_wall_ms == 30_000
     assert spec.token_budget == 5000
-
-
-def test_plain_dependent_node_spawn_info_carries_dependency_agent_ids():
-    rt = KernelRuntime(LoopPolicy(max_tokens=8000, max_turns=10))
-    _step(rt, {"kind": "start_run", "task": {"goal": "deps", "criteria": []}})
-    out = _step(rt, {
-        "kind": "load_workflow",
-        "spec": {
-            "nodes": [
-                {"task": {"goal": "w0", "criteria": []}, "role": "explore",
-                 "isolation": "read_only", "context_inheritance": "none"},
-                {"task": {"goal": "w1", "criteria": []}, "role": "explore",
-                 "isolation": "read_only", "context_inheritance": "none"},
-                {"task": {"goal": "synth", "criteria": []}, "role": "plan",
-                 "isolation": "shared", "context_inheritance": "none", "depends_on": [0, 1]},
-            ],
-        },
-        "parent_session_id": "sess",
-    })
-    workers = _batch_of(out)
-    assert [n.get("input_agent_ids") or [] for n in workers] == [[], []]
-    _accept_batch(rt, out)
-
-    # Complete both workers → the synthesizer spawns WITH its data edges.
-    def _mk_result(agent_id: str) -> dict:
-        return {
-            "kind": "sub_agent_completed",
-            "result": {"agent_id": agent_id, "result": {
-                "termination": "completed",
-                "final_message": {"role": "assistant", "content": f"{agent_id} out"},
-                "turns_used": 1, "total_tokens_used": 1,
-            }},
-        }
-
-    _step(rt, _mk_result("wf-node0"))
-    after = _step(rt, _mk_result("wf-node1"))
-    synth = _batch_of(after)
-    assert [n["agent_id"] for n in synth] == ["wf-node2"]
-    assert synth[0]["input_agent_ids"] == ["wf-node0", "wf-node1"]
 
 
 def test_dependency_outputs_note_formats_clips_and_skips_empty():

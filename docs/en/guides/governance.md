@@ -11,7 +11,7 @@ Governance is the Agent OS **Syscall Governance Plane**. It adjudicates permissi
 | Trap point | Description |
 |------------|-------------|
 | Tool syscall | Tool schema exposure and actual calls can both be filtered or denied |
-| Workflow syscall | `SubmitNodes` / `LoadWorkflow` are bounded by node count, depth, and resource quota |
+| Workflow syscall | `AppendWorkflowNodes` is bounded by node count, depth, and resource quota |
 | Memory syscall | Write frequency, content size, and metadata are controlled by policy |
 | Process spawn | Sub-agent concurrency, total count, and isolation mode can be trapped |
 | Context feedback | deny / ask_user decisions become visible error tool results in the next turn |
@@ -110,10 +110,10 @@ With `RunGroup`, spawn counts accumulate across stateless runs — see [RunGroup
 Workflow growth goes through kernel syscalls:
 
 - `SubmitNodes { count }` — append nodes
-- `LoadWorkflow { node_count }` — bootstrap / flatten DAG
+- `AppendWorkflowNodes { nodes }` — extend the DAG after the kernel derives the caller
 
 When `max_workflow_nodes` is exceeded, the kernel commits a `control_request_rejected` observation.
-Nothing executed, so nothing is rolled back. Top-level `bootstrapWorkflow` returns the reason through
+Nothing executed, so nothing is rolled back. Top-level `runWorkflow` returns the reason through
 `WorkflowOutcome.rejection`; a rejected in-flight node submission fails the submitting node so the
 root agent receives the real outcome.
 

@@ -1,7 +1,7 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
-  rust: [KernelInput, KernelAction, KernelObservation, TaskTable, Tcb, AgentProcess, TaskLifecycle]
+  rust: [KernelInput, PlannedStep, KernelObservation, TaskTable, Tcb, AgentProcess, TaskLifecycle]
 ---
 
 # Kernel / Host Split
@@ -30,13 +30,13 @@ Under the [Agent OS](/en/architecture/agent-os) narrative, DeepStrike splits int
 | **Memory mgmt** | `mm/`, `memory/` | Handles, residency, semantic memory, idle pipeline |
 | **Job scheduler** | `orchestration/` | Workflow DAG, control-flow nodes, Reduce |
 | **Signals** | `signals/` | Route into context state partition |
-| **ABI** | `runtime/kernel.rs` | KernelInput / Action / Observation |
+| **ABI** | `runtime/kernel/wire.rs` | KernelInput / PlannedStep / KernelObservation |
 
 ## L* loop (intra-turn)
 
 ```text
 Reason   →  render context, return CallLLM
-Act      →  tool_calls → ExecuteTools / Spawn / LoadWorkflow
+Act      →  tool_calls → ExecuteTools / Spawn / AppendWorkflowNodes
 Observe  →  ingest provider_result, tool_results
 Delta    →  pressure, compression, renewal
 ```
@@ -47,15 +47,16 @@ Delta    →  pressure, compression, renewal
 
 Each node spawn = `Syscall::Spawn` + child TCB. Unmet `depends_on` → kernel **waits** without burning LLM tokens.
 
-Runtime `SubmitNodes` / `LoadWorkflow` extends the DAG under `max_workflow_nodes` quota.
+Runtime `AppendWorkflowNodes` extends the DAG under `max_workflow_nodes` quota.
 
 ## Host loop (RuntimeRunner)
 
 ```python
 while not done:
-    action = kernel_step(runtime, observations)
-    # dispatch CallLLM / ExecuteTools / SpawnSubAgent / AwaitingResume
-    # append KernelObservation → SessionLog
+    transition = canonical_host.apply(envelope)  # prepare → journal append → commit
+    # execute typed effects and submit each result through ResolveEffect
+    # project observations and the terminal disposition into SessionLog
+    done = transition.terminal is not None
 ```
 
 ## Context VM (not a chat log)

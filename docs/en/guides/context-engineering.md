@@ -13,7 +13,7 @@ Context engineering is the Agent OS **Context VM plane**. It does not simply con
 | To the kernel | Provides deterministic rendered context before each `CallLLM` |
 | To providers | Keeps stable prefixes for better prompt-cache reuse |
 | To memory / skills / signals | Places durable knowledge, loaded capabilities, and external events into separate slots |
-| To tool results | Uses handles / spool residency so large outputs do not flood context |
+| To tool results | Uses inline/external handles so large outputs do not flood context |
 
 In OS terms, the Context VM is the agent's virtual memory manager: it decides what stays inline, what is archived, and what is injected only as next-turn state.
 
@@ -78,11 +78,12 @@ RuntimeOptions(
 
 ```python
 from deepstrike.runtime.archive import ArchiveStore
+from deepstrike import PayloadStore
 
 RuntimeOptions(
     ...,
     compression_store=ArchiveStore("./archives"),
-    result_spool=large_result_spool,  # Layer-1 spool for oversized tool results
+    payload_store=PayloadStore("./payloads"),
 )
 ```
 
@@ -165,7 +166,7 @@ runner.deactivate_skill("debug")                                        # K3: ex
 
 ## Further reading
 
-- [Execution Plane & Tools](./execution-plane-and-tools) — large tool results, spool, and handle projection
+- [Execution Plane & Tools](./execution-plane-and-tools) — large tool results, external payloads, and handle projection
 - [Skills](./skills) — `active_skills` narrows exposed tools
 - [Memory](./memory) — knowledge partition injection
 - Source: `context/manager.rs`, `context/renderer.rs`

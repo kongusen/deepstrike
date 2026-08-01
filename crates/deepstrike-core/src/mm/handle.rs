@@ -27,8 +27,6 @@ pub enum HandleKind {
     MemoryPage,
     /// A knowledge entry paged in from long-term storage.
     KnowledgeEntry,
-    /// A large result spooled to disk with a preview left in context (Layer 1).
-    SpoolFile,
     /// A sub-agent join result occupying context.
     SubAgentJoin,
 }
@@ -37,19 +35,12 @@ pub enum HandleKind {
 ///
 /// [`Self::External`] and [`Self::PagedOut`] are deliberately distinct (§7.10, cluster-b B19): the
 /// first is "generated over the inline threshold and never was resident", the second is "was
-/// resident, archived under context pressure". The historical [`Self::SpooledOut`] collapsed both
-/// into one notion and carried no digest, so a restored body could not be checked against the one
-/// that left — and an oversized result could not be told apart from an evicted one.
+/// resident, archived under context pressure".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Residency {
     /// Full content present in working context.
     Resident,
-    /// Content written to disk; a preview reference remains (Layer 1 spool).
-    ///
-    /// Legacy wire only — the canonical path never produces it (the host persists before
-    /// submitting, so the body never crosses core). Deleted with the rest of `SpoolLargeResult`.
-    SpooledOut { r: String },
     /// §7.10 · the body was over the inline threshold when it was generated: the host persisted it
     /// before the kernel ever saw it, and only `preview` was ever resident.
     External {
@@ -68,7 +59,6 @@ impl Residency {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Resident => "resident",
-            Self::SpooledOut { .. } => "spooled_out",
             Self::External { .. } => "external",
             Self::PagedOut { .. } => "paged_out",
             Self::Collapsed => "collapsed",
@@ -83,14 +73,13 @@ impl Residency {
     /// The opaque locator a page-in must hand back to the host, when one exists.
     ///
     /// `None` for every residency the kernel can satisfy on its own — `Resident` and `Collapsed`
-    /// still hold the body locally — and for the legacy spool, whose `r` is a filesystem path
-    /// rather than an opaque `PayloadRef` (§7.10 rule 7) and therefore is not a canonical locator.
+    /// still hold the body locally.
     pub fn payload_ref(&self) -> Option<&str> {
         match self {
             Self::External { payload_ref, .. } | Self::PagedOut { payload_ref, .. } => {
                 Some(payload_ref.as_str())
             }
-            Self::Resident | Self::Collapsed | Self::SpooledOut { .. } => None,
+            Self::Resident | Self::Collapsed => None,
         }
     }
 
@@ -99,7 +88,7 @@ impl Residency {
     pub fn digest(&self) -> Option<&str> {
         match self {
             Self::External { digest, .. } | Self::PagedOut { digest, .. } => Some(digest.as_str()),
-            Self::Resident | Self::Collapsed | Self::SpooledOut { .. } => None,
+            Self::Resident | Self::Collapsed => None,
         }
     }
 }
@@ -217,7 +206,7 @@ impl HandleTable {
             .sum()
     }
 
-    /// Sum of tokens for handles that have left working context (`Collapsed` / `SpooledOut` /
+    /// Sum of tokens for handles that have left working context (`Collapsed` / `External` /
     /// `PagedOut`). Their anchored messages still sit in `partitions` at full weight (collapse is
     /// non-destructive), so this is exactly the over-count that the *estimate* rho path must
     /// discount to become paging-aware — see [`crate::context::manager::ContextManager::effective_rho`].
@@ -245,12 +234,10 @@ impl HandleTable {
 /// *pressure-level* vocabulary owned by the pressure subsystem: it is what `PressureMonitor::recommend`
 /// and `ContextManager::should_compress` return, the `Ord`-keyed cascade selector inside the
 /// compression pipeline, and the canonical wire label. They map ~1:1 by layer but are not redundant —
-/// `Spool` / `TimeDecayMicro` don't sit on the linear pressure cascade, and `PressureAction` carries no
+/// `TimeDecayMicro` doesn't sit on the linear pressure cascade, and `PressureAction` carries no
 /// per-op data. The one bridge is `execute_eviction_op`, which is the intended seam, not duplication.
 #[derive(Debug, Clone)]
 pub enum EvictionOp {
-    /// Layer 1: spool a large handle to disk, keep a preview reference in context.
-    Spool(HandleId),
     /// Layer 2: cap oversized messages at a per-message token limit (in-place rewrite).
     Snip { per_msg_ratio: f64 },
     /// Layer 3: idle/time-decay micro-compact — excerpt large tool results to placeholders.
@@ -268,7 +255,6 @@ pub enum EvictionOp {
 impl EvictionOp {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Spool(_) => "spool",
             Self::Snip { .. } => "snip",
             Self::TimeDecayMicro => "time_decay_micro",
             Self::Collapse { .. } => "collapse",
@@ -277,12 +263,10 @@ impl EvictionOp {
     }
 
     /// Cache-aware metadata: the message index at which this op invalidates the prompt cache
-    /// prefix, if any. `None` = prefix-safe (op only affects late content or is layer-1 spool).
+    /// prefix, if any. `None` = prefix-safe (op only affects late content).
     /// Earlier index = higher cache cost (Anthropic cache keys off the first N messages).
     pub fn invalidates_prefix_at(&self) -> Option<usize> {
         match self {
-            // Spool: layer-1 disk spool of single large result; no message reordering → no impact.
-            Self::Spool(_) => None,
             // Snip: in-place rewrite of oversized messages anywhere in history. May hit early
             // messages if an early turn was oversized → conservative: assume prefix invalidation.
             Self::Snip { .. } => Some(0), // Conservative: may affect any message including early ones.
@@ -342,58 +326,12 @@ impl EvictionPlan {
     }
 }
 
-/// Layer-1 spool decision for a single tool result (kernel decides; SDK writes to disk).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpoolDecision {
-    /// Byte size of the full (un-spooled) output.
-    pub original_size: u32,
-    /// The preview text the kernel keeps in working context in place of the full output.
-    pub preview: String,
-}
-
-/// Pure Layer-1 spool planner: if `output` exceeds `threshold_bytes` (and threshold > 0), return a
-/// [`SpoolDecision`] whose `preview` is the first `preview_bytes` (truncated at a char boundary)
-/// plus a marker. `None` means keep the output inline. The kernel keeps `preview` in context and
-/// emits a `SpoolLargeResult` effect; success is observed only after the host result. No I/O here.
-///
-/// The marker uses the truncation phrasing models are trained on ("Output truncated: showing X of
-/// Y…") and carries the retrieval instruction inline — `call_id` + the `read_result` tool — so the
-/// model never has to connect a bare placeholder to a separately-described tool.
-pub fn plan_spool(
-    output: &str,
-    call_id: &str,
-    threshold_bytes: u32,
-    preview_bytes: u32,
-) -> Option<SpoolDecision> {
-    let size = output.len();
-    if threshold_bytes == 0 || size <= threshold_bytes as usize {
-        return None;
-    }
-    let mut end = (preview_bytes as usize).min(size);
-    while end > 0 && !output.is_char_boundary(end) {
-        end -= 1;
-    }
-    let preview = format!(
-        "{}\n[Output truncated: showing first {} of {} bytes. Call the read_result tool with call_id \"{}\" (use offset/max_bytes to page) to read the rest.]",
-        &output[..end],
-        end,
-        size,
-        call_id
-    );
-    Some(SpoolDecision {
-        original_size: size as u32,
-        preview,
-    })
-}
-
 /// Pure eviction planner (M3): the **single decision point** for the per-turn compression
 /// checkpoint. Packages the two previously-scattered decisions — Layer-3 idle/time-decay and the
 /// rho-driven pressure recommendation — into one ordered [`EvictionPlan`], in execution order
 /// (time-decay micro first, then the pressure action). Behavior-preserving: the inputs are exactly
 /// what the state machine already computed (`ContextManager::should_time_decay_compact` and
 /// `PressureMonitor::recommend`); this only centralizes their ordering and makes the plan testable.
-///
-/// Layer-1 spool is decided at tool-result ingestion (handle size), not here.
 ///
 /// W1-1 收口: `target_tokens` / `preserve_turns` are the **real** config-derived values supplied by
 /// the caller (`ContextManager::plan_compaction_params`), so the emitted ops carry truthful params
@@ -431,9 +369,11 @@ mod tests {
         table.insert(Handle::resident(1, HandleKind::ToolResult, 100));
         table.insert(Handle {
             id: 2,
-            kind: HandleKind::SpoolFile,
-            residency: Residency::SpooledOut {
-                r: "disk://x".into(),
+            kind: HandleKind::ToolResult,
+            residency: Residency::External {
+                payload_ref: "payload:x".into(),
+                digest: "sha256:".to_string() + &"a".repeat(64),
+                original_size: 5_000,
             },
             tokens: 5000,
             source: None,
@@ -488,14 +428,7 @@ mod tests {
             assert!(residency.payload_ref().is_some(), "{residency:?}");
             assert!(residency.digest().is_some(), "{residency:?}");
         }
-        for residency in [
-            Residency::Resident,
-            Residency::Collapsed,
-            // the legacy spool ref is a filesystem path, not an opaque `PayloadRef`
-            Residency::SpooledOut {
-                r: "/tmp/.spool/x".into(),
-            },
-        ] {
+        for residency in [Residency::Resident, Residency::Collapsed] {
             assert_eq!(residency.payload_ref(), None, "{residency:?}");
             assert_eq!(residency.digest(), None, "{residency:?}");
         }
@@ -585,7 +518,6 @@ mod tests {
 
     #[test]
     fn eviction_op_labels() {
-        assert_eq!(EvictionOp::Spool(1).label(), "spool");
         assert_eq!(EvictionOp::Snip { per_msg_ratio: 0.1 }.label(), "snip");
         assert_eq!(EvictionOp::TimeDecayMicro.label(), "time_decay_micro");
         assert_eq!(
@@ -599,38 +531,5 @@ mod tests {
             EvictionOp::AutoCompact { preserve_turns: 2 }.label(),
             "auto_compact"
         );
-    }
-
-    #[test]
-    fn plan_spool_keeps_small_output_inline() {
-        assert_eq!(plan_spool("small", "c1", 50, 16), None);
-        // threshold 0 disables spooling.
-        assert_eq!(plan_spool(&"x".repeat(1000), "c1", 0, 16), None);
-    }
-
-    #[test]
-    fn plan_spool_previews_large_output_with_retrieval_instruction() {
-        let output = "y".repeat(1000);
-        let d = plan_spool(&output, "call-42", 100, 32).expect("should spool");
-        assert_eq!(d.original_size, 1000);
-        assert!(d.preview.starts_with(&"y".repeat(32)));
-        // Trained truncation phrasing + the inline retrieval instruction: what was cut,
-        // and exactly how to read the rest.
-        assert!(
-            d.preview
-                .contains("Output truncated: showing first 32 of 1000 bytes")
-        );
-        assert!(d.preview.contains("read_result"));
-        assert!(d.preview.contains("call-42"));
-        assert!(d.preview.len() < output.len());
-    }
-
-    #[test]
-    fn plan_spool_truncates_on_char_boundary() {
-        // multi-byte chars: preview cut must not split a char.
-        let output = "🚀".repeat(100); // 4 bytes each = 400 bytes
-        let d = plan_spool(&output, "c1", 50, 10).expect("should spool");
-        // No panic / valid UTF-8 preview is the assertion.
-        assert!(d.preview.contains("of 400 bytes"));
     }
 }

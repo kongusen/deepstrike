@@ -1,25 +1,8 @@
-/**
- * `AgentRunSpec.toolAccess` on the public spawn path (`RuntimeRunner.spawnSubAgent`).
- *
- * Before this field the spawn path never set the orchestrator's `toolAccess`, so every spawned
- * sub-agent ran `"filtered"`; with no capability mounted the filter resolved to deny-all and the
- * child model saw "no tools available". Two cases pin the fix:
- *
- *  (a) `toolAccess:"inherit"` with NO capability mounting — the child runs on the parent's execution
- *      plane, so its first provider call still carries the parent's `noop` tool and it completes.
- *  (b) the default (`"filtered"`) with no capability — the child resolves to zero tools; the
- *      orchestrator emits a host-visible `console.warn` ("zero tools"), and the child still runs to
- *      completion (the warning is advisory, not fatal).
- *
- * The parent kernel is injected (mirrors spawn-sub-agent-deny.test.ts / nested-group-vehicle.test.ts);
- * a RecordingProvider captures the tool names handed to each LLM call.
- */
+/** Workflow-node capability filtering must preserve intentional quarantine deny-all semantics. */
 import { jest } from "@jest/globals"
 import {
   InMemorySessionLog,
   LocalExecutionPlane,
-  RuntimeRunner,
-  type AgentRunSpec,
   type StreamEvent,
 } from "../src/index.js"
 import type { LLMProvider, Message, RenderedContext, ToolSchema } from "../src/types.js"
@@ -39,71 +22,26 @@ class RecordingProvider implements LLMProvider {
   }
 }
 
-/** Parent runner over a `noop`-bearing plane. Direct host spawn is deliberately unavailable under
- *  canonical ABI v3; the runner is still useful as the parent-options source for orchestrator tests. */
-async function makeParent(): Promise<{ runner: RuntimeRunner; provider: RecordingProvider }> {
+function makeParentOptions(): RuntimeOptions {
   const noopTool = tool("noop", "does nothing", { type: "object", properties: {} }, () => "ok")
   const provider = new RecordingProvider()
   const plane = new LocalExecutionPlane()
   plane.register(noopTool)
-  const sessionLog = new InMemorySessionLog()
-  const runner = new RuntimeRunner({
+  return {
     provider,
-    sessionLog,
+    sessionLog: new InMemorySessionLog(),
     executionPlane: plane,
     maxTokens: 4096,
     maxTotalTokens: 100_000,
     agentId: "parent",
-  })
-  return { runner, provider }
+  }
 }
 
-describe("spawnSubAgent tool access (AgentRunSpec.toolAccess)", () => {
-  it("(a) direct host spawn fails closed even when toolAccess requests inheritance", async () => {
-    const { runner, provider } = await makeParent()
-
-    const spec: AgentRunSpec = {
-      identity: { agentId: "worker", sessionId: "worker-inherit", isSubAgent: true },
-      role: "implement",
-      isolation: "shared",
-      goal: "do the work",
-      toolAccess: "inherit",
-    }
-    await expect((async () => {
-      for await (const _event of runner.spawnSubAgent(spec)) {
-        // Rejected before a child stream exists.
-      }
-    })()).rejects.toThrow(/canonical ABI v3.*provider syscall/)
-    expect(provider.calls).toEqual([])
-  })
-
-  it("(b) direct host spawn also fails closed for default filtered access", async () => {
-    const { runner } = await makeParent()
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
-    try {
-      const spec: AgentRunSpec = {
-        identity: { agentId: "worker", sessionId: "worker-filtered", isSubAgent: true },
-        role: "implement",
-        isolation: "shared",
-        goal: "do the work",
-        // toolAccess omitted ⇒ default "filtered"; no capabilityFilter ⇒ deny-all.
-      }
-      await expect((async () => {
-        for await (const _event of runner.spawnSubAgent(spec)) {
-          // Rejected before a child stream exists.
-        }
-      })()).rejects.toThrow(/canonical ABI v3.*provider syscall/)
-      expect(warnSpy).not.toHaveBeenCalled()
-    } finally {
-      warnSpy.mockRestore()
-    }
-  })
-
-  it("(c) a workflow node that resolves to zero filtered tools is EXEMPT — no warning (intentional quarantine deny-all)", async () => {
+describe("workflow-node tool access", () => {
+  it("does not warn when a quarantined workflow node intentionally resolves to zero tools", async () => {
     // Drive the orchestrator directly with `isWorkflowNode: true` (no full workflow DAG needed): a
     // quarantined node runs filtered with no grants by design, so the misconfig warning must NOT fire.
-    const { runner } = await makeParent()
-    const parentOpts = (runner as never as { opts: RuntimeOptions }).opts
+    const parentOpts = makeParentOptions()
     const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {})
     try {
       const ctx: SubAgentRunContext = {

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from deepstrike import _kernel
+from deepstrike import kernel as kernel_facade
 from deepstrike.kernel.canonical import (
   KERNEL_ABI_VERSION,
   CanonicalKernel,
@@ -59,3 +61,14 @@ def test_canonical_binding_rejects_strictly_and_restores_in_place() -> None:
   kernel.restore(checkpoint.checkpoint_bytes, [])
   assert kernel is identity
   assert kernel.lifecycle() == "configured"
+
+
+def test_native_binding_does_not_export_legacy_direct_step() -> None:
+  assert not hasattr(kernel_facade, "KernelRuntime")
+  assert not hasattr(_kernel, "KernelRuntime")
+  assert not hasattr(_kernel._CanonicalKernel, "step")
+  source = (
+    Path(__file__).parents[2] / "crates/deepstrike-py/src/lib.rs"
+  ).read_text(encoding="utf-8")
+  assert "fn step(" not in source
+  assert "struct KernelRuntime" not in source

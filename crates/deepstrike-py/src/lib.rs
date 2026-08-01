@@ -38,7 +38,6 @@ use pyo3::types::PyBytes;
 
 use compact_str::CompactString;
 
-use deepstrike_core::context::renderer::RenderedContext as RustRenderedContext;
 use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
@@ -48,20 +47,12 @@ use deepstrike_core::harness::eval::{
     build_eval_messages as rust_build_eval_messages, parse_verdict as rust_parse_verdict,
     verdict_output_schema as rust_verdict_output_schema,
 };
-use deepstrike_core::memory::durable::SessionData as RustSessionData;
-use deepstrike_core::mm::memory::{
-    MemoryAuthor as RustMemoryAuthor, MemoryKind as RustMemoryKind,
-    MemoryProvenance as RustMemoryProvenance, MemoryRecord as RustMemoryRecord,
-    MemoryScope as RustMemoryScope, MemoryTrustLevel as RustMemoryTrustLevel,
-};
-use deepstrike_core::runtime::KernelRuntime as RustKernelRuntime;
 use deepstrike_core::runtime::kernel::wire::{
     CanonicalKernel as RustCanonicalKernel, CheckpointBoundary as RustCheckpointBoundary,
     Digest as RustDigest, KernelCheckpoint as RustKernelCheckpoint,
     KernelPreparation as RustKernelPreparation, OperationLifecycle as RustOperationLifecycle,
     PrepareToken as RustPrepareToken, WireU64 as RustWireU64,
 };
-use deepstrike_core::scheduler::policy::SchedulerBudget as RustLoopPolicy;
 use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
@@ -397,29 +388,6 @@ impl Message {
     }
 }
 
-fn content_part_obj_to_rust(p: &ContentPartObj) -> ContentPart {
-    match p.r#type.as_str() {
-        "image" => ContentPart::Image {
-            url: p.url.clone(),
-            data: p.data.clone(),
-            media_type: p.media_type.clone(),
-            detail: p.detail.clone(),
-        },
-        "audio" => ContentPart::Audio {
-            data: p.data.clone().unwrap_or_default(),
-            media_type: p.media_type.clone().unwrap_or_else(|| "audio/wav".into()),
-        },
-        "tool_result" => ContentPart::ToolResult {
-            call_id: CompactString::new(p.call_id.as_deref().unwrap_or("")),
-            output: p.output.clone().unwrap_or_default(),
-            is_error: p.is_error.unwrap_or(false),
-        },
-        _ => ContentPart::Text {
-            text: p.text.clone().unwrap_or_default(),
-        },
-    }
-}
-
 fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
     match p {
         ContentPart::Text { text } => ContentPartObj {
@@ -479,32 +447,6 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
 }
 
 impl Message {
-    fn to_rust(&self) -> Result<RustMessage, PyErr> {
-        let role = match self.role.as_str() {
-            "system" => Role::System,
-            "user" => Role::User,
-            "assistant" => Role::Assistant,
-            "tool" => Role::Tool,
-            other => return Err(PyValueError::new_err(format!("invalid role: {other}"))),
-        };
-        let content = match &self.content_parts {
-            Some(parts) if !parts.is_empty() => {
-                Content::Parts(parts.iter().map(content_part_obj_to_rust).collect())
-            }
-            _ => Content::Text(self.content.clone()),
-        };
-        Ok(RustMessage {
-            role,
-            content,
-            tool_calls: self
-                .tool_calls
-                .iter()
-                .map(|c| c.to_rust())
-                .collect::<Result<_, _>>()?,
-            token_count: self.token_count,
-        })
-    }
-
     fn from_rust(msg: &RustMessage) -> Self {
         let role = match msg.role {
             Role::System => "system",
@@ -566,16 +508,6 @@ impl ToolCall {
 }
 
 impl ToolCall {
-    fn to_rust(&self) -> Result<RustToolCall, PyErr> {
-        let args: serde_json::Value = serde_json::from_str(&self.arguments)
-            .map_err(|e| PyValueError::new_err(format!("invalid JSON arguments: {e}")))?;
-        Ok(RustToolCall {
-            id: CompactString::new(&self.id),
-            name: CompactString::new(&self.name),
-            arguments: args,
-        })
-    }
-
     fn from_rust(c: &RustToolCall) -> Self {
         Self {
             id: c.id.to_string(),
@@ -702,17 +634,6 @@ impl LoopPolicy {
             max_turns,
             max_total_tokens,
             timeout_ms,
-        }
-    }
-}
-
-impl LoopPolicy {
-    fn to_rust(&self) -> RustLoopPolicy {
-        RustLoopPolicy {
-            max_tokens: self.max_tokens,
-            max_turns: self.max_turns,
-            max_total_tokens: self.max_total_tokens,
-            max_wall_ms: self.timeout_ms,
         }
     }
 }
@@ -847,19 +768,6 @@ struct RenderedContext {
 impl RenderedContext {
     fn __repr__(&self) -> String {
         format!("RenderedContext(turns={})", self.turns.len())
-    }
-}
-
-impl RenderedContext {
-    fn from_rust(rc: RustRenderedContext) -> Self {
-        Self {
-            system_text: rc.system_text,
-            system_stable: rc.system_stable,
-            system_knowledge: rc.system_knowledge,
-            turns: rc.turns.iter().map(Message::from_rust).collect(),
-            state_turn: rc.state_turn.as_ref().map(Message::from_rust),
-            frozen_prefix_len: rc.frozen_prefix_len,
-        }
     }
 }
 
@@ -1154,114 +1062,6 @@ fn canonical_kernel_error(fault: deepstrike_core::runtime::kernel::wire::KernelF
     PyValueError::new_err(serde_json::to_string(&fault).unwrap_or_else(|_| fault.to_string()))
 }
 
-// ──────────────────────────────────────── KernelRuntime ────────────────────────────────────
-
-// `weakref` so the SDK can key per-runtime wire state in a WeakKeyDictionary — a module dict
-// keyed by id() aliases recycled addresses (a new runtime inherits a dead one's operation
-// identity) and leaks an entry per runtime.
-#[pyclass(weakref)]
-struct KernelRuntime {
-    inner: RustKernelRuntime,
-}
-
-#[pymethods]
-impl KernelRuntime {
-    #[new]
-    fn new(policy: LoopPolicy) -> Self {
-        Self {
-            inner: RustKernelRuntime::new(policy.to_rust()),
-        }
-    }
-
-    /// Feed a JSON-encoded KernelInput and return a JSON-encoded KernelStep.
-    fn step(&mut self, input_json: String) -> PyResult<String> {
-        let step = self
-            .inner
-            .step_json(&input_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid KernelInput JSON: {e}")))?;
-        serde_json::to_string(&step)
-            .map_err(|e| PyValueError::new_err(format!("failed to encode KernelStep: {e}")))
-    }
-
-    fn prepare_step(&mut self, input_json: String) -> PyResult<String> {
-        let prepared = self
-            .inner
-            .prepare_step_json(&input_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid KernelInput JSON: {e}")))?;
-        serde_json::to_string(&prepared)
-            .map_err(|e| PyValueError::new_err(format!("failed to encode KernelPreparedStep: {e}")))
-    }
-
-    fn commit_prepared(&mut self, prepare_token: String) -> PyResult<String> {
-        let step = self
-            .inner
-            .commit_prepared(&prepare_token)
-            .map_err(|fault| {
-                PyValueError::new_err(serde_json::to_string(&fault).unwrap_or(fault.message))
-            })?;
-        serde_json::to_string(&step)
-            .map_err(|e| PyValueError::new_err(format!("failed to encode KernelStep: {e}")))
-    }
-
-    fn abort_prepared(&mut self, prepare_token: String) -> PyResult<()> {
-        self.inner.abort_prepared(&prepare_token).map_err(|fault| {
-            PyValueError::new_err(serde_json::to_string(&fault).unwrap_or(fault.message))
-        })
-    }
-
-    fn snapshot(&self) -> PyResult<String> {
-        self.inner.snapshot_json().map_err(|fault| {
-            PyValueError::new_err(serde_json::to_string(&fault).unwrap_or(fault.message))
-        })
-    }
-
-    fn restore(&mut self, snapshot_json: String) -> PyResult<()> {
-        self.inner = RustKernelRuntime::restore_snapshot_json(&snapshot_json).map_err(|fault| {
-            PyValueError::new_err(serde_json::to_string(&fault).unwrap_or(fault.message))
-        })?;
-        Ok(())
-    }
-
-    /// Return a read-only JSON resource projection without mutating kernel state.
-    fn diagnostics(&self) -> PyResult<String> {
-        serde_json::to_string(&self.inner.diagnostics())
-            .map_err(|e| PyValueError::new_err(format!("failed to encode kernel diagnostics: {e}")))
-    }
-
-    fn is_terminal(&self) -> bool {
-        self.inner.is_terminal()
-    }
-
-    fn turn(&self) -> u32 {
-        self.inner.turn()
-    }
-
-    /// L1 (RunGroup): cumulative sub-agent spawns this run, for charging the group ledger at run end.
-    fn local_subagents_spawned(&self) -> u32 {
-        self.inner.local_subagents_spawned()
-    }
-
-    fn recovery_content_bytes(&self) -> u32 {
-        self.inner.recovery_content_bytes() as u32
-    }
-
-    fn render(&self) -> RenderedContext {
-        RenderedContext::from_rust(self.inner.render())
-    }
-
-    fn drain_new_messages(&mut self) -> Vec<Message> {
-        self.inner
-            .drain_new_messages()
-            .iter()
-            .map(Message::from_rust)
-            .collect()
-    }
-
-    fn preserved_refs(&self) -> Vec<String> {
-        self.inner.preserved_refs()
-    }
-}
-
 // ──────────────────────────────────────── SignalRouter (passthrough) ───────────────────────────
 
 #[pyclass]
@@ -1517,26 +1317,6 @@ impl SessionData {
     }
 }
 
-impl SessionData {
-    fn to_rust(&self) -> Result<RustSessionData, PyErr> {
-        let messages: Vec<RustMessage> = self
-            .messages
-            .iter()
-            .map(|m| m.to_rust())
-            .collect::<Result<_, _>>()?;
-        let metadata: serde_json::Value =
-            serde_json::from_str(&self.metadata).unwrap_or(serde_json::Value::Null);
-        Ok(RustSessionData {
-            session_id: self.session_id.clone(),
-            agent_id: self.agent_id.clone(),
-            messages,
-            metadata,
-            created_at_ms: self.created_at_ms as u64,
-            updated_at_ms: self.updated_at_ms as u64,
-        })
-    }
-}
-
 #[pyclass]
 #[derive(Clone)]
 struct MemoryScope {
@@ -1670,102 +1450,6 @@ impl MemoryRecord {
             "MemoryRecord(record_id={:?}, name={:?}, kind={:?})",
             self.record_id, self.name, self.kind
         )
-    }
-}
-
-impl MemoryRecord {
-    fn to_rust(&self) -> PyResult<RustMemoryRecord> {
-        let kind = match self.kind.as_str() {
-            "user" => RustMemoryKind::User,
-            "feedback" => RustMemoryKind::Feedback,
-            "project" => RustMemoryKind::Project,
-            "reference" => RustMemoryKind::Reference,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "invalid memory kind {other:?}"
-                )));
-            }
-        };
-        let author = match self.provenance.author.as_str() {
-            "model" => RustMemoryAuthor::Model,
-            "host" => RustMemoryAuthor::Host,
-            "extraction" => RustMemoryAuthor::Extraction,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "invalid memory author {other:?}"
-                )));
-            }
-        };
-        let trust = match self.provenance.trust.as_str() {
-            "untrusted" => RustMemoryTrustLevel::Untrusted,
-            "user_asserted" => RustMemoryTrustLevel::UserAsserted,
-            "host_verified" => RustMemoryTrustLevel::HostVerified,
-            other => {
-                return Err(PyValueError::new_err(format!(
-                    "invalid memory trust {other:?}"
-                )));
-            }
-        };
-        Ok(RustMemoryRecord {
-            record_id: self.record_id.clone(),
-            scope: RustMemoryScope::new(self.scope.tenant_id.clone(), self.scope.namespace.clone()),
-            name: self.name.clone(),
-            kind,
-            content: self.content.clone(),
-            description: self.description.clone(),
-            provenance: RustMemoryProvenance {
-                session_id: self.provenance.session_id.clone(),
-                author,
-                trust,
-                evidence_refs: self.provenance.evidence_refs.clone(),
-            },
-            created_at: self.created_at,
-            updated_at: self.updated_at,
-            last_recalled_at: self.last_recalled_at,
-            recall_count: self.recall_count,
-            confidence: self.confidence,
-            links: self.links.clone(),
-            pinned: self.pinned,
-            ttl_days: self.ttl_days,
-        })
-    }
-
-    fn from_rust(record: &RustMemoryRecord) -> Self {
-        Self {
-            record_id: record.record_id.clone(),
-            scope: MemoryScope {
-                tenant_id: record.scope.tenant_id.clone(),
-                namespace: record.scope.namespace.clone(),
-            },
-            name: record.name.clone(),
-            kind: record.kind.label().into(),
-            content: record.content.clone(),
-            description: record.description.clone(),
-            provenance: MemoryProvenance {
-                session_id: record.provenance.session_id.clone(),
-                author: match record.provenance.author {
-                    RustMemoryAuthor::Model => "model",
-                    RustMemoryAuthor::Host => "host",
-                    RustMemoryAuthor::Extraction => "extraction",
-                }
-                .into(),
-                trust: match record.provenance.trust {
-                    RustMemoryTrustLevel::Untrusted => "untrusted",
-                    RustMemoryTrustLevel::UserAsserted => "user_asserted",
-                    RustMemoryTrustLevel::HostVerified => "host_verified",
-                }
-                .into(),
-                evidence_refs: record.provenance.evidence_refs.clone(),
-            },
-            created_at: record.created_at,
-            updated_at: record.updated_at,
-            last_recalled_at: record.last_recalled_at,
-            recall_count: record.recall_count,
-            confidence: record.confidence,
-            links: record.links.clone(),
-            pinned: record.pinned,
-            ttl_days: record.ttl_days,
-        }
     }
 }
 
@@ -1960,7 +1644,6 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CanonicalCheckpoint>()?;
     m.add_class::<CanonicalRestoreCost>()?;
     m.add_class::<CanonicalKernel>()?;
-    m.add_class::<KernelRuntime>()?;
     // Signal types
     m.add_class::<RuntimeSignal>()?;
     m.add_class::<SignalRouter>()?;

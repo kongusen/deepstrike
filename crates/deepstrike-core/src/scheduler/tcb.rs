@@ -29,9 +29,8 @@ pub enum TaskLifecycle {
     /// before any host is asked to start it — that is what stops a resolution from *creating*
     /// process identity.
     ///
-    /// Only the canonical, ack-gated spawn path constructs this state
-    /// ([`crate::scheduler::state_machine::LoopStateMachine::set_ack_gated_launch`]); the legacy
-    /// path still seeds children `Running`.
+    /// Every spawn constructs this state; publication advances it to [`Self::Starting`] and only a
+    /// correlated launch acknowledgement advances it to [`Self::Running`].
     PendingLaunch,
     /// Spec §10.4 · the launch effect is published and the host has been asked to start the child,
     /// but no acknowledgement has arrived. Distinct from [`Self::Running`] because "we asked" and

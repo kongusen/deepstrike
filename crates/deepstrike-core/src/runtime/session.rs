@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::runtime::kernel::CancellationReason;
+use crate::runtime::kernel::wire::CancellationReason;
 use crate::types::message::{Message, ToolCall, ToolResult};
 
 /// Provider-native replay payload persisted in `llm_completed` for wake/preload recovery.
@@ -95,16 +95,6 @@ pub enum SessionEvent {
     PageIn {
         turn: u32,
         entry_count: u32,
-    },
-    /// Large tool result spooled to disk by the SDK (kernel Layer 1).
-    LargeResultSpooled {
-        turn: u32,
-        call_id: String,
-        tool: String,
-        original_size: u32,
-        preview_size: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        spool_ref: Option<String>,
     },
     RunTerminal {
         reason: String,
@@ -326,7 +316,6 @@ impl SessionEvent {
             Self::Compressed { .. } => "compressed",
             Self::PageOut { .. } => "page_out",
             Self::PageIn { .. } => "page_in",
-            Self::LargeResultSpooled { .. } => "large_result_spooled",
             Self::RunTerminal { .. } => "run_terminal",
             Self::ToolArgumentRepaired { .. } => "tool_argument_repaired",
             Self::PermissionRequested { .. } => "permission_requested",
@@ -362,7 +351,6 @@ impl SessionEvent {
             Self::Compressed { .. }
                 | Self::PageOut { .. }
                 | Self::PageIn { .. }
-                | Self::LargeResultSpooled { .. }
                 | Self::CapabilityChanged { .. }
                 | Self::ContextRenewed { .. }
                 | Self::Suspended { .. }

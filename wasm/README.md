@@ -85,7 +85,8 @@ src/
 ```
 
 The kernel (`@deepstrike/wasm-kernel`, Rust/wasm-bindgen) owns:
-- `KernelRuntime.step()` — drives `call_provider → execute_tool → evaluate_milestone → done`
+- the Canonical Kernel ABI durable `prepare → append → commit` transition contract
+- typed effects, a single effect-resolution input, observations, and terminal disposition
 - `ContextEngine` — 4-slot context with tiered history compression
 - `Governance` — tool veto authority
 - `SignalRouter` — external interrupt queue

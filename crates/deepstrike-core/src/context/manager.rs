@@ -69,10 +69,10 @@ pub(crate) fn is_exposure_exempt_meta_tool(name: &str) -> bool {
     EXPOSURE_EXEMPT_META_TOOLS.contains(&name)
 }
 
-/// Internal context engine backing [`crate::runtime::KernelRuntime`].
+/// Internal context engine backing the canonical operation driver.
 ///
 /// Exposed for in-crate use and tests; external callers should drive the kernel
-/// through `KernelRuntime` rather than this type directly.
+/// through the canonical kernel rather than this type directly.
 #[doc(hidden)]
 pub struct ContextManager {
     pub partitions: ContextPartitions,
@@ -116,8 +116,8 @@ pub struct ContextManager {
 
     // ── P3: handle table (context as address space) ─────────────────────────
     /// Per-task handle table: one [`Handle`] per addressable working-context object (tool results
-    /// today). Residency transitions on these handles drive read-time projection (Layer 4) and
-    /// spool (Layer 1) — the original messages in `partitions` are never mutated by projection.
+    /// today). Residency transitions on these handles drive read-time projection; the original
+    /// messages in `partitions` are never mutated by projection.
     pub handles: HandleTable,
     /// Monotonic allocator for [`HandleId`]s.
     next_handle_id: HandleId,
@@ -245,7 +245,7 @@ impl ContextManager {
         let cutoff = total.saturating_sub(keep);
         for (i, handle) in self.handles.tool_result_handles_mut().enumerate() {
             // Only fold the reversible Resident → Collapsed axis; never clobber a handle that has
-            // been spooled or paged out, and never reverse an existing collapse mid-generation.
+            // been externalized or paged out, and never reverse an existing collapse mid-generation.
             if i < cutoff && matches!(handle.residency, Residency::Resident) {
                 handle.residency = Residency::Collapsed;
             }
@@ -297,21 +297,6 @@ impl ContextManager {
             h.residency.payload_ref().is_some()
                 || h.source.as_ref().is_none_or(|s| live.contains(s))
         });
-    }
-
-    /// Mark the handle anchored to `call_id` as spooled to disk (Layer 1): the SDK persists the
-    /// full output, working context keeps only the preview. Keeps the handle out of the
-    /// Resident↔Collapsed projection cycle. No-op if no handle is anchored to `call_id`.
-    pub fn mark_spooled(&mut self, call_id: &str, spool_ref: impl Into<String>) {
-        let spool_ref = spool_ref.into();
-        if let Some(handle) = self
-            .handles
-            .all_mut()
-            .iter_mut()
-            .find(|h| h.source.as_deref() == Some(call_id))
-        {
-            handle.residency = Residency::SpooledOut { r: spool_ref };
-        }
     }
 
     /// §7.10 / §25.9 · move the payload residency of the handle addressed by `source`, minting the
@@ -909,10 +894,10 @@ impl ContextManager {
     }
 
     /// O7: the `read_result` meta-tool — re-fetch a tool result the kernel evicted from context
-    /// (spooled to disk / collapsed / paged out). Exposed DYNAMICALLY: only once at least one
+    /// (external / collapsed / paged out). Exposed DYNAMICALLY: only once at least one
     /// handle has actually left residency, so runs that never evict see an unchanged toolset
     /// (progressive disclosure; golden fixtures and cache prefixes stay byte-stable). Content is
-    /// host-resolved (spool file / session log) — the kernel only advertises the capability.
+    /// host-resolved through the payload store — the kernel only advertises the capability.
     pub fn read_result_tool_schema(&self) -> Option<ToolSchema> {
         let any_evicted = self
             .handles
@@ -1425,37 +1410,6 @@ mod tests {
     }
 
     #[test]
-    fn mark_spooled_sets_residency_and_survives_residency_recompute() {
-        let mut mgr = ContextManager::new(1_000);
-        mgr.push_history(
-            Message::tool(vec![ContentPart::ToolResult {
-                call_id: "big".into(),
-                output: "preview only".to_string(),
-                is_error: false,
-            }]),
-            10,
-        );
-        mgr.mark_spooled("big", "disk://big");
-        assert_eq!(
-            mgr.handles.residency_for_source("big"),
-            Some(&Residency::SpooledOut {
-                r: "disk://big".to_string()
-            })
-        );
-
-        // Even under collapse pressure, a spooled handle is not pulled into the
-        // Resident<->Collapsed projection cycle.
-        mgr.set_observed_prompt_tokens(990);
-        mgr.recompute_handle_residency();
-        assert_eq!(
-            mgr.handles.residency_for_source("big"),
-            Some(&Residency::SpooledOut {
-                r: "disk://big".to_string()
-            })
-        );
-    }
-
-    #[test]
     fn push_history_indexes_tool_results_as_resident_handles() {
         let mut mgr = ContextManager::new(10_000);
         let msg = Message::tool(vec![ContentPart::ToolResult {
@@ -1554,36 +1508,6 @@ mod tests {
             }
         }
         assert!(mgr.handles.all().len() <= 20);
-    }
-
-    #[test]
-    fn recompute_residency_index_semantics_with_spooled_in_the_middle() {
-        // Locks the O(n)-rewrite's index/cutoff semantics against the old id+get_mut version:
-        // a spooled handle still occupies an index position but is never toggled.
-        let mut mgr = ContextManager::new(1_000);
-        for i in 0..6 {
-            mgr.push_history(tool_result_msg(&format!("c{i}"), &"y".repeat(40)), 40);
-        }
-        mgr.mark_spooled("c2", "disk://c2");
-
-        mgr.set_observed_prompt_tokens(950); // rho >= collapse_threshold
-        mgr.recompute_handle_residency();
-
-        // Spooled stays spooled; the most recent configured tool-result handles stay resident.
-        assert_eq!(
-            mgr.handles.residency_for_source("c2"),
-            Some(&Residency::SpooledOut {
-                r: "disk://c2".to_string()
-            })
-        );
-        assert_eq!(
-            mgr.handles.residency_for_source("c0"),
-            Some(&Residency::Collapsed)
-        );
-        assert_eq!(
-            mgr.handles.residency_for_source("c5"),
-            Some(&Residency::Resident)
-        );
     }
 
     // ── K2: knowledge budget ─────────────────────────────────────────────────

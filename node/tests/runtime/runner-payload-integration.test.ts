@@ -1,20 +1,20 @@
 import * as path from "path"
 import * as fs from "node:fs/promises"
-import { LargeResultSpool } from "../../src/runtime/large-result-spool.js"
+import { PayloadStore } from "../../src/runtime/payload-store.js"
 import { collectText } from "../../src/runtime/runner.js"
 import { createRunner, tool } from "./helpers.js"
 import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
 
-describe("runner Layer-1 spool integration", () => {
-  const testSpoolDir = path.join(process.cwd(), ".spool-runner-test")
+describe("runner external payload integration", () => {
+  const storageDir = path.join(process.cwd(), ".payload-runner-test")
 
   afterAll(async () => {
-    await fs.rm(testSpoolDir, { recursive: true, force: true })
+    await fs.rm(storageDir, { recursive: true, force: true })
   })
 
-  it("logs large_result_spooled when kernel spools an oversized tool result", async () => {
+  it("persists an oversized tool result without a legacy session event", async () => {
     const huge = "x".repeat(60 * 1024)
-    const spool = new LargeResultSpool({ spoolDir: testSpoolDir })
+    const payloadStore = new PayloadStore({ storageDir })
 
     let callCount = 0
     const provider: LLMProvider = {
@@ -34,23 +34,19 @@ describe("runner Layer-1 spool integration", () => {
     const { runner, sessionLog } = createRunner(
       provider,
       [tool("big_out", "big", { type: "object", properties: {} }, () => huge)],
-      { maxTokens: 128_000, maxTurns: 4, resultSpool: spool },
+      { maxTokens: 128_000, maxTurns: 4, payloadStore },
     )
 
-    await collectText(runner.run({ sessionId: "spool-run", goal: "fetch big output" }))
+    await collectText(runner.run({ sessionId: "payload-run", goal: "fetch big output" }))
 
-    const events = await sessionLog.read("spool-run")
-    const spooled = events.find(e => e.event.kind === "large_result_spooled")
-    expect(spooled).toBeDefined()
-    expect((spooled!.event as { original_size: number }).original_size).toBeGreaterThan(50 * 1024)
-    expect((spooled!.event as { spool_ref?: string }).spool_ref).toMatch(/^payload:/)
-
-    await expect(spool.findByCallId("spool-run", "big-1")).resolves.toBe(huge)
+    const events = await sessionLog.read("payload-run")
+    expect(events.some(entry => entry.event.kind === "tool_completed")).toBe(true)
+    expect((await fs.readdir(storageDir)).length).toBeGreaterThan(0)
   })
 
   it("bounds a multibyte external preview by UTF-8 bytes", async () => {
     const huge = "界".repeat(20 * 1024)
-    const spool = new LargeResultSpool({ spoolDir: testSpoolDir })
+    const payloadStore = new PayloadStore({ storageDir })
     let callCount = 0
     const provider: LLMProvider = {
       async complete(): Promise<Message> {
@@ -68,11 +64,11 @@ describe("runner Layer-1 spool integration", () => {
     const { runner } = createRunner(
       provider,
       [tool("big_out", "big", { type: "object", properties: {} }, () => huge)],
-      { maxTokens: 128_000, maxTurns: 4, resultSpool: spool },
+      { maxTokens: 128_000, maxTurns: 4, payloadStore },
     )
 
     await expect(collectText(runner.run({
-      sessionId: "spool-run-cjk",
+      sessionId: "payload-run-cjk",
       goal: "fetch a multibyte output",
     }))).resolves.toBe("done")
   })

@@ -1,5 +1,3 @@
-import { getKernel } from "../../src/kernel.js"
-import { stepKernelV2WithHostEffects } from "../helpers/kernel-v2.js"
 import { categoryForKind, kernelObservationToSessionEvent } from "../../src/runtime/kernel-event-log.js"
 import { createRunner, tool } from "./helpers.js"
 import { collectText } from "../../src/runtime/runner.js"
@@ -45,6 +43,17 @@ describe("kernel event log (Phase 5)", () => {
     })
   })
 
+  it("keeps canonical parent task identity distinct from host session identity", () => {
+    const ev = kernelObservationToSessionEvent({
+      kind: "agent_process_changed",
+      turn: 3,
+      agent_id: "child",
+      parent_task_id: "root-task",
+    }, 3)
+    expect(ev).toMatchObject({ parent_task_id: "root-task" })
+    expect(ev).not.toHaveProperty("parent_session_id")
+  })
+
   it("governance suspend logs syscall/sched kernel events", async () => {
     let providerCalls = 0
     const provider: LLMProvider = {
@@ -81,27 +90,10 @@ describe("kernel event log (Phase 5)", () => {
     expect(categoryForKind(suspended!.event.kind)).toBe("sched")
   })
 
-  it("mm-paging session events carry mm category", async () => {
+  it("retains the mm category for the retired page-in side channel", () => {
     // The live memory-tool page-in side channel was retired (strict dynamic control): a memory
     // call no longer emits page_in_requested. The category mapping itself remains (`page_in`
     // stays a valid host-driven event kind for stable pins), so it still classifies as mm.
-    const rt = new (getKernel().KernelRuntime)({ maxTokens: 128_000 })
-    const step = (event: Record<string, unknown>) =>
-      stepKernelV2WithHostEffects(rt, event) as {
-        observations: Array<{ kind: string }>
-      }
-
-    step({ kind: "set_memory_enabled", enabled: true })
-    step({ kind: "start_run", task: { goal: "g", criteria: [] } })
-    const s = step({
-      kind: "provider_result",
-      message: {
-        role: "assistant",
-        content: "",
-        tool_calls: [{ id: "m1", name: "memory", arguments: { query: "x", top_k: 1 } }],
-      },
-    })
-    expect(s.observations.some(o => o.kind === "page_in_requested")).toBe(false)
     expect(categoryForKind("page_in_requested")).toBe("mm")
   })
 })

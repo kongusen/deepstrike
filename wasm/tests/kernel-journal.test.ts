@@ -11,11 +11,6 @@ import type {
   JournalStorageDriver,
   KernelJournal,
 } from "../src/runtime/kernel-journal.js"
-import { InMemorySessionLog, journalOperationKey } from "../src/runtime/session-log.js"
-import {
-  createKernelOperationGenesis,
-  createKernelTransaction,
-} from "../src/runtime/kernel-transaction-log.js"
 
 const OP = "op-journal"
 const encoder = new TextEncoder()
@@ -377,65 +372,7 @@ describe("DriverKernelJournal — the driver's atomic claim decides every race",
   })
 })
 
-describe("SessionLog / KernelJournal capability separation", () => {
-  async function genesis(operationId = "op-1") {
-    return createKernelOperationGenesis({
-      abi_version: 2,
-      operation_id: operationId,
-      initial_scheduler_policy: { max_tokens: 8_000 },
-      resolved_runtime_defaults: { max_input_bytes: 16_777_216 },
-      default_policy_version: 1,
-    })
-  }
-
-  async function transaction(previousTransactionDigest: string, stepSeq = 1) {
-    return createKernelTransaction({
-      operation_id: "op-1",
-      step_seq: stepSeq,
-      base_generation: stepSeq - 1,
-      input: { version: 2, operation_id: "op-1", event_id: `event-${stepSeq}` },
-      step: { version: 2, operation_id: "op-1", step_seq: stepSeq, actions: [] },
-      previous_transaction_digest: previousTransactionDigest,
-    })
-  }
-
-  it("exposes the journal as its own capability, not as SessionLog methods", async () => {
-    const log = new InMemorySessionLog()
-    const operationGenesis = await genesis()
-    await log.appendKernelGenesis("s1", operationGenesis)
-
-    // The same durable chain is reachable through the separated capability.
-    const head = await log.kernelJournal.head(journalOperationKey("s1", "op-1"))
-    expect(head).toEqual({ step_seq: 0, record_digest: operationGenesis.genesis_digest })
-  })
-
-  it("numbers journal records and business events in independent sequence spaces", async () => {
-    const log = new InMemorySessionLog()
-    const operationGenesis = await genesis()
-
-    // Interleave: genesis, event, transaction, event, transaction.
-    const genesisReceipt = await log.appendKernelGenesis("s1", operationGenesis)
-    const event0 = await log.append("s1", { kind: "run_started", run_id: "r1", goal: "a", criteria: [] })
-    const first = await transaction(operationGenesis.genesis_digest)
-    const firstReceipt = await log.compareAndAppendKernelTransaction("s1", operationGenesis.genesis_digest, first)
-    const event1 = await log.append("s1", { kind: "llm_completed", turn: 0, content: "b", tool_calls: [] })
-    const second = await transaction(first.transaction_digest, 2)
-    const secondReceipt = await log.compareAndAppendKernelTransaction("s1", first.transaction_digest, second)
-
-    // Business events: a dense 0,1 — journal appends never consumed a business number.
-    expect([event0, event1]).toEqual([0, 1])
-    expect(await log.latestSeq("s1")).toBe(1)
-    expect((await log.read("s1")).map(entry => entry.seq)).toEqual([0, 1])
-
-    // Journal records: their own dense chain positions, unaffected by the interleaved events.
-    expect(genesisReceipt.log_seq).toBe(0)
-    expect(firstReceipt.log_seq).toBe(1)
-    expect(secondReceipt.log_seq).toBe(2)
-    expect(await log.kernelTransactionHead("s1", "op-1")).toBe(second.transaction_digest)
-    expect((await log.readKernelTransactions("s1", "op-1")).map(entry => entry.log_seq)).toEqual([1, 2])
-    expect((await log.readKernelGenesis("s1", "op-1"))?.genesis_digest).toBe(operationGenesis.genesis_digest)
-  })
-
+describe("KernelJournal outbound envelopes", () => {
   it("stages and clears outbound envelopes (InMemory + Driver)", async () => {
     const memory = new InMemoryKernelJournal()
     await memory.stageOutboundEnvelope("op-out", "{\"kind\":\"start_operation\"}")
@@ -450,25 +387,4 @@ describe("SessionLog / KernelJournal capability separation", () => {
     expect(await driver.readOutboundEnvelope("op-out")).toBeUndefined()
   })
 
-  it("keeps the same split when the journal is a host-injected driver", async () => {
-    // A SessionLog whose journal half is durable: the capability is swappable precisely because the
-    // interfaces are separate (§9.4).
-    class DriverBackedSessionLog extends InMemorySessionLog {
-      override readonly kernelJournal = new DriverKernelJournal(new InMemoryJournalDriver())
-    }
-    const log = new DriverBackedSessionLog()
-    const operationGenesis = await genesis()
-
-    const genesisReceipt = await log.appendKernelGenesis("sess", operationGenesis)
-    const event0 = await log.append("sess", { kind: "run_started", run_id: "r1", goal: "a", criteria: [] })
-    const first = await transaction(operationGenesis.genesis_digest)
-    const receipt = await log.compareAndAppendKernelTransaction("sess", operationGenesis.genesis_digest, first)
-    const event1 = await log.append("sess", { kind: "llm_completed", turn: 0, content: "b", tool_calls: [] })
-
-    expect([event0, event1]).toEqual([0, 1])
-    expect(genesisReceipt.log_seq).toBe(0)
-    expect(receipt.log_seq).toBe(1)
-    expect(await log.kernelTransactionHead("sess", "op-1")).toBe(first.transaction_digest)
-    expect((await log.read("sess")).map(entry => entry.seq)).toEqual([0, 1])
-  })
 })

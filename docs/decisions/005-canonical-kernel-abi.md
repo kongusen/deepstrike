@@ -46,6 +46,12 @@ P1 syscall 不是允许 host 自由声明 actor 的第六类 wire input：当前
 
 大结果正文不再双向穿越 core：host 在提交 `External` 之前先持久化正文，kernel 只校验 digest、size、preview 与 configured threshold，并为 inline/external tool result 分配或更新 P3 `Handle`，residency 区分 `External`（生成即超限）与 `PagedOut`（压力归档）。`read_result` 等 meta-tool 归约为 `SyscallRequest::PageIn { handle_id }`，只能产生相应的 `LoadPayload` effect。`SpoolLargeResult` effect/result/observation 及通过 SessionLog 扫描原结果的恢复路径删除；`PayloadRef` 是 opaque locator，不得解释为文件路径，正文的真实性、权限、加密与 retention 由 host 负责。命名冲突按 DEC-9 消除：P3 syscall 保留 `PageIn { handle_id }`（读回），host 向 knowledge partition 推送条目的现行 `PageIn { entries }` 更名为 `SeedKnowledge` 并归入 host command 类。
 
+历史数据不做无损自动升级：旧 `spool_ref` 只记录宿主路径，缺少 canonical `digest` 与
+`original_size`，因此不能直接改标签为 `PayloadRef`。仍可访问正文的宿主必须重新读取正文、
+计算 SHA-256 与 UTF-8 字节数、写入新的 `PayloadStore` locator，再生成完整 `External`
+descriptor；正文缺失或不可验证时必须作废该 handle，并让后续 `PageIn` 返回 typed
+`StorageUnavailable`，不得猜测 digest/size 或继续解释旧路径。
+
 ### 9. 恢复只依赖 logical checkpoint + bounded tail
 
 恢复统一为 logical checkpoint + bounded tail：`LogicalKernelState` 按 transition / P1 syscall / P2 scheduler / P3 context VM 四个 owner 分区，每项 correctness state 只出现一次；checkpoint 只以 `state_digest`/`tail_digest` 表达最后一次 transition 的等价性，不内联 `RenderedContext`，durable record 与 checkpoint 均不保存完整 `KernelStep`。安装使用 candidate → host 持久化 → covered-head CAS install → `ack_checkpoint` 协议：candidate 之后允许继续 append 并保留为 tail，install 不要求 covered head 仍是当前 head，ack 之前不得回收 covered prefix。tail 同时按条数与字节设 watermark，超过 hard limit 时 prepare 返回**可重试**的 `CheckpointRequired`（该 input 尚未 accepted），取代现行“一旦 overflow 即永久禁 snapshot 且永久拒 prepare”的 latch。full accepted-input snapshot、generic `Resume`、workflow `resumed_*` 以及 SDK 用业务 SessionLog 重建 workflow graph 的主路径全部删除。版本字段更名为 `checkpoint_version`（常量 `KERNEL_CHECKPOINT_VERSION`），不得沿用现值为 2 的 `KERNEL_SNAPSHOT_VERSION`——否则 2 → 1 是降号且与 v1 历史值碰撞，会绕过 restore 的 fail-closed 边界校验；`KERNEL_ABI_VERSION` 由 core 定义并经 binding 导出，三个 host 的手抄常量删除（DEC-6）。
@@ -57,7 +63,7 @@ wire 契约固定 `WireU64`（十进制字符串，避免 JS 精度漂移）、s
 ## 与既有决策的关系
 
 - **ADR-001** 的 operation identity、required mutation 与 observer 分离、budget reservation 原则继续有效。
-- **ADR-002** 记录 ABI v2 的历史可靠性切换。本 ADR **supersede 其具体 wire shape**（`KERNEL_ABI_VERSION`、input/effect/observation 的具体形状、direct step 与 full-journal snapshot），但保留其历史记录与仍然成立的可靠性语义（identity、strict lifecycle、structured fault、delivery-aware signal、reservation budget、typed cancellation、命令与事实分离）。
+- **ADR-002** 记录 已废弃 ABI 的历史可靠性切换。本 ADR **supersede 其具体 wire shape**（`KERNEL_ABI_VERSION`、input/effect/observation 的具体形状、direct step 与 full-journal snapshot），但保留其历史记录与仍然成立的可靠性语义（identity、strict lifecycle、structured fault、delivery-aware signal、reservation budget、typed cancellation、命令与事实分离）。
 - **ADR-003** “只公开宿主有资源语义的可靠性参数”继续有效；host retry、path、provider config 等字段按本 ADR 进一步移出 core。
 - **ADR-004** 的 single transition path、external payload、logical checkpoint + bounded tail 是本 ADR 的必达项。**勘误**：ADR-004 决策 1 的文字顺序 `normalize → validate → plan → commit → journal` 勘正为 `normalize → validate → plan/prepare → durable journal CAS append → commit/publish`——publish gate 在 durable append **之后**，而不是先 commit 再补写 journal。ADR-004 其余表述不变。
 - `.local-docs/specs/agent-os-three-primitives.md` 的 P1/P2/P3 是本 ADR 的上游所有权模型；五类 wire input 必须归约到这些原语，而不是形成第四套并行业务状态机。SDK Runtime API 的收敛依赖本 ADR 的跨语言 parity 关口，不得反向决定 kernel 权限或 lifecycle。
@@ -68,7 +74,7 @@ wire 契约固定 `WireU64`（十进制字符串，避免 JS 精度漂移）、s
 
 ## 非目标
 
-- 不为 ABI v1/v2 提供 adapter、shim、协商或 deprecation window；旧 operation 不可在新 runtime 恢复。
+- 不为 旧版 ABI 提供 adapter、shim、协商或 deprecation window；旧 operation 不可在新 runtime 恢复。
 - core 不执行网络、文件、数据库、provider、tool 或 sub-agent I/O，也不持有 lease token、API key、路径或可执行 handle。
 - 不由 kernel 承担 host 的重试、backoff、真实取消与 blob 加密/retention。
 - 不在本 ADR 内决定 `CancellationReason` 由 reason 驱动 terminal 语义的扩展（现状四值折叠为 `UserAbort`，若需要须另行设计）。

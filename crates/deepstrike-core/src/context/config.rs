@@ -87,15 +87,6 @@ pub struct ContextConfig {
     /// Defaults to 13K tokens (p99.99 of summarizer output length + safety margin).
     pub autocompact_buffer: u32,
 
-    // ── Layer 1: Large-result spool ──────────────────────────────────────
-    /// Byte size above which a single tool result is spooled (Layer 1): the kernel
-    /// keeps only a preview in context and emits a `SpoolLargeResult` host effect.
-    /// Default: 50 KiB. `0` disables spooling.
-    pub spool_threshold_bytes: u32,
-
-    /// Preview byte budget kept in context when a tool result is spooled. Default: 2 KiB.
-    pub spool_preview_bytes: u32,
-
     // ── K2: knowledge budget ─────────────────────────────────────────────
     /// Max share of `max_tokens` the knowledge partition may occupy. Exceeding it emits a
     /// `KnowledgeBudgetExceeded` observation (once per cache generation) and marks the OLDEST
@@ -125,8 +116,6 @@ impl Default for ContextConfig {
             micro_compact_idle_minutes: 60,
             preserved_tool_results: 5,
             autocompact_buffer: 13_000,
-            spool_threshold_bytes: 50 * 1024,
-            spool_preview_bytes: 2 * 1024,
             knowledge_budget_ratio: 0.25,
         }
     }

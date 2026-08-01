@@ -5,7 +5,6 @@ import type {
 import type { RegisteredTool, ToolExecContext } from "../tools/index.js"
 import type { DreamStore, MemoryScope } from "../memory/index.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
-import { LargeResultSpool } from "./large-result-spool.js"
 import { formatToolError } from "../tools/errors.js"
 
 export interface ToolSuspendEvent {
@@ -24,7 +23,6 @@ export interface RunContext {
   knowledgeSource?: KnowledgeSource
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
-  resultSpool?: LargeResultSpool
   /** M3/G4: working directory a tool should run in. WASM has no filesystem, so this is carried for
    *  tool-ABI parity with Node/Python rather than consumed by a worktree plane. */
   cwd?: string
@@ -107,12 +105,6 @@ export class LocalExecutionPlane implements ExecutionPlane {
     }
 
     for (const call of regularCalls) {
-      const spooledContent = await this.tryReadSpooledArgument(call, ctx)
-      if (spooledContent !== null) {
-        yield { type: "tool_result", callId: call.id, name: call.name, content: spooledContent, isError: false } as ToolResultEvent
-        continue
-      }
-
       const registered = this.tools.get(call.name)
       if (!registered) {
         yield { type: "tool_result", callId: call.id, name: call.name, content: `unknown tool: ${call.name}`, isError: true, isFatal: false, errorKind: "recoverable" } as ToolResultEvent
@@ -153,24 +145,6 @@ export class LocalExecutionPlane implements ExecutionPlane {
     }
   }
 
-  private async tryReadSpooledArgument(call: ToolCall, ctx: RunContext): Promise<string | null> {
-    const isReadTool = ["read", "read_file", "view_file", "read_spooled_result"].includes(call.name)
-    if (!isReadTool) return null
-
-    try {
-      const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
-      for (const val of Object.values(args)) {
-        if (typeof val === "string" && (val.startsWith(".spool/") || val.includes("/.spool/"))) {
-          const spool = ctx.resultSpool ?? new LargeResultSpool()
-          const content = await spool.readSpooledResult(val)
-          return content
-        }
-      }
-    } catch {
-      // Ignore errors
-    }
-    return null
-  }
 }
 
 function tryParseJson(s: string): unknown {

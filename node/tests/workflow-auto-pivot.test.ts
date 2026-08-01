@@ -69,7 +69,6 @@ describe("M5 v2.1 top-level start_workflow auto-pivot", () => {
       maxTokens: 8000,
       maxTurns: 5,
       subAgentOrchestrator: orchestrator as never,
-      // NOTE: isWorkflowNode unset ⇒ this is a top-level run ⇒ start_workflow auto-pivots.
     } as never)
 
     let text = ""

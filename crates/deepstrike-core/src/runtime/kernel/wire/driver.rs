@@ -10,12 +10,9 @@
 //!
 //! Three properties define it:
 //!
-//! 1. **No adapter between the two wire contracts.** The driver never constructs a
-//!    [`KernelInputEvent`](super::super::protocol::KernelInputEvent) and never consumes one. It
-//!    reads the canonical [`NormalizedPayload`] and calls the same *semantic* entry points the
-//!    legacy runtime calls — `LoopStateMachine::start`, `load_workflow`, `resolve_workflow_spawn`,
-//!    `feed`. Sharing the mechanism is the requirement; sharing the wire would be the thing §16.2
-//!    forbids.
+//! 1. **No protocol adapter.** The driver reads [`NormalizedPayload`] directly and reduces it to
+//!    scheduler/context primitives such as `LoopStateMachine::start`, `load_workflow`,
+//!    `resolve_workflow_spawn`, and `feed`. The canonical envelope is the only wire contract.
 //! 2. **`RootKind` is immutable and `ExecutionFocus` moves only on a committed transition**
 //!    (§6.1.5/6.1.6, §7.4). Both live in [`CanonicalOperationDriver`], and `plan` never writes
 //!    them — it *stages* the next value, and [`CanonicalOperationDriver::note_committed`] is what
@@ -275,7 +272,6 @@ fn handle_kind_label(kind: &HandleKind) -> &'static str {
         HandleKind::ToolResult => "tool_result",
         HandleKind::MemoryPage => "memory_page",
         HandleKind::KnowledgeEntry => "knowledge_entry",
-        HandleKind::SpoolFile => "spool_file",
         HandleKind::SubAgentJoin => "sub_agent_join",
     }
 }
@@ -937,7 +933,6 @@ fn restore_handle_kind(label: &str) -> Result<HandleKind, KernelFault> {
         "tool_result" => HandleKind::ToolResult,
         "memory_page" => HandleKind::MemoryPage,
         "knowledge_entry" => HandleKind::KnowledgeEntry,
-        "spool_file" => HandleKind::SpoolFile,
         "sub_agent_join" => HandleKind::SubAgentJoin,
         other => {
             return Err(incompatible(format!(
@@ -957,12 +952,6 @@ fn restore_residency(handle: &HandleState) -> Result<Residency, KernelFault> {
     Ok(match handle.residency.as_str() {
         "resident" => Residency::Resident,
         "collapsed" => Residency::Collapsed,
-        "spooled_out" => Residency::SpooledOut {
-            r: handle
-                .payload_ref
-                .clone()
-                .ok_or_else(|| missing("locator"))?,
-        },
         "external" => Residency::External {
             payload_ref: handle
                 .payload_ref
@@ -1221,6 +1210,14 @@ impl CanonicalOperationDriver {
         self.workflow_id.as_ref()
     }
 
+    /// Return the kernel-issued live attempt for `task_id`.
+    ///
+    /// Bindings use this read-only projection when a legacy host completion carries only a task
+    /// identity. The value comes from checkpointed kernel state; hosts must never synthesize it.
+    pub fn attempt_id(&self, task_id: &str) -> Option<&AttemptId> {
+        self.attempts.get(task_id)
+    }
+
     pub fn poison(&self) -> Option<&KernelFault> {
         self.poison.as_ref()
     }
@@ -1468,7 +1465,6 @@ impl CanonicalOperationDriver {
                             payload_ref,
                             digest,
                         } => (Some(payload_ref.clone()), Some(digest.clone()), None),
-                        Residency::SpooledOut { r } => (Some(r.clone()), None, None),
                         Residency::Resident | Residency::Collapsed => (None, None, None),
                     };
                     HandleState {
@@ -2527,8 +2523,7 @@ impl CanonicalOperationDriver {
     ///   primitive — the historical SDK answered it by scanning a spool directory and then the
     ///   session log, so any path-shaped string was a readable address.
     /// - an address whose body core still holds. `Resident` and `Collapsed` are not paged out at
-    ///   all, and the legacy `SpooledOut` ref is a filesystem path rather than an opaque
-    ///   `PayloadRef` (§7.10 rule 7). None of the three yields a locator the kernel could hand back,
+    ///   all. Neither yields a locator the kernel could hand back,
     ///   and fabricating one is exactly the confusion the closed union removes.
     fn plan_page_in(
         &mut self,
@@ -3755,7 +3750,7 @@ impl CanonicalOperationDriver {
     /// path in [`Self::apply_syscall`]: a host command is not gated, not quarantine-coerced and not
     /// attributed to a caller, because the host *is* the authority. `UpdateTask` is the pair that
     /// makes the split visible — the same `TaskUpdate` payload, two input classes, two authorities,
-    /// which is exactly the distinction the legacy single `KernelInputEvent::UpdateTask` could not
+    /// preserving the authority distinction that the retired shared task-update input could not
     /// express (§7.5 现状注记).
     ///
     /// Refusals are faults rather than model-facing rejections: a control command is a host bug, so
@@ -3816,7 +3811,7 @@ impl CanonicalOperationDriver {
         let engine = self.engine_mut()?;
         let action = engine.cancel_operation(
             operation_id,
-            core_cancellation_reason(reason),
+            reason,
             cancel
                 .pending_call_ids
                 .iter()
@@ -4105,7 +4100,7 @@ impl CanonicalOperationDriver {
         let step_seq = context.step_seq;
 
         // A durability effect produced *inside* the transition (a compaction's page-out) is
-        // published first and holds the continuation, exactly as the legacy runtime tail does. The
+        // published first and holds the continuation. The
         // guard inside makes a second call in the same step a no-op, so a step never activates two.
         let mut action = self.engine_mut()?.externalize_pending_host_effect(action);
         // DEC-8 · an archive the host never declared it can perform is not a reason to refuse the
@@ -4219,19 +4214,6 @@ impl CanonicalOperationDriver {
                          inputs can produce; on the canonical wire a memory effect is minted by \
                          the P1 syscall that proposed it",
                         loop_action_label(&action)
-                    ),
-                ));
-            }
-            // Every canonical projection now exists; anything else the engine can still name is a
-            // legacy-only action (e.g. the spool ladder, unreachable here because the inline
-            // threshold is enforced before a body can enter the canonical wire).
-            other => {
-                return Err(KernelFault::new(
-                    KernelFaultCode::InvalidLifecycle,
-                    format!(
-                        "the semantic kernel emitted {}, which has no canonical projection; only \
-                         deleted legacy inputs can produce it",
-                        loop_action_label(&other)
                     ),
                 ));
             }
@@ -5018,18 +5000,6 @@ fn signal_summary(signal: &LogicalSignal) -> String {
     }
 }
 
-fn core_cancellation_reason(
-    reason: CancellationReason,
-) -> crate::runtime::kernel::CancellationReason {
-    use crate::runtime::kernel::CancellationReason as Core;
-    match reason {
-        CancellationReason::User => Core::User,
-        CancellationReason::Deadline => Core::Deadline,
-        CancellationReason::LeaseLost => Core::LeaseLost,
-        CancellationReason::HostShutdown => Core::HostShutdown,
-    }
-}
-
 fn core_capability_kind(
     kind: super::root::CapabilityKind,
 ) -> crate::types::capability::CapabilityKind {
@@ -5237,7 +5207,6 @@ fn loop_action_label(action: &LoopAction) -> &'static str {
         LoopAction::PreemptSubAgents { .. } => "preempt_tasks",
         LoopAction::PersistMemory { .. } => "persist_memory",
         LoopAction::QueryMemory { .. } => "query_memory",
-        LoopAction::SpoolLargeResult { .. } => "spool_large_result",
         LoopAction::ArchivePageOut { .. } => "archive_page_out",
         LoopAction::EvaluateMilestone { .. } => "evaluate_milestone",
         LoopAction::Done { .. } => "terminal",
@@ -5322,7 +5291,7 @@ fn wire_approval_request(
 /// `is_fatal` + six-way `ToolErrorKind` is total and lossless in the direction that matters: only
 /// `Recoverable` and `Fatal` are reachable, and `UserInterrupt` — the one kind that still rolls a
 /// turn back — has no canonical spelling at all. Cancellation travels on `HostControl::Cancel`
-/// (§7.9), so that rung dies with the legacy wire rather than being re-expressible here.
+/// (§7.9), so that retired retry rung is not re-expressible here.
 ///
 /// §7.10 rule 9 · failure is orthogonal to residency, so the two failure facts are read through
 /// [`WireToolResultPayload::disposition`] / [`WireToolResultPayload::is_error`] and land in core
@@ -5362,10 +5331,8 @@ fn core_tool_result(payload: &WireToolResultPayload) -> ToolResult {
 /// `PayloadPolicy::inline_threshold_bytes` documents a total partition — "results at or above this
 /// size are committed as `External` rather than inline" — so both directions are enforced here:
 ///
-/// - an oversized `Inline` is refused rather than spooled. The kernel does **not** externalise on
-///   the host's behalf: doing so is precisely the historical round trip §7.10 deletes, where the
-///   body crossed core inbound, came back out as a `SpoolLargeResult` action, and was written to
-///   the journal twice. "Reject" is the only answer that keeps rule 5 true.
+/// - an oversized `Inline` is refused rather than externalised by the kernel. The host must persist
+///   before submission, so "reject" is the only answer that keeps rule 5 true.
 /// - an undersized `External` is refused too, because it costs a `LoadPayload` round trip to read
 ///   something that would have fitted in the turn that produced it, and it makes the partition —
 ///   the one thing a host has to agree with the kernel about — untotal.
@@ -5577,12 +5544,19 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
         max_total_tokens: execution.max_total_tokens.get(),
         max_wall_ms: execution.max_wall_ms.map(WireU64::get),
     });
+    if let Some(grant) = config.budget_grant.clone() {
+        engine.set_budget_grant(grant);
+    }
+    let scheduler_policy = config.scheduler_policy;
+    engine.set_scheduler_policy(crate::scheduler::policy::SchedulerPolicyConfig {
+        version: crate::scheduler::policy::SCHEDULER_POLICY_VERSION,
+        critical_path_weight: i64::from(scheduler_policy.critical_path_weight),
+        fanout_weight: i64::from(scheduler_policy.fanout_weight),
+        age_weight: i64::from(scheduler_policy.age_weight),
+        token_cost_weight: i64::from(scheduler_policy.token_cost_weight),
+    });
 
     engine.set_criteria_gate(execution.criteria_gate_enabled);
-    // §10.4 / §15.3 · the canonical path is the ack-gated one: a child is `PendingLaunch` when the
-    // kernel mints its identity, `Starting` when the launch effect is published, and `Running` only
-    // once `TasksSpawned` names it as started. The legacy runtime leaves this off.
-    engine.set_ack_gated_launch(true);
     engine.set_repeat_fuse(crate::governance::repeat_fuse::RepeatFuseConfig {
         enabled: execution.repeat_fuse.enabled,
         deny_after: execution.repeat_fuse.deny_after,
@@ -5621,12 +5595,6 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
             .iter()
             .map(|id| id.as_str().into()),
     );
-    // §7.10 rule 5 · the canonical wire has no inbound body large enough to spool, and the kernel
-    // must not spool one even if a host widened `inline_threshold_bytes` past the legacy default:
-    // `SpoolLargeResult` is the round trip where the body crosses core twice and lands in the
-    // journal twice. A zero threshold is `plan_spool`'s "never" (see `mm::plan_spool`), so the
-    // legacy Layer-1 planner is structurally unreachable here rather than merely unused.
-    engine.ctx.config.spool_threshold_bytes = 0;
     engine.ctx.config.knowledge_budget_ratio =
         config.context_policy.knowledge_budget_ppm.as_ratio();
     engine.ctx.config.collapse_assistant_narration =
@@ -7494,7 +7462,6 @@ mod tests {
     #[test]
     fn an_ack_gated_spawn_mints_identity_in_pending_launch_before_the_effect_is_published() {
         let mut engine = LoopStateMachine::new(SchedulerBudget::default());
-        engine.set_ack_gated_launch(true);
         let action = engine.load_workflow(
             build_core_spec(&WireSpec {
                 name: String::new(),
@@ -7521,30 +7488,6 @@ mod tests {
             engine.task_lifecycle("wf-node0"),
             Some(TaskLifecycle::Running),
             "only the acknowledgement makes it Running"
-        );
-    }
-
-    /// The legacy path is untouched: a spawn seeds `Running` at insert, before any effect exists.
-    #[test]
-    fn a_legacy_spawn_still_seeds_running_at_insert() {
-        let mut engine = LoopStateMachine::new(SchedulerBudget::default());
-        engine.load_workflow(
-            build_core_spec(&WireSpec {
-                name: String::new(),
-                nodes: vec![wire_node("only", "only", &[])],
-            })
-            .unwrap(),
-        );
-        assert_eq!(
-            engine.task_lifecycle("wf-node0"),
-            Some(TaskLifecycle::Running),
-            "ack gating is off by default, so nothing about the legacy arc changed"
-        );
-        engine.mark_tasks_starting(&["wf-node0".to_string()]);
-        assert_eq!(
-            engine.task_lifecycle("wf-node0"),
-            Some(TaskLifecycle::Running),
-            "marking a legacy task starting is a no-op, not a downgrade"
         );
     }
 
@@ -8714,9 +8657,8 @@ mod tests {
     ///
     /// The scan is over everything the arc made durable or published: no record, no effect and no
     /// observation carries the persisted body, and no effect kind exists through which the kernel
-    /// could hand a body back out to be spooled. The historical path failed both halves at once —
-    /// the full output arrived as an accepted input *and* left again as a `SpoolLargeResult`
-    /// action, so it entered the journal twice.
+    /// could hand a body back out to be persisted. The full output enters only through a verified
+    /// host-owned payload reference.
     #[test]
     fn no_canonical_record_effect_or_observation_carries_an_external_body() {
         let (mut runtime, tools) = agent_awaiting_tool_results();
@@ -12566,10 +12508,8 @@ mod tests {
                 index == 5,
                 "link {index} disagrees about where a large body may enter",
             );
-            // A `call_provider` effect legitimately carries whatever is in context — once the model
-            // has paged a body in, that is the point. What must never exist is an effect that hands
-            // a body back out to be *written*: that is the `SpoolLargeResult` round trip, where the
-            // same bytes crossed core inbound and outbound and landed in the journal twice.
+            // A `call_provider` effect legitimately carries whatever is in context once the model
+            // has paged a body in. No effect may hand the body back out to be persisted.
             for effect in link["step"]["disposition"]["effects"]
                 .as_array()
                 .unwrap_or(&Vec::new())

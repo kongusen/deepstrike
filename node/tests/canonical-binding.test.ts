@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
@@ -61,5 +62,39 @@ describe("CanonicalKernel native binding", () => {
     kernel.restore(checkpoint.checkpointBytes, [])
     expect(kernel).toBe(identity)
     expect(kernel.lifecycle()).toBe("configured")
+  })
+
+  it("does not export the legacy runtime binding", () => {
+    const nativeRoot = join(process.cwd(), "../crates/deepstrike-node")
+    const source = readFileSync(join(nativeRoot, "src/lib.rs"), "utf8")
+    expect(source).not.toMatch(/pub fn step\s*\(/)
+    expect(source).not.toMatch(/pub struct KernelRuntime\b/)
+    expect(() => execFileSync(
+      process.execPath,
+      [
+        "-e",
+        `const native = require(process.argv[1]);
+         if (typeof native.KernelRuntime !== "undefined") {
+           throw new Error("KernelRuntime is exported");
+         }
+         if (typeof native.CanonicalKernel.prototype.step !== "undefined") {
+           throw new Error("CanonicalKernel.step is exported");
+         }`,
+        nativeRoot,
+      ],
+      { env: { ...process.env, NODE_ENV: "production" }, stdio: "pipe" },
+    )).not.toThrow()
+  })
+
+  it("keeps legacy root events out of the production operation driver", () => {
+    for (const file of ["runner.ts", "canonical-kernel-step.ts"]) {
+      const source = readFileSync(join(process.cwd(), "src/runtime", file), "utf8")
+      expect(source).not.toMatch(/start_run|load_workflow|complete_run|ABI[-_ ]?v[12]/i)
+      expect(source).not.toMatch(/CANONICAL_KERNEL_ABI_VERSION\s*=\s*3|["']abi_version["']\s*:\s*3/)
+    }
+
+    const bindingLoader = readFileSync(join(process.cwd(), "src/kernel.ts"), "utf8")
+    expect(bindingLoader).not.toMatch(/installTestOnlyLegacyStep|prototype\.step/)
+    expect(bindingLoader).not.toMatch(/KernelRuntimeInstance|\bKernelRuntime:\s*new\b/)
   })
 })

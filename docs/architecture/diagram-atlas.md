@@ -14,7 +14,7 @@
 
 ### 分层架构
 
-应用意图、宿主用户态、ABI v2、内核原语与持久证据面彼此分离。
+应用意图、宿主用户态、Canonical Kernel ABI、内核原语与持久证据面彼此分离。
 
 ![Agent OS 分层架构](/agent_os_architecture.svg)
 
@@ -78,7 +78,7 @@ Reason、Act、Adjudicate、Execute、Observe 与 Delta 都是显式状态转换
 
 ### ExecutionPlane
 
-获批调用经过宿主 Hook，进入本地、Worktree、Sandbox 或 Remote 执行，并支持流式、挂起与 Spool。
+获批调用经过宿主 Hook，进入本地、Worktree、Sandbox 或 Remote 执行，并支持流式、挂起与 external payload 存储。
 
 ![ExecutionPlane 机制](/execution_plane_mechanisms.svg)
 
@@ -112,13 +112,13 @@ Reason、Act、Adjudicate、Execute、Observe 与 Delta 都是显式状态转换
 
 ### Session 重放与恢复
 
-同一条 append-only 证据流支持审计、Provider Replay、Workflow Resume、OS Snapshot 与公开 ABI 状态重建。
+SessionLog 证据流支持审计、Provider Replay 与 OS Snapshot；canonical checkpoint + journal 独立承担 Workflow Resume 与 ABI 状态恢复。
 
 ![Session 重放与恢复](/session_replay_mechanisms.svg)
 
 ### Profile 与 Snapshot
 
-OS Profile 配置策略，OS Snapshot 服务可观测性，KernelSnapshot 恢复执行，ContextSnapshot 只恢复上下文。
+OS Profile 配置策略，OS Snapshot 服务可观测性，canonical Kernel Checkpoint 恢复执行，ContextSnapshot 只恢复上下文。
 
 ![Profile 与 Snapshot](/snapshots_mechanisms.svg)
 

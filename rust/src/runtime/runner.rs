@@ -6,16 +6,12 @@ use crate::runtime::skill_watcher::SkillWatcher;
 use async_stream::try_stream;
 use deepstrike_core::governance::quota::ResourceQuota;
 use deepstrike_core::mm::memory::{
-    MemoryAuthor, MemoryKind, MemoryPolicy, MemoryProvenance, MemoryQuery, MemoryRecall,
-    MemoryRecord, MemoryScope, MemoryTrustLevel,
+    MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
+    MemoryScope, MemoryTrustLevel, validate_memory_write,
 };
-use deepstrike_core::runtime::kernel::{
-    CancellationReason, KernelAction, KernelEffect, KernelInput, KernelInputEvent,
-    KernelObservation, KernelPressureAction, KernelReliabilityConfig, KernelRuntime, KernelStep,
-    RunConfig,
-};
+use deepstrike_core::runtime::kernel::wire::{CancellationReason, MemoryPolicy};
+use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
 use deepstrike_core::runtime::session::SessionEvent;
-use deepstrike_core::scheduler::policy::SchedulerBudget as KernelBudget;
 use deepstrike_core::scheduler::policy::SchedulerPolicyConfig;
 use deepstrike_core::types::message::{Message, ToolCall};
 use deepstrike_core::types::milestone::MilestoneCheckResult;
@@ -32,19 +28,26 @@ use crate::memory::DreamStore;
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
 use crate::runtime::archive::ArchiveStore;
+use crate::runtime::canonical_kernel::CanonicalKernel;
+use crate::runtime::canonical_runner_runtime::{
+    CanonicalRunnerOptions, CanonicalRunnerRuntime, PersistPayloadFn, PersistedPayload,
+    canonical_kernel_action, canonical_kernel_apply,
+};
 use crate::runtime::execution_plane::{
     ExecutionPlane, LocalExecutionPlane, PermissionRequest, PermissionRequestHandler,
     PermissionResponse, RunContext, ToolSuspendHandler,
 };
+use crate::runtime::host_projection::{HostAction, HostEffect};
 use crate::runtime::os_profile::{
     GovernancePolicy, OsProfile, SignalPolicy, assert_native_profile,
 };
+use crate::runtime::payload_store::{FilePayloadStore, PayloadStore};
 use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay_from_events};
 use crate::runtime::replay::{
-    is_mid_run, repair_entries_with_cap, replay_messages_with_cap,
-    replay_messages_with_cap_and_loader,
+    is_mid_run, replay_messages_with_cap, replay_messages_with_cap_and_loader,
 };
 use crate::runtime::session_log::{SessionEntry, SessionLog};
+use crate::runtime::{InMemoryKernelJournal, KernelJournal};
 use crate::{Error, Result};
 use crate::{SignalDeliveryReceipt, SignalSource};
 use deepstrike_core::context::task_state::TaskUpdate;
@@ -100,17 +103,24 @@ pub struct TurnMetrics {
 /// Sink for per-turn [`TurnMetrics`]. Synchronous, infallible — it must never affect the run.
 pub type OnTurnMetricsHandler = std::sync::Arc<dyn Fn(TurnMetrics) + Send + Sync>;
 
+/// Canonical recovery and input-bound overrides. Omitted fields retain core defaults.
+#[derive(Debug, Clone, Default)]
+pub struct KernelReliability {
+    pub provider_recovery_attempts: Option<u8>,
+    pub output_recovery_attempts: Option<u8>,
+    pub max_input_bytes: Option<u32>,
+}
+
 /// Configuration for a `RuntimeRunner` (aligned with Node/Python `RuntimeOptions`).
 pub struct RuntimeOptions {
     pub provider: Box<dyn LLMProvider>,
     pub execution_plane: Option<Box<dyn ExecutionPlane>>,
     pub session_log: Option<Arc<dyn SessionLog>>,
     pub compression_store: Option<Arc<dyn ArchiveStore>>,
-    /// Directory used by the built-in large-result spool effect executor.
-    /// Defaults to `.spool` when omitted.
-    pub spool_dir: Option<std::path::PathBuf>,
-    /// Bounded ABI-v2 replay, retry, and large-result policy. Omitted fields retain kernel defaults.
-    pub kernel_reliability: Option<KernelReliabilityConfig>,
+    /// Storage for canonical opaque external payload locators.
+    pub payload_store: Option<Arc<dyn PayloadStore>>,
+    /// Bounded recovery and replay policy. Omitted fields retain kernel defaults.
+    pub kernel_reliability: Option<KernelReliability>,
     /// When set, `execute` reuses this session id.
     pub session_id: Option<String>,
     pub max_tokens: u32,
@@ -163,7 +173,7 @@ pub struct RuntimeOptions {
     /// `None` ⇒ legacy behavior; `Some(vec![])` is DISTINCT and legitimate — the minimal surface
     /// (meta-tools + stable-core only). Entries outside the ceiling silently intersect away.
     pub baseline_tool_ids: Option<Vec<String>>,
-    /// P1 dispatch enforcement (`RunConfig::tool_dispatch_gate`). `None` ⇒ the kernel default
+    /// P1 dispatch enforcement (`OperationConfig.feature_policy.tool_dispatch_gate`). `None` ⇒ the kernel default
     /// `"exposed"`: fail-closed, a call to a tool this run never advertised commits a model-visible
     /// `governance_denied` result instead of executing. `Some("registered")` is the escape hatch
     /// restoring the pre-gate permissive dispatch.
@@ -189,6 +199,7 @@ fn build_run_spec(
     explicit: Option<deepstrike_core::types::agent::AgentRunSpec>,
     allowed_tool_ids: Option<&[String]>,
     baseline_tool_ids: Option<&[String]>,
+    verification_contract_id: Option<&str>,
     agent_id: Option<&str>,
     session_id: &str,
     goal: &str,
@@ -218,24 +229,58 @@ fn build_run_spec(
             )
         }),
     };
+    if spec.is_none() && verification_contract_id.is_some() {
+        spec = Some(AgentRunSpec::new(
+            AgentIdentity::new(agent_id.unwrap_or("root"), session_id),
+            AgentRole::Custom,
+            goal.to_string(),
+        ));
+    }
     if let (Some(spec), Some(baseline)) = (spec.as_mut(), baseline_tool_ids) {
         spec.exposure_baseline = Some(baseline.iter().map(|s| s.as_str().into()).collect());
     }
+    if let (Some(spec), Some(contract_id)) = (spec.as_mut(), verification_contract_id)
+        && spec.verification_contract_id.is_none()
+    {
+        spec.verification_contract_id = Some(contract_id.into());
+    }
     spec
+}
+
+fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
+    let mut end = value.len().min(max_bytes);
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
 }
 
 /// Orchestrates the agentic turn loop via the runtime kernel + session event log.
 pub struct RuntimeRunner {
     opts: RuntimeOptions,
     plane: Box<dyn ExecutionPlane>,
+    kernel_journal: Arc<dyn KernelJournal>,
     interrupted: AtomicBool,
     cancellation_reason: AtomicU8,
-    active_kernel: std::sync::Mutex<Option<std::sync::Arc<std::sync::Mutex<KernelRuntime>>>>,
+    active_kernel:
+        std::sync::Mutex<Option<std::sync::Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>>>,
+    memory_write_timestamps: tokio::sync::Mutex<std::collections::VecDeque<u64>>,
     local_page_out_cache: std::sync::Mutex<Vec<Message>>,
 }
 
 impl RuntimeRunner {
-    pub fn new(mut opts: RuntimeOptions) -> Self {
+    pub fn new(opts: RuntimeOptions) -> Self {
+        Self::new_with_kernel_journal(opts, Arc::new(InMemoryKernelJournal::new()))
+    }
+
+    /// Construct a runner with an explicit durable canonical journal implementation.
+    pub fn new_with_kernel_journal(
+        mut opts: RuntimeOptions,
+        kernel_journal: Arc<dyn KernelJournal>,
+    ) -> Self {
+        if opts.payload_store.is_none() {
+            opts.payload_store = Some(Arc::new(FilePayloadStore::new(".payloads")));
+        }
         let plane = opts
             .execution_plane
             .take()
@@ -243,9 +288,11 @@ impl RuntimeRunner {
         Self {
             opts,
             plane,
+            kernel_journal,
             interrupted: AtomicBool::new(false),
             cancellation_reason: AtomicU8::new(0),
             active_kernel: std::sync::Mutex::new(None),
+            memory_write_timestamps: tokio::sync::Mutex::new(std::collections::VecDeque::new()),
             local_page_out_cache: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -277,40 +324,93 @@ impl RuntimeRunner {
             return Ok(());
         };
 
-        let (kernel, requested) = self.begin_memory_syscall(KernelInputEvent::WriteMemory {
-            memory: memory.clone(),
-        });
-        let persist_effect = requested
-            .actions
-            .iter()
-            .find_map(|action| match &action.effect {
-                KernelEffect::PersistMemory { memory } => {
-                    Some((action.effect_id.clone(), memory.clone()))
+        let turn = self.active_kernel_turn().await;
+        let validation = match self.opts.memory_policy.as_ref() {
+            Some(policy) if policy.validation_enabled == Some(false) => Ok(()),
+            Some(policy) => {
+                let mut validation = deepstrike_core::mm::memory::MemoryValidation::default();
+                if let Some(max_content_bytes) = policy.max_content_bytes {
+                    validation.max_size_bytes = max_content_bytes;
                 }
-                _ => None,
-            });
-        let Some((effect_id, canonical)) = persist_effect else {
-            self.append_memory_syscall_observations(session_id, requested.observations)
-                .await;
-            return Ok(());
+                if let Some(max_name_length) = policy.max_name_length {
+                    validation.max_name_length = max_name_length as usize;
+                }
+                validation.validate(&memory)
+            }
+            None => validate_memory_write(&memory),
         };
-
-        let io_result: Result<()> = async {
-            store.upsert(agent_id, canonical).await?;
-            Ok(())
-        }
-        .await;
-        let completed =
-            kernel
-                .lock()
-                .unwrap()
-                .step(KernelInput::new(KernelInputEvent::MemoryPersistResult {
-                    effect_id,
-                    error: io_result.as_ref().err().map(ToString::to_string),
-                }));
-        self.append_memory_syscall_observations(session_id, completed.observations)
+        if let Err(error) = validation {
+            self.append_memory_syscall_observations(
+                session_id,
+                vec![KernelObservation::MemoryValidationFailed {
+                    turn,
+                    record_id: memory.record_id.clone(),
+                    error: format!("{error:?}"),
+                }],
+            )
             .await;
-        io_result
+            return Ok(());
+        }
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let write_limit = self
+            .opts
+            .resource_quota
+            .as_ref()
+            .and_then(|quota| quota.memory_writes_per_window);
+        let mut quota_guard = if write_limit.is_some() {
+            Some(self.memory_write_timestamps.lock().await)
+        } else {
+            None
+        };
+        if let (Some((max_writes, window_ms)), Some(timestamps)) =
+            (write_limit, quota_guard.as_mut())
+        {
+            let cutoff = now_ms.saturating_sub(window_ms);
+            while timestamps
+                .front()
+                .is_some_and(|timestamp| *timestamp < cutoff)
+            {
+                timestamps.pop_front();
+            }
+            if window_ms == 0 || timestamps.len() >= max_writes as usize {
+                drop(quota_guard);
+                self.append_memory_syscall_observations(
+                    session_id,
+                    vec![KernelObservation::MemoryValidationFailed {
+                        turn,
+                        record_id: memory.record_id.clone(),
+                        error: format!(
+                            "memory write quota exceeded: max {max_writes} writes per {window_ms}ms"
+                        ),
+                    }],
+                )
+                .await;
+                return Ok(());
+            }
+        }
+
+        store.upsert(agent_id, memory.clone()).await?;
+        if let Some(timestamps) = quota_guard.as_mut() {
+            timestamps.push_back(now_ms);
+        }
+        drop(quota_guard);
+        self.append_memory_syscall_observations(
+            session_id,
+            vec![KernelObservation::MemoryWritten {
+                turn,
+                record_id: memory.record_id,
+                scope: memory.scope,
+                memory_kind: memory.kind,
+                name: memory.name,
+                size_bytes: memory.content.len() as u32,
+            }],
+        )
+        .await;
+        Ok(())
     }
 
     pub async fn query_memory(
@@ -326,37 +426,28 @@ impl RuntimeRunner {
             return Ok(Vec::new());
         };
 
-        let (kernel, requested) = self.begin_memory_syscall(KernelInputEvent::QueryMemory {
-            query: query.clone(),
-        });
-        let query_effect = requested
-            .actions
-            .iter()
-            .find_map(|action| match &action.effect {
-                KernelEffect::QueryMemory { query, requested_k } => {
-                    Some((action.effect_id.clone(), query.clone(), *requested_k))
-                }
-                _ => None,
-            });
-        let Some((effect_id, mut canonical_query, requested_k)) = query_effect else {
-            self.append_memory_syscall_observations(session_id, requested.observations)
-                .await;
-            return Ok(Vec::new());
-        };
-
-        canonical_query.top_k = requested_k;
+        let turn = self.active_kernel_turn().await;
+        let mut canonical_query = query;
+        if let Some(top_k) = self
+            .opts
+            .memory_policy
+            .as_ref()
+            .and_then(|policy| policy.retrieval_top_k)
+        {
+            canonical_query.top_k = canonical_query.top_k.min(top_k as usize);
+        }
         let hits = store.search(agent_id, &canonical_query).await?;
-        let completed =
-            kernel
-                .lock()
-                .unwrap()
-                .step(KernelInput::new(KernelInputEvent::MemoryQueryResult {
-                    effect_id,
-                    hits: hits.clone(),
-                    error: None,
-                }));
-        self.append_memory_syscall_observations(session_id, completed.observations)
-            .await;
+        self.append_memory_syscall_observations(
+            session_id,
+            vec![KernelObservation::MemoryQueried {
+                turn,
+                scope: canonical_query.scope.clone(),
+                query: canonical_query.query.clone(),
+                requested_k: canonical_query.top_k,
+                requires_async_response: true,
+            }],
+        )
+        .await;
         self.log_memory_retrieval_result(session_id, hits.clone())
             .await;
         Ok(hits)
@@ -427,64 +518,88 @@ impl RuntimeRunner {
             .lock()
             .unwrap()
             .as_ref()
-            .map(|kernel| kernel.lock().unwrap().diagnostics().pending_effect_count)
+            .and_then(|kernel| {
+                kernel
+                    .try_lock()
+                    .ok()
+                    .map(|runtime| runtime.pending_effect_count())
+            })
     }
 
-    fn begin_memory_syscall(
-        &self,
-        event: KernelInputEvent,
-    ) -> (Arc<std::sync::Mutex<KernelRuntime>>, KernelStep) {
-        if let Some(active) = self.active_kernel.lock().unwrap().clone() {
-            if !active.lock().unwrap().is_terminal() {
-                let step = {
-                    let mut kernel = active.lock().unwrap();
-                    kernel.step(KernelInput::new(event))
-                };
-                return (active, step);
-            }
+    async fn active_kernel_turn(&self) -> u32 {
+        let active = self.active_kernel.lock().unwrap().clone();
+        match active {
+            Some(kernel) => kernel.lock().await.turn(),
+            None => 0,
         }
+    }
 
-        let mut kernel = KernelRuntime::new(KernelBudget {
-            max_tokens: self.opts.max_tokens,
-            max_turns: self.opts.max_turns.unwrap_or(25),
-            max_wall_ms: self.opts.timeout_ms,
-            ..Default::default()
-        });
-        if let Ok(profile) = assert_native_profile(self.opts.os_profile.clone()) {
-            kernel.step(KernelInput::new(
-                self.opts
-                    .governance_policy
+    fn create_canonical_runtime(
+        &self,
+        operation_id: String,
+        session_id: &str,
+    ) -> Result<CanonicalRunnerRuntime> {
+        let provider_policy = self.opts.provider.runtime_policy();
+        let effective_max_turns = self
+            .opts
+            .max_turns
+            .or(provider_policy.max_turns)
+            .unwrap_or(25);
+        let effective_timeout = self.opts.timeout_ms.or(provider_policy.timeout_ms);
+        let payload_store = self
+            .opts
+            .payload_store
+            .clone()
+            .expect("runtime constructor installs a payload store");
+        let payload_session = session_id.to_string();
+        let persist_payload: PersistPayloadFn =
+            Arc::new(move |_call_id, content, preview_bytes| {
+                let payload_store = payload_store.clone();
+                let payload_session = payload_session.clone();
+                Box::pin(async move {
+                    let digest = deepstrike_core::runtime::kernel::wire::canonical_digest(
+                        content.as_bytes(),
+                    )
+                    .as_str()
+                    .to_string();
+                    let payload_ref = format!(
+                        "payload:{}",
+                        digest
+                            .trim_start_matches("sha256:")
+                            .chars()
+                            .take(32)
+                            .collect::<String>()
+                    );
+                    payload_store.persist(&payload_session, &payload_ref, &content)?;
+                    Ok(PersistedPayload {
+                        payload_ref,
+                        digest,
+                        original_size: content.len().to_string(),
+                        preview: utf8_prefix(&content, preview_bytes).to_string(),
+                    })
+                })
+            });
+        let mut runtime = CanonicalRunnerRuntime::new(
+            CanonicalKernel::default(),
+            self.kernel_journal.clone(),
+            operation_id,
+            CanonicalRunnerOptions {
+                max_context_tokens: self.opts.max_tokens,
+                max_turns: Some(effective_max_turns),
+                max_total_tokens: None,
+                max_wall_ms: effective_timeout,
+                memory_binding_id: self
+                    .opts
+                    .agent_id
                     .clone()
-                    .unwrap_or(profile.governance_policy)
-                    .into_kernel_event(),
-            ));
-            let signal_policy = self.opts.signal_policy.unwrap_or(profile.signal_policy);
-            kernel.step(KernelInput::new(KernelInputEvent::SetSignalPolicy {
-                policy: signal_policy.into_kernel(),
-            }));
+                    .unwrap_or_else(|| format!("memory:{session_id}")),
+                persist_payload: Some(persist_payload),
+            },
+        )?;
+        if let Some(contract) = self.opts.milestone_contract.as_ref() {
+            runtime.remember_milestone_contract(contract);
         }
-        if self.opts.scheduler_policy.is_some() || self.opts.tool_dispatch_gate.is_some() {
-            kernel.step(KernelInput::new(KernelInputEvent::ConfigureRun {
-                config: RunConfig {
-                    scheduler_policy: self.opts.scheduler_policy,
-                    // P1: absent ⇒ kernel default "exposed"; "registered" is the escape hatch back
-                    // to permissive dispatch. The kernel rejects any other value.
-                    tool_dispatch_gate: self.opts.tool_dispatch_gate.clone(),
-                    ..RunConfig::default()
-                },
-            }));
-        }
-        if let Some(quota) = self.opts.resource_quota.clone() {
-            kernel.step(KernelInput::new(KernelInputEvent::SetResourceQuota {
-                quota,
-            }));
-        }
-        if let Some(policy) = self.opts.memory_policy.clone() {
-            kernel.step(KernelInput::new(memory_policy_event(policy)));
-        }
-        let kernel = Arc::new(std::sync::Mutex::new(kernel));
-        let step = kernel.lock().unwrap().step(KernelInput::new(event));
-        (kernel, step)
+        Ok(runtime)
     }
 
     async fn append_memory_syscall_observations(
@@ -592,13 +707,40 @@ impl RuntimeRunner {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         let prior = self.read_entries(&session_id).await?;
-        let mid_run = is_mid_run(&prior);
-
+        let mut mid_run = is_mid_run(&prior);
         if !mid_run {
+            if let Some(operation_id) = prior.iter().rev().find_map(|entry| match &entry.event {
+                SessionEvent::RunStarted { run_id, .. } => Some(run_id.clone()),
+                _ => None,
+            }) {
+                if self.kernel_journal.head(&operation_id).await?.is_some() {
+                    let mut authoritative =
+                        self.create_canonical_runtime(operation_id, &session_id)?;
+                    authoritative.restore().await?;
+                    mid_run = !authoritative.is_terminal();
+                }
+            }
+        }
+
+        let operation_id = if mid_run {
+            prior
+                .iter()
+                .rev()
+                .find_map(|entry| match &entry.event {
+                    SessionEvent::RunStarted { run_id, .. } => Some(run_id.clone()),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    Error::Other(format!(
+                        "mid-run session has no run_started identity: {session_id}"
+                    ))
+                })?
+        } else {
+            let run_id = uuid::Uuid::new_v4().to_string();
             self.log(
                 &session_id,
                 SessionEvent::RunStarted {
-                    run_id: uuid::Uuid::new_v4().to_string(),
+                    run_id: run_id.clone(),
                     goal: goal.to_string(),
                     criteria: criteria.to_vec(),
                     agent_id: self.opts.agent_id.clone(),
@@ -607,7 +749,8 @@ impl RuntimeRunner {
                 },
             )
             .await;
-        }
+            run_id
+        };
 
         let goal_owned = goal.to_string();
         let criteria_owned = criteria.to_vec();
@@ -617,6 +760,7 @@ impl RuntimeRunner {
 
         Ok(Box::pin(self.execute_inner(
             session_id,
+            operation_id,
             goal_owned,
             criteria_owned,
             extensions_owned,
@@ -632,30 +776,48 @@ impl RuntimeRunner {
         extensions: Option<&serde_json::Value>,
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<RunEvent>> + '_>>> {
         let prior = self.read_entries(session_id).await?;
-        if prior
+        let (start_index, start) = prior
             .iter()
-            .any(|e| matches!(e.event, SessionEvent::RunTerminal { .. }))
-        {
-            return Ok(Box::pin(futures::stream::empty()));
-        }
-        let start = prior
-            .iter()
+            .enumerate()
             .rev()
-            .find(|e| matches!(e.event, SessionEvent::RunStarted { .. }))
+            .find(|(_, entry)| matches!(entry.event, SessionEvent::RunStarted { .. }))
             .ok_or_else(|| Error::Other(format!("no run_started for session: {session_id}")))?;
-
-        let (goal, criteria, attachments) = match &start.event {
+        let (operation_id, goal, criteria, attachments) = match &start.event {
             SessionEvent::RunStarted {
+                run_id,
                 goal,
                 criteria,
                 attachments,
                 ..
-            } => (goal.clone(), criteria.clone(), attachments.clone()),
+            } => (
+                run_id.clone(),
+                goal.clone(),
+                criteria.clone(),
+                attachments.clone(),
+            ),
             _ => unreachable!(),
         };
 
+        if prior[start_index + 1..]
+            .iter()
+            .any(|entry| matches!(entry.event, SessionEvent::RunTerminal { .. }))
+        {
+            if self.kernel_journal.head(&operation_id).await?.is_none() {
+                return Err(Error::Other(
+                    "run_terminal projection has no canonical journal".into(),
+                ));
+            }
+            let mut authoritative =
+                self.create_canonical_runtime(operation_id.clone(), session_id)?;
+            authoritative.restore().await?;
+            if authoritative.is_terminal() {
+                return Ok(Box::pin(futures::stream::empty()));
+            }
+        }
+
         Ok(Box::pin(self.execute_inner(
             session_id.to_string(),
+            operation_id,
             goal,
             criteria,
             extensions.cloned(),
@@ -672,6 +834,7 @@ impl RuntimeRunner {
     fn execute_inner(
         &self,
         session_id: String,
+        operation_id: String,
         goal: String,
         criteria: Vec<String>,
         extensions: Option<serde_json::Value>,
@@ -687,17 +850,11 @@ impl RuntimeRunner {
                 ks.init().await?;
             }
 
-            let provider_policy = self.opts.provider.runtime_policy();
-            let effective_max_turns = self.opts.max_turns.or(provider_policy.max_turns).unwrap_or(25);
-            let effective_timeout = self.opts.timeout_ms.or(provider_policy.timeout_ms);
-            let policy = KernelBudget {
-                max_tokens: self.opts.max_tokens,
-                max_turns: effective_max_turns,
-                max_wall_ms: effective_timeout,
-                ..Default::default()
-            };
-
-            let mut kernel = std::sync::Arc::new(std::sync::Mutex::new(KernelRuntime::new(policy)));
+            let mut runtime = self.create_canonical_runtime(operation_id, &session_id)?;
+            if resume_mid_run {
+                runtime.restore().await?;
+            }
+            let kernel = std::sync::Arc::new(tokio::sync::Mutex::new(runtime));
             {
                 let mut active = self.active_kernel.lock().unwrap();
                 *active = Some(kernel.clone());
@@ -715,179 +872,191 @@ impl RuntimeRunner {
             }
             let _guard = ActiveKernelGuard { runner: self };
 
-            let kernel_apply = |kernel_arc: &mut std::sync::Arc<std::sync::Mutex<KernelRuntime>>, pending: &mut Vec<KernelObservation>, event| {
-                kernel_apply(&mut *kernel_arc.lock().unwrap(), pending, event)
-            };
-            let kernel_action = |kernel_arc: &mut std::sync::Arc<std::sync::Mutex<KernelRuntime>>, pending: &mut Vec<KernelObservation>, event| {
-                kernel_action(&mut *kernel_arc.lock().unwrap(), pending, event)
-            };
-
             let mut pending_observations = Vec::new();
             let mut pending_page_out_starts = std::collections::VecDeque::new();
             let mut active_page_out_start = None;
-
-            if self.opts.kernel_reliability.is_some() || self.opts.scheduler_policy.is_some() {
-                let mut step = kernel.lock().unwrap().step(KernelInput::new(
-                    KernelInputEvent::ConfigureRun {
-                        config: RunConfig {
-                            reliability: self.opts.kernel_reliability.clone(),
-                            scheduler_policy: self.opts.scheduler_policy,
-                            ..RunConfig::default()
-                        },
-                    },
-                ));
-                if let Some(fault) = step.faults.pop() {
-                    Err(Error::Other(format!(
-                        "kernel {:?}: {}",
-                        fault.code, fault.message
-                    )))?;
-                }
-                pending_observations.append(&mut step.observations);
-            }
-
-            if let Some(tokenizer_name) = &self.opts.tokenizer {
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::SetTokenizer {
-                        name: tokenizer_name.clone(),
-                    },
-                )?;
-            }
-            if let Some(enabled) = self.opts.enable_plan_tool {
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::SetPlanToolEnabled { enabled },
-                )?;
-            }
-
-            kernel_apply(
-                &mut kernel,
-                &mut pending_observations,
-                KernelInputEvent::SetTools {
-                    tools: self.plane.schemas(),
-                },
-            )?;
-
-            if self.opts.dream_store.is_some() && self.opts.agent_id.is_some() {
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::SetMemoryEnabled { enabled: true },
-                )?;
-            }
-            if self.opts.knowledge_source.is_some() {
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::SetKnowledgeEnabled { enabled: true },
-                )?;
-            }
-
-            if let Some(sp) = &self.opts.system_prompt {
-                let tokens = ((sp.len() / 4) as u32).max(1);
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::AddSystemMessage {
-                        content: sp.clone(),
-                        tokens,
-                    },
-                )?;
-            }
-            for mem in &self.opts.initial_memory {
-                let tokens = ((mem.len() / 4) as u32).max(1);
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::AddKnowledgeMessage {
-                        content: mem.clone(),
-                        tokens,
-                        key: None,
-                        pinned: false,
-                    },
-                )?;
-            }
-
             let skill_watcher = self.opts.skill_dir.as_deref().and_then(SkillWatcher::start);
-            if let Some(skill_dir) = &self.opts.skill_dir {
+
+            if !resume_mid_run {
+                if self.opts.kernel_reliability.is_some()
+                    || self.opts.scheduler_policy.is_some()
+                    || self.opts.tool_dispatch_gate.is_some()
+                {
+                    let mut config = serde_json::Map::new();
+                    if let Some(reliability) = self.opts.kernel_reliability.as_ref() {
+                        config.insert(
+                            "reliability".into(),
+                            serde_json::json!({
+                                "provider_recovery_attempts": reliability.provider_recovery_attempts,
+                                "output_recovery_attempts": reliability.output_recovery_attempts,
+                                "max_input_bytes": reliability.max_input_bytes,
+                            }),
+                        );
+                    }
+                    if let Some(policy) = self.opts.scheduler_policy {
+                        let policy = serde_json::to_value(policy).map_err(|error| {
+                            Error::Other(format!("scheduler policy is not serializable: {error}"))
+                        })?;
+                        config.insert("scheduler_policy".into(), policy);
+                    }
+                    if let Some(gate) = self.opts.tool_dispatch_gate.as_ref() {
+                        config.insert("tool_dispatch_gate".into(), gate.clone().into());
+                    }
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({
+                            "kind": "configure_run",
+                            "config": config,
+                        }),
+                    )
+                    .await?;
+                }
+
+                if let Some(tokenizer_name) = &self.opts.tokenizer {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({ "kind": "set_tokenizer", "name": tokenizer_name }),
+                    ).await?;
+                }
+                if let Some(enabled) = self.opts.enable_plan_tool {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({ "kind": "set_plan_tool_enabled", "enabled": enabled }),
+                    ).await?;
+                }
+
                 kernel_apply(
-                    &mut kernel,
+                    &kernel,
                     &mut pending_observations,
-                    KernelInputEvent::SetAvailableSkills {
-                        skills: scan_skill_dir(skill_dir),
-                    },
-                )?;
-            }
+                    serde_json::json!({ "kind": "set_tools", "tools": self.plane.schemas() }),
+                ).await?;
 
-            // P1-B/D: configure stable-core tool ids (always exposed under skill gating).
-            if !self.opts.stable_core_tool_ids.is_empty() {
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::SetStableCoreTools {
-                        tool_ids: self.opts.stable_core_tool_ids.clone(),
-                    },
-                )?;
-            }
+                if self.opts.dream_store.is_some() && self.opts.agent_id.is_some() {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({ "kind": "set_memory_enabled", "enabled": true }),
+                    ).await?;
+                }
+                if self.opts.knowledge_source.is_some() {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({ "kind": "set_knowledge_enabled", "enabled": true }),
+                    ).await?;
+                }
 
-            if let Some(milestones) = self.opts.milestone_contract.clone() {
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::LoadMilestoneContract { contract: milestones },
-                )?;
-            }
+                if let Some(sp) = &self.opts.system_prompt {
+                    let tokens = ((sp.len() / 4) as u32).max(1);
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({
+                            "kind": "add_system_message",
+                            "content": sp,
+                            "tokens": tokens,
+                        }),
+                    ).await?;
+                }
+                for mem in &self.opts.initial_memory {
+                    let tokens = ((mem.len() / 4) as u32).max(1);
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({
+                            "kind": "add_knowledge_message",
+                            "content": mem,
+                            "tokens": tokens,
+                            "pinned": false,
+                        }),
+                    ).await?;
+                }
 
-            let max_bytes = {
-                let k = kernel.lock().unwrap();
-                k.recovery_content_bytes()
-            };
+                if let Some(skill_dir) = &self.opts.skill_dir {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({
+                            "kind": "set_available_skills",
+                            "skills": scan_skill_dir(skill_dir),
+                        }),
+                    ).await?;
+                }
 
-            if let Some(ref events) = prior_events {
-                let repaired = repair_entries_with_cap(events, max_bytes);
-                seed_provider_replay_from_events(self.opts.provider.as_ref(), &repaired);
+                // P1-B/D: configure stable-core tool ids (always exposed under skill gating).
+                if !self.opts.stable_core_tool_ids.is_empty() {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({
+                            "kind": "set_stable_core_tools",
+                            "tool_ids": self.opts.stable_core_tool_ids,
+                        }),
+                    ).await?;
+                }
 
-                let messages = if let Some(ref store) = self.opts.compression_store {
-                    let store_clone = store.clone();
-                    replay_messages_with_cap_and_loader(&repaired, max_bytes, move |archive_ref| {
-                        store_clone.read(archive_ref).map_err(|_| {
-                            deepstrike_core::context::fault::ContextFault::MissingArchive {
-                                session_id: String::new(),
-                                seq: 0,
-                            }
-                        })
-                    })
-                } else {
-                    replay_messages_with_cap(&repaired, max_bytes)
+                if let Some(milestones) = self.opts.milestone_contract.clone() {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({
+                            "kind": "load_milestone_contract",
+                            "contract": milestones,
+                        }),
+                    ).await?;
+                }
+
+                let max_bytes = {
+                    let k = kernel.lock().await;
+                    k.recovery_content_bytes()
                 };
 
-                // P1-B B3: collect skill activations from the replayed history before `messages` is
-                // moved, then re-emit them after preload to rebuild gating (active_skills is not
-                // snapshotted — graceful).
-                let reactivate: Vec<String> = messages
-                    .iter()
-                    .flat_map(|m| m.tool_calls.iter())
-                    .filter(|c| c.name.as_str() == "skill")
-                    .filter_map(|c| c.arguments.get("name").and_then(|v| v.as_str()).map(str::to_string))
-                    .collect();
+                if let Some(ref events) = prior_events {
+                    seed_provider_replay_from_events(self.opts.provider.as_ref(), events);
 
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::PreloadHistory {
-                        messages,
-                    },
-                )?;
+                    let messages = if let Some(ref store) = self.opts.compression_store {
+                        let store_clone = store.clone();
+                        replay_messages_with_cap_and_loader(events, max_bytes, move |archive_ref| {
+                            store_clone.read(archive_ref).map_err(|_| {
+                                deepstrike_core::context::fault::ContextFault::MissingArchive {
+                                    session_id: String::new(),
+                                    seq: 0,
+                                }
+                            })
+                        })
+                    } else {
+                        replay_messages_with_cap(events, max_bytes)
+                    };
 
-                for name in reactivate {
+                    // P1-B B3: collect skill activations from the replayed history before `messages` is
+                    // moved, then re-emit them after preload to rebuild gating (active_skills is not
+                    // snapshotted — graceful).
+                    let reactivate: Vec<String> = messages
+                        .iter()
+                        .flat_map(|m| m.tool_calls.iter())
+                        .filter(|c| c.name.as_str() == "skill")
+                        .filter_map(|c| c.arguments.get("name").and_then(|v| v.as_str()).map(str::to_string))
+                        .collect();
+
                     kernel_apply(
-                        &mut kernel,
+                        &kernel,
                         &mut pending_observations,
-                        KernelInputEvent::SkillActivated { name, lease_turns: None },
-                    )?;
+                        serde_json::json!({ "kind": "preload_history", "messages": messages }),
+                    ).await?;
+
+                    for name in reactivate {
+                        kernel_apply(
+                            &kernel,
+                            &mut pending_observations,
+                            serde_json::json!({ "kind": "skill_activated", "name": name }),
+                        ).await?;
+                    }
                 }
+            } else if let Some(ref events) = prior_events {
+                seed_provider_replay_from_events(self.opts.provider.as_ref(), events);
             }
 
             let ext = merge_extensions(self.opts.extensions.as_ref(), extensions.as_ref());
@@ -900,108 +1069,114 @@ impl RuntimeRunner {
                 .unwrap_or_default()
                 .as_millis() as u64;
 
-            let os_profile = assert_native_profile(self.opts.os_profile.clone())?;
-            let governance_policy = self
-                .opts
-                .governance_policy
-                .clone()
-                .unwrap_or(os_profile.governance_policy);
-            kernel_apply(
-                &mut kernel,
-                &mut pending_observations,
-                governance_policy.into_kernel_event(),
-            )?;
-
-            let signal_policy = self
-                .opts
-                .signal_policy
-                .unwrap_or(os_profile.signal_policy);
-            kernel_apply(
-                &mut kernel,
-                &mut pending_observations,
-                KernelInputEvent::SetSignalPolicy {
-                    policy: signal_policy.into_kernel(),
-                },
-            )?;
-
-            if let Some(quota) = self.opts.resource_quota.clone() {
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::SetResourceQuota { quota },
-                )?;
-            }
-
-            if let Some(policy) = self.opts.memory_policy.clone() {
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    memory_policy_event(policy),
-                )?;
-            }
-
-            // Multimodal upload: seed attachments before start_run (parity with Node/Python).
-            if !resume_mid_run && !attachments.is_empty() {
-                kernel_apply(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::AddHistoryMessage {
-                        message: Message::user_multimodal(attachments.clone()),
-                        tokens: None,
-                    },
-                )?;
-            }
-
-            // I4: pre-fetch memory into the knowledge partition before the first LLM turn.
-            // Mirrors Node/WASM/Python preQueryMemory. Errs-open: missing dream_store/agent_id
-            // or a faulty closure silently skip the pre-fetch.
             if !resume_mid_run {
-                if let (Some(pre), Some(store), Some(agent_id)) = (
-                    self.opts.pre_query_memory.clone(),
-                    self.opts.dream_store.as_ref(),
-                    self.opts.agent_id.as_deref(),
-                ) {
-                    let queries = pre(goal.as_str());
-                    let mut recalled = Vec::new();
-                    for q in &queries {
-                        if q.query.trim().is_empty() {
-                            continue;
-                        }
-                        if let Ok(hits) = store.search(agent_id, q).await {
-                            for hit in hits {
-                                recalled.push(format!(
-                                    "[memory record_id={} trust={} score={:.3}] {}",
-                                    hit.record.record_id,
-                                    match hit.record.provenance.trust {
-                                        MemoryTrustLevel::Untrusted => "untrusted",
-                                        MemoryTrustLevel::UserAsserted => "user_asserted",
-                                        MemoryTrustLevel::HostVerified => "host_verified",
-                                    },
-                                    hit.score,
-                                    hit.record.content
-                                ));
+                let os_profile = assert_native_profile(self.opts.os_profile.clone())?;
+                let governance_policy = self
+                    .opts
+                    .governance_policy
+                    .clone()
+                    .unwrap_or(os_profile.governance_policy);
+                kernel_apply(
+                    &kernel,
+                    &mut pending_observations,
+                    governance_policy.into_host_fact(),
+                ).await?;
+
+                let signal_policy = self
+                    .opts
+                    .signal_policy
+                    .unwrap_or(os_profile.signal_policy);
+                kernel_apply(
+                    &kernel,
+                    &mut pending_observations,
+                    serde_json::json!({
+                        "kind": "set_signal_policy",
+                        "policy": signal_policy.into_kernel(),
+                    }),
+                ).await?;
+
+                if let Some(quota) = self.opts.resource_quota.clone() {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({ "kind": "set_resource_quota", "quota": quota }),
+                    ).await?;
+                }
+
+                if let Some(policy) = self.opts.memory_policy.clone() {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        memory_policy_host_fact(policy),
+                    ).await?;
+                }
+
+                // Multimodal upload: seed attachments before the canonical root start (Node/Python parity).
+                if !resume_mid_run && !attachments.is_empty() {
+                    kernel_apply(
+                        &kernel,
+                        &mut pending_observations,
+                        serde_json::json!({
+                            "kind": "add_history_message",
+                            "message": Message::user_multimodal(attachments.clone()),
+                        }),
+                    ).await?;
+                }
+
+                // I4: pre-fetch memory into the knowledge partition before the first LLM turn.
+                // Mirrors Node/WASM/Python preQueryMemory. Errs-open: missing dream_store/agent_id
+                // or a faulty closure silently skip the pre-fetch.
+                if !resume_mid_run {
+                    if let (Some(pre), Some(store), Some(agent_id)) = (
+                        self.opts.pre_query_memory.clone(),
+                        self.opts.dream_store.as_ref(),
+                        self.opts.agent_id.as_deref(),
+                    ) {
+                        let queries = pre(goal.as_str());
+                        let mut recalled = Vec::new();
+                        for q in &queries {
+                            if q.query.trim().is_empty() {
+                                continue;
+                            }
+                            if let Ok(hits) = store.search(agent_id, q).await {
+                                for hit in hits {
+                                    recalled.push(format!(
+                                        "[memory record_id={} trust={} score={:.3}] {}",
+                                        hit.record.record_id,
+                                        match hit.record.provenance.trust {
+                                            MemoryTrustLevel::Untrusted => "untrusted",
+                                            MemoryTrustLevel::UserAsserted => "user_asserted",
+                                            MemoryTrustLevel::HostVerified => "host_verified",
+                                        },
+                                        hit.score,
+                                        hit.record.content
+                                    ));
+                                }
                             }
                         }
-                    }
-                    if !recalled.is_empty() {
-                        kernel_apply(
-                            &mut kernel,
-                            &mut pending_observations,
-                            KernelInputEvent::AddHistoryMessage {
-                                message: Message::user(recalled.join("\n")),
-                                tokens: None,
-                            },
-                        )?;
+                        if !recalled.is_empty() {
+                            kernel_apply(
+                                &kernel,
+                                &mut pending_observations,
+                                serde_json::json!({
+                                    "kind": "add_history_message",
+                                    "message": Message::user(recalled.join("\n")),
+                                }),
+                            ).await?;
+                        }
                     }
                 }
             }
 
             let mut action = if resume_mid_run {
-                kernel_action(
-                    &mut kernel,
-                    &mut pending_observations,
-                    KernelInputEvent::Resume,
-                )?
+                let mut runtime = kernel.lock().await;
+                let action = runtime.resume_action()?.ok_or_else(|| {
+                    Error::Other(
+                        "restored canonical operation has no pending effect or terminal".into(),
+                    )
+                })?;
+                pending_observations.extend(runtime.drain_host_observations());
+                action
             } else {
                 // P0-A: fold an explicit `run_spec`, the `allowed_tool_ids` ceiling, and/or the
                 // `baseline_tool_ids` pre-activation surface into the kernel run spec (reuses the
@@ -1010,23 +1185,25 @@ impl RuntimeRunner {
                     self.opts.run_spec.clone(),
                     self.opts.allowed_tool_ids.as_deref(),
                     self.opts.baseline_tool_ids.as_deref(),
+                    self.opts
+                        .milestone_contract
+                        .as_ref()
+                        .map(|_| "rust-default"),
                     self.opts.agent_id.as_deref(),
                     &session_id,
                     &goal,
                 );
-                kernel_action(
-                    &mut kernel,
+                kernel_start_agent(
+                    &kernel,
                     &mut pending_observations,
-                    KernelInputEvent::StartRun {
-                        task: RuntimeTask::new(&goal).with_criteria(criteria),
-                        run_spec,
-                    },
-                )?
+                    RuntimeTask::new(&goal).with_criteria(criteria),
+                    run_spec,
+                ).await?
             };
 
             let mut last_skill_version: u64 = skill_watcher.as_ref().map(|w| w.version()).unwrap_or(0);
 
-            while !kernel.lock().unwrap().is_terminal() {
+            while !kernel.lock().await.is_terminal() {
                 // Hot-reload: refresh skill catalog if the watcher detected changes.
                 if let (Some(watcher), Some(skill_dir)) =
                     (&skill_watcher, &self.opts.skill_dir)
@@ -1035,12 +1212,13 @@ impl RuntimeRunner {
                     if cur != last_skill_version {
                         last_skill_version = cur;
                         kernel_apply(
-                            &mut kernel,
+                            &kernel,
                             &mut pending_observations,
-                            KernelInputEvent::SetAvailableSkills {
-                                skills: scan_skill_dir(skill_dir),
-                            },
-                        )?;
+                            serde_json::json!({
+                                "kind": "set_available_skills",
+                                "skills": scan_skill_dir(skill_dir),
+                            }),
+                        ).await?;
                     }
                 }
 
@@ -1055,15 +1233,17 @@ impl RuntimeRunner {
                     .await;
 
                 if self.interrupted.load(Ordering::Relaxed) {
+                    let operation_id = kernel.lock().await.operation_id().to_string();
                     kernel_apply(
-                        &mut kernel,
+                        &kernel,
                         &mut pending_observations,
-                        KernelInputEvent::CancelOperation {
-                            operation_id: KernelInput::LOCAL_OPERATION_ID.into(),
-                            reason: cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
-                            pending_call_ids: pending_call_ids(&action),
-                        },
-                    )?;
+                        serde_json::json!({
+                            "kind": "cancel_operation",
+                            "operation_id": operation_id,
+                            "reason": cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
+                            "pending_call_ids": pending_call_ids(&action),
+                        }),
+                    ).await?;
                     break;
                 }
 
@@ -1125,26 +1305,45 @@ impl RuntimeRunner {
                         // the disposition (dedup / queue / interrupt / preempt) and emits
                         // `signal_delivery_disposed`; an actionable disposition yields the next action to
                         // adopt (e.g. a forced Reason turn on Critical), queued/observed yields none.
-                        let mut kguard = kernel.lock().unwrap();
-                        let mut step = kguard.step(KernelInput::new(KernelInputEvent::DeliverSignal {
-                            delivery_id: claim.delivery_id.clone(),
-                            attempt: claim.delivery_attempt,
-                            signal: kernel_sig,
-                        }));
-                        drop(kguard);
-                        let disposition_matches = step.observations.iter().filter(|observation| matches!(
-                            observation,
-                            KernelObservation::SignalDeliveryDisposed {
-                                delivery_id,
-                                attempt,
-                                ..
-                            } if delivery_id == &claim.delivery_id && *attempt == claim.delivery_attempt
-                        )).count() == 1;
+                        let observation_start = pending_observations.len();
+                        let signal_action = kernel_transition(
+                            &kernel,
+                            &mut pending_observations,
+                            serde_json::json!({
+                                "kind": "deliver_signal",
+                                "delivery_id": claim.delivery_id,
+                                "attempt": claim.delivery_attempt,
+                                "signal": kernel_sig,
+                            }),
+                        )
+                        .await;
                         let receipt = SignalDeliveryReceipt {
-                            delivery_id: claim.delivery_id,
-                            lease_token: claim.lease_token,
+                            delivery_id: claim.delivery_id.clone(),
+                            lease_token: claim.lease_token.clone(),
                         };
-                        if !step.faults.is_empty() || !disposition_matches {
+                        let signal_action = match signal_action {
+                            Ok(action) => action,
+                            Err(error) => {
+                                let _ = ss.nack_signal(&receipt).await?;
+                                Err(error)?
+                            }
+                        };
+                        let disposition_matches = pending_observations[observation_start..]
+                            .iter()
+                            .filter(|observation| match observation {
+                                KernelObservation::SignalDeliveryDisposed {
+                                    delivery_id,
+                                    attempt,
+                                    ..
+                                } => {
+                                    delivery_id == &claim.delivery_id
+                                        && attempt == &claim.delivery_attempt
+                                }
+                                _ => false,
+                            })
+                            .count()
+                            == 1;
+                        if !disposition_matches {
                             let _ = ss.nack_signal(&receipt).await?;
                             Err(crate::Error::Other(
                                 "kernel did not return the matching signal delivery disposition".into(),
@@ -1156,19 +1355,18 @@ impl RuntimeRunner {
                                 "signal lease was lost before acknowledgement".into(),
                             ))?;
                         }
-                        pending_observations.append(&mut step.observations);
-                        if let Some(sig_action) = step.actions.pop() {
+                        if let Some(sig_action) = signal_action {
                             action = sig_action;
                         }
                         // Critical attention/preemption is distinct from operation cancellation.
                     }
                 }
-                if kernel.lock().unwrap().is_terminal() {
+                if kernel.lock().await.is_terminal() {
                     break;
                 }
 
                 match &action.effect {
-                    KernelEffect::CallProvider { context, tools } => {
+                    HostEffect::CallProvider { context, tools } => {
                         let provider_effect_id = action.effect_id.clone();
                         let mut final_text = String::new();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
@@ -1221,20 +1419,21 @@ impl RuntimeRunner {
                                 // duplicated across the four SDK runners.
                                 let msg = e.to_string();
                                 action = kernel_action(
-                                    &mut kernel,
+                                    &kernel,
                                     &mut pending_observations,
-                                    KernelInputEvent::ProviderError {
-                                        effect_id: provider_effect_id.clone(),
-                                        message: msg.clone(),
-                                    },
-                                )?;
+                                    serde_json::json!({
+                                        "kind": "provider_error",
+                                        "effect_id": provider_effect_id,
+                                        "message": msg,
+                                    }),
+                                ).await?;
                                 // Withholding (query.ts parity): surface the raw provider error only
                                 // when the kernel could NOT recover (it returned a terminal). On a
                                 // recovered retry (CallProvider) the error stays hidden. `continue`
                                 // re-enters the loop: a recovered turn persists its compaction
                                 // archive at the loop's normal append point, and a terminal Done
                                 // exits through `is_terminal()` into the run_terminal emit.
-                                if matches!(&action.effect, KernelEffect::Done { .. }) {
+                                if matches!(&action.effect, HostEffect::Done { .. }) {
                                     yield RunEvent::Error(msg);
                                 }
                                 continue;
@@ -1297,15 +1496,17 @@ impl RuntimeRunner {
                         }
 
                         if self.interrupted.load(Ordering::Relaxed) {
+                            let operation_id = kernel.lock().await.operation_id().to_string();
                             action = kernel_action(
-                                &mut kernel,
+                                &kernel,
                                 &mut pending_observations,
-                                KernelInputEvent::CancelOperation {
-                                    operation_id: KernelInput::LOCAL_OPERATION_ID.into(),
-                                    reason: cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
-                                    pending_call_ids: vec![provider_effect_id],
-                                },
-                            )?;
+                                serde_json::json!({
+                                    "kind": "cancel_operation",
+                                    "operation_id": operation_id,
+                                    "reason": cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
+                                    "pending_call_ids": [provider_effect_id],
+                                }),
+                            ).await?;
                             break;
                         }
 
@@ -1316,14 +1517,15 @@ impl RuntimeRunner {
                             // Surface the error to the caller only when the kernel gave up, so a
                             // recovered turn does not emit a phantom failure.
                             action = kernel_action(
-                                &mut kernel,
+                                &kernel,
                                 &mut pending_observations,
-                                KernelInputEvent::ProviderError {
-                                    effect_id: provider_effect_id.clone(),
-                                    message: msg.clone(),
-                                },
-                            )?;
-                            if matches!(&action.effect, KernelEffect::Done { .. }) {
+                                serde_json::json!({
+                                    "kind": "provider_error",
+                                    "effect_id": provider_effect_id,
+                                    "message": msg,
+                                }),
+                            ).await?;
+                            if matches!(&action.effect, HostEffect::Done { .. }) {
                                 yield RunEvent::Error(msg);
                             }
                             continue;
@@ -1345,24 +1547,20 @@ impl RuntimeRunner {
                         repair_llm_completed(&mut assistant, &mut provider_replay);
 
                         action = kernel_action(
-                            &mut kernel,
+                            &kernel,
                             &mut pending_observations,
-                            KernelInputEvent::ProviderResult {
-                                effect_id: provider_effect_id,
-                                message: assistant.clone(),
-                                observed_input_tokens: None,
-                                observed_output_tokens: None,
-                                // COMPAT(gov-clock): rust SDK does not yet drive the in-kernel
-                                // governance gate, so no clock is fed. Set once it adopts governancePolicy.
-                                now_ms: None,
+                            serde_json::json!({
+                                "kind": "provider_result",
+                                "effect_id": provider_effect_id,
+                                "message": assistant,
                                 // Phase 4: stop_reason drives the kernel's max-output-tokens recovery.
-                                stop_reason: turn_stop_reason.clone(),
-                            },
-                        )?;
+                                "stop_reason": turn_stop_reason,
+                            }),
+                        ).await?;
                         self.log(
                             &session_id,
                             SessionEvent::LlmCompleted {
-                                turn: kernel.lock().unwrap().turn(),
+                                turn: kernel.lock().await.turn(),
                                 message: assistant,
                                 provider_replay,
                             },
@@ -1374,7 +1572,7 @@ impl RuntimeRunner {
                         // — emit first, then advance.
                         if let Some(ref sink) = self.opts.on_turn_metrics {
                             sink(TurnMetrics {
-                                turn: kernel.lock().unwrap().turn(),
+                                turn: kernel.lock().await.turn(),
                                 tools_exposed,
                                 tools_called: final_tool_calls.len(),
                                 active_skill: active_skill.clone(),
@@ -1392,7 +1590,7 @@ impl RuntimeRunner {
                             }
                         }
                     }
-                    KernelEffect::RequestApproval { requests } => {
+                    HostEffect::RequestApproval { requests } => {
                         let approval_effect_id = action.effect_id.clone();
                         let mut approved_calls = Vec::new();
                         let mut denied_calls = Vec::new();
@@ -1401,7 +1599,7 @@ impl RuntimeRunner {
                             self.log(
                                 &session_id,
                                 SessionEvent::PermissionRequested {
-                                    turn: kernel.lock().unwrap().turn(),
+                                    turn: kernel.lock().await.turn(),
                                     tool: request.tool.clone(),
                                     arguments: arguments.clone(),
                                     reason: Some(request.reason.clone()),
@@ -1450,7 +1648,7 @@ impl RuntimeRunner {
                             self.log(
                                 &session_id,
                                 SessionEvent::PermissionResolved {
-                                    turn: kernel.lock().unwrap().turn(),
+                                    turn: kernel.lock().await.turn(),
                                     approved: response.approved,
                                     responder: responder.clone(),
                                 },
@@ -1465,22 +1663,22 @@ impl RuntimeRunner {
                             };
                         }
                         action = kernel_action(
-                            &mut kernel,
+                            &kernel,
                             &mut pending_observations,
-                            KernelInputEvent::ApprovalResult {
-                                effect_id: approval_effect_id,
-                                approved_calls,
-                                denied_calls,
-                                error: None,
-                            },
-                        )?;
+                            serde_json::json!({
+                                "kind": "approval_result",
+                                "effect_id": approval_effect_id,
+                                "approved_calls": approved_calls,
+                                "denied_calls": denied_calls,
+                            }),
+                        ).await?;
                     }
-                    KernelEffect::SpawnWorkflow { nodes, .. } => {
+                    HostEffect::SpawnWorkflow { nodes, .. } => {
                         // This runner has no workflow child orchestrator. Report each
                         // requested spawn as a completed failure instead of treating the
                         // action as an observation or leaving the effect unresolved.
                         let workflow_effect_id = action.effect_id.clone();
-                        let failures = nodes
+                        let failures: Vec<deepstrike_core::runtime::kernel::WorkflowSpawnFailure> = nodes
                             .into_iter()
                             .map(|node| deepstrike_core::runtime::kernel::WorkflowSpawnFailure {
                                 agent_id: node.agent_id.clone(),
@@ -1488,72 +1686,103 @@ impl RuntimeRunner {
                             })
                             .collect();
                         action = kernel_action(
-                            &mut kernel,
+                            &kernel,
                             &mut pending_observations,
-                            KernelInputEvent::WorkflowSpawnResult {
-                                effect_id: workflow_effect_id,
-                                started_agent_ids: Vec::new(),
-                                failures,
-                                error: None,
-                            },
-                        )?;
+                            serde_json::json!({
+                                "kind": "workflow_spawn_result",
+                                "effect_id": workflow_effect_id,
+                                "started_agent_ids": [],
+                                "failures": failures,
+                            }),
+                        ).await?;
                     }
-                    KernelEffect::PreemptSubAgents { .. } => {
+                    HostEffect::PreemptSubAgents { .. } => {
                         // RuntimeRunner does not launch external child runners, so
                         // there is no host process to cancel before acknowledging.
                         let preempt_effect_id = action.effect_id.clone();
                         action = kernel_action(
-                            &mut kernel,
+                            &kernel,
                             &mut pending_observations,
-                            KernelInputEvent::PreemptResult {
-                                effect_id: preempt_effect_id,
-                                error: None,
-                            },
-                        )?;
+                            serde_json::json!({
+                                "kind": "preempt_result",
+                                "effect_id": preempt_effect_id,
+                            }),
+                        ).await?;
                     }
-                    KernelEffect::PersistMemory { .. } => {
+                    HostEffect::PersistMemory { memory } => {
                         let effect_id = action.effect_id.clone();
-                        action = kernel_action(
-                            &mut kernel,
-                            &mut pending_observations,
-                            KernelInputEvent::MemoryPersistResult {
-                                effect_id,
-                                error: Some(
-                                    "memory effects must be executed by RuntimeRunner::write_memory"
-                                        .to_string(),
-                                ),
-                            },
-                        )?;
-                    }
-                    KernelEffect::QueryMemory { .. } => {
-                        let effect_id = action.effect_id.clone();
-                        action = kernel_action(
-                            &mut kernel,
-                            &mut pending_observations,
-                            KernelInputEvent::MemoryQueryResult {
-                                effect_id,
-                                hits: Vec::new(),
-                                error: Some(
-                                    "memory effects must be executed by RuntimeRunner::query_memory"
-                                        .to_string(),
-                                ),
-                            },
-                        )?;
-                    }
-                    KernelEffect::SpoolLargeResult { call_id, output, .. } => {
-                        let effect_id = action.effect_id.clone();
-                        let spool_dir = self.opts.spool_dir.as_deref().unwrap_or_else(|| std::path::Path::new(".spool"));
-                        let (spool_ref, error) = match crate::runtime::large_result_spool::persist_output(spool_dir, call_id, output) {
-                            Ok(path) => (Some(path), None),
-                            Err(error) => (None, Some(error.to_string())),
+                        let error = match (
+                            self.opts.dream_store.as_ref(),
+                            self.opts.agent_id.as_deref(),
+                        ) {
+                            (Some(store), Some(agent_id)) => {
+                                let mut memory = memory.clone();
+                                if let Some(scope) = self.opts.memory_scope.as_ref() {
+                                    memory.scope = scope.clone();
+                                }
+                                memory.provenance.session_id = Some(session_id.clone());
+                                store
+                                    .upsert(agent_id, memory)
+                                    .await
+                                    .err()
+                                    .map(|error| error.to_string())
+                            }
+                            _ => Some(
+                                "memory persistence is unavailable without dream_store and agent_id"
+                                    .to_string(),
+                            ),
                         };
                         action = kernel_action(
-                            &mut kernel,
+                            &kernel,
                             &mut pending_observations,
-                            KernelInputEvent::LargeResultSpoolResult { effect_id, spool_ref, error },
-                        )?;
+                            serde_json::json!({
+                                "kind": "memory_persist_result",
+                                "effect_id": effect_id,
+                                "error": error,
+                            }),
+                        ).await?;
                     }
-                    KernelEffect::ArchivePageOut { archived, tier, action: pressure_action, .. } => {
+                    HostEffect::QueryMemory { query, requested_k } => {
+                        let effect_id = action.effect_id.clone();
+                        let (hits, error) = match (
+                            self.opts.dream_store.as_ref(),
+                            self.opts.agent_id.as_deref(),
+                        ) {
+                            (Some(store), Some(agent_id)) => {
+                                let mut query = query.clone();
+                                query.top_k = *requested_k;
+                                if let Some(scope) = self.opts.memory_scope.as_ref() {
+                                    query.scope = scope.clone();
+                                }
+                                match store.search(agent_id, &query).await {
+                                    Ok(hits) => (hits, None),
+                                    Err(error) => (Vec::new(), Some(error.to_string())),
+                                }
+                            }
+                            _ => (
+                                Vec::new(),
+                                Some(
+                                    "memory query is unavailable without dream_store and agent_id"
+                                        .to_string(),
+                                ),
+                            ),
+                        };
+                        if error.is_none() {
+                            self.log_memory_retrieval_result(Some(&session_id), hits.clone())
+                                .await;
+                        }
+                        action = kernel_action(
+                            &kernel,
+                            &mut pending_observations,
+                            serde_json::json!({
+                                "kind": "memory_query_result",
+                                "effect_id": effect_id,
+                                "hits": hits,
+                                "error": error,
+                            }),
+                        ).await?;
+                    }
+                    HostEffect::ArchivePageOut { archived, tier, action: pressure_action, .. } => {
                         let effect_id = action.effect_id.clone();
                         let archived = archived.clone();
                         let tier = tier.clone();
@@ -1581,18 +1810,55 @@ impl RuntimeRunner {
                             active_page_out_start = None;
                         }
                         action = kernel_action(
-                            &mut kernel,
+                            &kernel,
                             &mut pending_observations,
-                            KernelInputEvent::PageOutArchiveResult { effect_id, archive_ref, error },
-                        )?;
+                            serde_json::json!({
+                                "kind": "page_out_archive_result",
+                                "effect_id": effect_id,
+                                "archive_ref": archive_ref,
+                                "error": error,
+                            }),
+                        ).await?;
                     }
-                    KernelEffect::ExecuteTool { calls } => {
+                    HostEffect::LoadPayload { handle_id, payload_ref } => {
+                        let effect_id = action.effect_id.clone();
+                        let content = self
+                            .opts
+                            .payload_store
+                            .as_ref()
+                            .expect("runtime constructor installs a payload store")
+                            .load(&session_id, payload_ref)?;
+                        let event = match content {
+                            Some(content) => serde_json::json!({
+                                "kind": "payload_loaded",
+                                "effect_id": effect_id,
+                                "handle_id": handle_id,
+                                "digest": deepstrike_core::runtime::kernel::wire::canonical_digest(
+                                    content.as_bytes(),
+                                )
+                                .as_str(),
+                                "original_size": content.len(),
+                                "content": content,
+                            }),
+                            None => serde_json::json!({
+                                "kind": "payload_load_failed",
+                                "effect_id": effect_id,
+                                "error": format!("payload is unavailable: {payload_ref}"),
+                            }),
+                        };
+                        action = kernel_action(
+                            &kernel,
+                            &mut pending_observations,
+                            event,
+                        ).await?;
+                    }
+                    HostEffect::ExecuteTool { calls } => {
                         let tool_effect_id = action.effect_id.clone();
                         let tool_calls = calls.clone();
                         self.log(
                             &session_id,
                             SessionEvent::ToolRequested {
-                                turn: kernel.lock().unwrap().turn(),
+                                turn: kernel.lock().await.turn(),
                                 calls: tool_calls.clone(),
                             },
                         )
@@ -1631,10 +1897,10 @@ impl RuntimeRunner {
                         for call in plan_calls {
                             let update = parse_update_plan_args(&call.arguments);
                             kernel_apply(
-                                &mut kernel,
+                                &kernel,
                                 &mut pending_observations,
-                                KernelInputEvent::UpdateTask { update },
-                            )?;
+                                serde_json::json!({ "kind": "update_task", "update": update }),
+                            ).await?;
                             tool_results.push(deepstrike_core::types::message::ToolResult {
                                 call_id: call.id.clone(),
                                 output: deepstrike_core::types::message::Content::Text("success".to_string()),
@@ -1677,7 +1943,7 @@ impl RuntimeRunner {
                                         self.log(
                                             &session_id,
                                             SessionEvent::ToolArgumentRepaired {
-                                                turn: kernel.lock().unwrap().turn(),
+                                                turn: kernel.lock().await.turn(),
                                                 tool: name.clone(),
                                                 original_arguments: original_arguments.clone(),
                                                 repaired_arguments: repaired_arguments.clone(),
@@ -1695,7 +1961,7 @@ impl RuntimeRunner {
                                         self.log(
                                             &session_id,
                                             SessionEvent::ToolDenied {
-                                                turn: kernel.lock().unwrap().turn(),
+                                                turn: kernel.lock().await.turn(),
                                                 call_id: call_id.clone(),
                                                 tool_name: tool_name.clone(),
                                                 reason: reason.clone(),
@@ -1705,7 +1971,7 @@ impl RuntimeRunner {
                                         yield RunEvent::ToolDenied { call_id, tool_name, reason };
                                     }
                                     RunEvent::PermissionRequest { call_id, tool_name, arguments, reason } => {
-                                        let turn = kernel.lock().unwrap().turn();
+                                        let turn = kernel.lock().await.turn();
                                         self.log(
                                             &session_id,
                                             SessionEvent::PermissionRequested {
@@ -1719,7 +1985,7 @@ impl RuntimeRunner {
                                         yield RunEvent::PermissionRequest { call_id, tool_name, arguments, reason };
                                     }
                                     RunEvent::PermissionResolved { call_id, tool_name, approved, responder, reason } => {
-                                        let turn = kernel.lock().unwrap().turn();
+                                        let turn = kernel.lock().await.turn();
                                         self.log(
                                             &session_id,
                                             SessionEvent::PermissionResolved {
@@ -1736,21 +2002,22 @@ impl RuntimeRunner {
                             }
                             let names: Vec<String> = normal_calls.iter().map(|c| c.name.to_string()).collect();
                             kernel_apply(
-                                &mut kernel,
+                                &kernel,
                                 &mut pending_observations,
-                                KernelInputEvent::UpdateTask {
-                                    update: TaskUpdate {
+                                serde_json::json!({
+                                    "kind": "update_task",
+                                    "update": TaskUpdate {
                                         progress: Some(format!("Executed tools: {}", names.join(", "))),
                                         ..Default::default()
                                     },
-                                },
-                            )?;
+                                }),
+                            ).await?;
                         }
 
                         self.log(
                             &session_id,
                             SessionEvent::ToolCompleted {
-                                turn: kernel.lock().unwrap().turn(),
+                                turn: kernel.lock().await.turn(),
                                 results: tool_results.clone(),
                             },
                         )
@@ -1770,23 +2037,27 @@ impl RuntimeRunner {
                             }
                             if let Some(name) = call.arguments.get("name").and_then(|v| v.as_str()) {
                                 kernel_apply(
-                                    &mut kernel,
+                                    &kernel,
                                     &mut pending_observations,
-                                    KernelInputEvent::SkillActivated { name: name.to_string(), lease_turns: None },
-                                )?;
+                                    serde_json::json!({
+                                        "kind": "skill_activated",
+                                        "name": name,
+                                    }),
+                                ).await?;
                             }
                         }
 
                         action = kernel_action(
-                            &mut kernel,
+                            &kernel,
                             &mut pending_observations,
-                            KernelInputEvent::ToolResults {
-                                effect_id: tool_effect_id,
-                                results: tool_results,
-                            },
-                        )?;
+                            serde_json::json!({
+                                "kind": "tool_results",
+                                "effect_id": tool_effect_id,
+                                "results": tool_results,
+                            }),
+                        ).await?;
                     }
-                    KernelEffect::EvaluateMilestone {
+                    HostEffect::EvaluateMilestone {
                         phase_id,
                         criteria,
                         required_evidence,
@@ -1797,13 +2068,14 @@ impl RuntimeRunner {
                         if policy == MilestonePolicy::AutoPass {
                             let result = MilestoneCheckResult::pass(phase_id.clone());
                             action = kernel_action(
-                                &mut kernel,
+                                &kernel,
                                 &mut pending_observations,
-                                KernelInputEvent::MilestoneResult {
-                                    effect_id: milestone_effect_id.clone(),
-                                    result,
-                                },
-                            )?;
+                                serde_json::json!({
+                                    "kind": "milestone_result",
+                                    "effect_id": milestone_effect_id,
+                                    "result": result,
+                                }),
+                            ).await?;
                             next_archive_start = self
                                 .append_observations(
                                     &session_id,
@@ -1822,13 +2094,14 @@ impl RuntimeRunner {
                             let check_future = handler(context);
                             let result = check_future.await?;
                             action = kernel_action(
-                                &mut kernel,
+                                &kernel,
                                 &mut pending_observations,
-                                KernelInputEvent::MilestoneResult {
-                                    effect_id: milestone_effect_id,
-                                    result,
-                                },
-                            )?;
+                                serde_json::json!({
+                                    "kind": "milestone_result",
+                                    "effect_id": milestone_effect_id,
+                                    "result": result,
+                                }),
+                            ).await?;
                             next_archive_start = self
                                 .append_observations(
                                     &session_id,
@@ -1856,13 +2129,14 @@ impl RuntimeRunner {
                                 "milestone unverified: no verifier configured and no host evaluation hook (fail-closed)",
                             );
                             let _unverified = kernel_action(
-                                &mut kernel,
+                                &kernel,
                                 &mut pending_observations,
-                                KernelInputEvent::MilestoneResult {
-                                    effect_id: milestone_effect_id,
-                                    result,
-                                },
-                            )?;
+                                serde_json::json!({
+                                    "kind": "milestone_result",
+                                    "effect_id": milestone_effect_id,
+                                    "result": result,
+                                }),
+                            ).await?;
                             next_archive_start = self
                                 .append_observations(
                                     &session_id,
@@ -1876,20 +2150,20 @@ impl RuntimeRunner {
                                 &session_id,
                                 SessionEvent::RunTerminal {
                                     reason: "milestone_pending".to_string(),
-                                    turns_used: kernel.lock().unwrap().turn().max(1),
+                                    turns_used: kernel.lock().await.turn().max(1),
                                     total_tokens: 0,
                                 },
                             )
                             .await;
                             yield RunEvent::Done {
-                                iterations: kernel.lock().unwrap().turn().max(1),
+                                iterations: kernel.lock().await.turn().max(1),
                                 total_tokens: 0,
                                 status: "milestone_pending".to_string(),
                             };
                             return;
                         }
                     }
-                    KernelEffect::Done { result } => {
+                    HostEffect::Done { result } => {
                         let status = format!("{:?}", result.termination).to_lowercase();
                         let turns_used = result.turns_used.max(1);
                         let total_tokens = result.total_tokens_used;
@@ -1917,7 +2191,7 @@ impl RuntimeRunner {
                         if let (Some(store), Some(agent_id)) =
                             (&self.opts.dream_store, &self.opts.agent_id)
                         {
-                            let new_msgs = kernel.lock().unwrap().drain_new_messages();
+                            let new_msgs = kernel.lock().await.drain_new_messages();
                             if !new_msgs.is_empty() {
                                 let now_ms = std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
@@ -1966,12 +2240,12 @@ impl RuntimeRunner {
             // (interrupted flag set) in the run_terminal reason — otherwise an interrupt-curtailed
             // run reports "error" indistinguishable from a real crash. Mirrors Node/WASM/Python.
             let (status, turns_used, total_tokens) = match &action.effect {
-                KernelEffect::Done { result } => (
+                HostEffect::Done { result } => (
                     format!("{:?}", result.termination).to_lowercase(),
                     result.turns_used.max(1),
                     result.total_tokens_used,
                 ),
-                _ => ("error".to_string(), kernel.lock().unwrap().turn().max(1), 0),
+                _ => ("error".to_string(), kernel.lock().await.turn().max(1), 0),
             };
 
             self.log(
@@ -1984,11 +2258,11 @@ impl RuntimeRunner {
             )
             .await;
 
-            if let KernelEffect::Done { .. } = &action.effect {
+            if let HostEffect::Done { .. } = &action.effect {
                 if let (Some(store), Some(agent_id)) =
                     (&self.opts.dream_store, &self.opts.agent_id)
                 {
-                    let new_msgs = kernel.lock().unwrap().drain_new_messages();
+                    let new_msgs = kernel.lock().await.drain_new_messages();
                     if !new_msgs.is_empty() {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -2025,14 +2299,14 @@ impl RuntimeRunner {
     pub(crate) async fn append_observations(
         &self,
         session_id: &str,
-        kernel_mutex: &std::sync::Mutex<KernelRuntime>,
+        kernel_mutex: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
         observations: &mut Vec<KernelObservation>,
         pending_page_out_starts: &mut std::collections::VecDeque<u64>,
         mut next_archive_start: u64,
     ) -> u64 {
         let drained = std::mem::take(observations);
         let (turn, preserved_refs, summary_tokens_by_index) = {
-            let kernel = kernel_mutex.lock().unwrap();
+            let kernel = kernel_mutex.lock().await;
             let summary_tokens_by_index = drained
                 .iter()
                 .map(|obs| match obs {
@@ -2113,9 +2387,7 @@ impl RuntimeRunner {
                     .await;
                 }
                 KernelObservation::PageOutArchiveFailed { .. } => {}
-                // §7.10 · P3 payload residency facts are canonical-wire only. This SDK runs the
-                // legacy wire, whose large-result path is `SpoolLargeResult`, so nothing here can
-                // produce one; the session-log projection lands with the Phase 6 cutover.
+                // Payload residency is already durable in the canonical transaction record.
                 KernelObservation::PayloadResidencyChanged { .. }
                 | KernelObservation::PayloadLoadFailed { .. } => {}
                 KernelObservation::Rollbacked {
@@ -2320,8 +2592,8 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
-                // §13.2 · a live policy patch is a canonical-wire fact; this SDK runs the legacy
-                // wire, which has no live-patch input, so nothing can produce one here.
+                // §13.2 · live policy patches are not exposed through this SDK's public runner, so
+                // no host path currently produces this canonical observation.
                 KernelObservation::LivePolicyChanged { .. } => {}
                 KernelObservation::Suspended { .. }
                 | KernelObservation::ApprovalResolutionFailed { .. } => {}
@@ -2388,28 +2660,6 @@ impl RuntimeRunner {
                     )
                     .await;
                 }
-                KernelObservation::LargeResultSpooled {
-                    turn,
-                    call_id,
-                    tool,
-                    original_size,
-                    preview_size,
-                    spool_ref,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::LargeResultSpooled {
-                            turn,
-                            call_id,
-                            tool,
-                            original_size,
-                            preview_size,
-                            spool_ref,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::LargeResultSpoolFailed { .. } => {}
                 // Rejections are already durable in the kernel transaction record. Call-specific
                 // APIs inspect the observation directly; the generic runner has no host effect.
                 KernelObservation::ControlRequestRejected { .. } => {}
@@ -2572,52 +2822,53 @@ fn action_str_of(action: KernelPressureAction) -> String {
     }
 }
 
-/// R-B29 (apply path): a fault on an action-less transition is the same protocol violation as one
-/// on an action-bearing transition — the kernel rejected the input. Silently discarding it left
-/// the run marching on with a configuration/history the kernel never accepted. Node's twin
-/// (`kernel-step.ts::durableKernelApply`) throws; this returns `Err` with the same message shape
-/// as [`take_single_action`], so both paths terminate the run through the runner's error tail.
-pub(crate) fn kernel_apply(
-    kernel: &mut KernelRuntime,
+pub(crate) async fn kernel_apply(
+    kernel: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
     pending_observations: &mut Vec<KernelObservation>,
-    event: KernelInputEvent,
+    event: serde_json::Value,
 ) -> Result<()> {
-    let mut step = kernel.step(KernelInput::new(event));
-    pending_observations.append(&mut step.observations);
-    if let Some(fault) = step.faults.pop() {
-        return Err(Error::Other(format!(
-            "kernel {:?}: {}",
-            fault.code, fault.message
-        )));
-    }
-    Ok(())
+    let mut runtime = kernel.lock().await;
+    canonical_kernel_apply(&mut runtime, pending_observations, event).await
 }
 
-fn kernel_action(
-    kernel: &mut KernelRuntime,
+async fn kernel_transition(
+    kernel: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
     pending_observations: &mut Vec<KernelObservation>,
-    event: KernelInputEvent,
-) -> Result<KernelAction> {
-    let mut step = kernel.step(KernelInput::new(event));
-    pending_observations.append(&mut step.observations);
-    take_single_action(step)
+    event: serde_json::Value,
+) -> Result<Option<HostAction>> {
+    let mut runtime = kernel.lock().await;
+    let action = runtime.apply_host_event(event).await?;
+    pending_observations.extend(runtime.drain_host_observations());
+    Ok(action)
 }
 
-/// R-B29: a kernel fault is the single exit of every fail-closed path (`UnexpectedEffectResult`
-/// and friends). It must reach the host as a `Result` error — the run then terminates through the
-/// runner's normal error tail, matching node (`kernel-step.ts` throw → `run_terminal{error}`) and
-/// python (`RuntimeError` → caught terminal). Panicking here turned a protocol violation into a
-/// process-level crash, i.e. fail-closed degraded into an availability incident.
-pub(crate) fn take_single_action(mut step: KernelStep) -> Result<KernelAction> {
-    if let Some(fault) = step.faults.pop() {
-        return Err(Error::Other(format!(
-            "kernel {:?}: {}",
-            fault.code, fault.message
-        )));
-    }
-    step.actions.pop().ok_or_else(|| {
-        Error::Other("kernel transition returned no action and no fault".to_string())
-    })
+async fn kernel_action(
+    kernel: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
+    pending_observations: &mut Vec<KernelObservation>,
+    event: serde_json::Value,
+) -> Result<HostAction> {
+    let mut runtime = kernel.lock().await;
+    canonical_kernel_action(&mut runtime, pending_observations, event).await
+}
+
+async fn kernel_start_agent(
+    kernel: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
+    pending_observations: &mut Vec<KernelObservation>,
+    task: RuntimeTask,
+    run_spec: Option<deepstrike_core::types::agent::AgentRunSpec>,
+) -> Result<HostAction> {
+    let task = serde_json::to_value(task)
+        .map_err(|error| Error::Other(format!("canonical task is not serializable: {error}")))?;
+    let run_spec = run_spec
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| {
+            Error::Other(format!("canonical run spec is not serializable: {error}"))
+        })?;
+    let mut runtime = kernel.lock().await;
+    let action = runtime.start_agent_value(task, run_spec).await?;
+    pending_observations.extend(runtime.drain_host_observations());
+    action.ok_or_else(|| Error::Other("canonical agent root must return one host action".into()))
 }
 
 pub async fn collect_text(
@@ -2670,36 +2921,31 @@ fn cancellation_reason_from_code(code: u8) -> CancellationReason {
     }
 }
 
-fn pending_call_ids(action: &KernelAction) -> Vec<String> {
+fn pending_call_ids(action: &HostAction) -> Vec<String> {
     match &action.effect {
-        KernelEffect::CallProvider { .. } => vec![action.effect_id.clone()],
-        KernelEffect::ExecuteTool { calls } => {
-            calls.iter().map(|call| call.id.to_string()).collect()
-        }
-        KernelEffect::RequestApproval { requests } => requests
+        HostEffect::CallProvider { .. } => vec![action.effect_id.clone()],
+        HostEffect::ExecuteTool { calls } => calls.iter().map(|call| call.id.to_string()).collect(),
+        HostEffect::RequestApproval { requests } => requests
             .iter()
             .map(|request| request.call_id.clone())
             .collect(),
-        KernelEffect::SpawnWorkflow { nodes, .. } => {
+        HostEffect::SpawnWorkflow { nodes, .. } => {
             nodes.iter().map(|node| node.agent_id.clone()).collect()
         }
-        KernelEffect::PreemptSubAgents { agent_ids, .. } => agent_ids.clone(),
-        KernelEffect::Done { .. } => Vec::new(),
+        HostEffect::PreemptSubAgents { agent_ids, .. } => agent_ids.clone(),
+        HostEffect::Done { .. } => Vec::new(),
         _ => vec![action.effect_id.clone()],
     }
 }
 
-/// Map the ergonomic [`MemoryPolicy`] onto the flat `set_memory_policy` kernel event.
-fn memory_policy_event(policy: MemoryPolicy) -> KernelInputEvent {
-    KernelInputEvent::SetMemoryPolicy {
-        memory_path: policy.memory_path,
-        stale_warning_days: policy.stale_warning_days,
-        retrieval_top_k: policy.retrieval_top_k,
-        validation_enabled: policy.validation_enabled,
-        max_content_bytes: policy.max_content_bytes,
-        max_name_length: policy.max_name_length,
-        promotion_recall_threshold: policy.promotion_recall_threshold,
-    }
+/// Map the ergonomic [`MemoryPolicy`] onto the SDK-owned bootstrap fact.
+fn memory_policy_host_fact(policy: MemoryPolicy) -> serde_json::Value {
+    let mut value = serde_json::to_value(policy).expect("canonical memory policy serializes");
+    value
+        .as_object_mut()
+        .expect("canonical memory policy is a JSON object")
+        .insert("kind".into(), serde_json::json!("set_memory_policy"));
+    value
 }
 
 fn next_archived_seq_start(events: Option<&[SessionEntry]>) -> u64 {

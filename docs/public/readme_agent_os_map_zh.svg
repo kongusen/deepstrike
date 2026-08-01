@@ -1,7 +1,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike 运行机制</title>
-  <desc id="desc">DeepStrike 0.2.48 的完整运行边界：宿主拥有真实 I/O，RuntimeRunner 驱动 ABI v2，Rust 内核治理控制流，Self-Harness v2 在隔离外环中改进下一次运行。</desc>
+  <desc id="desc">DeepStrike 当前运行边界：宿主拥有真实 I/O，RuntimeRunner 驱动 Canonical Kernel ABI，Rust 内核治理控制流，Self-Harness v2 在隔离外环中改进下一次运行。</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
@@ -71,8 +71,8 @@
     <rect x="600" y="140" width="258" height="82" rx="6" class="panel"/>
 
     <text x="618" y="169" class="card-title" text-anchor="start">证据与持久存储</text>
-    <text x="618" y="193" class="card-text" text-anchor="start">SessionLog · ABI 事务 · 快照</text>
-<text x="618" y="211" class="card-text" text-anchor="start">DreamStore · Archive · 大结果 spool</text>
+    <text x="618" y="193" class="card-text" text-anchor="start">SessionLog · ABI 事务 · checkpoint</text>
+<text x="618" y="211" class="card-text" text-anchor="start">DreamStore · Archive · 外置 payload</text>
 
   </g>
 
@@ -106,7 +106,7 @@
     <text x="720" y="350" class="micro" text-anchor="start">OBSERVATION 向内</text>
     <rect x="48" y="370" width="1104" height="214" rx="7" class="kernel"/>
     <text x="68" y="400" class="section-title" text-anchor="start">deepstrike-core</text>
-    <text x="205" y="400" class="section-note" text-anchor="start">纯 Rust · 可序列化状态机 · ABI v2 · 零 Provider I/O</text>
+    <text x="205" y="400" class="section-note" text-anchor="start">纯 Rust · 可序列化状态机 · Canonical ABI · 零 Provider I/O</text>
 
   <rect x="1067" y="384" width="66" height="22" rx="11" class="pill coral"/>
   <text x="1100" y="399" class="pill-text" text-anchor="middle">内核</text>
@@ -116,7 +116,7 @@
 
     <text x="86" y="451" class="card-title" text-anchor="start">Syscall Gate 与治理</text>
     <text x="86" y="475" class="card-text" text-anchor="start">Invoke · Spawn · Memory</text>
-<text x="86" y="493" class="card-text" text-anchor="start">SubmitNodes · LoadWorkflow</text>
+<text x="86" y="493" class="card-text" text-anchor="start">AppendWorkflowNodes</text>
 
   </g>
         <path d="M86 509H299" class="rule"/>
@@ -149,7 +149,7 @@
 
     <text x="869" y="451" class="card-title" text-anchor="start">Observation 与恢复</text>
     <text x="869" y="475" class="card-text" text-anchor="start">Provider / Tool 结果 · 可见拒绝</text>
-<text x="869" y="493" class="card-text" text-anchor="start">信号 · 事务 · 快照 · 唤醒</text>
+<text x="869" y="493" class="card-text" text-anchor="start">信号 · 事务 · checkpoint · 唤醒</text>
 
   </g>
         <path d="M869 509H1114" class="rule"/>

@@ -6,11 +6,12 @@
 
 | 角色 | 实现 |
 |------|------|
-| **Kernel** | `KernelRuntime` / `LoopStateMachine` |
+| **Kernel** | `CanonicalKernel` / `CanonicalOperationDriver` |
 | **Host** | `RuntimeRunner` |
-| **Evidence** | `SessionLog`（append-only events） |
+| **Durability** | `KernelJournal`（canonical record chain） |
+| **Evidence** | `SessionLog`（业务 observation projection） |
 
-## 生命周期：从 start_run 到 Done
+## 生命周期：从 StartOperation 到 Terminal
 
 ```mermaid
 sequenceDiagram
@@ -21,24 +22,25 @@ sequenceDiagram
     participant Tools as ExecutionPlane
 
     User->>SDK: run(goal)
-    SDK->>K: start_run
-    K->>SDK: CallLLM (RenderedContext, tools)
+    SDK->>K: ConfigureOperation + StartOperation(Agent)
+    K->>SDK: CallProvider effect
 
     loop Each turn
         SDK->>LLM: stream(context, tools)
         LLM-->>SDK: text / tool_calls
-        SDK->>K: provider_result
+        SDK->>K: ResolveEffect(ProviderCompleted)
         alt has tool_calls
-            K->>SDK: ExecuteTools
+            K->>SDK: ExecuteTools effect
             SDK->>Tools: execute
             Tools-->>SDK: results
-            SDK->>K: tool_results
+            SDK->>K: ResolveEffect(Tools)
             Note over K: Observe → Delta (pressure?)
         else no tools
             Note over K: Reason complete or terminate
         end
     end
 
+    K-->>SDK: KernelTerminal
     SDK-->>User: DoneEvent
 ```
 
@@ -48,7 +50,7 @@ sequenceDiagram
 
 1. `ContextManager` 合并分区，产出 `RenderedContext`（四槽位）
 2. 根据 `active_skills`、`capability_filter`、governance **收窄** 暴露的 tool schema
-3. 返回 `KernelAction::CallLLM`
+3. 返回 `KernelEffect::CallProvider`
 
 **内核决定**：哪些 history 可见、哪些工具可调用、state_turn 里有什么 task/directives。
 
@@ -75,10 +77,10 @@ Meta-tools（`skill`、`memory`、`submit_workflow_nodes`）由内核 **内建�
 
 ## Phase 3 — Observe：结果回灌
 
-SDK 将 `ToolResult` / `ProviderResult` 作为 `KernelInput` 喂回：
+SDK 将 tool/provider outcome 统一包装为 `ResolveEffect`：
 
 - History 分区追加 message
-- Handle 表注册大结果（可选 spool）
+- Handle 表注册 inline/external 大结果
 - `PressureMonitor` 采样 token 占用
 
 ## Phase 4 — Delta：压力与压缩
@@ -100,7 +102,7 @@ Syscall::Spawn(manifest)
   → quota 检查（深度、并发、累计 spawn）
   → trust 检查（quarantined 不可提权）
   → Allow → SDK SubAgentOrchestrator.run(AgentRunSpec)
-  → sub_agent_result 回灌 → DAG 推进
+  → DeliverExternalEvent(ChildCompleted) → DAG 推进
 ```
 
 ![Dynamic Workflow Orchestration DAG](/agent_os_workflow_dag.svg)
@@ -109,11 +111,11 @@ Syscall::Spawn(manifest)
 
 ## Memory syscall（环外也可调用）
 
-`write_memory` / `query_memory` 可在 run 循环外由 SDK 直接 `kernel_apply`：
+`write_memory` / `query_memory` 可在 run 循环外由 SDK 通过同一个 canonical operation host 提交；它们不形成第二条 direct-step 路径：
 
 ```text
-Syscall::WriteMemory → 内核校验 metadata → observation memory_written → SDK commit DreamStore
-Syscall::QueryMemory  → SDK search DreamStore → 检索命中作为普通轮次进入 history（单次使用、随压缩衰减）
+canonical input → P1 WriteMemory → typed PersistMemory effect → ResolveEffect → observation
+canonical input → P1 QueryMemory → typed QueryMemory effect → ResolveEffect → history projection
 ```
 
 Memory **不** 绕过 governance validation。检索结果落 `history` 而非 `knowledge`——只有 skill 正文、`initial_memory`、宿主显式钉住的参考材料才进耐久的 knowledge 分区（见 [Context 工程 · Level 5](../guides/context-engineering.md)）。
@@ -126,7 +128,7 @@ Memory **不** 绕过 governance validation。检索结果落 `history` 而非 `
 | Sub-agent | Suspended | orchestrator 完成 → `sub_agent_result` |
 | External | Suspended | signal / user interrupt → `signal` event |
 
-SessionLog 记录挂起点；`wake` 从 log 重建 `KernelRuntime` 状态。
+SessionLog 记录面向产品的挂起事件；`wake` 从 KernelJournal 的 logical checkpoint + bounded tail 重建 canonical operation，SessionLog 不承担内核恢复。
 
 ## 与「普通 agent 框架」的差异
 

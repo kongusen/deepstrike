@@ -196,7 +196,7 @@ describe("applyManifest", () => {
     provider: { tag: "P" },
     maxTokens: 42,
     maxTurns: 3,
-    memoryPolicy: { memoryPath: ".memory", validationEnabled: false },
+    memoryPolicy: { validationEnabled: false },
   } as unknown as RuntimeOptions
 
   it("folds instructions, nudges, and whitelisted runtime keys onto base", () => {
@@ -208,7 +208,6 @@ describe("applyManifest", () => {
     expect(out.maxTurns).toBe(10) // manifest runtime wins over base
     expect(out.memoryPolicy?.retrievalTopK).toBe(5)
     expect(out.memoryPolicy?.promotionRecallThreshold).toBe(2)
-    expect(out.memoryPolicy?.memoryPath).toBe(".memory")
     expect(out.memoryPolicy?.validationEnabled).toBe(false)
     expect(out.instructions).toEqual(m.instructions)
     expect(out.nudges).toEqual(m.nudges)

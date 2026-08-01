@@ -98,34 +98,6 @@ export interface AgentProcessChangedObservation {
   result_termination?: string
 }
 
-/** Map kernel spawn observation → host manifest. */
-export function spawnObservationToManifest(
-  obs: AgentProcessChangedObservation | Record<string, unknown>,
-  spec: AgentRunSpec,
-  parentSessionId: string,
-): AgentProcessChangedObservation {
-  const o = obs as AgentProcessChangedObservation
-  return {
-    kind: "agent_process_changed",
-    turn: o.turn,
-    agent_id: String(o.agent_id ?? spec.identity.agentId),
-    parent_session_id: String(o.parent_session_id ?? parentSessionId),
-    role: String(o.role ?? spec.role),
-    isolation: String(o.isolation ?? spec.isolation ?? "shared"),
-    context_inheritance: String(o.context_inheritance ?? "none"),
-    permitted_capability_ids: o.permitted_capability_ids ?? [],
-  }
-}
-
-export function findSpawnProcessObservation(
-  observations: Array<{ kind: string; agent_id?: string }>,
-): AgentProcessChangedObservation | undefined {
-  const hit = observations.find(
-    o => o.kind === "agent_process_changed" && typeof o.agent_id === "string",
-  )
-  return hit as AgentProcessChangedObservation | undefined
-}
-
 export interface LoopResult {
   termination: TerminationReason | string
   finalMessage?: Message
@@ -567,7 +539,7 @@ function nodeKindToKernel(n: WorkflowNodeSpec): Record<string, unknown> | undefi
   return undefined
 }
 
-/** Map one host `WorkflowNodeSpec` to its snake_case kernel JSON. Shared by `load_workflow` (the
+/** Map one host `WorkflowNodeSpec` to its snake_case canonical JSON. Shared by the workflow root (the
  *  whole spec) and `submit_workflow_nodes` (R3-1 runtime append) so the two encodings never drift. */
 export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, unknown> {
   const kind = nodeKindToKernel(n)
@@ -592,40 +564,9 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, un
   }
 }
 
-/** Map a host `WorkflowSpec` to the snake_case kernel JSON (`load_workflow.spec`). */
+/** Map a host `WorkflowSpec` to the canonical workflow-root JSON. */
 export function workflowSpecToKernel(spec: WorkflowSpec): Record<string, unknown> {
   return { nodes: spec.nodes.map(workflowNodeSpecToKernel) }
-}
-
-/** R3-1: map a batch of host nodes to the `submit_workflow_nodes` kernel event body. G1: pass
- *  `submitterAgentId` (the node that requested the append) so the kernel can enforce no-privilege-
- *  escalation — a quarantined submitter's nodes are coerced to quarantined. Omitted ⇒ no coercion. */
-export function submitWorkflowNodesToKernel(
-  nodes: WorkflowNodeSpec[],
-  submitterAgentId?: string,
-): Record<string, unknown> {
-  return {
-    kind: "submit_workflow_nodes",
-    nodes: nodes.map(workflowNodeSpecToKernel),
-    ...(submitterAgentId ? { submitter_agent_id: submitterAgentId } : {}),
-  }
-}
-
-/** M5/G1: map an agent-authored spec to the `submit_workflow` kernel event body (the agent-reachable
- *  `Syscall::LoadWorkflow`). The kernel bootstraps the DAG when none is active, else flattens onto it.
- *  `parentSessionId` seeds child session ids on bootstrap; `submitterAgentId` carries G1 trust coercion
- *  on the flatten case (a quarantined author's nodes are coerced quarantined). */
-export function submitWorkflowToKernel(
-  spec: WorkflowSpec,
-  parentSessionId: string,
-  submitterAgentId?: string,
-): Record<string, unknown> {
-  return {
-    kind: "submit_workflow",
-    spec: workflowSpecToKernel(spec),
-    parent_session_id: parentSessionId,
-    ...(submitterAgentId ? { submitter_agent_id: submitterAgentId } : {}),
-  }
 }
 
 /** Shared JSON-Schema for a workflow-node batch (a DAG). Used by both `submit_workflow_nodes`

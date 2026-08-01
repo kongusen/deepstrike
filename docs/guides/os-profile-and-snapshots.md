@@ -108,7 +108,6 @@ Snapshot 统计：
 | `budget_exceeded` | `budget_exceeded` |
 | `signals` | `signal_delivery_disposed` |
 | `page_out_count` / `page_in_count` | memory paging |
-| `spool_count` | `large_result_spooled` |
 | `tool_gated_count` | `tool_gated` |
 | memory counters | `memory_*` events |
 
@@ -123,24 +122,24 @@ assert session_log_has_required_categories(events)
 
 这会检查 kernel event 是否带有正确的 `category` 和 `primitive`，适合 CI 或 dashboard ingest 前校验。
 
-## 与 Kernel Snapshot 的区别
+## 与 Kernel Checkpoint 的区别
 
 | 名称 | 用途 | 是否可恢复执行 |
 |------|------|----------------|
 | OS Snapshot | 从 SessionLog 折叠出的观测摘要 | 否 |
-| KernelSnapshot | 已接受 ABI 事务与校验元数据 | 是，服务精确 wake / replay |
+| Kernel Checkpoint | opaque logical state、digest 与 bounded journal tail | 是，服务精确 wake / replay |
 | ContextSnapshot | Context 分区快照 | 部分，服务 context restore |
 
-OS Snapshot 面向人和监控系统；`KernelSnapshot` 面向 runtime 恢复。后者不序列化私有 state-machine struct，而是确定性重放 public ABI，并核对 lifecycle、operation、step/effect identity 与 terminal latch。Node 使用 `snapshotKernelRuntime` / `restoreKernelRuntime`，Python 使用 `snapshot_kernel_runtime` / `restore_kernel_runtime`。`kernelReliability.snapshotInputLimit` / `KernelReliability.snapshot_input_limit` 控制可恢复事务上限。
+OS Snapshot 面向人和监控系统；canonical Kernel Checkpoint 面向 runtime 恢复。checkpoint 不序列化私有 state-machine struct，也不保存完整 accepted-input 历史或派生的 planned step；它按 transition/P1/P2/P3 owner 保存 logical state，并用 state/tail digest 校验。宿主通过 candidate -> 持久化 -> covered-head CAS install -> ack 协议管理 checkpoint，恢复时只回放 bounded tail 和 checkpoint 之后的 journal records。
 
 ## 生产建议
 
 1. 不要直接用 `native` profile 当生产安全边界。
 2. 把 write / deploy / shell 类工具默认设为 `ask_user` 或 `deny`。
 3. 给 dashboard ingest 增加 `session_log_has_required_categories` 检查。
-4. 对长期 run 定期构建 OS Snapshot，观察 `tool_gated_count`、`spool_count`、memory validation failure。
+4. 对长期 run 定期构建 OS Snapshot，观察 `tool_gated_count`、paging 和 memory validation failure。
 5. Profile 与 `ResourceQuota` 配合使用；profile 管策略，quota 管资源。
-6. 按故障恢复窗口设置 snapshot input limit；达到上限会显式返回 `snapshot_incompatible`，不会生成不完整快照。
+6. 按恢复目标配置 checkpoint tail 的 count/byte soft watermark 与 hard limit；hard limit 返回可重试的 `CheckpointRequired`，不会接受该 input，也不会设置永久 overflow latch。
 
 ## 验证入口
 

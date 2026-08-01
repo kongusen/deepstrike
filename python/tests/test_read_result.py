@@ -1,118 +1,90 @@
-"""O7 — the `read_result` meta-tool: once the kernel evicts (spools) a large tool result from
-context, it exposes `read_result` in the toolset so the model can re-fetch the full output by
-`call_id`. The kernel only advertises the capability; the HOST resolves the content (in-memory
-pending map -> on-disk result spool -> session-log scan). Mirrors the Node
-`tests/read-result.test.ts` integration test."""
+"""Canonical external payload and read_result integration coverage."""
 
-import shutil
 import asyncio
-from pathlib import Path
 
 import pytest
 
 from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
 from deepstrike.providers.base import RenderedContext
-from deepstrike.providers.stream import TextDelta, ToolCallEvent, ToolResultEvent
-from deepstrike.runtime.large_result_spool import LargeResultSpool
+from deepstrike.providers.stream import TextDelta, ToolCallEvent
+from deepstrike.runtime.payload_store import PayloadStore
 from deepstrike.tools.registry import tool
 
-SPOOL_DIR = Path.cwd() / ".spool-read-result-test-py"
 
+class ExternalThenReadProvider:
+  def __init__(self) -> None:
+    self.calls: list[RenderedContext] = []
+    self.seen_tools: list[list] = []
 
-class SpoolThenReadProvider:
-    def __init__(self) -> None:
-        self.calls: list[RenderedContext] = []
-        self.seen_tools: list[list] = []
-        self.read_result_output: str | None = None
+  async def complete(self, context, tools, extensions=None):
+    raise NotImplementedError
 
-    async def complete(self, context, tools, extensions=None):
-        raise NotImplementedError
-
-    async def stream(self, context: RenderedContext, tools, extensions=None, state=None):
-        self.calls.append(context)
-        self.seen_tools.append(list(tools))
-        if len(self.calls) == 1:
-            # Turn 1: produce the oversized result the kernel will spool out of context.
-            yield ToolCallEvent(id="big-1", name="big_out", arguments={})
-            return
-        if any(t.name == "read_result" for t in tools) and self.read_result_output is None:
-            # Turn 2+: the kernel now advertises `read_result` (a handle left residency).
-            yield ToolCallEvent(id="read-1", name="read_result", arguments={"call_id": "big-1"})
-            return
-        yield TextDelta(delta="done")
-
-
-@pytest.fixture(autouse=True)
-def _clean_spool_dir():
-    yield
-    shutil.rmtree(SPOOL_DIR, ignore_errors=True)
+  async def stream(self, context: RenderedContext, tools, extensions=None, state=None):
+    self.calls.append(context)
+    self.seen_tools.append(list(tools))
+    if len(self.calls) == 1:
+      yield ToolCallEvent(id="big-1", name="big_out", arguments={})
+      return
+    if any(t.name == "read_result" for t in tools):
+      yield ToolCallEvent(id="read-1", name="read_result", arguments={"call_id": "big-1"})
+      return
+    yield TextDelta(delta="done")
 
 
 @pytest.mark.asyncio
-async def test_read_result_refetches_spooled_output_by_call_id():
-    huge = "y" * (100 * 1024)
-    spool = LargeResultSpool(spool_dir=str(SPOOL_DIR))
-    provider = SpoolThenReadProvider()
+async def test_read_result_loads_an_external_payload(tmp_path):
+  huge = "y" * (100 * 1024)
+  payload_store = PayloadStore(storage_dir=str(tmp_path / "payloads"))
+  provider = ExternalThenReadProvider()
 
-    @tool
-    def big_out() -> str:
-        """Return an oversized result."""
-        return huge
+  @tool
+  def big_out() -> str:
+    """Return an oversized result."""
+    return huge
 
-    plane = LocalExecutionPlane().register(big_out)
-    session_log = InMemorySessionLog()
-    runner = RuntimeRunner(RuntimeOptions(
-        provider=provider,
-        session_log=session_log,
-        execution_plane=plane,
-        max_tokens=128_000,
-        max_turns=8,
-        result_spool=spool,
-    ))
+  session_log = InMemorySessionLog()
+  runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=session_log,
+    execution_plane=LocalExecutionPlane().register(big_out),
+    max_tokens=128_000,
+    max_turns=8,
+    payload_store=payload_store,
+  ))
 
-    async for evt in runner.run(goal="fetch big output", session_id="read-result-run"):
-        if isinstance(evt, ToolResultEvent) and evt.call_id == "read-1":
-            read_result_output = evt.content
+  async for _ in runner.run(goal="fetch big output", session_id="read-result-run"):
+    pass
 
-    # Sanity: the kernel did actually spool the oversized result out of context.
-    logged = await session_log.read("read-result-run")
-    assert any(e.event.get("kind") == "large_result_spooled" for e in logged)
-
-    # The toolset advertised `read_result` only once eviction happened (progressive disclosure).
-    assert not any(t.name == "read_result" for t in provider.seen_tools[0])
-    assert any(any(t.name == "read_result" for t in ts) for ts in provider.seen_tools)
-
-    # The host resolved the opaque locator and the kernel restored the body for the next render.
-    assert len(provider.calls) >= 3
-    assert huge[:4000] in repr(provider.calls[2])
+  assert not any(t.name == "read_result" for t in provider.seen_tools[0])
+  assert any(any(t.name == "read_result" for t in tools) for tools in provider.seen_tools)
+  assert len(provider.calls) >= 3
+  assert huge[:4000] in repr(provider.calls[2])
 
 
 @pytest.mark.asyncio
-async def test_spool_hashes_untrusted_call_ids_and_commits_atomically(tmp_path):
-    spool = LargeResultSpool(spool_dir=str(tmp_path / "spool"))
-    call_id = "../../outside/../tool-call"
-    refs = await asyncio.gather(*[
-        spool.persist_output("session", call_id, "stable-output") for _ in range(8)
-    ])
+async def test_payload_store_hashes_opaque_locators_and_commits_atomically(tmp_path):
+  storage_dir = tmp_path / "payloads"
+  store = PayloadStore(storage_dir=str(storage_dir))
+  locator = "../../outside/../payload"
 
-    assert len(set(refs)) == 1
-    ref = Path(refs[0])
-    assert ref.parent == tmp_path / "spool"
-    assert "tool-call" not in ref.name
-    assert not list(ref.parent.glob("*.tmp"))
-    assert await spool.find_by_call_id("session", call_id) == "stable-output"
+  await asyncio.gather(*[
+    store.persist_payload("session", locator, "stable-output") for _ in range(8)
+  ])
+
+  files = list(storage_dir.iterdir())
+  assert len(files) == 1
+  assert ".." not in files[0].name
+  assert not list(storage_dir.glob("*.tmp"))
+  assert await store.load_payload("session", locator) == "stable-output"
+  assert store._active_writes == {}
 
 
 @pytest.mark.asyncio
-async def test_spool_call_id_lookup_is_session_scoped(tmp_path):
-    """The spool dir is shared across sessions and outlives runs, while vendor call ids can be
-    index-style ("call_0") and repeat — an unscoped key let read_result in one session fetch
-    another session's spooled output (data bleed) or a stale run's content."""
-    spool = LargeResultSpool(spool_dir=str(tmp_path / "spool"))
+async def test_payload_store_is_session_scoped(tmp_path):
+  store = PayloadStore(storage_dir=str(tmp_path / "payloads"))
+  await store.persist_payload("session-a", "payload:1", "alpha")
+  await store.persist_payload("session-b", "payload:1", "beta")
 
-    await spool.persist_output("session-a", "call_0", "secret output of session A")
-    await spool.persist_output("session-b", "call_0", "output of session B")
-
-    assert await spool.find_by_call_id("session-a", "call_0") == "secret output of session A"
-    assert await spool.find_by_call_id("session-b", "call_0") == "output of session B"
-    assert await spool.find_by_call_id("session-c", "call_0") is None
+  assert await store.load_payload("session-a", "payload:1") == "alpha"
+  assert await store.load_payload("session-b", "payload:1") == "beta"
+  assert await store.load_payload("session-c", "payload:1") is None

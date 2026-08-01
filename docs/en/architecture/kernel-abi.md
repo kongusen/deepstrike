@@ -1,73 +1,92 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
-  rust: [KernelInput, KernelObservation, KernelRuntime, Syscall, Disposition]
-  python: [RenderedContext, MemoryPolicy, ResourceQuota, SchedulerPolicy]
+  rust: [WireEnvelope, KernelInput, KernelEffect, KernelTerminal, KernelTransaction, SyscallRequest]
+  python: [RuntimeRunner, KernelJournal, PayloadStore]
 ---
 
-# Kernel ABI
+# Canonical Kernel ABI
 
-The Kernel ABI is the stable boundary between **host and Agent OS microkernel** — analogous to the user/kernel syscall interface. Version: `KERNEL_ABI_VERSION = 1`.
+The Canonical Kernel ABI is the only stable boundary between the host and the Agent OS kernel. The host owns providers, tools, credentials, filesystems, payloads, and durable I/O. The kernel owns operation lifecycle, effect identity, authority, scheduling, the Context VM, and terminal decisions.
 
-## Design intent
+## Envelope
 
-| Principle | Meaning |
-|-----------|---------|
-| **Versioned** | Every `KernelInput` carries `version` |
-| **Event-driven** | Host appends events; never mutates kernel structs directly |
-| **Observable** | Decisions emit `KernelObservation` to SessionLog |
-| **Language-neutral** | Same ABI for Py / Node / WASM |
+Every input carries correlated operation, input, and observation-time identities. `WireU64` values use decimal strings, and strict unions reject unknown fields and variants.
 
-## Three message kinds
+```json
+{
+  "abi_version": 3,
+  "operation_id": "op-42",
+  "input_id": "input-7",
+  "observed_at_ms": "1785542400000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-42:step:1:effect:0",
+    "outcome": {
+      "status": "failed",
+      "failure": {
+        "kind": "transport_exhausted",
+        "message": "provider unavailable",
+        "retryable": true
+      }
+    }
+  }
+}
+```
+
+The kernel accepts only the current revision. It does not negotiate, downgrade, or restore an old operation through an adapter.
+
+## Five Inputs
+
+| Input | Authority | Purpose |
+|---|---|---|
+| `ConfigureOperation` | host | Install resolved operation config once and create the genesis record |
+| `StartOperation` | host | Atomically start `RootEntry::Agent` or `RootEntry::Workflow` with initial context |
+| `ResolveEffect` | host executor | Return any effect success or the common typed failure |
+| `DeliverExternalEvent` | external | Deliver a signal or child completion with kernel-validated causation |
+| `HostControl` | host | Cancel, update deadline/task state, or apply a closed live-policy patch |
+
+`StartOperation` is the only root entry. An agent root first emits `CallProvider`; a workflow root first emits `SpawnTasks`. Session identity stays in the host runner and never enters the wire.
+
+## Effects And Terminals
+
+`KernelEffect` expresses intent that the host must execute idempotently by effect ID and answer through `ResolveEffect`:
+
+- `CallProvider`
+- `ExecuteTools`
+- `RequestApproval`
+- `SpawnTasks` / `PreemptTasks`
+- `PersistMemory` / `QueryMemory`
+- `ArchivePageOut` / `LoadPayload`
+- `EvaluateMilestone`
+
+A terminal is not an effect. A transition disposition contains either effects or one `KernelTerminal`, never both.
+
+## Durable Transition
+
+The host never steps directly:
 
 ```text
-Host ──KernelInput──► Kernel
-Host ◄──KernelAction── Kernel
-Host ◄──KernelObservation── Kernel  (audit / replay)
+prepare canonical envelope
+  -> append core-owned record bytes with CAS
+  -> commit using record digest
+  -> publish effects or terminal
 ```
 
-### KernelInput (host → kernel)
+A record stores the normalized input, previous digest, record digest, and step digest, not a complete step. If commit fails after append, the runner rebuilds from the journal. Abort is valid only before a record becomes durable.
 
-Grouped by Agent OS subsystem:
+## Checkpoints And Payloads
 
-| Subsystem | kind | Purpose |
-|-----------|------|---------|
-| Schedule | `start_run`, `provider_result`, `tool_results`, `sub_agent_result` | Turn loop |
-| Syscall feedback | `permission_resolved`, `milestone_result` | Resume from Gate |
-| Governance | `load_governance_policy`, `set_resource_quota` | Policy install |
-| Workflow | `load_workflow` | Install DAG |
-| Memory | `write_memory`, `query_memory`, `set_memory_policy` | Long-term memory |
-| Context | `signal` | External inject |
-| Recovery | resume / snapshot events | Rebuild from log |
+Restore uses a logical checkpoint plus a bounded journal tail. Checkpoint state has one owner in each transition, P1 syscall, P2 scheduler, and P3 context-VM partition. Candidate, install, acknowledgement, and prefix pruning use explicit CAS and acknowledgement boundaries.
 
-### KernelAction (kernel → host)
+The host persists a large result in `PayloadStore` before core receives an opaque locator, digest, size, and bounded preview. Page-in is correlated to a handle and emits `LoadPayload`; SessionLog is never a payload lookup service.
 
-| action | Host must |
-|--------|-----------|
-| `CallLLM` | Call provider with `RenderedContext` + tools |
-| `ExecuteTools` | Run ExecutionPlane |
-| `SpawnSubAgent` | Run orchestrator with `AgentRunSpec` |
-| `AwaitingResume` | Stop stepping until external event |
+## Syscall Causation
 
-### KernelObservation → SessionLog
+Model tool calls derive their caller from the pending provider effect. Canonical syscalls cover invoke, spawn, `AppendWorkflowNodes`, memory proposals, and page-in. The host cannot supply an actor, forge a workflow root, or invent a child attempt.
 
-Facts for replay: `tool_denied`, `agent_process_changed`, `workflow_node_completed`, `pressure_compact`, etc.
+## Further Reading
 
-## Relation to Syscall
-
-Wire events converge internally to `Syscall` + `Disposition` — **one gate** for tools, spawn, memory, DAG growth.
-
-## Python binding
-
-```python
-from deepstrike.runtime.kernel_step import kernel_apply
-
-observations: list[dict] = []
-kernel_apply(runtime, observations, {"kind": "write_memory", "memory": {...}})
-```
-
-## Further reading
-
-- [Execution model](/en/architecture/execution-model)
-- [Session & replay](/en/architecture/session-replay)
-- Source: `crates/deepstrike-core/src/runtime/kernel.rs`
+- [Execution model](./execution-model)
+- [Session and restore](./session-replay)
+- [Canonical Kernel ABI ADR](/en/decisions/005-canonical-kernel-abi)

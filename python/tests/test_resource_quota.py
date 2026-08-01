@@ -1,9 +1,6 @@
-import json
-
 import pytest
 
 import deepstrike.runtime.runner as runner_mod
-from deepstrike._kernel import KernelRuntime, LoopPolicy
 from deepstrike.providers.stream import TextDelta
 from deepstrike.runtime import (
   InMemorySessionLog,
@@ -58,12 +55,9 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
       safety_margin_tokens=10,
     ),
     kernel_reliability=KernelReliability(
-      event_replay_capacity=512,
-      host_effect_retry_attempts=4,
-      spool_threshold_bytes=2048,
-      spool_preview_bytes=256,
+      provider_recovery_attempts=2,
+      output_recovery_attempts=1,
       max_input_bytes=1024 * 1024,
-      snapshot_journal_bytes_limit=16 * 1024 * 1024,
     ),
     resource_quota=ResourceQuota(
       max_concurrent_subagents=2,
@@ -111,13 +105,15 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     if e["kind"] == "configure_run" and "reliability" in e["config"]
   )
   assert reliability_event["config"]["reliability"] == {
-    "event_replay_capacity": 512,
-    "host_effect_retry_attempts": 4,
-    "spool_threshold_bytes": 2048,
-    "spool_preview_bytes": 256,
+    "provider_recovery_attempts": 2,
+    "output_recovery_attempts": 1,
     "max_input_bytes": 1024 * 1024,
-    "snapshot_journal_bytes_limit": 16 * 1024 * 1024,
   }
+
+  with pytest.raises(ValueError, match="unknown kernel reliability field"):
+    runner_mod._kernel_reliability_to_kernel({"event_replay_capacity": 512})
+  with pytest.raises(ValueError, match="unknown memory policy field"):
+    runner_mod._memory_policy_to_kernel({"memory_path": ".memory"})
 
 
 def test_scheduler_policy_dict_rejects_camel_case_aliases():
@@ -140,32 +136,4 @@ def test_scheduler_policy_dict_rejects_retired_wall_budget():
       "age_weight": 1,
       "token_cost_weight": 1,
       "max_wall_ms": 1234,
-    })
-
-
-def test_native_kernel_accepts_set_resource_quota_event():
-  runtime = KernelRuntime(LoopPolicy(max_tokens=1024, max_turns=4))
-
-  from deepstrike.runtime.kernel_step import _kernel_step
-  decoded = _kernel_step(runtime, {
-    "kind": "set_resource_quota",
-    "quota": {
-      "max_concurrent_subagents": 2,
-      "max_spawn_depth": 1,
-      "memory_writes_per_window": [3, 1000],
-    },
-  })
-  assert decoded["version"] == 2
-  assert decoded["actions"] == []
-  assert decoded["observations"] == []
-
-
-def test_native_kernel_rejects_out_of_bounds_sdk_reliability_config():
-  from deepstrike.runtime.kernel_step import _kernel_step
-
-  runtime = KernelRuntime(LoopPolicy(max_tokens=1024, max_turns=4))
-  with pytest.raises(RuntimeError, match="invalid_config"):
-    _kernel_step(runtime, {
-      "kind": "configure_run",
-      "config": {"reliability": {"event_replay_capacity": 0}},
     })

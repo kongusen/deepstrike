@@ -9,11 +9,7 @@ import {
   MAX_CHAIN_POSITION,
 } from "../../src/runtime/kernel-journal.js"
 import type { CheckpointCandidate, JournalRecordInput, KernelJournal } from "../../src/runtime/kernel-journal.js"
-import { InMemorySessionLog, FileSessionLog, journalOperationKey } from "../../src/runtime/session-log.js"
-import {
-  createKernelOperationGenesis,
-  createKernelTransaction,
-} from "../../src/runtime/kernel-transaction-log.js"
+import { InMemorySessionLog, FileSessionLog } from "../../src/runtime/session-log.js"
 
 const OP = "op-journal"
 
@@ -411,49 +407,22 @@ describe("FileKernelJournal — cross-process atomicity", () => {
 })
 
 describe("SessionLog / KernelJournal capability separation", () => {
-  async function genesis(operationId = "op-1") {
-    return createKernelOperationGenesis({
-      abi_version: 2,
-      operation_id: operationId,
-      initial_scheduler_policy: { max_tokens: 8_000 },
-      resolved_runtime_defaults: { max_input_bytes: 16_777_216 },
-      default_policy_version: 1,
-    })
-  }
-
-  async function transaction(previousTransactionDigest: string, stepSeq = 1) {
-    return createKernelTransaction({
-      operation_id: "op-1",
-      step_seq: stepSeq,
-      base_generation: stepSeq - 1,
-      input: { version: 2, operation_id: "op-1", event_id: `event-${stepSeq}` },
-      step: { version: 2, operation_id: "op-1", step_seq: stepSeq, actions: [] },
-      previous_transaction_digest: previousTransactionDigest,
-    })
-  }
-
   it("exposes the journal as its own capability, not as SessionLog methods", async () => {
     const log = new InMemorySessionLog()
-    const operationGenesis = await genesis()
-    await log.appendKernelGenesis("s1", operationGenesis)
+    await log.kernelJournal.compareAndAppend("op-1", undefined, record(0, "d0"))
 
-    // The same durable chain is reachable through the separated capability.
-    const head = await log.kernelJournal.head(journalOperationKey("s1", "op-1"))
-    expect(head).toEqual({ step_seq: 0, record_digest: operationGenesis.genesis_digest })
+    expect(await log.kernelJournal.head("op-1")).toEqual({ step_seq: 0, record_digest: "d0" })
+    expect(log).not.toHaveProperty("appendKernelGenesis")
+    expect(log).not.toHaveProperty("compareAndAppendKernelTransaction")
   })
 
   it("numbers journal records and business events in independent sequence spaces", async () => {
     const log = new InMemorySessionLog()
-    const operationGenesis = await genesis()
-
-    // Interleave: genesis, event, transaction, event, transaction.
-    const genesisReceipt = await log.appendKernelGenesis("s1", operationGenesis)
+    const genesisReceipt = await log.kernelJournal.compareAndAppend("op-1", undefined, record(0, "d0"))
     const event0 = await log.append("s1", { kind: "run_started", run_id: "r1", goal: "a", criteria: [] })
-    const first = await transaction(operationGenesis.genesis_digest)
-    const firstReceipt = await log.compareAndAppendKernelTransaction("s1", operationGenesis.genesis_digest, first)
+    const firstReceipt = await log.kernelJournal.compareAndAppend("op-1", "d0", record(1, "d1"))
     const event1 = await log.append("s1", { kind: "llm_completed", turn: 0, content: "b", tool_calls: [] })
-    const second = await transaction(first.transaction_digest, 2)
-    const secondReceipt = await log.compareAndAppendKernelTransaction("s1", first.transaction_digest, second)
+    const secondReceipt = await log.kernelJournal.compareAndAppend("op-1", "d1", record(2, "d2"))
 
     // Business events: a dense 0,1 — journal appends never consumed a business number.
     expect([event0, event1]).toEqual([0, 1])
@@ -461,31 +430,29 @@ describe("SessionLog / KernelJournal capability separation", () => {
     expect((await log.read("s1")).map(entry => entry.seq)).toEqual([0, 1])
 
     // Journal records: their own dense chain positions, unaffected by the interleaved events.
-    expect(genesisReceipt.log_seq).toBe(0)
-    expect(firstReceipt.log_seq).toBe(1)
-    expect(secondReceipt.log_seq).toBe(2)
+    expect(genesisReceipt.step_seq).toBe(0)
+    expect(firstReceipt.step_seq).toBe(1)
+    expect(secondReceipt.step_seq).toBe(2)
   })
 
   it("keeps the same sequence-space split on the file-backed pair", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ds-session-split-"))
     try {
       const log = new FileSessionLog(dir)
-      const operationGenesis = await genesis()
-      const genesisReceipt = await log.appendKernelGenesis("sess", operationGenesis)
+      const genesisReceipt = await log.kernelJournal.compareAndAppend("op-1", undefined, record(0, "d0"))
       const event0 = await log.append("sess", { kind: "run_started", run_id: "r1", goal: "a", criteria: [] })
-      const first = await transaction(operationGenesis.genesis_digest)
-      const receipt = await log.compareAndAppendKernelTransaction("sess", operationGenesis.genesis_digest, first)
+      const receipt = await log.kernelJournal.compareAndAppend("op-1", "d0", record(1, "d1"))
       const event1 = await log.append("sess", { kind: "llm_completed", turn: 0, content: "b", tool_calls: [] })
 
       expect([event0, event1]).toEqual([0, 1])
-      expect(genesisReceipt.log_seq).toBe(0)
-      expect(receipt.log_seq).toBe(1)
+      expect(genesisReceipt.step_seq).toBe(0)
+      expect(receipt.step_seq).toBe(1)
 
       // The projection file holds only business events; the journal lives beside it.
       const reopened = new FileSessionLog(dir)
       expect((await reopened.read("sess")).map(entry => entry.seq)).toEqual([0, 1])
       expect(await reopened.latestSeq("sess")).toBe(1)
-      expect(await reopened.kernelTransactionHead("sess", "op-1")).toBe(first.transaction_digest)
+      expect(await reopened.kernelJournal.head("op-1")).toEqual({ step_seq: 1, record_digest: "d1" })
       expect(await readdir(dir)).toEqual(expect.arrayContaining(["kernel-journal", "sess.jsonl"]))
     } finally {
       await rm(dir, { recursive: true, force: true })

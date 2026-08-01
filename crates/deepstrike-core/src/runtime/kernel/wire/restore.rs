@@ -18,9 +18,9 @@
 //!
 //! 1. **There is no second state machine.** With a checkpoint or without one, the replay goes
 //!    through the same `prepare`/`commit` fold every live transition goes through, and the driver
-//!    plans every replayed input exactly as it planned it the first time. The legacy
-//!    `restore_snapshot` had its own `StepMode::SnapshotReplay` path through the runtime, and the
-//!    two drifted. Here, "restore from genesis" is literally `restore_operation` with no
+//!    plans every replayed input exactly as it planned it the first time. The retired recovery path
+//!    had a separate replay mode, and the two drifted. Here, "restore from genesis" is literally
+//!    `restore_operation` with no
 //!    checkpoint — [`KernelTransaction::rebuild_from_records`] — and nothing else.
 //! 2. **The restore verifies itself.** After the logical state is installed and before a single
 //!    tail input is replayed, the restored runtime is re-projected and the projection is digested.

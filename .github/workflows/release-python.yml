@@ -124,10 +124,11 @@ jobs:
           python -c "
           import deepstrike
           from deepstrike import Governance
-          from deepstrike.kernel import KernelRuntime, LoopPolicy
+          from deepstrike.kernel import CanonicalKernel, KERNEL_ABI_VERSION
           assert Governance().evaluate('x', '{}').kind == 'allow'
-          sm = KernelRuntime(LoopPolicy())
-          assert not sm.is_terminal()
+          kernel = CanonicalKernel()
+          assert KERNEL_ABI_VERSION == 3
+          assert kernel.lifecycle() == 'created'
           "
 
       - uses: actions/upload-artifact@v4

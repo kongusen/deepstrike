@@ -9,7 +9,7 @@ ExecutionPlane is DeepStrike's tool execution layer. The kernel adjudicates tool
 - `python/deepstrike/runtime/worktree_plane.py`
 - `python/deepstrike/runtime/process_sandbox_plane.py`
 - `python/deepstrike/runtime/remote_vpc_plane.py`
-- `python/deepstrike/runtime/large_result_spool.py`
+- `python/deepstrike/runtime/payload_store.py`
 
 ## Agent OS Positioning
 
@@ -18,7 +18,7 @@ ExecutionPlane is DeepStrike's tool execution layer. The kernel adjudicates tool
 | To the kernel | Receives approved tool calls and writes results back as observations |
 | To the host | Binds Python functions, subprocesses, worktrees, remote VPCs, or customer environments |
 | To governance | Honors schema filtering, permission, quota, and sandbox decisions |
-| To the Context VM | Projects large results through spool / handles instead of flooding context |
+| To the Context VM | Projects large results through external payload handles instead of flooding context |
 
 The ExecutionPlane is the OS device-driver layer: the kernel does not directly read or write the outside world; it delegates approved actions to the host through this plane.
 
@@ -32,7 +32,7 @@ The ExecutionPlane is the OS device-driver layer: the kernel does not directly r
 | Stream tool output | `streaming_tool` / async iterable chunks |
 | Wait for external resume | yield `{"type": "suspend", ...}` and configure `on_tool_suspend` |
 | Write files | make tools honor `ctx.cwd`, then use worktree / sandbox |
-| Handle huge outputs | configure `LargeResultSpool` |
+| Handle huge outputs | configure `PayloadStore` |
 | Execute inside customer VPC | `RemoteVpcPlane` |
 | Expose only a tool subset | `FilteredExecutionPlane`, Skill gating, Governance |
 
@@ -190,20 +190,20 @@ response: { "output": "...", "isError": false }
 
 Credentials are fetched from `CredentialVault` at call time and injected into HTTP headers. They do not enter model context or session log.
 
-## Large Result Spool
+## External Payload Store
 
-When the kernel emits `large_result_spooled`, the SDK uses `LargeResultSpool` to persist the full output and keep a preview / ref in context:
+The SDK persists an oversized result before submitting its canonical `External` descriptor. The descriptor carries a bounded preview and an opaque locator; the body never enters the journal or checkpoint:
 
 ```python
-from deepstrike.runtime.large_result_spool import LargeResultSpool
+from deepstrike import PayloadStore
 
 RuntimeOptions(
     ...,
-    result_spool=LargeResultSpool(".spool", max_age_seconds=7 * 24 * 3600),
+    payload_store=PayloadStore(".payloads", max_age_seconds=7 * 24 * 3600),
 )
 ```
 
-If a read tool receives a `.spool/...` path argument, `LocalExecutionPlane` attempts to read the spooled result automatically.
+`read_result` is reduced in core to a reachable-handle `PageIn` request and a correlated `LoadPayload` effect. `LocalExecutionPlane` never interprets the locator as a file path.
 
 ## Kernel / Host Boundary
 
@@ -213,13 +213,13 @@ If a read tool receives a `.spool/...` path argument, `LocalExecutionPlane` atte
 | whether a tool call is allowed | kernel syscall / governance |
 | Python function invocation | SDK ExecutionPlane |
 | subprocess / HTTP / file writes | SDK / tool |
-| whether a large result should spool | kernel decides, SDK writes |
+| external body persistence | SDK writes before submit; kernel validates descriptor |
 | worktree lifecycle | SDK |
 
 ## Verification Entry Points
 
 - `python/tests/test_streaming_tools.py`
 - `python/tests/test_tool_argument_repair.py`
-- `python/tests/test_large_result_spool.py`
+- `python/tests/test_read_result.py`
 - `python/tests/test_worktree_isolation.py`
 - `node/tests/remote-vpc-plane.test.ts`

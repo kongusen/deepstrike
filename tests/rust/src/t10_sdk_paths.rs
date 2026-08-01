@@ -65,7 +65,7 @@ where
         execution_plane: None,
         session_log: Some(Arc::new(InMemorySessionLog::new())),
         compression_store: None,
-        spool_dir: None,
+        payload_store: None,
         kernel_reliability: None,
         session_id: None,
         max_tokens: 4096,

@@ -54,7 +54,7 @@ ANTHROPIC_API_KEY=sk-... python examples/hello_agent/main.py "Read README.md and
 
 ## What Happens
 
-1. `RuntimeRunner` creates the kernel and sends `start_run`
+1. `RuntimeRunner` creates a canonical operation and atomically starts `StartOperation::Agent`
 2. The kernel returns `CallLLM` with `RenderedContext` and tool schemas
 3. The provider streams tokens; if the model calls a tool, `ExecutionPlane` runs `read_file`
 4. Tool results are fed back into the kernel for the next turn

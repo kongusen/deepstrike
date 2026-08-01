@@ -7,12 +7,7 @@ pub mod repair;
 pub mod replay;
 pub mod session;
 
-pub use kernel::{
-    CancellationReason, KERNEL_ABI_VERSION, KERNEL_SNAPSHOT_VERSION, KernelAction, KernelEffect,
-    KernelFault, KernelFaultCode, KernelInput, KernelInputEvent, KernelLifecycle,
-    KernelObservation, KernelPreparationStatus, KernelPreparedStep, KernelPressureAction,
-    KernelRuntime, KernelSnapshot, KernelSnapshotPolicy, KernelStep,
-};
+pub use kernel::{KERNEL_ABI_VERSION, KernelObservation, KernelPressureAction};
 
 pub use event_log::{KernelEventCategory, Primitive, category_for_kind, primitive_for_kind};
 pub use repair::{

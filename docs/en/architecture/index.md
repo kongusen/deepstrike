@@ -43,7 +43,7 @@ Complex agents usually fail because the **control plane** is ad hoc, not because
 | Who may trigger side effects? | Each SDK / example decides locally | Every effect enters one syscall trap |
 | Who may spawn sub-agents? | Harness creates new clients directly | TCB + TaskTable + quota / trust gates |
 | Who owns the context window? | Append messages, then truncate | Context VM partitions, handles, compression, renewal |
-| Who proves what happened? | Logs and orchestration state are scattered | SessionLog + KernelSnapshot |
+| Who proves what happened? | Logs and orchestration state are scattered | SessionLog evidence + canonical checkpoint/journal recovery |
 | Who keeps languages consistent? | Python / Node each implement a loop | One `deepstrike-core` drives multiple hosts |
 
 So DeepStrike is not primarily about "calling an LLM." It is a **governed control plane** for long-running agent work.

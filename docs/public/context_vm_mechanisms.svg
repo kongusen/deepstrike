@@ -133,7 +133,7 @@
 
     <text x="66" y="581" class="card-title" text-anchor="start">Large tool output</text>
     <text x="66" y="605" class="card-text" text-anchor="start">Inline preview + H# descriptor</text>
-<text x="66" y="623" class="card-text" text-anchor="start">Payload pages to host spool</text>
+<text x="66" y="623" class="card-text" text-anchor="start">Body in host PayloadStore</text>
 
   </g>
 

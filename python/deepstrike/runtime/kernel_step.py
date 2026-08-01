@@ -2,19 +2,13 @@ from __future__ import annotations
 
 import base64
 import json
-import re
-import time
-import uuid
-import weakref
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 
 from deepstrike._kernel import ContentPartObj, Message, TaskUpdate, ToolCall, ToolResult, ToolSchema
 from deepstrike.providers.base import ContextBudgetOverflow, RenderedContext
 
 
-KERNEL_ABI_VERSION = 2
 CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts:v1]]"
 
 
@@ -38,31 +32,6 @@ def decode_canonical_content_parts(content: str) -> list[dict[str, Any]] | None:
   if not isinstance(decoded, list):
     return None
   return [part for part in decoded if isinstance(part, dict)]
-# Keyed by the runtime OBJECT, not id(runtime): a plain dict keyed by id() aliases recycled
-# addresses (a new runtime inherits a dead one's operation identity — fatal once a durable log
-# keys chains by that identity) and leaks an entry per runtime. WeakKeyDictionary mirrors the
-# Node/WASM WeakMap; the pyo3 KernelRuntime declares `weakref` support for exactly this.
-_wire_states: "weakref.WeakKeyDictionary[Any, tuple[str, int]]" = weakref.WeakKeyDictionary()
-
-
-def snapshot_kernel_runtime(runtime: Any) -> dict[str, Any]:
-  return json.loads(runtime.snapshot())
-
-
-def restore_kernel_runtime(runtime: Any, snapshot: dict[str, Any]) -> None:
-  runtime.restore(json.dumps(snapshot))
-  operation_id = snapshot.get("operation_id")
-  if not operation_id:
-    _wire_states.pop(runtime, None)
-    return
-  next_sequence = 1
-  for accepted in snapshot.get("accepted_inputs") or []:
-    match = re.search(r"-event-(\d+)$", str(accepted.get("event_id") or ""))
-    if match:
-      next_sequence = max(next_sequence, int(match.group(1)) + 1)
-  _wire_states[runtime] = (str(operation_id), next_sequence)
-
-
 @dataclass
 class KernelRunnerAction:
   kind: str
@@ -298,170 +267,3 @@ def _context_from_kernel(raw: dict[str, Any]) -> RenderedContext:
       max_tokens=int(overflow_raw.get("max_tokens") or overflow_raw.get("maxTokens") or 0),
     ) if isinstance(overflow_raw, dict) else None,
   )
-
-
-def _action_from_kernel(raw: dict[str, Any]) -> KernelRunnerAction:
-  kind = raw.get("kind")
-  effect_id = str(raw.get("effect_id") or "")
-  if not effect_id:
-    raise RuntimeError(f"kernel action {kind} is missing effect_id")
-  if kind == "call_provider":
-    return KernelRunnerAction(
-      kind="call_provider",
-      effect_id=effect_id,
-      context=_context_from_kernel(raw.get("context") or {}),
-      tools=[
-        ToolSchema(
-          name=str(t.get("name") or ""),
-          description=str(t.get("description") or ""),
-          parameters=json.dumps(t.get("parameters") or {}),
-        )
-        for t in raw.get("tools", []) or []
-      ],
-    )
-  if kind == "execute_tool":
-    return KernelRunnerAction(
-      kind="execute_tool",
-      effect_id=effect_id,
-      calls=[
-        ToolCall(
-          id=str(c.get("id") or ""),
-          name=str(c.get("name") or ""),
-          arguments=json.dumps(c.get("arguments") or {}),
-        )
-        for c in raw.get("calls", []) or []
-      ],
-    )
-  if kind == "request_approval":
-    return KernelRunnerAction(
-      kind=kind,
-      effect_id=effect_id,
-      requests=[{
-        "call_id": str(request.get("call_id") or ""),
-        "tool": str(request.get("tool") or ""),
-        "arguments": json.dumps(request.get("arguments") or {}),
-        "reason": str(request.get("reason") or ""),
-      } for request in raw.get("requests", []) or []],
-    )
-  if kind == "spawn_workflow":
-    return KernelRunnerAction(
-      kind=kind, effect_id=effect_id,
-      nodes=list(raw.get("nodes") or []), budget=raw.get("budget"),
-    )
-  if kind == "preempt_sub_agents":
-    return KernelRunnerAction(
-      kind=kind, effect_id=effect_id,
-      agent_ids=list(raw.get("agent_ids") or []), reason=str(raw.get("reason") or ""),
-    )
-  if kind == "persist_memory":
-    return KernelRunnerAction(kind=kind, effect_id=effect_id, memory=dict(raw.get("memory") or {}))
-  if kind == "query_memory":
-    return KernelRunnerAction(
-      kind=kind, effect_id=effect_id, query=dict(raw.get("query") or {}),
-      requested_k=int(raw.get("requested_k") or 0),
-    )
-  if kind == "spool_large_result":
-    return KernelRunnerAction(
-      kind=kind, effect_id=effect_id,
-      call_id=str(raw.get("call_id") or ""), tool=str(raw.get("tool") or ""),
-      output=str(raw.get("output") or ""), original_size=int(raw.get("original_size") or 0),
-      preview_size=int(raw.get("preview_size") or 0),
-    )
-  if kind == "archive_page_out":
-    return KernelRunnerAction(
-      kind=kind, effect_id=effect_id, turn=int(raw.get("turn") or 0),
-      action=str(raw.get("action") or "auto_compact"), summary=raw.get("summary"),
-      archived=[_message_from_kernel(message) for message in raw.get("archived", []) or []],
-      tier=str(raw.get("tier") or "durable"),
-    )
-  if kind == "evaluate_milestone":
-    return KernelRunnerAction(
-      kind="evaluate_milestone",
-      effect_id=effect_id,
-      phase_id=str(raw.get("phase_id") or ""),
-      criteria=list(raw.get("criteria") or []),
-      required_evidence=list(raw.get("required_evidence") or []),
-    )
-  if kind == "done":
-    result = raw.get("result") or {}
-    # ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs).
-    pace = result.get("pace_decision")
-    pace_decision = (
-      {
-        "action": str(pace.get("action") or "stop"),
-        "delay_ms": pace.get("delay_ms"),
-        "reason": str(pace.get("reason") or ""),
-        "coerced_from": pace.get("coerced_from"),
-      }
-      if isinstance(pace, dict)
-      else None
-    )
-    return KernelRunnerAction(
-      kind="done",
-      effect_id=effect_id,
-      result=SimpleNamespace(
-        termination=str(result.get("termination") or "error"),
-        turns_used=int(result.get("turns_used") or 0),
-        total_tokens_used=int(result.get("total_tokens_used") or 0),
-        pace_decision=pace_decision,
-      ),
-    )
-  raise RuntimeError(f"unknown KernelAction kind: {kind}")
-
-
-def _step_input(runtime: Any, event: dict[str, Any]) -> str:
-  state = _wire_states.get(runtime)
-  if state is None:
-    state = (f"python-operation-{uuid.uuid4()}", 1)
-  operation_id, sequence = state
-  _wire_states[runtime] = (operation_id, sequence + 1)
-  correlated_event = (
-    {**event, "operation_id": operation_id}
-    if event.get("kind") == "cancel_operation"
-    else event
-  )
-  return json.dumps({
-    "version": KERNEL_ABI_VERSION,
-    "operation_id": operation_id,
-    "event_id": f"{operation_id}-event-{sequence}",
-    "observed_at_ms": int(time.time() * 1000),
-    "event": correlated_event,
-  })
-
-
-def _kernel_step(runtime: Any, event: dict[str, Any]) -> dict[str, Any]:
-  step = json.loads(runtime.step(_step_input(runtime, event)))
-  faults = step.get("faults") or []
-  if faults:
-    fault = faults[0]
-    raise RuntimeError(f"{fault.get('code', 'kernel_fault')}: {fault.get('message', 'kernel transition failed')}")
-  return step
-
-
-def kernel_apply(runtime: Any, pending: list[dict[str, Any]], event: dict[str, Any]) -> list[dict[str, Any]]:
-  step = _kernel_step(runtime, event)
-  observations = list(step.get("observations") or [])
-  pending.extend(observations)
-  return observations
-
-
-def kernel_action(runtime: Any, pending: list[dict[str, Any]], event: dict[str, Any]) -> KernelRunnerAction:
-  step = _kernel_step(runtime, event)
-  pending.extend(step.get("observations") or [])
-  actions = step.get("actions") or []
-  if not actions:
-    raise RuntimeError("kernel transition must return one action")
-  return _action_from_kernel(actions[0])
-
-
-def kernel_maybe_action(
-  runtime: Any,
-  pending: list[dict[str, Any]],
-  event: dict[str, Any],
-) -> KernelRunnerAction | None:
-  step = _kernel_step(runtime, event)
-  pending.extend(step.get("observations") or [])
-  actions = step.get("actions") or []
-  if not actions:
-    return None
-  return _action_from_kernel(actions[0])

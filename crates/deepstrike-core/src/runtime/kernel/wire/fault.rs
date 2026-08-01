@@ -2,7 +2,7 @@
 //!
 //! Two shapes, one property. [`KernelPreparation`] is a **closed** union with no `faults` field on
 //! any success arm, so "a step that carries both actions and faults" is not constructible — the
-//! historical `KernelStep { faults: Vec<_> }` made a partially-applied transition representable,
+//! a historical step-level fault list made a partially-applied transition representable,
 //! and one host then ignored the vector entirely while another turned it into a panic.
 //!
 //! Every rejection is therefore zero-mutation by construction: [`KernelPreparation::Rejected`]
@@ -55,7 +55,7 @@ pub enum KernelFaultCode {
     /// [`Self::DuplicateInputConflict`].
     ///
     /// This code exists to replace the snapshot-overflow latch, whose double consequence — snapshots
-    /// permanently disabled **and** `prepare_step` permanently refused — was a hard failure on the
+    /// permanently disabled snapshots and later preparations — was a hard failure on the
     /// only durable host and a silent degradation everywhere else.
     CheckpointRequired,
     /// The kernel was about to emit an effect whose kind the operation's `host_effect_support`

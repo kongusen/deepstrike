@@ -22,8 +22,6 @@ export interface PrimitivesStats {
     compressedCount: number
     pageOutCount: number
     pageInCount: number
-    largeResultSpooledCount: number
-    totalSpooledBytes: number
     contextRenewedCount: number
   }
 }
@@ -50,8 +48,6 @@ export class KernelPrimitivesDashboard {
       compressedCount: 0,
       pageOutCount: 0,
       pageInCount: 0,
-      largeResultSpooledCount: 0,
-      totalSpooledBytes: 0,
       contextRenewedCount: 0,
     },
   }
@@ -95,10 +91,6 @@ export class KernelPrimitivesDashboard {
       else if (event.kind === "page_out") this.stats.mm.pageOutCount++
       else if (event.kind === "page_in") this.stats.mm.pageInCount++
       else if (event.kind === "context_renewed") this.stats.mm.contextRenewedCount++
-      else if (event.kind === "large_result_spooled") {
-        this.stats.mm.largeResultSpooledCount++
-        this.stats.mm.totalSpooledBytes += event.original_size
-      }
     }
 
     // Special handling for tool completion which logs at outer runner
@@ -139,8 +131,7 @@ export class KernelPrimitivesDashboard {
       `║                                                                      ║`,
       `║ ${bold}${magenta}💾 MM (Memory Management & Context Paging)${reset}                          ║`,
       `║   - Compressions: ${s.mm.compressedCount.toString().padEnd(9)} - Page-Outs (Semantic): ${s.mm.pageOutCount.toString().padEnd(10)}       ║`,
-      `║   - Page-Ins (Cache): ${s.mm.pageInCount.toString().padEnd(7)} - Large Spooled: ${s.mm.largeResultSpooledCount.toString().padEnd(14)} ║`,
-      `║   - Total Spooled Bytes: ${(s.mm.totalSpooledBytes / 1024).toFixed(1).toString() + " KB"}`.padEnd(70) + "║",
+      `║   - Page-Ins (Cache): ${s.mm.pageInCount.toString().padEnd(43)} ║`,
       footer
     ]
 

@@ -14,7 +14,7 @@ Host-owned I/O surrounds a pure Rust control plane; Self-Harness v2 improves onl
 
 ### Layered architecture
 
-Application intent, host user space, ABI v2, kernel primitives, and the durable evidence plane remain separate.
+Application intent, host user space, the Canonical Kernel ABI, kernel primitives, and the durable evidence plane remain separate.
 
 ![Agent OS architecture](/agent_os_architecture.svg)
 
@@ -78,7 +78,7 @@ Query, recall, write, retention, and promotion preserve the distinction between 
 
 ### ExecutionPlane
 
-Approved calls move through host hooks into local, worktree, sandbox, or remote execution, with streaming, suspension, and spooling.
+Approved calls move through host hooks into local, worktree, sandbox, or remote execution, with streaming, suspension, and external payload storage.
 
 ![ExecutionPlane mechanisms](/execution_plane_mechanisms.svg)
 
@@ -112,13 +112,13 @@ Context, capabilities, isolation, contracts, and handoff artifacts define a chil
 
 ### Session replay and recovery
 
-One append-only evidence stream supports audit, provider replay, workflow resume, OS snapshots, and public-ABI state reconstruction.
+The SessionLog evidence stream supports audit, provider replay, and OS snapshots; canonical checkpoints and journals independently own workflow resume and ABI-state recovery.
 
 ![Session replay and recovery](/session_replay_mechanisms.svg)
 
 ### Profiles and snapshots
 
-An OS Profile configures policy, an OS Snapshot supports observability, a KernelSnapshot restores execution, and a ContextSnapshot restores context only.
+An OS Profile configures policy, an OS Snapshot supports observability, a canonical Kernel Checkpoint restores execution, and a ContextSnapshot restores context only.
 
 ![Profiles and snapshots](/snapshots_mechanisms.svg)
 

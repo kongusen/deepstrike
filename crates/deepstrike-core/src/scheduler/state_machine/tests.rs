@@ -1817,7 +1817,7 @@ fn truncated_response_continues_then_resets() {
     let mut sm = sm();
     sm.start(RuntimeTask::new("write a long thing"));
     // Cut off at the output cap with no tool call ⇒ keep the partial and re-call (don't finish).
-    sm.set_pending_stop_reason(Some("max_tokens".into()));
+    sm.set_output_truncated(true);
     let action = sm.feed(LoopEvent::LLMResponse {
         message: Message::assistant("partial..."),
     });
@@ -1840,13 +1840,13 @@ fn truncation_recovery_is_bounded() {
     sm.start(RuntimeTask::new("write forever"));
     // 3 attempts continue; the 4th consecutive truncation gives up and accepts the partial.
     for _ in 0..3 {
-        sm.set_pending_stop_reason(Some("length".into()));
+        sm.set_output_truncated(true);
         let action = sm.feed(LoopEvent::LLMResponse {
             message: Message::assistant("more"),
         });
         assert!(matches!(action, LoopAction::CallLLM { .. }));
     }
-    sm.set_pending_stop_reason(Some("length".into()));
+    sm.set_output_truncated(true);
     let action = sm.feed(LoopEvent::LLMResponse {
         message: Message::assistant("more"),
     });
@@ -2961,15 +2961,12 @@ fn memory_write_quota_rate_limits_within_window() {
     assert!(sm.gate_syscall(&Syscall::WriteMemory(req)).is_allowed());
 }
 
-// ---- Layer 1: large tool result spool ----------------------------------
-
 #[test]
-fn large_tool_result_emits_spool_effect_and_keeps_preview() {
+fn large_tool_result_continues_inline_without_a_host_persistence_effect() {
     let mut sm = sm();
     sm.start(RuntimeTask::new("task"));
-    sm.take_observations();
 
-    let huge = "Z".repeat(60 * 1024); // > 50 KiB default threshold
+    let huge = "Z".repeat(60 * 1024);
     let continuation = sm.feed(LoopEvent::ToolResults {
         results: vec![ToolResult {
             call_id: compact_str::CompactString::new("big"),
@@ -2981,64 +2978,28 @@ fn large_tool_result_emits_spool_effect_and_keeps_preview() {
         }],
     });
 
-    let action = sm.externalize_pending_host_effect(continuation);
     assert!(matches!(
-        action,
-        LoopAction::SpoolLargeResult { call_id, output, original_size, .. }
-            if call_id == "big" && output == huge && original_size == (60 * 1024)
+        sm.externalize_pending_host_effect(continuation),
+        LoopAction::CallLLM { .. }
     ));
 
-    // No success fact exists until the host returns the correlated result.
-    let obs = sm.take_observations();
-    assert!(
-        !obs.iter()
-            .any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. }))
-    );
-
-    // Context holds only the preview, not the full 60 KiB.
-    let stored: usize = sm
+    let stored = sm
         .ctx
         .partitions
         .history
         .messages
         .iter()
-        .filter_map(|m| match &m.content {
+        .flat_map(|message| match &message.content {
             Content::Parts(parts) => Some(parts),
             _ => None,
         })
         .flatten()
-        .filter_map(|p| match p {
-            ContentPart::ToolResult { output, .. } => Some(output.len()),
+        .find_map(|part| match part {
+            ContentPart::ToolResult { output, .. } => Some(output),
             _ => None,
         })
-        .sum();
-    assert!(
-        stored < huge.len(),
-        "spooled output should be a small preview"
-    );
-    assert!(stored < 8 * 1024, "preview should be near the 2 KiB budget");
-}
-
-#[test]
-fn small_tool_result_is_not_spooled() {
-    let mut sm = sm();
-    sm.start(RuntimeTask::new("task"));
-    sm.take_observations();
-    sm.feed(LoopEvent::ToolResults {
-        results: vec![ToolResult {
-            call_id: compact_str::CompactString::new("ok"),
-            output: Content::Text("small output".into()),
-            is_error: false,
-            is_fatal: false,
-            error_kind: None,
-            token_count: None,
-        }],
-    });
-    let obs = sm.take_observations();
-    assert!(
-        !obs.iter()
-            .any(|o| matches!(o, KernelObservation::LargeResultSpooled { .. }))
-    );
+        .expect("tool result is retained in history");
+    assert_eq!(stored, &huge);
 }
 
 // ---- M1c: canonical TaskTable mirrors ProcessTable ----------------------
@@ -4996,7 +4957,7 @@ fn pace_continue_coerced_to_stop_at_max_rounds() {
         max_rounds: Some(3),
         ..Default::default()
     });
-    sm.set_budget_grant(crate::runtime::kernel::BudgetGrant {
+    sm.set_budget_grant(crate::runtime::kernel::wire::BudgetGrant {
         reservation_id: "reservation-round".into(),
         tokens: None,
         subagents: None,
@@ -5037,7 +4998,7 @@ fn zero_round_grant_stops_before_provider_dispatch() {
         ..Default::default()
     });
     sm.run_spec = Some(run_spec);
-    sm.set_budget_grant(crate::runtime::kernel::BudgetGrant {
+    sm.set_budget_grant(crate::runtime::kernel::wire::BudgetGrant {
         reservation_id: "no-rounds".into(),
         tokens: None,
         subagents: None,
@@ -5060,9 +5021,9 @@ fn zero_round_grant_stops_before_provider_dispatch() {
 #[test]
 fn zero_token_grant_stops_before_provider_dispatch() {
     let mut sm = sm();
-    sm.set_budget_grant(crate::runtime::kernel::BudgetGrant {
+    sm.set_budget_grant(crate::runtime::kernel::wire::BudgetGrant {
         reservation_id: "no-tokens".into(),
-        tokens: Some(0),
+        tokens: Some(crate::runtime::kernel::wire::WireU64::new(0)),
         subagents: None,
         rounds: None,
     });

@@ -37,7 +37,7 @@ def noop() -> str:
     return "ok"
 
 
-def _make_runner(run_group=None, agent_id=None, kernel_reliability=None) -> RuntimeRunner:
+def _make_runner(run_group=None, agent_id=None, group_budget_settlement_retries=3) -> RuntimeRunner:
     plane = LocalExecutionPlane()
     plane.register(tool(noop))
     return RuntimeRunner(RuntimeOptions(
@@ -48,7 +48,7 @@ def _make_runner(run_group=None, agent_id=None, kernel_reliability=None) -> Runt
         max_total_tokens=100_000,
         agent_id=agent_id,
         run_group=run_group,
-        kernel_reliability=kernel_reliability,
+        group_budget_settlement_retries=group_budget_settlement_retries,
     ))
 
 
@@ -131,16 +131,24 @@ async def test_runner_retries_terminal_settlement_from_reliability_policy():
                 raise RuntimeError("temporary store failure")
             await super().settle(group_id, reservation_id, **actual)
 
-    from deepstrike import KernelReliability
-
     store = FlakyStore()
     runner = _make_runner(
         RunGroup(id="host-retry", budget_store=store),
-        kernel_reliability=KernelReliability(host_effect_retry_attempts=1),
+        group_budget_settlement_retries=1,
     )
     status, _ = await _run_to_done(runner, "member")
     assert status == "completed"
     assert store.attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_runner_rejects_unbounded_host_settlement_retry_policy():
+    runner = _make_runner(
+        RunGroup(id="invalid-host-retry", budget_store=InMemoryGroupBudgetStore()),
+        group_budget_settlement_retries=17,
+    )
+    with pytest.raises(ValueError, match="group_budget_settlement_retries"):
+        await _run_to_done(runner, "member")
 
 
 @pytest.mark.asyncio

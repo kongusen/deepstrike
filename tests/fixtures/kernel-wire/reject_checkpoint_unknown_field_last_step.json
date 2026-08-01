@@ -202,6 +202,6 @@
     "tail_inputs": [],
     "through_step_seq": "3"
   },
-  "description": "Spec 12.4 deleted `last_step`; a blob that still carries one is an ABI-v2 snapshot and is refused rather than partially read.",
+  "description": "Spec 12.4 deleted `last_step`; a legacy blob that still carries one is refused rather than partially read.",
   "expect": "malformed_envelope"
 }

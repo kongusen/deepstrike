@@ -1,7 +1,4 @@
-/**
- * Adapt ABI-v2 scripted `{ step(inputJson) }` fakes into a CanonicalRunnerRuntime-shaped surface
- * so workflow integration tests can drive the post-Task-21 runner without a real WASM kernel.
- */
+/** Adapt scripted event-kernel fakes to the canonical runtime surface used by workflow tests. */
 import type { KernelRunnerAction } from "../../src/runtime/kernel-step.js"
 import { InMemoryKernelJournal } from "../../src/runtime/kernel-journal.js"
 
@@ -80,7 +77,7 @@ function mapAction(raw: Record<string, unknown>): KernelRunnerAction | null {
   }
 }
 
-/** Wrap a scripted ABI-v2 kernel so `commitKernel*` wrappers can call `applyHostEvent`. */
+/** Wrap a scripted kernel so host projections can call `applyHostEvent`. */
 export function wrapScriptedKernel(fake: ScriptedKernel, operationId = "wasm-scripted-operation") {
   const journal = new InMemoryKernelJournal()
   let terminal = false
@@ -88,7 +85,7 @@ export function wrapScriptedKernel(fake: ScriptedKernel, operationId = "wasm-scr
   const observations: Array<Record<string, unknown>> = []
   const messages: unknown[] = []
 
-  return {
+  const runtime = {
     operationId,
     journal,
     turn: () => turns,
@@ -99,6 +96,12 @@ export function wrapScriptedKernel(fake: ScriptedKernel, operationId = "wasm-scr
     drainHostObservations: () => observations.splice(0) as never,
     resumeAction: () => null,
     async restore() {},
+    async startAgent(task: Record<string, unknown>, runSpec?: Record<string, unknown>) {
+      return runtime.applyHostEvent({ kind: "start_run", task, ...(runSpec ? { run_spec: runSpec } : {}) })
+    },
+    async startWorkflow(spec: Record<string, unknown>) {
+      return runtime.applyHostEvent({ kind: "load_workflow", spec })
+    },
     async applyHostEvent(event: Record<string, unknown>) {
       const step = JSON.parse(fake.step(JSON.stringify({
         abi_version: 2,
@@ -131,4 +134,5 @@ export function wrapScriptedKernel(fake: ScriptedKernel, operationId = "wasm-scr
       return action
     },
   }
+  return runtime
 }

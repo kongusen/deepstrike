@@ -258,13 +258,13 @@ Four kernel correctness fixes that close unbounded or misclassified agent-loop e
 
 ## [0.2.40] - 2026-07-16
 
-### Changed — BREAKING: single-version kernel ABI v2
+### Changed — BREAKING: single-version kernel ABI
 
-- **Kernel snapshot ABI is a single version with no back-compat shims.** `KernelSnapshotV2` /
-  `KernelSnapshotPolicyV2` are renamed to `KernelSnapshot` / `KernelSnapshotPolicy`; the contract uses
+- **Kernel snapshot ABI is a single version with no back-compat shims.** The then-versioned snapshot
+  types are renamed to `KernelSnapshot` / `KernelSnapshotPolicy`; the contract uses
   `deny_unknown_fields` and rejects superseded wire shapes instead of parsing them. Kernel state rebuilds
   from the accepted public-ABI transaction stream (portable snapshot replay), and all hosts are cut over
-  to ABI v2. Kernel reliability is bounded by explicit policy (byte-bounded snapshot replay), and memory
+  to that now-superseded ABI. Kernel reliability is bounded by explicit policy (byte-bounded snapshot replay), and memory
   effects are transacted through the syscall gate.
 
 ### Added

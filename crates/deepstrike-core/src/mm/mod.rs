@@ -13,8 +13,7 @@ pub mod memory;
 pub mod value;
 
 pub use handle::{
-    EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable, Residency, SpoolDecision,
-    plan_eviction, plan_spool,
+    EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable, Residency, plan_eviction,
 };
 
 /// Long-term tier hint for a page-out event (SDK maps to durable vs semantic store).

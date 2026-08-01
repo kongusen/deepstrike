@@ -32,7 +32,7 @@ settle(reservation_id, actual) / 失败前 release(reservation_id)
 | 组件 | 职责 |
 |------|------|
 | `GroupBudgetStore` | 原子计算 settled + held、预留容量、幂等 settle/release、维护成员 lineage |
-| SDK runner | 在 `start_run` 前 reserve；把 grant 交给 kernel；按相关 usage report 结算 |
+| SDK runner | 在 canonical root start 前 reserve；把 grant 交给 kernel；按相关 usage report 结算 |
 | Kernel | 强制本次 grant；为 exceeded/usage 事件附带 operation 与 reservation identity |
 
 `GroupBudgetStore` 必须实现 `join`、`members`、`reserve`、`settle`、`release`。跨副本实现应使用 Redis script、数据库事务或等价的原子机制。通用 append-only SessionLog 没有 CAS，因此不能作为预算预留实现。
@@ -52,7 +52,7 @@ settle(reservation_id, actual) / 失败前 release(reservation_id)
 
 ## Standalone Workflow
 
-`run_workflow()` 没有 active parent 时会创建一个真实 kernel run。SDK 先 reserve，再启动 workflow；DAG 完成后发送 `complete_run`，由 kernel 产生普通 `done` 和一次 correlated `budget_usage_reported`。因此 workflow node 数来自 kernel TaskTable，而不是宿主旁路计数。
+`run_workflow()` 没有 active parent 时会创建一个真实 canonical operation。SDK 先 reserve，再以 workflow root 启动；DAG 完成时 kernel 直接提交 terminal 和一次 correlated usage report。因此 workflow node 数来自 kernel TaskTable，而不是宿主旁路计数。
 
 ## 嵌套 vehicle
 

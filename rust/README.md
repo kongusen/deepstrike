@@ -8,7 +8,7 @@
 
 Runtime framework built on `deepstrike-core`. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
 
-> **Runtime v1:** Use `RuntimeRunner` + `SessionLog` + `LocalExecutionPlane` (same model as Node/Python/WASM).
+> **Runtime API:** Use `RuntimeRunner` + `SessionLog` + `LocalExecutionPlane` (same model as Node/Python/WASM).
 
 ## Add to your project
 

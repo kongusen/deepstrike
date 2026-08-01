@@ -76,6 +76,7 @@ pub fn plan_utility_archive(
     for (index, range) in ranges.iter().enumerate() {
         let slice = &messages[range.clone()];
         let text = &unit_texts[index];
+        let folded_text = text.to_lowercase();
         let tokens = slice
             .iter()
             .map(|message| {
@@ -84,10 +85,14 @@ pub fn plan_utility_archive(
                     .unwrap_or_else(|| engine.count_message(message))
             })
             .sum::<u32>();
-        let goal_overlap = overlap_count(&terms(text), &goal_terms);
-        let has_unresolved = has_unresolved(slice, text);
+        let goal_overlap = if goal_terms.is_empty() {
+            0
+        } else {
+            overlap_count(&terms(text), &goal_terms)
+        };
+        let has_unresolved = has_unresolved(slice, &folded_text);
         let referenced_later = unit_referenced_later(slice, text, &unit_texts[index + 1..]);
-        let is_error_or_decision = is_error_or_decision(slice, text);
+        let is_error_or_decision = is_error_or_decision(slice, &folded_text);
         let dependency = context
             .preserved_refs
             .iter()
@@ -190,30 +195,53 @@ fn compare_density(left: &UtilityUnitScore, right: &UtilityUnitScore) -> Orderin
 }
 
 fn unit_text(messages: &[Message]) -> String {
-    let mut parts = Vec::new();
+    let mut text = String::new();
+    let mut first_part = true;
     for message in messages {
         match &message.content {
-            Content::Text(text) => parts.push(text.clone()),
+            Content::Text(content) => append_unit_part(&mut text, &mut first_part, content),
             Content::Parts(content_parts) => {
                 for part in content_parts {
                     match part {
-                        ContentPart::Text { text } => parts.push(text.clone()),
+                        ContentPart::Text { text: content } => {
+                            append_unit_part(&mut text, &mut first_part, content)
+                        }
                         ContentPart::ToolResult {
                             call_id, output, ..
-                        } => parts.push(format!("{call_id} {output}")),
-                        ContentPart::Image { url, .. } => {
-                            parts.push(url.clone().unwrap_or_default())
+                        } => {
+                            append_unit_part(&mut text, &mut first_part, call_id.as_str());
+                            text.push(' ');
+                            text.push_str(output);
                         }
-                        ContentPart::Audio { .. } => parts.push("audio".into()),
+                        ContentPart::Image { url, .. } => append_unit_part(
+                            &mut text,
+                            &mut first_part,
+                            url.as_deref().unwrap_or_default(),
+                        ),
+                        ContentPart::Audio { .. } => {
+                            append_unit_part(&mut text, &mut first_part, "audio")
+                        }
                     }
                 }
             }
         }
         for call in &message.tool_calls {
-            parts.push(format!("{} {} {}", call.id, call.name, call.arguments));
+            append_unit_part(&mut text, &mut first_part, call.id.as_str());
+            text.push(' ');
+            text.push_str(call.name.as_str());
+            text.push(' ');
+            text.push_str(&call.arguments.to_string());
         }
     }
-    parts.join("\n")
+    text
+}
+
+fn append_unit_part(text: &mut String, first_part: &mut bool, part: &str) {
+    if !*first_part {
+        text.push('\n');
+    }
+    *first_part = false;
+    text.push_str(part);
 }
 
 fn contains_folded(text: &str, pattern: &str) -> bool {
@@ -232,7 +260,7 @@ fn directive_dependency(text: &str, directive: &str) -> bool {
     terms(text).intersection(&directive_terms).count() >= threshold
 }
 
-fn has_unresolved(messages: &[Message], text: &str) -> bool {
+fn has_unresolved(messages: &[Message], folded_text: &str) -> bool {
     let mut opened = BTreeSet::new();
     let mut resolved = BTreeSet::new();
     for message in messages {
@@ -254,8 +282,8 @@ fn has_unresolved(messages: &[Message], text: &str) -> bool {
         }
     }
     opened.iter().any(|call_id| !resolved.contains(call_id))
-        || marker(
-            text,
+        || marker_folded(
+            folded_text,
             &[
                 "unresolved",
                 "open question",
@@ -269,11 +297,11 @@ fn has_unresolved(messages: &[Message], text: &str) -> bool {
         )
 }
 
-fn is_error_or_decision(messages: &[Message], text: &str) -> bool {
+fn is_error_or_decision(messages: &[Message], folded_text: &str) -> bool {
     messages.iter().any(|message| {
         matches!(&message.content, Content::Parts(parts) if parts.iter().any(|part| matches!(part, ContentPart::ToolResult { is_error: true, .. })))
-    }) || marker(
-        text,
+    }) || marker_folded(
+        folded_text,
         &[
             "error", "failed", "failure", "exception", "decision", "decided", "must", "should",
             "错误", "失败", "异常", "决定", "选择", "必须", "应当",
@@ -281,8 +309,8 @@ fn is_error_or_decision(messages: &[Message], text: &str) -> bool {
     )
 }
 
-fn marker(text: &str, markers: &[&str]) -> bool {
-    markers.iter().any(|marker| contains_folded(text, marker))
+fn marker_folded(folded_text: &str, markers: &[&str]) -> bool {
+    markers.iter().any(|marker| folded_text.contains(marker))
 }
 
 fn unit_referenced_later(messages: &[Message], text: &str, later: &[String]) -> bool {
@@ -308,6 +336,12 @@ fn unit_referenced_later(messages: &[Message], text: &str, later: &[String]) -> 
 mod tests {
     use super::*;
     use crate::types::message::{ContentPart, ToolCall};
+
+    #[test]
+    fn unit_text_preserves_empty_part_separators() {
+        let messages = vec![Message::user(""), Message::user("next")];
+        assert_eq!(unit_text(&messages), "\nnext");
+    }
 
     #[test]
     fn unresolved_tool_unit_is_mandatory() {

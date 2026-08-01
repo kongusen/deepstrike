@@ -7,7 +7,7 @@ import type { ToolSuspendEvent } from "../../src/types.js"
 import type { GovernancePolicy } from "../../src/governance.js"
 import type { DreamStore } from "../../src/memory/protocols.js"
 import type { ArchiveStore } from "../../src/runtime/archive.js"
-import type { LargeResultSpool } from "../../src/runtime/large-result-spool.js"
+import type { PayloadStore } from "../../src/runtime/payload-store.js"
 
 export { tool } from "../../src/tools/index.js"
 
@@ -22,7 +22,7 @@ export function createRunner(
     memoryScope?: import("../../src/memory/protocols.js").MemoryScope
     dreamStore?: DreamStore
     compressionStore?: ArchiveStore
-    resultSpool?: LargeResultSpool
+    payloadStore?: PayloadStore
     onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
     onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
     governancePolicy?: GovernancePolicy
@@ -65,7 +65,7 @@ export function createRunner(
     memoryScope: opts.memoryScope,
     dreamStore: opts.dreamStore,
     compressionStore: opts.compressionStore,
-    resultSpool: opts.resultSpool,
+    payloadStore: opts.payloadStore,
     onToolSuspend: opts.onToolSuspend,
     onPermissionRequest: opts.onPermissionRequest,
     governancePolicy: opts.governancePolicy,

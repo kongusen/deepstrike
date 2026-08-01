@@ -26,7 +26,6 @@
 import { link, mkdir, open as openFile, readdir, readFile, rename, unlink } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import { dirname, join } from "node:path"
-import { KernelLogConflictError, KernelLogIntegrityError } from "./kernel-transaction-log.js"
 
 export const MAX_CHAIN_POSITION = 1_000_000_000_000
 
@@ -38,10 +37,9 @@ export const MAX_CHAIN_POSITION = 1_000_000_000_000
  * The CAS precondition did not hold: the journal head (or checkpoint pointer) moved.
  *
  * Retryable — the protocol response is `abort(token)` → re-read head → rebuild → replay the input
- * (spec §8.3, row "CAS conflict"). Extends the legacy `KernelLogConflictError` so existing callers
- * keep working while gaining the sharper type.
+ * (spec §8.3, row "CAS conflict").
  */
-export class JournalCasConflictError extends KernelLogConflictError {
+export class JournalCasConflictError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "JournalCasConflictError"
@@ -53,7 +51,7 @@ export class JournalCasConflictError extends KernelLogConflictError {
  * `step_seq` that does not follow its predecessor, a checkpoint whose `covered_head` does not match
  * the record at its `through_step_seq`. Never retryable — retrying replays the same contradiction.
  */
-export class JournalIntegrityError extends KernelLogIntegrityError {
+export class JournalIntegrityError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "JournalIntegrityError"

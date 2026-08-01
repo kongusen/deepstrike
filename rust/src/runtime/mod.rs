@@ -1,14 +1,17 @@
-//! Runtime v1 — session event log, execution planes, credential vault, and runner.
+//! Runtime API — session event log, execution planes, credential vault, and runner.
 
 pub mod archive;
 pub mod canonical_kernel;
+pub mod canonical_kernel_step;
+pub(crate) mod canonical_runner_runtime;
 pub mod credential_vault;
 pub mod eval;
 pub mod execution_plane;
+mod host_projection;
 pub mod kernel_journal;
-pub mod large_result_spool;
 pub mod mcp_proxy_plane;
 pub mod os_profile;
+pub mod payload_store;
 pub mod process_sandbox_plane;
 pub mod provider_replay;
 pub mod remote_vpc_plane;
@@ -25,6 +28,7 @@ pub use canonical_kernel::{
     CanonicalCheckpoint, CanonicalCheckpointCandidate, CanonicalCommit, CanonicalKernel,
     CanonicalPreparation,
 };
+pub use canonical_kernel_step::{CanonicalKernelHost, CanonicalTransition, HostTransitionError};
 pub use credential_vault::{
     ChainedCredentialVault, CredentialVault, EnvCredentialVault, InMemoryCredentialVault,
 };
@@ -46,6 +50,7 @@ pub use os_profile::{
     OsProfile, SchedulerPolicyConfig, SignalPolicy, assert_native_profile,
     default_native_governance_policy, governance_filter_schema, os_profile,
 };
+pub use payload_store::{FilePayloadStore, PayloadStore};
 pub use process_sandbox_plane::{ProcessSandboxPlane, SandboxOptions};
 pub use provider_replay::{
     assistant_replay_key, peek_provider_replay, seed_provider_replay_from_events,
@@ -53,8 +58,8 @@ pub use provider_replay::{
 pub use remote_vpc_plane::{RemoteVpcOptions, RemoteVpcPlane};
 pub use replay::{is_mid_run, repair_entries, replay_messages};
 pub use runner::{
-    MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy, OnTurnMetricsHandler,
-    RuntimeOptions, RuntimeRunner, TurnMetrics, collect_text,
+    KernelReliability, MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy,
+    OnTurnMetricsHandler, RuntimeOptions, RuntimeRunner, TurnMetrics, collect_text,
 };
 pub use sandboxed_skill::{PythonSkillPolicy, SkillKind, scan_skill_dir};
 pub use session_log::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};

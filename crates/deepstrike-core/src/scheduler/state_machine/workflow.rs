@@ -63,49 +63,6 @@ impl LoopStateMachine {
         });
     }
 
-    pub(crate) fn validate_workflow_spawn_result(
-        &self,
-        started_agent_ids: &[String],
-        failures: &[crate::runtime::kernel::WorkflowSpawnFailure],
-        error: Option<&str>,
-    ) -> Result<(), String> {
-        let pending = self
-            .pending_workflow_spawn
-            .as_ref()
-            .ok_or_else(|| "workflow spawn result has no pending batch".to_string())?;
-        if error.is_some() {
-            return if started_agent_ids.is_empty() && failures.is_empty() {
-                Ok(())
-            } else {
-                Err("batch error cannot include per-agent results".to_string())
-            };
-        }
-
-        let expected: std::collections::HashSet<&str> = pending
-            .nodes
-            .iter()
-            .map(|node| node.agent_id.as_str())
-            .collect();
-        let mut actual = std::collections::HashSet::with_capacity(expected.len());
-        for agent_id in started_agent_ids
-            .iter()
-            .map(String::as_str)
-            .chain(failures.iter().map(|failure| failure.agent_id.as_str()))
-        {
-            if !actual.insert(agent_id) {
-                return Err(format!(
-                    "duplicate workflow spawn result for agent {agent_id}"
-                ));
-            }
-        }
-        if actual != expected {
-            return Err(
-                "workflow spawn result must resolve every requested agent exactly once".to_string(),
-            );
-        }
-        Ok(())
-    }
-
     /// Whether a workflow DAG is currently in flight.
     pub fn workflow_active(&self) -> bool {
         self.workflow.is_some()
@@ -420,18 +377,13 @@ impl LoopStateMachine {
             match self.evaluate_spawn_quota_deferrable() {
                 Disposition::Allow => {
                     let agent_id = manifest.agent_id.to_string();
-                    // §10.4: an ack-gated run mints identity here and stops at `PendingLaunch` —
-                    // the child is a committed kernel fact, not yet a running process. The legacy
-                    // path keeps seeding `Running` at this exact point.
-                    let child = if self.ack_gated_launch {
-                        Tcb::spawned_in(
-                            &manifest,
-                            self.policy.clone(),
-                            TaskLifecycle::PendingLaunch,
-                        )
-                    } else {
-                        Tcb::spawned(&manifest, self.policy.clone())
-                    };
+                    // §10.4: mint identity here and stop at `PendingLaunch` — the child is a
+                    // committed kernel fact, not yet a running process.
+                    let child = Tcb::spawned_in(
+                        &manifest,
+                        self.policy.clone(),
+                        TaskLifecycle::PendingLaunch,
+                    );
                     self.tasks.insert(child);
                     if let Some(run) = self.workflow.as_mut() {
                         run.mark_spawned(node, &agent_id);
@@ -614,8 +566,7 @@ impl LoopStateMachine {
             // §10.4 / §15.3: this acknowledgement is the *only* transition that makes a task
             // `Running`. Before it the task was `PendingLaunch`/`Starting` — identity the kernel
             // minted — so the host confirms an execution, it never creates one.
-            if self.ack_gated_launch
-                && let Some(task) = self.tasks.get_mut(node.agent_id.as_str())
+            if let Some(task) = self.tasks.get_mut(node.agent_id.as_str())
                 && !task.state.is_terminal()
             {
                 task.state = TaskLifecycle::Running;

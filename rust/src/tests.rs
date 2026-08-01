@@ -559,7 +559,7 @@ mod tests {
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 2048,
@@ -671,7 +671,7 @@ mod tests {
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 2048,
@@ -798,7 +798,7 @@ mod tests {
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 4096,
@@ -899,7 +899,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(session_log.clone()),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1_000,
@@ -1103,7 +1103,7 @@ mod tests {
             execution_plane: Some(Box::new(plane)),
             session_log: Some(session_log.clone()),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -1213,7 +1213,7 @@ mod tests {
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -1304,7 +1304,7 @@ mod tests {
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -1412,7 +1412,7 @@ mod tests {
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -1463,66 +1463,6 @@ mod tests {
         }
         assert!(done_seen);
         assert!(*called.lock().unwrap());
-    }
-
-    #[tokio::test]
-    async fn test_local_execution_plane_spool_read_intercept() {
-        use crate::runtime::execution_plane::{ExecutionPlane, LocalExecutionPlane, RunContext};
-        use deepstrike_core::types::message::ToolCall;
-
-        // 1. Create a dummy spool file
-        let spool_dir = std::path::Path::new(".spool");
-        let _ = std::fs::create_dir_all(spool_dir);
-        let spool_file = spool_dir.join("test-spool-intercept.txt");
-        let expected_content =
-            "This is the spooled output content that should be transparently read!";
-        std::fs::write(&spool_file, expected_content).unwrap();
-
-        // 2. Create local execution plane
-        let plane = LocalExecutionPlane::new();
-        let call = ToolCall {
-            id: compact_str::CompactString::new("call_read"),
-            name: compact_str::CompactString::new("read_file"),
-            arguments: serde_json::json!({
-                "path": spool_file.to_string_lossy().to_string()
-            }),
-        };
-
-        let ctx = RunContext {
-            agent_id: None,
-            memory_scope: None,
-            skill_dir: None,
-            dream_store: None,
-            knowledge_source: None,
-            governance: None,
-            on_tool_suspend: None,
-            on_permission_request: None,
-        };
-
-        let events: Vec<RunEvent> = plane
-            .execute_all(&[call], ctx)
-            .map(|r| r.unwrap())
-            .collect()
-            .await;
-
-        // 3. Clean up the spool file
-        let _ = std::fs::remove_file(spool_file);
-
-        // 4. Assert transparent intercept worked
-        assert_eq!(events.len(), 1);
-        if let RunEvent::ToolResult {
-            call_id,
-            content,
-            is_error,
-            ..
-        } = &events[0]
-        {
-            assert_eq!(call_id, "call_read");
-            assert_eq!(content, expected_content);
-            assert!(!is_error);
-        } else {
-            panic!("Expected RunEvent::ToolResult");
-        }
     }
 
     use crate::memory::DreamStore;
@@ -1593,7 +1533,6 @@ mod tests {
     async fn test_page_out_observation_does_not_trigger_dream_store_io() {
         use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
         use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
-        use deepstrike_core::types::message::{Message, Role};
         use std::sync::Arc;
 
         let memories = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1643,7 +1582,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -1692,8 +1631,21 @@ mod tests {
             archive_ref: Some("archive://batch".to_string()),
         }];
 
-        let kernel = std::sync::Mutex::new(deepstrike_core::runtime::kernel::KernelRuntime::new(
-            deepstrike_core::scheduler::policy::SchedulerBudget::default(),
+        let kernel = Arc::new(tokio::sync::Mutex::new(
+            crate::runtime::canonical_runner_runtime::CanonicalRunnerRuntime::new(
+                crate::runtime::canonical_kernel::CanonicalKernel::default(),
+                Arc::new(crate::runtime::InMemoryKernelJournal::new()),
+                "test-session",
+                crate::runtime::canonical_runner_runtime::CanonicalRunnerOptions {
+                    max_context_tokens: 1_000,
+                    max_turns: Some(3),
+                    max_total_tokens: None,
+                    max_wall_ms: None,
+                    memory_binding_id: "test-memory".into(),
+                    persist_payload: None,
+                },
+            )
+            .unwrap(),
         ));
         runner
             .append_observations(
@@ -1758,7 +1710,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(session_log.clone()),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -1866,7 +1818,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(session_log.clone()),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -1949,18 +1901,9 @@ mod tests {
             token_cost_weight: 1,
         };
 
-        let event = deepstrike_core::runtime::KernelInputEvent::ConfigureRun {
-            config: deepstrike_core::runtime::kernel::RunConfig {
-                scheduler_policy: Some(scheduler_policy),
-                ..Default::default()
-            },
-        };
-        let json = serde_json::to_value(event).unwrap();
-        assert_eq!(
-            json["config"]["scheduler_policy"]["critical_path_weight"],
-            1_000_000
-        );
-        assert!(json["config"].get("scheduler_max_wall_ms").is_none());
+        let json = serde_json::to_value(scheduler_policy).unwrap();
+        assert_eq!(json["critical_path_weight"], 1_000_000);
+        assert!(json.get("scheduler_max_wall_ms").is_none());
 
         let write_limit: (u32, u64) = MemoryWriteRateLimit {
             max_writes: 3,
@@ -2025,7 +1968,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(session_log.clone()),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -2128,7 +2071,7 @@ mod tests {
             execution_plane: None,
             session_log: Some(session_log.clone()),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -2238,117 +2181,65 @@ mod tests {
     // Task 0 pre-migration stop-the-bleeding regressions (canonical-kernel-abi Phase 0).
     // ---------------------------------------------------------------------------------------
 
-    /// R-B29: a kernel fault must reach the host as a `Result` error, never a panic. The whole
-    /// fail-closed family (`UnexpectedEffectResult`, `InvalidLifecycle`, …) exits through this
-    /// helper, so a `panic!` here turns every protocol violation into a process-level crash
-    /// instead of a clean, recoverable run terminal (node throws, python raises).
-    #[test]
-    fn take_single_action_surfaces_kernel_fault_as_error_not_panic() {
-        use crate::runtime::runner::take_single_action;
-        use deepstrike_core::runtime::kernel::{KernelFault, KernelFaultCode, KernelStep};
-
-        let faulted = KernelStep {
-            version: 2,
-            operation_id: "op-1".to_string(),
-            input_event_id: "evt-1".to_string(),
-            step_seq: 7,
-            actions: Vec::new(),
-            observations: Vec::new(),
-            faults: vec![KernelFault {
-                code: KernelFaultCode::UnexpectedEffectResult,
-                message: "effect result does not match a pending effect: eff-9".to_string(),
-                operation_id: Some("op-1".to_string()),
-                event_id: Some("evt-1".to_string()),
-                effect_id: Some("eff-9".to_string()),
-            }],
-        };
-
-        // `catch_unwind` is the counter-proof: the old `expect(...)` would unwind here.
-        let outcome = std::panic::catch_unwind(move || take_single_action(faulted));
-        let result = outcome.expect("kernel fault must not panic the host process");
-        let err = result.expect_err("kernel fault must surface as Err");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("UnexpectedEffectResult"),
-            "fault code must survive into the host error: {msg}"
-        );
-        assert!(
-            msg.contains("does not match a pending effect"),
-            "fault message must survive into the host error: {msg}"
-        );
-    }
-
-    /// R-B29 (second half): an actionless, faultless step is still a protocol violation — report
-    /// it as `Err`, not by unwinding out of the runner's async generator.
-    #[test]
-    fn take_single_action_without_action_returns_error_not_panic() {
-        use crate::runtime::runner::take_single_action;
-        use deepstrike_core::runtime::kernel::KernelStep;
-
-        let empty = KernelStep {
-            version: 2,
-            operation_id: "op-2".to_string(),
-            input_event_id: "evt-2".to_string(),
-            step_seq: 1,
-            actions: Vec::new(),
-            observations: Vec::new(),
-            faults: Vec::new(),
-        };
-
-        let outcome = std::panic::catch_unwind(move || take_single_action(empty));
-        let result = outcome.expect("empty step must not panic the host process");
-        assert!(result.is_err(), "empty step must surface as Err");
-    }
-
-    /// R-B29 (apply path): `kernel_apply` used to drop `step.faults` on the floor, so a rejected
-    /// configuration/history input left the run marching on against state the kernel never
-    /// accepted. Node's twin (`durableKernelApply`) throws; the rust helper must return `Err`.
-    #[test]
-    fn kernel_apply_surfaces_kernel_fault_instead_of_succeeding_silently() {
+    /// R-B29 / Task 21b: a canonical transition rejection must reach the runner as `Result::Err`,
+    /// never as a panic or a silently dropped legacy `KernelStep::faults` entry.
+    #[tokio::test]
+    async fn kernel_apply_surfaces_canonical_rejection() {
         use crate::runtime::runner::kernel_apply;
-        use deepstrike_core::runtime::kernel::{
-            KernelInputEvent, KernelReliabilityConfig, KernelRuntime, RunConfig,
-        };
-        use deepstrike_core::scheduler::policy::SchedulerBudget;
+        use std::sync::Arc;
 
-        let mut kernel = KernelRuntime::new(SchedulerBudget::default());
-        let configured = kernel.step(deepstrike_core::runtime::kernel::KernelInput::new(
-            KernelInputEvent::ConfigureRun {
-                config: RunConfig {
-                    reliability: Some(KernelReliabilityConfig {
-                        max_input_bytes: Some(512),
-                        ..KernelReliabilityConfig::default()
-                    }),
-                    ..RunConfig::default()
+        let kernel = Arc::new(tokio::sync::Mutex::new(
+            crate::runtime::canonical_runner_runtime::CanonicalRunnerRuntime::new(
+                crate::runtime::canonical_kernel::CanonicalKernel::default(),
+                Arc::new(crate::runtime::InMemoryKernelJournal::new()),
+                "canonical-rejection",
+                crate::runtime::canonical_runner_runtime::CanonicalRunnerOptions {
+                    max_context_tokens: 1_000,
+                    max_turns: Some(3),
+                    max_total_tokens: None,
+                    max_wall_ms: None,
+                    memory_binding_id: "test-memory".into(),
+                    persist_payload: None,
                 },
-            },
+            )
+            .unwrap(),
         ));
-        assert!(configured.faults.is_empty(), "setup must be accepted");
 
         let mut observations = Vec::new();
+        {
+            let mut runtime = kernel.lock().await;
+            runtime
+                .start_agent_value(
+                    serde_json::json!({
+                        "goal": "exercise canonical rejection",
+                        "criteria": [],
+                    }),
+                    None,
+                )
+                .await
+                .expect("start must produce a pending provider effect");
+        }
+
         let err = kernel_apply(
-            &mut kernel,
+            &kernel,
             &mut observations,
-            // Oversized input ⇒ `ResourceLimitExceeded`, rejected before any state change.
-            KernelInputEvent::AddSystemMessage {
-                content: "x".repeat(2_048),
-                tokens: 512,
-            },
+            serde_json::json!({
+                "kind": "provider_result",
+                "effect_id": "not-the-pending-effect",
+                "message": {
+                    "role": "assistant",
+                    "content": "unexpected",
+                    "tool_calls": [],
+                },
+            }),
         )
+        .await
         .expect_err("a faulted apply-only transition must not report success");
         let msg = err.to_string();
         assert!(
-            msg.contains("ResourceLimitExceeded"),
+            msg.contains("unexpected_effect_outcome"),
             "fault code must survive into the host error: {msg}"
         );
-
-        // Same helper, an accepted input: still `Ok`, observations still forwarded.
-        kernel_apply(
-            &mut kernel,
-            &mut observations,
-            KernelInputEvent::SetMemoryEnabled { enabled: true },
-        )
-        .expect("an accepted apply-only transition stays Ok");
     }
 
     /// End-to-end companion: the `?` threading actually reaches the caller — a rejected
@@ -2358,9 +2249,10 @@ mod tests {
     async fn runner_surfaces_apply_path_kernel_fault_to_the_caller() {
         use crate::providers::LLMProvider;
         use crate::providers::StreamEvent;
-        use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
+        use crate::runtime::runner::{
+            KernelReliability, MilestonePolicy, RuntimeOptions, RuntimeRunner,
+        };
         use crate::runtime::session_log::InMemorySessionLog;
-        use deepstrike_core::runtime::kernel::KernelReliabilityConfig;
         use std::sync::Arc;
 
         struct FakeProvider;
@@ -2389,10 +2281,10 @@ mod tests {
             execution_plane: None,
             session_log: Some(Arc::new(InMemorySessionLog::new())),
             compression_store: None,
-            spool_dir: None,
-            kernel_reliability: Some(KernelReliabilityConfig {
+            payload_store: None,
+            kernel_reliability: Some(KernelReliability {
                 max_input_bytes: Some(8_192),
-                ..KernelReliabilityConfig::default()
+                ..KernelReliability::default()
             }),
             session_id: None,
             max_tokens: 100_000,
@@ -2447,7 +2339,7 @@ mod tests {
 
         let msg = fault_err.expect("a rejected apply-path input must reach the caller as Err");
         assert!(
-            msg.contains("ResourceLimitExceeded"),
+            msg.contains("resource_limit_exceeded"),
             "fault code must survive into the host error: {msg}"
         );
         assert!(
@@ -2499,7 +2391,7 @@ mod tests {
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(session_log.clone()),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -2621,7 +2513,7 @@ mod tests {
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(session_log.clone()),
             compression_store: None,
-            spool_dir: None,
+            payload_store: None,
             kernel_reliability: None,
             session_id: None,
             max_tokens: 1000,
@@ -2700,5 +2592,48 @@ mod tests {
             entry.event,
             deepstrike_core::runtime::session::SessionEvent::MilestoneAdvanced { .. }
         )));
+    }
+
+    #[test]
+    fn rust_production_runtime_does_not_reference_the_retired_kernel_input_abi() {
+        let runtime_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime");
+        let production_modules = [
+            runtime_dir.join("runner.rs"),
+            runtime_dir.join("canonical_kernel_step.rs"),
+            runtime_dir.join("canonical_runner_runtime.rs"),
+            runtime_dir.join("os_profile.rs"),
+        ];
+        let forbidden = [
+            "KernelInputEvent",
+            "KernelRuntime",
+            "ABI-v1",
+            "ABI-v2",
+            "\"abi_version\": 3",
+            ".step(",
+        ];
+        let mut hits = Vec::new();
+
+        for path in production_modules {
+            let source = std::fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+            for (line_index, line) in source.lines().enumerate() {
+                for needle in forbidden {
+                    if line.contains(needle) {
+                        hits.push(format!(
+                            "{}:{} contains {needle:?}: {}",
+                            path.display(),
+                            line_index + 1,
+                            line.trim()
+                        ));
+                    }
+                }
+            }
+        }
+
+        assert!(
+            hits.is_empty(),
+            "retired kernel input ABI is still reachable from Rust production modules:\n{}",
+            hits.join("\n")
+        );
     }
 }

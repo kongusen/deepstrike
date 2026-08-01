@@ -2,9 +2,11 @@
 
 SessionLog is DeepStrike's evidence chain: each run appends LLM output, tool requests, tool results, compression, permission, process, memory, and workflow events to one session stream. It supports:
 
-- **Recovery**: rebuild state or workflow progress from session events
+- **Diagnostics**: fold OS Snapshots or inspect historical workflow projections offline
 - **Audit**: filter important events by kernel primitive
 - **Reproduction**: replay model output via provider replay / ReplayProvider
+
+Production recovery is a separate path: hosts persist an opaque logical checkpoint and canonical KernelJournal, then restore by installing the checkpoint and replaying only the bounded tail. SessionLog never reconstructs production control state.
 
 **Code entry points**:
 
@@ -20,12 +22,12 @@ SessionLog is DeepStrike's evidence chain: each run appends LLM output, tool req
 | Responsibility | Description |
 |----------------|-------------|
 | Event log | SessionLog is the append-only evidence stream for a run |
-| Recovery | Workflow, memory, permission, tool, and provider events can be folded into current state |
+| Recovery | Canonical checkpoints and KernelJournal records restore complete logical state; SessionLog has no state authority |
 | Audit | Events can be filtered by kernel primitive to see which plane did what |
 | Reproduction | provider replay / ReplayProvider makes tests independent of live model calls |
 | Operations | OS Snapshot summarizes session events into dashboard-ready state |
 
-The session plane is the Agent OS journal. Without it, the system only "ran once"; with it, it can explain, recover, replay, and operate.
+The session plane is the Agent OS evidence stream; KernelJournal is the transaction authority. SessionLog explains, reproduces, and supports operations, while logical checkpoints and the journal own production recovery.
 
 ![Session Replay & Recovery Mechanisms](/session_replay_mechanisms.svg)
 
@@ -63,7 +65,7 @@ async for event in runner.run("fix payment bug", session_id="pay-bug-42"):
 events = await session_log.read("pay-bug-42")
 ```
 
-If `session_id` is omitted, the SDK creates a new id. Pass one explicitly for recovery, audit, or RunGroup membership alignment.
+If `session_id` is omitted, the SDK creates a new id. Pass one explicitly to correlate checkpoint/journal state, audit evidence, or RunGroup membership.
 
 ## Level 3: Read and Filter Events
 
@@ -81,13 +83,13 @@ Common events:
 
 | kind | Purpose |
 |------|---------|
-| `run_started` / `run_terminal` | run lifecycle; `run_started` also carries any multimodal `attachments`, restored as a `Content::Parts` turn on resume |
+| `run_started` / `run_terminal` | run lifecycle and multimodal-attachment audit projections; authoritative restore state lives in the logical checkpoint |
 | `llm_completed` | assistant text, tool_calls, provider_replay |
 | `tool_requested` / `tool_completed` | tool evidence |
 | `compressed` / `context_renewed` | Context VM compression and renewal |
 | `tool_gated` / `permission_requested` / `permission_resolved` | permission path |
 | `agent_process_changed` | sub-agent lineage |
-| `workflow_node_completed` / `workflow_nodes_submitted` | workflow recovery |
+| `workflow_node_completed` / `workflow_nodes_submitted` | workflow audit and offline diagnostic projections |
 | `memory_written` / `memory_queried` / `memory_validation_failed` | memory syscalls |
 
 ## Level 4: Provider Replay
@@ -132,7 +134,7 @@ events = await session_log.read("pay-bug-42")
 repaired = repair_events_for_recovery(events, max_bytes=100_000)
 ```
 
-`repair_events_for_recovery`:
+`repair_events_for_recovery` retains its historical name as an offline log-repair helper; it neither emits canonical inputs nor restores a kernel. It:
 
 - sanitizes `llm_completed.content`
 - backfills `token_count`
@@ -159,7 +161,7 @@ print(snapshot.process_by_agent)
 print(snapshot.tool_gated_count)
 ```
 
-Use it for dashboards / debug views. It is not a replacement for kernel snapshots.
+Use it for dashboards / debug views. It is not a replacement for the canonical Kernel Checkpoint.
 
 ## Boundaries
 
@@ -168,8 +170,8 @@ Use it for dashboards / debug views. It is not a replacement for kernel snapshot
 | append-only evidence chain | yes |
 | strong multi-process write consistency | depends on your `SessionLog` implementation |
 | provider-native replay | depends on provider descriptor / replay hooks |
-| completed workflow-node recovery | yes, via `workflow_node_completed` |
-| runtime append recovery | yes, via `workflow_nodes_submitted` |
+| completed workflow-node recovery | no; logical checkpoint + KernelJournal own it |
+| runtime append recovery | no; checkpoint workflow graph state owns it |
 | rollback of filesystem / tool side effects | no; tools need idempotency or compensation |
 
 ## Verification Entry Points

@@ -8,7 +8,6 @@ import { formatToolError } from "../tools/errors.js"
 import { readSkillFile } from "../skills/loader.js"
 import type { DreamStore, MemoryScope } from "../memory/protocols.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
-import { LargeResultSpool } from "./large-result-spool.js"
 import type { OperationContext } from "./reliability.js"
 
 export interface RunContext {
@@ -21,7 +20,6 @@ export interface RunContext {
   knowledgeSource?: KnowledgeSource
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
-  resultSpool?: LargeResultSpool
   /** M3/G4 worktree isolation: the working directory a sub-agent's tools should run in (the git
    *  worktree created for an `isolation: "worktree"` node). Injected by `WorktreeExecutionPlane`; a
    *  cwd-aware execution plane / tool reads it to scope filesystem + subprocess work. Undefined ⇒
@@ -137,31 +135,7 @@ export class LocalExecutionPlane implements ExecutionPlane {
     }
   }
 
-  private async tryReadSpooledArgument(call: ToolCall, ctx: RunContext): Promise<string | null> {
-    const isReadTool = ["read", "read_file", "view_file", "read_spooled_result"].includes(call.name)
-    if (!isReadTool) return null
-
-    try {
-      const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
-      for (const val of Object.values(args)) {
-        if (typeof val === "string" && (val.startsWith(".spool/") || val.includes("/.spool/"))) {
-          const spool = ctx.resultSpool ?? new LargeResultSpool()
-          const content = await spool.readSpooledResult(val)
-          return content
-        }
-      }
-    } catch {
-      // Ignore errors
-    }
-    return null
-  }
-
   private async *executeSingle(call: ToolCall, ctx: RunContext): AsyncGenerator<StreamEvent, ToolResult> {
-    const spooledContent = await this.tryReadSpooledArgument(call, ctx)
-    if (spooledContent !== null) {
-      return { callId: call.id, output: spooledContent, isError: false }
-    }
-
     const registered = this.tools.get(call.name)
     if (!registered) return { callId: call.id, output: `unknown tool: ${call.name}`, isError: true }
     // `audit` failure buffer is hoisted above the try-block so the catch path can flush any

@@ -15,7 +15,6 @@ def category_for_kind(kind: str) -> KernelEventCategory:
         "page_in_requested",
         "renewed",
         "context_renewed",
-        "large_result_spooled",
         "memory_written",
         "memory_queried",
         "memory_validation_failed",
@@ -139,7 +138,7 @@ def kernel_observation_to_session_event(
             "kind": "agent_process_changed",
             "turn": t,
             "agent_id": obs.get("agent_id") or "",
-            "parent_session_id": obs.get("parent_session_id") or "",
+            "parent_task_id": obs.get("parent_task_id") or "",
             "role": obs.get("role") or "",
             "isolation": obs.get("isolation") or "",
             "context_inheritance": obs.get("context_inheritance") or "",
@@ -210,16 +209,6 @@ def kernel_observation_to_session_event(
         }
     if kind == "page_in_requested":
         return None
-    if kind == "large_result_spooled":
-        return {
-            "kind": "large_result_spooled",
-            "turn": t,
-            "call_id": obs.get("call_id") or "",
-            "tool": obs.get("tool") or "",
-            "original_size": obs.get("original_size") or 0,
-            "preview_size": obs.get("preview_size") or 0,
-            "spool_ref": obs.get("spool_ref"),
-        }
     if kind == "page_out_archived":
         return {
             "kind": "page_out",

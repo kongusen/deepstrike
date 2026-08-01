@@ -6,8 +6,9 @@ target/
 node_modules/
 dist/
 *.tgz
-# LargeResultSpool / payload test artifacts (opaque payload refs land here)
+# Runtime payload artifacts
 node/.spool/
+.payloads/
 
 # Python
 __pycache__/

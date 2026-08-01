@@ -108,7 +108,6 @@ Snapshot fields:
 | `budget_exceeded` | `budget_exceeded` |
 | `signals` | `signal_delivery_disposed` |
 | `page_out_count` / `page_in_count` | memory paging |
-| `spool_count` | `large_result_spooled` |
 | `tool_gated_count` | `tool_gated` |
 | memory counters | `memory_*` events |
 
@@ -123,24 +122,24 @@ assert session_log_has_required_categories(events)
 
 This verifies kernel events carry correct `category` and `primitive`, useful before CI or dashboard ingest.
 
-## OS Snapshot vs Kernel Snapshot
+## OS Snapshot vs Kernel Checkpoint
 
 | Name | Purpose | Can restore execution? |
 |------|---------|------------------------|
 | OS Snapshot | observed summary folded from SessionLog | no |
-| KernelSnapshot | accepted ABI transactions plus validation metadata | yes, for exact wake / replay |
+| Kernel Checkpoint | opaque logical state, digests, and a bounded journal tail | yes, for exact wake / replay |
 | ContextSnapshot | context partition snapshot | partially, for context restore |
 
-OS Snapshot is for humans and monitoring. `KernelSnapshot` is for runtime recovery. It does not serialize private state-machine structs: restore deterministically replays the public ABI and verifies lifecycle, operation, step/effect identity, and the terminal latch. Node exposes `snapshotKernelRuntime` / `restoreKernelRuntime`; Python exposes `snapshot_kernel_runtime` / `restore_kernel_runtime`. Configure the bound with `kernelReliability.snapshotInputLimit` or `KernelReliability.snapshot_input_limit`.
+OS Snapshot is for humans and monitoring. The canonical Kernel Checkpoint is for runtime recovery. It neither serializes private state-machine structs nor stores the complete accepted-input history or a derived planned step; it stores logical state by transition/P1/P2/P3 owner and verifies state/tail digests. Hosts manage it through candidate -> persist -> covered-head CAS install -> ack, then restore only the bounded tail and journal records after the checkpoint.
 
 ## Production Practices
 
 1. Do not use `native` profile as your production safety boundary.
 2. Default write / deploy / shell tools to `ask_user` or `deny`.
 3. Check `session_log_has_required_categories` before dashboard ingest.
-4. Build OS Snapshot periodically for long runs and watch `tool_gated_count`, `spool_count`, and memory validation failures.
+4. Build OS Snapshot periodically for long runs and watch `tool_gated_count`, paging, and memory validation failures.
 5. Combine Profile with `ResourceQuota`: profile governs policy; quota governs resources.
-6. Size the snapshot input limit to the recovery window. Once exceeded, snapshot creation fails explicitly with `snapshot_incompatible` instead of emitting a partial checkpoint.
+6. Size the checkpoint tail count/byte soft watermark and hard limit for the recovery objective; the hard limit returns retryable `CheckpointRequired` without accepting the input or setting a permanent overflow latch.
 
 ## Verification Entry Points
 

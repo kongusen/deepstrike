@@ -1,39 +1,33 @@
-# Kernel ABI v2 Performance Baseline
+# Canonical Kernel Performance Baseline
 
-Date: 2026-07-15. Profile: Apple Silicon, optimized Rust `bench` profile.
+Date: 2026-07-31. Profile: Apple Silicon, optimized Rust `bench` profile.
 
-Run with:
+Run:
 
 ```bash
 cargo bench -p deepstrike-core --bench kernel_baseline
 ```
 
-| Scenario | Time | Allocations | Allocated bytes |
+## Executable Gate
+
+Elapsed time remains characterization data because local scheduling is noisy. The release gate uses stable cumulative allocation counts/bytes; the benchmark panics and exits nonzero when any budget is exceeded.
+
+| Scenario | Observed time | Observed allocations | Gate budget (count / bytes) |
 |---|---:|---:|---:|
-| 10k kernel steps | 14.505 ms (1.450 µs/op) | 285,016 | 34,756,685 |
-| 1k-message render, 100 iterations | 5.077 ms (50.769 µs/op) | 100,900 | 41,505,800 |
-| forced compression | 0.226 ms | 4,052 | 1,504,608 |
-| 100-node workflow submit | 0.223 ms | 4,705 | 653,475 |
-| 10k signal deliveries | 29.360 ms (2.936 µs/op) | 620,018 | 57,193,012 |
-| 10k-input snapshot encode | 4.456 ms | 30,031 | 14,287,767 |
-| 10k-input snapshot decode + deterministic replay | 40.499 ms | 1,220,283 | 129,141,254 |
-| encoded snapshot size | 3,556,595 bytes | — | — |
+| 1k canonical operation constructions (configure + agent start) | 90.146 ms (90.146 µs/op) | 1,289,020 / 266,064,480 | 1,500,000 / 310,000,000 |
+| 1k-message canonical start | 6.437 ms | 87,577 / 28,460,449 | 100,000 / 34,000,000 |
+| canonical forced compression | 3.180 ms | 28,658 / 5,083,105 | 32,000 / 6,000,000 |
+| 100-node canonical workflow start | 0.570 ms | 13,637 / 2,295,992 | 16,000 / 2,800,000 |
+| 1k canonical signal deliveries | 52.313 ms (52.313 µs/op) | 2,061,745 / 262,157,154 | 2,400,000 / 310,000,000 |
 
-Allocation counts include reallocations and report cumulative allocated bytes during each measured section, not peak live memory. These numbers are characterization data, not release gates. They justify keeping snapshot history explicitly bounded and SDK-configurable; optimize only after a repeatable regression appears in this harness.
+Every scenario uses strict envelope decoding, core record construction, and prepare/commit; the benchmark no longer calls the retired direct-step runtime. The large-context, compression, workflow, and signal scenarios all carry real canonical payloads. The signal baseline is limited to 1k deliveries so it remains inside the default bounded-tail hard limit; the fixed-tail gate below covers long-running restore behavior.
 
-## Recovery hot-path result
+## Restore-Cost Gate
 
-After replacing JSON-tree fingerprints with canonical JSON bytes, serializing snapshots from a
-borrowed view, and suppressing duplicate journal recording during deterministic restore:
+The full-journal snapshot has been removed, so its historical encode/decode/replay numbers are no longer a valid baseline for the current API. The restore gate directly proves that logical-checkpoint cost is bounded by the tail rather than total run length:
 
-| Scenario | Before | After | Allocation change |
-|---|---:|---:|---:|
-| 10k kernel steps | 0.899 µs/op, 285,016 allocs / 34,756,685 bytes | 0.701 µs/op, 185,016 allocs / 25,878,051 bytes | -35.1% allocs, -25.5% bytes |
-| 10k signal deliveries | 2.340 µs/op, 620,018 allocs / 57,193,012 bytes | 2.049 µs/op, 370,018 allocs / 45,646,446 bytes | -40.3% allocs, -20.2% bytes |
-| 10k-input snapshot encode | 5.656 ms, 30,031 allocs / 14,287,767 bytes | 3.061 ms, 17 allocs / 8,388,487 bytes | -99.9% allocs, -41.3% bytes |
-| 10k-input snapshot decode + replay | 48.042 ms, 1,220,283 allocs / 129,141,254 bytes | 20.025 ms, 390,168 allocs / 56,408,963 bytes | -68.0% allocs, -56.3% bytes |
+```bash
+cargo test -p deepstrike-core long_run_restore_cost_is_bounded_by_the_tail_not_the_run -- --nocapture
+```
 
-Elapsed time is retained as characterization data because it is sensitive to local scheduling;
-allocation counts and bytes are the primary regression signal for this slice. Snapshot wire bytes
-are measured after a warm run. The byte-resource metadata adds 98 snapshot bytes; the encoded
-10k-input checkpoint is 3,556,693 bytes.
+The benchmark also asserts that DAG F1 improves critical-path makespan, F2 has zero loop waiting rounds, and F3 covers all 12 termination cases. Allocation counts include reallocations; bytes are cumulative allocations during each measured section, not peak live memory.

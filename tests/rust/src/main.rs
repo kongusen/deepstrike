@@ -8,8 +8,6 @@ mod t07_harness;
 mod t08_sdk;
 mod t09_api;
 mod t10_sdk_paths;
-mod t11_runtime;
-mod t12_golden_fixtures;
 mod t13_transaction;
 mod t14_milestone;
 mod t15_sub_agent;

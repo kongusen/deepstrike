@@ -137,7 +137,7 @@ async def test_run_records_compressed_event():
 
   events = await session_log.read(session_id)
   # ABI-v3 keeps compaction decisions in the canonical journal rather than projecting
-  # ABI-v2 ``compressed`` repairs into SessionLog.
+  # Legacy ``compressed`` repairs into SessionLog.
   run_id = [entry.event["run_id"] for entry in events if entry.event.get("kind") == "run_started"][-1]
   assert await runner.resolve_kernel_journal().head(f"python-operation-{run_id}") is not None
 

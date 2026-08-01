@@ -5,7 +5,6 @@ from deepstrike.runtime.context_policy import (
     normalize_context_policy_v1,
     ratio_to_ppm,
 )
-from deepstrike.runtime.kernel_transaction_log import kernel_record_digest
 
 
 def test_normalizes_context_ratios_to_cross_sdk_integer_ppm_wire():
@@ -25,7 +24,6 @@ def test_normalizes_context_ratios_to_cross_sdk_integer_ppm_wire():
         "collapse_old_assistant_narration": True,
         "idle_micro_compact_minutes": 60,
     }
-    assert kernel_record_digest(wire) == "a8ea8875b056cb07c15b7832b5a90aa809041e91aeaf58462c402bce2312351b"
     assert ratio_to_ppm(0.1234565) == 123_457
 
 

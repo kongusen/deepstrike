@@ -3,7 +3,7 @@
 code_refs:
   node: [RuntimeRunner, LLMProvider, SessionLog, Governance]
   fields:
-    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, result_spool, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, dream_store, memory_policy, pre_query_memory, knowledge_source, dream_provider, dream_summarizer, governance, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, is_workflow_node, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
+    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, dream_store, memory_policy, pre_query_memory, knowledge_source, dream_provider, dream_summarizer, governance, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
 ---
 
 # RuntimeOptions 参考
@@ -35,7 +35,7 @@ Python `RuntimeRunner` 的配置中心。定义：`python/deepstrike/runtime/run
 | 字段 | 说明 |
 |------|------|
 | `compression_store` | 压缩归档 `ArchiveStore` |
-| `result_spool` | 大工具结果 spool |
+| `payload_store` | canonical opaque payload 存储 |
 | `initial_memory` | 启动注入 knowledge |
 | `tokenizer` | token 计数器选择 |
 | `enable_plan_tool` | 启用 `update_plan` meta-tool |
@@ -79,7 +79,6 @@ Python `RuntimeRunner` 的配置中心。定义：`python/deepstrike/runtime/run
 | `worktree_manager` | worktree 隔离 |
 | `sub_agent_orchestrator` | 自定义 spawn 逻辑 |
 | `sub_agent_harness` | 子 agent harness 重试 |
-| `is_workflow_node` | 标记 workflow 节点 runner |
 | `reducers` | 自定义 reduce 节点 |
 | `milestone_policy` | milestone 策略 |
 | `milestone_contract` | 顶层 milestone |

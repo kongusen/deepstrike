@@ -103,8 +103,8 @@ describe("R-B28: the main loop cannot busy-wait on an effect it has no branch fo
   }, 15_000)
 })
 
-describe("R-B32: the default result spool survives long enough to be read back", () => {
-  it("runner default spool can persist and reload a large tool payload", async () => {
+describe("the default payload store survives long enough to be read back", () => {
+  it("persists and reloads an external tool payload", async () => {
     const huge = "z".repeat(80 * 1024)
     const plane = new LocalExecutionPlane()
     plane.register(tool("big_out", "emit huge", { type: "object", properties: {} }, () => huge))
@@ -135,10 +135,9 @@ describe("R-B32: the default result spool survives long enough to be read back",
       executionPlane: plane,
       maxTokens: 4000,
       maxTurns: 8,
-      kernelReliability: { spoolThresholdBytes: 1024, spoolPreviewBytes: 512 },
     })
 
-    for await (const evt of runner.run({ sessionId: "spool-default", goal: "test" })) {
+    for await (const evt of runner.run({ sessionId: "payload-default", goal: "test" })) {
       events.push(evt)
     }
 

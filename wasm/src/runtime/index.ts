@@ -1,6 +1,5 @@
-export type { KernelTransactionEntry, SessionEvent, SessionLog } from "./session-log.js"
-export { InMemorySessionLog, journalOperationKey } from "./session-log.js"
-export * from "./kernel-transaction-log.js"
+export type { SessionEvent, SessionLog } from "./session-log.js"
+export { InMemorySessionLog } from "./session-log.js"
 // Durable transaction capability (Canonical Kernel ABI §9.1)
 export {
   DriverKernelJournal,
@@ -21,16 +20,13 @@ export type {
   JournalStorageDriver,
   KernelJournal,
 } from "./kernel-journal.js"
-export { rebuildKernelRuntime } from "./kernel-rebuild.js"
-export type { KernelRebuildResult } from "./kernel-rebuild.js"
 export * from "./context-policy.js"
 export type { RunContext, ExecutionPlane } from "./execution-plane.js"
 export { LocalExecutionPlane } from "./execution-plane.js"
 export type { MemoryPolicy, MemoryWriteRateLimit, OperationCancellationReason, PromptBudget, ResourceQuota, RuntimeOptions, SchedulerPolicy } from "./runner.js"
 export { RuntimeRunner, collectText } from "./runner.js"
-export { readKernelDiagnostics, restoreKernelRuntime, snapshotKernelRuntime } from "./kernel-step.js"
-export type { KernelDiagnostics } from "./kernel-step.js"
-export type { KernelSnapshot } from "./kernel-step.js"
+export { MemoryPayloadDriver, PayloadStore } from "./payload-store.js"
+export type { PayloadStorageDriver, PayloadStoreConfig } from "./payload-store.js"
 export {
   CanonicalKernelHost,
   CanonicalKernelRejectedError,
