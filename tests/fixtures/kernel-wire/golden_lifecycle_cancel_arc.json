@@ -1,7 +1,7 @@
 {
   "description": "The cancellation arc on the canonical wire (spec 7.5 / 7.7 / 11.1 · Task 12b): configure → workflow root start → spawn ack → a critical signal that preempts the running child → the host's preempt resolution → `HostControl::Cancel`, whose step is the cancelled terminal itself. Two things this chain fixes in place: the only host action a signal can cause is the preemption (its queueing/dropping/expiry are audit facts and publish nothing), and cancellation settles every downstream wait inside the same transition that commits the root terminal — §7.12 admits effects or a terminal and never both, so there is no second round trip in which the operation is neither running nor cancelled.",
   "genesis_digest": "sha256:ff471383ae00c8226e46b7ab321f3cdf1db47395abf16ac472a646510127204f",
-  "head_digest": "sha256:b1d793e83e8ead7ee9d71eea17ee60461a99ceba7a2be36b1101373a347958a3",
+  "head_digest": "sha256:f8f946134a95cf2a1a0894eb2dde01bf5fd0f85e2433c525b1e591c44e4af30a",
   "links": [
     {
       "envelope": {
@@ -138,8 +138,8 @@
         "input_id": "in-start",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:ff471383ae00c8226e46b7ab321f3cdf1db47395abf16ac472a646510127204f",
-        "record_digest": "sha256:515e9dd4c8c6f11e84ecef7d068ae6e80bdc2b2252e05672c59b28d6615c3291",
-        "step_digest": "sha256:1490b931340a5481f933e85c8dac85d01e3f37615539f2d93dc67ace08c4a680",
+        "record_digest": "sha256:5b6204827bb4abce1b2c0bd09f9ce2bc4048b5b65389d44d0e2c10e1552b929b",
+        "step_digest": "sha256:529fc28fd7f5f6fdd36a50e300fd0f630d55d429000690fc86c6b74725e12fec",
         "step_seq": "1"
       },
       "step": {
@@ -158,6 +158,7 @@
                     "launch_token": "op-driver-1:step:1:launch:wf-node0",
                     "node_id": "collect",
                     "spec": {
+                      "context_inheritance": "none",
                       "goal": "collect the sources",
                       "metadata": {}
                     },
@@ -212,8 +213,8 @@
         "input_digest": "sha256:41d68b7f8fdb36c2930e44501e9a665497e301cbf66f166ce740f06dd52f725d",
         "input_id": "in-ack",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:515e9dd4c8c6f11e84ecef7d068ae6e80bdc2b2252e05672c59b28d6615c3291",
-        "record_digest": "sha256:6e981df5456f9fe4baca37c3b061a3bc56e20cf6dfb6da40b6254615d2ff9b02",
+        "previous_record_digest": "sha256:5b6204827bb4abce1b2c0bd09f9ce2bc4048b5b65389d44d0e2c10e1552b929b",
+        "record_digest": "sha256:39c830d3da980d34641071e1dfb94c6144aaae65ed9351432a6382f81e710729",
         "step_digest": "sha256:a4db654375bf12b5763eba593839ff9d7e892d1451d6c2214432bd1c15c282c1",
         "step_seq": "2"
       },
@@ -302,8 +303,8 @@
         "input_digest": "sha256:cd4d5f90cae5470ddc409700405cf12970614e17d942cda7011fb3aaf9ca59f7",
         "input_id": "in-sig",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:6e981df5456f9fe4baca37c3b061a3bc56e20cf6dfb6da40b6254615d2ff9b02",
-        "record_digest": "sha256:0c5425816c49fa93deacfe124a5c6e44b72505c93eeccb7f81284cc201efff2d",
+        "previous_record_digest": "sha256:39c830d3da980d34641071e1dfb94c6144aaae65ed9351432a6382f81e710729",
+        "record_digest": "sha256:e2cc03fb98c5b39cd900ae30e960045ac0296d4847e598bf287a66951a12b10f",
         "step_digest": "sha256:adc28ba2b742488b363da46964f92e8323e973e6db0c4d9b7f189b1c90940a04",
         "step_seq": "3"
       },
@@ -381,8 +382,8 @@
         "input_digest": "sha256:9222177ab6c53791db6b0c87062572f75f4d7c08095b558239ada202842b2669",
         "input_id": "in-preempted",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:0c5425816c49fa93deacfe124a5c6e44b72505c93eeccb7f81284cc201efff2d",
-        "record_digest": "sha256:d5ea1829229e527c62e51228ccf1df51d0651f393512dfd669a73e6a07782bd5",
+        "previous_record_digest": "sha256:e2cc03fb98c5b39cd900ae30e960045ac0296d4847e598bf287a66951a12b10f",
+        "record_digest": "sha256:1bdea73b8c99aab744acf2b9a75f96e4243195fccf8952f7082e83a7028d8277",
         "step_digest": "sha256:772be24a010fc0d6e0e775ee0e6744b7b34fb311e5abd959e6ba3d8d8de99f90",
         "step_seq": "4"
       },
@@ -514,8 +515,8 @@
         "input_digest": "sha256:60cfefbc4075a3a5c5cc6dc8c930d9ca335e33f13d36c14c38a2072eee3c9c79",
         "input_id": "in-cancel",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:d5ea1829229e527c62e51228ccf1df51d0651f393512dfd669a73e6a07782bd5",
-        "record_digest": "sha256:b1d793e83e8ead7ee9d71eea17ee60461a99ceba7a2be36b1101373a347958a3",
+        "previous_record_digest": "sha256:1bdea73b8c99aab744acf2b9a75f96e4243195fccf8952f7082e83a7028d8277",
+        "record_digest": "sha256:f8f946134a95cf2a1a0894eb2dde01bf5fd0f85e2433c525b1e591c44e4af30a",
         "step_digest": "sha256:483ffe6de46707cc62c22bc1d004f8988eed085315b8df64163bff2b429593d9",
         "step_seq": "5"
       },
