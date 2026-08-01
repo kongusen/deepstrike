@@ -103,6 +103,7 @@ export type KernelRunnerAction =
       verifier?: MilestoneVerifierKind
       requiredEvidence: string[]
     }
+  | { kind: "unsupported_effect"; effectId: string; effectKind: string }
   | { kind: "done"; effectId: string; result: KernelLoopResult }
 
 export interface KernelObservation {

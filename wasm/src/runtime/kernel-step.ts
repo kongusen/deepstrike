@@ -98,6 +98,7 @@ export type KernelRunnerAction =
     }
   | { kind: "load_payload"; effectId: string; handleId: string; payloadRef: string }
   | { kind: "evaluate_milestone"; effectId: string; phaseId: string; criteria: string[]; requiredEvidence?: string[] }
+  | { kind: "unsupported_effect"; effectId: string; effectKind: string }
   | { kind: "done"; effectId: string; result: KernelLoopResult }
 
 export interface KernelObservation {

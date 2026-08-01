@@ -1,0 +1,32 @@
+{
+  "planned_step": {
+    "disposition": {
+      "kind": "effects",
+      "effects": [
+        {
+          "effect_id": "op-contract:step:7:effect:0",
+          "effect": {
+            "kind": "future_host_effect"
+          }
+        }
+      ]
+    }
+  },
+  "expected_action": {
+    "kind": "unsupported_effect",
+    "effect_id": "op-contract:step:7:effect:0",
+    "effect_kind": "future_host_effect"
+  },
+  "expected_resolution": {
+    "kind": "resolve_effect",
+    "effect_id": "op-contract:step:7:effect:0",
+    "outcome": {
+      "status": "failed",
+      "failure": {
+        "kind": "protocol_error",
+        "message": "unknown canonical effect kind: future_host_effect",
+        "retryable": false
+      }
+    }
+  }
+}

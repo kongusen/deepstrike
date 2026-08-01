@@ -64,6 +64,7 @@ class KernelRunnerAction:
   handle_id: str | None = None
   payload_ref: str | None = None
   attempts: list[dict[str, Any]] | None = None
+  effect_kind: str | None = None
 
 
 def _try_parse_json(value: str) -> Any:

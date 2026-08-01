@@ -2658,6 +2658,13 @@ class RuntimeRunner:
         if action is None:
           raise RuntimeError("canonical workflow completed without a terminal or continuation")
 
+      elif action.kind == "unsupported_effect":
+        action = await action_host(runtime, self._pending_observations, {
+          "kind": "unsupported_effect",
+          "effect_id": action.effect_id,
+          "effect_kind": action.effect_kind or "",
+        })
+
       elif action.kind == "done":
         break
 

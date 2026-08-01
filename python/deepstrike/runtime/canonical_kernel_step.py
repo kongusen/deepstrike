@@ -80,6 +80,21 @@ def _planned_step(raw: str | None) -> dict[str, Any]:
   return parsed
 
 
+def canonical_unsupported_effect_resolution(effect_id: str, effect_kind: str) -> dict[str, Any]:
+  return {
+    "kind": "resolve_effect",
+    "effect_id": effect_id,
+    "outcome": {
+      "status": "failed",
+      "failure": {
+        "kind": "protocol_error",
+        "message": f"unknown canonical effect kind: {effect_kind}",
+        "retryable": False,
+      },
+    },
+  }
+
+
 def _advice(raw: str | None) -> dict[str, Any] | None:
   if not raw:
     return None
@@ -368,7 +383,11 @@ def canonical_action_from_planned_step(planned_step: dict[str, Any]) -> KernelRu
     request = _object(effect.get("request"))
     return KernelRunnerAction(kind="evaluate_milestone", effect_id=effect_id,
                               phase_id=str(request.get("phase_id") or ""), criteria=[], required_evidence=[])
-  raise CanonicalKernelRejectedError("unsupported_effect", f"unknown canonical effect kind: {kind}")
+  return KernelRunnerAction(
+    kind="unsupported_effect",
+    effect_id=effect_id,
+    effect_kind=str(kind),
+  )
 
 
 class CanonicalRunnerRuntime:
@@ -486,6 +505,11 @@ class CanonicalRunnerRuntime:
     if not self._started and self._apply_bootstrap(event):
       return None
     kind = event.get("kind")
+    if kind == "unsupported_effect":
+      return await self._commit(canonical_unsupported_effect_resolution(
+        str(event.get("effect_id") or ""),
+        str(event.get("effect_kind") or ""),
+      ))
     if kind == "provider_result":
       message = _object(event.get("message"))
       self._turns += 1
@@ -660,13 +684,20 @@ class CanonicalRunnerRuntime:
       self._configured = True
 
   async def _commit(self, input: dict[str, Any]) -> KernelRunnerAction | None:
-    transition = await self.host.transition(input)
-    if not transition.replayed:
-      self._observations.extend(_object(item) for item in transition.planned_step.get("observations") or [])
-      if transition.checkpoint_advice:
-        self._observations.append({"kind": "checkpoint_advised", **transition.checkpoint_advice})
-    self._last_action = canonical_action_from_planned_step(transition.planned_step)
-    return self._last_action
+    next_input = input
+    while True:
+      transition = await self.host.transition(next_input)
+      if not transition.replayed:
+        self._observations.extend(_object(item) for item in transition.planned_step.get("observations") or [])
+        if transition.checkpoint_advice:
+          self._observations.append({"kind": "checkpoint_advised", **transition.checkpoint_advice})
+      self._last_action = canonical_action_from_planned_step(transition.planned_step)
+      if self._last_action is None or self._last_action.kind != "unsupported_effect":
+        return self._last_action
+      next_input = canonical_unsupported_effect_resolution(
+        self._last_action.effect_id,
+        self._last_action.effect_kind or "",
+      )
 
   async def _resolve(self, event: dict[str, Any], result: dict[str, Any]) -> KernelRunnerAction | None:
     return await self._commit({"kind": "resolve_effect", "effect_id": str(event.get("effect_id") or ""),

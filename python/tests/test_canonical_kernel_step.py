@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -167,3 +168,24 @@ async def test_staged_outbound_survives_append_failure_and_drain_replays_exact_b
     assert kernel.prepares[-1] == staged
     assert await journal.read_outbound_envelope("op") is None
     assert json.loads(staged)["input_id"] == "stable-input"
+
+
+def test_unknown_effect_preserves_correlation_and_returns_shared_protocol_error_resolution():
+    from deepstrike.runtime.canonical_kernel_step import (
+        canonical_action_from_planned_step,
+        canonical_unsupported_effect_resolution,
+    )
+
+    fixture = json.loads(
+        (Path(__file__).parents[2] / "tests/fixtures/abi/unknown_effect_protocol_error.json")
+        .read_text(encoding="utf-8")
+    )
+    action = canonical_action_from_planned_step(fixture["planned_step"])
+
+    assert action is not None
+    assert {
+        "kind": action.kind,
+        "effect_id": action.effect_id,
+        "effect_kind": action.effect_kind,
+    } == fixture["expected_action"]
+    assert canonical_unsupported_effect_resolution(action.effect_id, action.effect_kind) == fixture["expected_resolution"]

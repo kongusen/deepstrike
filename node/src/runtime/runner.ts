@@ -2860,6 +2860,13 @@ export class RuntimeRunner {
         action = runtime.resumeAction()
           ?? (() => { throw new Error("canonical workflow completed without a terminal or continuation") })()
 
+      } else if (action.kind === "unsupported_effect") {
+        action = await this.commitKernelAction(runtime, this.pendingObservations, {
+          kind: "unsupported_effect",
+          effect_id: action.effectId,
+          effect_kind: action.effectKind,
+        })
+
       } else if (action.kind === "done") {
         break
       } else {

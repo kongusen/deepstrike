@@ -60,6 +60,24 @@ function totalUsageTokens(terminal: Record<string, unknown>): number {
   return Number.isSafeInteger(input + output) ? input + output : 0
 }
 
+export function canonicalUnsupportedEffectResolution(
+  effectId: string,
+  effectKind: string,
+): CanonicalKernelInput {
+  return {
+    kind: "resolve_effect",
+    effect_id: effectId,
+    outcome: {
+      status: "failed",
+      failure: {
+        kind: "protocol_error",
+        message: `unknown canonical effect kind: ${effectKind}`,
+        retryable: false,
+      },
+    },
+  }
+}
+
 /** The only ABI-v3 planned-step → Node host-action projection. */
 export function canonicalActionFromPlannedStep(
   plannedStep: CanonicalPlannedStep,
@@ -291,7 +309,11 @@ export function canonicalActionFromPlannedStep(
       }
     }
     default:
-      throw new Error(`unknown canonical effect kind: ${String(effect.kind)}`)
+      return {
+        kind: "unsupported_effect",
+        effectId,
+        effectKind: String(effect.kind),
+      }
   }
 }
 
@@ -1196,6 +1218,12 @@ export class CanonicalRunnerRuntime {
       case "skill_activated":
         // Model activations are already reduced inside the canonical provider resolution.
         return this.lastAction
+      case "unsupported_effect":
+        input = canonicalUnsupportedEffectResolution(
+          String(event.effect_id ?? ""),
+          String(event.effect_kind ?? ""),
+        )
+        break
       case "capability_command":
         input = { kind: "host_control", command: this.canonicalCapabilityCommand(asObject(event.command)) }
         break
@@ -1214,22 +1242,29 @@ export class CanonicalRunnerRuntime {
   }
 
   private async commit(input: CanonicalKernelInput): Promise<KernelRunnerAction | null> {
-    const transition = await this.host.transition(input)
-    if (!transition.replayed) {
-      for (const raw of transition.plannedStep.observations ?? []) {
-        const kind = String(raw.kind ?? "")
-        if (!kind) throw new Error("canonical observation is missing kind")
-        this.hostObservations.push({ ...raw, kind })
+    let nextInput = input
+    for (;;) {
+      const transition = await this.host.transition(nextInput)
+      if (!transition.replayed) {
+        for (const raw of transition.plannedStep.observations ?? []) {
+          const kind = String(raw.kind ?? "")
+          if (!kind) throw new Error("canonical observation is missing kind")
+          this.hostObservations.push({ ...raw, kind })
+        }
+        if (transition.checkpointAdvice) {
+          this.hostObservations.push({
+            kind: "checkpoint_advised",
+            ...transition.checkpointAdvice,
+          })
+        }
       }
-      if (transition.checkpointAdvice) {
-        this.hostObservations.push({
-          kind: "checkpoint_advised",
-          ...transition.checkpointAdvice,
-        })
-      }
+      this.lastAction = canonicalActionFromPlannedStep(transition.plannedStep)
+      if (this.lastAction?.kind !== "unsupported_effect") return this.lastAction
+      nextInput = canonicalUnsupportedEffectResolution(
+        this.lastAction.effectId,
+        this.lastAction.effectKind,
+      )
     }
-    this.lastAction = canonicalActionFromPlannedStep(transition.plannedStep)
-    return this.lastAction
   }
 
   private currentAction(): KernelRunnerAction | null {
