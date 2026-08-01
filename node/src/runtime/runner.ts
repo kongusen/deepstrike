@@ -1766,7 +1766,9 @@ export class RuntimeRunner {
     const resumedStart = [...prior].reverse().find(entry => entry.event.kind === "run_started")
     // SessionLog is an audit projection. A forged/stale run_terminal must not mint a new
     // operation while the canonical journal still has a live chain — same authority as wake().
-    let midRun = isMidRun(prior)
+    // Inherited parent events are transcript input for a fresh child operation, never recovery
+    // evidence for the child's own canonical journal.
+    let midRun = req.inheritEvents ? false : isMidRun(prior)
     if (
       !midRun
       && resumedStart?.event.kind === "run_started"

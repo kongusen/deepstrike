@@ -84,8 +84,8 @@ use super::fault::{KernelFault, KernelFaultCode};
 use super::record::NormalizedPayload;
 use super::root::{
     AgentIsolation as WireIsolation, AgentRole as WireRole, ExecutionFocus, InitialContext,
-    LogicalAgentSpec, LogicalTask, MessageRole, RootEntry, RootKind, WorkflowNode as WireNode,
-    WorkflowSpec as WireSpec,
+    LogicalAgentSpec, LogicalContextInheritance as WireContextInheritance, LogicalTask, MessageRole,
+    RootEntry, RootKind, WorkflowNode as WireNode, WorkflowSpec as WireSpec,
 };
 use super::scalar::{
     AttemptId, EffectId, MemoryBindingId, NodeId, OperationId, TaskId, WireU64, WorkflowId,
@@ -4409,6 +4409,7 @@ impl CanonicalOperationDriver {
                 goal: info.goal.clone(),
                 role: parse_wire_role(&info.role),
                 isolation: parse_wire_isolation(&info.isolation),
+                context_inheritance: parse_wire_context_inheritance(&info.context_inheritance),
                 verification_contract_id: None,
                 capability_filter: Default::default(),
                 exposure_baseline: None,
@@ -4767,6 +4768,13 @@ fn build_core_spec(spec: &WireSpec) -> Result<CoreWorkflowSpec, KernelFault> {
         if let Some(isolation) = node.run_spec.as_ref().and_then(|spec| spec.isolation) {
             core = core.with_isolation(core_isolation(isolation));
         }
+        if let Some(inheritance) = node
+            .run_spec
+            .as_ref()
+            .and_then(|spec| spec.context_inheritance)
+        {
+            core.context_inheritance = core_context_inheritance(inheritance);
+        }
         if let Some(metadata) = node
             .run_spec
             .as_ref()
@@ -4867,6 +4875,14 @@ fn core_isolation(isolation: WireIsolation) -> AgentIsolation {
     }
 }
 
+fn core_context_inheritance(inheritance: WireContextInheritance) -> ContextInheritance {
+    match inheritance {
+        WireContextInheritance::None => ContextInheritance::None,
+        WireContextInheritance::SystemOnly => ContextInheritance::SystemOnly,
+        WireContextInheritance::Full => ContextInheritance::Full,
+    }
+}
+
 /// Internal role/isolation labels back onto the wire vocabulary. `None` is the *absent* field, not
 /// a parse failure: `custom`/`shared` are the wire defaults, so omitting them keeps a launch spec
 /// minimal instead of restating what the contract already implies.
@@ -4885,6 +4901,15 @@ fn parse_wire_isolation(label: &str) -> Option<WireIsolation> {
         "read_only" => Some(WireIsolation::ReadOnly),
         "worktree" => Some(WireIsolation::Worktree),
         "remote" => Some(WireIsolation::Remote),
+        _ => None,
+    }
+}
+
+fn parse_wire_context_inheritance(label: &str) -> Option<WireContextInheritance> {
+    match label {
+        "none" => Some(WireContextInheritance::None),
+        "system_only" => Some(WireContextInheritance::SystemOnly),
+        "full" => Some(WireContextInheritance::Full),
         _ => None,
     }
 }
@@ -6526,6 +6551,31 @@ mod tests {
         assert!(
             !runtime.driver.focus().unwrap().is_nested_in_agent(),
             "the root workflow is not nested in an agent"
+        );
+    }
+
+    #[test]
+    fn a_workflow_launch_preserves_logical_context_inheritance() {
+        let mut spec = two_node_spec();
+        spec.nodes[0].run_spec = Some(LogicalAgentSpec {
+            context_inheritance: Some(WireContextInheritance::SystemOnly),
+            ..LogicalAgentSpec::new("collect the sources")
+        });
+
+        let mut runtime = Runtime::new();
+        runtime.submit(&configure());
+        let started = runtime.submit(&workflow_start(
+            "in-start",
+            1_700_000_001_000,
+            spec,
+        ));
+
+        let EffectKind::SpawnTasks(spawn) = &sole_effect(&started).effect else {
+            panic!("expected a task spawn");
+        };
+        assert_eq!(
+            spawn.tasks[0].spec.context_inheritance,
+            Some(WireContextInheritance::SystemOnly),
         );
     }
 

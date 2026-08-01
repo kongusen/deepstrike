@@ -200,7 +200,7 @@ export function canonicalActionFromPlannedStep(
             goal: String(spec.goal ?? ""),
             role: String(spec.role ?? "custom"),
             isolation: String(spec.isolation ?? "shared"),
-            context_inheritance: "none",
+            context_inheritance: String(spec.context_inheritance ?? "none"),
             ...(spec.metadata && typeof spec.metadata === "object"
               ? asObject(spec.metadata)
               : {}),
@@ -624,6 +624,7 @@ function logicalRunSpec(raw: Record<string, unknown> | undefined, goal: string):
     goal: String(raw.goal ?? goal),
     ...(raw.role ? { role: raw.role } : {}),
     ...(raw.isolation ? { isolation: raw.isolation } : {}),
+    ...(raw.context_inheritance ? { context_inheritance: raw.context_inheritance } : {}),
     ...(raw.verification_contract_id ? { verification_contract_id: raw.verification_contract_id } : {}),
     ...((Array.isArray(filter.allowed_kinds) && filter.allowed_kinds.length > 0) ||
       (Array.isArray(filter.allowed_ids) && filter.allowed_ids.length > 0)
@@ -683,9 +684,6 @@ function canonicalWorkflowSpec(raw: Record<string, unknown>): Record<string, unk
       if (node.max_turns !== undefined || node.maxTurns !== undefined) unsupported.push("max_turns")
       if (node.max_wall_ms !== undefined || node.maxWallMs !== undefined) unsupported.push("max_wall_ms")
       const inheritance = node.context_inheritance ?? node.contextInheritance
-      if (inheritance !== undefined && inheritance !== "none") {
-        unsupported.push("context_inheritance")
-      }
       if (unsupported.length > 0) {
         throw new CanonicalKernelRejectedError(JSON.stringify({
           code: "unsupported_effect",
@@ -709,6 +707,7 @@ function canonicalWorkflowSpec(raw: Record<string, unknown>): Record<string, unk
         goal,
         ...(node.role ? { role: node.role } : {}),
         ...(node.isolation ? { isolation: node.isolation } : {}),
+        ...(inheritance ? { context_inheritance: inheritance } : {}),
         ...((modelHint !== undefined || outputSchema !== undefined)
           ? {
               metadata: {

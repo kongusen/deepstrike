@@ -83,6 +83,10 @@ async def run_fanout(
         node.role = worker_role
     spec.nodes[-1].role = synthesis_role
     outcome = await runner.run_workflow(spec, **({"session_id": session_id} if session_id else {}))
+    if outcome.rejection is not None:
+        raise RuntimeError(
+            f"workflow {outcome.rejection.operation} rejected: {outcome.rejection.reason}"
+        )
     outputs = outcome.outputs
     completed = [
         node.node_id for node in outcome.node_outcomes

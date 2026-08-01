@@ -1571,7 +1571,9 @@ class RuntimeRunner:
   ) -> AsyncIterator[StreamEvent]:
     sid = session_id or str(uuid.uuid4())
     prior = inherit_events if inherit_events is not None else await self._opts.session_log.read(sid)
-    mid_run = _is_mid_run(prior)
+    # Inherited parent events are transcript input for a fresh child operation, never recovery
+    # evidence for the child's own canonical journal.
+    mid_run = False if inherit_events is not None else _is_mid_run(prior)
     resumed_start = next((entry for entry in reversed(prior) if entry.event.get("kind") == "run_started"), None)
     # SessionLog is an audit projection. A stale or forged run_terminal cannot
     # mint a second operation while the canonical journal owns a live chain.

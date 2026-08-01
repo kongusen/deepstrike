@@ -39,6 +39,9 @@ export class CanonicalKernel {
   private paceProposal: { action: string; reason: string } | null = null
   private turns = 0
   private checkpointThrough = 0
+  private workflowNodes: Array<Record<string, unknown>> = []
+  private workflowStarted = new Set<string>()
+  private workflowCompleted = new Set<string>()
 
   private effect(kind: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
     return { effect_id: `mock-effect-${this.nextEffect++}`, effect: { kind, ...payload } }
@@ -63,6 +66,30 @@ export class CanonicalKernel {
       turns: [{ role: "user", content: "test" }],
       tools: [],
     }
+  }
+
+  private readyWorkflowTasks(): Array<Record<string, unknown>> {
+    const ready = this.workflowNodes.filter(node => {
+      const nodeId = String(node.node_id ?? "")
+      const dependencies = Array.isArray(node.depends_on) ? node.depends_on.map(String) : []
+      return !this.workflowStarted.has(nodeId)
+        && dependencies.every(dependency => this.workflowCompleted.has(dependency))
+    })
+    for (const node of ready) this.workflowStarted.add(String(node.node_id ?? ""))
+    return ready.map(node => {
+      const nodeId = String(node.node_id ?? "")
+      const task = (node.task && typeof node.task === "object" ? node.task : {}) as Record<string, unknown>
+      const runSpec = (node.run_spec && typeof node.run_spec === "object"
+        ? node.run_spec
+        : { goal: task.goal ?? "" }) as Record<string, unknown>
+      return {
+        task_id: nodeId,
+        attempt_id: `${nodeId}:attempt:1`,
+        launch_token: `${nodeId}:launch:1`,
+        node_id: nodeId,
+        spec: runSpec,
+      }
+    })
   }
 
   prepare(inputJson: string): {
@@ -119,14 +146,14 @@ export class CanonicalKernel {
         this.loopRound = runSpec.loop_round ?? null
         this.life = "running"
         if (entry.kind === "workflow") {
-          // Workflow roots complete immediately in this mock unless later resolve_effect advances them.
-          this.life = "completed"
-          this.terminalPayload = {
-            kind: "workflow",
-            outcome: { status: "completed" },
-            usage: { turns: 0, input_tokens: 0, output_tokens: 0 },
-          }
-          plannedStepJson = this.planned([], [], this.terminalPayload)
+          const spec = (entry.spec && typeof entry.spec === "object" ? entry.spec : {}) as Record<string, unknown>
+          this.workflowNodes = Array.isArray(spec.nodes)
+            ? spec.nodes.filter(node => node && typeof node === "object") as Array<Record<string, unknown>>
+            : []
+          this.workflowStarted = new Set()
+          this.workflowCompleted = new Set()
+          const tasks = this.readyWorkflowTasks()
+          plannedStepJson = this.planned(tasks.length > 0 ? [this.effect("spawn_tasks", { tasks })] : [])
         } else {
           plannedStepJson = this.planned([
             this.effect("call_provider", { context: this.providerContext(), tools: [] }),
@@ -263,6 +290,10 @@ export class CanonicalKernel {
           }
           break
         }
+        if (result.kind === "tasks_spawned") {
+          plannedStepJson = this.planned()
+          break
+        }
         // Default: keep the loop alive with another provider call.
         plannedStepJson = this.planned([
           this.effect("call_provider", { context: this.providerContext(), tools: [] }),
@@ -290,8 +321,36 @@ export class CanonicalKernel {
         }
         break
       }
-      case "deliver_external_event":
+      case "deliver_external_event": {
+        const event = (input.event && typeof input.event === "object"
+          ? input.event
+          : {}) as Record<string, unknown>
+        if (event.kind !== "child_completed") break
+        this.workflowCompleted.add(String(event.task_id ?? ""))
+        const tasks = this.readyWorkflowTasks()
+        if (tasks.length > 0) {
+          plannedStepJson = this.planned([this.effect("spawn_tasks", { tasks })])
+          break
+        }
+        if (this.workflowCompleted.size === this.workflowNodes.length) {
+          this.life = "completed"
+          observations = [{
+            kind: "workflow_completed",
+            node_outcomes: this.workflowNodes.map(node => ({
+              node_id: String(node.node_id ?? ""),
+              status: "completed",
+              termination: "completed",
+            })),
+          }]
+          this.terminalPayload = {
+            kind: "workflow",
+            outcome: { status: "completed" },
+            usage: { turns: 0, input_tokens: 0, output_tokens: 0 },
+          }
+          plannedStepJson = this.planned([], observations, this.terminalPayload)
+        }
         break
+      }
       default:
         break
     }

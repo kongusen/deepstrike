@@ -15,6 +15,7 @@ from deepstrike import (
     workflow_spec_to_kernel,
     fanout_synthesize,
     generate_and_filter,
+    run_fanout,
     verify_rules,
 )
 class _StubProvider:
@@ -36,6 +37,19 @@ class _StubOrchestrator:
             agent_id=ctx.spec.identity.agent_id,
             result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1),
         )
+
+
+@pytest.mark.asyncio
+async def test_run_fanout_executes_context_inheritance_template_instead_of_empty_success():
+    outcome = await run_fanout(
+        provider=_StubProvider(),
+        tasks=["worker"],
+        synthesize="merge",
+        max_turns=1,
+    )
+
+    assert sorted(outcome["outputs"]) == ["wf-node0", "wf-node1"]
+    assert outcome["synthesis"] == "x"
 
 
 def test_workflow_spec_to_kernel_shape():

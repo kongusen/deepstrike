@@ -6,8 +6,8 @@
  *
  * Uses a stub orchestrator so no LLM is needed — the focus is the bootstrap / teardown / resume wiring.
  */
-import { RuntimeRunner, InMemorySessionLog, InMemoryGroupBudgetStore } from "../src/index.js"
-import type { SessionEvent, WorkflowSpec } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog, InMemoryGroupBudgetStore, runFanout } from "../src/index.js"
+import type { LLMProvider, Message, SessionEvent, StreamEvent, WorkflowSpec } from "../src/index.js"
 
 function stubOrchestrator(onCall?: () => void) {
   return {
@@ -31,6 +31,22 @@ const fanoutSpec: WorkflowSpec = {
 }
 
 describe("runWorkflow bootstraps standalone (no active parent run)", () => {
+  it("runFanout executes the public system-only/full template instead of returning empty success", async () => {
+    const provider: LLMProvider = {
+      async complete(): Promise<Message> {
+        return { role: "assistant", content: "facade-output", toolCalls: [] }
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", delta: "facade-output" }
+      },
+    }
+
+    const outcome = await runFanout({ provider, tasks: ["worker"], synthesize: "merge", maxTurns: 1 })
+
+    expect(Object.keys(outcome.outputs).sort()).toEqual(["wf-node0", "wf-node1"])
+    expect(outcome.synthesis).toBe("facade-output")
+  })
+
   it("does not start nodes when the durable run_started fact cannot be recorded", async () => {
     let calls = 0
     class FailingStartLog extends InMemorySessionLog {

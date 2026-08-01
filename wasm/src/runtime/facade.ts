@@ -69,6 +69,9 @@ export async function runFanout(opts: RunFanoutOptions): Promise<{ synthesis: st
   }
   if (opts.synthesisRole) spec.nodes[spec.nodes.length - 1].role = opts.synthesisRole
   const outcome = await runner.runWorkflow(spec, opts.sessionId ? { sessionId: opts.sessionId } : undefined)
+  if (outcome.rejection) {
+    throw new Error(`workflow ${outcome.rejection.operation} rejected: ${outcome.rejection.reason}`)
+  }
   const synthesisId = `wf-node${opts.tasks.length}`
   const completed = outcome.nodeOutcomes.filter(node =>
     node.status === "completed" || node.status === "completed_partial")

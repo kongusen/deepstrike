@@ -177,6 +177,10 @@ pub struct LogicalAgentSpec {
     pub role: Option<AgentRole>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub isolation: Option<AgentIsolation>,
+    /// Logical context carried into a workflow child. This is operation-local content selection,
+    /// not a host session reference, so it is safe to persist and replay in canonical records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_inheritance: Option<LogicalContextInheritance>,
     /// Logical id of a verification contract in the operation's catalog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_contract_id: Option<String>,
@@ -212,6 +216,7 @@ impl LogicalAgentSpec {
             goal: goal.into(),
             role: None,
             isolation: None,
+            context_inheritance: None,
             verification_contract_id: None,
             capability_filter: CapabilityFilter::default(),
             exposure_baseline: None,
@@ -238,6 +243,14 @@ pub enum AgentIsolation {
     ReadOnly,
     Worktree,
     Remote,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogicalContextInheritance {
+    None,
+    SystemOnly,
+    Full,
 }
 
 /// Capability ceiling for a run. Empty on an axis ⇒ that axis does not narrow anything.

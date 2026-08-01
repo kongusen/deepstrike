@@ -318,7 +318,7 @@ def canonical_action_from_planned_step(planned_step: dict[str, Any]) -> KernelRu
         "goal": str(spec.get("goal") or ""),
         "role": str(spec.get("role") or "custom"),
         "isolation": str(spec.get("isolation") or "shared"),
-        "context_inheritance": "none",
+        "context_inheritance": str(spec.get("context_inheritance") or "none"),
         **metadata,
       })
     return KernelRunnerAction(kind="spawn_workflow", effect_id=effect_id, nodes=nodes, budget=effect.get("budget"))
@@ -707,6 +707,7 @@ class CanonicalRunnerRuntime:
       "goal": str(raw.get("goal") or goal),
       **({"role": raw["role"]} if raw.get("role") else {}),
       **({"isolation": raw["isolation"]} if raw.get("isolation") else {}),
+      **({"context_inheritance": raw["context_inheritance"]} if raw.get("context_inheritance") else {}),
       **({"verification_contract_id": raw["verification_contract_id"]} if raw.get("verification_contract_id") else {}),
       **({"exposure_baseline": raw["exposure_baseline"]} if "exposure_baseline" in raw else {}),
       **({"metadata": raw["metadata"]} if isinstance(raw.get("metadata"), dict) else {}),
@@ -745,8 +746,7 @@ class CanonicalRunnerRuntime:
         unsupported.append("max_turns")
       if node.get("max_wall_ms", node.get("maxWallMs")) is not None:
         unsupported.append("max_wall_ms")
-      if node.get("context_inheritance", node.get("contextInheritance")) not in (None, "none"):
-        unsupported.append("context_inheritance")
+      inheritance = node.get("context_inheritance", node.get("contextInheritance"))
       if unsupported:
         raise CanonicalKernelRejectedError(
           "unsupported_effect",
@@ -762,6 +762,7 @@ class CanonicalRunnerRuntime:
       run_spec = self._logical_run_spec({
         "goal": goal, **({"role": node["role"]} if node.get("role") else {}),
         **({"isolation": node["isolation"]} if node.get("isolation") else {}),
+        **({"context_inheritance": inheritance} if inheritance else {}),
         **({"metadata": {
           **({"model_hint": node.get("model_hint", node.get("modelHint"))}
              if node.get("model_hint", node.get("modelHint")) is not None else {}),

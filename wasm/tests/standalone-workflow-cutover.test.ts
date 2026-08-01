@@ -1,7 +1,23 @@
-import { InMemorySessionLog, LocalExecutionPlane, RuntimeRunner } from "../src/runtime/index.js"
+import { InMemorySessionLog, LocalExecutionPlane, RuntimeRunner, runFanout } from "../src/runtime/index.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
 
 describe("Task 21 standalone workflow cutover", () => {
+  it("runFanout executes the public context-inheritance template instead of returning empty success", async () => {
+    const provider: LLMProvider = {
+      async complete(): Promise<Message> {
+        return { role: "assistant", content: "facade-output", toolCalls: [] }
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield { type: "text_delta", delta: "facade-output" }
+      },
+    }
+
+    const outcome = await runFanout({ provider, tasks: ["worker"], synthesize: "merge", maxTurns: 1 })
+
+    expect(Object.keys(outcome.outputs).sort()).toEqual(["wf-node0", "wf-node1"])
+    expect(outcome.synthesis).toBe("facade-output")
+  })
+
   it("uses one durable operation identity and commits the workflow terminal", async () => {
     const sessionLog = new InMemorySessionLog()
     const sessionId = "standalone-workflow"

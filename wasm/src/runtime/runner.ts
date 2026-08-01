@@ -581,8 +581,10 @@ export class RuntimeRunner {
   }): AsyncIterable<StreamEvent> {
     const prior = req.inheritEvents ?? await this.opts.sessionLog.read(req.sessionId)
     const resumedStart = [...prior].reverse().find(entry => entry.event.kind === "run_started")
-    let midRun = isMidRun(prior)
-    if (!midRun && resumedStart?.event.kind === "run_started") {
+    // Inherited parent events are transcript input for a fresh child operation, never recovery
+    // evidence for the child's own canonical journal.
+    let midRun = req.inheritEvents ? false : isMidRun(prior)
+    if (!midRun && resumedStart?.event.kind === "run_started" && !req.inheritEvents) {
       const operationId = `wasm-operation-${resumedStart.event.run_id}`
       if (await this.resolveKernelJournal().head(operationId)) {
         const authoritative = await this.createCanonicalRuntime(resumedStart.event.run_id, req.sessionId)
@@ -2068,6 +2070,9 @@ export class RuntimeRunner {
           obs = [...obs, ...await acceptSpawn(completionAction)]
         } else if (completionAction?.kind === "call_provider") {
           this.workflowContinuation = completionAction
+        } else if (completionAction?.kind === "done") {
+          // The correlated child completion may terminalize the workflow in the same canonical
+          // step. Its workflow_completed observation below remains the typed outcome source.
         } else if (completionAction) {
           throw new Error(`workflow completion returned unexpected effect: ${completionAction.kind}`)
         }
