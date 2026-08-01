@@ -255,7 +255,12 @@ export function kernelObservationToSessionEvent(
       }
     }
     default:
-      return null
+      return {
+        kind: "kernel_observation" as const,
+        turn: t,
+        observation_kind: obs.kind,
+        raw: { ...obs },
+      }
   }
 }
 
