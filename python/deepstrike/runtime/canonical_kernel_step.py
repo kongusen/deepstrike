@@ -11,7 +11,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -48,7 +48,16 @@ class CanonicalKernelRejectedError(RuntimeError):
 
 
 class CanonicalKernelRebuildRequiredError(RuntimeError):
-  """A record is durable but its commit could not be safely published."""
+  """A record is durable but its commit could not be safely published.
+
+  ``rebuilt`` is True when the runtime was already rebuilt from the journal with the
+  durable record applied — the caller can resync and continue. False when the rebuild
+  itself failed and the operation cannot proceed without journal repair.
+  """
+
+  def __init__(self, message: str, *, rebuilt: bool = False) -> None:
+    super().__init__(message)
+    self.rebuilt = rebuilt
 
 
 @dataclass(frozen=True)
@@ -59,6 +68,10 @@ class CanonicalTransition:
   planned_step: dict[str, Any]
   checkpoint_advice: dict[str, Any] | None
   replayed: bool
+  #: Set when the advised §12.3 checkpoint failed AFTER this step was durably committed.
+  #: The step itself is published and authoritative; the checkpoint is deferred housekeeping
+  #: retried at the next advice or forced by the checkpoint_required gate.
+  checkpoint_failure: str | None = None
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -224,9 +237,6 @@ class CanonicalKernelHost:
       transition = CanonicalTransition(
         envelope, step_seq, committed.record_digest, _planned_step(committed.planned_step_json), advice, False,
       )
-      if advice is not None:
-        await self.checkpoint()
-      return transition
     except Exception as error:
       if appended:
         try:
@@ -234,9 +244,11 @@ class CanonicalKernelHost:
         except Exception as restore_error:
           raise CanonicalKernelRebuildRequiredError(
             "canonical record is durable, commit failed, and journal rebuild also failed",
+            rebuilt=False,
           ) from restore_error
         raise CanonicalKernelRebuildRequiredError(
           "canonical record is durable but commit could not be published; runtime rebuilt from journal",
+          rebuilt=True,
         ) from error
       try:
         self.kernel.abort(preparation.prepare_token)
@@ -248,6 +260,19 @@ class CanonicalKernelHost:
           envelope, cas_retries_left=cas_retries_left - 1, checkpoint_retries_left=checkpoint_retries_left,
         )
       raise
+
+    # Past this point the step is durable AND committed. A failing advised checkpoint must not be
+    # misdiagnosed as a lost commit: it is deferred housekeeping — the next advice retries it, and
+    # the checkpoint_required prepare gate is the hard backstop. (The checkpoint taken above for a
+    # checkpoint_required rejection stays a genuine blocker and still propagates.)
+    if transition.checkpoint_advice is not None:
+      try:
+        await self.checkpoint()
+      except Exception as checkpoint_error:
+        transition = replace(
+          transition, checkpoint_failure=str(checkpoint_error) or repr(checkpoint_error),
+        )
+    return transition
 
 
 def canonical_action_from_planned_step(planned_step: dict[str, Any]) -> KernelRunnerAction | None:
@@ -684,12 +709,33 @@ class CanonicalRunnerRuntime:
   async def _commit(self, input: dict[str, Any]) -> KernelRunnerAction | None:
     next_input = input
     while True:
-      transition = await self.host.transition(next_input)
-      if not transition.replayed:
-        self._observations.extend(_object(item) for item in transition.planned_step.get("observations") or [])
-        if transition.checkpoint_advice:
-          self._observations.append({"kind": "checkpoint_advised", **transition.checkpoint_advice})
-      self._last_action = canonical_action_from_planned_step(transition.planned_step)
+      transition: CanonicalTransition | None = None
+      try:
+        transition = await self.host.transition(next_input)
+      except CanonicalKernelRebuildRequiredError as error:
+        if not error.rebuilt:
+          raise
+        # The input's record is durable and the kernel was rebuilt from the journal with it
+        # applied; only that step's observations are lost (the crash-window cost). Resync and
+        # publish the rebuilt kernel's pending work instead of failing a healthy run.
+        lifecycle = self.host.kernel.lifecycle()
+        self._configured = lifecycle != "created"
+        self._started = lifecycle not in {"created", "configured"}
+        self._observations.append({"kind": "kernel_rebuilt", "reason": str(error)})
+        self._last_action = self._current_action()
+      if transition is not None:
+        if not transition.replayed:
+          self._observations.extend(
+            _object(item) for item in transition.planned_step.get("observations") or []
+          )
+          if transition.checkpoint_advice:
+            self._observations.append({"kind": "checkpoint_advised", **transition.checkpoint_advice})
+          if transition.checkpoint_failure:
+            self._observations.append({
+              "kind": "checkpoint_deferred",
+              "reason": transition.checkpoint_failure,
+            })
+        self._last_action = canonical_action_from_planned_step(transition.planned_step)
       if self._last_action is None or self._last_action.kind != "unsupported_effect":
         return self._last_action
       next_input = canonical_unsupported_effect_resolution(

@@ -954,8 +954,18 @@ impl Governance {
     /// `argsJson`: JSON-encoded tool arguments string.
     #[napi]
     pub fn evaluate(&mut self, tool_name: String, args_json: String) -> Result<GovernanceVerdict> {
-        let args: serde_json::Value =
-            serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
+        // Fail closed: constraints cannot be evaluated against arguments that do not
+        // parse, so an unparseable payload is a denial, not a skipped check.
+        let args: serde_json::Value = match serde_json::from_str(&args_json) {
+            Ok(value) => value,
+            Err(err) => {
+                return Ok(GovernanceVerdict {
+                    kind: "deny".into(),
+                    reason: Some(format!("tool arguments are not valid JSON: {err}")),
+                    retry_after_ms: None,
+                });
+            }
+        };
         let call = RustToolCall {
             id: compact_str::CompactString::new(""),
             name: compact_str::CompactString::new(&tool_name),

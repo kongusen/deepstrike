@@ -55,4 +55,20 @@ assert.match(
   declarations,
   /export type CanonicalPreparation = \{ status: "prepared";.*recordBytes: Uint8Array;.*status: "rejected"; faultJson: string \};/,
 )
-assert.match(declarations, /record_bytes: CanonicalRecordBytes\): CanonicalRestoreCost;/)
+// record_bytes is JsValue at the ABI boundary (fallible in-body decode — C1); the
+// CanonicalRecordBytes alias remains the documented TypeScript surface.
+assert.match(declarations, /export type CanonicalRecordBytes = Uint8Array\[\];/)
+assert.match(declarations, /restore\(checkpoint_bytes: Uint8Array \| null \| undefined, record_bytes: any\): CanonicalRestoreCost;/)
+
+// C1: bad record_bytes must fail closed WITHOUT bricking the WasmRefCell handle.
+// tsify/from_wasm_abi throw_str used to skip destructor release → permanent "recursive use".
+const brickProbe = new native.CanonicalKernel()
+assert.equal(brickProbe.lifecycle(), "created")
+assert.throws(() => brickProbe.restore(undefined, undefined), /record_bytes|Array|Uint8Array|TypeError/i)
+assert.equal(
+  brickProbe.lifecycle(),
+  "created",
+  "bad restore args must not leak the WasmRefCell borrow (handle stays usable)",
+)
+assert.throws(() => brickProbe.restore(undefined, null), /record_bytes|Array|Uint8Array/i)
+assert.equal(brickProbe.lifecycle(), "created")

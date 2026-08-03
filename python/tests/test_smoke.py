@@ -256,6 +256,16 @@ def test_governance_full_pipeline_methods():
     assert denied.kind == "deny"
 
 
+def test_governance_denies_malformed_args_json():
+    gov = Governance()
+    gov.allow_param_values("shell", "cmd", ["ls", "pwd"])
+    # Truncated JSON: the cmd constraint can never be evaluated, so the
+    # pipeline must deny (fail-closed), not skip the constraint and allow.
+    verdict = gov.evaluate("shell", '{"cmd": "rm -rf /"')
+    assert verdict.kind == "deny"
+    assert "JSON" in (verdict.reason or "")
+
+
 def test_signal_router():
     router = SignalRouter(max_queue_size=10)
     assert router.depth() == 0

@@ -308,7 +308,9 @@ fn extract_json(s: &str) -> &str {
     // Strip ```json ... ``` fences if present.
     if let Some(start) = s.find('{') {
         if let Some(end) = s.rfind('}') {
-            return &s[start..=end];
+            if start <= end {
+                return &s[start..=end];
+            }
         }
     }
     s
@@ -353,6 +355,16 @@ mod tests {
             panic!("expected text")
         };
         assert!(!system.contains("\"name\":\"snake_case\""));
+    }
+
+    #[test]
+    fn parse_verdict_survives_close_brace_before_open_brace() {
+        // Truncated/garbled evaluator output where `}` precedes `{`: the doc contract is
+        // "tolerant of malformed model output", so this must fall back, not panic.
+        let result = parse_verdict("score 8/10}\n\nverdict: {");
+        assert!(!result.passed);
+        assert_eq!(result.overall_score, 0.0);
+        assert!(result.details.is_empty());
     }
 
     #[test]

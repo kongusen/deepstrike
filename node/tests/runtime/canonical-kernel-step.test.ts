@@ -10,6 +10,7 @@ import type {
 import {
   CanonicalKernelHost,
   CanonicalKernelRebuildRequiredError,
+  CanonicalRunnerRuntime,
   canonicalActionFromPlannedStep,
   canonicalUnsupportedEffectResolution,
 } from "../../src/runtime/canonical-kernel-step.js"
@@ -211,6 +212,36 @@ describe("CanonicalKernelHost", () => {
     expect(phases.some(phase => phase.startsWith("restore:"))).toBe(true)
   })
 
+  it("publishes the committed transition even when the advised checkpoint fails", async () => {
+    const phases: string[] = []
+    const kernel = fakeKernel(phases)
+    const originalCommit = kernel.commit.bind(kernel)
+    kernel.commit = (token, appendedHead) => ({
+      ...originalCommit(token, appendedHead),
+      checkpointAdviceJson: JSON.stringify({ through_step_seq: "0" }),
+    })
+    const journal = new InMemoryKernelJournal()
+    jest.spyOn(journal, "compareAndInstallCheckpoint")
+      .mockRejectedValueOnce(new Error("journal io: storage 503"))
+    const host = new CanonicalKernelHost(kernel, journal, OPERATION_ID)
+
+    // The record is durable and commit already returned: a failing §12.3 checkpoint
+    // is deferred housekeeping (the next advice or the checkpoint_required gate
+    // retries it), not a failed commit.
+    const transition = await host.transition(
+      { kind: "configure_operation", config: { host_effect_support: { supported: ["call_provider"] } } },
+      { inputId: "input-checkpoint-io", observedAtMs: "1753747200004" },
+    )
+
+    expect(transition.replayed).toBe(false)
+    expect(transition.checkpointAdvice).toBeDefined()
+    expect(transition.checkpointFailure).toContain("storage 503")
+    // Not misdiagnosed as a lost commit: no rebuild happened.
+    expect(phases.some(phase => phase.startsWith("restore:"))).toBe(false)
+    // The committed step is durable and the stage is clear for the next input.
+    expect(await journal.readOutboundEnvelope(OPERATION_ID)).toBeUndefined()
+  })
+
   it("installs, durably acknowledges, core-acknowledges, then prunes a checkpoint", async () => {
     const phases: string[] = []
     const kernel = fakeKernel(phases)
@@ -260,6 +291,78 @@ describe("CanonicalKernelHost", () => {
       "core_ack:0:digest-0",
       "prune",
     ])
+  })
+})
+
+describe("CanonicalRunnerRuntime rebuild recovery", () => {
+  function commitLossKernel(phases: string[]): CanonicalKernelInstance {
+    const kernel = fakeKernel(phases)
+    const originalCommit = kernel.commit.bind(kernel)
+    let failOnce = true
+    kernel.commit = (token, appendedHead) => {
+      if (failOnce) {
+        failOnce = false
+        phases.push("commit_lost")
+        throw new Error("response lost")
+      }
+      return originalCommit(token, appendedHead)
+    }
+    return kernel
+  }
+
+  it("continues on the rebuilt kernel instead of failing the run when a commit response is lost", async () => {
+    const phases: string[] = []
+    const journal = new InMemoryKernelJournal()
+    const runtime = new CanonicalRunnerRuntime(commitLossKernel(phases), journal, OPERATION_ID, {
+      maxContextTokens: 8_192,
+    })
+
+    // The configure record is durably appended before the commit response is lost;
+    // the kernel is rebuilt from the journal with that step applied, so the run
+    // must carry on (here: proceed to start_operation), not terminate with an error.
+    await runtime.startAgent({ goal: "recover across a lost commit response" })
+
+    expect(phases.some(phase => phase.startsWith("restore:"))).toBe(true)
+    const stored = await journal.readFrom(OPERATION_ID)
+    expect(stored).toHaveLength(2)
+    expect(runtime.drainHostObservations().some(
+      observation => observation.kind === "kernel_rebuilt",
+    )).toBe(true)
+  })
+
+  it("surfaces a deferred checkpoint failure as a host observation", async () => {
+    const phases: string[] = []
+    const kernel = fakeKernel(phases)
+    const originalCommit = kernel.commit.bind(kernel)
+    kernel.commit = (token, appendedHead) => ({
+      ...originalCommit(token, appendedHead),
+      checkpointAdviceJson: JSON.stringify({ through_step_seq: "0" }),
+    })
+    const journal = new InMemoryKernelJournal()
+    jest.spyOn(journal, "compareAndInstallCheckpoint")
+      .mockRejectedValueOnce(new Error("journal io: storage 503"))
+    const runtime = new CanonicalRunnerRuntime(kernel, journal, OPERATION_ID, {
+      maxContextTokens: 8_192,
+    })
+
+    await runtime.startAgent({ goal: "observe deferred checkpoint" })
+
+    const observations = runtime.drainHostObservations()
+    const deferred = observations.find(observation => observation.kind === "checkpoint_deferred")
+    expect(deferred).toBeDefined()
+    expect(String(deferred?.reason)).toContain("storage 503")
+  })
+
+  it("still fails the run when the journal rebuild itself fails", async () => {
+    const phases: string[] = []
+    const journal = new InMemoryKernelJournal()
+    jest.spyOn(journal, "recordsAfter").mockRejectedValue(new Error("journal unreadable"))
+    const runtime = new CanonicalRunnerRuntime(commitLossKernel(phases), journal, OPERATION_ID, {
+      maxContextTokens: 8_192,
+    })
+
+    await expect(runtime.startAgent({ goal: "fatal" }))
+      .rejects.toThrow(CanonicalKernelRebuildRequiredError)
   })
 })
 

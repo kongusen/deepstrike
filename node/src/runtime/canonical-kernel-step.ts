@@ -46,6 +46,10 @@ export interface CanonicalTransition {
   recordDigest: string
   plannedStep: CanonicalPlannedStep
   checkpointAdvice?: Record<string, unknown>
+  /** Set when the advised §12.3 checkpoint failed AFTER this step was durably committed.
+   *  The step itself is published and authoritative; the checkpoint is deferred
+   *  housekeeping retried at the next advice or forced by the checkpoint_required gate. */
+  checkpointFailure?: string
   replayed: boolean
 }
 
@@ -338,9 +342,15 @@ export class CanonicalKernelRejectedError extends Error {
  * is therefore a rebuild boundary, never an abort boundary.
  */
 export class CanonicalKernelRebuildRequiredError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options)
+  /** True when the runtime was already rebuilt from the journal with the durable record
+   *  applied — the caller can resync and continue. False when the rebuild itself failed
+   *  and the operation cannot proceed without journal repair. */
+  readonly rebuilt: boolean
+
+  constructor(message: string, options?: { cause?: unknown; rebuilt?: boolean }) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined)
     this.name = "CanonicalKernelRebuildRequiredError"
+    this.rebuilt = options?.rebuilt ?? false
   }
 }
 
@@ -511,6 +521,7 @@ export class CanonicalKernelHost {
 
     const stepSeq = chainPosition(preparation.stepSeq, "prepared stepSeq")
     let appended = false
+    let transition: CanonicalTransition
     try {
       const receipt = await this.journal.compareAndAppend(
         this.operationId,
@@ -530,7 +541,7 @@ export class CanonicalKernelHost {
         throw new Error("canonical commit receipt disagrees with the durably appended record")
       }
       const checkpointAdvice = parseAdvice(committed.checkpointAdviceJson)
-      const transition: CanonicalTransition = {
+      transition = {
         inputJson,
         stepSeq,
         recordDigest: committed.recordDigest,
@@ -538,8 +549,6 @@ export class CanonicalKernelHost {
         ...(checkpointAdvice ? { checkpointAdvice } : {}),
         replayed: false,
       }
-      if (checkpointAdvice) await this.checkpoint()
-      return transition
     } catch (error) {
       if (appended) {
         try {
@@ -552,7 +561,7 @@ export class CanonicalKernelHost {
         }
         throw new CanonicalKernelRebuildRequiredError(
           "canonical record is durable but commit could not be published; runtime rebuilt from journal",
-          { cause: error },
+          { cause: error, rebuilt: true },
         )
       }
 
@@ -567,6 +576,19 @@ export class CanonicalKernelHost {
       }
       throw error
     }
+
+    // Past this point the step is durable AND committed. A failing advised checkpoint
+    // must not be misdiagnosed as a lost commit: it is deferred housekeeping — the next
+    // advice retries it, and the checkpoint_required prepare gate is the hard backstop.
+    if (transition.checkpointAdvice) {
+      try {
+        await this.checkpoint()
+      } catch (checkpointError) {
+        transition.checkpointFailure =
+          checkpointError instanceof Error ? checkpointError.message : String(checkpointError)
+      }
+    }
+    return transition
   }
 }
 
@@ -1241,21 +1263,42 @@ export class CanonicalRunnerRuntime {
   private async commit(input: CanonicalKernelInput): Promise<KernelRunnerAction | null> {
     let nextInput = input
     for (;;) {
-      const transition = await this.host.transition(nextInput)
-      if (!transition.replayed) {
-        for (const raw of transition.plannedStep.observations ?? []) {
-          const kind = String(raw.kind ?? "")
-          if (!kind) throw new Error("canonical observation is missing kind")
-          this.hostObservations.push({ ...raw, kind })
-        }
-        if (transition.checkpointAdvice) {
-          this.hostObservations.push({
-            kind: "checkpoint_advised",
-            ...transition.checkpointAdvice,
-          })
-        }
+      let transition: CanonicalTransition | undefined
+      try {
+        transition = await this.host.transition(nextInput)
+      } catch (error) {
+        if (!(error instanceof CanonicalKernelRebuildRequiredError) || !error.rebuilt) throw error
+        // The input's record is durable and the kernel was rebuilt from the journal with it
+        // applied; only that step's observations are lost (the crash-window cost). Resync and
+        // publish the rebuilt kernel's pending work instead of failing a healthy run.
+        const lifecycle = this.host.kernel.lifecycle()
+        this.configured = lifecycle !== "created"
+        this.started = !["created", "configured"].includes(lifecycle)
+        this.hostObservations.push({ kind: "kernel_rebuilt", reason: error.message })
+        this.lastAction = this.currentAction()
       }
-      this.lastAction = canonicalActionFromPlannedStep(transition.plannedStep)
+      if (transition) {
+        if (!transition.replayed) {
+          for (const raw of transition.plannedStep.observations ?? []) {
+            const kind = String(raw.kind ?? "")
+            if (!kind) throw new Error("canonical observation is missing kind")
+            this.hostObservations.push({ ...raw, kind })
+          }
+          if (transition.checkpointAdvice) {
+            this.hostObservations.push({
+              kind: "checkpoint_advised",
+              ...transition.checkpointAdvice,
+            })
+          }
+          if (transition.checkpointFailure) {
+            this.hostObservations.push({
+              kind: "checkpoint_deferred",
+              reason: transition.checkpointFailure,
+            })
+          }
+        }
+        this.lastAction = canonicalActionFromPlannedStep(transition.plannedStep)
+      }
       if (this.lastAction?.kind !== "unsupported_effect") return this.lastAction
       nextInput = canonicalUnsupportedEffectResolution(
         this.lastAction.effectId,

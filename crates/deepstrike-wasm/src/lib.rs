@@ -5,6 +5,7 @@ use js_sys::Uint8Array;
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
 use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
@@ -569,10 +570,15 @@ pub struct CanonicalRestoreCost {
     pub bytes_read: String,
 }
 
-#[derive(Tsify, Deserialize)]
-#[tsify(from_wasm_abi)]
-#[serde(transparent)]
-pub struct CanonicalRecordBytes(#[tsify(type = "Uint8Array[]")] Vec<Vec<u8>>);
+/// TypeScript surface for `CanonicalKernel.restore`'s record-bytes argument.
+///
+/// Intentionally NOT `#[tsify(from_wasm_abi)]`: tsify's throw-on-bad-arg path runs
+/// before the `&mut self` WasmRefCell guard is released, permanently bricking the
+/// handle (`recursive use of an object`). Conversion is fallible and in-body.
+#[wasm_bindgen(typescript_custom_section)]
+const TS_CANONICAL_RECORD_BYTES: &'static str = r#"
+export type CanonicalRecordBytes = Uint8Array[];
+"#;
 
 #[derive(Tsify, Serialize)]
 #[tsify(into_wasm_abi)]
@@ -711,12 +717,15 @@ impl CanonicalKernel {
     pub fn restore(
         &mut self,
         checkpoint_bytes: Option<Uint8Array>,
-        record_bytes: CanonicalRecordBytes,
+        record_bytes: JsValue,
     ) -> Result<CanonicalRestoreCost, JsValue> {
+        // Decode inside the method body so a bad argument returns `Err` through the
+        // normal wasm-bindgen Result path (which releases the WasmRefCell borrow).
+        let records = canonical_record_bytes_from_js(record_bytes)?;
         let checkpoint = checkpoint_bytes.as_ref().map(Uint8Array::to_vec);
         let cost = self
             .inner
-            .restore_bytes(checkpoint.as_deref(), &record_bytes.0)
+            .restore_bytes(checkpoint.as_deref(), &records)
             .map_err(canonical_kernel_error)?;
 
         Ok(CanonicalRestoreCost {
@@ -831,6 +840,26 @@ impl Serialize for Bytes<'_> {
     {
         serializer.serialize_bytes(self.0)
     }
+}
+
+/// Fallible JS → record-bytes conversion that returns `Err` instead of throwing across
+/// the WasmRefCell boundary (see C1 / `CanonicalKernel::restore`).
+fn canonical_record_bytes_from_js(value: JsValue) -> Result<Vec<Vec<u8>>, JsValue> {
+    if value.is_null() || value.is_undefined() || !js_sys::Array::is_array(&value) {
+        return Err(JsValue::from_str(
+            "record_bytes must be an Array of Uint8Array",
+        ));
+    }
+    let array = js_sys::Array::from(&value);
+    let mut records = Vec::with_capacity(array.length() as usize);
+    for index in 0..array.length() {
+        let entry = array.get(index);
+        let bytes = entry.dyn_into::<Uint8Array>().map_err(|_| {
+            JsValue::from_str("record_bytes entries must be Uint8Array")
+        })?;
+        records.push(bytes.to_vec());
+    }
+    Ok(records)
 }
 
 fn canonical_kernel_error(fault: deepstrike_core::runtime::kernel::wire::KernelFault) -> JsValue {
