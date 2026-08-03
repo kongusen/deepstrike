@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/wasm",
-  "version": "0.2.51",
+  "version": "0.2.52",
   "description": "DeepStrike WASM SDK — browser, Cloudflare Workers, Deno Deploy",
   "type": "module",
   "main": "dist/index.js",
@@ -16,7 +16,7 @@
     "test:canonical-binding": "wasm-pack build ../crates/deepstrike-wasm --target nodejs --dev --out-dir ../../wasm/pkg-node && node tests/canonical-binding.node.cjs"
   },
   "dependencies": {
-    "@deepstrike/wasm-kernel": "0.2.51"
+    "@deepstrike/wasm-kernel": "0.2.52"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",

@@ -6,6 +6,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.52] - 2026-08-03
+
+### Fixed — fail-closed hardening at FFI and host runner seams
+
+- Core `parse_verdict` no longer panics when an evaluator response contains `}` before `{`
+  (truncated/garbled model output). The Node binding aborted the process and the Python binding
+  raised an uncatchable `PanicException`; malformed JSON now falls back to the documented
+  fail verdict.
+- Governance `evaluate` (Node and Python bindings) now denies a tool call whose argument JSON does
+  not parse instead of skipping parameter constraints and allowing it. Constraints cannot be
+  evaluated against arguments that never decoded, so an unparseable payload is a denial.
+- A §12.3 checkpoint that fails **after** a step is durably committed is deferred housekeeping,
+  not a lost commit: the transition is published with `checkpointFailure` set and a
+  `checkpoint_deferred` observation, instead of discarding the committed step and killing the run
+  with a spurious rebuild (Node, Python and WASM hosts). The next advice or the
+  `checkpoint_required` prepare gate retries the checkpoint.
+- Runners resync and continue after a successful journal rebuild.
+  `CanonicalKernelRebuildRequiredError` now carries `rebuilt`; when the kernel was rebuilt from the
+  journal with the durable record applied, the runner publishes the rebuilt kernel's pending work
+  (with a `kernel_rebuilt` observation) instead of terminating a healthy operation as `error`.
+  Rebuild failures still propagate.
+- WASM `CanonicalKernel.restore` decodes `record_bytes` fallibly inside the method body. A bad
+  argument now returns an ordinary error; previously the generated conversion threw across the
+  borrow guard and permanently bricked the kernel handle — reachable from the CAS-conflict rebuild
+  path, turning a retryable conflict into a dead operation.
+
 ## [0.2.51] - 2026-08-01
 
 ### BREAKING — one Canonical Kernel ABI
