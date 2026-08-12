@@ -3,6 +3,9 @@ import type { Knowledge } from "../src/knowledge/public.js"
 import type { KnowledgeSource } from "../src/knowledge/source.js"
 import type { Handoff } from "../src/handoff-target.js"
 import type { HandoffArtifact } from "../src/collaboration/handoff.js"
+import type { Session } from "../src/session.js"
+import type { SessionData } from "../src/memory/protocols.js"
+import type { SessionLog } from "../src/runtime/session-log.js"
 
 describe("spc_010-04: typed Agent knowledge", () => {
   it("stores every public knowledge source form without changing KnowledgeSource", async () => {
@@ -39,5 +42,32 @@ describe("spc_010-05: typed Agent handoffs", () => {
     expect(agent.handoffs?.[0].inputSchema).toEqual({ type: "object", required: ["draft"] })
     const artifact: Pick<HandoffArtifact, "goal" | "sprint"> = { goal: "ship", sprint: 1 }
     expect(artifact.goal).toBe("ship")
+  })
+})
+
+describe("spc_010-06: public Session type", () => {
+  it("describes user session state without conflating persistence record or runtime log", () => {
+    const session: Session = {
+      id: "session-1",
+      userId: "user-1",
+      state: { draft: true },
+      metadata: { source: "web" },
+    }
+    const data: SessionData = {
+      sessionId: "persisted-1",
+      agentId: "agent-1",
+      messages: [],
+      metadata: null,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    }
+    const log: Pick<SessionLog, "append" | "read"> = {
+      append: async () => 0,
+      read: async () => [],
+    }
+
+    expect(session.state).toEqual({ draft: true })
+    expect(data.messages).toEqual([])
+    expect(typeof log.read).toBe("function")
   })
 })
