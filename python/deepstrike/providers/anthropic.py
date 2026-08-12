@@ -97,6 +97,7 @@ class AnthropicProvider:
             native_replay=lambda message: self._native_assistant_blocks.get(
                 self._assistant_replay_key(message)
             ),
+            resolved=getattr(self, "_resolved_runtime", None),
         )
         # Cache breakpoints anchor on the stable history; the volatile State turn
         # is appended AFTER them as the uncached tail. On un-rebuilt bindings
@@ -114,6 +115,7 @@ class AnthropicProvider:
                 native_replay=lambda message: self._native_assistant_blocks.get(
                     self._assistant_replay_key(message)
                 ),
+                resolved=getattr(self, "_resolved_runtime", None),
             )
             msgs.extend(state_msgs)
         return msgs

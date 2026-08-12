@@ -98,12 +98,17 @@ class OpenAIResponsesAdapter:
     def build_instructions(self, context: RenderedContext) -> str | None:
         return context.system_text or None
 
-    def build_input(self, context: RenderedContext, state: ProviderRunState | None = None) -> list[dict]:
+    def build_input(
+        self,
+        context: RenderedContext,
+        state: ProviderRunState | None = None,
+        resolved=None,
+    ) -> list[dict]:
         """The Responses ``input`` array. When continuing from a previous response, only the
         uncovered tail (turns past ``covered_message_count``) is serialized — the covered prefix
         already lives server-side under ``previous_response_id``. The volatile State turn is always
         appended (it changes every call and is never "covered")."""
-        normalize_canonical_adapter_input(context, [])
+        normalize_canonical_adapter_input(context, [], resolved=resolved)
         input_items: list[dict] = []
         turns = context.turns
         if state and state.get("previous_response_id"):
@@ -241,7 +246,7 @@ class OpenAIResponsesProvider:
                 req: dict[str, Any] = {
                     **self._request_extensions(extensions),
                     "model": self._model,
-                    "input": self._responses.build_input(context),
+                    "input": self._responses.build_input(context, resolved=getattr(self, "_resolved_runtime", None)),
                 }
                 if instructions:
                     req["instructions"] = instructions
@@ -287,7 +292,7 @@ class OpenAIResponsesProvider:
         req: dict[str, Any] = {
             **self._request_extensions(extensions),
             "model": self._model,
-            "input": self._responses.build_input(context, run_state),
+            "input": self._responses.build_input(context, run_state, getattr(self, "_resolved_runtime", None)),
             "stream": True,
         }
         if instructions:

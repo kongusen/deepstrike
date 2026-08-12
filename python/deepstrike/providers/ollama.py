@@ -47,7 +47,7 @@ class OllamaProvider:
         msgs = []
         if context.system_text:
             msgs.append({"role": "system", "content": context.system_text})
-        for m in turns_with_state_appended(context):
+        for m in turns_with_state_appended(context, getattr(self, "_resolved_runtime", None)):
             entry: dict = {"role": m.role, "content": m.content}
             parts = getattr(m, "content_parts", None)
             if parts:

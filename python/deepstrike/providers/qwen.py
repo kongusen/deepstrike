@@ -65,7 +65,7 @@ class QwenProvider(ReasoningReplayMixin):
 
     def _build_messages(self, context: RenderedContext) -> list[dict]:
         serialized = self._merge_replay_into_openai_messages(
-            to_openai_message_params(context),
+            to_openai_message_params(context, getattr(self, "_resolved_runtime", None)),
             context,
         )
         for msg in serialized:
@@ -99,8 +99,9 @@ class QwenProvider(ReasoningReplayMixin):
     # text-only Generation path): content is a list of single-modality dicts and the response
     # message.content comes back as a list too. Routed to only when the input carries an image.
 
-    @staticmethod
-    def _has_image_input(context: RenderedContext) -> bool:
+    def _has_image_input(self, context: RenderedContext) -> bool:
+        from deepstrike.types.content import normalize_canonical_adapter_input
+        normalize_canonical_adapter_input(context, [], resolved=getattr(self, "_resolved_runtime", None))
         for turn in context.turns:
             for p in getattr(turn, "content_parts", None) or []:
                 if getattr(p, "type", None) == "image":

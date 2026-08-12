@@ -228,10 +228,11 @@ def to_openai_content(msg: Message) -> str | list[dict]:
 def to_anthropic_messages(
     turns: list[Message],
     native_replay: Callable[[Message], list[dict] | None] | None = None,
+    resolved=None,
 ) -> list[dict]:
     """Serialize provider-neutral turns into Anthropic-native messages."""
     for message in turns:
-        validate_rendered_message(message)
+        validate_rendered_message(message, resolved)
     result: list[dict] = []
     for msg in turns:
         if msg.role == "tool":
@@ -272,21 +273,21 @@ def to_anthropic_messages(
     return result
 
 
-def turns_with_state_appended(context: "RenderedContext") -> list:
+def turns_with_state_appended(context: "RenderedContext", resolved=None) -> list:
     """History turns with the volatile State turn appended as the latest turn, for
     providers that render it inline (OpenAI-family, Gemini, Ollama). Appending
     keeps the history a byte-stable prefix so their automatic prefix caches hit
     across turns. Anthropic appends it after the cache breakpoint instead. When
     state_turn is absent (un-rebuilt binding) the State turn is still inside turns,
     so this returns turns as-is."""
-    normalize_canonical_adapter_input(context, [])
+    normalize_canonical_adapter_input(context, [], resolved=resolved)
     state_turn = getattr(context, "state_turn", None)
     return [*context.turns, state_turn] if state_turn is not None else list(context.turns)
 
 
-def to_openai_message_params(context: "RenderedContext") -> list[dict]:
+def to_openai_message_params(context: "RenderedContext", resolved=None) -> list[dict]:
     """Serialize provider-neutral context into OpenAI-compatible chat messages."""
-    normalize_canonical_adapter_input(context, [])
+    normalize_canonical_adapter_input(context, [], resolved=resolved)
     result: list[dict] = []
     if context.system_text:
         result.append({"role": "system", "content": context.system_text})
@@ -294,7 +295,7 @@ def to_openai_message_params(context: "RenderedContext") -> list[dict]:
     # The volatile State turn is appended as the latest turn so the history stays
     # a stable prefix that OpenAI's automatic cache can hit. Absent on un-rebuilt
     # bindings, where the state is already inside turns.
-    for msg in turns_with_state_appended(context):
+    for msg in turns_with_state_appended(context, resolved):
         if msg.role == "tool":
             # spc_012-P-03 (parity with Node N-04): OpenAI **chat completions** tool-role
             # messages accept text only. Explicit text-only degradation via the `output`

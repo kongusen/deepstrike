@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import pytest
+from dataclasses import replace
 
 from deepstrike._kernel import ContentPartObj, Message, ToolSchema
 from deepstrike.providers.base import RenderedContext, to_openai_message_params
+from deepstrike.providers.model_registry import ModelDescriptor, model_registry, resolve_effective_capabilities
 from deepstrike.providers.openai_responses import OpenAIResponsesAdapter
+from deepstrike.providers.runtime_registry import create_provider
 from deepstrike.types.content import (
     ContentValidationError,
     RenderedMessage,
@@ -79,3 +82,75 @@ def test_responses_adapter_uses_the_same_media_validation_boundary() -> None:
 
     with pytest.raises(ContentValidationError, match="source"):
         OpenAIResponsesAdapter().build_input(context)
+
+
+def test_known_runtime_rejects_explicitly_unsupported_audio_before_serialization() -> None:
+    model = ModelDescriptor(
+        id="openai/text-only",
+        provider_id="openai",
+        kind="generation",
+        intrinsic_input_modalities=("text",),
+    )
+    runtime = model_registry.resolve_provider_runtime(
+        "openai",
+        "text-only",
+        endpoint_overrides=None,
+    )
+    runtime = replace(
+        runtime,
+        model=model,
+        effective_capabilities=resolve_effective_capabilities(model, "openai.chat"),
+    )
+    context = RenderedContext(turns=[Message(
+        role="user",
+        content="",
+        content_parts=[ContentPartObj("audio", data="YWJj", media_type="audio/wav")],
+    )])
+
+    with pytest.raises(ContentValidationError, match="audio is explicitly unsupported"):
+        normalize_canonical_adapter_input(context, [], resolved=runtime)
+
+
+def test_unknown_runtime_keeps_audio_fail_open_at_canonical_boundary() -> None:
+    runtime = model_registry.resolve_provider_runtime("openai", "unregistered-model")
+    context = RenderedContext(turns=[Message(
+        role="user",
+        content="",
+        content_parts=[ContentPartObj("audio", data="YWJj", media_type="audio/wav")],
+    )])
+
+    canonical = normalize_canonical_adapter_input(context, [], resolved=runtime)
+
+    assert canonical.resolved is runtime
+
+
+def test_runtime_preflight_recursively_rejects_unsupported_tool_result_audio_source() -> None:
+    runtime = model_registry.resolve_provider_runtime("openai", "unregistered-model")
+    context = RenderedContext(turns=[RenderedMessage(
+        role="tool",
+        content_parts=[StructuredToolResultPart(
+            call_id="call-1",
+            output="[audio]",
+            content_parts=[{
+                "type": "audio",
+                "source": {"kind": "url", "url": "https://example.test/input.wav"},
+            }],
+        )],
+    )])
+
+    with pytest.raises(ContentValidationError, match="audio url source is explicitly unsupported"):
+        normalize_canonical_adapter_input(context, [], resolved=runtime)
+
+
+def test_factory_attaches_runtime_and_provider_entry_uses_it_for_source_preflight() -> None:
+    provider = create_provider("openai", api_key="key", model="unregistered-model")
+    context = RenderedContext(turns=[Message(
+        role="user",
+        content="",
+        content_parts=[ContentPartObj("audio", url="https://example.test/input.wav", media_type="audio/wav")],
+    )])
+
+    assert provider._resolved_runtime.provider_id == "openai"
+    assert provider._resolved_runtime.model_id == provider._model
+    with pytest.raises(ContentValidationError, match="audio url source is explicitly unsupported"):
+        provider._build_messages(context)

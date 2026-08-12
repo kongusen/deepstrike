@@ -24,6 +24,7 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
   from deepstrike.providers.base import RenderedContext
   from deepstrike._kernel import ToolSchema
+  from deepstrike.providers.model_registry import ResolvedProviderRuntime
 
 
 class ContentValidationError(ValueError):
@@ -51,6 +52,7 @@ class CanonicalAdapterInput:
   context: "RenderedContext"
   tools: tuple["ToolSchema", ...]
   extensions: dict[str, Any]
+  resolved: "ResolvedProviderRuntime | None" = None
 
 
 def _require_non_empty(value: Any, label: str) -> None:
@@ -119,7 +121,48 @@ def _validate_media_part(part: Any) -> None:
   _require_non_empty(data if data else url, f"{kind} source")
 
 
-def validate_rendered_message(message: Any) -> None:
+def _reject_unsupported_capability(
+  resolved: "ResolvedProviderRuntime | None",
+  modality: str,
+  source_kind: str | None = None,
+) -> None:
+  """Apply the runtime's explicit denials while preserving unknown fail-open semantics."""
+  if resolved is None:
+    return
+  capabilities = resolved.effective_capabilities
+  modality_cap = capabilities.input_modalities.get(modality)
+  if modality_cap is not None and modality_cap.state == "unsupported":
+    raise ContentValidationError(f"{modality} is explicitly unsupported by {resolved.provider_id}/{resolved.model_id}")
+  if source_kind is None:
+    return
+  source_attr = {
+    "url": f"{modality}_url",
+    "base64": f"{modality}_base64",
+    "fileId": "file_id",
+    "object": "file_id",
+  }.get(source_kind)
+  source_cap = getattr(capabilities, source_attr, None) if source_attr else None
+  if source_cap is not None and source_cap.state == "unsupported":
+    raise ContentValidationError(
+      f"{modality} {source_kind} source is explicitly unsupported by {resolved.provider_id}/{resolved.model_id}"
+    )
+
+
+def _preflight_tool_blocks(
+  blocks: list[dict] | tuple[dict, ...],
+  resolved: "ResolvedProviderRuntime | None",
+) -> None:
+  for block in blocks:
+    if block.get("type") not in {"image", "audio", "video", "file"}:
+      continue
+    source = block.get("source") or {}
+    _reject_unsupported_capability(resolved, block["type"], source.get("kind"))
+
+
+def validate_rendered_message(
+  message: Any,
+  resolved: "ResolvedProviderRuntime | None" = None,
+) -> None:
   """Validate one legacy message before its canonical provider projection."""
   parts = getattr(message, "content_parts", None) or []
   for part in parts:
@@ -129,6 +172,7 @@ def validate_rendered_message(message: Any) -> None:
         raise ContentValidationError("text content must be a string")
     elif kind in {"image", "audio"}:
       _validate_media_part(part)
+      _reject_unsupported_capability(resolved, kind, "base64" if getattr(part, "data", None) else "url")
     elif kind == "tool_result":
       output = getattr(part, "output", "")
       if not isinstance(output, str):
@@ -139,13 +183,18 @@ def validate_rendered_message(message: Any) -> None:
         bool(getattr(part, "is_error", False)),
         getattr(part, "content_parts", None),
       )
+      if getattr(part, "content_parts", None) is not None:
+        _preflight_tool_blocks(getattr(part, "content_parts"), resolved)
     else:
       raise ContentValidationError(f"unknown content part type: {kind}")
 
 
-def validate_rendered_context(context: "RenderedContext") -> None:
+def validate_rendered_context(
+  context: "RenderedContext",
+  resolved: "ResolvedProviderRuntime | None" = None,
+) -> None:
   for message in [*context.turns, *([context.state_turn] if context.state_turn is not None else [])]:
-    validate_rendered_message(message)
+    validate_rendered_message(message, resolved)
 
 
 def normalize_canonical_adapter_input(
@@ -153,10 +202,16 @@ def normalize_canonical_adapter_input(
   tools: list["ToolSchema"] | tuple["ToolSchema", ...],
   *,
   extensions: dict[str, Any] | None = None,
+  resolved: "ResolvedProviderRuntime | None" = None,
 ) -> CanonicalAdapterInput:
   """Validate compatibility carriers once before protocol-specific projection."""
-  validate_rendered_context(context)
-  return CanonicalAdapterInput(context=context, tools=tuple(tools), extensions=dict(extensions or {}))
+  validate_rendered_context(context, resolved)
+  return CanonicalAdapterInput(
+    context=context,
+    tools=tuple(tools),
+    extensions=dict(extensions or {}),
+    resolved=resolved,
+  )
 
 
 @dataclass

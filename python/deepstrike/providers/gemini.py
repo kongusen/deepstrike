@@ -234,7 +234,7 @@ class GeminiProvider:
             raise RuntimeError("Circuit breaker open")
 
         system = context.system_text or None
-        contents = self._build_contents(turns_with_state_appended(context))
+        contents = self._build_contents(turns_with_state_appended(context, getattr(self, "_resolved_runtime", None)))
         config = self._build_config(system, tools, extensions)
 
         last_exc = None
@@ -283,7 +283,7 @@ class GeminiProvider:
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
         system = context.system_text or None
-        contents = self._build_contents(turns_with_state_appended(context))
+        contents = self._build_contents(turns_with_state_appended(context, getattr(self, "_resolved_runtime", None)))
         config = self._build_config(system, tools, extensions)
 
         tool_calls: list[dict] = []

@@ -292,17 +292,37 @@ def create_provider(
 
     This is the single construction seam used by the public per-vendor factories.
     """
-    endpoint_id, resolved_base = resolve_endpoint(provider_id, model, protocol, region, base_url)
-    profile = ENDPOINT_PROFILES.get(endpoint_id)
+    runtime, profile, dialect = resolve_runtime_profile(
+        provider_id,
+        model=model,
+        protocol=protocol,
+        region=region,
+        base_url=base_url,
+    )
     if profile is None:
-        raise ValueError(f"Unknown endpoint {endpoint_id!r}")
+        raise ValueError(f"Unknown endpoint {runtime.endpoint_id!r}")
     key = (provider_id, profile.protocol)
     cls = _PROVIDER_CLASSES.get(key)
     if cls is None:
         raise ValueError(f"No provider class registered for {key!r}")
-    dialect = OPENAI_CHAT_DIALECTS.get(provider_id) if profile.protocol == "openai-chat" else None
     resolved_model = model or (dialect.default_model if dialect is not None else None)
-    return _build_provider(cls, api_key=api_key, model=resolved_model, base_url=resolved_base, retry_config=retry_config, dialect=dialect)
+    provider = _build_provider(
+        cls,
+        api_key=api_key,
+        model=resolved_model,
+        base_url=base_url or profile.base_url,
+        retry_config=retry_config,
+        dialect=dialect,
+    )
+    # Private additive attachment avoids changing the established provider constructor ABI.
+    provider_model = getattr(provider, "_model", getattr(provider, "_model_name", runtime.model_id))
+    runtime = model_registry.resolve_provider_runtime(
+        provider_id,
+        provider_model,
+        endpoint_id=runtime.endpoint_id,
+    )
+    provider._resolved_runtime = runtime
+    return provider
 
 
 model_registry = ModelRegistry()

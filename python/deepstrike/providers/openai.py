@@ -240,7 +240,7 @@ class OpenAIProvider(ReasoningReplayMixin):
                 assistant_replay_key(content, tool_calls)
             ),
         )
-        serialized = to_openai_message_params(context)
+        serialized = to_openai_message_params(context, getattr(self, "_resolved_runtime", None))
         messages = self._merge_replay_into_openai_messages(
             serialized, context, degrade_missing_reasoning=require_reasoning and degrade,
         )
