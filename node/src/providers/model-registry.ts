@@ -10,6 +10,7 @@ import {
   ANTHROPIC_PROTOCOL_CAPABILITIES,
   GEMINI_PROTOCOL_CAPABILITIES,
   OLLAMA_PROTOCOL_CAPABILITIES,
+  OPENAI_CHAT_PROTOCOL_CAPABILITIES,
   OPENAI_RESPONSES_PROTOCOL_CAPABILITIES,
   type GenerationProtocol,
   type InputModality,
@@ -337,11 +338,7 @@ function ollamaPolicy(modelId: string): RuntimePolicy {
 
 export const protocolRuntimeCapabilities: Record<GenerationProtocol, ProtocolRuntimeCapabilities> = {
   "anthropic-messages": ANTHROPIC_PROTOCOL_CAPABILITIES,
-  "openai-chat": {
-    acceptedInputModalities: ["text", "image", "audio"], emittedOutputModalities: ["text"], tools: true,
-    parallelToolCalls: true, structuredOutput: true, reasoningReplay: "optional", promptCaching: true,
-    mediaForms: { imageUrl: true, imageBase64: true, audioBase64: true },
-  },
+  "openai-chat": OPENAI_CHAT_PROTOCOL_CAPABILITIES,
   "openai-responses": OPENAI_RESPONSES_PROTOCOL_CAPABILITIES,
   gemini: GEMINI_PROTOCOL_CAPABILITIES,
   "ollama-chat": OLLAMA_PROTOCOL_CAPABILITIES,

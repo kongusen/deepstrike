@@ -1,40 +1,56 @@
 import OpenAI from "openai"
-import type { Message, ProviderDescriptor, ProviderReplay, ProviderRunState, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type {
+  LLMProvider,
+  Message,
+  ProviderDescriptor,
+  ProviderReplay,
+  ProviderRunState,
+  RenderedContext,
+  ReplayabilityAssessment,
+  RuntimePolicy,
+  StreamEvent,
+  ToolSchema,
+} from "../types.js"
+import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker, omitExtensionKeys, openAICachedPromptTokens, stablePromptCacheKey, ThinkingTagStreamExtractor } from "./base.js"
-import { normalizeOpenAIUsage } from "./usage-normalizer.js"
-import { OpenAIChatAdapter } from "./openai-chat.js"
-import type { ReplayabilityAssessment } from "./replay-validator.js"
+import { CircuitBreaker, omitExtensionKeys, stablePromptCacheKey } from "./base.js"
+import {
+  normalizeCanonicalAdapterInput,
+  type CanonicalAdapterInput,
+} from "./content-normalization.js"
+import { endpointProfiles } from "./endpoints.js"
+import {
+  OpenAIChatAdapter,
+  type OpenAIChatStreamChunk,
+} from "./openai-chat.js"
+import {
+  openAIChatDialects,
+  type OpenAIChatTurnReasoning,
+  type OpenAIChatWireDialect,
+} from "./openai-chat-dialects.js"
 
-/** Options-object form for `OpenAIProvider` — the recommended way to construct an OpenAI-compatible
- *  provider (custom `baseURL` no longer needs a positional hole). */
+/** Options-object form for `OpenAIProvider`. */
 export interface OpenAIProviderOptions {
   apiKey: string
   model?: string
   retry?: { maxRetries: number; baseDelay: number }
-  /** Custom OpenAI-compatible endpoint (MiMo, DeepSeek, Kimi, …). Defaults to the OpenAI API. */
   baseURL?: string
 }
 
-/** Reasoning captured from a single model turn, handed to the replay-remember hooks so an
- *  OpenAI-compatible subclass can persist whatever replay envelope its wire requires. */
-export interface OpenAIChatTurnReasoning {
-  reasoningContent: string
-  reasoningDetails?: unknown
-  nativeToolCalls: unknown[]
-}
+export type { OpenAIChatTurnReasoning } from "./openai-chat-dialects.js"
 
-/** Rebuild OpenAI-native `tool_calls` blocks from the streamed buffers — needed by reasoning
- *  vendors (DeepSeek/MiniMax) that persist the native blocks in their replay envelope. */
+/** Compatibility helper retained for callers that rebuild native streamed tool blocks. */
 export function nativeToolCallsFromBuffers(
-  toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }>,
+  toolCallBuffers: Record<number, { id: string; name: string; argsBuf: string }>,
 ): Array<Record<string, unknown>> {
-  return Object.values(toolCallBufs).map(tb => ({
-    id: tb.id,
+  return Object.values(toolCallBuffers).map(call => ({
+    id: call.id,
     type: "function",
-    function: { name: tb.name, arguments: tb.argsBuf || "{}" },
+    function: { name: call.name, arguments: call.argsBuf || "{}" },
   }))
 }
+
+type ResolvedOpenAIChatRuntime = CanonicalAdapterInput["resolved"]
 
 export class OpenAIChatProvider implements LLMProvider {
   protected client: OpenAI
@@ -43,27 +59,37 @@ export class OpenAIChatProvider implements LLMProvider {
   protected baseDelay: number
   protected readonly model: string
   protected readonly chat = new OpenAIChatAdapter()
+  protected readonly dialect: OpenAIChatWireDialect
+  private readonly replayStore = new Map<string, ProviderReplay>()
   private readonly resolvedRuntimePolicy: RuntimePolicy
+  private resolvedRuntime?: ResolvedOpenAIChatRuntime
 
-  // Accepts either the options object (`new OpenAIProvider({ apiKey, model, baseURL })`) or the legacy
-  // positional form (still used by the backend subclasses' `super(...)` calls).
   constructor(
     apiKeyOrOptions: string | OpenAIProviderOptions,
     model = "gpt-4o",
     retry = { maxRetries: 3, baseDelay: 1000 },
-    baseURL = "https://api.openai.com/v1",
+    baseURL: string = endpointProfiles["openai.chat"].baseURL,
     runtimePolicy: RuntimePolicy = {},
+    dialect: OpenAIChatWireDialect = openAIChatDialects.openai,
   ) {
-    const o: Required<OpenAIProviderOptions> =
-      typeof apiKeyOrOptions === "string"
-        ? { apiKey: apiKeyOrOptions, model, retry, baseURL }
-        : { model: "gpt-4o", retry: { maxRetries: 3, baseDelay: 1000 }, baseURL: "https://api.openai.com/v1", ...apiKeyOrOptions }
-    this.model = o.model
-    this.client = withServerRuntimeGuard(() => new OpenAI({ apiKey: o.apiKey, baseURL: o.baseURL }))
+    const options: Required<OpenAIProviderOptions> = typeof apiKeyOrOptions === "string"
+      ? { apiKey: apiKeyOrOptions, model, retry, baseURL }
+      : {
+          model: "gpt-4o",
+          retry: { maxRetries: 3, baseDelay: 1000 },
+          baseURL: endpointProfiles["openai.chat"].baseURL,
+          ...apiKeyOrOptions,
+        }
+    this.model = options.model
+    this.client = withServerRuntimeGuard(() => new OpenAI({
+      apiKey: options.apiKey,
+      baseURL: options.baseURL,
+    }))
     this.circuit = new CircuitBreaker()
-    this.maxRetries = o.retry.maxRetries
-    this.baseDelay = o.retry.baseDelay
+    this.maxRetries = options.retry.maxRetries
+    this.baseDelay = options.retry.baseDelay
     this.resolvedRuntimePolicy = runtimePolicy
+    this.dialect = dialect
   }
 
   runtimePolicy(): RuntimePolicy {
@@ -72,307 +98,231 @@ export class OpenAIChatProvider implements LLMProvider {
 
   descriptor(): ProviderDescriptor {
     return {
-      provider: "openai",
+      provider: this.dialect.providerId,
       protocol: "openai-chat",
       model: this.model,
-      reasoning: {
-        supported: true,
-        preserveAcrossToolTurns: false,
-      },
-      toolCalls: {
-        supported: true,
-        requiresStrictPairing: true,
-      },
+      reasoning: this.dialect.descriptor.reasoning,
+      toolCalls: { supported: true, requiresStrictPairing: true },
     }
   }
 
-  protected requireNonEmptyReasoningReplayForToolTurns(_extensions?: Record<string, unknown>): boolean {
-    return false
-  }
-
-  protected degradeMissingReasoningReplay(extensions?: Record<string, unknown>): boolean {
-    return extensions?.degradeMissingReasoningReplay === true
-  }
-
-  protected buildChatMessages(context: RenderedContext, extensions?: Record<string, unknown>) {
-    return this.chat.buildMessages(context, {
-      descriptor: this.descriptor(),
-      requireNonEmptyReasoningForToolCalls: this.requireNonEmptyReasoningReplayForToolTurns(extensions),
-      degradeMissingReasoning: this.degradeMissingReasoningReplay(extensions),
-    })
-  }
-
-  // ── Template-Method hooks ───────────────────────────────────────────────────
-  // Defaults reproduce the plain OpenAI-chat behavior; reasoning vendors
-  // (DeepSeek/MiniMax) override these instead of duplicating complete()/stream().
-
-  /** Pre-process caller extensions before they reach buildChatMessages + the wire request
-   *  (e.g. set `__deepstrikeThinkingEnabled`). Default: pass through unchanged. */
-  protected prepareExtensions(extensions?: Record<string, unknown>): Record<string, unknown> | undefined {
-    return extensions
-  }
-
-  /** Extra top-level request-body fields merged into the chat.completions call (vendor thinking
-   *  knobs like `reasoning_effort`, `extra_body`, `reasoning_split`). Default: none. */
-  protected requestBodyExtras(_extensions?: Record<string, unknown>): Record<string, unknown> {
-    return {}
-  }
-
-  /** Vendor server tools (e.g. web search) injected into the `tools[]` array alongside the function
-   *  tools, driven by caller `extensions`. These run server-side — the model invokes them and the
-   *  results come back inline, with no client tool-loop round-trip. Default: none. Vendors that ship
-   *  built-in tools (GLM web_search, …) override this and strip the consumed key in `prepareExtensions`
-   *  so it does not also leak into the request body. */
-  protected serverTools(_extensions?: Record<string, unknown>): unknown[] {
-    return []
-  }
-
-  /** Merge function tools + vendor server tools into the wire `tools[]` (undefined when empty). Server
-   *  tools (e.g. web_search) are non-standard wire entries, so the array is cast to the SDK tool type. */
-  protected assembleTools(tools: ToolSchema[], extensions?: Record<string, unknown>): OpenAI.Chat.Completions.ChatCompletionTool[] | undefined {
-    const fnTools = tools.length ? this.chat.buildTools(tools) : []
-    const all = [...fnTools, ...this.serverTools(extensions)]
-    return all.length ? (all as OpenAI.Chat.Completions.ChatCompletionTool[]) : undefined
-  }
-
-  /** Request-body params controlling prompt caching. Default sends OpenAI's `prompt_cache_key`;
-   *  vendors whose endpoints reject unknown params (e.g. DeepSeek 400s) override to `{}`. */
-  protected cacheKeyParams(context: RenderedContext, tools: ToolSchema[]): Record<string, unknown> {
-    return { prompt_cache_key: this.promptCacheKey(context, tools) }
-  }
-
-  /** Whether streamed `content` may carry inline `<thinking>…</thinking>` tags to split out.
-   *  Default true (OpenAI). Reasoning vendors emit reasoning out-of-band, so they return false. */
-  protected usesInlineThinkingTags(): boolean {
-    return true
-  }
-
-  /** Whether to surface streamed `reasoning_content` as thinking_delta events. Default true;
-   *  vendors gate this behind an `exposeReasoning` extension. */
-  protected exposeReasoningDelta(_extensions?: Record<string, unknown>): boolean {
-    return true
-  }
-
-  /** Persist replay after a non-streaming turn. Default: nothing (plain OpenAI has no reasoning
-   *  to replay). Reasoning vendors override to store their envelope. */
-  protected rememberCompleteReplay(_content: string, _toolCalls: Array<{ id: string; name: string; arguments: string }>, _reasoning: OpenAIChatTurnReasoning): void {
-    /* no-op */
-  }
-
-  /** Persist replay after a streamed turn. Default: store `{ reasoning_content }` when there is a
-   *  tool-call turn or captured reasoning (the prior base behavior). Vendors override. */
-  protected rememberStreamReplay(content: string, toolCalls: Array<{ id: string; name: string; arguments: string }>, reasoning: OpenAIChatTurnReasoning): void {
-    if (toolCalls.length || reasoning.reasoningContent) {
-      this.chat.rememberReplayFields({ content, toolCalls }, { reasoning_content: reasoning.reasoningContent })
+  bindResolvedRuntime(resolved: ResolvedOpenAIChatRuntime): void {
+    if (
+      resolved.identity.protocol !== "openai-chat"
+      || resolved.identity.providerId !== this.dialect.providerId
+      || resolved.identity.modelId !== this.model
+    ) {
+      throw new Error("OpenAIChatProvider received a mismatched resolved runtime")
     }
+    this.resolvedRuntime = resolved
   }
 
-  /**
-   * Pre-flight query: would this history validate against this provider with the
-   * given extensions, without sending the request? Lets an embedder route around
-   * a reasoning-replay failure (keep thinking on, disable it, or skip this
-   * candidate) before issuing the request. `ok: true` when this provider does
-   * not require reasoning replay for the current extensions.
-   */
-  assessReplayability(context: RenderedContext, extensions?: Record<string, unknown>): ReplayabilityAssessment {
-    if (!this.requireNonEmptyReasoningReplayForToolTurns(extensions)) {
+  assessReplayability(
+    context: RenderedContext,
+    extensions?: Record<string, unknown>,
+  ): ReplayabilityAssessment {
+    const prepared = this.dialect.prepareExtensions(extensions ?? {})
+    if (!this.dialect.requireReasoningReplay(prepared)) {
       return { ok: true, offendingCallIds: [] }
     }
-    return this.chat.assessReasoning(context)
+    const offendingCallIds = context.turns.flatMap(message => {
+      if (message.role !== "assistant" || !message.toolCalls?.length) return []
+      const replay = this.peekProviderReplay(message)
+      return typeof replay?.reasoning_content === "string" && replay.reasoning_content.trim()
+        ? []
+        : message.toolCalls.map(call => call.id)
+    })
+    return { ok: offendingCallIds.length === 0, offendingCallIds }
   }
 
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
-    const fields = this.chat.peekReplayFields(message)
-    if (!fields || !("reasoning_content" in fields || "reasoning_details" in fields)) return undefined
-    return fields as ProviderReplay
+    const replay = this.replayStore.get(assistantReplayKey(message))
+    if (!replay || !("reasoning_content" in replay || "reasoning_details" in replay)) return undefined
+    if (this.dialect.id === "qwen" && replay.reasoning_content !== undefined) {
+      return { reasoning_content: String(replay.reasoning_content ?? "") }
+    }
+    return replay
   }
 
   seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
-    if (replay.reasoning_content !== undefined || replay.reasoning_details !== undefined) {
-      this.chat.rememberReplayFields(message, replay as Record<string, unknown>)
-    }
+    if (replay.reasoning_content === undefined && replay.reasoning_details === undefined) return
+    this.replayStore.set(assistantReplayKey(message), this.dialect.id === "qwen"
+      ? { reasoning_content: replay.reasoning_content }
+      : replay)
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
-    const prepared = this.prepareExtensions(extensions)
-    if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const msgs = this.buildChatMessages(context, prepared)
+  private rememberReplay(
+    message: Pick<Message, "content" | "toolCalls">,
+    replay: ProviderReplay | undefined,
+  ): void {
+    if (replay) this.replayStore.set(assistantReplayKey(message), replay)
+  }
 
-    let lastErr: unknown
-    for (let i = 0; i < this.maxRetries; i++) {
+  private adapterInput(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+  ): CanonicalAdapterInput {
+    const endpoint = endpointProfiles[this.dialect.endpointId]
+    const resolved = this.resolvedRuntime ?? {
+      identity: {
+        providerId: this.dialect.providerId,
+        modelId: this.model,
+        endpointId: this.dialect.endpointId,
+        protocol: "openai-chat",
+      },
+      model: {
+        id: `${this.dialect.providerId}/${this.model}`,
+        providerId: this.dialect.providerId,
+        kind: "generation",
+        intrinsic: {},
+      },
+      endpoint,
+      adapter: this,
+      effectiveCapabilities: compatibilityCapabilities(),
+    } as unknown as ResolvedOpenAIChatRuntime
+    return normalizeCanonicalAdapterInput({
+      context,
+      tools,
+      resolved,
+      extensions,
+      replayForMessage: message => this.peekProviderReplay(message),
+    })
+  }
+
+  async complete(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+  ): Promise<Message> {
+    if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
+    const input = this.adapterInput(context, tools, extensions)
+    const plan = this.chat.buildRequest(input, this.dialect)
+    let lastError: unknown
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        const resp = await this.client.chat.completions.create({
-          ...this.cacheKeyParams(context, tools),
-          ...this.requestExtensions(prepared),
-          ...this.requestBodyExtras(extensions),
-          model: this.model,
-          messages: msgs,
-          ...((t => t ? { tools: t } : {})(this.assembleTools(tools, extensions))),
-        })
+        const response = await this.client.chat.completions.create(
+          plan.params as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming,
+        )
         this.circuit.recordSuccess()
-        const choice = resp.choices[0].message as OpenAI.ChatCompletionMessage & Record<string, unknown>
-        const nativeToolCalls = choice.tool_calls ?? []
-        const toolCalls = this.chat.normalizeToolCalls(nativeToolCalls as OpenAI.ChatCompletionMessageToolCall[])
-        const content = choice.content ?? ""
-        this.rememberCompleteReplay(content, toolCalls, {
-          reasoningContent: typeof choice.reasoning_content === "string" ? choice.reasoning_content : "",
-          reasoningDetails: choice.reasoning_details,
-          nativeToolCalls: nativeToolCalls as unknown[],
-        })
-        return { role: "assistant", content, tokenCount: resp.usage?.completion_tokens ?? resp.usage?.total_tokens, toolCalls }
-      } catch (err) {
-        lastErr = err
+        const decoded = this.chat.decodeComplete(
+          response as unknown as Record<string, any>,
+          { input },
+          this.dialect,
+        )
+        this.rememberReplay(decoded.message, decoded.replay)
+        return decoded.message
+      } catch (error) {
+        lastError = error
         this.circuit.recordFailure()
-        if (i < this.maxRetries - 1) await new Promise(r => setTimeout(r, this.baseDelay * 2 ** i))
+        if (attempt < this.maxRetries - 1) {
+          await new Promise(resolve => setTimeout(resolve, this.baseDelay * 2 ** attempt))
+        }
       }
     }
-    throw lastErr
+    throw lastError
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
-    const prepared = this.prepareExtensions(extensions)
-    const msgs = this.buildChatMessages(context, prepared)
-    const toolCallBufs: Record<number, { id: string; name: string; argsBuf: string }> = {}
-    const emittedToolCallIndexes = new Set<number>()
-    const useTags = this.usesInlineThinkingTags()
-    const exposeReasoning = this.exposeReasoningDelta(extensions)
-    const extractor = new ThinkingTagStreamExtractor()
-    let accumulatedReasoning = ""
-    let accumulatedReasoningDetails: unknown
-    let accumulatedContent = ""
-
+  async *stream(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+    _state?: ProviderRunState,
+    signal?: AbortSignal,
+  ): AsyncIterable<StreamEvent> {
+    const input = this.adapterInput(context, tools, extensions)
+    const plan = this.chat.buildRequest(input, this.dialect)
+    const state = this.chat.createStreamState({ input }, this.dialect)
     const stream = await this.client.chat.completions.create({
-      ...this.cacheKeyParams(context, tools),
-      ...this.requestExtensions(prepared),
-      ...this.requestBodyExtras(extensions),
-      model: this.model,
-      messages: msgs,
-      ...((t => t ? { tools: t } : {})(this.assembleTools(tools, extensions))),
+      ...plan.params,
       stream: true,
       stream_options: { include_usage: true },
-    // #2-B-ii: forward the abort signal so a preempt cancels the in-flight HTTP request.
-    }, signal ? { signal } : undefined)
-
-    const rememberStream = () => {
-      const toolCalls = Object.values(toolCallBufs).map(tb => ({ id: tb.id, name: tb.name, arguments: tb.argsBuf || "{}" }))
-      this.rememberStreamReplay(accumulatedContent, toolCalls, {
-        reasoningContent: accumulatedReasoning,
-        reasoningDetails: accumulatedReasoningDetails,
-        nativeToolCalls: nativeToolCallsFromBuffers(toolCallBufs),
-      })
+    } as unknown as OpenAI.ChatCompletionCreateParamsStreaming, signal ? { signal } : undefined)
+    for await (const chunk of stream as unknown as AsyncIterable<OpenAIChatStreamChunk>) {
+      const output = this.chat.pushStreamChunk(chunk, state)
+      if (output.replay) {
+        this.rememberReplay({
+          content: state.accumulatedContent,
+          toolCalls: Object.values(state.toolCallBuffers).map(call => ({
+            id: call.id,
+            name: call.name,
+            arguments: call.argsBuffer || "{}",
+          })),
+        }, output.replay)
+      }
+      for (const event of output.events) yield event
     }
-    const emitPendingToolCalls = function* () {
-      for (const [index, tb] of Object.entries(toolCallBufs)) {
-        const idx = Number(index)
-        if (emittedToolCallIndexes.has(idx)) continue
-        let args: Record<string, unknown> = {}
-        try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
-        emittedToolCallIndexes.add(idx)
-        yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
-      }
-    }
-
-    let totalTokens = 0
-    let inputTokens = 0
-    let outputTokens = 0
-    let cacheReadTokens = 0
-    // Phase 4: OpenAI signals an output-cap truncation via finish_reason="length", which arrives on
-    // a `choices` frame separate from the trailing `usage` frame — so capture it and attach it to the
-    // usage event the runner reads. The kernel treats "length" as a truncation (== Anthropic
-    // "max_tokens"); other reasons ("stop"/"tool_calls") pass through harmlessly.
-    let finishReason: string | undefined
-    let rawUsage: unknown
-    for await (const chunk of stream) {
-      if (chunk.usage) {
-        totalTokens = chunk.usage.total_tokens
-        inputTokens = chunk.usage.prompt_tokens ?? 0
-        outputTokens = chunk.usage.completion_tokens ?? 0
-        cacheReadTokens = openAICachedPromptTokens(chunk.usage)
-        rawUsage = chunk.usage
-        continue
-      }
-      const choice = chunk.choices[0]
-      if (!choice) continue
-      if (choice.finish_reason) finishReason = choice.finish_reason
-      const delta = choice.delta as Record<string, unknown>
-      if (!delta) continue
-
-      if (delta.reasoning_content) {
-        accumulatedReasoning += String(delta.reasoning_content)
-        if (exposeReasoning) yield { type: "thinking_delta", delta: String(delta.reasoning_content) } as ThinkingDelta
-      }
-      if (delta.reasoning_details !== undefined && delta.reasoning_details !== null) accumulatedReasoningDetails = delta.reasoning_details
-
-      if (delta.content) {
-        if (useTags) {
-          for (const part of extractor.feed(String(delta.content))) {
-            if (part.type === "thinking") {
-              accumulatedReasoning += part.content
-              yield { type: "thinking_delta", delta: part.content } as ThinkingDelta
-            } else {
-              accumulatedContent += part.content
-              yield { type: "text_delta", delta: part.content } as TextDelta
-            }
-          }
-        } else {
-          accumulatedContent += String(delta.content)
-          yield { type: "text_delta", delta: delta.content } as TextDelta
-        }
-      }
-
-      for (const tc of (delta.tool_calls as OpenAI.ChatCompletionChunk.Choice.Delta.ToolCall[] | undefined) ?? []) {
-        const idx = tc.index
-        if (!toolCallBufs[idx]) toolCallBufs[idx] = { id: tc.id ?? "", name: "", argsBuf: "" }
-        if (tc.function?.name) toolCallBufs[idx].name += tc.function.name
-        toolCallBufs[idx].argsBuf += tc.function?.arguments ?? ""
-      }
-
-      if (choice.finish_reason === "tool_calls") {
-        rememberStream()
-        yield* emitPendingToolCalls()
-      }
-    }
-
-    if (useTags) {
-      for (const part of extractor.flush()) {
-        if (part.type === "thinking") {
-          accumulatedReasoning += part.content
-          yield { type: "thinking_delta", delta: part.content } as ThinkingDelta
-        } else {
-          accumulatedContent += part.content
-          yield { type: "text_delta", delta: part.content } as TextDelta
-        }
-      }
-    }
-
-    rememberStream()
-    yield* emitPendingToolCalls()
-    if (totalTokens > 0) {
-      const providerUsage = normalizeOpenAIUsage(rawUsage)
-      yield {
-        type: "usage",
-        totalTokens,
-        inputTokens,
-        outputTokens,
-        ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}),
-        ...(finishReason ? { stopReason: finishReason } : {}),
-        ...(providerUsage ? { providerUsage } : {}),
-      } as StreamEvent
-    }
+    const final = this.chat.finishStream(state)
+    for (const event of final.events) yield event
+    this.rememberReplay({
+      content: state.accumulatedContent,
+      toolCalls: Object.values(state.toolCallBuffers).map(call => ({
+        id: call.id,
+        name: call.name,
+        arguments: call.argsBuffer || "{}",
+      })),
+    }, final.replay)
   }
 
-  /**
-   * Default `prompt_cache_key` derived from the cacheable prefix (system prompt +
-   * tool names) so requests for the same agent config route to the same cache.
-   * A caller-supplied `prompt_cache_key` in extensions overrides it (it is spread
-   * after this default). Unknown to non-OpenAI compatible endpoints, which ignore it.
-   */
-  protected promptCacheKey(context: RenderedContext, tools: ToolSchema[]): string {
-    return stablePromptCacheKey([context.systemText, tools.map(t => t.name).join(",")])
+  // Compatibility-only white-box seams. Runtime request shaping uses the dialect through adapter.
+  protected prepareExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
+    return this.dialect.prepareExtensions(extensions ?? {})
+  }
+
+  protected requestBodyExtras(extensions?: Record<string, unknown>): Record<string, unknown> {
+    const prepared = this.dialect.prepareExtensions(extensions ?? {})
+    return Object.fromEntries(Object.entries(prepared).filter(([key]) =>
+      key === "extra_body" || key === "reasoning_effort" || key === "reasoning_split"))
+  }
+
+  protected serverTools(extensions?: Record<string, unknown>): unknown[] {
+    return this.dialect.serverTools?.(extensions ?? {}) ?? []
   }
 
   protected requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
-    return omitExtensionKeys(extensions, ["model", "messages", "tools", "stream", "stream_options", "__deepstrikeThinkingEnabled"])
+    const prepared = this.dialect.prepareExtensions(extensions ?? {})
+    return omitExtensionKeys(prepared, [
+      "model", "messages", "tools", "stream", "stream_options", "extra_body",
+      "reasoning_effort", "reasoning_split", "__deepstrikeThinkingEnabled",
+    ])
+  }
+
+  protected promptCacheKey(context: RenderedContext, tools: ToolSchema[]): string {
+    return stablePromptCacheKey([context.systemText, tools.map(tool => tool.name).join(",")])
+  }
+
+  protected rememberCompleteReplay(
+    _content: string,
+    _toolCalls: Array<{ id: string; name: string; arguments: string }>,
+    _reasoning: OpenAIChatTurnReasoning,
+  ): void {}
+
+  protected rememberStreamReplay(
+    _content: string,
+    _toolCalls: Array<{ id: string; name: string; arguments: string }>,
+    _reasoning: OpenAIChatTurnReasoning,
+  ): void {}
+}
+
+function compatibilityCapabilities(): ResolvedOpenAIChatRuntime["effectiveCapabilities"] {
+  const unknown = { state: "unknown" as const, evidence: [] }
+  const unsupported = { state: "unsupported" as const, evidence: ["protocol" as const] }
+  return {
+    inputModalities: { text: unknown, image: unknown, audio: unknown, video: unsupported, file: unsupported },
+    outputModalities: { text: unknown, image: unsupported, audio: unsupported, embedding: unsupported },
+    tools: unknown,
+    reasoning: unknown,
+    parallelToolCalls: unknown,
+    structuredOutput: unknown,
+    promptCaching: unknown,
+    nativeTokenCounting: unknown,
+    mediaForms: {
+      imageUrl: unknown,
+      imageBase64: unknown,
+      fileId: unsupported,
+      audioUrl: unsupported,
+      audioBase64: unknown,
+    },
   }
 }
 

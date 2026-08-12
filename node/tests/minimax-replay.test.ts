@@ -1,5 +1,6 @@
 import { MiniMaxAnthropicProvider, MiniMaxOpenAIProvider } from "../src/providers/minimax.js"
 import { createProvider } from "../src/providers/catalog.js"
+import { OpenAIChatProvider } from "../src/providers/openai.js"
 
 function installComplete(provider: unknown, message: Record<string, unknown>, captured?: (req: Record<string, unknown>) => void) {
   ;(provider as { client: { chat: { completions: { create(req: Record<string, unknown>): Promise<Record<string, unknown>> } } } }).client = {
@@ -27,9 +28,11 @@ describe("MiniMax provider split", () => {
     expect((provider as unknown as { client: { baseURL: string } }).client.baseURL).toBe("https://api.minimaxi.com/v1")
   })
 
-  it("createProvider routes the minimax.openai endpoint to MiniMaxOpenAIProvider", () => {
+  it("createProvider routes minimax.openai through the generic provider plus minimax dialect", () => {
     const provider = createProvider({ model: "minimax/MiniMax-M2.7", apiKey: "k", endpoint: "minimax.openai" })
-    expect(provider).toBeInstanceOf(MiniMaxOpenAIProvider)
+    expect(provider).toBeInstanceOf(OpenAIChatProvider)
+    expect(provider).not.toBeInstanceOf(MiniMaxOpenAIProvider)
+    expect((provider as unknown as { dialect: { id: string } }).dialect.id).toBe("minimax")
     const anthropic = createProvider({ model: "minimax/MiniMax-M2.7", apiKey: "k" })
     expect(anthropic).toBeInstanceOf(MiniMaxAnthropicProvider)
   })

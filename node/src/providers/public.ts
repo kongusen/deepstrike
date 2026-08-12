@@ -14,6 +14,8 @@ export type {
   OpenAIResponsesStreamState,
 } from "./openai-responses.js"
 export { OpenAIChatAdapter } from "./openai-chat.js"
+export { openAIChatDialects } from "./openai-chat-dialects.js"
+export type { OpenAIChatDialectId, OpenAIChatWireDialect } from "./openai-chat-dialects.js"
 export { GeminiAdapter } from "./gemini-adapter.js"
 export { OllamaAdapter, OllamaNdjsonDecoder } from "./ollama-adapter.js"
 export type {

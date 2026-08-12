@@ -1,119 +1,20 @@
-import type { Message, ProviderDescriptor, ProviderReplay, RuntimePolicy } from "../types.js"
+import type { RuntimePolicy } from "../types.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { AnthropicCompatibleProvider } from "./anthropic-compatible.js"
-import { omitExtensionKeys } from "./base.js"
+import { openAIChatDialects } from "./openai-chat-dialects.js"
 import { endpointProfiles } from "./endpoints.js"
 import { anthropicVendorProfiles } from "./vendor-profiles.js"
 
-/**
- * Qwen over its Anthropic-compatible endpoint.
- * @deprecated Prefer `qwen({ protocol: "anthropic" })`. Behavior is now fully
- * data-driven via `anthropicVendorProfiles.qwen`; this thin shim is kept for
- * backward compatibility and `instanceof` checks.
- */
+/** @deprecated Prefer `qwen({ protocol: "anthropic" })`. */
 export class QwenAnthropicProvider extends AnthropicCompatibleProvider {
-  constructor(
-    apiKey: string,
-    model?: string,
-    retry?: { maxRetries: number; baseDelay: number },
-    baseURL?: string,
-    runtimePolicy?: RuntimePolicy,
-  ) {
+  constructor(apiKey: string, model?: string, retry?: { maxRetries: number; baseDelay: number }, baseURL?: string, runtimePolicy?: RuntimePolicy) {
     super(anthropicVendorProfiles.qwen, apiKey, model, retry, baseURL, runtimePolicy)
   }
 }
 
-/**
- * Qwen / DashScope over its OpenAI-compatible (DashScope) endpoint. Reasoning is carried
- * out-of-band as `reasoning_content`; thinking is opted into via `enable_thinking` /
- * `thinking_budget` (sent under `extra_body`). The streaming / tool-call machinery and the
- * default `{ reasoning_content }` replay are inherited from OpenAIChatProvider; only request
- * shaping and the (string-coerced) replay peek differ, supplied via the Template-Method hooks.
- */
+/** @deprecated Prefer the `qwen()` factory. Runtime behavior is dialect data. */
 export class QwenProvider extends OpenAIChatProvider {
-  constructor(
-    apiKey: string,
-    model: string = "qwen3.6-plus",
-    retry?: { maxRetries: number; baseDelay: number },
-    baseURL: string = endpointProfiles["qwen.dashscope"].baseURL,
-    runtimePolicy: RuntimePolicy = {},
-  ) {
-    super(apiKey, model, retry, baseURL, runtimePolicy)
-  }
-
-  override runtimePolicy(): RuntimePolicy {
-    return super.runtimePolicy()
-  }
-
-  override descriptor(): ProviderDescriptor {
-    return {
-      provider: "qwen",
-      protocol: "openai-chat",
-      model: this.model,
-      reasoning: {
-        supported: true,
-        preserveAcrossToolTurns: true,
-      },
-      toolCalls: {
-        supported: true,
-        requiresStrictPairing: true,
-      },
-    }
-  }
-
-  // DashScope auto prefix-caches and does not accept OpenAI's `prompt_cache_key`; omit it.
-  protected override cacheKeyParams(): Record<string, unknown> {
-    return {}
-  }
-
-  // Reasoning arrives out-of-band as `reasoning_content`, never as inline <thinking> tags.
-  protected override usesInlineThinkingTags(): boolean {
-    return false
-  }
-
-  protected override requestBodyExtras(extensions?: Record<string, unknown>): Record<string, unknown> {
-    // DashScope vendor knobs travel under `extra_body` in OpenAI-compat mode: thinking + web search.
-    const extraBody = { ...this.thinkingExtraBody(extensions), ...this.searchExtraBody(extensions) }
-    return Object.keys(extraBody).length ? { extra_body: extraBody } : {}
-  }
-
-  protected override requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
-    return omitExtensionKeys(extensions, [
-      "model", "messages", "tools", "stream", "stream_options", "extra_body",
-      "enableThinking", "enable_thinking", "thinkingBudget", "thinking_budget",
-      "enable_search", "search_options",
-    ])
-  }
-
-  // DashScope web search (Qwen vendor feature): `extensions={ enable_search: true }` + optional
-  // `search_options` (forced_search / search_strategy / enable_citation …). Mirrors the Python provider.
-  private searchExtraBody(extensions?: Record<string, unknown>): Record<string, unknown> {
-    if (!extensions?.enable_search) return {}
-    return {
-      enable_search: true,
-      ...(extensions.search_options != null ? { search_options: extensions.search_options } : {}),
-    }
-  }
-
-  override peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
-    const fields = this.chat.peekReplayFields(message)
-    if (!fields || !("reasoning_content" in fields)) return undefined
-    return { reasoning_content: String(fields.reasoning_content ?? "") }
-  }
-
-  override seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
-    if (replay.reasoning_content !== undefined) {
-      this.chat.rememberReplayFields(message, { reasoning_content: replay.reasoning_content })
-    }
-  }
-
-  private thinkingExtraBody(extensions?: Record<string, unknown>): Record<string, unknown> | undefined {
-    const enableThinking = Boolean(extensions?.enableThinking ?? extensions?.enable_thinking)
-    const thinkingBudget = extensions?.thinkingBudget ?? extensions?.thinking_budget
-    if (!enableThinking) return undefined
-    return {
-      enable_thinking: true,
-      ...(typeof thinkingBudget === "number" ? { thinking_budget: thinkingBudget } : {}),
-    }
+  constructor(apiKey: string, model = "qwen3.6-plus", retry?: { maxRetries: number; baseDelay: number }, baseURL: string = endpointProfiles["qwen.dashscope"].baseURL, runtimePolicy: RuntimePolicy = {}) {
+    super(apiKey, model, retry, baseURL, runtimePolicy, openAIChatDialects.qwen)
   }
 }

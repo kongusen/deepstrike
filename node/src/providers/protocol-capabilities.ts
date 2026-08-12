@@ -73,3 +73,14 @@ export const OPENAI_RESPONSES_PROTOCOL_CAPABILITIES: ProtocolRuntimeCapabilities
   promptCaching: true,
   mediaForms: { imageUrl: true, imageBase64: true, fileId: true },
 }
+
+export const OPENAI_CHAT_PROTOCOL_CAPABILITIES: ProtocolRuntimeCapabilities = {
+  acceptedInputModalities: ["text", "image", "audio"],
+  emittedOutputModalities: ["text"],
+  tools: true,
+  parallelToolCalls: true,
+  structuredOutput: true,
+  reasoningReplay: "optional",
+  promptCaching: true,
+  mediaForms: { imageUrl: true, imageBase64: true, audioBase64: true },
+}
