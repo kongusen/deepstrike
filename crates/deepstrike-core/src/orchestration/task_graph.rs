@@ -59,6 +59,24 @@ struct SchedulingMetadata {
     critical_path_remaining: u64,
     downstream_fanout: u64,
     token_cost: u64,
+    factors: SchedulingFactors,
+}
+
+/// Host-measured integer scheduling inputs. The kernel never fabricates estimates when a factor is
+/// unavailable; callers pass zero and the corresponding policy weight contributes nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchedulingFactors {
+    pub deadline_urgency: u64,
+    pub process_priority: u64,
+    pub resource_pressure: u64,
+    pub budget_pressure: u64,
+}
+
+impl SchedulingFactors {
+    pub fn is_zero(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,6 +357,15 @@ impl TaskGraph {
     }
 
     pub fn configure_scheduling(&mut self, policy: SchedulerPolicyConfig, token_costs: &[u64]) {
+        self.configure_scheduling_with_factors(policy, token_costs, &[]);
+    }
+
+    pub fn configure_scheduling_with_factors(
+        &mut self,
+        policy: SchedulerPolicyConfig,
+        token_costs: &[u64],
+        factors: &[SchedulingFactors],
+    ) {
         self.scheduler_policy = policy;
         let order = self
             .topological_sort()
@@ -361,6 +388,7 @@ impl TaskGraph {
                 critical_path_remaining: critical,
                 downstream_fanout: reachable[node].len() as u64,
                 token_cost: token_costs.get(node).copied().unwrap_or(0),
+                factors: factors.get(node).copied().unwrap_or_default(),
             };
         }
         self.rebuild_ready_heap();
@@ -390,6 +418,15 @@ impl TaskGraph {
             + i128::from(policy.fanout_weight) * i128::from(metadata.downstream_fanout)
             - i128::from(policy.age_weight) * i128::from(self.enqueued_round[task_id])
             - i128::from(policy.token_cost_weight) * i128::from(metadata.token_cost);
+        let priority = priority
+            + i128::from(policy.deadline_weight)
+                * i128::from(metadata.factors.deadline_urgency)
+            + i128::from(policy.process_priority_weight)
+                * i128::from(metadata.factors.process_priority)
+            + i128::from(policy.resource_pressure_weight)
+                * i128::from(metadata.factors.resource_pressure)
+            + i128::from(policy.budget_pressure_weight)
+                * i128::from(metadata.factors.budget_pressure);
         self.ready_heap.push(ReadyEntry {
             priority,
             enqueue_sequence: self.enqueue_sequence,
@@ -570,5 +607,150 @@ mod tests {
 
         assert_eq!(g.reverse_adjacency[root], vec![child]);
         assert!(g.reverse_adjacency[unrelated].is_empty());
+    }
+
+    #[test]
+    fn scheduler_trace_uses_integer_deadline_priority_and_pressure_without_starving_a_peer() {
+        let mut g = TaskGraph::new();
+        let deadline = g.add(RuntimeTask::new("deadline"), vec![]);
+        let peer = g.add(RuntimeTask::new("peer"), vec![]);
+        let mut policy = SchedulerPolicyConfig::default();
+        policy.critical_path_weight = 0;
+        policy.fanout_weight = 0;
+        policy.age_weight = 1_000;
+        policy.token_cost_weight = 0;
+        policy.deadline_weight = 100;
+        policy.process_priority_weight = 10;
+        policy.resource_pressure_weight = 10;
+        policy.budget_pressure_weight = 10;
+        g.configure_scheduling_with_factors(
+            policy,
+            &[],
+            &[
+                SchedulingFactors {
+                    deadline_urgency: 5,
+                    process_priority: 1,
+                    resource_pressure: 0,
+                    budget_pressure: 0,
+                },
+                SchedulingFactors {
+                    deadline_urgency: 0,
+                    process_priority: 0,
+                    resource_pressure: 0,
+                    budget_pressure: 0,
+                },
+            ],
+        );
+        assert_eq!(g.ready_tasks(), vec![deadline, peer]);
+
+        // A loop re-arm must age fairly: after the peer has waited, it gets the next turn even if
+        // the deadline task remains ready with the same static factors.
+        g.start(deadline);
+        g.set_ready(deadline);
+        assert_eq!(g.ready_tasks(), vec![peer, deadline]);
+
+        let mut replay = TaskGraph::new();
+        replay.add(RuntimeTask::new("deadline"), vec![]);
+        replay.add(RuntimeTask::new("peer"), vec![]);
+        replay.configure_scheduling_with_factors(
+            policy,
+            &[],
+            &[
+                SchedulingFactors {
+                    deadline_urgency: 5,
+                    process_priority: 1,
+                    resource_pressure: 0,
+                    budget_pressure: 0,
+                },
+                SchedulingFactors {
+                    deadline_urgency: 0,
+                    process_priority: 0,
+                    resource_pressure: 0,
+                    budget_pressure: 0,
+                },
+            ],
+        );
+        assert_eq!(replay.ready_tasks(), vec![0, 1]);
+    }
+
+    #[test]
+    fn scheduler_factor_mutation_matrix_changes_only_its_configured_integer_axis() {
+        let mut g = TaskGraph::new();
+        let first = g.add(RuntimeTask::new("first"), vec![]);
+        let second = g.add(RuntimeTask::new("second"), vec![]);
+        let weights = |deadline, priority, resource, budget| SchedulerPolicyConfig {
+            critical_path_weight: 0,
+            fanout_weight: 0,
+            age_weight: 0,
+            token_cost_weight: 0,
+            deadline_weight: deadline,
+            process_priority_weight: priority,
+            resource_pressure_weight: resource,
+            budget_pressure_weight: budget,
+            ..SchedulerPolicyConfig::default()
+        };
+        let factors = [
+            SchedulingFactors {
+                deadline_urgency: 1,
+                process_priority: 1,
+                resource_pressure: 1,
+                budget_pressure: 1,
+            },
+            SchedulingFactors::default(),
+        ];
+        for policy in [
+            weights(1, 0, 0, 0),
+            weights(0, 1, 0, 0),
+            weights(0, 0, 1, 0),
+            weights(0, 0, 0, 1),
+        ] {
+            g.configure_scheduling_with_factors(policy, &[], &factors);
+            assert_eq!(g.ready_tasks(), vec![first, second]);
+        }
+    }
+
+    #[test]
+    fn restored_ready_state_replays_the_same_integer_factor_order() {
+        let policy = SchedulerPolicyConfig {
+            critical_path_weight: 0,
+            fanout_weight: 0,
+            age_weight: 0,
+            token_cost_weight: 0,
+            deadline_weight: 10,
+            process_priority_weight: 1,
+            resource_pressure_weight: 1,
+            budget_pressure_weight: 1,
+            ..SchedulerPolicyConfig::default()
+        };
+        let factors = [
+            SchedulingFactors {
+                deadline_urgency: 0,
+                process_priority: 1,
+                resource_pressure: 0,
+                budget_pressure: 0,
+            },
+            SchedulingFactors {
+                deadline_urgency: 1,
+                process_priority: 0,
+                resource_pressure: 0,
+                budget_pressure: 0,
+            },
+        ];
+        let mut original = TaskGraph::new();
+        original.add(RuntimeTask::new("priority"), vec![]);
+        original.add(RuntimeTask::new("deadline"), vec![]);
+        original.configure_scheduling_with_factors(policy, &[], &factors);
+        let expected = original.ready_tasks();
+
+        let states = [(TaskStatus::Ready, None), (TaskStatus::Ready, None)];
+        let mut restored = TaskGraph::new();
+        restored.add(RuntimeTask::new("priority"), vec![]);
+        restored.add(RuntimeTask::new("deadline"), vec![]);
+        restored.configure_scheduling_with_factors(policy, &[], &factors);
+        restored.restore_runtime_state(&states).unwrap();
+        // Restore rebuilds the ready index. Reinstalling the durable policy/factors produces the
+        // identical trace with no float or wall-clock input.
+        restored.configure_scheduling_with_factors(policy, &[], &factors);
+        assert_eq!(restored.ready_tasks(), expected);
     }
 }

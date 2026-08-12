@@ -10,6 +10,12 @@ pub struct SchedulerPolicyConfig {
     pub fanout_weight: i64,
     pub age_weight: i64,
     pub token_cost_weight: i64,
+    /// Deadline urgency, process priority, and host-reported pressure are integer-only inputs.
+    /// Zero preserves the pre-016-06 ordering when no new factor is configured.
+    pub deadline_weight: i64,
+    pub process_priority_weight: i64,
+    pub resource_pressure_weight: i64,
+    pub budget_pressure_weight: i64,
 }
 
 impl Default for SchedulerPolicyConfig {
@@ -20,6 +26,10 @@ impl Default for SchedulerPolicyConfig {
             fanout_weight: 10_000,
             age_weight: 1_000,
             token_cost_weight: 1,
+            deadline_weight: 0,
+            process_priority_weight: 0,
+            resource_pressure_weight: 0,
+            budget_pressure_weight: 0,
         }
     }
 }
@@ -36,6 +46,10 @@ impl SchedulerPolicyConfig {
             ("fanout_weight", self.fanout_weight),
             ("age_weight", self.age_weight),
             ("token_cost_weight", self.token_cost_weight),
+            ("deadline_weight", self.deadline_weight),
+            ("process_priority_weight", self.process_priority_weight),
+            ("resource_pressure_weight", self.resource_pressure_weight),
+            ("budget_pressure_weight", self.budget_pressure_weight),
         ] {
             if !(0..=1_000_000_000).contains(&weight) {
                 return Err(format!(

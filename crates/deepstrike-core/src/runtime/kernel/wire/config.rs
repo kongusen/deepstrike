@@ -222,6 +222,14 @@ pub struct SchedulerPolicy {
     pub age_weight: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_cost_weight: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_weight: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_priority_weight: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_pressure_weight: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_pressure_weight: Option<u32>,
 }
 
 /// Upper bound of any scheduler weight, matching the legacy validator.
@@ -638,6 +646,14 @@ pub struct ResolvedSchedulerPolicy {
     pub fanout_weight: u32,
     pub age_weight: u32,
     pub token_cost_weight: u32,
+    #[serde(default)]
+    pub deadline_weight: u32,
+    #[serde(default)]
+    pub process_priority_weight: u32,
+    #[serde(default)]
+    pub resource_pressure_weight: u32,
+    #[serde(default)]
+    pub budget_pressure_weight: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -856,6 +872,10 @@ impl ConfigDefaults {
                     fanout_weight: 10_000,
                     age_weight: 1_000,
                     token_cost_weight: 1,
+                    deadline_weight: 0,
+                    process_priority_weight: 0,
+                    resource_pressure_weight: 0,
+                    budget_pressure_weight: 0,
                 },
                 resource_quota: ResourceQuota::default(),
                 budget_grant: None,
@@ -1546,12 +1566,28 @@ fn resolve_scheduler(
         if let Some(value) = policy.token_cost_weight {
             resolved.token_cost_weight = value;
         }
+        if let Some(value) = policy.deadline_weight {
+            resolved.deadline_weight = value;
+        }
+        if let Some(value) = policy.process_priority_weight {
+            resolved.process_priority_weight = value;
+        }
+        if let Some(value) = policy.resource_pressure_weight {
+            resolved.resource_pressure_weight = value;
+        }
+        if let Some(value) = policy.budget_pressure_weight {
+            resolved.budget_pressure_weight = value;
+        }
     }
     for (label, weight) in [
         ("critical_path_weight", resolved.critical_path_weight),
         ("fanout_weight", resolved.fanout_weight),
         ("age_weight", resolved.age_weight),
         ("token_cost_weight", resolved.token_cost_weight),
+        ("deadline_weight", resolved.deadline_weight),
+        ("process_priority_weight", resolved.process_priority_weight),
+        ("resource_pressure_weight", resolved.resource_pressure_weight),
+        ("budget_pressure_weight", resolved.budget_pressure_weight),
     ] {
         if weight > MAX_SCHEDULER_WEIGHT {
             return Err(invalid(format!(
@@ -2097,6 +2133,10 @@ mod tests {
                 fanout_weight: Some(9_000),
                 age_weight: Some(900),
                 token_cost_weight: Some(2),
+                deadline_weight: None,
+                process_priority_weight: None,
+                resource_pressure_weight: None,
+                budget_pressure_weight: None,
             }),
             resource_quota: Some(ResourceQuota {
                 max_concurrent_subagents: Some(2),

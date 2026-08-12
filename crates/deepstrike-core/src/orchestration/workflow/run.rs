@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::{DependencyPolicy, NodeKind, NodeTrust, WorkflowNode, WorkflowSpec};
-use crate::orchestration::task_graph::{TaskGraph, TaskStatus};
+use crate::orchestration::task_graph::{SchedulingFactors, TaskGraph, TaskStatus};
 use crate::orchestration::tournament::{EntrantId, Match, Tournament, TournamentAction};
 use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
 use crate::types::error::DeepStrikeError;
@@ -334,8 +334,16 @@ impl WorkflowRun {
             .iter()
             .map(|node| u64::from(node.token_budget.unwrap_or(0)))
             .collect();
-        self.graph
-            .configure_scheduling(self.scheduler_policy, &token_costs);
+        let factors: Vec<SchedulingFactors> = self
+            .nodes
+            .iter()
+            .map(|node| node.scheduling_factors)
+            .collect();
+        self.graph.configure_scheduling_with_factors(
+            self.scheduler_policy,
+            &token_costs,
+            &factors,
+        );
     }
 
     /// The agent id for a node's *current* spawn. For a `Spawn` node this is the stable
@@ -2325,6 +2333,42 @@ mod tests {
             1,
             "the independent node runs before the loop's second iteration (no starvation)"
         );
+    }
+
+    #[test]
+    fn workflow_source_factors_survive_checkpoint_rebuild_and_preserve_ready_order() {
+        use crate::orchestration::task_graph::SchedulingFactors;
+        use crate::scheduler::policy::SchedulerPolicyConfig;
+
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("ordinary"), AgentRole::Implement),
+            WorkflowNode::new(RuntimeTask::new("urgent"), AgentRole::Implement)
+                .with_scheduling_factors(SchedulingFactors {
+                    deadline_urgency: 1,
+                    process_priority: 0,
+                    resource_pressure: 0,
+                    budget_pressure: 0,
+                }),
+        ]);
+        let policy = SchedulerPolicyConfig {
+            critical_path_weight: 0,
+            fanout_weight: 0,
+            age_weight: 0,
+            token_cost_weight: 0,
+            deadline_weight: 1,
+            process_priority_weight: 0,
+            resource_pressure_weight: 0,
+            budget_pressure_weight: 0,
+            ..SchedulerPolicyConfig::default()
+        };
+        let mut original = WorkflowRun::new(&spec).unwrap();
+        original.set_scheduler_policy(policy);
+        assert_eq!(original.ready_batch(), vec![1, 0]);
+
+        let states = original.checkpoint_nodes();
+        let mut restored = WorkflowRun::restore_from_checkpoint(&spec, &states).unwrap();
+        restored.set_scheduler_policy(policy);
+        assert_eq!(restored.ready_batch(), vec![1, 0]);
     }
 
     /// F3 — failure propagation: a failure skips its transitive successors, and partial results gate

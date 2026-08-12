@@ -18,7 +18,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::task_graph::TaskGraph;
+use super::task_graph::{SchedulingFactors, TaskGraph};
 use crate::scheduler::budget_grant::ResourceBudget;
 use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance};
 use crate::types::capability::Capability;
@@ -157,6 +157,10 @@ pub struct WorkflowNode {
     /// notes), so today this can only be exercised with a test-seeded root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_budget: Option<ResourceBudget>,
+    /// Deterministic Host-observed scheduling inputs. Zero means unavailable and is deliberately
+    /// distinct from an inferred estimate; these values travel with the workflow source/checkpoint.
+    #[serde(default, skip_serializing_if = "SchedulingFactors::is_zero")]
+    pub scheduling_factors: SchedulingFactors,
 }
 
 fn is_trusted(t: &NodeTrust) -> bool {
@@ -187,6 +191,7 @@ impl WorkflowNode {
             depends_on: Vec::new(),
             requested_capabilities: Vec::new(),
             requested_budget: None,
+            scheduling_factors: SchedulingFactors::default(),
         }
     }
 
@@ -201,6 +206,13 @@ impl WorkflowNode {
     /// operation root's own grantable pool.
     pub fn with_requested_budget(mut self, budget: ResourceBudget) -> Self {
         self.requested_budget = Some(budget);
+        self
+    }
+
+    /// Attach only observed integer scheduling facts. The Kernel never derives deadline or
+    /// pressure values from provider timing, pricing, or opaque Host state.
+    pub fn with_scheduling_factors(mut self, factors: SchedulingFactors) -> Self {
+        self.scheduling_factors = factors;
         self
     }
 

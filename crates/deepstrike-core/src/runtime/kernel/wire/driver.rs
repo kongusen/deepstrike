@@ -4869,6 +4869,19 @@ fn build_core_spec(spec: &WireSpec) -> Result<CoreWorkflowSpec, KernelFault> {
                     })?;
                 core = core.with_requested_budget(budget);
             }
+            if let Some(factors) = metadata.get("scheduling_factors") {
+                let factors: crate::orchestration::task_graph::SchedulingFactors =
+                    serde_json::from_value(factors.clone()).map_err(|error| {
+                        KernelFault::new(
+                            KernelFaultCode::InvalidConfig,
+                            format!(
+                                "workflow node {:?} metadata.scheduling_factors is malformed: {error}",
+                                node.node_id
+                            ),
+                        )
+                    })?;
+                core = core.with_scheduling_factors(factors);
+            }
         }
         let mut depends_on = Vec::with_capacity(node.depends_on.len());
         for dependency in &node.depends_on {
@@ -5663,6 +5676,10 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
         fanout_weight: i64::from(scheduler_policy.fanout_weight),
         age_weight: i64::from(scheduler_policy.age_weight),
         token_cost_weight: i64::from(scheduler_policy.token_cost_weight),
+        deadline_weight: i64::from(scheduler_policy.deadline_weight),
+        process_priority_weight: i64::from(scheduler_policy.process_priority_weight),
+        resource_pressure_weight: i64::from(scheduler_policy.resource_pressure_weight),
+        budget_pressure_weight: i64::from(scheduler_policy.budget_pressure_weight),
     });
 
     engine.set_criteria_gate(execution.criteria_gate_enabled);
@@ -10206,6 +10223,52 @@ mod tests {
         .expect("well-formed requested_budget builds");
 
         assert_eq!(core.nodes[0].requested_budget, Some(budget));
+    }
+
+    #[test]
+    fn spc_016_06_wire_node_scheduling_factors_thread_into_the_core_spec() {
+        let factors = crate::orchestration::task_graph::SchedulingFactors {
+            deadline_urgency: 3,
+            process_priority: 2,
+            resource_pressure: 1,
+            budget_pressure: 4,
+        };
+        let metadata = json!({ "scheduling_factors": factors });
+
+        let core = build_core_spec(&WireSpec {
+            name: "scheduler-factors".to_string(),
+            nodes: vec![WireNode {
+                node_id: NodeId::new("solo").unwrap(),
+                task: LogicalTask::new("do work"),
+                depends_on: Vec::new(),
+                run_spec: Some(LogicalAgentSpec {
+                    metadata: crate::runtime::kernel::wire::BoundedJson::new(metadata).unwrap(),
+                    ..LogicalAgentSpec::new("do work")
+                }),
+            }],
+        })
+        .expect("well-formed scheduling factors build");
+
+        assert_eq!(core.nodes[0].scheduling_factors, factors);
+    }
+
+    #[test]
+    fn spc_016_06_malformed_wire_node_scheduling_factors_fail_closed() {
+        let metadata = json!({ "scheduling_factors": { "deadline_urgency": "urgent" } });
+        let error = build_core_spec(&WireSpec {
+            name: "scheduler-factors-malformed".to_string(),
+            nodes: vec![WireNode {
+                node_id: NodeId::new("solo").unwrap(),
+                task: LogicalTask::new("do work"),
+                depends_on: Vec::new(),
+                run_spec: Some(LogicalAgentSpec {
+                    metadata: crate::runtime::kernel::wire::BoundedJson::new(metadata).unwrap(),
+                    ..LogicalAgentSpec::new("do work")
+                }),
+            }],
+        })
+        .expect_err("malformed scheduling factors must not silently become zeros");
+        assert_eq!(error.code, KernelFaultCode::InvalidConfig);
     }
 
     #[test]
