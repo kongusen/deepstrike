@@ -9,82 +9,48 @@ longer part of the public ``deepstrike.providers`` surface.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
-from .deepseek import DeepSeekProvider, DeepSeekAnthropicProvider
-from .kimi import KimiProvider, KimiAnthropicProvider
-from .qwen import QwenProvider, QwenAnthropicProvider
-from .glm import GLMProvider, GLMAnthropicProvider
-from .minimax import MiniMaxOpenAIProvider, MiniMaxAnthropicProvider
-from .gemini import GeminiProvider
-from .ollama import OllamaProvider
-from .vendor_profiles import resolve_vendor_endpoint
+from .runtime_registry import create_provider
 
 Protocol = Literal["openai", "anthropic"]
 Region = Literal["cn", "global"]
 
 
-def _build(cls, api_key, model, base_url, retry_config):
-    kw: dict[str, Any] = {"api_key": api_key}
-    if model is not None:
-        kw["model"] = model
-    if base_url is not None:
-        kw["base_url"] = base_url
-    if retry_config is not None:
-        kw["retry_config"] = retry_config
-    return cls(**kw)
-
-
 def deepseek(*, api_key, model=None, base_url=None, retry_config=None, protocol: Protocol = "openai"):
     """DeepSeek. Defaults to the OpenAI-compatible wire (richer reasoning-replay handling)."""
-    cls = DeepSeekAnthropicProvider if protocol == "anthropic" else DeepSeekProvider
-    return _build(cls, api_key, model, base_url, retry_config)
+    return create_provider("deepseek", api_key=api_key, model=model, base_url=base_url, retry_config=retry_config, protocol=protocol)
 
 
 def kimi(*, api_key, model=None, base_url=None, retry_config=None, protocol: Protocol = "openai", region: Region | None = None):
     """Moonshot Kimi. Defaults to the OpenAI-compatible wire. ``region`` ("cn"|"global") selects the
     mainland vs international endpoint for the chosen protocol (supply that region's API key); an
     explicit ``base_url`` overrides it. Both protocols exist in both regions."""
-    cls = KimiAnthropicProvider if protocol == "anthropic" else KimiProvider
-    if base_url is None and region is not None:
-        base_url = resolve_vendor_endpoint("kimi", region, protocol)
-    return _build(cls, api_key, model, base_url, retry_config)
+    return create_provider("kimi", api_key=api_key, model=model, base_url=base_url, retry_config=retry_config, protocol=protocol, region=region)
 
 
 def qwen(*, api_key, model=None, base_url=None, retry_config=None, protocol: Protocol = "openai"):
     """Alibaba Qwen / DashScope. Defaults to the OpenAI-compatible (DashScope) wire."""
-    cls = QwenAnthropicProvider if protocol == "anthropic" else QwenProvider
-    return _build(cls, api_key, model, base_url, retry_config)
+    return create_provider("qwen", api_key=api_key, model=model, base_url=base_url, retry_config=retry_config, protocol=protocol)
 
 
 def glm(*, api_key, model=None, base_url=None, retry_config=None, protocol: Protocol = "openai", region: Region | None = None):
     """Zhipu GLM. Defaults to the OpenAI-compatible wire. ``region`` ("cn"|"global") selects the
     mainland (bigmodel.cn) vs international (z.ai) endpoint for the chosen protocol (supply that
     region's API key); an explicit ``base_url`` overrides it. Both protocols exist in both regions."""
-    cls = GLMAnthropicProvider if protocol == "anthropic" else GLMProvider
-    if base_url is None and region is not None:
-        base_url = resolve_vendor_endpoint("glm", region, protocol)
-    return _build(cls, api_key, model, base_url, retry_config)
+    return create_provider("glm", api_key=api_key, model=model, base_url=base_url, retry_config=retry_config, protocol=protocol, region=region)
 
 
 def minimax(*, api_key, model=None, base_url=None, retry_config=None, protocol: Protocol = "anthropic"):
     """MiniMax. Defaults to the Anthropic-compatible wire (the primary M2.x path)."""
-    cls = MiniMaxOpenAIProvider if protocol == "openai" else MiniMaxAnthropicProvider
-    return _build(cls, api_key, model, base_url, retry_config)
+    return create_provider("minimax", api_key=api_key, model=model, base_url=base_url, retry_config=retry_config, protocol=protocol)
 
 
 def gemini(*, api_key, model=None, base_url=None, retry_config=None):
     """Google Gemini (single wire)."""
-    return _build(GeminiProvider, api_key, model, base_url, retry_config)
+    return create_provider("gemini", api_key=api_key, model=model, base_url=base_url, retry_config=retry_config, protocol="gemini")
 
 
 def ollama(*, model=None, base_url=None, retry_config=None):
     """Local Ollama (single wire, no API key)."""
-    kw: dict[str, Any] = {}
-    if model is not None:
-        kw["model"] = model
-    if base_url is not None:
-        kw["base_url"] = base_url
-    if retry_config is not None:
-        kw["retry_config"] = retry_config
-    return OllamaProvider(**kw)
+    return create_provider("ollama", api_key=None, model=model, base_url=base_url, retry_config=retry_config, protocol="ollama")

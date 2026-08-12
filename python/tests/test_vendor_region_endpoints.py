@@ -10,6 +10,7 @@ from deepstrike.providers.vendor_profiles import resolve_vendor_endpoint, VENDOR
 from deepstrike.providers.factories import kimi, glm
 from deepstrike.providers.kimi import KimiProvider, KimiAnthropicProvider
 from deepstrike.providers.glm import GLMProvider, GLMAnthropicProvider
+from deepstrike.providers.openai import OpenAIProvider
 
 
 def test_resolver_returns_all_four_cells_for_kimi_and_glm():
@@ -33,7 +34,8 @@ def test_resolver_raises_on_missing_qwen_mainland_anthropic():
 def test_kimi_factory_region_selects_endpoint_for_each_protocol():
     # global openai (was only reachable by hand-typing a base_url before)
     p = kimi(api_key="k", region="global", protocol="openai")
-    assert isinstance(p, KimiProvider) and p._base_url == "https://api.moonshot.ai/v1"
+    assert isinstance(p, OpenAIProvider) and p._base_url == "https://api.moonshot.ai/v1"
+    assert p._wire_dialect.provider_id == "kimi"
     # mainland anthropic (the previously-unreachable cell)
     p2 = kimi(api_key="k", region="cn", protocol="anthropic")
     assert isinstance(p2, KimiAnthropicProvider) and "api.moonshot.cn/anthropic" in str(p2._client.base_url)
@@ -41,7 +43,8 @@ def test_kimi_factory_region_selects_endpoint_for_each_protocol():
 
 def test_glm_factory_region_selects_endpoint():
     p = glm(api_key="k", region="cn", protocol="openai")
-    assert isinstance(p, GLMProvider) and p._base_url == "https://open.bigmodel.cn/api/paas/v4"
+    assert isinstance(p, OpenAIProvider) and p._base_url == "https://open.bigmodel.cn/api/paas/v4"
+    assert p._wire_dialect.provider_id == "glm"
     p2 = glm(api_key="k", region="global", protocol="anthropic")
     assert isinstance(p2, GLMAnthropicProvider) and "z.ai/api/anthropic" in str(p2._client.base_url)
 

@@ -3,6 +3,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
+import httpx
 from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent, ThinkingDelta, UsageEvent
@@ -74,18 +75,37 @@ class OpenAIProvider(ReasoningReplayMixin):
         model: str = "gpt-4o",
         retry_config: RetryConfig | None = None,
         base_url: str = "https://api.openai.com/v1",
+        dialect: Any | None = None,
     ):
         self._model = model
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
         self._base_url = base_url.rstrip("/")
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._wire_dialect = dialect
         self._init_replay_store()
 
     def runtime_policy(self) -> RuntimePolicy:
+        if self._wire_dialect is not None:
+            from .model_registry import get_runtime_policy
+            return get_runtime_policy(self._wire_dialect.provider_id, self._model)
         return _OPENAI_POLICIES.get(self._model, RuntimePolicy())
 
     def descriptor(self) -> ProviderDescriptor:
+        if self._wire_dialect is not None:
+            reasoning = {
+                "supported": True,
+                "preserve_across_tool_turns": self._wire_dialect.reasoning_preserve_across_tool_turns,
+            }
+            if self._wire_dialect.reasoning_requires_replay_for_tool_turns:
+                reasoning["requires_replay_for_tool_turns"] = True
+            return ProviderDescriptor(
+                provider=self._wire_dialect.provider_id,
+                protocol="openai-chat",
+                model=self._model,
+                reasoning=reasoning,
+                tool_calls={"supported": True, "requires_strict_pairing": True},
+            )
         return ProviderDescriptor(
             provider="openai",
             protocol="openai-chat",
@@ -95,6 +115,11 @@ class OpenAIProvider(ReasoningReplayMixin):
         )
 
     def _require_non_empty_reasoning_replay_for_tool_turns(self, extensions: dict | None) -> bool:
+        if self._wire_dialect is not None:
+            return (
+                self._model in self._wire_dialect.reasoning_model_ids
+                and bool(self._wire_dialect.require_reasoning_replay((extensions or {})))
+            )
         return False
 
     def _degrade_missing_reasoning_replay(self, extensions: dict | None) -> bool:
@@ -107,42 +132,91 @@ class OpenAIProvider(ReasoningReplayMixin):
     def _prepare_extensions(self, extensions: dict | None) -> dict | None:
         """Pre-process caller extensions before they reach the wire request body (e.g. force
         ``reasoning_split``). Default: pass through unchanged."""
+        if self._wire_dialect is not None and self._wire_dialect.prepare_extensions is not None:
+            return self._wire_dialect.prepare_extensions(extensions or {})
         return extensions
 
     def _cache_key_params(self, context: RenderedContext, tools: list[ToolSchema]) -> dict:
         """Request-body params controlling prompt caching, merged via setdefault. Default sends
         OpenAI's ``prompt_cache_key``; vendors whose endpoints reject unknown params (DeepSeek 400s)
         override to ``{}``."""
+        if self._wire_dialect is not None and self._wire_dialect.cache_key_mode == "none":
+            return {}
         return {"prompt_cache_key": self._prompt_cache_key(context, tools)}
 
     def _wire_tools(self, tools: list[ToolSchema], extensions: dict | None = None) -> list[dict] | None:
         """Tool defs sent on the wire. Default = the caller's function tools; DeepSeek reasoner models
         strip them, GLM appends its server-side web_search tool when enabled via extensions."""
-        return self._build_tools(tools)
+        defs = list(self._build_tools(tools) or [])
+        if self._wire_dialect is not None:
+            if self._model in self._wire_dialect.tool_unsupported_model_ids:
+                return None
+            if self._wire_dialect.server_tools is not None:
+                defs.extend(self._wire_dialect.server_tools(extensions or {}))
+        return defs or None
 
     def _uses_inline_thinking_tags(self) -> bool:
         """Whether streamed ``content`` may carry inline <thinking>…</thinking> tags to split out.
         Default True (OpenAI); reasoning vendors emit reasoning out-of-band, so they return False."""
-        return True
+        return self._wire_dialect.inline_thinking_tags if self._wire_dialect is not None else True
 
     def _expose_reasoning_delta(self, extensions: dict | None) -> bool:
         """Whether to surface streamed ``reasoning_content`` as ThinkingDelta events. Default True;
         vendors gate this behind an ``expose_reasoning`` extension."""
+        if self._wire_dialect is not None and self._wire_dialect.expose_reasoning is not None:
+            return bool(self._wire_dialect.expose_reasoning(extensions or {}))
         return True
 
     def _capture_reasoning_details(self) -> bool:
         """Whether to accumulate ``reasoning_details`` (split reasoning) for replay. Default False;
         MiniMax returns True."""
-        return False
+        return bool(self._wire_dialect and self._wire_dialect.capture_reasoning_details)
 
     def _remember_complete_replay(self, content: str, tool_calls: list, reasoning: OpenAIChatTurnReasoning) -> None:
-        """Persist replay after a non-streaming turn. Default: nothing (plain OpenAI has no reasoning
-        to replay). Reasoning vendors override to store their envelope."""
+        if self._wire_dialect is not None:
+            self._remember_dialect_replay(content, tool_calls, reasoning, phase="complete")
 
     def _remember_stream_replay(self, content: str, tool_calls: list, reasoning: OpenAIChatTurnReasoning) -> None:
         """Persist replay after a streamed turn. Default reproduces the prior base behavior. Vendors
         override to store their schema_v2 envelope."""
-        self.remember_reasoning_for_turn(content, tool_calls, reasoning.reasoning_content)
+        if self._wire_dialect is not None:
+            self._remember_dialect_replay(content, tool_calls, reasoning, phase="stream")
+        else:
+            self.remember_reasoning_for_turn(content, tool_calls, reasoning.reasoning_content)
+
+    def _remember_dialect_replay(
+        self,
+        content: str,
+        tool_calls: list,
+        reasoning: OpenAIChatTurnReasoning,
+        *,
+        phase: str,
+    ) -> None:
+        dialect = self._wire_dialect
+        if dialect.replay_strategy == "generic_stream":
+            if phase == "stream" and (tool_calls or reasoning.reasoning_content):
+                self.remember_reasoning_for_turn(content, tool_calls, reasoning.reasoning_content)
+            return
+        if dialect.replay_strategy == "deepseek":
+            if not reasoning.reasoning_content.strip():
+                return
+            envelope: dict[str, Any] = {
+                "schema_version": 2, "provider": dialect.provider_id, "protocol": "openai-chat",
+                "model": self._model, "reasoning_content": reasoning.reasoning_content,
+            }
+        elif dialect.replay_strategy == "minimax":
+            if not reasoning.reasoning_content.strip() and reasoning.reasoning_details is None:
+                return
+            envelope = {"schema_version": 2, "provider": dialect.provider_id, "protocol": "openai-chat", "model": self._model}
+            if reasoning.reasoning_content.strip():
+                envelope["reasoning_content"] = reasoning.reasoning_content
+            if reasoning.reasoning_details is not None:
+                envelope["reasoning_details"] = reasoning.reasoning_details
+        else:
+            return
+        if reasoning.native_tool_calls:
+            envelope["tool_calls"] = reasoning.native_tool_calls
+        self.remember_replay_fields(Message(role="assistant", content=content, tool_calls=tool_calls or None), envelope)
 
     def assess_replayability(self, context: RenderedContext, extensions: dict | None = None) -> dict:
         """Pre-flight query: would this history validate against this provider with
@@ -167,9 +241,77 @@ class OpenAIProvider(ReasoningReplayMixin):
             ),
         )
         serialized = to_openai_message_params(context)
-        return self._merge_replay_into_openai_messages(
+        messages = self._merge_replay_into_openai_messages(
             serialized, context, degrade_missing_reasoning=require_reasoning and degrade,
         )
+        if self._wire_dialect is not None and self._wire_dialect.supports_context_cache:
+            cache_message = self._context_cache_message(extensions)
+            if cache_message is not None:
+                return [cache_message, *messages]
+        return messages
+
+    def _context_cache_message(self, extensions: dict | None) -> dict | None:
+        ext = extensions or {}
+        cache_id = ext.get("context_cache_id")
+        cache_tag = ext.get("context_cache_tag")
+        if cache_id:
+            reference = f"cache_id={cache_id}"
+        elif cache_tag:
+            reference = f"tag={cache_tag}"
+        else:
+            return None
+        if ext.get("context_cache_reset_ttl") is not None:
+            reference += f";reset_ttl={int(ext['context_cache_reset_ttl'])}"
+        return {"role": "cache", "content": reference}
+
+    def _cache_model_family(self) -> str:
+        return "moonshot-v1" if self._model.startswith("moonshot-v1") else self._model
+
+    async def create_context_cache(
+        self,
+        messages: list[dict],
+        *,
+        model: str | None = None,
+        tools: list[dict] | None = None,
+        ttl: int | None = 3600,
+        expired_at: int | None = None,
+        name: str | None = None,
+        tags: list[str] | None = None,
+    ) -> dict:
+        if self._wire_dialect is None or not self._wire_dialect.supports_context_cache:
+            raise AttributeError("This OpenAI-chat dialect does not support context caching")
+        body: dict[str, Any] = {"model": model or self._cache_model_family(), "messages": messages}
+        if tools is not None:
+            body["tools"] = tools
+        if name is not None:
+            body["name"] = name
+        if tags is not None:
+            body["tags"] = tags
+        if expired_at is not None:
+            body["expired_at"] = expired_at
+        elif ttl is not None:
+            body["ttl"] = ttl
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self._base_url}/caching",
+                headers={"Authorization": f"Bearer {self._client.api_key}", "Content-Type": "application/json"},
+                json=body,
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    async def resolve_cache_tag(self, tag: str) -> dict:
+        if self._wire_dialect is None or not self._wire_dialect.supports_context_cache:
+            raise AttributeError("This OpenAI-chat dialect does not support context caching")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{self._base_url}/caching/refs/tags/{tag}",
+                headers={"Authorization": f"Bearer {self._client.api_key}"},
+                timeout=30,
+            )
+            response.raise_for_status()
+            return response.json()
 
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
         if not tools:

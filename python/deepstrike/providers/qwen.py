@@ -39,12 +39,14 @@ class QwenProvider(ReasoningReplayMixin):
         model: str = "qwen3.6-plus",
         retry_config: RetryConfig | None = None,
         base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        dialect=None,
     ):
         self._api_key = api_key
         self._model = model
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
         self._base_url = base_url
+        self._wire_dialect = dialect
         self._init_replay_store()
         import dashscope  # noqa: PLC0415
         dashscope.api_key = api_key
