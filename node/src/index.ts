@@ -100,9 +100,11 @@ export type { AnthropicProviderConfig } from "./providers/anthropic.js"
 export { OpenAIProvider } from "./providers/openai.js"
 export type { OpenAIProviderOptions } from "./providers/openai.js"
 export { OpenAIResponsesProvider } from "./providers/openai-responses.js"
-export { createProvider, resolveProviderRuntime } from "./providers/catalog.js"
+export { createProvider, createProviderAsync, resolveProviderRuntime, resolveProviderRuntimeAsync } from "./providers/catalog.js"
 export { UnsupportedModalityError } from "./providers/base.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
+export { createProviderRequestPlan, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./providers/request-plan.js"
+export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement } from "./providers/request-plan.js"
 
 // ── Governance ──────────────────────────────────────────────────────────────
 export { Governance } from "./governance.js"
@@ -114,7 +116,9 @@ export { AgentPool } from "./collaboration/pool.js"
 
 // ── Ecosystem Surface Contract (spc_001) ────────────────────────────────────
 export { Agent } from "./agent.js"
-export type { AgentOptions, ModelRef, ModelRequirement } from "./agent.js"
+export type { AgentOptions, AgentMemory, MemoryReference, ModelRef, ModelRequirement } from "./agent.js"
+export { lowerAgent, normalizeAgent } from "./agent-ir.js"
+export type { AgentCapabilityIR, AgentDefinition, AgentLoweringInputs, AgentMemoryIR, AgentSpec, AgentToolDefinition, AgentToolIR } from "./agent-ir.js"
 export type { Guardrail } from "./guardrail.js"
 export type { MCPServer, McpTransport } from "./mcp-server.js"
 export type { Knowledge, KnowledgeSourceRef } from "./knowledge/public.js"

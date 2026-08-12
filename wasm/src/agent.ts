@@ -1,24 +1,15 @@
+import type { AgentCapabilityFilter } from "./runtime/types/agent.js"
+import type { Memory, WorkingMemory } from "./memory/index.js"
 import type { RegisteredTool } from "./tools/index.js"
-import type { Memory, WorkingMemory } from "./memory/public.js"
-import type { MCPServer } from "./mcp-server.js"
-import type { JsonSchema } from "./runtime/output-schema.js"
-import type { Guardrail } from "./guardrail.js"
-import type { Skill } from "./skill.js"
-import type { Knowledge } from "./knowledge/public.js"
-import type { Handoff } from "./handoff-target.js"
-import type { AgentCapabilityFilter } from "./types/agent.js"
 
-/** A serializable durable-memory binding for agents that are described before a host store exists. */
+type JsonSchema = Record<string, unknown>
+
 export interface MemoryReference {
   kind?: "durable"
   namespace?: string
 }
 
 export type AgentMemory = Memory | WorkingMemory | MemoryReference
-
-/** spc_001 §2.1: dual-mode model reference — either an explicit vendor model name, or a
- *  capability-based requirement the Host routes to a concrete model. Routing logic for the
- *  `ModelRequirement` branch is Provider Adapter work, out of scope here (spc_001-06). */
 export type ModelRef = string | ModelRequirement
 
 export interface ModelRequirement {
@@ -28,14 +19,83 @@ export interface ModelRequirement {
   costClass?: string
 }
 
+export interface AgentToolDefinition {
+  name: string
+  description?: string
+  parameters?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
+}
+
+export type McpTransport =
+  | { kind: "stdio"; command: string; args?: string[] }
+  | { kind: "http"; url: string }
+  | { kind: "sse"; url: string }
+  | { kind: "custom"; [key: string]: unknown }
+
+export interface MCPServer {
+  name?: string
+  transport: McpTransport
+  tools?: string[]
+  resources?: boolean
+  prompts?: boolean
+  auth?: Record<string, unknown>
+  metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
+}
+
+export interface Skill {
+  name: string
+  description?: string
+  instructions?: string
+  resources?: unknown[]
+  scripts?: unknown[]
+  tools?: unknown[]
+  mcpServers?: unknown[]
+  knowledge?: unknown[]
+  metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
+}
+
+export type KnowledgeSourceRef =
+  | { kind: "file"; path: string }
+  | { kind: "directory"; path: string }
+  | { kind: "text"; content: string }
+  | { kind: "url"; url: string }
+  | { kind: "vector"; retriever: unknown }
+  | { kind: "custom"; [key: string]: unknown }
+
+export interface Knowledge {
+  id?: string
+  name?: string
+  source: KnowledgeSourceRef
+  description?: string
+  metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
+}
+
+export type AgentRef = string | { name: string }
+
+export interface Handoff {
+  agent: AgentRef
+  description?: string
+  inputSchema?: JsonSchema
+  metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
+}
+
+export interface Guardrail {
+  name: string
+  description?: string
+  metadata?: Record<string, unknown>
+}
+
 export interface AgentOptions {
   name: string
   description?: string
   instructions?: string
   model?: ModelRef
-  /** Optional host capability ceiling. It narrows declarations during Agent IR lowering; it never grants authority. */
   capabilityFilter?: AgentCapabilityFilter
-  tools?: RegisteredTool[]
+  tools?: Array<RegisteredTool | AgentToolDefinition>
   mcpServers?: MCPServer[]
   skills?: Skill[]
   memory?: AgentMemory
@@ -47,15 +107,13 @@ export interface AgentOptions {
   guardrails?: Guardrail[]
 }
 
-/** spc_001 §2.1: public Agent contract — a thin field-storage wrapper today, with lowering to the
- *  Kernel's `AgentRunSpec`/Canonical Agent IR added incrementally by later cards (spc_001-03+). */
 export class Agent {
   readonly name: string
   readonly description?: string
   readonly instructions?: string
   readonly model?: ModelRef
   readonly capabilityFilter?: AgentCapabilityFilter
-  readonly tools?: RegisteredTool[]
+  readonly tools?: Array<RegisteredTool | AgentToolDefinition>
   readonly mcpServers?: MCPServer[]
   readonly skills?: Skill[]
   readonly memory?: AgentMemory

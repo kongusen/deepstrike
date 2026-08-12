@@ -1,23 +1,22 @@
-import { Agent, type AgentMemory, type AgentOptions, type ModelRef } from "./agent.js"
-import type { Guardrail } from "./guardrail.js"
-import type { Handoff } from "./handoff-target.js"
-import type { Knowledge } from "./knowledge/public.js"
-import type { MCPServer } from "./mcp-server.js"
-import { WorkingMemory } from "./memory/public.js"
-import type { JsonSchema } from "./runtime/output-schema.js"
-import type { Skill } from "./skill.js"
+import {
+  Agent,
+  type AgentMemory,
+  type AgentOptions,
+  type AgentToolDefinition,
+  type Guardrail,
+  type Handoff,
+  type Knowledge,
+  type MCPServer,
+  type MemoryReference,
+  type ModelRef,
+  type Skill,
+} from "./agent.js"
+import { WorkingMemory } from "./memory/index.js"
+import type { AgentCapabilityFilter } from "./runtime/types/agent.js"
 import type { RegisteredTool } from "./tools/index.js"
-import type { AgentCapabilityFilter } from "./types/agent.js"
 
-export interface AgentToolDefinition {
-  name: string
-  description?: string
-  parameters?: Record<string, unknown>
-  providerOptions?: Record<string, unknown>
-}
+type JsonSchema = Record<string, unknown>
 
-/** A JSON-friendly Agent definition accepted by `normalizeAgent`.  It is deliberately declarative:
- * executable tools still enter the SDK through `AgentOptions.tools`. */
 export interface AgentDefinition extends Omit<AgentOptions, "tools"> {
   tools?: Array<RegisteredTool | AgentToolDefinition>
 }
@@ -39,29 +38,16 @@ export type AgentCapabilityIR =
   | { kind: "mcp_server"; id: string; description: string }
   | { kind: "skill"; id: string; description: string }
 
-/** The host-facing lowering destinations. These are declarations, not grants: a runner still
- * attenuates them through its existing `AgentRunSpec.capabilityFilter` and mounted manifest. */
 export interface AgentLoweringInputs {
   run: { name: string; model?: ModelRef }
-  context: {
-    description?: string
-    instructions?: string
-    outputSchema?: JsonSchema
-    knowledge: Knowledge[]
-  }
-  capabilities: {
-    tools: AgentToolIR[]
-    mcpServers: MCPServer[]
-    skills: Skill[]
-    effective: AgentCapabilityIR[]
-  }
+  context: { description?: string; instructions?: string; outputSchema?: JsonSchema; knowledge: Knowledge[] }
+  capabilities: { tools: AgentToolIR[]; mcpServers: MCPServer[]; skills: Skill[]; effective: AgentCapabilityIR[] }
   memory?: AgentMemoryIR
   delegation: { handoffs: Handoff[] }
   governance: { guardrails: Guardrail[] }
 }
 
-/** spc_015-09: the canonical, provider-neutral Agent IR between public SDK surfaces and host
- * runtime inputs. It contains neither an execution plan nor a Kernel wire DTO. */
+/** Provider-neutral host descriptor. This is neither an execution plan nor a Kernel wire DTO. */
 export interface AgentSpec {
   version: 1
   name: string
@@ -77,13 +63,9 @@ export interface AgentSpec {
   handoffs?: Handoff[]
   guardrails?: Guardrail[]
   metadata?: Record<string, unknown>
-  /** Flat compatibility view of capability declarations. It grants nothing by itself. */
   capabilities: AgentCapabilityIR[]
-  /** Host ceiling copied from the public Agent, when supplied. Empty axes remain non-narrowing. */
   capabilityFilter?: AgentCapabilityFilter
-  /** The declarations that survive the supplied local ceiling. Host mounts may narrow further. */
   effectiveCapabilities: AgentCapabilityIR[]
-  /** Namespace-isolated provider extensions. Unknown namespaces are preserved verbatim. */
   extensions: Record<string, unknown>
   /** @deprecated Read `extensions`; retained as an additive compatibility alias. */
   providerOptions?: Record<string, unknown>
@@ -98,76 +80,56 @@ function clone<T>(value: T): T {
   return copy as T
 }
 
-function toolDefinitionToRegisteredTool(tool: AgentToolDefinition): RegisteredTool {
-  const parameters = clone(tool.parameters ?? { type: "object", properties: {} })
-  if (parameters.type !== "object") {
-    throw new Error(`tool "${tool.name}": parameters must be a JSON Schema with root type "object"`)
-  }
-  return {
-    schema: {
-      name: tool.name,
-      description: tool.description ?? "",
-      parameters: JSON.stringify(parameters),
-    },
-    providerOptions: clone(tool.providerOptions),
-    async execute() {
-      throw new Error(`tool "${tool.name}" has no execution binding — declarative Agent definitions only carry shape`)
-    },
-  }
-}
-
 function isRegisteredTool(tool: RegisteredTool | AgentToolDefinition): tool is RegisteredTool {
   return "schema" in tool && "execute" in tool
 }
 
-/** Normalizes native Agents and JSON-safe descriptor objects into the one public surface used by
- * lowering. It does not interpret provider namespaces or create executable capabilities. */
+/** Native Agents need no normalization; JSON-safe declarations remain schema-only capabilities. */
 export function normalizeAgent(agent: Agent | AgentDefinition): Agent {
   if (agent instanceof Agent) return agent
-  const tools = agent.tools?.map(tool => isRegisteredTool(tool) ? tool : toolDefinitionToRegisteredTool(tool))
-  const { tools: _rawTools, ...options } = agent
-  return new Agent({ ...options, ...(tools ? { tools } : {}) })
+  return new Agent({ ...agent, ...(agent.tools ? { tools: clone(agent.tools) } : {}) })
 }
 
-function lowerTool(tool: RegisteredTool): AgentToolIR {
+function lowerTool(tool: RegisteredTool | AgentToolDefinition): AgentToolIR {
+  if (!isRegisteredTool(tool)) {
+    const parameters = clone(tool.parameters ?? { type: "object", properties: {} })
+    if (parameters.type !== "object") {
+      throw new Error(`tool "${tool.name}": parameters must be a JSON Schema with root type "object"`)
+    }
+    return {
+      name: tool.name,
+      description: tool.description ?? "",
+      parameters,
+      ...(tool.providerOptions ? { providerOptions: clone(tool.providerOptions) } : {}),
+    }
+  }
   let parameters: unknown
   try {
     parameters = JSON.parse(tool.schema.parameters)
   } catch {
     throw new Error(`tool "${tool.schema.name}" has invalid JSON Schema parameters`)
   }
-  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters) || (parameters as Record<string, unknown>).type !== "object") {
     throw new Error(`tool "${tool.schema.name}" parameters must decode to an object`)
   }
-  return {
-    name: tool.schema.name,
-    description: tool.schema.description,
-    parameters: clone(parameters as Record<string, unknown>),
-    ...(tool.providerOptions ? { providerOptions: clone(tool.providerOptions) } : {}),
-  }
+  return { name: tool.schema.name, description: tool.schema.description, parameters: clone(parameters as Record<string, unknown>) }
 }
 
 function lowerMemory(memory: AgentMemory | undefined): AgentMemoryIR | undefined {
   if (!memory) return undefined
   if (memory instanceof WorkingMemory) return { kind: "working" }
-  const reference = memory as { kind?: string; namespace?: string }
-  return {
-    kind: "durable",
-    ...(reference.namespace ? { namespace: reference.namespace } : {}),
-  }
+  const reference = memory as MemoryReference
+  return { kind: "durable", ...(reference.namespace ? { namespace: reference.namespace } : {}) }
 }
 
 function capabilityAllowed(capability: AgentCapabilityIR, filter: AgentCapabilityFilter | undefined): boolean {
   if (!filter) return true
-  const kind = capability.kind === "mcp_server" ? "mcp_server" : capability.kind
-  const kindAllowed = !filter.allowedKinds?.length || filter.allowedKinds.includes(kind)
+  const kindAllowed = !filter.allowedKinds?.length || filter.allowedKinds.includes(capability.kind)
   const idAllowed = !filter.allowedIds?.length || filter.allowedIds.includes(capability.id)
   return kindAllowed && idAllowed
 }
 
-/** Pure: no provider branching, no scheduling, authorization, persistence, or Kernel wire calls.
- * Providers consume only their own namespace from `extensions`; the host decides whether declared
- * capabilities survive its existing attenuation filter. */
+/** Pure lowering only: providers, Kernel scheduling, persistence, and grants remain outside it. */
 export function lowerAgent(agent: Agent): AgentSpec {
   const tools = (agent.tools ?? []).map(lowerTool)
   const mcpServers = clone(agent.mcpServers ?? [])

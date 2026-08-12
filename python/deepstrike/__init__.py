@@ -176,6 +176,8 @@ from deepstrike.types.agent import (
     workflow_budget_note,
     fanout_synthesize, generate_and_filter, verify_rules, gen_eval,
 )
+from deepstrike.agent import Agent, AgentDefinition, AgentMemory, MemoryReference, ModelRef
+from deepstrike.agent_ir import lower_agent, normalize_agent
 from deepstrike.collaboration import (
     AcceptanceCriterion, VerificationContract, ContractCheckResult,
     ContractBuilder, format_contract_for_system_prompt, contract_to_criteria_strings,
@@ -318,6 +320,7 @@ __all__ = [
     "Governance", "GovernanceVerdict",
     # Sub-agent isolation
     "AgentIdentity", "AgentCapabilityFilter", "AgentRunSpec",
+    "Agent", "AgentDefinition", "AgentMemory", "MemoryReference", "ModelRef", "lower_agent", "normalize_agent",
     "AgentProcessChangedObservation", "SubAgentResult", "LoopResult",
     "KernelAgentRole", "AgentIsolation", "ContextInheritance",
     "MilestoneContract", "MilestonePhase", "MilestoneCheckResult", "MilestonePolicy",

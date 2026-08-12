@@ -1,0 +1,77 @@
+{
+  "name": "researcher",
+  "description": "Finds and verifies source material.",
+  "instructions": "Cite primary sources and state uncertainty.",
+  "model": {
+    "capability": { "reasoning": true, "vision": true, "toolUse": true },
+    "contextWindow": 128000,
+    "latencyClass": "balanced",
+    "costClass": "standard"
+  },
+  "tools": [
+    {
+      "name": "web_search",
+      "description": "Search the web for source material.",
+      "parameters": {
+        "type": "object",
+        "properties": { "query": { "type": "string" } },
+        "required": ["query"]
+      },
+      "providerOptions": { "openai": { "strict": true } }
+    }
+  ],
+  "outputSchema": {
+    "type": "object",
+    "properties": { "answer": { "type": "string" } },
+    "required": ["answer"]
+  },
+  "capabilityFilter": {
+    "allowedKinds": ["tool", "skill", "mcp_server"],
+    "allowedIds": ["web_search", "citations"]
+  },
+  "mcpServers": [
+    {
+      "name": "filesystem",
+      "transport": { "kind": "stdio", "command": "mcp-filesystem", "args": ["/workspace"] },
+      "tools": ["read_file"],
+      "resources": true,
+      "providerOptions": { "anthropic": { "toolSearch": true } }
+    }
+  ],
+  "skills": [
+    {
+      "name": "citations",
+      "description": "Citation policy.",
+      "instructions": "Use primary sources whenever possible.",
+      "providerOptions": { "custom": { "revision": 2 } }
+    }
+  ],
+  "memory": { "namespace": "project-research" },
+  "knowledge": [
+    {
+      "id": "style-guide",
+      "name": "Style guide",
+      "source": { "kind": "text", "content": "Use concise citations." },
+      "metadata": { "owner": "docs" }
+    }
+  ],
+  "handoffs": [
+    {
+      "agent": "writer",
+      "description": "Turn verified notes into a draft.",
+      "inputSchema": { "type": "object", "required": ["notes"] }
+    }
+  ],
+  "guardrails": [
+    {
+      "name": "no-pii",
+      "description": "Do not return personal data.",
+      "metadata": { "severity": "high" }
+    }
+  ],
+  "metadata": { "team": "research", "priority": 1 },
+  "providerOptions": {
+    "openai": { "reasoningEffort": "high" },
+    "example.future_provider": { "opaque": { "preserve": true } }
+  }
+}

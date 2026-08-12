@@ -97,6 +97,15 @@ export {
 } from "./runtime/workflow-control-flow.js"
 export { Governance } from "./governance.js"
 export type { GovernanceVerdict } from "./governance.js"
+export { Agent } from "./agent.js"
+export type {
+  AgentMemory, AgentOptions, AgentToolDefinition, AgentRef, Guardrail, Handoff, Knowledge,
+  KnowledgeSourceRef, MCPServer, McpTransport, MemoryReference, ModelRef, ModelRequirement, Skill,
+} from "./agent.js"
+export { lowerAgent, normalizeAgent } from "./agent-ir.js"
+export type {
+  AgentCapabilityIR, AgentDefinition, AgentLoweringInputs, AgentMemoryIR, AgentSpec, AgentToolIR,
+} from "./agent-ir.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
 export { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider, KimiProvider } from "./providers/openai.js"
 export { tool, executeTools } from "./tools/index.js"
@@ -129,6 +138,8 @@ export type {
 export { ScheduledPrompt } from "./signals/index.js"
 export type { RuntimeSignal, SignalSource } from "./signals/index.js"
 export { PermissionManager, PermissionMode } from "./safety/index.js"
+export { createProviderRequestPlan, measurementForPlan, recordPromptMeasurement } from "./providers/request-plan.js"
+export type { ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement } from "./providers/request-plan.js"
 export type { PermissionDecision } from "./safety/index.js"
 export type {
   Message, ToolCall, ToolResult, ToolSchema,
