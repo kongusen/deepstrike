@@ -9,12 +9,23 @@ import {
   type ResolvedProviderRuntime,
 } from "./model-registry.js"
 import { endpointProfiles, type EndpointProfileId, type ProviderId } from "./endpoints.js"
+import {
+  resolveCredential,
+  resolveCredentialSync,
+  type CredentialOptions,
+} from "./credentials.js"
+import type { ModelCatalog } from "./model-catalog.js"
 
 export type { EndpointProfileId } from "./endpoints.js"
 
 export interface CreateProviderOptions {
   model: string
-  apiKey: string
+  /** Explicit credential is kept source-compatible; resolver-backed construction can omit it. */
+  apiKey?: string
+  bearerToken?: string
+  credentialResolver?: CredentialOptions["credentialResolver"]
+  /** Host-provided catalog used only for lookup; it never carries routing policy. */
+  modelCatalog?: ModelCatalog
   provider?: ProviderId
   endpoint?: EndpointProfileId
   retry?: { maxRetries: number; baseDelay: number }
@@ -26,9 +37,57 @@ export function createProvider(options: CreateProviderOptions): LLMProvider {
 }
 
 export function resolveProviderRuntime(options: CreateProviderOptions): ResolvedProviderRuntime {
+  const draft = resolveRuntimeDraft(options)
+  const credential = resolveCredentialSync(draft.credentialRequest, options)
+  return constructResolvedRuntime(draft, credential)
+}
+
+/** I/O-capable equivalent for host credential resolvers and dynamic catalogs. */
+export async function resolveProviderRuntimeAsync(options: CreateProviderOptions): Promise<ResolvedProviderRuntime> {
+  const draft = await resolveRuntimeDraftAsync(options)
+  const credential = await resolveCredential(draft.credentialRequest, options)
+  return constructResolvedRuntime(draft, credential)
+}
+
+export async function createProviderAsync(options: CreateProviderOptions): Promise<LLMProvider> {
+  return (await resolveProviderRuntimeAsync(options)).adapter
+}
+
+interface RuntimeDraft {
+  providerId: ProviderId
+  model: string
+  endpointId: EndpointProfileId
+  endpoint: (typeof endpointProfiles)[EndpointProfileId]
+  registration: NonNullable<ReturnType<typeof modelRegistry.resolve>>
+  credentialRequest: {
+    providerId: ProviderId
+    modelId: string
+    endpointId: EndpointProfileId
+    protocol: (typeof endpointProfiles)[EndpointProfileId]["protocol"]
+  }
+}
+
+function resolveRuntimeDraft(options: CreateProviderOptions): RuntimeDraft {
   const parsedProviderId = providerPrefix(options.model)
   const providerHint = options.provider ?? parsedProviderId
   const initialRegistration = modelRegistry.resolve(options.model, providerHint)
+  return resolveRuntimeDraftWithRegistration(options, parsedProviderId, initialRegistration)
+}
+
+async function resolveRuntimeDraftAsync(options: CreateProviderOptions): Promise<RuntimeDraft> {
+  const parsedProviderId = providerPrefix(options.model)
+  const providerHint = options.provider ?? parsedProviderId
+  const fromCatalog = options.modelCatalog ? await options.modelCatalog.get(options.model) : undefined
+  const initialRegistration = fromCatalog ?? modelRegistry.resolve(options.model, providerHint)
+  return resolveRuntimeDraftWithRegistration(options, parsedProviderId, initialRegistration)
+}
+
+function resolveRuntimeDraftWithRegistration(
+  options: CreateProviderOptions,
+  parsedProviderId: ProviderId | undefined,
+  initialRegistration: ReturnType<typeof modelRegistry.resolve>,
+): RuntimeDraft {
+  const providerHint = options.provider ?? parsedProviderId
   const endpointId = (options.endpoint ?? initialRegistration?.defaultEndpointId ?? defaultEndpointForProvider(providerHint)) as EndpointProfileId | undefined
 
   if (!endpointId) {
@@ -52,42 +111,47 @@ export function resolveProviderRuntime(options: CreateProviderOptions): Resolved
   }
 
   const model = normalizeModelId(providerId, options.model)
-  const baseURL = options.baseURL ?? endpoint.baseURL
-
-  // Single data-driven dispatch: one registry keyed by (providerId, protocol).
-  const make = PROVIDER_REGISTRY[providerRegistryKey(providerId, endpoint.protocol)]
-  if (make) {
-    const protocol = generationProtocol(endpoint.protocol)
-    if (!protocol) throw new Error(`No Node provider factory for ${options.model} on ${endpoint.id}`)
-    const adapter = make(options.apiKey, model, options.retry, baseURL, registration.recommendedRuntimePolicy)
-    const preserveEndpointIdentity = options.baseURL === undefined || options.endpoint !== undefined
-    const resolved: ResolvedProviderRuntime = {
-      identity: {
-        providerId,
-        modelId: model,
-        endpointId,
-        protocol,
-      },
-      model: registration?.descriptor,
-      endpoint,
-      adapter,
-      effectiveCapabilities: resolveEffectiveModelCapabilities({
-        model: registration?.descriptor,
-        protocol,
-        endpointCapabilities: endpointCapabilitiesFor(endpointId, preserveEndpointIdentity),
-      }),
-      ...(registration?.recommendedRuntimePolicy
-        ? { runtimePolicy: registration.recommendedRuntimePolicy }
-        : {}),
-    }
-    const bind = (adapter as LLMProvider & {
-      bindResolvedRuntime?: (runtime: ResolvedProviderRuntime) => void
-    }).bindResolvedRuntime
-    bind?.call(adapter, resolved)
-    return resolved
+  return {
+    providerId,
+    model,
+    endpointId,
+    endpoint,
+    registration,
+    credentialRequest: { providerId, modelId: model, endpointId, protocol: endpoint.protocol },
   }
+}
 
-  throw new Error(`No Node provider factory for ${options.model} on ${endpoint.id}`)
+function constructResolvedRuntime(
+  draft: RuntimeDraft,
+  credential: { type: "api_key" | "bearer"; value: string },
+): ResolvedProviderRuntime {
+  const make = PROVIDER_REGISTRY[providerRegistryKey(draft.providerId, draft.endpoint.protocol)]
+  if (!make) throw new Error(`No Node provider factory for ${draft.model} on ${draft.endpoint.id}`)
+  const protocol = generationProtocol(draft.endpoint.protocol)
+  if (!protocol) throw new Error(`No Node provider factory for ${draft.model} on ${draft.endpoint.id}`)
+  const adapter = make(
+    credential.value,
+    draft.model,
+    undefined,
+    draft.endpoint.baseURL,
+    draft.registration.recommendedRuntimePolicy,
+    credential.type,
+  )
+  const resolved: ResolvedProviderRuntime = {
+    identity: { providerId: draft.providerId, modelId: draft.model, endpointId: draft.endpointId, protocol },
+    model: draft.registration.descriptor,
+    endpoint: draft.endpoint,
+    adapter,
+    effectiveCapabilities: resolveEffectiveModelCapabilities({
+      model: draft.registration.descriptor,
+      protocol,
+      endpointCapabilities: endpointCapabilitiesFor(draft.endpointId, true),
+    }),
+    ...(draft.registration.recommendedRuntimePolicy ? { runtimePolicy: draft.registration.recommendedRuntimePolicy } : {}),
+  }
+  const bind = (adapter as LLMProvider & { bindResolvedRuntime?: (runtime: ResolvedProviderRuntime) => void }).bindResolvedRuntime
+  bind?.call(adapter, resolved)
+  return resolved
 }
 
 function providerPrefix(model: string): ProviderId | undefined {

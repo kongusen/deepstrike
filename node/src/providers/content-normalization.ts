@@ -14,6 +14,7 @@ import type {
   InputModality,
   ResolvedProviderRuntime,
 } from "./model-registry.js"
+import { requireContentDisposition } from "./content-policy.js"
 
 export class ContentValidationError extends Error {
   constructor(message: string) {
@@ -272,10 +273,14 @@ function validateCanonicalMessage(
   resolved: ResolvedProviderRuntime<unknown>,
 ): void {
   for (const item of message.blocks) {
+    const placement = item.type === "tool_result" ? "tool_result" : "message"
     const blocks = item.type === "tool_result" ? item.blocks : [item]
     validateToolOutputBlocks(blocks)
     for (const block of blocks) {
       if (block.type === "text") continue
+      // Protocol policy is the stable user-visible reason for document/video refusal; a model
+      // capability cannot make a protocol-level unsupported shape serializable.
+      requireContentDisposition(resolved.identity.protocol, block.type, placement)
       assertSupported(block.type, resolved.effectiveCapabilities, resolved.identity.providerId)
       validateSourceAffinity(block.type, block.source, resolved.effectiveCapabilities, resolved)
     }

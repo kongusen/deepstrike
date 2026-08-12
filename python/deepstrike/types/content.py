@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import base64
 import binascii
 from typing import Any, TYPE_CHECKING
+from .content_policy import require_content_disposition
 
 if TYPE_CHECKING:
   from deepstrike.providers.base import RenderedContext
@@ -170,6 +171,8 @@ def _preflight_tool_blocks(
     if block.get("type") not in {"image", "audio", "video", "file"}:
       continue
     source = block.get("source") or {}
+    if resolved is not None:
+      require_content_disposition(resolved.protocol, block["type"], "tool_result")
     _reject_unsupported_capability(resolved, block["type"], source.get("kind"))
     affinity = source.get("affinity") if source.get("kind") == "fileId" else None
     if affinity is not None:
@@ -201,8 +204,12 @@ def validate_rendered_message(
         raise ContentValidationError("text content must be a string")
     elif kind in {"image", "audio"}:
       _validate_media_part(part)
+      if resolved is not None:
+        require_content_disposition(resolved.protocol, kind, "message")
       _reject_unsupported_capability(resolved, kind, "base64" if getattr(part, "data", None) else "url")
     elif kind == "file":
+      if resolved is not None:
+        require_content_disposition(resolved.protocol, kind, "message")
       _validate_file_part(part, resolved)
     elif kind == "tool_result":
       output = getattr(part, "output", "")

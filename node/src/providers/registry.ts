@@ -23,6 +23,7 @@ export type ProviderMaker = (
   retry: ProviderRetry | undefined,
   baseURL: string | undefined,
   runtimePolicy: RuntimePolicy | undefined,
+  authMode?: "api_key" | "bearer",
 ) => LLMProvider
 
 /** Build the registry key for a `(providerId, endpointProtocol)` pair. */
@@ -57,7 +58,11 @@ const openAIChatRegistry = Object.fromEntries(
  * deprecated named classes are constructor shims only and are not runtime registry entries.
  */
 export const PROVIDER_REGISTRY: Record<string, ProviderMaker> = {
-  "anthropic:anthropic-messages": (k, m, r, b, p) => new AnthropicProvider(k, m, r, { baseURL: b, ...(p ? { runtimePolicy: p } : {}) }),
+  "anthropic:anthropic-messages": (k, m, r, b, p, authMode) => new AnthropicProvider(k, m, r, {
+    baseURL: b,
+    ...(p ? { runtimePolicy: p } : {}),
+    ...(authMode === "bearer" ? { authMode: "bearer" as const } : {}),
+  }),
   "openai:openai-responses":      (k, m, r, b, p) => new OpenAIResponsesProvider(k, m, r, b, p),
 
   "deepseek:anthropic-messages":  (k, m, r, b, p) => new DeepSeekAnthropicProvider(k, m, r, b, p),

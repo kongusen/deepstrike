@@ -105,6 +105,12 @@ function messageContent(message: CanonicalMessage): string | Array<Record<string
           image_url: imageUrl,
         })
       }
+    } else if (block.type === "file") {
+      if (block.source.kind === "fileId") {
+        content.push({ type: "input_file", file_id: block.source.id })
+      } else {
+        throw new UnsupportedModalityError("file source", "openai-responses")
+      }
     } else if (block.type === "audio") {
       throw new UnsupportedModalityError("audio", "openai-responses")
     }
