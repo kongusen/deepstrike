@@ -5,6 +5,7 @@ import { CircuitBreaker, normalizeToolCall, turnsWithStateAppended } from "./bas
 import { endpointProfiles } from "./endpoints.js"
 import { UnsupportedModalityError } from "./base.js"
 import { normalizeGeminiUsage } from "./usage-normalizer.js"
+import { normalizeToolResultPart, projectToolOutputToText } from "./content-normalization.js"
 
 const GEMINI_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["gemini.google"].baseURL
 
@@ -33,7 +34,10 @@ export function buildContents(turns: Message[]): Content[] {
             }
           }
           return {
-            functionResponse: { name: toolName, response: { output: p.output } },
+            functionResponse: {
+              name: toolName,
+              response: { output: projectToolOutputToText(normalizeToolResultPart(p).blocks) },
+            },
           }
         })
       if (parts.length) contents.push({ role: "user", parts })

@@ -1,6 +1,7 @@
 import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy, UsageEvent } from "../types.js"
 import { normalizeToolCall, omitExtensionKeys, turnsWithStateAppended, UnsupportedModalityError } from "./base.js"
 import { normalizeOllamaUsage } from "./usage-normalizer.js"
+import { normalizeToolResultPart, projectToolOutputToText } from "./content-normalization.js"
 
 export class OllamaProvider implements LLMProvider {
   constructor(
@@ -21,13 +22,17 @@ export class OllamaProvider implements LLMProvider {
     if (context.systemText) result.push({ role: "system", content: context.systemText })
     for (const m of turnsWithStateAppended(context)) {
       const images: string[] = []
+      let content = m.content
       if (m.contentParts?.length) {
         for (const p of m.contentParts) {
           if (p.type === "image" && p.data) images.push(p.data)
           else if (p.type === "audio") throw new UnsupportedModalityError("audio", "ollama")
+          else if (p.type === "tool_result") {
+            content = projectToolOutputToText(normalizeToolResultPart(p).blocks)
+          }
         }
       }
-      result.push({ role: m.role, content: m.content, ...(images.length ? { images } : {}) })
+      result.push({ role: m.role, content, ...(images.length ? { images } : {}) })
     }
     return result
   }

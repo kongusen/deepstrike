@@ -5,6 +5,7 @@ import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { normalizeToolCall } from "./base.js"
 import { UnsupportedModalityError } from "./base.js"
 import { normalizeOpenAIUsage } from "./usage-normalizer.js"
+import { normalizeToolResultPart } from "./content-normalization.js"
 
 export interface OpenAIResponsesRunState extends ProviderRunState {
   previousResponseId?: string
@@ -20,9 +21,9 @@ export interface OpenAIResponsesRunState extends ProviderRunState {
  * never silently dropped (INV-012-01).
  */
 function toolResultResponsesOutput(part: ToolResultPart): string | Array<Record<string, unknown>> {
-  if (!part.contentParts?.length) return part.output
+  if (part.contentParts === undefined) return part.output
   const out: Array<Record<string, unknown>> = []
-  for (const block of part.contentParts) {
+  for (const block of normalizeToolResultPart(part).blocks) {
     if (block.type === "text") {
       out.push({ type: "input_text", text: block.text })
       continue

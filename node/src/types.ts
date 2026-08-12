@@ -30,14 +30,9 @@ export interface ToolResultPart {
   callId: string
   output: string
   isError: boolean
-  /**
-   * spc_012-N-01: structured multimodal tool output, additive alongside `output`. When present,
-   * `output` must still hold the constructor's own text projection of the same content (same
-   * projection of the same blocks. The current type cannot enforce that invariant; A-02's
-   * corrective tests intentionally keep the conflicting-state case red until the content model
-   * has one canonical source of truth.
-   */
-  contentParts?: ContentBlock[]
+  /** Legacy transport shape. Provider boundaries normalize this into one canonical block list
+   * and reject `output` when it disagrees with the deterministic block projection. */
+  contentParts?: ToolOutputBlock[]
 }
 
 export type ContentPart = TextPart | ImagePart | AudioPart | ToolResultPart
@@ -51,7 +46,13 @@ export type ContentPart = TextPart | ImagePart | AudioPart | ToolResultPart
 export type MediaSource =
   | { kind: "url"; url: string }
   | { kind: "base64"; data: string }
-  | { kind: "fileId"; id: string }
+  | {
+      kind: "fileId"
+      id: string
+      /** Endpoint that issued this provider-owned reference. Legacy values may omit affinity
+       * and are then valid only for the already-resolved current endpoint. */
+      affinity?: { providerId: string; endpointId: string }
+    }
   | { kind: "object"; handle: string }
 
 export interface ContentBlockText { type: "text"; text: string }
@@ -59,23 +60,18 @@ export interface ContentBlockImage { type: "image"; source: MediaSource; mediaTy
 export interface ContentBlockAudio { type: "audio"; source: MediaSource; mediaType?: string; providerOptions?: Record<string, unknown> }
 export interface ContentBlockVideo { type: "video"; source: MediaSource; mediaType?: string; providerOptions?: Record<string, unknown> }
 export interface ContentBlockFile { type: "file"; source: MediaSource; filename?: string; mediaType?: string; providerOptions?: Record<string, unknown> }
-/**
- * spc_011-B-04/B-05 parity: `content: ContentBlock[]` (not `output: string`) so a multimodal tool
- * result isn't flattened — but this coexists with `ToolResultPart.output: string` rather than
- * renaming it. The Rust side found the equivalent rename touches 54 call sites deeply embedded in
- * the `context/` compression pipeline and the user chose docs-only over a forced merge; Node has
- * ~24 call sites spanning core runtime (`runner.ts`/`kernel-step.ts`/`execution-plane.ts`, not
- * just providers), the same shape of problem, so the same non-disruptive choice applies here.
- */
-export interface ContentBlockToolResult { type: "tool_result"; callId: string; content: ContentBlock[]; isError: boolean }
 
-export type ContentBlock =
+/** Legal content returned by a tool. Deliberately excludes ToolResult, so nesting is
+ * unrepresentable in the canonical type. */
+export type ToolOutputBlock =
   | ContentBlockText
   | ContentBlockImage
   | ContentBlockAudio
   | ContentBlockVideo
   | ContentBlockFile
-  | ContentBlockToolResult
+
+/** @deprecated Use `ToolOutputBlock`; retained as a source-compatible name during A-02. */
+export type ContentBlock = ToolOutputBlock
 
 export interface Message {
   role: "system" | "user" | "assistant" | "tool"
@@ -109,7 +105,7 @@ export interface ToolResult {
   errorKind?: ToolErrorKind
   tokenCount?: number
   /** spc_012-N-01: same additive contract as `ToolResultPart.contentParts` (see there). */
-  contentParts?: ContentBlock[]
+  contentParts?: ToolOutputBlock[]
 }
 
 export interface ToolSchema {
@@ -201,7 +197,7 @@ export interface ToolResultEvent extends StreamEvent {
   errorKind?: ToolErrorKind
   /** spc_012-N-02: structured multimodal blocks when the tool returned non-text content
    *  (e.g. an MCP screenshot). `content` stays the text projection; see `ToolResultPart.contentParts`. */
-  contentParts?: ContentBlock[]
+  contentParts?: ToolOutputBlock[]
 }
 
 /** R3-1: a workflow node's agent called the `submit_workflow_nodes` tool. The runner intercepts it

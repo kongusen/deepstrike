@@ -7,6 +7,7 @@ from deepstrike._kernel import Message, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended
 from deepstrike.providers.base import UnsupportedModalityError
+from deepstrike.types.content import normalize_tool_result, project_tool_output_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,17 @@ class OllamaProvider:
                 if any(p.type == "audio" for p in parts):
                     raise UnsupportedModalityError("audio", "ollama")
                 images = [p.data for p in parts if p.type == "image" and p.data]
+                tool_results = [p for p in parts if p.type == "tool_result"]
+                if tool_results:
+                    part = tool_results[0]
+                    entry["content"] = project_tool_output_to_text(
+                        normalize_tool_result(
+                            part.call_id,
+                            part.output,
+                            part.is_error,
+                            getattr(part, "content_parts", None),
+                        ).blocks
+                    )
                 if images:
                     entry["images"] = images
             msgs.append(entry)

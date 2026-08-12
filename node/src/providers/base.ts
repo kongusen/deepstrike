@@ -1,4 +1,5 @@
-import type { ContentBlock, Message, ContentPart, RenderedContext } from "../types.js"
+import type { ToolOutputBlock, Message, ContentPart, RenderedContext } from "../types.js"
+import { normalizeToolResultPart, projectToolOutputToText } from "./content-normalization.js"
 
 export class CircuitBreaker {
   private failures = 0
@@ -151,7 +152,7 @@ export function toAnthropicContent(msg: Message): string | Array<Record<string, 
  * (audio/video/file, `fileId`/`object` sources with no Anthropic wire form) degrades to an
  * explicit `[modality]` placeholder visible to the model, never silently dropped (INV-012-01).
  */
-function contentBlockToAnthropic(block: ContentBlock): Record<string, unknown> {
+function contentBlockToAnthropic(block: ToolOutputBlock): Record<string, unknown> {
   if (block.type === "text") return { type: "text", text: block.text }
   if (block.type === "image") {
     const src = block.source
@@ -163,10 +164,6 @@ function contentBlockToAnthropic(block: ContentBlock): Record<string, unknown> {
     }
     return { type: "text", text: "[image]" }
   }
-  if (block.type === "tool_result") {
-    // INV-012-03 forbids nesting; flatten defensively rather than recurse.
-    return { type: "text", text: "[tool_result]" }
-  }
   return { type: "text", text: `[${block.type}]` }
 }
 
@@ -175,7 +172,7 @@ function contentBlockToAnthropic(block: ContentBlock): Record<string, unknown> {
  * projection (`output`) is the content, byte-identical to the pre-spc_012 behavior.
  */
 function toolResultAnthropicContent(p: Extract<ContentPart, { type: "tool_result" }>): string | Array<Record<string, unknown>> {
-  if (p.contentParts?.length) return p.contentParts.map(contentBlockToAnthropic)
+  if (p.contentParts !== undefined) return normalizeToolResultPart(p).blocks.map(contentBlockToAnthropic)
   return p.output
 }
 
@@ -293,7 +290,12 @@ export function toOpenAIMessageParams(context: RenderedContext): Array<Record<st
       const parts = (msg.contentParts ?? [])
         .filter((p): p is Extract<ContentPart, { type: "tool_result" }> => p.type === "tool_result")
       for (const p of parts) {
-        result.push({ role: "tool", tool_call_id: p.callId, content: p.output })
+        const canonical = normalizeToolResultPart(p)
+        result.push({
+          role: "tool",
+          tool_call_id: p.callId,
+          content: projectToolOutputToText(canonical.blocks),
+        })
       }
       continue
     }

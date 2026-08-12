@@ -13,6 +13,21 @@ export { OpenAIChatAdapter } from "./openai-chat.js"
 export { endpointProfiles } from "./endpoints.js"
 export type { EndpointProfile, EndpointProfileId, EndpointProtocol, ProviderId } from "./endpoints.js"
 export { modelRegistry, resolveEffectiveCapability } from "./model-registry.js"
+export {
+  ContentValidationError,
+  ToolResultProjectionConflictError,
+  normalizeCanonicalAdapterInput,
+  normalizeToolResultPart,
+  projectToolOutputToText,
+  validateCanonicalAdapterInput,
+} from "./content-normalization.js"
+export type {
+  CanonicalAdapterInput,
+  CanonicalMessage,
+  CanonicalMessageBlock,
+  CanonicalRenderedContext,
+  CanonicalToolResult,
+} from "./content-normalization.js"
 export type {
   CapabilityState,
   EffectiveCapability,

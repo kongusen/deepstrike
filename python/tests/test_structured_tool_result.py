@@ -11,9 +11,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
-
-import pytest
 
 from deepstrike._kernel import Message
 from deepstrike.providers.base import RenderedContext, to_anthropic_messages
@@ -233,10 +230,6 @@ class _FirstStructuredThenTextPlane(_MultimodalToolPlane):
             )
 
 
-@pytest.mark.skipif(
-    os.environ.get("RUN_SPC013_A02_RED") != "1",
-    reason="opt-in red proof for SPC-013 A-02; enable with RUN_SPC013_A02_RED=1",
-)
 def test_same_runner_two_sessions_do_not_share_reused_call_id_blocks():
     provider = _TwoSessionProvider()
     runner = _make_runner(provider, _FirstStructuredThenTextPlane())

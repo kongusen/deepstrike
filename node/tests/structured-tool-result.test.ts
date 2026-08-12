@@ -1,10 +1,4 @@
-/**
- * spc_012-N-01: `contentParts?: ContentBlock[]` is added directly onto the existing, production
- * `ToolResultPart`/`ToolResult` interfaces (not a new coexisting type, superseding the spc_011-B-05
- * `ContentBlockToolResult` approach for this specific field). Purely additive — `output: string`
- * stays required and is still the sole source of truth for the 24 existing call sites that never
- * set `contentParts`.
- */
+/** Legacy ToolResult carriers remain accepted, then normalize to canonical blocks at the boundary. */
 import type { ContentBlock, Message, ToolResult, ToolResultPart } from "../src/types.js"
 import { mcpResultToToolOutput } from "../src/runtime/mcp-proxy-plane.js"
 import { toAnthropicMessages } from "../src/providers/base.js"
@@ -18,11 +12,11 @@ describe("structured tool result field (spc_012-N-01)", () => {
     const part: ToolResultPart = {
       type: "tool_result",
       callId: "call_1",
-      output: "sunny [image]",
+      output: "sunny\n[image]",
       isError: false,
       contentParts: blocks,
     }
-    expect(part.output).toBe("sunny [image]")
+    expect(part.output).toBe("sunny\n[image]")
     expect(part.contentParts).toHaveLength(2)
   })
 
@@ -105,12 +99,12 @@ describe("mcpResultToToolOutput (spc_012-N-02)", () => {
 describe("toAnthropicMessages structured tool_result (spc_012-N-03)", () => {
   const toolMessage = (contentParts?: ContentBlock[]): Message => ({
     role: "tool",
-    content: "weather: sunny [image]",
+    content: "weather: sunny\n[image]",
     toolCalls: [],
     contentParts: [{
       type: "tool_result",
       callId: "call_1",
-      output: "weather: sunny [image]",
+      output: "weather: sunny\n[image]",
       isError: false,
       ...(contentParts ? { contentParts } : {}),
     }],
@@ -139,7 +133,7 @@ describe("toAnthropicMessages structured tool_result (spc_012-N-03)", () => {
     const msgs = toAnthropicMessages([toolMessage()])
     expect(msgs).toEqual([{
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: "call_1", content: "weather: sunny [image]", is_error: false }],
+      content: [{ type: "tool_result", tool_use_id: "call_1", content: "weather: sunny\n[image]", is_error: false }],
     }])
   })
 })
@@ -174,7 +168,7 @@ class MultimodalToolPlane implements ExecutionPlane {
         type: "tool_result",
         callId: call.id,
         name: call.name,
-        content: "screenshot taken [image]",
+        content: "screenshot taken\n[image]",
         isError: false,
         contentParts: [
           { type: "text", text: "screenshot taken" },

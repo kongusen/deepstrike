@@ -23,7 +23,7 @@ from deepstrike._kernel import (
   TaskUpdate,
 )
 from deepstrike.providers.base import LLMProvider, RenderedContext
-from deepstrike.types.content import RenderedMessage, StructuredToolResultPart
+from deepstrike.types.content import RenderedMessage, StructuredToolResultPart, normalize_tool_result
 from deepstrike.providers.stream import (
   DoneEvent,
   EntropyAlertEvent,
@@ -445,22 +445,18 @@ class RuntimeRunner:
     self._workflow_continuation_action: KernelRunnerAction | None = None
     self._fallback_payload_store: Any = None
     self._deferred_host_events: list[dict[str, Any]] = []
-    # spc_012-P-03: SDK-side side channel for structured tool output. The kernel wire
-    # (`wire::effect::ToolResult.output: String`) is text-only by design (deferred upgrade), so
-    # multimodal blocks from an execution plane (e.g. an MCP screenshot, spc_012-P-02) are kept
-    # here keyed by call_id and re-attached onto the rendered context's tool_result parts right
-    # before the provider call. Session-scoped, not durable: after a wake/restore the map is
-    # empty and those results degrade to their text projection (pre-spc_012 behavior).
-    self._structured_tool_outputs: dict[str, list[dict]] = {}
-
-  def _with_structured_tool_outputs(self, context: RenderedContext) -> RenderedContext:
+  def _with_structured_tool_outputs(
+    self,
+    context: RenderedContext,
+    overlay: dict[str, tuple[dict, ...]],
+  ) -> RenderedContext:
     """Re-attach side-channel structured tool output onto a rendered context's tool_result
     parts (matched by call_id) before it goes to the provider. Copy-on-write: returns
     `context` unchanged when nothing matches, so the common all-text path is untouched.
     Structured parts are plain Python `StructuredToolResultPart` shims (duck-typed against
     the pyo3 ContentPartObj) — the pyo3 binding deliberately gained no new field
     (spc_012-R-07 premise correction)."""
-    if not self._structured_tool_outputs:
+    if not overlay:
       return context
 
     def attach(msg):
@@ -469,7 +465,7 @@ class RuntimeRunner:
         return msg
       if not any(
         getattr(p, "type", None) == "tool_result"
-        and getattr(p, "call_id", None) in self._structured_tool_outputs
+        and getattr(p, "call_id", None) in overlay
         and getattr(p, "content_parts", None) is None
         for p in parts
       ):
@@ -479,11 +475,11 @@ class RuntimeRunner:
           call_id=p.call_id,
           output=p.output,
           is_error=p.is_error,
-          content_parts=self._structured_tool_outputs[p.call_id],
+          content_parts=list(overlay[p.call_id]),
         )
         if (
           getattr(p, "type", None) == "tool_result"
-          and getattr(p, "call_id", None) in self._structured_tool_outputs
+          and getattr(p, "call_id", None) in overlay
           and getattr(p, "content_parts", None) is None
         )
         else p
@@ -1808,6 +1804,8 @@ class RuntimeRunner:
     ext = {**(self._opts.extensions or {}), **(extensions or {})}
     create_run_state = getattr(self._opts.provider, "create_run_state", None)
     provider_state = create_run_state() if callable(create_run_state) else None
+    # Operation-local by construction: same-Runner and new-Runner wake paths are equivalent.
+    tool_output_overlay: dict[str, tuple[dict, ...]] = {}
     next_compressed_archive_start = _next_archived_seq_start(prior_events)
     self._next_archive_start = next_compressed_archive_start
 
@@ -2181,7 +2179,9 @@ class RuntimeRunner:
         provider_effect_id = action.effect_id
         final_tool_calls: list[ToolCall] = []
         final_text = ""
-        context = self._with_structured_tool_outputs(action.context or RenderedContext())
+        context = self._with_structured_tool_outputs(
+          action.context or RenderedContext(), tool_output_overlay,
+        )
         # I5: governance schema-level pre-filter — mirrors Node. Tools that the policy denies are
         # dropped from the schema before the provider sees them; the model never tries them.
         turn_tools = action.tools or []
@@ -2526,8 +2526,11 @@ class RuntimeRunner:
               if hasattr(result, "error_kind"):
                 result.error_kind = getattr(evt, "error_kind", None)
               tool_results.append(result)
-              if evt.content_parts:
-                self._structured_tool_outputs[evt.call_id] = evt.content_parts
+              if evt.content_parts is not None:
+                canonical = normalize_tool_result(
+                  evt.call_id, evt.content, evt.is_error, evt.content_parts,
+                )
+                tool_output_overlay[evt.call_id] = canonical.blocks
             elif isinstance(evt, ToolArgumentRepairedEvent):
               await self._opts.session_log.append(session_id, {
                 "kind": "tool_argument_repaired",

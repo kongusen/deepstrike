@@ -1,12 +1,4 @@
-/**
- * spc_011-B-05: Node `ContentBlock` — additive alongside the existing `ContentPart` union (same
- * precedent as the Rust side: new type, old type untouched, no "V2" in the name per explicit
- * instruction). `ToolResultPart.output: string` stays as-is — 011-B-04 (Rust) found the analogous
- * rename disruptive (54 call sites) and the user chose docs-only over a forced merge; the Node
- * side has ~24 call sites across core runtime (runner.ts/kernel-step.ts/execution-plane.ts, not
- * just providers), the same shape of problem, so `ContentBlockToolResult.content: ContentBlock[]`
- * is a new, separately-named variant that coexists rather than a rename of `ToolResultPart`.
- */
+/** SPC-013 A-02: legal tool output blocks exclude nested ToolResult values. */
 import type { ContentBlock, MediaSource } from "../src/types.js"
 
 describe("ContentBlock (spc_011-B-05)", () => {
@@ -18,16 +10,15 @@ describe("ContentBlock (spc_011-B-05)", () => {
     expect([url, base64, fileId, object].map(s => s.kind)).toEqual(["url", "base64", "fileId", "object"])
   })
 
-  it("ContentBlock constructs all six variants, including the new Video/File kinds", () => {
+  it("ContentBlock constructs the five legal output variants", () => {
     const blocks: ContentBlock[] = [
       { type: "text", text: "hi" },
       { type: "image", source: { kind: "url", url: "u" }, mediaType: "image/png" },
       { type: "audio", source: { kind: "base64", data: "AAAA" }, mediaType: "audio/wav" },
       { type: "video", source: { kind: "url", url: "u" }, mediaType: "video/mp4" },
       { type: "file", source: { kind: "fileId", id: "file_1" }, filename: "a.pdf", mediaType: "application/pdf" },
-      { type: "tool_result", callId: "call_1", content: [{ type: "text", text: "ok" }], isError: false },
     ]
-    expect(blocks.map(b => b.type)).toEqual(["text", "image", "audio", "video", "file", "tool_result"])
+    expect(blocks.map(b => b.type)).toEqual(["text", "image", "audio", "video", "file"])
   })
 
   it("Image provider_options carries the OpenAI detail key without a canonical `detail` field", () => {

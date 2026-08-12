@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator, Callable, Protocol, TypeVar, runtime_chec
 from dataclasses import dataclass, field
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent
+from deepstrike.types.content import normalize_tool_result, project_tool_output_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -147,8 +148,9 @@ def _tool_result_anthropic_content(p: Any) -> "str | list[dict]":
   """spc_012-P-03: structured `content_parts` win when present; otherwise the legacy text
   projection (`output`) is the content, byte-identical to the pre-spc_012 behavior."""
   content_parts = getattr(p, "content_parts", None)
-  if content_parts:
-    return [_content_block_to_anthropic(b) for b in content_parts]
+  if content_parts is not None:
+    canonical = normalize_tool_result(p.call_id, p.output, p.is_error, content_parts)
+    return [_content_block_to_anthropic(b) for b in canonical.blocks]
   return p.output
 
 
@@ -289,10 +291,13 @@ def to_openai_message_params(context: "RenderedContext") -> list[dict]:
             # has native structured support (see Node openai-responses.ts).
             for p in (getattr(msg, "content_parts", None) or []):
                 if p.type == "tool_result":
+                    canonical = normalize_tool_result(
+                        p.call_id, p.output, p.is_error, getattr(p, "content_parts", None)
+                    )
                     result.append({
                         "role": "tool",
                         "tool_call_id": p.call_id,
-                        "content": p.output,
+                        "content": project_tool_output_to_text(canonical.blocks),
                     })
             continue
 

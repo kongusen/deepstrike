@@ -9,6 +9,7 @@ except ImportError:  # pragma: no cover - exercised only when optional provider 
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent, UsageEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended, UnsupportedModalityError
+from deepstrike.types.content import normalize_tool_result, project_tool_output_to_text
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,16 @@ class GeminiProvider:
                         parts.append({
                             "function_response": {
                                 "name": tool_name,
-                                "response": {"output": p.output},
+                                "response": {
+                                    "output": project_tool_output_to_text(
+                                        normalize_tool_result(
+                                            p.call_id,
+                                            p.output,
+                                            p.is_error,
+                                            getattr(p, "content_parts", None),
+                                        ).blocks
+                                    )
+                                },
                             }
                         })
                 if parts:

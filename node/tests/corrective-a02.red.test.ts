@@ -1,13 +1,17 @@
 import { RuntimeRunner } from "../src/runtime/runner.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import type { ExecutionPlane } from "../src/runtime/execution-plane.js"
-import { toAnthropicMessages, UnsupportedModalityError } from "../src/providers/base.js"
-import { OpenAIChatAdapter } from "../src/providers/openai-chat.js"
+import { toAnthropicMessages } from "../src/providers/base.js"
+import {
+  attachToolOutputOverlay,
+  ContentValidationError,
+  normalizeCanonicalAdapterInput,
+} from "../src/providers/content-normalization.js"
+import { resolveEffectiveModelCapabilities } from "../src/providers/model-registry.js"
+import { resolveProviderRuntime } from "../src/providers/catalog.js"
 import type {
-  LLMProvider, Message, RenderedContext, StreamEvent, ToolCall, ToolResultEvent, ToolSchema,
+  LLMProvider, Message, RenderedContext, StreamEvent, ToolCall, ToolOutputBlock, ToolResultEvent, ToolSchema,
 } from "../src/types.js"
-
-const describeA02Red = process.env.RUN_SPC013_A02_RED === "1" ? describe : describe.skip
 
 class ReusedCallIdPlane implements ExecutionPlane {
   private executions = 0
@@ -23,7 +27,7 @@ class ReusedCallIdPlane implements ExecutionPlane {
         type: "tool_result",
         callId: call.id,
         name: call.name,
-        content: this.executions === 1 ? "first [image]" : "second text only",
+        content: this.executions === 1 ? "first\n[image]" : "second text only",
         isError: false,
         ...(this.executions === 1 ? {
           contentParts: [
@@ -67,7 +71,7 @@ function structuredToolContext(nested = false): RenderedContext {
         output: "public projection",
         isError: false,
         contentParts: nested
-          ? [{ type: "tool_result", callId: "nested", content: [{ type: "text", text: "secret" }], isError: false }]
+          ? ([{ type: "tool_result", callId: "nested", content: [{ type: "text", text: "secret" }], isError: false }] as unknown as ToolOutputBlock[])
           : [{ type: "text", text: "different structured fact" }],
       }],
     }],
@@ -94,7 +98,28 @@ function restoredTextProjection(): RenderedContext {
   }
 }
 
-describeA02Red("spc_013-A-00: reproducible A-02 corrective reds", () => {
+function imageToolContext(): RenderedContext {
+  return {
+    systemText: "",
+    turns: [{
+      role: "tool",
+      content: "[image]",
+      contentParts: [{
+        type: "tool_result",
+        callId: "call_1",
+        output: "[image]",
+        isError: false,
+        contentParts: [{
+          type: "image",
+          source: { kind: "base64", data: "aW1hZ2U=" },
+          mediaType: "image/png",
+        }],
+      }],
+    }],
+  }
+}
+
+describe("spc_013-A-02: canonical content and operation overlay", () => {
   it("does not reuse structured blocks when two sessions share a Runner and call_1", async () => {
     const provider = new TwoSessionProvider()
     const runner = new RuntimeRunner({
@@ -126,22 +151,17 @@ describeA02Red("spc_013-A-00: reproducible A-02 corrective reds", () => {
     }
     const reused = new RuntimeRunner(options as never)
     const fresh = new RuntimeRunner(options as never)
-    const staleBlocks = [
+    const staleBlocks: ToolOutputBlock[] = [
       { type: "text" as const, text: "old process-local fact" },
       { type: "image" as const, source: { kind: "base64" as const, data: "b2xk" }, mediaType: "image/png" },
     ]
-    const reusedInternals = reused as unknown as {
-      structuredToolOutputs: Map<string, typeof staleBlocks>
-      withStructuredToolOutputs(context: RenderedContext): RenderedContext
-    }
-    const freshInternals = fresh as unknown as {
-      withStructuredToolOutputs(context: RenderedContext): RenderedContext
-    }
-    reusedInternals.structuredToolOutputs.set("call_1", staleBlocks)
-
     const restored = restoredTextProjection()
-    expect(reusedInternals.withStructuredToolOutputs(restored))
-      .toEqual(freshInternals.withStructuredToolOutputs(restored))
+    expect(reused).not.toHaveProperty("structuredToolOutputs")
+    expect(fresh).not.toHaveProperty("structuredToolOutputs")
+    expect(attachToolOutputOverlay(restored, new Map()))
+      .toEqual(attachToolOutputOverlay(restored, new Map()))
+    expect(attachToolOutputOverlay(restored, new Map([["call_1", staleBlocks]])))
+      .not.toEqual(restored)
   })
 
   it("rejects conflicting output and structured content instead of choosing one silently", () => {
@@ -153,9 +173,78 @@ describeA02Red("spc_013-A-00: reproducible A-02 corrective reds", () => {
   })
 
   it("applies modality preflight recursively to images inside tool output", () => {
-    const adapter = new OpenAIChatAdapter()
-    expect(() => adapter.buildMessages(structuredToolContext(), {
-      descriptor: { provider: "qwen", protocol: "openai-chat", model: "qwen3.7-max-preview" },
-    })).toThrow(UnsupportedModalityError)
+    const effectiveCapabilities = resolveEffectiveModelCapabilities({
+      model: {
+        id: "test/text-only",
+        providerId: "test",
+        kind: "generation",
+        intrinsic: { inputModalities: ["text"] },
+      },
+      protocol: "openai-chat",
+    })
+    const base = resolveProviderRuntime({ model: "openai/gpt-4o", apiKey: "k" })
+    const resolved = { ...base, effectiveCapabilities }
+    expect(() => normalizeCanonicalAdapterInput({
+      context: imageToolContext(),
+      tools: [],
+      resolved,
+    })).toThrow(ContentValidationError)
+  })
+
+  it("rejects invalid media sources before an adapter sees them", () => {
+    const context = imageToolContext()
+    const tool = context.turns[0].contentParts?.[0]
+    if (tool?.type !== "tool_result" || tool.contentParts?.[0]?.type !== "image") {
+      throw new Error("invalid test fixture")
+    }
+    tool.contentParts[0].source = { kind: "base64", data: "***not-base64***" }
+    const resolved = resolveProviderRuntime({ model: "openai/gpt-4o", apiKey: "k" })
+    expect(() => normalizeCanonicalAdapterInput({ context, tools: [], resolved }))
+      .toThrow(/valid base64/i)
+  })
+
+  it("rejects provider files when endpoint affinity does not match", () => {
+    const context: RenderedContext = {
+      systemText: "",
+      turns: [{
+        role: "tool",
+        content: "[file]",
+        contentParts: [{
+          type: "tool_result",
+          callId: "call_file",
+          output: "[file]",
+          isError: false,
+          contentParts: [{
+            type: "file",
+            source: {
+              kind: "fileId",
+              id: "file_1",
+              affinity: { providerId: "openai", endpointId: "openai.responses" },
+            },
+          }],
+        }],
+      }],
+    }
+    const resolved = resolveProviderRuntime({
+      model: "openai/gpt-5.5",
+      endpoint: "openai.responses",
+      apiKey: "k",
+    })
+    context.turns[0].contentParts![0] = {
+      ...(context.turns[0].contentParts![0] as Extract<
+        NonNullable<Message["contentParts"]>[number],
+        { type: "tool_result" }
+      >),
+      contentParts: [{
+        type: "file",
+        source: {
+          kind: "fileId",
+          id: "file_1",
+          affinity: { providerId: "openai", endpointId: "openai.chat" },
+        },
+      }],
+    }
+    expect(() => normalizeCanonicalAdapterInput({ context, tools: [], resolved }))
+      .toThrow(/belongs to openai\/openai.chat/i)
   })
 })
