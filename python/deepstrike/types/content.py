@@ -19,7 +19,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import base64
 import binascii
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+  from deepstrike.providers.base import RenderedContext
+  from deepstrike._kernel import ToolSchema
 
 
 class ContentValidationError(ValueError):
@@ -35,6 +39,18 @@ class CanonicalToolResult:
   call_id: str
   blocks: tuple[dict, ...]
   is_error: bool
+
+
+@dataclass(frozen=True)
+class CanonicalAdapterInput:
+  """Provider-ready input with one validated content representation.
+
+  The existing Python bindings remain the public carriers. This boundary validates
+  their content tree before a protocol serializer projects it to a vendor wire.
+  """
+  context: "RenderedContext"
+  tools: tuple["ToolSchema", ...]
+  extensions: dict[str, Any]
 
 
 def _require_non_empty(value: Any, label: str) -> None:
@@ -92,6 +108,55 @@ def normalize_tool_result(
       f"Tool result projection conflict for {call_id}: output does not match content_parts"
     )
   return CanonicalToolResult(call_id, tuple(content_parts), is_error)
+
+
+def _validate_media_part(part: Any) -> None:
+  kind = getattr(part, "type", "unknown")
+  data = getattr(part, "data", None)
+  url = getattr(part, "url", None)
+  if bool(data) == bool(url):
+    raise ContentValidationError(f"{kind} source must contain exactly one of data or url")
+  _require_non_empty(data if data else url, f"{kind} source")
+
+
+def validate_rendered_message(message: Any) -> None:
+  """Validate one legacy message before its canonical provider projection."""
+  parts = getattr(message, "content_parts", None) or []
+  for part in parts:
+    kind = getattr(part, "type", "unknown")
+    if kind == "text":
+      if not isinstance(getattr(part, "text", None), str):
+        raise ContentValidationError("text content must be a string")
+    elif kind in {"image", "audio"}:
+      _validate_media_part(part)
+    elif kind == "tool_result":
+      output = getattr(part, "output", "")
+      if not isinstance(output, str):
+        raise ContentValidationError("tool result output must be a string")
+      normalize_tool_result(
+        getattr(part, "call_id", ""),
+        output,
+        bool(getattr(part, "is_error", False)),
+        getattr(part, "content_parts", None),
+      )
+    else:
+      raise ContentValidationError(f"unknown content part type: {kind}")
+
+
+def validate_rendered_context(context: "RenderedContext") -> None:
+  for message in [*context.turns, *([context.state_turn] if context.state_turn is not None else [])]:
+    validate_rendered_message(message)
+
+
+def normalize_canonical_adapter_input(
+  context: "RenderedContext",
+  tools: list["ToolSchema"] | tuple["ToolSchema", ...],
+  *,
+  extensions: dict[str, Any] | None = None,
+) -> CanonicalAdapterInput:
+  """Validate compatibility carriers once before protocol-specific projection."""
+  validate_rendered_context(context)
+  return CanonicalAdapterInput(context=context, tools=tuple(tools), extensions=dict(extensions or {}))
 
 
 @dataclass

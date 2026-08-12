@@ -30,6 +30,7 @@ from .base import (
 )
 from .stop_reason import canonicalize_stop_reason
 from .usage import normalize_usage
+from deepstrike.types.content import normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +103,7 @@ class OpenAIResponsesAdapter:
         uncovered tail (turns past ``covered_message_count``) is serialized — the covered prefix
         already lives server-side under ``previous_response_id``. The volatile State turn is always
         appended (it changes every call and is never "covered")."""
+        normalize_canonical_adapter_input(context, [])
         input_items: list[dict] = []
         turns = context.turns
         if state and state.get("previous_response_id"):

@@ -7,7 +7,12 @@ from typing import Any, AsyncIterator, Callable, Protocol, TypeVar, runtime_chec
 from dataclasses import dataclass, field
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent
-from deepstrike.types.content import normalize_tool_result, project_tool_output_to_text
+from deepstrike.types.content import (
+    normalize_canonical_adapter_input,
+    normalize_tool_result,
+    project_tool_output_to_text,
+    validate_rendered_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +161,7 @@ def _tool_result_anthropic_content(p: Any) -> "str | list[dict]":
 
 def to_anthropic_content(msg: Message) -> str | list[dict]:
     """Convert Message to Anthropic API content format."""
+    validate_rendered_message(msg)
     if not getattr(msg, "content_parts", None):
         return msg.content
     parts = []
@@ -194,6 +200,7 @@ def _openai_audio_format(media_type: str | None) -> str:
 
 def to_openai_content(msg: Message) -> str | list[dict]:
     """Convert Message to OpenAI API content format."""
+    validate_rendered_message(msg)
     if not getattr(msg, "content_parts", None):
         return msg.content
     parts = []
@@ -223,6 +230,8 @@ def to_anthropic_messages(
     native_replay: Callable[[Message], list[dict] | None] | None = None,
 ) -> list[dict]:
     """Serialize provider-neutral turns into Anthropic-native messages."""
+    for message in turns:
+        validate_rendered_message(message)
     result: list[dict] = []
     for msg in turns:
         if msg.role == "tool":
@@ -270,12 +279,14 @@ def turns_with_state_appended(context: "RenderedContext") -> list:
     across turns. Anthropic appends it after the cache breakpoint instead. When
     state_turn is absent (un-rebuilt binding) the State turn is still inside turns,
     so this returns turns as-is."""
+    normalize_canonical_adapter_input(context, [])
     state_turn = getattr(context, "state_turn", None)
     return [*context.turns, state_turn] if state_turn is not None else list(context.turns)
 
 
 def to_openai_message_params(context: "RenderedContext") -> list[dict]:
     """Serialize provider-neutral context into OpenAI-compatible chat messages."""
+    normalize_canonical_adapter_input(context, [])
     result: list[dict] = []
     if context.system_text:
         result.append({"role": "system", "content": context.system_text})
