@@ -12,6 +12,8 @@ from .replay import ReasoningReplayMixin, assistant_replay_key
 from .replay_validator import validate_openai_chat_replay
 from .stop_reason import canonicalize_stop_reason
 from .usage import normalize_usage
+from .openai_chat_adapter import OpenAIChatAdapter
+from deepstrike.types.content import normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,7 @@ class OpenAIProvider(ReasoningReplayMixin):
         self._base_url = base_url.rstrip("/")
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._wire_dialect = dialect
+        self._adapter = OpenAIChatAdapter(model)
         self._init_replay_store()
 
     def runtime_policy(self) -> RuntimePolicy:
@@ -358,9 +361,82 @@ class OpenAIProvider(ReasoningReplayMixin):
         to non-OpenAI compatible endpoints, which ignore it."""
         return stable_prompt_cache_key([context.system_text, ",".join(t.name for t in tools)])
 
+    def _canonical_input(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None):
+        return normalize_canonical_adapter_input(
+            context,
+            tools,
+            extensions=extensions,
+            resolved=getattr(self, "_resolved_runtime", None),
+        )
+
+    def _replay_for_assistant(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
+        return self._replay_fields.get(assistant_replay_key(content, tool_calls))
+
+    async def _complete_with_adapter(
+        self,
+        context: RenderedContext,
+        tools: list[ToolSchema],
+        extensions: dict | None,
+    ) -> Message:
+        adapter_input = self._canonical_input(context, tools, extensions)
+        plan = self._adapter.build_request(adapter_input, self._wire_dialect, self._replay_for_assistant)
+        last_exc = None
+        for attempt in range(self._retry.max_retries):
+            try:
+                response = await self._client.chat.completions.create(**plan.params)
+                self._circuit.record_success()
+                decoded = self._adapter.decode_complete(response, adapter_input, self._wire_dialect)
+                if decoded.replay:
+                    self.remember_replay_fields(decoded.message, decoded.replay)
+                return decoded.message
+            except Exception as exc:
+                last_exc = exc
+                self._circuit.record_failure()
+                if attempt < self._retry.max_retries - 1:
+                    import asyncio
+                    await asyncio.sleep(self._retry.base_delay * (2 ** attempt))
+        raise last_exc or RuntimeError("Complete failed")
+
+    async def _stream_with_adapter(
+        self,
+        context: RenderedContext,
+        tools: list[ToolSchema],
+        extensions: dict | None,
+    ) -> AsyncIterator[StreamEvent]:
+        adapter_input = self._canonical_input(context, tools, extensions)
+        plan = self._adapter.build_request(adapter_input, self._wire_dialect, self._replay_for_assistant)
+        stream = await self._client.chat.completions.create(
+            **plan.params,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        stream_state = self._adapter.create_stream_state(adapter_input, self._wire_dialect)
+        async for chunk in stream:
+            output = self._adapter.push_stream_chunk(chunk, stream_state)
+            if output.replay:
+                self.remember_replay_fields(
+                    Message(role="assistant", content=stream_state.accumulated_content,
+                            tool_calls=self._adapter._final_tool_calls(stream_state.tool_call_buffers) or None),
+                    output.replay,
+                )
+            for event in output.events:
+                yield event
+        output = self._adapter.finish_stream(stream_state)
+        if output.replay:
+            self.remember_replay_fields(
+                Message(role="assistant", content=stream_state.accumulated_content,
+                        tool_calls=self._adapter._final_tool_calls(stream_state.tool_call_buffers) or None),
+                output.replay,
+            )
+        for event in output.events:
+            yield event
+
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
+
+        if self._wire_dialect is not None:
+            return await self._complete_with_adapter(context, tools, extensions)
 
         prepared = self._prepare_extensions(extensions)
         msgs = self._build_messages(context, extensions)
@@ -415,6 +491,10 @@ class OpenAIProvider(ReasoningReplayMixin):
         raise last_exc or RuntimeError("Complete failed")
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
+        if self._wire_dialect is not None:
+            async for event in self._stream_with_adapter(context, tools, extensions):
+                yield event
+            return
         prepared = self._prepare_extensions(extensions)
         msgs = self._build_messages(context, extensions)
         tool_defs = self._wire_tools(tools, extensions)
