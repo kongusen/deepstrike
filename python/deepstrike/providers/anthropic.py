@@ -4,10 +4,10 @@ import logging
 from typing import AsyncIterator
 from anthropic import AsyncAnthropic
 from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
+from .stream import StreamEvent
 from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, parse_tool_arguments, to_anthropic_content, to_anthropic_messages
-from .stop_reason import canonicalize_stop_reason
-from .usage import normalize_usage
+from .anthropic_adapter import AnthropicMessagesAdapter
+from deepstrike.types.content import normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,7 @@ class AnthropicProvider:
             client_kwargs["base_url"] = base_url
         self._client = AsyncAnthropic(**client_kwargs)
         self._native_assistant_blocks: dict[str, list[dict]] = {}
+        self._adapter = AnthropicMessagesAdapter(model)
 
     def runtime_policy(self) -> RuntimePolicy:
         return _CLAUDE_POLICIES.get(self._model, RuntimePolicy())
@@ -154,63 +155,21 @@ class AnthropicProvider:
         system = self._build_system(context, strategy, cc)
         tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy, cache_control=cc)
         _assert_cache_budget(system, len(tools))
+        canonical = normalize_canonical_adapter_input(
+            context, tools, extensions=extensions,
+            resolved=getattr(self, "_resolved_runtime", None),
+        )
+        plan = self._adapter.build_request(canonical, messages=msgs, system=system, tools=tool_defs)
 
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
-                request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "system", "tools", "stream", "max_tokens", *_CACHE_CONTROL_EXTENSION_KEYS}}
-                resp = await self._client.messages.create(
-                    **request_extensions,
-                    model=self._model,
-                    max_tokens=(extensions or {}).get("max_tokens", 8096),
-                    system=system,
-                    messages=msgs,
-                    tools=tool_defs,
-                )
+                resp = await self._client.messages.create(**plan.params)
                 self._circuit.record_success()
-
-                content = ""
-                tool_calls: list[ToolCall] = []
-                native_blocks: list[dict] = []
-
-                for block in resp.content:
-                    if block.type == "text":
-                        content += block.text
-                        native_blocks.append({"type": "text", "text": block.text})
-                    elif block.type == "tool_use":
-                        tc = normalize_tool_call(block.id, block.name, block.input)
-                        if tc:
-                            tool_calls.append(tc)
-                        native_blocks.append({
-                            "type": "tool_use",
-                            "id": block.id,
-                            "name": block.name,
-                            "input": block.input,
-                        })
-                    elif block.type == "thinking":
-                        native_blocks.append({
-                            "type": "thinking",
-                            "thinking": block.thinking,
-                            "signature": getattr(block, "signature", None),
-                        })
-
-                self._remember_native_blocks(content, tool_calls, native_blocks)
-
-                # token_count is the turn total: full prompt (uncached + cache
-                # read + cache write) + output, so it stays accurate once caching
-                # moves most of the prompt into cache_read.
-                usage = resp.usage
-                full_input = (
-                    (usage.input_tokens or 0)
-                    + (getattr(usage, "cache_read_input_tokens", 0) or 0)
-                    + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
-                )
-                return Message(
-                    role="assistant",
-                    content=content,
-                    token_count=full_input + (usage.output_tokens or 0),
-                    tool_calls=tool_calls or None,
-                )
+                message, replay = self._adapter.decode_complete(resp, canonical)
+                if replay:
+                    self._remember_native_blocks(message.content, message.tool_calls or [], replay["native_blocks"])
+                return message
             except Exception as exc:
                 last_exc = exc
                 self._circuit.record_failure()
@@ -228,101 +187,19 @@ class AnthropicProvider:
         system = self._build_system(context, strategy, cc)
         tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy, cache_control=cc)
         _assert_cache_budget(system, len(tools))
-        # I1: capture which slots will carry cache_control for pro-rata attribution at usage time.
-        slot_bp = _count_cache_control_slots(system, tool_defs, msgs)
-
-        native_blocks: dict[int, dict] = {}
-        tool_blocks: dict[int, dict] = {}
-        final_text = ""
-        final_tool_calls: list[ToolCall] = []
-        uncached_input = 0
-        cache_read = 0
-        cache_creation = 0
-        output_tokens = 0
-
-        request_extensions = {k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "system", "tools", "stream", "max_tokens", *_CACHE_CONTROL_EXTENSION_KEYS}}
-        async with self._client.messages.stream(
-            **request_extensions,
-            model=self._model,
-            max_tokens=(extensions or {}).get("max_tokens", 8096),
-            system=system,
-            messages=msgs,
-            tools=tool_defs,
-        ) as stream:
+        canonical = normalize_canonical_adapter_input(
+            context, tools, extensions=extensions,
+            resolved=getattr(self, "_resolved_runtime", None),
+        )
+        plan = self._adapter.build_request(canonical, messages=msgs, system=system, tools=tool_defs)
+        stream_state = self._adapter.create_stream_state(canonical, plan.cache_slots)
+        async with self._client.messages.stream(**plan.params) as stream:
             async for event in stream:
-                if event.type in ("message_start", "message_delta"):
-                    usage = getattr(event, "usage", None) or getattr(getattr(event, "message", None), "usage", None)
-                    if usage is not None:
-                        # input + cache counts are pinned at message_start; a later
-                        # message_delta may omit them — max() prevents zeroing.
-                        uncached_input = max(uncached_input, getattr(usage, "input_tokens", 0) or 0)
-                        cache_read = max(cache_read, getattr(usage, "cache_read_input_tokens", 0) or 0)
-                        cache_creation = max(cache_creation, getattr(usage, "cache_creation_input_tokens", 0) or 0)
-                        output_tokens = max(output_tokens, getattr(usage, "output_tokens", 0) or 0)
-                        # input_tokens is the FULL prompt size (uncached + cache
-                        # read + cache write) for accurate context accounting.
-                        full_input = uncached_input + cache_read + cache_creation
-                        by_slot = _estimate_cache_read_by_slot(cache_read, slot_bp)
-                        # stop_reason is only present on message_delta (the closing frame);
-                        # "max_tokens" drives the kernel's output-cap recovery.
-                        stop_reason = getattr(getattr(event, "delta", None), "stop_reason", None)
-                        yield UsageEvent(
-                            total_tokens=full_input + output_tokens,
-                            input_tokens=full_input,
-                            output_tokens=output_tokens,
-                            cache_read_input_tokens=cache_read,
-                            cache_creation_input_tokens=cache_creation,
-                            cache_read_input_tokens_by_slot=by_slot,
-                            stop_reason=canonicalize_stop_reason(stop_reason),
-                            raw_stop_reason=stop_reason,
-                            provider_usage=normalize_usage(usage),
-                        )
-                elif event.type == "content_block_start":
-                    idx = event.index
-                    block = event.content_block
-                    native_blocks[idx] = {"type": block.type}
-                    if block.type == "thinking":
-                        native_blocks[idx]["thinking"] = getattr(block, "thinking", "") or ""
-                        native_blocks[idx]["signature"] = getattr(block, "signature", "") or ""
-                    elif block.type == "text":
-                        native_blocks[idx]["text"] = getattr(block, "text", "") or ""
-                    elif block.type == "tool_use":
-                        native_blocks[idx].update({
-                            "id": block.id,
-                            "name": block.name,
-                            "input": getattr(block, "input", {}) or {},
-                        })
-                        tool_blocks[idx] = {"id": block.id, "name": block.name, "args_buf": ""}
-                elif event.type == "content_block_delta":
-                    delta = event.delta
-                    idx = event.index
-                    if delta.type == "text_delta":
-                        final_text += delta.text
-                        native_blocks[idx]["text"] = native_blocks[idx].get("text", "") + delta.text
-                        yield TextDelta(delta=delta.text)
-                    elif delta.type == "thinking_delta":
-                        native_blocks[idx]["thinking"] = native_blocks[idx].get("thinking", "") + delta.thinking
-                        yield ThinkingDelta(delta=delta.thinking)
-                    elif delta.type == "signature_delta":
-                        native_blocks[idx]["signature"] = native_blocks[idx].get("signature", "") + delta.signature
-                    elif delta.type == "input_json_delta" and idx in tool_blocks:
-                        tool_blocks[idx]["args_buf"] += delta.partial_json
-                elif event.type == "content_block_stop":
-                    idx = event.index
-                    if idx in tool_blocks:
-                        tb = tool_blocks.pop(idx)
-                        try:
-                            args = json.loads(tb["args_buf"] or "{}")
-                        except json.JSONDecodeError:
-                            args = {}
-                        native_blocks[idx]["input"] = args
-                        tc = normalize_tool_call(tb["id"], tb["name"], args)
-                        if tc:
-                            final_tool_calls.append(tc)
-                            yield ToolCallEvent(id=tc.id, name=tc.name, arguments=args)
-
-        ordered_blocks = [native_blocks[i] for i in sorted(native_blocks)]
-        self._remember_native_blocks(final_text, final_tool_calls, ordered_blocks)
+                for output in self._adapter.push_stream_chunk(event, stream_state).events:
+                    yield output
+        finalized = self._adapter.finish_stream(stream_state)
+        if finalized.replay:
+            self._remember_native_blocks(stream_state.final_text, stream_state.final_tool_calls, finalized.replay["native_blocks"])
 
     def _assistant_replay_key(self, message: Message) -> str:
         return self._assistant_replay_key_parts(message.content, message.tool_calls or [])
