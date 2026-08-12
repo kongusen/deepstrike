@@ -14,6 +14,7 @@ from .model_registry import (
     ModelRegistry,
     ResolvedProviderRuntime,
 )
+from .credentials import CredentialResolutionError, OAuthCredentialResolver, resolve_credential
 
 
 @dataclass(frozen=True)
@@ -265,6 +266,7 @@ def _build_provider(
     base_url: str,
     retry_config: RetryConfig | None,
     dialect: WireDialect | None = None,
+    auth_mode: str = "api_key",
 ) -> LLMProvider:
     kwargs: dict[str, Any] = {"base_url": base_url}
     if api_key is not None:
@@ -275,6 +277,8 @@ def _build_provider(
         kwargs["retry_config"] = retry_config
     if dialect is not None:
         kwargs["dialect"] = dialect
+    if auth_mode == "bearer" and cls in {AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider}:
+        kwargs["auth_mode"] = auth_mode
     return cls(**kwargs)
 
 
@@ -322,7 +326,116 @@ def create_provider(
         endpoint_id=runtime.endpoint_id,
     )
     provider._resolved_runtime = runtime
+    _attach_request_plan_identity(provider, runtime, base_url or profile.base_url)
     return provider
+
+
+def _supports_bearer_credential(provider_id: str, protocol: str) -> bool:
+    return (
+        provider_id == "openai" and protocol in {"openai-chat", "openai-responses"}
+    ) or (provider_id == "anthropic" and protocol == "anthropic-messages")
+
+
+async def create_provider_async(
+    provider_id: str,
+    *,
+    api_key: str | None = None,
+    bearer_token: str | None = None,
+    credential_resolver: OAuthCredentialResolver | None = None,
+    model: str | None = None,
+    protocol: str = "openai",
+    region: str | None = None,
+    base_url: str | None = None,
+    retry_config: RetryConfig | None = None,
+) -> LLMProvider:
+    """I/O-capable provider construction for Host credential resolvers.
+
+    The synchronous factory deliberately remains free of refresh I/O.  Only providers with an
+    explicit bearer policy may receive OAuth credentials; compatible vendors cannot inherit it.
+    """
+    runtime, profile, dialect = resolve_runtime_profile(
+        provider_id, model=model, protocol=protocol, region=region, base_url=base_url,
+    )
+    if profile is None:
+        raise ValueError(f"Unknown endpoint {runtime.endpoint_id!r}")
+    if provider_id == "ollama":
+        return create_provider(
+            provider_id, api_key=None, model=model, protocol=protocol, region=region,
+            base_url=base_url, retry_config=retry_config,
+        )
+    credential = await resolve_credential(
+        provider_id=provider_id,
+        model_id=runtime.model_id,
+        endpoint_id=runtime.endpoint_id,
+        protocol=profile.protocol,
+        api_key=api_key,
+        bearer_token=bearer_token,
+        credential_resolver=credential_resolver,
+    )
+    if credential.type == "bearer" and not _supports_bearer_credential(provider_id, profile.protocol):
+        raise CredentialResolutionError("credential_auth_mode_unsupported", provider_id)
+    key = (provider_id, profile.protocol)
+    cls = _PROVIDER_CLASSES.get(key)
+    if cls is None:
+        raise ValueError(f"No provider class registered for {key!r}")
+    resolved_model = model or (dialect.default_model if dialect is not None else None)
+    provider = _build_provider(
+        cls,
+        api_key=credential.value,
+        model=resolved_model,
+        base_url=base_url or profile.base_url,
+        retry_config=retry_config,
+        dialect=dialect,
+        auth_mode=credential.type,
+    )
+    provider_model = getattr(provider, "_model", None) or getattr(provider, "_model_name", runtime.model_id)
+    provider._resolved_runtime = model_registry.resolve_provider_runtime(
+        provider_id,
+        provider_model,
+        endpoint_id=runtime.endpoint_id,
+    )
+    _attach_request_plan_identity(provider, provider._resolved_runtime, base_url or profile.base_url)
+    return provider
+
+
+def _attach_request_plan_identity(
+    provider: LLMProvider,
+    runtime: ResolvedProviderRuntime,
+    base_url: str,
+) -> None:
+    """Expose resolved, credential-free facts for a provider request-plan builder."""
+    native = runtime.effective_capabilities.native_token_counting
+    identity: dict[str, object] = {
+        "providerId": runtime.provider_id,
+        "modelId": runtime.model_id,
+        "endpoint": {
+            "id": runtime.endpoint_id,
+            "protocol": runtime.protocol,
+            "baseURL": _safe_endpoint_base_url(base_url),
+        },
+    }
+    if native.state == "supported" and native.value is True:
+        identity["nativeTokenCounting"] = True
+
+    def request_plan_identity() -> dict[str, object]:
+        return {
+            **identity,
+            "endpoint": dict(identity["endpoint"]),
+        }
+
+    provider.requestPlanIdentity = request_plan_identity
+
+
+def _safe_endpoint_base_url(base_url: str) -> str:
+    from urllib.parse import urlsplit, urlunsplit
+
+    parsed = urlsplit(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        return base_url
+    host = parsed.hostname or ""
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, host, parsed.path.rstrip("/"), "", ""))
 
 
 model_registry = ModelRegistry()

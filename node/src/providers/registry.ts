@@ -11,6 +11,7 @@ import { GeminiProvider } from "./gemini.js"
 import { OllamaProvider } from "./ollama.js"
 import { openAIChatDialects, type OpenAIChatDialectId } from "./openai-chat-dialects.js"
 import { endpointProfiles } from "./endpoints.js"
+import type { EndpointProtocol, ProviderId } from "./endpoints.js"
 
 export type ProviderRetry = { maxRetries: number; baseDelay: number }
 
@@ -29,6 +30,12 @@ export type ProviderMaker = (
 /** Build the registry key for a `(providerId, endpointProtocol)` pair. */
 export function providerRegistryKey(providerId: string, protocol: string): string {
   return `${providerId}:${protocol}`
+}
+
+/** OAuth bearer is opt-in per provider/protocol. Compatible endpoints do not inherit this policy. */
+export function supportsBearerCredential(providerId: ProviderId, protocol: EndpointProtocol): boolean {
+  return (providerId === "openai" && (protocol === "openai-chat" || protocol === "openai-responses"))
+    || (providerId === "anthropic" && protocol === "anthropic-messages")
 }
 
 function openAIChatMaker(dialectId: OpenAIChatDialectId): ProviderMaker {

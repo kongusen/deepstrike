@@ -1,6 +1,7 @@
 import { CapabilityRouter } from "../src/providers/capability-router.js"
 import {
   CredentialResolutionError,
+  OAuthCredentialResolver,
   resolveCredential,
   type CredentialResolver,
 } from "../src/providers/credentials.js"
@@ -129,6 +130,138 @@ describe("spc_015-03 credential resolver", () => {
     expect(adapter.client.baseURL).toBe("https://gateway.example.test/v1")
     expect(adapter.maxRetries).toBe(7)
     expect(adapter.baseDelay).toBe(13)
+  })
+})
+
+describe("spc_016-03 OAuth credential extension", () => {
+  const request = {
+    providerId: "openai" as const,
+    modelId: "gpt-4.1",
+    endpointId: "openai.responses" as const,
+    protocol: "openai-responses" as const,
+  }
+
+  it("deduplicates concurrent refreshes and refreshes again only after expiry", async () => {
+    let now = 1_000
+    let refreshes = 0
+    let releaseRefresh: (() => void) | undefined
+    const refreshStarted = new Promise<void>(resolve => { releaseRefresh = resolve })
+    const resolver = new OAuthCredentialResolver({
+      providerId: "openai",
+      audience: "https://api.openai.com",
+      requiredScopes: ["responses.write"],
+      clock: () => now,
+      refresh: async () => {
+        refreshes += 1
+        await refreshStarted
+        return {
+          accessToken: `access-${refreshes}`,
+          expiresAt: now + 10,
+          audience: "https://api.openai.com",
+          scopes: ["responses.write"],
+        }
+      },
+    })
+
+    const pending = Array.from({ length: 3 }, () => resolveCredential(request, {
+      credentialResolver: resolver.resolve,
+    }))
+    await Promise.resolve()
+    expect(refreshes).toBe(1)
+    releaseRefresh?.()
+    await expect(Promise.all(pending)).resolves.toEqual([
+      { type: "bearer", value: "access-1" },
+      { type: "bearer", value: "access-1" },
+      { type: "bearer", value: "access-1" },
+    ])
+
+    now += 11
+    await expect(resolveCredential(request, { credentialResolver: resolver.resolve }))
+      .resolves.toEqual({ type: "bearer", value: "access-2" })
+    expect(refreshes).toBe(2)
+  })
+
+  it("fails closed on scope, audience, and revocation failures without exposing secrets", async () => {
+    const secret = "oauth-refresh-secret"
+    const wrongScope = new OAuthCredentialResolver({
+      providerId: "openai",
+      requiredScopes: ["responses.write"],
+      refresh: async () => ({ accessToken: secret, expiresAt: Number.MAX_SAFE_INTEGER, scopes: ["read"] }),
+    })
+    await expect(resolveCredential(request, { credentialResolver: wrongScope.resolve }))
+      .rejects.toMatchObject({ code: "credential_oauth_scope_mismatch", retryable: false })
+
+    const wrongAudience = new OAuthCredentialResolver({
+      providerId: "openai",
+      audience: "https://api.openai.com",
+      refresh: async () => ({ accessToken: secret, expiresAt: Number.MAX_SAFE_INTEGER, audience: "https://other.example" }),
+    })
+    await expect(resolveCredential(request, { credentialResolver: wrongAudience.resolve }))
+      .rejects.toMatchObject({ code: "credential_oauth_audience_mismatch", retryable: false })
+
+    const revoked = new OAuthCredentialResolver({
+      providerId: "openai",
+      refresh: async () => ({ accessToken: secret, expiresAt: Number.MAX_SAFE_INTEGER }),
+    })
+    revoked.revoke()
+    await expect(resolveCredential(request, { credentialResolver: revoked.resolve }))
+      .rejects.toMatchObject({ code: "credential_revoked", retryable: false })
+
+    const refreshFailure = new OAuthCredentialResolver({
+      providerId: "openai",
+      refresh: async () => { throw new Error(secret) },
+    })
+    try {
+      await resolveCredential(request, { credentialResolver: refreshFailure.resolve })
+      throw new Error("expected OAuth refresh to fail")
+    } catch (error) {
+      expect(error).toMatchObject({ code: "credential_refresh_failed", retryable: true })
+      expect(String(error)).not.toContain(secret)
+      expect(JSON.stringify(error)).not.toContain(secret)
+    }
+  })
+
+  it("constructs OpenAI Responses with only a refreshed bearer credential", async () => {
+    const secret = "oauth-access-token"
+    const resolver = new OAuthCredentialResolver({
+      providerId: "openai",
+      refresh: async () => ({ accessToken: secret, expiresAt: Number.MAX_SAFE_INTEGER }),
+    })
+    const runtime = await resolveProviderRuntimeAsync({
+      model: "openai/gpt-4.1",
+      endpoint: "openai.responses",
+      credentialResolver: resolver.resolve,
+    })
+
+    expect((runtime.adapter as unknown as {
+      client: { _options: { defaultHeaders?: Record<string, string> } }
+    }).client._options.defaultHeaders).toEqual({ Authorization: `Bearer ${secret}` })
+    expect(JSON.stringify(runtime.identity)).not.toContain(secret)
+    const identity = (runtime.adapter as unknown as {
+      requestPlanIdentity(): Record<string, unknown>
+    }).requestPlanIdentity()
+    expect(identity).toEqual({
+      providerId: "openai",
+      modelId: "gpt-4.1",
+      endpoint: {
+        id: "openai.responses",
+        protocol: "openai-responses",
+        baseURL: "https://api.openai.com/v1",
+      },
+    })
+    expect(JSON.stringify(identity)).not.toContain(secret)
+    expect(resolver.status()).toEqual({ providerId: "openai", revoked: false, hasUsableToken: true })
+  })
+
+  it("does not inherit OpenAI bearer policy on a compatible provider endpoint", async () => {
+    const resolver = new OAuthCredentialResolver({
+      providerId: "deepseek",
+      refresh: async () => ({ accessToken: "deepseek-token", expiresAt: Number.MAX_SAFE_INTEGER }),
+    })
+    await expect(resolveProviderRuntimeAsync({
+      model: "deepseek/deepseek-chat",
+      credentialResolver: resolver.resolve,
+    })).rejects.toMatchObject({ code: "credential_auth_mode_unsupported", retryable: false })
   })
 })
 

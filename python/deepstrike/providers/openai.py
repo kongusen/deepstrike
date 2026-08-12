@@ -78,12 +78,16 @@ class OpenAIProvider(ReasoningReplayMixin):
         retry_config: RetryConfig | None = None,
         base_url: str = "https://api.openai.com/v1",
         dialect: Any | None = None,
+        auth_mode: str = "api_key",
     ):
         self._model = model
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
         self._base_url = base_url.rstrip("/")
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        client_kwargs: dict[str, Any] = {"api_key": api_key, "base_url": base_url}
+        if auth_mode == "bearer":
+            client_kwargs["default_headers"] = {"Authorization": f"Bearer {api_key}"}
+        self._client = AsyncOpenAI(**client_kwargs)
         self._wire_dialect = dialect
         self._adapter = OpenAIChatAdapter(model)
         self._init_replay_store()

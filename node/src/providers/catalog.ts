@@ -1,5 +1,5 @@
 import type { LLMProvider } from "../types.js"
-import { PROVIDER_REGISTRY, providerRegistryKey } from "./registry.js"
+import { PROVIDER_REGISTRY, providerRegistryKey, supportsBearerCredential } from "./registry.js"
 import {
   endpointCapabilitiesFor,
   generationProtocol,
@@ -12,6 +12,7 @@ import { endpointProfiles, type EndpointProfileId, type ProviderId } from "./end
 import {
   resolveCredential,
   resolveCredentialSync,
+  CredentialResolutionError,
   type CredentialOptions,
   type ProviderCredential,
 } from "./credentials.js"
@@ -131,6 +132,9 @@ function constructResolvedRuntime(
   credential: ProviderCredential,
   options: CreateProviderOptions,
 ): ResolvedProviderRuntime {
+  if (credential.type === "bearer" && !supportsBearerCredential(draft.providerId, draft.endpoint.protocol)) {
+    throw new CredentialResolutionError("credential_auth_mode_unsupported", draft.providerId)
+  }
   const make = PROVIDER_REGISTRY[providerRegistryKey(draft.providerId, draft.endpoint.protocol)]
   if (!make) throw new Error(`No Node provider factory for ${draft.model} on ${draft.endpoint.id}`)
   const protocol = generationProtocol(draft.endpoint.protocol)
@@ -160,7 +164,40 @@ function constructResolvedRuntime(
   }
   const bind = (adapter as LLMProvider & { bindResolvedRuntime?: (runtime: ResolvedProviderRuntime) => void }).bindResolvedRuntime
   bind?.call(adapter, resolved)
+  const requestPlanIdentity = {
+    providerId: resolved.identity.providerId,
+    modelId: resolved.identity.modelId,
+    endpoint: {
+      id: resolved.identity.endpointId,
+      protocol: resolved.identity.protocol,
+      baseURL: safeEndpointBaseURL(options.baseURL ?? draft.endpoint.baseURL),
+    },
+    ...(resolved.effectiveCapabilities.nativeTokenCounting.state === "supported"
+      && resolved.effectiveCapabilities.nativeTokenCounting.value === true
+      ? { nativeTokenCounting: true }
+      : {}),
+  }
+  // Host-only measurement identity. It closes over resolved facts, never credentials or transport knobs.
+  ;(adapter as LLMProvider & { requestPlanIdentity?: () => typeof requestPlanIdentity })
+    .requestPlanIdentity = () => ({
+      ...requestPlanIdentity,
+      endpoint: { ...requestPlanIdentity.endpoint },
+    })
   return resolved
+}
+
+function safeEndpointBaseURL(baseURL: string): string {
+  try {
+    const parsed = new URL(baseURL)
+    parsed.username = ""
+    parsed.password = ""
+    parsed.search = ""
+    parsed.hash = ""
+    return parsed.toString().replace(/\/$/, "")
+  } catch {
+    // Provider construction has already accepted this opaque endpoint. Do not invent a replacement.
+    return baseURL
+  }
 }
 
 function providerPrefix(model: string): ProviderId | undefined {

@@ -30,11 +30,12 @@ class AnthropicProvider:
         model: str = "claude-sonnet-4-6",
         retry_config: RetryConfig | None = None,
         base_url: str | None = None,
+        auth_mode: str = "api_key",
     ):
         self._model = model
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
-        client_kwargs: dict = {"api_key": api_key}
+        client_kwargs: dict = ({"auth_token": api_key} if auth_mode == "bearer" else {"api_key": api_key})
         if base_url:
             client_kwargs["base_url"] = base_url
         self._client = AsyncAnthropic(**client_kwargs)
