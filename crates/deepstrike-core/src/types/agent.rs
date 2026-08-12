@@ -1,7 +1,7 @@
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
-use super::capability::{CapabilityDescriptor, CapabilityKind, CapabilityManifest};
+use super::capability::{Capability, CapabilityDescriptor, CapabilityKind, CapabilityManifest};
 use super::milestone::MilestoneContract;
 
 /// Unified agent identity — shared across scheduler, memory, and governance.
@@ -130,6 +130,19 @@ pub struct IsolationManifest {
     /// Capability IDs visible to the sub-agent after applying the capability filter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permitted_capability_ids: Vec<CompactString>,
+    /// spc_004 debt closure: fine-grained (resource/action-scoped) capability grants this spawn
+    /// is requesting for the child, checked against the spawning task's own held `Capability` set
+    /// at the gate (`gate.rs`'s spawn-quota path) for attenuation (`Caps(child) ⊆ Caps(parent)`).
+    /// Empty (the default) ⇒ the check is skipped entirely — this is additive, not a replacement
+    /// for `permitted_capability_ids`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_capabilities: Vec<Capability>,
+    /// spc_005: hierarchical resource budget this spawn is requesting from the parent's own
+    /// remaining pool, checked against it at the gate (`gate.rs`'s spawn-quota path) via
+    /// `budget_grant::reserve`. `None` (the default) skips the check entirely — additive, not a
+    /// replacement for the existing `ResourceQuota`/`SchedulerBudget` axes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_budget: Option<crate::scheduler::budget_grant::ResourceBudget>,
 }
 
 impl IsolationManifest {
@@ -148,6 +161,8 @@ impl IsolationManifest {
             isolation: spec.isolation,
             context_inheritance,
             permitted_capability_ids,
+            requested_capabilities: spec.requested_capabilities.clone(),
+            requested_budget: spec.requested_budget,
         }
     }
 
@@ -193,6 +208,12 @@ pub struct AgentRunSpec {
     /// stable-core only). See the exposure formula in `emit_call_llm`. Additive ABI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure_baseline: Option<Vec<CompactString>>,
+    /// spc_004 debt closure — see [`IsolationManifest::requested_capabilities`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_capabilities: Vec<Capability>,
+    /// spc_005 — see [`IsolationManifest::requested_budget`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_budget: Option<crate::scheduler::budget_grant::ResourceBudget>,
 }
 
 /// Round/pacing bounds for a loop-agent run (all optional; the kernel clamps and
@@ -228,6 +249,8 @@ impl AgentRunSpec {
             metadata: serde_json::Value::Null,
             loop_round: None,
             exposure_baseline: None,
+            requested_capabilities: Vec::new(),
+            requested_budget: None,
         }
     }
 
@@ -263,6 +286,21 @@ impl AgentRunSpec {
 
     pub fn filter_manifest(&self, manifest: &CapabilityManifest) -> CapabilityManifest {
         manifest.filtered(|capability| self.capability_filter.allows(capability))
+    }
+
+    /// spc_004 debt closure — see [`IsolationManifest::requested_capabilities`].
+    pub fn with_requested_capabilities(mut self, capabilities: Vec<Capability>) -> Self {
+        self.requested_capabilities = capabilities;
+        self
+    }
+
+    /// spc_005 — see [`IsolationManifest::requested_budget`].
+    pub fn with_requested_budget(
+        mut self,
+        budget: crate::scheduler::budget_grant::ResourceBudget,
+    ) -> Self {
+        self.requested_budget = Some(budget);
+        self
     }
 }
 
@@ -309,6 +347,47 @@ mod tests {
             spec.verification_contract_id.unwrap().as_str(),
             "contract-1"
         );
+    }
+
+    /// spc_004 debt closure: `requested_capabilities` (spc_004's `Capability` shape) flows from
+    /// `AgentRunSpec` through `IsolationManifest::from_spec` untouched — the gate (spc_004 debt
+    /// closure in `gate.rs`) is what actually enforces attenuation against it.
+    #[test]
+    fn requested_capabilities_pass_through_from_spec_to_manifest() {
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, ConstraintSet, Principal, ResourceSelector,
+        };
+
+        let requested = vec![Capability {
+            id: CapabilityId("cap-1".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/src/**".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: true,
+            issuer: Principal("agent-7".into()),
+        }];
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "session"),
+            AgentRole::Explore,
+            "inspect only",
+        )
+        .with_requested_capabilities(requested.clone());
+
+        let manifest = IsolationManifest::from_spec(&spec, &CapabilityManifest::new());
+        assert_eq!(manifest.requested_capabilities, requested);
+    }
+
+    #[test]
+    fn requested_capabilities_default_empty() {
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "session"),
+            AgentRole::Explore,
+            "inspect only",
+        );
+        let manifest = IsolationManifest::from_spec(&spec, &CapabilityManifest::new());
+        assert!(manifest.requested_capabilities.is_empty());
     }
 
     /// § Task 11 · isolation is decided from logical identity alone. Two specs that differ **only**

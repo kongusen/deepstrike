@@ -219,6 +219,139 @@ impl HandleTable {
     }
 }
 
+/// spc_006-05: what an [`ObjectDescriptor`] refers to. A pure additive extension over
+/// [`HandleKind`] (see [`From<HandleKind> for ObjectKind`](#impl-From<HandleKind>-for-ObjectKind))
+/// — every existing `HandleKind` maps onto exactly one `ObjectKind`, `HandleKind` itself is
+/// untouched, and `Handle`/`HandleTable` keep working unmodified (spc_006 §4: Public
+/// `Memory`/`Knowledge`/`Artifact`/`ToolResult` naming is unchanged; only the Kernel-internal
+/// descriptor is unified).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectKind {
+    ToolResult,
+    Memory,
+    Knowledge,
+    Artifact,
+    AgentResult,
+    Dataset,
+    File,
+    WorkflowOutput,
+    Custom(CompactString),
+}
+
+impl From<HandleKind> for ObjectKind {
+    fn from(kind: HandleKind) -> Self {
+        match kind {
+            HandleKind::ToolResult => Self::ToolResult,
+            HandleKind::MemoryPage => Self::Memory,
+            HandleKind::KnowledgeEntry => Self::Knowledge,
+            HandleKind::SubAgentJoin => Self::Custom(CompactString::from("sub_agent_join")),
+        }
+    }
+}
+
+/// spc_006-05: the unified Kernel-internal descriptor spc_006 §4 targets for
+/// ToolResult/Memory/Knowledge/Artifact/AgentResult (and the three IPC-facing kinds
+/// Dataset/File/WorkflowOutput `ObjectKind` adds room for). Additive and parallel to
+/// [`Handle`]/[`HandleTable`] — this card does not replace or migrate either.
+///
+/// Field type choices (spec left both open, resolved here):
+/// - `id: ObjectId` reuses [`HandleId`] rather than a new id space — `ObjectDescriptor` is framed
+///   throughout spc_006 §4-§5 as the *same* addressable-object concept `Handle` already is, just
+///   generalized beyond in-context residency (this file's own header already anticipates the
+///   context manager becoming "a view over" the handle table); a second parallel id space would
+///   fight that convergence instead of serving it.
+/// - `digest: String` and `payload_ref: Option<String>` mirror [`Residency::External`]'s own field
+///   types exactly (spc_006-05's own instruction: "复用 Residency::External 里已有的 digest 类
+///   型") — no `Digest`/`PayloadRef` newtype exists anywhere in this codebase to reuse, and
+///   inventing one here would be exactly the "重新发明" the card says not to do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectDescriptor {
+    pub id: ObjectId,
+    pub kind: ObjectKind,
+    pub owner: crate::scheduler::tcb::TaskId,
+    pub digest: String,
+    pub size: u64,
+    pub residency: Residency,
+    pub payload_ref: Option<String>,
+    pub version: u64,
+    /// spc_006-06: a short excerpt a cross-task reader sees by default — never the full body.
+    /// `None` for descriptors with no externally-stored content (e.g. small `Resident` objects
+    /// short enough that the whole thing already fits, per `Residency::occupies_context`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<CompactString>,
+}
+
+impl ObjectDescriptor {
+    /// spc_006-06: build the descriptor a cross-task reader (Agent B) receives for an object
+    /// whose full body lives outside working context (Agent A's large Artifact/ToolResult/etc.).
+    /// By construction — `ObjectDescriptor` has no `payload`/`content` field at all — a caller
+    /// holding one physically cannot read the full body without a separate, explicit page-in
+    /// (spc_006 §5: "Pass handles, not prompts").
+    ///
+    /// Takes an already-built [`Residency::External`] (rather than its three fields individually)
+    /// so `payload_ref`/`digest` are entered once, not twice over — a caller passing the wrong
+    /// [`Residency`] variant gets a clear panic rather than a descriptor silently missing its
+    /// locator.
+    pub fn external(
+        id: ObjectId,
+        kind: ObjectKind,
+        owner: crate::scheduler::tcb::TaskId,
+        version: u64,
+        residency: Residency,
+        preview: impl Into<CompactString>,
+    ) -> Self {
+        let Residency::External { payload_ref, digest, original_size } = &residency else {
+            panic!("ObjectDescriptor::external requires a Residency::External, got {residency:?}");
+        };
+        let (payload_ref, digest, size) = (payload_ref.clone(), digest.clone(), *original_size);
+        Self {
+            id,
+            kind,
+            owner,
+            digest,
+            size,
+            residency,
+            payload_ref: Some(payload_ref),
+            version,
+            preview: Some(preview.into()),
+        }
+    }
+}
+
+/// See [`ObjectDescriptor::id`]'s doc comment for why this is a `HandleId` alias, not a new type.
+pub type ObjectId = HandleId;
+
+/// spc_009-07 · the Object invariant plan.md §7.3 names "Capability controls object access":
+/// bridges spc_004's [`Capability`] attenuation matching to spc_006's [`ObjectDescriptor`]. The
+/// two structures were never designed to reference each other — `ObjectDescriptor` carries an
+/// `owner: TaskId`, not a `ResourceSelector`-shaped field a `Capability.resource` could match
+/// against directly — so this establishes the minimal resource-naming convention needed to bridge
+/// them (`"object:{owner}/{id}"`), reusing [`resource_prefix`]'s exact prefix-containment rule
+/// rather than inventing a second matching algorithm. Neither `ObjectDescriptor` nor `Capability`
+/// is changed to make this work — the bridge is one pure function, not a structural merge.
+///
+/// **No production caller yet.** `ObjectDescriptor` itself currently has no syscall that hands one
+/// to a cross-task reader (grep confirms its only non-test references are its own definition and
+/// the `mm` module's re-export) — the "cross-task read" path spc_006-06's own doc comment
+/// describes is unbuilt, not merely unwired. Building that syscall is a materially larger change
+/// than this card's "wire an existing input to a check that already runs" pattern (spc_008's), and
+/// is out of scope here. This function makes the invariant itself provable and correct in
+/// isolation; wiring it to a real caller is future work once that syscall exists.
+pub fn object_access_allowed(
+    capabilities: &[crate::types::capability::Capability],
+    action: &str,
+    descriptor: &ObjectDescriptor,
+) -> bool {
+    let resource = format!("object:{}/{}", descriptor.owner, descriptor.id);
+    capabilities.iter().any(|capability| {
+        capability.actions.0.contains(action)
+            && resource.starts_with(crate::types::capability::resource_prefix(
+                &capability.resource,
+            ))
+    })
+}
+
 /// One ordered eviction action in an [`EvictionPlan`]. Maps the pressure pyramid onto explicit
 /// ops the planner emits directly (the old `Pressure(PressureAction)` umbrella is deleted), each
 /// annotated with cache-aware metadata via [`EvictionOp::invalidates_prefix_at`].
@@ -530,6 +663,158 @@ mod tests {
         assert_eq!(
             EvictionOp::AutoCompact { preserve_turns: 2 }.label(),
             "auto_compact"
+        );
+    }
+
+    #[test]
+    fn spc_006_05_object_descriptor_fields_are_readable() {
+        let descriptor = ObjectDescriptor {
+            id: 7,
+            kind: ObjectKind::Artifact,
+            owner: crate::scheduler::tcb::TaskId::from("agent-1"),
+            digest: "sha256:".to_string() + &"a".repeat(64),
+            size: 1_200_000,
+            residency: Residency::Resident,
+            payload_ref: Some("payload:x".to_string()),
+            version: 1,
+            preview: None,
+        };
+
+        assert_eq!(descriptor.id, 7);
+        assert_eq!(descriptor.kind, ObjectKind::Artifact);
+        assert_eq!(descriptor.owner, crate::scheduler::tcb::TaskId::from("agent-1"));
+        assert_eq!(descriptor.size, 1_200_000);
+        assert_eq!(descriptor.residency, Residency::Resident);
+        assert_eq!(descriptor.payload_ref, Some("payload:x".to_string()));
+        assert_eq!(descriptor.version, 1);
+        assert_eq!(descriptor.preview, None);
+    }
+
+    #[test]
+    fn spc_006_05_object_kind_from_handle_kind_maps_all_four_variants() {
+        assert_eq!(ObjectKind::from(HandleKind::ToolResult), ObjectKind::ToolResult);
+        assert_eq!(ObjectKind::from(HandleKind::MemoryPage), ObjectKind::Memory);
+        assert_eq!(
+            ObjectKind::from(HandleKind::KnowledgeEntry),
+            ObjectKind::Knowledge
+        );
+        assert_eq!(
+            ObjectKind::from(HandleKind::SubAgentJoin),
+            ObjectKind::Custom(CompactString::from("sub_agent_join"))
+        );
+    }
+
+    #[test]
+    fn spc_006_06_external_descriptor_carries_a_preview_and_locator_never_the_full_body() {
+        let full_report = "x".repeat(1_200_000);
+        let descriptor = ObjectDescriptor::external(
+            7,
+            ObjectKind::Artifact,
+            crate::scheduler::tcb::TaskId::from("agent-a"),
+            1,
+            Residency::External {
+                payload_ref: "payload:research-report".to_string(),
+                digest: "sha256:deadbeef".to_string(),
+                original_size: full_report.len() as u64,
+            },
+            &full_report[..200],
+        );
+
+        // The descriptor's own type has no `payload`/`content` field — a caller can only ever see
+        // the four fields below. `size` still reports the true full-body size (so a reader knows
+        // what a page-in would cost), but the descriptor never carries that many bytes itself.
+        assert_eq!(descriptor.payload_ref.as_deref(), Some("payload:research-report"));
+        assert_eq!(descriptor.digest, "sha256:deadbeef");
+        assert_eq!(descriptor.size, 1_200_000);
+        assert_eq!(descriptor.preview.as_deref(), Some(&full_report[..200]));
+        assert!(
+            descriptor.preview.as_ref().unwrap().len() < descriptor.size as usize,
+            "the preview must be far smaller than the full body it stands in for"
+        );
+        assert!(matches!(descriptor.residency, Residency::External { .. }));
+    }
+
+    #[test]
+    fn spc_009_07_a_capability_outside_the_objects_resource_denies_access() {
+        // Plan §8 / spc_009-07: "Capability controls object access" — task A holds a capability
+        // scoped to a *different* object than the one it tries to read on task B. Before this
+        // card there was no function at all that could answer this question (no matching call
+        // point existed anywhere in the crate), so this — an unconditional `false` — is what "the
+        // check doesn't exist" looked like; now it's a real, reasoned denial.
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+            ResourceSelector,
+        };
+
+        let b_object = ObjectDescriptor::external(
+            42,
+            ObjectKind::Artifact,
+            crate::scheduler::tcb::TaskId::from("task-b"),
+            1,
+            Residency::External {
+                payload_ref: "payload:b-report".to_string(),
+                digest: "sha256:deadbeef".to_string(),
+                original_size: 1_000,
+            },
+            "preview",
+        );
+
+        // A's capability names a *different* object entirely (task-b's object 7, not 42).
+        let a_capability = Capability {
+            id: CapabilityId("cap-a".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("object:task-b/7".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: true,
+            issuer: Principal("task-a".into()),
+        };
+
+        assert!(
+            !object_access_allowed(&[a_capability], "read", &b_object),
+            "a capability scoped to a different object must not authorize this one"
+        );
+    }
+
+    #[test]
+    fn spc_009_07_a_matching_capability_allows_the_requested_action() {
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+            ResourceSelector,
+        };
+
+        let b_object = ObjectDescriptor::external(
+            42,
+            ObjectKind::Artifact,
+            crate::scheduler::tcb::TaskId::from("task-b"),
+            1,
+            Residency::External {
+                payload_ref: "payload:b-report".to_string(),
+                digest: "sha256:deadbeef".to_string(),
+                original_size: 1_000,
+            },
+            "preview",
+        );
+
+        let a_capability = Capability {
+            id: CapabilityId("cap-a".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("object:task-b/42".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: true,
+            issuer: Principal("task-a".into()),
+        };
+
+        assert!(
+            object_access_allowed(std::slice::from_ref(&a_capability), "read", &b_object),
+            "a capability naming this exact object and the requested action must authorize it"
+        );
+        assert!(
+            !object_access_allowed(std::slice::from_ref(&a_capability), "write", &b_object),
+            "the same capability must not authorize an action it never granted"
         );
     }
 }

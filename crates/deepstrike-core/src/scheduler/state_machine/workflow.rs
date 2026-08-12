@@ -374,15 +374,17 @@ impl LoopStateMachine {
                 Some(w) => w.manifest_for(node),
                 None => continue,
             };
-            match self.evaluate_spawn_quota_deferrable() {
+            match self.evaluate_spawn_quota_deferrable(&manifest) {
                 Disposition::Allow => {
                     let agent_id = manifest.agent_id.to_string();
                     // §10.4: mint identity here and stop at `PendingLaunch` — the child is a
                     // committed kernel fact, not yet a running process.
+                    // spc_002-04: parent derives from this table's own structural root, not a literal.
                     let child = Tcb::spawned_in(
                         &manifest,
                         self.policy.clone(),
                         TaskLifecycle::PendingLaunch,
+                        self.tasks.root_id(),
                     );
                     self.tasks.insert(child);
                     if let Some(run) = self.workflow.as_mut() {
@@ -547,6 +549,10 @@ impl LoopStateMachine {
             if let Some(task) = self.tasks.get_mut(failure.agent_id.as_str()) {
                 task.state = TaskLifecycle::Done(crate::types::result::TerminationReason::Error);
             }
+            // spc_005-05: a no-op today (workflow-node spawns never set `requested_budget`), kept
+            // for parity with every other terminal-transition site so a future workflow-budget
+            // wiring does not have to remember to add it here too.
+            self.tasks.return_child_budget(failure.agent_id.as_str());
             if let Some(run) = self.workflow.as_mut() {
                 run.mark_spawn_failed(&failure.agent_id);
             }

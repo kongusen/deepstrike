@@ -216,6 +216,9 @@ impl LoopStateMachine {
             } else {
                 None
             };
+            // spc_005-05: no join result exists for a preemption, so `consumed` stays whatever
+            // the grant already held (zero) — the full reservation returns to the parent.
+            self.tasks.return_child_budget(id.as_str());
             if let Some(process) = process {
                 self.push_agent_process_changed(process);
             }

@@ -20,3 +20,7 @@ pretty_assertions = "1"
 [[bench]]
 name = "kernel_baseline"
 harness = false
+
+[[bench]]
+name = "wait_index_baseline"
+harness = false

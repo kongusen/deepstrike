@@ -68,8 +68,9 @@ use super::effect::{
     ApprovalRequest as WireApprovalRequest, ArchivePageOutEffect, CallProviderEffect,
     CanonicalMemoryQuery, CanonicalMemoryWrite, EffectKind, EffectKindTag, EffectOutcome,
     EffectSuccess, EvaluateMilestoneEffect, ExecuteToolsEffect, HostEffectFailure, KernelEffect,
-    LaunchToken, LoadPayloadEffect, PageOutPayload, PayloadRef, PersistMemoryEffect,
-    PreemptTasksEffect, ProviderCompleted, ProviderMessage, ProviderOutcome, QueryMemoryEffect,
+    LaunchToken, LoadPayloadEffect, PageOutPayload, PayloadRef,
+    PersistMemoryEffect, PreemptTasksEffect, ProviderCompleted, ProviderMessage, ProviderOutcome,
+    QueryMemoryEffect,
     RenderedContext as WireRenderedContext, RequestApprovalEffect, SpawnTasksEffect,
     TaskAttemptRef, TaskLaunch, ToolCall as WireToolCall, ToolResultDisposition,
     ToolResultPayload as WireToolResultPayload, ToolSchema as WireToolSchema,
@@ -123,7 +124,9 @@ use crate::types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
     ContextInheritance, LoopRoundSpec,
 };
-use crate::types::message::{Content, ContentPart, Message, Role, ToolErrorKind, ToolResult};
+use crate::types::message::{
+    Content, ContentPart, Message, Role, ToolErrorKind, ToolResult,
+};
 use crate::types::result::{
     LoopResult, PaceAction as CorePaceAction, SubAgentResult, TerminationReason,
 };
@@ -623,6 +626,11 @@ fn restore_scheduler(
         tcb.state = restore_task_lifecycle(task)?;
         tcb.wait = restore_task_wait(task)?;
         tcb.caps = task.capability_ids.iter().map(|cap| cap.into()).collect();
+        // spc_009-06: restore this task's own checkpointed pool verbatim — never re-derive it from
+        // `state.budget_grant` (the `set_budget_grant` call above only restores the whole-operation
+        // admission grant for reporting; re-seeding from it here would silently undo every debit a
+        // spawn made before this checkpoint was taken).
+        tcb.child_budget_remaining = task.child_budget_remaining;
         tcb.proc = task
             .process
             .as_ref()
@@ -669,6 +677,15 @@ fn restore_scheduler(
         };
         table.insert(tcb);
     }
+    // spc_002-09: `children` is not on the wire (derivable from `parent`); `insert` above only
+    // registers a child when its parent row already exists, which the wire's task order does not
+    // guarantee. Recompute from the now-complete `parent` links rather than trust insertion order.
+    table.rebuild_children();
+    // spc_002-09: `tcb.wait` above (line 624) is set directly, not through `TaskTable::set_wait` —
+    // the index's only other sanctioned mutation path — so a restored waiting task is otherwise
+    // invisible to `wake`/`notify` even though `Tcb.wait` itself is correct. Recompute the index
+    // from every task's now-restored `.wait` field.
+    table.rebuild_wait_index();
 
     let queued = state
         .queued_signals
@@ -1391,6 +1408,7 @@ impl CanonicalOperationDriver {
                     }),
                     tokens_used: WireU64::new(tcb.budget.total_tokens),
                     turns_used: tcb.budget.turns,
+                    child_budget_remaining: tcb.child_budget_remaining,
                 })
                 .collect(),
             attempts: self
@@ -4798,6 +4816,39 @@ fn build_core_spec(spec: &WireSpec) -> Result<CoreWorkflowSpec, KernelFault> {
             if let Some(output_schema) = metadata.get("output_schema") {
                 core = core.with_output_schema(output_schema.clone());
             }
+            // spc_008-01: fine-grained capability requests, smuggled through the same generic
+            // `metadata` escape hatch `model_hint`/`output_schema` already use rather than a new
+            // dedicated wire field. Fails closed on malformed input rather than silently treating
+            // it as "no capability requested" — a security-relevant declaration must not downgrade
+            // itself into a no-op check on a parse error.
+            if let Some(requested) = metadata.get("requested_capabilities") {
+                let capabilities: Vec<crate::types::capability::Capability> =
+                    serde_json::from_value(requested.clone()).map_err(|error| {
+                        KernelFault::new(
+                            KernelFaultCode::InvalidConfig,
+                            format!(
+                                "workflow node {:?} metadata.requested_capabilities is malformed: {error}",
+                                node.node_id
+                            ),
+                        )
+                    })?;
+                core = core.with_requested_capabilities(capabilities);
+            }
+            // spc_008-02: same escape-hatch pattern, same fail-closed convention, for the
+            // hierarchical budget grant a node's spawn requests.
+            if let Some(requested) = metadata.get("requested_budget") {
+                let budget: crate::scheduler::budget_grant::ResourceBudget =
+                    serde_json::from_value(requested.clone()).map_err(|error| {
+                        KernelFault::new(
+                            KernelFaultCode::InvalidConfig,
+                            format!(
+                                "workflow node {:?} metadata.requested_budget is malformed: {error}",
+                                node.node_id
+                            ),
+                        )
+                    })?;
+                core = core.with_requested_budget(budget);
+            }
         }
         let mut depends_on = Vec::with_capacity(node.depends_on.len());
         for dependency in &node.depends_on {
@@ -4861,6 +4912,8 @@ fn agent_run_spec(spec: &LogicalAgentSpec) -> AgentRunSpec {
             .exposure_baseline
             .as_ref()
             .map(|ids| ids.iter().map(|id| id.as_str().into()).collect()),
+        requested_capabilities: Vec::new(),
+        requested_budget: None,
     }
 }
 
@@ -4929,6 +4982,9 @@ fn seed_initial_context(engine: &mut LoopStateMachine, initial: &InitialContext)
         engine.preload_history(initial.messages.iter().map(logical_message).collect());
     }
     seed_knowledge(engine, &initial.knowledge);
+    if !initial.requested_capabilities.is_empty() {
+        engine.set_requested_capabilities(initial.requested_capabilities.clone());
+    }
 }
 
 /// The one place wire knowledge entries enter the P3 knowledge partition.
@@ -10010,6 +10066,112 @@ mod tests {
 
     // ----- slice 2 · workflow / control ---------------------------------------------------------
 
+    #[test]
+    fn spc_008_01_wire_node_metadata_requested_capabilities_threads_into_the_core_spec() {
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+            ResourceSelector,
+        };
+
+        let capability = Capability {
+            id: CapabilityId("cap-1".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/src/**".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: true,
+            issuer: Principal("root".into()),
+        };
+        let metadata = json!({ "requested_capabilities": [capability.clone()] });
+
+        let core = build_core_spec(&WireSpec {
+            name: "cap-thread".to_string(),
+            nodes: vec![WireNode {
+                node_id: NodeId::new("solo").unwrap(),
+                task: LogicalTask::new("do work"),
+                depends_on: Vec::new(),
+                run_spec: Some(LogicalAgentSpec {
+                    metadata: crate::runtime::kernel::wire::BoundedJson::new(metadata).unwrap(),
+                    ..LogicalAgentSpec::new("do work")
+                }),
+            }],
+        })
+        .expect("well-formed requested_capabilities builds");
+
+        assert_eq!(core.nodes[0].requested_capabilities, vec![capability]);
+    }
+
+    #[test]
+    fn spc_008_02_wire_node_metadata_requested_budget_threads_into_the_core_spec() {
+        use crate::scheduler::budget_grant::ResourceBudget;
+
+        let budget = ResourceBudget {
+            tokens: Some(1_000),
+            ..ResourceBudget::default()
+        };
+        let metadata = json!({ "requested_budget": budget });
+
+        let core = build_core_spec(&WireSpec {
+            name: "budget-thread".to_string(),
+            nodes: vec![WireNode {
+                node_id: NodeId::new("solo").unwrap(),
+                task: LogicalTask::new("do work"),
+                depends_on: Vec::new(),
+                run_spec: Some(LogicalAgentSpec {
+                    metadata: crate::runtime::kernel::wire::BoundedJson::new(metadata).unwrap(),
+                    ..LogicalAgentSpec::new("do work")
+                }),
+            }],
+        })
+        .expect("well-formed requested_budget builds");
+
+        assert_eq!(core.nodes[0].requested_budget, Some(budget));
+    }
+
+    #[test]
+    fn spc_008_02_malformed_requested_budget_metadata_fails_closed() {
+        let metadata = json!({ "requested_budget": {"tokens": "not a number"} });
+
+        let error = build_core_spec(&WireSpec {
+            name: "budget-malformed".to_string(),
+            nodes: vec![WireNode {
+                node_id: NodeId::new("solo").unwrap(),
+                task: LogicalTask::new("do work"),
+                depends_on: Vec::new(),
+                run_spec: Some(LogicalAgentSpec {
+                    metadata: crate::runtime::kernel::wire::BoundedJson::new(metadata).unwrap(),
+                    ..LogicalAgentSpec::new("do work")
+                }),
+            }],
+        })
+        .expect_err("malformed requested_budget must fail closed, not silently drop");
+        assert_eq!(error.code, KernelFaultCode::InvalidConfig);
+    }
+
+    #[test]
+    fn spc_008_01_malformed_requested_capabilities_metadata_fails_closed() {
+        // A security-relevant declaration that fails to parse must reject the whole spec, not
+        // silently degrade into "no capability requested" (which would make the attenuation check
+        // a no-op instead of denying).
+        let metadata = json!({ "requested_capabilities": [{"not": "a capability"}] });
+
+        let error = build_core_spec(&WireSpec {
+            name: "cap-malformed".to_string(),
+            nodes: vec![WireNode {
+                node_id: NodeId::new("solo").unwrap(),
+                task: LogicalTask::new("do work"),
+                depends_on: Vec::new(),
+                run_spec: Some(LogicalAgentSpec {
+                    metadata: crate::runtime::kernel::wire::BoundedJson::new(metadata).unwrap(),
+                    ..LogicalAgentSpec::new("do work")
+                }),
+            }],
+        })
+        .expect_err("malformed requested_capabilities must fail closed, not silently drop");
+        assert_eq!(error.code, KernelFaultCode::InvalidConfig);
+    }
+
     // fixture: removed-kernel-auto-redispatch
     #[test]
     fn a_spawn_failure_fails_the_whole_batch_and_never_re_launches_it() {
@@ -13053,6 +13215,122 @@ mod tests {
             "the restored process table authorizes the same next transition",
         );
         assert_eq!(surface(&restored), surface(&uninterrupted));
+    }
+
+    #[test]
+    fn spc_009_06_a_restored_root_tasks_child_budget_remaining_matches_the_checkpointed_value() {
+        // Plan §8 / spc_009-06: closes the checkpoint-wire half of spc_009-05 — root's
+        // `child_budget_remaining` was seeded from a real RunGroup admission grant (spc_009-05),
+        // but `TaskControlState` did not carry it on the wire, so a checkpoint→restore silently
+        // reset root's pool to `None`, un-seeding the hierarchical budget check right after a
+        // restore even though nothing about the RunGroup grant changed.
+        //
+        // Narrower than originally scoped: `LoopStateMachine.budget_grant` itself (the
+        // whole-operation admission grant `engine.budget_grant()` reports) needs no new wire
+        // field at all — `Runtime::restore_with` already rebuilds it from `genesis_config` via
+        // `build_engine`, and `budget_grant` is boot-only (absent from `LivePolicyPatch` in
+        // `command.rs`), so the genesis record it is already part of is authoritative for the
+        // whole operation's lifetime. Verified empirically: the checkpoint round-trip below
+        // reproduces the same `engine.budget_grant()` on both sides with no `SchedulerStateV1`
+        // field for it at all. The one genuine gap is `child_budget_remaining`, which is derived,
+        // per-task, debit-mutated state with no other durable home — that is what this test (and
+        // `TaskControlState.child_budget_remaining`) actually closes.
+        use crate::runtime::kernel::wire::config::BudgetGrant;
+        use crate::scheduler::budget_grant::ResourceBudget;
+
+        let mut uninterrupted = Runtime::new();
+        uninterrupted.submit(&syscall_config_with(|config| {
+            config.budget_grant = Some(BudgetGrant {
+                reservation_id: "res-1".to_string(),
+                tokens: Some(WireU64::new(1_000)),
+                subagents: None,
+                rounds: None,
+            });
+        }));
+        uninterrupted.submit(&agent_start("in-start", 1_700_000_001_000));
+
+        let expected_pool = uninterrupted
+            .driver
+            .engine()
+            .expect("engine installed")
+            .task_table()
+            .get("root")
+            .expect("root exists")
+            .child_budget_remaining;
+        assert_eq!(
+            expected_pool,
+            Some(ResourceBudget {
+                tokens: Some(1_000),
+                ..ResourceBudget::default()
+            }),
+            "sanity: root's pool really was seeded from the grant before any checkpoint"
+        );
+
+        let checkpoint = uninterrupted.checkpoint().decode().expect("verifies");
+        let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+
+        let actual_pool = restored
+            .driver
+            .engine()
+            .expect("engine installed")
+            .task_table()
+            .get("root")
+            .expect("root exists")
+            .child_budget_remaining;
+        assert_eq!(
+            actual_pool, expected_pool,
+            "a restored root task's own grantable pool must match the checkpointed one exactly, \
+             not be re-derived fresh from the admission grant (which would silently undo debits)"
+        );
+    }
+
+    #[test]
+    fn spc_002_09_a_restored_approval_wait_is_indexed_the_same_as_before_checkpoint() {
+        // Plan §3.1 "Replay invariants": same checkpoint+journal must reproduce the same WaitSet
+        // state. `Tcb.wait` alone restoring correctly is not the whole story — `WaitIndex` is a
+        // separate structure (spc_003) that a restore must also reproduce, or a task that was
+        // waiting when checkpointed becomes unwakeable (via `wake`/`notify`) after restore even
+        // though its own `Tcb.wait` field looks fine.
+        use crate::scheduler::tcb::ApprovalId;
+        use crate::scheduler::wait_index::WaitKey;
+
+        let (mut uninterrupted, provider) = agent_awaiting_approval();
+        let requested = uninterrupted.submit(&provider_result(
+            "in-gated",
+            1_700_000_002_000,
+            &provider,
+            vec![tool_call("call-1", "search", json!({"q": "a"}))],
+        ));
+        assert_eq!(kinds(&requested), vec![EffectKindTag::RequestApproval]);
+
+        let checkpoint = uninterrupted.checkpoint().decode().expect("verifies");
+        let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+
+        let key = WaitKey::Approval(ApprovalId("pending".into()));
+        let expected = uninterrupted
+            .driver
+            .engine()
+            .expect("engine installed")
+            .task_table()
+            .wait_index()
+            .lookup(&key)
+            .to_vec();
+        assert!(
+            !expected.is_empty(),
+            "sanity: the uninterrupted run really did index a waiting task"
+        );
+        let actual = restored
+            .driver
+            .engine()
+            .expect("engine installed")
+            .task_table()
+            .wait_index()
+            .lookup(&key)
+            .to_vec();
+        assert_eq!(
+            actual, expected,
+            "a restored Approval wait must be indexed identically to the uninterrupted run"
+        );
     }
 
     #[test]

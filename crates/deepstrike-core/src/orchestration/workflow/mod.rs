@@ -19,7 +19,9 @@
 use serde::{Deserialize, Serialize};
 
 use super::task_graph::TaskGraph;
+use crate::scheduler::budget_grant::ResourceBudget;
 use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance};
+use crate::types::capability::Capability;
 use crate::types::error::{DeepStrikeError, Result};
 use crate::types::task::RuntimeTask;
 
@@ -143,6 +145,18 @@ pub struct WorkflowNode {
     /// Indices into [`WorkflowSpec::nodes`] this node depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<usize>,
+    /// spc_008-01: fine-grained capabilities this node's spawn requests, checked for attenuation
+    /// against the operation root's own `Tcb.capabilities` by `gate.rs::evaluate_spawn_quota_inner`.
+    /// Empty (the default) skips the check entirely — existing specs are unaffected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_capabilities: Vec<Capability>,
+    /// spc_008-02: the hierarchical budget grant this node's spawn requests, checked against the
+    /// operation root's own `Tcb.child_budget_remaining` by the same gate function. `None` (the
+    /// default) skips the check entirely — existing specs are unaffected. Note: nothing in
+    /// production currently seeds the root's own `child_budget_remaining` (see spc_008's card
+    /// notes), so today this can only be exercised with a test-seeded root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_budget: Option<ResourceBudget>,
 }
 
 fn is_trusted(t: &NodeTrust) -> bool {
@@ -171,7 +185,23 @@ impl WorkflowNode {
             max_wall_ms: None,
             dep_policy: DependencyPolicy::AllSuccess,
             depends_on: Vec::new(),
+            requested_capabilities: Vec::new(),
+            requested_budget: None,
         }
+    }
+
+    /// spc_008-01: request fine-grained capabilities for this node's spawn, checked for
+    /// attenuation against the operation root's own capabilities.
+    pub fn with_requested_capabilities(mut self, capabilities: Vec<Capability>) -> Self {
+        self.requested_capabilities = capabilities;
+        self
+    }
+
+    /// spc_008-02: request a hierarchical budget grant for this node's spawn, checked against the
+    /// operation root's own grantable pool.
+    pub fn with_requested_budget(mut self, budget: ResourceBudget) -> Self {
+        self.requested_budget = Some(budget);
+        self
     }
 
     /// M4/G5: cap this node's child run at `tokens` cumulative tokens.

@@ -170,6 +170,35 @@ fn llm_response_without_tools_terminates_and_saves_to_history() {
 }
 
 #[test]
+fn spc_009_02_rollback_does_not_erase_already_consumed_token_usage() {
+    // Plan §8 / spc_009-02: "Rollback cannot erase already consumed external resources" — the
+    // real-world side effect this protects is tokens a provider call actually charged for. spc_009-01
+    // found the ABI has no `OutcomeUnknown`/`Reconciliation` state machine (kernel forces every
+    // effect outcome to a binary Succeeded/Failed, idempotency lives entirely in host-side
+    // launch_token reissue) — so this invariant is not about an unimplemented recovery mechanism,
+    // it's about whether the *existing* `rollback()` respects consumption that already happened.
+    // It does: `rollback()` truncates `history`/`signals`/`task_state` only — `total_tokens` (the
+    // budget-verdict counter, restored via the public `restore_budget_usage`) is untouched by
+    // construction. This test makes that a checked invariant instead of an implicit fact.
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("test"));
+    sm.restore_budget_usage(500, 0);
+
+    sm.feed(LoopEvent::Timeout);
+
+    assert!(
+        sm.observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::Rollbacked { .. })),
+        "sanity: this really is a rollback path"
+    );
+    assert_eq!(
+        sm.total_tokens, 500,
+        "already-consumed token usage must survive a rollback"
+    );
+}
+
+#[test]
 fn timeout_rolls_back() {
     let mut sm = sm();
     sm.start(RuntimeTask::new("test"));
@@ -3876,6 +3905,380 @@ fn quarantined_node_output_is_labeled_crossing_into_trusted_context() {
 }
 
 #[test]
+fn spc_008_01_a_workflow_node_requesting_a_capability_the_root_does_not_hold_is_denied() {
+    // Plan §8 / spc_008-01: `evaluate_spawn_quota_deferrable` (the real workflow-node spawn gate,
+    // wired since spc_004-04's "debt closure") only ever saw an empty `requested_capabilities` in
+    // production because `manifest_for` hardcoded it — this proves the field now really reaches
+    // the gate and a denial really happens on the real spawn path, not just the test-only
+    // `evaluate_spawn_quota` spc_004-04 originally exercised. The operation root never holds any
+    // `Capability` of its own (`Tcb::root` always constructs `capabilities: Vec::new()`), so any
+    // non-empty request is definitionally over-privileged — this proves denial fires; it does not
+    // (cannot yet) prove a legitimate narrowing grant succeeds, since nothing in production can
+    // give the root itself a `Capability` to narrow from (see spc_008's own doc for that gap).
+    use crate::governance::permission::PermissionAction;
+    use crate::governance::pipeline::GovernancePipeline;
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::types::agent::AgentRole;
+    use crate::types::capability::{
+        ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+        ResourceSelector,
+    };
+
+    let mut sm = sm();
+    sm.set_governance(GovernancePipeline::new(PermissionAction::Allow));
+    sm.start(RuntimeTask::new("do the sensitive task"));
+    sm.take_observations();
+
+    let capability = Capability {
+        id: CapabilityId("cap-1".into()),
+        kind: CapabilityKind::Tool,
+        resource: ResourceSelector("/repo/src/**".into()),
+        actions: ActionSet(["read".into()].into_iter().collect()),
+        constraints: ConstraintSet::default(),
+        lease: None,
+        delegatable: true,
+        issuer: Principal("root".into()),
+    };
+    let spec = WorkflowSpec::new(vec![
+        WorkflowNode::new(RuntimeTask::new("do the privileged part"), AgentRole::Implement)
+            .with_requested_capabilities(vec![capability]),
+        WorkflowNode::new(RuntimeTask::new("act on it"), AgentRole::Implement)
+            .with_depends_on(vec![0]),
+    ]);
+    let action = load_workflow_started(&mut sm, spec);
+
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    assert!(
+        sm.agent_process("wf-node0").is_none(),
+        "over-privileged capability request must be denied, not spawned"
+    );
+    assert!(sm.agent_process("wf-node1").is_none(), "dependent starves");
+    assert!(!sm.workflow_active());
+}
+
+#[test]
+fn spc_008_02_a_workflow_node_requesting_budget_beyond_the_roots_pool_is_denied() {
+    // Plan §8 / spc_008-02: symmetric to spc_008-01 for the budget axis. **Deeper honest note**:
+    // unlike capability (where an empty parent set makes *any* non-empty request over-privileged
+    // by construction), the budget guard in `gate.rs` is `if let (Some(parent_id), Some(remaining))
+    // = (...)` — when the root's `child_budget_remaining` is `None` (its permanent default,
+    // `Tcb::root` never sets it and nothing in production ever does either — see spc_005-04's own
+    // test doing exactly this same manual seed), the whole check is skipped, not denied. So this
+    // test seeds the root's pool directly, exactly like `spc_005_04_spawn_denies_a_budget_request_
+    // exceeding_the_parents_remaining_pool` does for the `spawn_sub_agent` path — proving the
+    // *computation* is correct once a pool exists, while being explicit that "how a real workflow
+    // operation's root ever gets a non-`None` `child_budget_remaining` in the first place" remains
+    // unresolved (spc_008's doc records this as a follow-on gap, not solved by this card).
+    use crate::governance::permission::PermissionAction;
+    use crate::governance::pipeline::GovernancePipeline;
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::types::agent::AgentRole;
+
+    let mut sm = sm();
+    sm.set_governance(GovernancePipeline::new(PermissionAction::Allow));
+    sm.start(RuntimeTask::new("do the budgeted task"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().child_budget_remaining = Some(ResourceBudget {
+        tokens: Some(1_000),
+        ..ResourceBudget::default()
+    });
+
+    let spec = WorkflowSpec::new(vec![
+        WorkflowNode::new(RuntimeTask::new("do the expensive part"), AgentRole::Implement)
+            .with_requested_budget(ResourceBudget {
+                tokens: Some(2_000),
+                ..ResourceBudget::default()
+            }),
+        WorkflowNode::new(RuntimeTask::new("act on it"), AgentRole::Implement)
+            .with_depends_on(vec![0]),
+    ]);
+    let action = load_workflow_started(&mut sm, spec);
+
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    assert!(
+        sm.agent_process("wf-node0").is_none(),
+        "over-budget request must be denied, not spawned"
+    );
+    assert!(sm.agent_process("wf-node1").is_none(), "dependent starves");
+    assert!(!sm.workflow_active());
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(1_000),
+            ..ResourceBudget::default()
+        }),
+        "a denied request must not debit the parent's pool"
+    );
+}
+
+#[test]
+fn spc_009_04_a_legitimate_narrowing_of_the_roots_capability_is_allowed_to_spawn() {
+    // Plan §8 / spc_009-04: closes the gap spc_008-01 documented — production had no path to give
+    // root a non-empty `capabilities`, so only *denial* was provable (any non-empty request was
+    // over-privileged by construction, since the empty set has no attenuations). `set_requested_
+    // capabilities` (called from `driver.rs::seed_initial_context` with the Host's real
+    // `InitialContext.requested_capabilities`) now gives root its own `Capability`, so a workflow
+    // node requesting a genuine narrowing of it must actually be allowed to spawn.
+    use crate::governance::permission::PermissionAction;
+    use crate::governance::pipeline::GovernancePipeline;
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::types::agent::AgentRole;
+    use crate::types::capability::{
+        ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+        ResourceSelector,
+    };
+
+    let root_capability = Capability {
+        id: CapabilityId("root-cap".into()),
+        kind: CapabilityKind::Tool,
+        resource: ResourceSelector("/repo/src/**".into()),
+        actions: ActionSet(["read".into(), "write".into()].into_iter().collect()),
+        constraints: ConstraintSet::default(),
+        lease: None,
+        delegatable: true,
+        issuer: Principal("root".into()),
+    };
+
+    let mut sm = sm();
+    sm.set_governance(GovernancePipeline::new(PermissionAction::Allow));
+    sm.set_requested_capabilities(vec![root_capability]);
+    sm.start(RuntimeTask::new("do the sensitive task"));
+    sm.take_observations();
+
+    let narrowed_capability = Capability {
+        id: CapabilityId("cap-1".into()),
+        kind: CapabilityKind::Tool,
+        resource: ResourceSelector("/repo/src/util.rs".into()),
+        actions: ActionSet(["read".into()].into_iter().collect()),
+        constraints: ConstraintSet::default(),
+        lease: None,
+        delegatable: true,
+        issuer: Principal("root".into()),
+    };
+    let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+        RuntimeTask::new("do the narrowed part"),
+        AgentRole::Implement,
+    )
+    .with_requested_capabilities(vec![narrowed_capability])]);
+    load_workflow_started(&mut sm, spec);
+
+    assert!(
+        sm.agent_process("wf-node0").is_some(),
+        "a legitimate narrowing of a real root capability must be allowed to spawn"
+    );
+}
+
+#[test]
+fn spc_009_05_root_child_budget_remaining_is_seeded_from_the_rungroup_admission_grant() {
+    // Plan §8 / spc_009-05: closes the gap spc_008-02 documented — production had no path to give
+    // root a non-`None` `child_budget_remaining`, so only *denial* was provable, never a legitimate
+    // grant. `set_budget_grant` (called from `driver.rs::build_engine` with the Host's real
+    // `ConfigureOperation`-time RunGroup admission grant) now also seeds root's hierarchical pool
+    // via `root_child_budget_seed`, converting `tokens`/`subagents`/`rounds` into the matching
+    // `ResourceBudget` axes.
+    use crate::governance::permission::PermissionAction;
+    use crate::governance::pipeline::GovernancePipeline;
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::runtime::kernel::wire::config::BudgetGrant as WireBudgetGrant;
+    use crate::runtime::kernel::wire::scalar::WireU64;
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::types::agent::AgentRole;
+
+    let mut sm = sm();
+    sm.set_governance(GovernancePipeline::new(PermissionAction::Allow));
+    sm.set_budget_grant(WireBudgetGrant {
+        reservation_id: "res-1".to_string(),
+        tokens: Some(WireU64::new(1_000)),
+        subagents: None,
+        rounds: None,
+    });
+    sm.start(RuntimeTask::new("do the budgeted task"));
+    sm.take_observations();
+
+    let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+        RuntimeTask::new("do the affordable part"),
+        AgentRole::Implement,
+    )
+    .with_requested_budget(ResourceBudget {
+        tokens: Some(400),
+        ..ResourceBudget::default()
+    })]);
+    load_workflow_started(&mut sm, spec);
+
+    assert!(
+        sm.agent_process("wf-node0").is_some(),
+        "an in-budget request against a real RunGroup-seeded pool must be allowed to spawn"
+    );
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(600),
+            ..ResourceBudget::default()
+        }),
+        "the debit must actually have happened — proves the check ran, not that it was skipped"
+    );
+}
+
+#[test]
+fn spc_009_05_no_rungroup_grant_leaves_child_budget_remaining_none() {
+    // Zero-signal case: no `set_budget_grant` call at all must leave root's pool `None`, exactly
+    // as before this card — no unconditional activation for operations that never declared one.
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("do the task"));
+
+    assert_eq!(sm.tasks.get("root").unwrap().child_budget_remaining, None);
+}
+
+#[test]
+fn spc_008_03_an_expired_lease_blocks_its_matching_tool_invoke() {
+    // Plan §8 / spc_008-03: closes "Expired lease cannot execute" (`Agent OS Kernel Evolution
+    // Plan.md` §3.1) — `Lease.is_expired` was a tested pure function (spc_004-05) with zero
+    // production callers; `Syscall::Invoke` went straight to the tool-name-glob governance
+    // pipeline and never consulted `Tcb.capabilities` at all.
+    //
+    // Honest constraint discovered while writing this test: `gate_tool_calls` short-circuits to
+    // `GateToolOutcome::Proceed` before ever calling `evaluate_syscall` when `self.governance` is
+    // `None` (`gate.rs`'s own "no governance configured, skip the whole gate" fast path) — so
+    // lease enforcement, as placed inside `evaluate_syscall`'s `Invoke` arm, is *also* inert on an
+    // operation with no governance pipeline configured at all, same as the capability-attenuation
+    // check's own documented convention. This is a real, narrower-than-ideal scope, not fixed by
+    // this card — a governance pipeline (even a trivial allow-everything one) must be installed for
+    // lease enforcement to run.
+    use crate::governance::permission::PermissionAction;
+    use crate::governance::pipeline::GovernancePipeline;
+    use crate::types::capability::{
+        ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Lease, Principal,
+        ResourceSelector,
+    };
+
+    let mut sm = sm_with_tools(&["search"]);
+    sm.set_governance(GovernancePipeline::new(PermissionAction::Allow));
+    sm.start(RuntimeTask::new("do the task"));
+    sm.take_observations();
+    sm.turn = 5;
+    sm.tasks.get_mut("root").unwrap().capabilities = vec![Capability {
+        id: CapabilityId("cap-1".into()),
+        kind: CapabilityKind::Tool,
+        resource: ResourceSelector("search".into()),
+        actions: ActionSet::default(),
+        constraints: ConstraintSet::default(),
+        lease: Some(Lease {
+            expires_at_turn: Some(2),
+        }),
+        delegatable: true,
+        issuer: Principal("root".into()),
+    }];
+
+    sm.feed(LoopEvent::LLMResponse {
+        message: assistant_calling(vec![call("c1", "search")]),
+    });
+
+    assert!(
+        history_contains(&sm, "expired"),
+        "an expired-lease-gated call must be visibly denied, not silently executed"
+    );
+}
+
+#[test]
+fn spc_008_03_an_unexpired_lease_does_not_block_its_matching_tool_invoke() {
+    use crate::governance::permission::PermissionAction;
+    use crate::governance::pipeline::GovernancePipeline;
+    use crate::types::capability::{
+        ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Lease, Principal,
+        ResourceSelector,
+    };
+
+    let mut sm = sm_with_tools(&["search"]);
+    sm.set_governance(GovernancePipeline::new(PermissionAction::Allow));
+    sm.start(RuntimeTask::new("do the task"));
+    sm.take_observations();
+    sm.turn = 1;
+    sm.tasks.get_mut("root").unwrap().capabilities = vec![Capability {
+        id: CapabilityId("cap-1".into()),
+        kind: CapabilityKind::Tool,
+        resource: ResourceSelector("search".into()),
+        actions: ActionSet::default(),
+        constraints: ConstraintSet::default(),
+        lease: Some(Lease {
+            expires_at_turn: Some(2),
+        }),
+        delegatable: true,
+        issuer: Principal("root".into()),
+    }];
+
+    let action = sm.feed(LoopEvent::LLMResponse {
+        message: assistant_calling(vec![call("c1", "search")]),
+    });
+
+    assert!(
+        matches!(action, LoopAction::ExecuteTools { .. }),
+        "an unexpired lease must not block its matching call, got {action:?}"
+    );
+}
+
+#[test]
+fn spc_008_04_root_termination_propagates_cancellation_to_still_running_children_by_default() {
+    // Plan §8 / spc_008-04: `SupervisionPolicy.child_failure` (spc_002-07) was pure structure —
+    // no production terminal transition ever read it. The root's own `terminate()` is the one
+    // reliable place a task-with-children terminates in production (spc_002-03's finding: only
+    // root ever has children today, since the only live spawn path parents everything to root).
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::scheduler::tcb::TaskLifecycle;
+    use crate::types::agent::AgentRole;
+    use crate::types::result::TerminationReason;
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("do the task"));
+    sm.take_observations();
+    // Default SupervisionPolicy is `Propagate` (spc_002-07) — no override needed.
+    let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+        RuntimeTask::new("a node that never finishes"),
+        AgentRole::Implement,
+    )]);
+    load_workflow_started(&mut sm, spec);
+    assert!(
+        sm.agent_process("wf-node0").is_some(),
+        "sanity: the node actually spawned and is still running"
+    );
+
+    sm.terminate(TerminationReason::TokenBudget, None);
+
+    assert_eq!(
+        sm.task_table().get("wf-node0").unwrap().state,
+        TaskLifecycle::Done(TerminationReason::UserAbort),
+        "Propagate (the default) must cancel a still-running child when the parent terminates"
+    );
+}
+
+#[test]
+fn spc_008_04_isolate_leaves_still_running_children_unaffected() {
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::scheduler::tcb::{ChildFailurePolicy, TaskLifecycle};
+    use crate::types::agent::AgentRole;
+    use crate::types::result::TerminationReason;
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("do the task"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().supervision.child_failure = ChildFailurePolicy::Isolate;
+    let spec = WorkflowSpec::new(vec![WorkflowNode::new(
+        RuntimeTask::new("a node that never finishes"),
+        AgentRole::Implement,
+    )]);
+    load_workflow_started(&mut sm, spec);
+    assert!(sm.agent_process("wf-node0").is_some());
+
+    sm.terminate(TerminationReason::TokenBudget, None);
+
+    assert_ne!(
+        sm.task_table().get("wf-node0").unwrap().state,
+        TaskLifecycle::Done(TerminationReason::UserAbort),
+        "Isolate must leave a still-running child untouched when the parent terminates"
+    );
+}
+
+#[test]
 fn quarantined_node_with_write_isolation_is_denied_in_kernel() {
     // Part A #3: the kernel enforces the quarantine invariant — a quarantined node (reads
     // untrusted content) that declares a write-capable isolation is denied at spawn, starving
@@ -5332,5 +5735,611 @@ fn entropy_rollbacks_accrue_into_the_next_completed_turn() {
     assert_eq!(
         rollbacks, 1,
         "turn A's rollback must land in turn B's window"
+    );
+}
+
+#[test]
+fn spc_003_04_set_lifecycle_syncs_wait_index_through_the_real_governance_path() {
+    use crate::scheduler::tcb::{TaskId, WaitCondition, WaitMode};
+    use crate::scheduler::wait_index::WaitKey;
+
+    let mut sm = sm();
+    sm.set_lifecycle(TaskLifecycle::Suspended, Some(WaitReason::Approval));
+
+    let (condition, _mode) = <(WaitCondition, WaitMode)>::from(WaitReason::Approval);
+    let key = match condition {
+        WaitCondition::Approval(id) => WaitKey::Approval(id),
+        _ => unreachable!(),
+    };
+    assert_eq!(sm.tasks.wait_index().lookup(&key), &[TaskId::from("root")]);
+
+    sm.set_lifecycle(TaskLifecycle::Running, None);
+    assert!(sm.tasks.wait_index().lookup(&key).is_empty());
+}
+
+fn cap_for_debt_test(resource: &str, actions: &[&str]) -> crate::types::capability::Capability {
+    use crate::types::capability::*;
+    Capability {
+        id: CapabilityId("cap".into()),
+        kind: CapabilityKind::Tool,
+        resource: ResourceSelector(resource.into()),
+        actions: ActionSet(actions.iter().map(|a| (*a).into()).collect()),
+        constraints: ConstraintSet::default(),
+        lease: None,
+        delegatable: true,
+        issuer: Principal("root".into()),
+    }
+}
+
+#[test]
+fn spc_004_debt_spawn_denies_capability_delegation_that_widens_scope() {
+    use crate::governance::pipeline::GovernancePipeline;
+    use crate::governance::permission::PermissionAction;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+    let mut sm = sm();
+    sm.set_governance(GovernancePipeline::new(PermissionAction::Allow));
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().capabilities =
+        vec![cap_for_debt_test("/repo/src/**", &["read"])];
+
+    let action = sm.spawn_sub_agent(
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "child-sess"),
+            AgentRole::Implement,
+            "t",
+        )
+        .with_requested_capabilities(vec![cap_for_debt_test("/repo/**", &["read"])]),
+    );
+
+    assert!(matches!(action, LoopAction::AwaitingResume));
+    assert_eq!(
+        sm.task_table().children_of("root").len(),
+        0,
+        "the over-broad delegation must not spawn a child"
+    );
+    let observations = sm.take_observations();
+    assert!(
+        observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::ControlRequestRejected { .. })),
+        "spawn must be visibly rejected, not silently dropped"
+    );
+}
+
+#[test]
+fn spc_004_debt_spawn_allows_a_legal_capability_narrowing() {
+    use crate::governance::pipeline::GovernancePipeline;
+    use crate::governance::permission::PermissionAction;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+    let mut sm = sm();
+    sm.set_governance(GovernancePipeline::new(PermissionAction::Allow));
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().capabilities =
+        vec![cap_for_debt_test("/repo/src/**", &["read"])];
+
+    let action = sm.spawn_sub_agent(
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "child-sess"),
+            AgentRole::Implement,
+            "t",
+        )
+        .with_requested_capabilities(vec![cap_for_debt_test("/repo/src/utils/**", &["read"])]),
+    );
+
+    assert!(matches!(action, LoopAction::AwaitingResume));
+    assert_eq!(sm.task_table().children_of("root").len(), 1);
+    let child = &sm.task_table().children_of("root")[0];
+    assert_eq!(
+        child.capabilities,
+        vec![cap_for_debt_test("/repo/src/utils/**", &["read"])]
+    );
+}
+
+#[test]
+fn spc_004_debt_spawn_with_no_requested_capabilities_is_unaffected() {
+    // Zero-regression: every existing caller passes no `requested_capabilities`, so the check
+    // must be skipped entirely — a parent with NO capabilities at all must still be able to
+    // spawn, exactly as before this debt closure.
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+
+    let action = sm.spawn_sub_agent(AgentRunSpec::new(
+        AgentIdentity::sub_agent("child", "child-sess"),
+        AgentRole::Implement,
+        "t",
+    ));
+
+    assert!(matches!(action, LoopAction::AwaitingResume));
+    assert_eq!(sm.task_table().children_of("root").len(), 1);
+}
+
+#[test]
+fn spc_005_04_spawn_denies_a_budget_request_exceeding_the_parents_remaining_pool() {
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().child_budget_remaining = Some(ResourceBudget {
+        tokens: Some(1_000),
+        ..ResourceBudget::default()
+    });
+
+    let action = sm.spawn_sub_agent(
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "child-sess"),
+            AgentRole::Implement,
+            "t",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(2_000),
+            ..ResourceBudget::default()
+        }),
+    );
+
+    assert!(matches!(action, LoopAction::AwaitingResume));
+    assert_eq!(
+        sm.task_table().children_of("root").len(),
+        0,
+        "a budget request beyond parent headroom must not spawn a child"
+    );
+    let observations = sm.take_observations();
+    assert!(
+        observations
+            .iter()
+            .any(|o| matches!(o, KernelObservation::ControlRequestRejected { .. })),
+        "spawn must be visibly rejected, not silently dropped"
+    );
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(1_000),
+            ..ResourceBudget::default()
+        }),
+        "a denied request must not debit the parent's remaining pool"
+    );
+}
+
+#[test]
+fn spc_005_04_spawn_allows_and_debits_a_budget_request_within_the_parents_remaining_pool() {
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::scheduler::tcb::TaskId;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().child_budget_remaining = Some(ResourceBudget {
+        tokens: Some(1_000),
+        ..ResourceBudget::default()
+    });
+
+    let action = sm.spawn_sub_agent(
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "child-sess"),
+            AgentRole::Implement,
+            "t",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(500),
+            ..ResourceBudget::default()
+        }),
+    );
+
+    assert!(matches!(action, LoopAction::AwaitingResume));
+    assert_eq!(sm.task_table().children_of("root").len(), 1);
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(500),
+            ..ResourceBudget::default()
+        }),
+        "an allowed request must debit exactly the granted amount from the parent's remaining pool"
+    );
+    let child = &sm.task_table().children_of("root")[0];
+    let grant = child
+        .budget_grant
+        .as_ref()
+        .expect("a granted child must carry its own BudgetGrant");
+    assert_eq!(grant.reserved.tokens, Some(500));
+    assert_eq!(grant.parent, TaskId::from("root"));
+    assert_eq!(grant.child, TaskId::from("child"));
+}
+
+#[test]
+fn spc_005_04_spawn_with_no_requested_budget_is_unaffected_even_under_a_finite_parent_pool() {
+    // Zero-regression: existing callers pass no `requested_budget`, so the check must be skipped
+    // regardless of whether the parent happens to have a `child_budget_remaining` set — spc_005
+    // is opt-in per spawn, not per parent.
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().child_budget_remaining = Some(ResourceBudget {
+        tokens: Some(1),
+        ..ResourceBudget::default()
+    });
+
+    let action = sm.spawn_sub_agent(AgentRunSpec::new(
+        AgentIdentity::sub_agent("child", "child-sess"),
+        AgentRole::Implement,
+        "t",
+    ));
+
+    assert!(matches!(action, LoopAction::AwaitingResume));
+    assert_eq!(sm.task_table().children_of("root").len(), 1);
+}
+
+#[test]
+fn spc_005_04_spawn_with_no_parent_budget_pool_is_unbounded() {
+    // Zero-regression: the pre-spc_005 default (no `child_budget_remaining` set at all) must
+    // still permit any requested budget — a parent opts INTO hierarchical accounting, it is not
+    // silently retrofitted.
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+
+    let action = sm.spawn_sub_agent(
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "child-sess"),
+            AgentRole::Implement,
+            "t",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(1_000_000),
+            ..ResourceBudget::default()
+        }),
+    );
+
+    assert!(matches!(action, LoopAction::AwaitingResume));
+    assert_eq!(sm.task_table().children_of("root").len(), 1);
+}
+
+#[test]
+fn spc_005_05_child_completion_returns_unused_tokens_to_the_parents_remaining_pool() {
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().child_budget_remaining = Some(ResourceBudget {
+        tokens: Some(1_000),
+        ..ResourceBudget::default()
+    });
+
+    sm.spawn_sub_agent(
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "child-sess"),
+            AgentRole::Implement,
+            "t",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(1_000),
+            ..ResourceBudget::default()
+        }),
+    );
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(0),
+            ..ResourceBudget::default()
+        }),
+        "the full 1000 was reserved, leaving the parent with zero remaining"
+    );
+
+    sm.handle_sub_agent_completed(SubAgentResult {
+        agent_id: compact_str::CompactString::new("child"),
+        result: LoopResult {
+            termination: TerminationReason::Completed,
+            final_message: Some(Message::assistant("ok")),
+            turns_used: 1,
+            total_tokens_used: 300,
+            loop_continue: None,
+            classify_branch: None,
+            tournament_winner: None,
+            pace_decision: None,
+        },
+    });
+
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(700),
+            ..ResourceBudget::default()
+        }),
+        "consuming only 300 of a 1000 reservation must return exactly 700 to the parent"
+    );
+    let grant = sm
+        .tasks
+        .get("child")
+        .and_then(|t| t.budget_grant.as_ref())
+        .expect("the completed child still carries its grant for audit");
+    assert_eq!(grant.consumed.tokens, Some(300));
+    assert_eq!(grant.returned.tokens, Some(700));
+}
+
+#[test]
+fn spc_005_05_multiple_children_return_budget_independently() {
+    // DoD: "多子节点场景互不干扰" — two siblings' returns must not clobber each other or the
+    // parent's running total.
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().child_budget_remaining = Some(ResourceBudget {
+        tokens: Some(1_000),
+        ..ResourceBudget::default()
+    });
+
+    sm.spawn_sub_agent(
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("child-a", "sess-a"),
+            AgentRole::Implement,
+            "a",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(400),
+            ..ResourceBudget::default()
+        }),
+    );
+    sm.spawn_sub_agent(
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("child-b", "sess-b"),
+            AgentRole::Implement,
+            "b",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(400),
+            ..ResourceBudget::default()
+        }),
+    );
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(200),
+            ..ResourceBudget::default()
+        }),
+        "two 400-token reservations against a 1000 pool leave 200"
+    );
+
+    let complete = |agent_id: &str, used: u64| SubAgentResult {
+        agent_id: compact_str::CompactString::new(agent_id),
+        result: LoopResult {
+            termination: TerminationReason::Completed,
+            final_message: Some(Message::assistant("ok")),
+            turns_used: 1,
+            total_tokens_used: used,
+            loop_continue: None,
+            classify_branch: None,
+            tournament_winner: None,
+            pace_decision: None,
+        },
+    };
+    sm.handle_sub_agent_completed(complete("child-a", 100)); // returns 300
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(500),
+            ..ResourceBudget::default()
+        })
+    );
+    sm.handle_sub_agent_completed(complete("child-b", 350)); // returns 50
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(550),
+            ..ResourceBudget::default()
+        }),
+        "sibling B's return must not disturb A's already-credited amount"
+    );
+}
+
+#[test]
+fn spc_005_05_cancellation_returns_the_full_unconsumed_reservation() {
+    // No join result exists on an abrupt cancellation, so the whole reservation is treated as
+    // unconsumed and returned — see the comment at the `cancel_operation` call site.
+    use crate::runtime::kernel::wire::CancellationReason;
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("parent"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().child_budget_remaining = Some(ResourceBudget {
+        tokens: Some(1_000),
+        ..ResourceBudget::default()
+    });
+    sm.spawn_sub_agent(
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("child", "child-sess"),
+            AgentRole::Implement,
+            "t",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(600),
+            ..ResourceBudget::default()
+        }),
+    );
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(400),
+            ..ResourceBudget::default()
+        })
+    );
+
+    sm.cancel_operation("op-1".to_string(), CancellationReason::User, vec![]);
+
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(1_000),
+            ..ResourceBudget::default()
+        }),
+        "a cancelled child's full reservation must return to the parent"
+    );
+}
+
+#[test]
+fn spc_005_06_three_layer_grant_invariant_operation_to_a_to_a1_a2() {
+    // Card spc_005-06: Operation($100) -> A($60) -> { A1($30), A2($30) }.
+    //
+    // Design note: `evaluate_spawn_quota_inner`'s hierarchical-budget check reads
+    // `self.tasks.root_id()` as "the parent" (spc_005-04, mirroring the same established
+    // convention spc_004-04 uses for capability attenuation — see that check a few lines above
+    // it in `gate.rs`). Every `LoopStateMachine`/`TaskTable` instance in this codebase models
+    // exactly ONE agent's own spawn tree, always rooted at that agent itself (`gate.rs`'s own
+    // comment: "every task this table can currently reach is still directly under its own
+    // structural root, so depth stays 1"). A genuine three-level tree is therefore realized by
+    // the HOST running TWO separate kernel instances — Operation's, and A's own once A itself
+    // starts spawning — not by one `TaskTable` holding three tiers of `parent` links. This test
+    // models that faithfully: `sm_operation` grants A its $60 (asserted below), and a second
+    // `sm_a` instance — seeded with exactly the $60 grant A received — spawns A1 and A2 from
+    // that pool, so the invariant chains through two real, separately-enforced `reserve()` calls
+    // rather than being asserted by construction.
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    use crate::types::result::{LoopResult, SubAgentResult, TerminationReason};
+
+    // ---- layer 1: Operation grants A $60 out of its own $100 -------------------------------
+    let mut sm_operation = sm();
+    sm_operation.start(RuntimeTask::new("operation"));
+    sm_operation.take_observations();
+    sm_operation.tasks.get_mut("root").unwrap().child_budget_remaining = Some(ResourceBudget {
+        tokens: Some(100),
+        ..ResourceBudget::default()
+    });
+    sm_operation.spawn_sub_agent(
+        AgentRunSpec::new(AgentIdentity::sub_agent("a", "a-sess"), AgentRole::Implement, "a")
+            .with_requested_budget(ResourceBudget {
+                tokens: Some(60),
+                ..ResourceBudget::default()
+            }),
+    );
+    assert_eq!(
+        sm_operation.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(40),
+            ..ResourceBudget::default()
+        }),
+        "Operation must have exactly $40 left after granting A $60 of its $100"
+    );
+    let a_grant = sm_operation
+        .tasks
+        .get("a")
+        .and_then(|t| t.budget_grant.as_ref())
+        .expect("A must carry the grant it received from Operation");
+    assert_eq!(a_grant.reserved.tokens, Some(60));
+
+    // ---- layer 2: A grants A1 and A2 $30 each, out of the $60 it received from Operation ----
+    let mut sm_a = sm();
+    sm_a.start(RuntimeTask::new("a"));
+    sm_a.take_observations();
+    // A's own remaining pool starts at exactly what Operation granted it — the cross-instance
+    // seed a real host would perform at A's spawn (not itself part of spc_005's scope; spc_002's
+    // deferred cross-operation lineage note covers wiring this automatically).
+    sm_a.tasks.get_mut("root").unwrap().child_budget_remaining = Some(ResourceBudget {
+        tokens: Some(60),
+        ..ResourceBudget::default()
+    });
+
+    sm_a.spawn_sub_agent(
+        AgentRunSpec::new(AgentIdentity::sub_agent("a1", "a1-sess"), AgentRole::Implement, "a1")
+            .with_requested_budget(ResourceBudget {
+                tokens: Some(30),
+                ..ResourceBudget::default()
+            }),
+    );
+    sm_a.spawn_sub_agent(
+        AgentRunSpec::new(AgentIdentity::sub_agent("a2", "a2-sess"), AgentRole::Implement, "a2")
+            .with_requested_budget(ResourceBudget {
+                tokens: Some(30),
+                ..ResourceBudget::default()
+            }),
+    );
+    assert_eq!(
+        sm_a.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(0),
+            ..ResourceBudget::default()
+        }),
+        "A1($30) + A2($30) == A's entire $60 grant — nothing left over"
+    );
+    assert_eq!(sm_a.task_table().children_of("root").len(), 2);
+
+    // Invariant: Sigma GrantedChildBudget <= ParentRemainingBudget at grant time. A never granted
+    // more than the $60 it itself held — enforced above by construction (both spawns succeeded
+    // and drove A's pool to exactly 0, never negative); a third grant now must be denied.
+    let over_budget = sm_a.spawn_sub_agent(
+        AgentRunSpec::new(AgentIdentity::sub_agent("a3", "a3-sess"), AgentRole::Implement, "a3")
+            .with_requested_budget(ResourceBudget {
+                tokens: Some(1),
+                ..ResourceBudget::default()
+            }),
+    );
+    assert!(matches!(over_budget, LoopAction::AwaitingResume));
+    assert_eq!(
+        sm_a.task_table().children_of("root").len(),
+        2,
+        "A has nothing left to grant — a third child must be refused, not overdrawn"
+    );
+
+    // ---- A1 completes, having used only $20 of its $30 -> $10 returns to A's pool ----------
+    sm_a.handle_sub_agent_completed(SubAgentResult {
+        agent_id: compact_str::CompactString::new("a1"),
+        result: LoopResult {
+            termination: TerminationReason::Completed,
+            final_message: Some(Message::assistant("done")),
+            turns_used: 1,
+            total_tokens_used: 20,
+            loop_continue: None,
+            classify_branch: None,
+            tournament_winner: None,
+            pace_decision: None,
+        },
+    });
+    assert_eq!(
+        sm_a.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(10),
+            ..ResourceBudget::default()
+        }),
+        "A1's $10 unused must correctly increase A's allocatable remainder from 0 to 10"
+    );
+
+    // And A can now grant that returned $10 onward, still never exceeding what it once held.
+    let now_allowed = sm_a.spawn_sub_agent(
+        AgentRunSpec::new(AgentIdentity::sub_agent("a3", "a3-sess"), AgentRole::Implement, "a3")
+            .with_requested_budget(ResourceBudget {
+                tokens: Some(10),
+                ..ResourceBudget::default()
+            }),
+    );
+    assert!(matches!(now_allowed, LoopAction::AwaitingResume));
+    assert_eq!(sm_a.task_table().children_of("root").len(), 3);
+    assert_eq!(
+        sm_a.tasks.get("root").unwrap().child_budget_remaining,
+        Some(ResourceBudget {
+            tokens: Some(0),
+            ..ResourceBudget::default()
+        })
     );
 }

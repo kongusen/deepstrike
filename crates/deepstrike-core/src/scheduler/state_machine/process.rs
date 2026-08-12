@@ -31,7 +31,17 @@ impl LoopStateMachine {
         let agent_id = manifest.agent_id.to_string();
         // M1 収口: register the sub-agent as a child task — the single source of truth. The
         // `AgentProcess` view row is reconstructed from the TCB for the observation/session-log.
-        let child = Tcb::spawned(&manifest, self.policy.clone());
+        // spc_002-04: parent derives from this table's own structural root, not a literal.
+        let mut child = Tcb::spawned_in(
+            &manifest,
+            self.policy.clone(),
+            TaskLifecycle::Running,
+            self.tasks.root_id(),
+        );
+        // spc_005-04: `evaluate_syscall` above already reserved this child's budget grant (if the
+        // spawn requested one) and debited the parent's remaining pool — attach it now so
+        // spc_005-05's completion path knows what to return.
+        child.budget_grant = self.pending_budget_grant.take();
         self.tasks.insert(child);
         if let Some(process) = self.tasks.get(&agent_id).and_then(AgentProcess::from_tcb) {
             self.push_agent_process_changed(process);
@@ -65,10 +75,18 @@ impl LoopStateMachine {
             if let Some(info) = task.proc.as_mut() {
                 info.result = Some(result.clone());
             }
+            // spc_005-05: real per-child consumption, from the two axes the join result actually
+            // reports. Other seven axes stay whatever `budget_grant.consumed` already held (zero,
+            // since nothing meters them yet) — untracked axes return in full, never negative.
+            if let Some(grant) = task.budget_grant.as_mut() {
+                grant.consumed.tokens = Some(result.result.total_tokens_used);
+                grant.consumed.turns = Some(result.result.turns_used);
+            }
             AgentProcess::from_tcb(task)
         } else {
             None
         };
+        self.tasks.return_child_budget(result.agent_id.as_str());
         if let Some(process) = process {
             self.push_agent_process_changed(process);
         }

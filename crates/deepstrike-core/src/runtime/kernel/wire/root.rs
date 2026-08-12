@@ -320,6 +320,14 @@ pub struct InitialContext {
     pub knowledge: Vec<KnowledgeEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<CapabilityGrant>,
+    /// spc_009-04: the operation root's own fine-grained `Capability` set (resource/actions/
+    /// constraints/lease) — distinct from `capabilities` above, which is the coarse kind/id
+    /// allowlist `CapabilityGrant` predates this field with. The two do not merge: `CapabilityGrant`
+    /// cannot be mechanically converted into a `Capability` (an allowed id implies nothing about
+    /// what actions should be granted), so a Host that wants root to hold real delegatable
+    /// authority must declare it here explicitly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requested_capabilities: Vec<crate::types::capability::Capability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -21,6 +21,43 @@ impl LoopStateMachine {
     pub(super) fn evaluate_syscall(&mut self, sys: &Syscall) -> Disposition {
         match sys {
             Syscall::Invoke(call) => {
+                // spc_008-03: an expired-lease capability blocks its matching tool call,
+                // independent of (and checked before) the governance pipeline below — `Lease` is
+                // spc_004's own mechanism, not a governance policy rule, and this closes the
+                // "Expired lease cannot execute" invariant (`Agent OS Kernel Evolution Plan.md`
+                // §3.1) that `Lease.is_expired` alone left unenforced. Simple-scope by design (per
+                // spc_008-03's own range boundary): matches by resource-prefix against the calling
+                // task's own capabilities, does not attempt cross-capability priority resolution.
+                if let Some(root) = self
+                    .tasks
+                    .root_id()
+                    .and_then(|id| self.tasks.get(id.as_str()))
+                {
+                    let turn = self.turn;
+                    if let Some(expired) = root.capabilities.iter().find(|capability| {
+                        capability.kind == crate::types::capability::CapabilityKind::Tool
+                            && call
+                                .name
+                                .as_str()
+                                .starts_with(crate::types::capability::resource_prefix(
+                                    &capability.resource,
+                                ))
+                            && capability
+                                .lease
+                                .as_ref()
+                                .is_some_and(|lease| lease.is_expired(turn))
+                    }) {
+                        return Disposition::Deny {
+                            stage: "capability_lease",
+                            reason: format!(
+                                "tool {:?} is gated by capability {:?} whose lease expired at turn {:?}",
+                                call.name,
+                                expired.id,
+                                expired.lease.as_ref().and_then(|l| l.expires_at_turn)
+                            ),
+                        };
+                    }
+                }
                 // § Task 11 · the caller handed to governance is logical identity. The session slot
                 // `AgentIdentity` still declares is filled with nothing here, and no gate reads it
                 // (§22.6) — a fabricated session literal in a decision path is exactly the
@@ -35,7 +72,7 @@ impl LoopStateMachine {
                     None => Disposition::Allow,
                 }
             }
-            Syscall::Spawn(_) => self.evaluate_spawn_quota(),
+            Syscall::Spawn(manifest) => self.evaluate_spawn_quota(manifest),
             Syscall::WriteMemory(_) => self.evaluate_memory_write_quota(),
             Syscall::SubmitNodes { count } => self.evaluate_submit_nodes_quota(*count),
             // M5/G1: an agent-authored spec grows the DAG by `node_count`; same backstop as SubmitNodes.
@@ -139,7 +176,11 @@ impl LoopStateMachine {
     ///   event, when a running sibling has freed a slot.
     /// The **permanent** axes (cumulative total, depth) are always a hard `Deny`: a completed
     /// sibling never frees a cumulative slot, and more nesting never becomes available.
-    fn evaluate_spawn_quota_inner(&mut self, concurrency_transient: bool) -> Disposition {
+    fn evaluate_spawn_quota_inner(
+        &mut self,
+        concurrency_transient: bool,
+        manifest: &crate::types::agent::IsolationManifest,
+    ) -> Disposition {
         let quota = self.resource_quota.as_ref();
         if let Some(max) = quota.and_then(|quota| quota.max_concurrent_subagents) {
             // W-6: a zero-slot pool can never free a slot — Defer would park every workflow node
@@ -200,8 +241,10 @@ impl LoopStateMachine {
             }
         }
         if let Some(max) = quota.and_then(|quota| quota.max_spawn_depth) {
-            // Sub-agents currently parent to the root task (depth 1). Nested spawning would
-            // generalize this to the spawning task's lineage depth.
+            // Real lineage derivation lives in `Tcb::spawned_in` (spc_002-04); every task this
+            // table can currently reach is still directly under its own structural root, so depth
+            // stays 1 for every reachable state. Generalizing this to the spawning task's true
+            // lineage depth is future work once nested (not just root-child) spawning exists.
             let depth = 1u32;
             if depth > max {
                 return Disposition::Deny {
@@ -210,17 +253,79 @@ impl LoopStateMachine {
                 };
             }
         }
+        // spc_004 debt closure: attenuation check for spawn-time capability delegation, additive
+        // to (never replacing) the quota checks above. Skipped entirely when the spawn requests no
+        // fine-grained capability grants (the default — see `IsolationManifest::requested_capabilities`)
+        // or when no governance pipeline is configured, matching `Syscall::Invoke`'s own
+        // no-governance-configured convention.
+        if !manifest.requested_capabilities.is_empty()
+            && let Some(governance) = self.governance.as_ref()
+        {
+            let parent_caps = self
+                .tasks
+                .root_id()
+                .and_then(|id| self.tasks.get(id.as_str()))
+                .map(|task| task.capabilities.as_slice())
+                .unwrap_or(&[]);
+            if let Some(verdict) = governance
+                .permission
+                .check_delegation(&manifest.requested_capabilities, parent_caps)
+            {
+                return verdict.into();
+            }
+        }
+        // spc_005-04: hierarchical budget check, additive to (never replacing) the quota checks
+        // above. Skipped entirely when the spawn requests no budget (the default — see
+        // `IsolationManifest::requested_budget`) or the parent has no `child_budget_remaining` set
+        // (unlimited — preserves pre-spc_005 single-layer behavior byte-for-byte).
+        if let Some(requested) = manifest.requested_budget.as_ref() {
+            let parent_id = self.tasks.root_id();
+            let remaining = parent_id
+                .as_ref()
+                .and_then(|id| self.tasks.get(id.as_str()))
+                .and_then(|task| task.child_budget_remaining);
+            if let (Some(parent_id), Some(remaining)) = (parent_id, remaining) {
+                match crate::scheduler::budget_grant::reserve(
+                    parent_id.clone(),
+                    manifest.agent_id.clone(),
+                    &remaining,
+                    requested,
+                ) {
+                    Err(_) => {
+                        return Disposition::Deny {
+                            stage: "budget_grant",
+                            reason: format!(
+                                "requested budget exceeds parent {parent_id}'s remaining pool"
+                            ),
+                        };
+                    }
+                    Ok(grant) => {
+                        if let Some(task) = self.tasks.get_mut(parent_id.as_str()) {
+                            task.child_budget_remaining =
+                                Some(crate::scheduler::budget_grant::debit(&remaining, requested));
+                        }
+                        self.pending_budget_grant = Some(grant);
+                    }
+                }
+            }
+        }
         Disposition::Allow
     }
 
     /// Synchronous spawn path: quota misses roll the turn back like a denied tool call.
-    pub(super) fn evaluate_spawn_quota(&mut self) -> Disposition {
-        self.evaluate_spawn_quota_inner(false)
+    pub(super) fn evaluate_spawn_quota(
+        &mut self,
+        manifest: &crate::types::agent::IsolationManifest,
+    ) -> Disposition {
+        self.evaluate_spawn_quota_inner(false, manifest)
     }
 
     /// W2-1 workflow run-queue path: the transient concurrency axis defers instead of denying.
-    pub(super) fn evaluate_spawn_quota_deferrable(&mut self) -> Disposition {
-        self.evaluate_spawn_quota_inner(true)
+    pub(super) fn evaluate_spawn_quota_deferrable(
+        &mut self,
+        manifest: &crate::types::agent::IsolationManifest,
+    ) -> Disposition {
+        self.evaluate_spawn_quota_inner(true, manifest)
     }
 
     /// Memory-write quota: a rolling-window rate limit. Prunes timestamps older than the window,

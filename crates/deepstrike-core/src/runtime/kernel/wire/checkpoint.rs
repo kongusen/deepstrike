@@ -513,6 +513,12 @@ pub struct TaskControlState {
     pub process: Option<ChildProcessState>,
     pub tokens_used: WireU64,
     pub turns_used: u32,
+    /// spc_009-06 · this task's own grantable pool (`Tcb.child_budget_remaining`) — `None` for
+    /// every task that was never seeded (the common case) or has none left; `Some` once seeded,
+    /// currently only for `root` (spc_009-05). Per-task, unlike [`SchedulerStateV1::budget_grant`]
+    /// above, which is the single whole-operation admission grant it was derived from.
+    #[serde(default)]
+    pub child_budget_remaining: Option<crate::scheduler::budget_grant::ResourceBudget>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -360,7 +360,9 @@ impl WorkflowRun {
 
     /// Build the isolation manifest for a node's current spawn, preserving its explicit isolation +
     /// context-inheritance (the `AgentRunSpec`→`from_spec` path would overwrite these with
-    /// role defaults). Capability inheritance for workflow nodes is left to a later round.
+    /// role defaults). spc_008-01/02: `requested_capabilities`/`requested_budget` now flow from the
+    /// node's own fields — `permitted_capability_ids` (the coarse tool-name-glob ceiling, a distinct
+    /// pre-existing mechanism) is unrelated and still left to a later round.
     pub fn manifest_for(&self, node: usize) -> IsolationManifest {
         let n = &self.nodes[node];
         IsolationManifest {
@@ -369,6 +371,8 @@ impl WorkflowRun {
             isolation: n.isolation,
             context_inheritance: n.context_inheritance,
             permitted_capability_ids: Vec::new(),
+            requested_capabilities: n.requested_capabilities.clone(),
+            requested_budget: n.requested_budget,
         }
     }
 

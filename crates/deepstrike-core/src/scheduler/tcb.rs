@@ -6,6 +6,8 @@
 //! [`budget_verdict`] is the single budget decision point (turn/token/wall axes),
 //! delegating to [`SchedulerBudget::should_terminate`] via [`BudgetLedger`].
 
+use std::collections::BTreeSet;
+
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
@@ -106,6 +108,73 @@ impl WaitReason {
     }
 }
 
+/// spc_003 §2: placeholder identity newtypes for wait conditions that have no existing kernel
+/// concept yet. Minimal on purpose — no validation, no dependency beyond `CompactString` — until a
+/// real producer (spc_003-05+ for `Timer`; future cards for the rest) earns a richer type.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ApprovalId(pub CompactString);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct SignalFilter(pub CompactString);
+
+/// Milliseconds, matching the existing wall-clock convention (`now_ms`/`max_wall_ms`/
+/// `started_at_ms` are all `u64` ms elsewhere in this module).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LogicalDeadline(pub u64);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ChannelId(pub CompactString);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ResourceKey(pub CompactString);
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct SubscriptionId(pub CompactString);
+
+/// spc_003 §2: the generalized wait vocabulary `WaitReason` is expected to grow into. Additive
+/// only in this card — not wired to `Tcb.wait` yet (spc_003-04).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WaitCondition {
+    Effect(crate::runtime::kernel::wire::EffectId),
+    Child(TaskId),
+    Children(Vec<TaskId>),
+    Approval(ApprovalId),
+    Signal(SignalFilter),
+    Timer(LogicalDeadline),
+    Channel(ChannelId),
+    Resource(ResourceKey),
+    External(SubscriptionId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WaitMode {
+    Any,
+    All,
+}
+
+/// spc_003 §2. Additive only in this card — not wired to `Tcb.wait` yet (spc_003-04).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitSet {
+    pub mode: WaitMode,
+    pub conditions: Vec<WaitCondition>,
+}
+
+/// spc_003-02: semantic-equivalence mapping for the two existing `WaitReason` variants. `Approval`
+/// carries no id anywhere in the kernel today (verified by grep — the AskUser path constructs a
+/// bare `WaitReason::Approval`), so this mints a fixed placeholder id until governance's AskUser
+/// path earns a real one.
+impl From<WaitReason> for (WaitCondition, WaitMode) {
+    fn from(reason: WaitReason) -> Self {
+        match reason {
+            WaitReason::Approval => (
+                WaitCondition::Approval(ApprovalId(CompactString::from("pending"))),
+                WaitMode::Any,
+            ),
+            WaitReason::SubAgentJoin(ids) => (WaitCondition::Children(ids), WaitMode::All),
+        }
+    }
+}
+
 /// Running budget counters + limits for a task. Wraps the existing [`SchedulerBudget`]
 /// limits so budget evaluation lives here without changing the axes.
 #[derive(Debug, Clone)]
@@ -156,18 +225,77 @@ pub struct ProcInfo {
     pub result: Option<SubAgentResult>,
 }
 
+/// spc_002 §4: what happens to a task's children when the task itself terminates. Additive type
+/// only in this card — not wired to parent-termination logic yet (a future card, once a real
+/// producer needs it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChildFailurePolicy {
+    #[default]
+    Propagate,
+    Isolate,
+    Restart,
+    Retry,
+    Ignore,
+}
+
+/// spc_002 §4.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SupervisionPolicy {
+    pub child_failure: ChildFailurePolicy,
+    pub max_restarts: Option<u32>,
+    pub cancel_children_on_exit: bool,
+}
+
+impl Default for SupervisionPolicy {
+    fn default() -> Self {
+        Self {
+            child_failure: ChildFailurePolicy::default(),
+            max_restarts: None,
+            cancel_children_on_exit: true,
+        }
+    }
+}
+
 /// One schedulable entity. The root loop and every sub-agent are uniform `Tcb`s.
 #[derive(Debug, Clone)]
 pub struct Tcb {
     pub id: TaskId,
     pub parent: Option<TaskId>,
+    /// spc_002: child task ids spawned under this task. Populated by `TaskTable` insertion
+    /// (spc_002-05); empty for leaf tasks and for every task predating recursive spawn.
+    pub children: BTreeSet<TaskId>,
     pub state: TaskLifecycle,
     pub budget: BudgetLedger,
     pub wait: Option<WaitReason>,
     /// Capability ids permitted to this task (mirrors `AgentProcess.permitted_capability_ids`).
     pub caps: Vec<CompactString>,
+    /// spc_004 debt closure: this task's own held `Capability` grants (spc_004's resource/
+    /// action-scoped shape) — what a spawn from *this* task may legally attenuate into. Empty by
+    /// default; only set when `IsolationManifest.requested_capabilities` (spc_004) was non-empty
+    /// at spawn time.
+    pub capabilities: Vec<crate::types::capability::Capability>,
     /// Sub-agent identity for child tasks; `None` for the root loop.
     pub proc: Option<ProcInfo>,
+    /// spc_002-07: read by `terminate()` (spc_008-04) when this task's own terminal transition
+    /// commits, to decide what happens to any still-running children.
+    pub supervision: SupervisionPolicy,
+    /// spc_008-05: when `true`, this task is exempt from `cancel_subtree`/`cancel_children` —
+    /// it (and its own descendants) are never cancelled as a side effect of an ancestor's
+    /// cancellation or termination. `false` by default (existing behavior unchanged).
+    pub detached: bool,
+    /// spc_005: this task's own currently-grantable budget pool for its children — `reserve()`'s
+    /// `parent_remaining` argument. `None` (the default) means no hierarchical budget is in play
+    /// on this task, so spawn-time budget checks are skipped entirely and behavior is unchanged
+    /// from before spc_005.
+    pub child_budget_remaining: Option<super::budget_grant::ResourceBudget>,
+    /// spc_005: the grant this task itself received from its parent at spawn time, if the
+    /// spawner set `IsolationManifest.requested_budget`. `None` for the root and for any child
+    /// spawned without a hierarchical budget request.
+    pub budget_grant: Option<super::budget_grant::BudgetGrant>,
+    /// spc_006-03: this task's point-to-point inbox. Empty by default; populated via
+    /// `TaskTable::send_message`.
+    pub mailbox: super::mailbox::Mailbox,
 }
 
 impl Tcb {
@@ -176,43 +304,67 @@ impl Tcb {
         Self {
             id: id.into(),
             parent: None,
+            children: BTreeSet::new(),
             state: TaskLifecycle::Ready,
             budget: BudgetLedger::new(budget),
             wait: None,
             caps: Vec::new(),
+            capabilities: Vec::new(),
             proc: None,
+            supervision: SupervisionPolicy::default(),
+            detached: false,
+            child_budget_remaining: None,
+            budget_grant: None,
+            mailbox: super::mailbox::Mailbox::new(),
         }
     }
 
     /// A sub-agent task spawned under the root, seeded `Running`, carrying the manifest's
     /// process identity. The single source of truth for what the `AgentProcess` view exposes.
     pub fn spawned(manifest: &IsolationManifest, budget: SchedulerBudget) -> Self {
-        Self::spawned_in(manifest, budget, TaskLifecycle::Running)
+        Self::spawned_in(
+            manifest,
+            budget,
+            TaskLifecycle::Running,
+            Some(TaskId::from("root")),
+        )
     }
 
-    /// The same child, seeded in an explicit lifecycle state.
+    /// The same child, seeded in an explicit lifecycle state under an explicit `parent`.
     ///
     /// §10.4's spawn arc is `PendingLaunch → Starting → Running(ack)`; the legacy path collapses it
     /// to `Running` at insert time, which is why [`Self::spawned`] exists unchanged and this is the
     /// entry point the ack-gated canonical path uses.
+    ///
+    /// spc_002-02: `parent` is no longer hardcoded to `root` — callers must supply the real caller.
+    /// This card does not derive that caller from syscall causation (spc_002-04); every call site
+    /// still passes `Some("root")` explicitly, preserving today's behavior byte-for-byte.
     pub fn spawned_in(
         manifest: &IsolationManifest,
         budget: SchedulerBudget,
         state: TaskLifecycle,
+        parent: Option<TaskId>,
     ) -> Self {
         Self {
             id: manifest.agent_id.clone(),
-            parent: Some("root".into()),
+            parent,
+            children: BTreeSet::new(),
             state,
             budget: BudgetLedger::new(budget),
             wait: None,
             caps: manifest.permitted_capability_ids.clone(),
+            capabilities: manifest.requested_capabilities.clone(),
             proc: Some(ProcInfo {
                 role: manifest.role,
                 isolation: manifest.isolation,
                 context_inheritance: manifest.context_inheritance,
                 result: None,
             }),
+            supervision: SupervisionPolicy::default(),
+            detached: false,
+            child_budget_remaining: None,
+            budget_grant: None,
+            mailbox: super::mailbox::Mailbox::new(),
         }
     }
 }
@@ -222,6 +374,9 @@ impl Tcb {
 #[derive(Debug, Clone, Default)]
 pub struct TaskTable {
     tasks: Vec<Tcb>,
+    /// spc_003-04: kept in sync with every task's `wait` field exclusively through
+    /// [`Self::set_wait`] — that method is the only sanctioned way to mutate `Tcb.wait`.
+    wait_index: super::wait_index::WaitIndex,
 }
 
 impl TaskTable {
@@ -230,6 +385,14 @@ impl TaskTable {
     }
 
     pub fn insert(&mut self, tcb: Tcb) {
+        // spc_002-05: a fresh child registers itself in its parent's `children` set. Re-inserting
+        // an existing id (state update, not a new spawn) must not touch any `children` set.
+        let is_new = !self.tasks.iter().any(|t| t.id == tcb.id);
+        if is_new && let Some(parent_id) = tcb.parent.clone()
+            && let Some(parent) = self.tasks.iter_mut().find(|t| t.id == parent_id)
+        {
+            parent.children.insert(tcb.id.clone());
+        }
         if let Some(existing) = self.tasks.iter_mut().find(|t| t.id == tcb.id) {
             *existing = tcb;
         } else {
@@ -255,6 +418,224 @@ impl TaskTable {
             .filter(|t| t.parent.as_deref() == Some(parent))
             .collect()
     }
+
+    pub fn wait_index(&self) -> &super::wait_index::WaitIndex {
+        &self.wait_index
+    }
+
+    /// spc_003-04: the only sanctioned path for mutating `Tcb.wait` — keeps `WaitIndex` in sync
+    /// with the field it mirrors. `None` clears any existing wait; `Some` replaces it (the prior
+    /// wait, if any, is removed from the index first). A `task_id` not present in the table is a
+    /// no-op.
+    pub fn set_wait(&mut self, task_id: &str, wait: Option<WaitReason>) {
+        let Some(id) = self.get(task_id).map(|t| t.id.clone()) else {
+            return;
+        };
+        if let Some(old) = self.get_mut(task_id).and_then(|t| t.wait.take()) {
+            let (condition, _mode) = <(WaitCondition, WaitMode)>::from(old);
+            self.wait_index.remove(&id, &condition);
+        }
+        if let Some(task) = self.get_mut(task_id) {
+            task.wait = wait.clone();
+        }
+        if let Some(new_wait) = wait {
+            let (condition, _mode) = <(WaitCondition, WaitMode)>::from(new_wait);
+            self.wait_index.insert(id, &condition);
+        }
+    }
+
+    /// spc_003-05: register `task_id` as waiting on a deadline. `Timer` has no `WaitReason`
+    /// counterpart (spc_003-01 does not touch `WaitReason`), so — unlike `set_wait` — this only
+    /// updates the `WaitIndex`, not `Tcb.wait`.
+    pub fn wait_for_timer(&mut self, task_id: &str, deadline: LogicalDeadline) {
+        let Some(id) = self.get(task_id).map(|t| t.id.clone()) else {
+            return;
+        };
+        self.wait_index
+            .insert(id, &WaitCondition::Timer(deadline));
+    }
+
+    /// spc_003-05: wake every task whose `Timer` deadline is `<= now_ms`. Returns the woken ids.
+    pub fn wake_expired_timers(&mut self, now_ms: u64) -> Vec<TaskId> {
+        self.wait_index.expire_timers(now_ms)
+    }
+
+    /// spc_003-06: register `task_id` as waiting on an arbitrary `WaitCondition`, index-only
+    /// (mirrors [`Self::wait_for_timer`] — no `Tcb.wait` mutation, since most `WaitCondition`
+    /// variants have no `WaitReason` counterpart to store there).
+    pub fn wait_for_condition(&mut self, task_id: &str, condition: &WaitCondition) {
+        let Some(id) = self.get(task_id).map(|t| t.id.clone()) else {
+            return;
+        };
+        self.wait_index.insert(id, condition);
+    }
+
+    /// spc_003-06: wake every task waiting on exactly `key`. Idempotent — see
+    /// [`super::wait_index::WaitIndex::wake`].
+    pub fn wake(&mut self, key: &super::wait_index::WaitKey) -> Vec<TaskId> {
+        self.wait_index.wake(key)
+    }
+
+    /// spc_003 debt closure: register `task_id` against a full `WaitSet` (`Any`/`All` over
+    /// multiple heterogeneous conditions) — see [`super::wait_index::WaitIndex::register_wait_set`].
+    pub fn register_wait_set(&mut self, task_id: &str, wait_set: WaitSet) {
+        let Some(id) = self.get(task_id).map(|t| t.id.clone()) else {
+            return;
+        };
+        self.wait_index.register_wait_set(id, wait_set);
+    }
+
+    /// spc_003 debt closure: notify every task registered under `key` via
+    /// [`Self::register_wait_set`], returning those whose whole `WaitSet` is now satisfied — see
+    /// [`super::wait_index::WaitIndex::notify`].
+    pub fn notify(&mut self, key: &super::wait_index::WaitKey) -> Vec<TaskId> {
+        self.wait_index.notify(key)
+    }
+
+    /// spc_002-04: the id of this table's own structural root — the task with no `parent` — the
+    /// kernel-owned fact a spawn's `parent` derives from instead of a hardcoded `"root"` literal.
+    /// `None` only for a table that has not yet had its root task inserted.
+    pub fn root_id(&self) -> Option<TaskId> {
+        self.tasks
+            .iter()
+            .find(|t| t.parent.is_none())
+            .map(|t| t.id.clone())
+    }
+
+    /// spc_002-06: recursively cancel `task_id` and every (recursive) child. Default cancellation
+    /// policy — no detached-child exemption yet (future card, per spc_002 §5).
+    pub fn cancel_subtree(&mut self, task_id: &str) {
+        let children: Vec<TaskId> = self
+            .get(task_id)
+            .map(|t| t.children.iter().cloned().collect())
+            .unwrap_or_default();
+        if let Some(task) = self.get_mut(task_id) {
+            task.state = TaskLifecycle::Done(TerminationReason::UserAbort);
+        }
+        for child_id in children {
+            // spc_008-05: a detached child (and, transitively, everything under it — this `if`
+            // skips recursing into it at all, so its own children are never reached either) is
+            // exempt from cancellation cascading down from an ancestor.
+            let is_detached = self
+                .get(child_id.as_str())
+                .is_some_and(|child| child.detached);
+            if !is_detached {
+                self.cancel_subtree(child_id.as_str());
+            }
+        }
+    }
+
+    /// spc_008-04: like [`Self::cancel_subtree`] but leaves `task_id` itself untouched — only its
+    /// (recursive) descendants are cancelled. For `SupervisionPolicy.child_failure ==
+    /// ChildFailurePolicy::Propagate`, where the terminating task's own termination reason (set by
+    /// the caller) must not be overwritten by this call. Already-terminal children are skipped so a
+    /// child that already completed successfully is never retroactively relabeled as cancelled;
+    /// spc_008-05: a `detached` direct child is skipped too, same exemption `cancel_subtree`'s own
+    /// recursion honors — `Propagate` must not reach into a child that opted out of the lifecycle.
+    pub fn cancel_children(&mut self, task_id: &str) {
+        let children: Vec<TaskId> = self
+            .get(task_id)
+            .map(|t| t.children.iter().cloned().collect())
+            .unwrap_or_default();
+        for child_id in children {
+            if self
+                .get(child_id.as_str())
+                .is_some_and(|t| !t.state.is_terminal() && !t.detached)
+            {
+                self.cancel_subtree(child_id.as_str());
+            }
+        }
+    }
+
+    /// spc_005-05: `return_unused` a child's `budget_grant` (if it has one) into its parent's
+    /// `child_budget_remaining`, then record `returned` on the grant for audit. A no-op when the
+    /// child never carried a grant (spawned without `requested_budget`, or the parent had no
+    /// `child_budget_remaining` set — see spc_005-04) or when the parent has since lost its own
+    /// remaining-budget pool. Idempotent to call twice: the second call finds `consumed` already
+    /// reflecting the first return_unused's inputs and returns the same (already-zeroed) delta —
+    /// callers still should call this exactly once per terminal transition.
+    pub fn return_child_budget(&mut self, child_id: &str) {
+        let Some(grant) = self.get(child_id).and_then(|t| t.budget_grant.clone()) else {
+            return;
+        };
+        let unused = super::budget_grant::return_unused(&grant);
+        if let Some(child) = self.get_mut(child_id)
+            && let Some(child_grant) = child.budget_grant.as_mut()
+        {
+            child_grant.returned = unused;
+        }
+        if let Some(parent) = self.get_mut(grant.parent.as_str())
+            && let Some(remaining) = parent.child_budget_remaining
+        {
+            parent.child_budget_remaining = Some(super::budget_grant::credit(&remaining, &unused));
+        }
+    }
+
+    /// spc_006-03: deliver `msg` into `msg.to`'s mailbox. A no-op (message silently dropped) when
+    /// `to` names no task in this table — mirrors `get_mut`'s own "absent id, no panic" contract
+    /// used throughout this table's other mutators.
+    pub fn send_message(&mut self, msg: super::mailbox::MailboxMessage) {
+        if let Some(recipient) = self.get_mut(msg.to.as_str()) {
+            recipient.mailbox.send(msg);
+        }
+    }
+
+    /// spc_002-09: recompute every task's `children` set from the authoritative `parent` field.
+    /// `insert` only registers a child in its parent's `children` when the parent is already
+    /// present in the table (spc_002-05) — a bulk restore that inserts rows in an order other
+    /// than parent-before-child silently drops those edges. This is idempotent and safe to call
+    /// after any bulk load.
+    pub fn rebuild_children(&mut self) {
+        for task in &mut self.tasks {
+            task.children.clear();
+        }
+        let edges: Vec<(TaskId, TaskId)> = self
+            .tasks
+            .iter()
+            .filter_map(|t| t.parent.clone().map(|parent| (parent, t.id.clone())))
+            .collect();
+        for (parent_id, child_id) in edges {
+            if let Some(parent) = self.tasks.iter_mut().find(|t| t.id == parent_id) {
+                parent.children.insert(child_id);
+            }
+        }
+    }
+
+    /// spc_002-09: reinsert every task's already-restored `Tcb.wait` into `WaitIndex`. A checkpoint
+    /// restore sets `Tcb.wait` directly (it does not call [`Self::set_wait`], the index's only
+    /// other sanctioned mutation path — restore reconstructs the whole table row at once, not one
+    /// field at a time), so without this the index silently forgets every task that was waiting at
+    /// checkpoint time. `insert` is idempotent per task id, so calling this more than once is safe.
+    /// Only touches tasks with `wait.is_some()`; conditions with no `WaitReason` counterpart
+    /// (`Timer`/`Signal`/`Channel`/...) are untouched — they are not restored via `Tcb.wait` at all.
+    pub fn rebuild_wait_index(&mut self) {
+        let waiting: Vec<(TaskId, WaitReason)> = self
+            .tasks
+            .iter()
+            .filter_map(|t| t.wait.clone().map(|wait| (t.id.clone(), wait)))
+            .collect();
+        for (id, wait) in waiting {
+            let (condition, _mode) = <(WaitCondition, WaitMode)>::from(wait);
+            self.wait_index.insert(id, &condition);
+        }
+    }
+
+    /// spc_002-08: process-tree invariant — no cycle in the `parent` chain of any task. Not on the
+    /// spawn hot path (spawn already makes a cycle structurally unreachable, see spc_002-04); this
+    /// exists to be tested and to back future debug/diagnostic tooling.
+    pub fn has_cycle(&self) -> bool {
+        for task in &self.tasks {
+            let mut visited: BTreeSet<TaskId> = BTreeSet::new();
+            let mut current = Some(task.id.clone());
+            while let Some(id) = current {
+                if !visited.insert(id.clone()) {
+                    return true;
+                }
+                current = self.get(id.as_str()).and_then(|t| t.parent.clone());
+            }
+        }
+        false
+    }
 }
 
 /// Pure budget verdict for one task: `Some(reason)` when a budget axis (turn/token/wall)
@@ -271,6 +652,502 @@ pub fn budget_verdict(task: &Tcb, now_ms: Option<u64>) -> Option<TerminationReas
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    use crate::types::capability::CapabilityManifest;
+
+    fn manifest_for(id: &str) -> IsolationManifest {
+        let spec = AgentRunSpec::new(
+            AgentIdentity::sub_agent(id, format!("{id}-session")),
+            AgentRole::Implement,
+            "do work",
+        );
+        IsolationManifest::from_spec(&spec, &CapabilityManifest::new())
+    }
+
+    #[test]
+    fn spawned_in_uses_explicit_parent() {
+        let manifest = manifest_for("agent-7-child");
+        let tcb = Tcb::spawned_in(
+            &manifest,
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            Some(TaskId::from("agent-7")),
+        );
+        assert_eq!(tcb.parent, Some(TaskId::from("agent-7")));
+    }
+
+    #[test]
+    fn spawned_in_carries_requested_capabilities_as_the_grant() {
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, ConstraintSet, Principal, ResourceSelector,
+        };
+
+        let mut manifest = manifest_for("child");
+        let grant = Capability {
+            id: CapabilityId("cap-1".into()),
+            kind: crate::types::capability::CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/src/**".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: true,
+            issuer: Principal("root".into()),
+        };
+        manifest.requested_capabilities = vec![grant.clone()];
+
+        let tcb = Tcb::spawned_in(
+            &manifest,
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            Some(TaskId::from("root")),
+        );
+        assert_eq!(tcb.capabilities, vec![grant]);
+    }
+
+    #[test]
+    fn root_task_has_no_capabilities_by_default() {
+        let tcb = Tcb::root("root", SchedulerBudget::default());
+        assert!(tcb.capabilities.is_empty());
+    }
+
+    #[test]
+    fn nested_spawn_records_real_parent() {
+        // Task A's own table: spawning B derives parent from the table's structural root (A),
+        // not a hardcoded "root" literal.
+        let mut table_a = TaskTable::new();
+        table_a.insert(Tcb::root("A", SchedulerBudget::default()));
+        let manifest_b = manifest_for("B");
+        let b = Tcb::spawned_in(
+            &manifest_b,
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            table_a.root_id(),
+        );
+        assert_eq!(b.parent, Some(TaskId::from("A")));
+
+        // B's own table (mirrors B running as its own kernel operation, rooted at its real id):
+        // spawning C derives parent from B, not from A and not from a literal "root".
+        let mut table_b = TaskTable::new();
+        table_b.insert(Tcb::root(b.id.clone(), SchedulerBudget::default()));
+        let manifest_c = manifest_for("C");
+        let c = Tcb::spawned_in(
+            &manifest_c,
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            table_b.root_id(),
+        );
+        assert_eq!(c.parent, Some(TaskId::from("B")));
+    }
+
+    #[test]
+    fn waiting_task_not_runnable() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        table.set_wait("root", Some(WaitReason::Approval));
+        table.get_mut("root").unwrap().state = TaskLifecycle::Suspended;
+
+        assert!(
+            !table.get("root").unwrap().state.occupies_slot(),
+            "a Suspended/Waiting task must not occupy a concurrency slot"
+        );
+        assert_ne!(table.get("root").unwrap().state, TaskLifecycle::Ready);
+    }
+
+    #[test]
+    fn wake_is_idempotent() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        let effect = crate::runtime::kernel::wire::EffectId::new("e1").unwrap();
+        table.wait_for_condition("root", &WaitCondition::Effect(effect.clone()));
+        let key = crate::scheduler::wait_index::WaitKey::Effect(effect);
+
+        let first = table.wake(&key);
+        assert_eq!(first, vec![TaskId::from("root")]);
+
+        // Simulated redelivery of the same completion event.
+        let second = table.wake(&key);
+        assert!(second.is_empty(), "a second wake for the same key must be a no-op");
+    }
+
+    #[test]
+    fn unrelated_event_does_not_wake() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        let e1 = crate::runtime::kernel::wire::EffectId::new("e1").unwrap();
+        let e2 = crate::runtime::kernel::wire::EffectId::new("e2").unwrap();
+        table.wait_for_condition("root", &WaitCondition::Effect(e1.clone()));
+
+        let woken = table.wake(&crate::scheduler::wait_index::WaitKey::Effect(e2));
+        assert!(woken.is_empty());
+        assert_eq!(
+            table.wait_index().lookup(&crate::scheduler::wait_index::WaitKey::Effect(e1)),
+            &[TaskId::from("root")],
+            "task must still be registered as waiting on e1"
+        );
+    }
+
+    #[test]
+    fn task_table_wait_set_any_mode_wakes_through_the_public_api() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        let e1 = crate::runtime::kernel::wire::EffectId::new("e1").unwrap();
+        let e2 = crate::runtime::kernel::wire::EffectId::new("e2").unwrap();
+        table.register_wait_set(
+            "root",
+            WaitSet {
+                mode: WaitMode::Any,
+                conditions: vec![
+                    WaitCondition::Effect(e1.clone()),
+                    WaitCondition::Effect(e2),
+                ],
+            },
+        );
+
+        let woken = table.notify(&crate::scheduler::wait_index::WaitKey::Effect(e1));
+        assert_eq!(woken, vec![TaskId::from("root")]);
+    }
+
+    #[test]
+    fn timer_wakes_exactly_at_deadline_not_before() {
+        // `WaitReason`/`Tcb.wait` stays legacy-only (spc_003-01's explicit boundary: not
+        // modified). `Timer` has no `WaitReason` counterpart, so the `WaitIndex` alone is the
+        // source of truth for whether a task is still waiting on one.
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        table.wait_for_timer("root", LogicalDeadline(1_000));
+        let key = crate::scheduler::wait_index::WaitKey::Timer(LogicalDeadline(1_000));
+        assert_eq!(table.wait_index().lookup(&key), &[TaskId::from("root")]);
+
+        let woken_early = table.wake_expired_timers(999);
+        assert!(woken_early.is_empty(), "must not wake before the deadline");
+        assert_eq!(table.wait_index().lookup(&key), &[TaskId::from("root")]);
+
+        let woken = table.wake_expired_timers(1_000);
+        assert_eq!(woken, vec![TaskId::from("root")]);
+        assert!(table.wait_index().lookup(&key).is_empty());
+    }
+
+    #[test]
+    fn set_wait_syncs_the_wait_index() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+
+        table.set_wait("root", Some(WaitReason::Approval));
+        assert_eq!(table.get("root").unwrap().wait, Some(WaitReason::Approval));
+        let (condition, _mode) = <(WaitCondition, WaitMode)>::from(WaitReason::Approval);
+        let key = crate::scheduler::wait_index::WaitKey::Approval(match condition {
+            WaitCondition::Approval(id) => id,
+            _ => unreachable!(),
+        });
+        assert_eq!(
+            table.wait_index().lookup(&key),
+            &[TaskId::from("root")]
+        );
+
+        table.set_wait("root", None);
+        assert_eq!(table.get("root").unwrap().wait, None);
+        assert!(table.wait_index().lookup(&key).is_empty());
+    }
+
+    #[test]
+    fn wait_reason_approval_converts_to_single_approval_condition() {
+        let (condition, mode) = <(WaitCondition, WaitMode)>::from(WaitReason::Approval);
+        assert!(matches!(condition, WaitCondition::Approval(_)));
+        assert_eq!(mode, WaitMode::Any);
+    }
+
+    #[test]
+    fn wait_reason_sub_agent_join_converts_to_children_wait_all() {
+        let ids = vec![TaskId::from("child-1"), TaskId::from("child-2")];
+        let (condition, mode) =
+            <(WaitCondition, WaitMode)>::from(WaitReason::SubAgentJoin(ids.clone()));
+        assert_eq!(condition, WaitCondition::Children(ids));
+        assert_eq!(mode, WaitMode::All);
+    }
+
+    #[test]
+    fn wait_condition_and_wait_mode_variants_compile() {
+        let conditions = vec![
+            WaitCondition::Effect(crate::runtime::kernel::wire::EffectId::new("e1").unwrap()),
+            WaitCondition::Child(TaskId::from("child-1")),
+            WaitCondition::Children(vec![TaskId::from("child-1"), TaskId::from("child-2")]),
+            WaitCondition::Approval(ApprovalId("approval-1".into())),
+            WaitCondition::Signal(SignalFilter("topic:*".into())),
+            WaitCondition::Timer(LogicalDeadline(1_000)),
+            WaitCondition::Channel(ChannelId("chan-1".into())),
+            WaitCondition::Resource(ResourceKey("res-1".into())),
+            WaitCondition::External(SubscriptionId("sub-1".into())),
+        ];
+        for condition in &conditions {
+            match condition {
+                WaitCondition::Effect(_)
+                | WaitCondition::Child(_)
+                | WaitCondition::Children(_)
+                | WaitCondition::Approval(_)
+                | WaitCondition::Signal(_)
+                | WaitCondition::Timer(_)
+                | WaitCondition::Channel(_)
+                | WaitCondition::Resource(_)
+                | WaitCondition::External(_) => {}
+            }
+        }
+
+        let wait_set = WaitSet {
+            mode: WaitMode::Any,
+            conditions,
+        };
+        assert_eq!(wait_set.mode, WaitMode::Any);
+        assert_eq!(wait_set.conditions.len(), 9);
+    }
+
+    #[test]
+    fn rebuild_children_recovers_lineage_after_out_of_order_restore() {
+        // spc_002-09: checkpoint restore inserts tasks in whatever order the wire state lists
+        // them — `TaskTable::insert`'s children-registration only fires when the parent is
+        // already present, so a child row landing before its parent silently drops that edge.
+        // `rebuild_children` must recover it regardless of insertion order.
+        let mut table = TaskTable::new();
+        let mut child = Tcb::root("child", SchedulerBudget::default());
+        child.parent = Some(TaskId::from("root"));
+        table.insert(child); // parent "root" does not exist yet at insertion time
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+
+        assert!(
+            !table.get("root").unwrap().children.contains(&TaskId::from("child")),
+            "sanity: out-of-order insert must NOT have already fixed itself"
+        );
+
+        table.rebuild_children();
+
+        assert!(table.get("root").unwrap().children.contains(&TaskId::from("child")));
+    }
+
+    #[test]
+    fn rebuild_wait_index_recovers_a_restored_waits_index_entry() {
+        // Mirrors what checkpoint restore actually does: build the Tcb with `.wait` already set
+        // (as `restore_task_wait` + direct field assignment does in `driver.rs`), never through
+        // `TaskTable::set_wait`. Before the fix, the WaitIndex has no record of this task at all.
+        let mut table = TaskTable::new();
+        let mut root = Tcb::root("root", SchedulerBudget::default());
+        root.wait = Some(WaitReason::Approval);
+        table.insert(root);
+
+        let (condition, _mode) = <(WaitCondition, WaitMode)>::from(WaitReason::Approval);
+        let key = crate::scheduler::wait_index::WaitKey::Approval(match condition {
+            WaitCondition::Approval(id) => id,
+            _ => unreachable!(),
+        });
+        assert!(
+            table.wait_index().lookup(&key).is_empty(),
+            "sanity: inserting a Tcb with .wait already set must NOT auto-sync WaitIndex"
+        );
+
+        table.rebuild_wait_index();
+
+        assert_eq!(table.wait_index().lookup(&key), &[TaskId::from("root")]);
+    }
+
+    #[test]
+    fn rebuild_wait_index_is_idempotent() {
+        let mut table = TaskTable::new();
+        let mut root = Tcb::root("root", SchedulerBudget::default());
+        root.wait = Some(WaitReason::Approval);
+        table.insert(root);
+
+        table.rebuild_wait_index();
+        table.rebuild_wait_index();
+
+        let (condition, _mode) = <(WaitCondition, WaitMode)>::from(WaitReason::Approval);
+        let key = crate::scheduler::wait_index::WaitKey::Approval(match condition {
+            WaitCondition::Approval(id) => id,
+            _ => unreachable!(),
+        });
+        assert_eq!(
+            table.wait_index().lookup(&key),
+            &[TaskId::from("root")],
+            "calling rebuild_wait_index twice must not duplicate the entry"
+        );
+    }
+
+    #[test]
+    fn has_cycle_is_false_on_a_normal_tree() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("A", SchedulerBudget::default()));
+        let b = Tcb::spawned_in(
+            &manifest_for("B"),
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            table.root_id(),
+        );
+        table.insert(b);
+        let c = Tcb::spawned_in(
+            &manifest_for("C"),
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            Some(TaskId::from("B")),
+        );
+        table.insert(c);
+
+        assert!(!table.has_cycle());
+    }
+
+    #[test]
+    fn has_cycle_detects_a_manually_constructed_cycle() {
+        // Detector-validity check only: the public spawn API can never produce this — a not-yet-
+        // existing task cannot already be an ancestor's parent (spc_002-04 derives `parent` from a
+        // structural fact, never from a future id).
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("A", SchedulerBudget::default()));
+        let b = Tcb::spawned_in(
+            &manifest_for("B"),
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            table.root_id(),
+        );
+        table.insert(b);
+        // Force a cycle: A's parent becomes B, even though B's parent is A.
+        table.get_mut("A").unwrap().parent = Some(TaskId::from("B"));
+
+        assert!(table.has_cycle());
+    }
+
+    #[test]
+    fn supervision_policy_defaults_match_spec_section_4() {
+        let root = Tcb::root("root", SchedulerBudget::default());
+        assert_eq!(root.supervision.child_failure, ChildFailurePolicy::Propagate);
+        assert_eq!(root.supervision.max_restarts, None);
+        assert!(root.supervision.cancel_children_on_exit);
+
+        let manifest = manifest_for("child");
+        let child = Tcb::spawned_in(
+            &manifest,
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            Some(TaskId::from("root")),
+        );
+        assert_eq!(child.supervision, SupervisionPolicy::default());
+    }
+
+    #[test]
+    fn spc_008_05_cancel_subtree_exempts_a_detached_child_and_its_own_descendants() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("A", SchedulerBudget::default()));
+        let mut b = Tcb::spawned_in(
+            &manifest_for("B"),
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            table.root_id(),
+        );
+        b.detached = true;
+        table.insert(b);
+        let c = Tcb::spawned_in(
+            &manifest_for("C"),
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            Some(TaskId::from("B")),
+        );
+        table.insert(c);
+
+        table.cancel_subtree("A");
+
+        assert_eq!(
+            table.get("A").unwrap().state,
+            TaskLifecycle::Done(TerminationReason::UserAbort),
+            "A itself must still be cancelled"
+        );
+        assert_eq!(
+            table.get("B").unwrap().state,
+            TaskLifecycle::Running,
+            "detached B must not be cancelled by A's cancellation"
+        );
+        assert_eq!(
+            table.get("C").unwrap().state,
+            TaskLifecycle::Running,
+            "C (B's own child) must not be reached either — detaching exempts the whole subtree"
+        );
+    }
+
+    #[test]
+    fn cancel_subtree_terminates_the_whole_tree() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("A", SchedulerBudget::default()));
+        let b = Tcb::spawned_in(
+            &manifest_for("B"),
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            table.root_id(),
+        );
+        table.insert(b);
+        let c = Tcb::spawned_in(
+            &manifest_for("C"),
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            Some(TaskId::from("B")),
+        );
+        table.insert(c);
+
+        table.cancel_subtree("A");
+
+        for id in ["A", "B", "C"] {
+            assert_eq!(
+                table.get(id).unwrap().state,
+                TaskLifecycle::Done(TerminationReason::UserAbort),
+                "task {id} should be cancelled"
+            );
+        }
+    }
+
+    #[test]
+    fn cancel_subtree_on_a_leaf_only_cancels_itself() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        table.cancel_subtree("root");
+        assert_eq!(
+            table.get("root").unwrap().state,
+            TaskLifecycle::Done(TerminationReason::UserAbort)
+        );
+    }
+
+    #[test]
+    fn spawn_registers_child_in_parent_children() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        let manifest = manifest_for("child-1");
+        let child = Tcb::spawned_in(
+            &manifest,
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            table.root_id(),
+        );
+        table.insert(child.clone());
+
+        assert!(
+            table
+                .get("root")
+                .unwrap()
+                .children
+                .contains(&TaskId::from("child-1"))
+        );
+
+        // A second spawn accumulates rather than clobbering the first.
+        let manifest_2 = manifest_for("child-2");
+        let child_2 = Tcb::spawned_in(
+            &manifest_2,
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            table.root_id(),
+        );
+        table.insert(child_2);
+        let root_children = &table.get("root").unwrap().children;
+        assert!(root_children.contains(&TaskId::from("child-1")));
+        assert!(root_children.contains(&TaskId::from("child-2")));
+    }
+
+    #[test]
+    fn tcb_children_default_empty() {
+        let tcb = Tcb::root("root", SchedulerBudget::default());
+        assert!(tcb.children.is_empty());
+    }
 
     #[test]
     fn process_state_maps_to_lifecycle() {
@@ -377,5 +1254,55 @@ mod tests {
             budget_verdict(&tcb, None),
             Some(TerminationReason::TokenBudget)
         );
+    }
+
+    #[test]
+    fn spc_006_03_send_message_delivers_into_the_recipients_mailbox() {
+        use crate::scheduler::mailbox::{LogicalTime, MailboxMessage, MessageId};
+        use crate::types::signal::Urgency;
+
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("a", SchedulerBudget::default()));
+        table.insert(Tcb::root("b", SchedulerBudget::default()));
+
+        table.send_message(MailboxMessage {
+            id: MessageId::from("msg-1"),
+            from: TaskId::from("a"),
+            to: TaskId::from("b"),
+            kind: CompactString::from("research_result"),
+            payload_handle: 1,
+            priority: Urgency::Normal,
+            timestamp: LogicalTime(0),
+        });
+
+        let received = table
+            .get_mut("b")
+            .unwrap()
+            .mailbox
+            .receive()
+            .expect("B must have received A's message");
+        assert_eq!(received.from, TaskId::from("a"));
+        assert_eq!(received.id, MessageId::from("msg-1"));
+        assert!(table.get_mut("a").unwrap().mailbox.receive().is_none());
+    }
+
+    #[test]
+    fn spc_006_03_send_message_to_an_unknown_task_is_dropped_not_panicking() {
+        use crate::scheduler::mailbox::{LogicalTime, MailboxMessage, MessageId};
+        use crate::types::signal::Urgency;
+
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("a", SchedulerBudget::default()));
+
+        table.send_message(MailboxMessage {
+            id: MessageId::from("msg-1"),
+            from: TaskId::from("a"),
+            to: TaskId::from("nobody"),
+            kind: CompactString::from("kind"),
+            payload_handle: 1,
+            priority: Urgency::Normal,
+            timestamp: LogicalTime(0),
+        });
+        // No panic — the only observable behavior is that the message goes nowhere.
     }
 }

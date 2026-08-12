@@ -18,7 +18,8 @@ use crate::types::result::SubAgentResult;
 pub use crate::runtime::kernel::KernelObservation;
 use crate::runtime::session::RollbackReason;
 use crate::types::message::{
-    Content, ContentPart, Message, ToolCall, ToolErrorKind, ToolResult, ToolSchema,
+    Content, ContentPart, Message, ToolCall, ToolErrorKind, ToolResult,
+    ToolSchema,
 };
 use crate::types::milestone::MilestoneCheckResult;
 use crate::types::result::{LoopResult, TerminationReason};
@@ -295,6 +296,11 @@ pub struct LoopStateMachine {
     /// the kernel tracks only this run's local usage.
     pub(super) budget_grant: Option<crate::runtime::kernel::wire::BudgetGrant>,
     pub(super) local_rounds_completed: u32,
+    /// spc_005-04: the `BudgetGrant` `evaluate_spawn_quota_inner` just reserved from the parent's
+    /// `child_budget_remaining`, awaiting attachment to the child `Tcb` the caller is about to
+    /// construct. Set only on a successful hierarchical-budget check; taken (and cleared) by the
+    /// spawn call site immediately after, so it never survives past the syscall that produced it.
+    pub(super) pending_budget_grant: Option<crate::scheduler::budget_grant::BudgetGrant>,
     /// ③ the adjudicated `pace` decision awaiting attachment to this round's LoopResult.
     pub(super) pending_pace: Option<crate::types::result::PaceDecision>,
     /// When set, the next LLM call strips tools to force a text response,
@@ -453,6 +459,7 @@ impl LoopStateMachine {
             scheduler_policy: crate::scheduler::policy::SchedulerPolicyConfig::default(),
             total_tokens: 0,
             budget_grant: None,
+            pending_budget_grant: None,
             local_rounds_completed: 0,
             pending_pace: None,
             pending_termination: None,
@@ -745,15 +752,30 @@ impl LoopStateMachine {
 
     /// Set the root task's lifecycle (and wait reason). Single mutation point for schedulability.
     fn set_lifecycle(&mut self, state: TaskLifecycle, wait: Option<WaitReason>) {
+        if self.tasks.get("root").is_none() {
+            self.tasks.insert(Tcb::root("root", self.policy.clone()));
+        }
         if let Some(root) = self.tasks.get_mut("root") {
             root.state = state;
-            root.wait = wait;
-        } else {
-            let mut root = Tcb::root("root", self.policy.clone());
-            root.state = state;
-            root.wait = wait;
-            self.tasks.insert(root);
         }
+        // spc_003-04: `set_wait` keeps `WaitIndex` in sync — it is the only sanctioned mutator.
+        self.tasks.set_wait("root", wait);
+    }
+
+    /// spc_009-05: convert the RunGroup admission grant (`tokens`/`subagents`/`rounds`, a coarse
+    /// whole-operation ceiling) into the [`crate::scheduler::budget_grant::ResourceBudget`] shape
+    /// spc_005's hierarchical checks understand. Axes with no source field (`cost_microunits`/
+    /// `wall_ms`/`concurrent_children`/`tool_calls`/`memory_writes`/`object_bytes`) stay `None` —
+    /// `ResourceBudget`'s own "unset means unbounded" convention, not an omission.
+    fn root_child_budget_seed(&self) -> Option<super::budget_grant::ResourceBudget> {
+        self.budget_grant
+            .as_ref()
+            .map(|grant| super::budget_grant::ResourceBudget {
+                tokens: grant.tokens.map(|t| t.get()),
+                child_tasks: grant.subagents,
+                turns: grant.rounds,
+                ..super::budget_grant::ResourceBudget::default()
+            })
     }
 
     /// Build a transient root [`Tcb`] mirroring the current scheduling facts (budget counters,
@@ -841,6 +863,31 @@ impl LoopStateMachine {
 
     pub fn set_budget_grant(&mut self, grant: crate::runtime::kernel::wire::BudgetGrant) {
         self.budget_grant = Some(grant);
+        // spc_009-05: seed root's own grantable pool from the RunGroup admission grant the Host
+        // just declared. `new()` already inserted root (eagerly, before any grant is known), so
+        // this is the first point a grant actually exists to seed from — `set_lifecycle`'s
+        // lazy-insert branch never fires for root and cannot be the hook. `None` stays `None`:
+        // this only activates the spc_005 hierarchical check when the Host declared a real
+        // admission grant, never unconditionally.
+        let seed = self.root_child_budget_seed();
+        if let Some(root) = self.tasks.get_mut("root") {
+            root.child_budget_remaining = seed;
+        }
+    }
+
+    /// spc_009-04: seed the operation root's own delegatable `Capability` set from
+    /// `InitialContext.requested_capabilities` — the Host input a `StartOperation` carries.
+    /// Mirrors `set_budget_grant`'s hook: root already exists (`new()` inserts it eagerly), so
+    /// this writes directly rather than waiting on `set_lifecycle`'s lazy-insert branch, which
+    /// never fires for root. An empty request leaves `capabilities` at its `Vec::new()` default —
+    /// no unconditional grant for operations that declared none.
+    pub fn set_requested_capabilities(
+        &mut self,
+        capabilities: Vec<crate::types::capability::Capability>,
+    ) {
+        if let Some(root) = self.tasks.get_mut("root") {
+            root.capabilities = capabilities;
+        }
     }
 
     /// L1: this vehicle's cumulative sub-agent spawns this run — every child task ever registered in
@@ -1737,6 +1784,26 @@ impl LoopStateMachine {
             pace_decision,
         };
         self.set_lifecycle(TaskLifecycle::Done(termination), None);
+        // spc_008-04: `SupervisionPolicy.child_failure` was structural-only (spc_002-07) until now
+        // — the root's own terminal transition is the one place in production a task with children
+        // (workflow nodes; see spc_002-03's finding that only root ever has children today) can
+        // reliably be observed terminating. `Restart`/`Retry`/`Ignore` are deliberately treated as
+        // `Isolate` for now (no policy distinguishes them yet) — a documented placeholder per
+        // spc_008-04's own scope, not silently dropped.
+        match self
+            .tasks
+            .get("root")
+            .map(|root| root.supervision.child_failure)
+            .unwrap_or_default()
+        {
+            crate::scheduler::tcb::ChildFailurePolicy::Propagate => {
+                self.tasks.cancel_children("root");
+            }
+            crate::scheduler::tcb::ChildFailurePolicy::Isolate
+            | crate::scheduler::tcb::ChildFailurePolicy::Restart
+            | crate::scheduler::tcb::ChildFailurePolicy::Retry
+            | crate::scheduler::tcb::ChildFailurePolicy::Ignore => {}
+        }
         LoopAction::Done { result }
     }
 
@@ -1807,10 +1874,12 @@ impl LoopStateMachine {
                 return self.terminate(TerminationReason::ContextOverflow, None);
             }
         }
-        if self.pending_termination.is_some() {
-            return self.call_llm_action(context, Vec::new());
-        }
-        let tools = self.provider_tools();
+        let tools = if self.pending_termination.is_some() {
+            Vec::new()
+        } else {
+            self.provider_tools()
+        };
+
         self.call_llm_action(context, tools)
     }
 
