@@ -143,10 +143,12 @@ pub struct ContextManager {
 
 impl ContextManager {
     pub fn new(max_tokens: u32) -> Self {
+        // spc_011-C-01: production default is the real-BPE-backed estimator, not char/4
+        // approximation — see `ContextTokenEngine::fallback_estimator` doc comment.
         Self::with_config(
             max_tokens,
             ContextConfig::default(),
-            ContextTokenEngine::char_approx(),
+            ContextTokenEngine::fallback_estimator(),
         )
     }
 
@@ -1623,9 +1625,19 @@ mod tests {
             output_reserve_tokens: 20,
             safety_margin_tokens: 10,
         });
-        mgr.partitions
-            .system
-            .push(Message::system("x".repeat(240)), 60);
+        // spc_011-C-01: `render()`'s fixed-context accounting always recounts the system
+        // partition via `engine.count()` (never trusts a stored `token_count` — see
+        // `renderer.rs::render_projected`'s `system_tokens` line), so this text must overflow
+        // the 50-token budget under whichever engine is configured. A single repeated character
+        // (the previous `"x".repeat(240)`) reliably hit 60 under char/4 math, but real BPE
+        // merges long identical-byte runs into a handful of tokens (~30, well under budget) —
+        // that was calibrated to the old default, not to the overflow behavior under test.
+        mgr.partitions.system.push(
+            Message::system(
+                "System policy directive number seven requires strict adherence. ".repeat(10),
+            ),
+            60,
+        );
 
         let rendered = mgr.render();
         let overflow = rendered

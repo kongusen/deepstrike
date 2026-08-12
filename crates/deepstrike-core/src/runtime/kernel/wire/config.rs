@@ -2483,7 +2483,7 @@ mod tests {
             serde_json::from_value::<HostEffectSupport>(json!({ "supported": ["load_payload"] }))
                 .is_ok()
         );
-        assert_eq!(EffectKindTag::ALL.len(), 10);
+        assert_eq!(EffectKindTag::ALL.len(), 11);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -2823,15 +2823,21 @@ mod tests {
 
     #[test]
     fn every_declared_capability_requires_its_effect_kind() {
-        // The all-fields config switches on every capability, so dropping any one kind from the
+        // The all-fields config switches on every producible capability, so dropping any one
+        // required kind from the
         // support declaration must be refused — and the rejection must name the kind, because a
         // host reading it has to know which declaration to fix. Iterating `ALL` also means a new
-        // effect kind cannot be added without deciding what switches it on.
+        // effect kind cannot be added without deciding what switches it on. `MeasurePrompt` is a
+        // reserved wire shape with no scheduler producer after SPC-013 A-00R, so it deliberately
+        // imposes no host-support requirement.
         let full = fully_populated_config();
         full.resolve(&defaults())
             .expect("declaring every kind satisfies every trigger");
 
-        for dropped in EffectKindTag::ALL {
+        for dropped in EffectKindTag::ALL
+            .into_iter()
+            .filter(|kind| *kind != EffectKindTag::MeasurePrompt)
+        {
             let mut config = full.clone();
             config.host_effect_support = HostEffectSupport::new(
                 EffectKindTag::ALL

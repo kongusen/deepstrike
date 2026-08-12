@@ -124,6 +124,8 @@ export type {
 export type {
   Message, ToolCall, ToolResult, ToolSchema,
   ContentPart, TextPart, ImagePart, AudioPart,
+  ContentBlock, MediaSource, ContentBlockText, ContentBlockImage, ContentBlockAudio,
+  ContentBlockVideo, ContentBlockFile, ContentBlockToolResult,
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, ToolAuditFailedEvent, DoneEvent, ErrorEvent,
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,

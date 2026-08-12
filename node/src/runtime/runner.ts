@@ -1,5 +1,5 @@
 import type {
-  LLMProvider, Message, ContentPart, ToolCall, ToolResult, ToolSchema,
+  LLMProvider, Message, ContentBlock, ContentPart, RenderedContext, ToolCall, ToolResult, ToolSchema,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
   PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, DreamSummarizer,
@@ -596,6 +596,39 @@ export class RuntimeRunner {
   /** K4: the active run's goal, kept for the renewal-boundary memory re-query. */
   private currentGoal = ""
   private workflowContinuation: Extract<KernelRunnerAction, { kind: "call_provider" }> | null = null
+  /** spc_012: SDK-side side channel for structured tool output. The kernel wire
+   *  (`wire::effect::ToolResult.output: String`) is text-only by design (deferred upgrade), so
+   *  multimodal blocks from an execution plane (e.g. an MCP screenshot, spc_012-N-02) are kept
+   *  here keyed by callId and re-attached onto the rendered context's tool_result parts right
+   *  before the provider call — the provider serialization layer (spc_012-N-03) then sees the
+   *  structured `contentParts` end to end. Session-scoped, not durable: after a wake/restore the
+   *  map is empty and those results degrade to their text projection (identical to pre-spc_012
+   *  behavior). */
+  private structuredToolOutputs = new Map<string, ContentBlock[]>()
+
+  /** Re-attach side-channel structured tool output onto a rendered context's tool_result parts
+   *  (matched by callId) before it goes to the provider. Pure copy-on-write: returns `context`
+   *  unchanged when nothing matches, so the common all-text path is allocation-free. */
+  private withStructuredToolOutputs(context: RenderedContext): RenderedContext {
+    if (this.structuredToolOutputs.size === 0) return context
+    const attach = (m: Message): Message => {
+      const needs = m.contentParts?.some(
+        p => p.type === "tool_result" && !p.contentParts && this.structuredToolOutputs.has(p.callId),
+      )
+      if (!needs) return m
+      return {
+        ...m,
+        contentParts: m.contentParts!.map(p =>
+          p.type === "tool_result" && !p.contentParts && this.structuredToolOutputs.has(p.callId)
+            ? { ...p, contentParts: this.structuredToolOutputs.get(p.callId)! }
+            : p),
+      }
+    }
+    const turns = context.turns.map(attach)
+    const stateTurn = context.stateTurn ? attach(context.stateTurn) : undefined
+    if (turns.every((t, i) => t === context.turns[i]) && stateTurn === context.stateTurn) return context
+    return { ...context, turns, ...(stateTurn ? { stateTurn } : {}) }
+  }
   private dashboard: KernelPrimitivesDashboard | null = null
   /** Most recent kernel entropy sample of the active/last run (see `latestEntropy`). */
   private lastEntropySample: EntropySample | null = null
@@ -2207,7 +2240,7 @@ export class RuntimeRunner {
         // model sees them — the model can't plan a call it doesn't know about, so the rollback
         // overhead disappears. The list of denied names is appended to systemKnowledge so the
         // model knows not to plan around them.
-        let context = action.context
+        let context = this.withStructuredToolOutputs(action.context)
         let tools = action.tools
         if (this.opts.governancePolicy && this.opts.governancePolicy.surfaceDeniedInSystem !== false) {
           const { allowed, denied } = governanceFilterSchema(tools, this.opts.governancePolicy)
@@ -2641,12 +2674,14 @@ export class RuntimeRunner {
             yield evt
             if (evt.type === "tool_result") {
               const tre = evt as ToolResultEvent
+              if (tre.contentParts?.length) this.structuredToolOutputs.set(tre.callId, tre.contentParts)
               toolResults.push({
                 callId: tre.callId,
                 output: tre.content,
                 isError: tre.isError,
                 isFatal: tre.isFatal,
                 errorKind: tre.errorKind,
+                ...(tre.contentParts?.length ? { contentParts: tre.contentParts } : {}),
               })
             } else if (evt.type === "tool_argument_repaired") {
               const tare = evt as ToolArgumentRepairedEvent

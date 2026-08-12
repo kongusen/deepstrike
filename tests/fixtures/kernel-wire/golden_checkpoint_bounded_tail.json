@@ -1,12 +1,12 @@
 {
-  "base_state_digest": "sha256:8e6af9ee8391f2539dc579f96c8023c009d92fb9b91cf5a87441cc5a5862a338",
+  "base_state_digest": "sha256:688af5d49a91e826bdd6025c0431a6c8c8a1200c303cca2d85d76d6e2ffa8a0d",
   "checkpoint": {
     "abi_version": 3,
-    "base_record_digest": "sha256:9f2f4c6e3b06d578cdac04d71f98e2e1831ab1dced6e4e20b6572593dfb7d608",
+    "base_record_digest": "sha256:74b7999e76564efaedc5271fb014b8979b0ee33569bad0e1042e407f0ba1e5f8",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:84dac79c643f14f60c1057e3c934b8e1f3a28bbdf25a8572d7739df3c07baa6f",
+    "checkpoint_digest": "sha256:a4c5f7d3c91a434cb788fe30f9502242eb7fa2f185e827d167b4adc7bc6f708b",
     "checkpoint_version": 1,
-    "covered_transaction_head_digest": "sha256:bb77d3702094d9f4294a889b1c29fecaf9ab69a0903ede4d981f2c22a63b4bc0",
+    "covered_transaction_head_digest": "sha256:f65efc0afa234924a8efa3905e374d8218f4bd2254a9090d0255d230b485fb7b",
     "genesis_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
     "logical_state": {
       "context_vm": {
@@ -27,13 +27,13 @@
             },
             "partition": "history",
             "role": "user",
-            "tokens": 12,
+            "tokens": 11,
             "tool_calls": []
           }
         ],
         "next_handle_id": 0,
         "partition_tokens": {
-          "history": 12,
+          "history": 11,
           "knowledge": 0,
           "system": 0
         },
@@ -71,6 +71,7 @@
         "tasks": [
           {
             "capability_ids": [],
+            "child_budget_remaining": null,
             "lifecycle": "running",
             "parent_task_id": null,
             "process": null,
@@ -273,7 +274,7 @@
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:9f2f4c6e3b06d578cdac04d71f98e2e1831ab1dced6e4e20b6572593dfb7d608",
+            "record_digest": "sha256:74b7999e76564efaedc5271fb014b8979b0ee33569bad0e1042e407f0ba1e5f8",
             "step_seq": "1"
           }
         ],
@@ -297,7 +298,7 @@
                   {
                     "content": "Proceed with the task described in [TASK STATE].",
                     "role": "user",
-                    "tokens": 12
+                    "tokens": 11
                   }
                 ]
               },
@@ -505,8 +506,8 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:8e6af9ee8391f2539dc579f96c8023c009d92fb9b91cf5a87441cc5a5862a338",
-    "tail_digest": "sha256:577baec426e3a1562ddd2b79d73e6c9ddd8df83906d8bd4d8c5aebd1e40d63e4",
+    "state_digest": "sha256:688af5d49a91e826bdd6025c0431a6c8c8a1200c303cca2d85d76d6e2ffa8a0d",
+    "tail_digest": "sha256:49822f8165896e647e40ea3cab9f9cba0cfc99b52f4ff3cd6dc39754121fba20",
     "tail_inputs": [
       {
         "input": {
@@ -541,7 +542,7 @@
           "observed_at_ms": "1700000002000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:c11c4df0cac6f4fc6bc330ef35a771f68ea651ab032268bfbf708d2b8aaa3ac6",
+        "record_digest": "sha256:4c57a522743b7a6412b6764e7359180929d098b0daf86a9793d09933ba4245ff",
         "step_seq": "2"
       },
       {
@@ -571,7 +572,7 @@
           "observed_at_ms": "1700000003000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:26cad4ef6463aa2097b2c2e32fe527909e28cc853134afde49bfd6d08fba6e58",
+        "record_digest": "sha256:c2e2a1bed1684a1cebd6bc89257564310959bdf1bf911e4580fb0837b0479a39",
         "step_seq": "3"
       },
       {
@@ -599,7 +600,7 @@
           "observed_at_ms": "1700000004000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:bb77d3702094d9f4294a889b1c29fecaf9ab69a0903ede4d981f2c22a63b4bc0",
+        "record_digest": "sha256:f65efc0afa234924a8efa3905e374d8218f4bd2254a9090d0255d230b485fb7b",
         "step_seq": "4"
       }
     ],

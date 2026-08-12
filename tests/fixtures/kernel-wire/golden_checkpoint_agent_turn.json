@@ -1,12 +1,12 @@
 {
-  "ack_token": "op-driver-1:checkpoint:3:sha256:69c0d899909cefc7b59bbb15443b751f6d171dd4b26a716822bb204f960f97c2",
+  "ack_token": "op-driver-1:checkpoint:3:sha256:5335f31f75701aaa0976bdc240eae249fc48b399a673f4f136024f7586bf5720",
   "checkpoint": {
     "abi_version": 3,
-    "base_record_digest": "sha256:26cad4ef6463aa2097b2c2e32fe527909e28cc853134afde49bfd6d08fba6e58",
+    "base_record_digest": "sha256:c2e2a1bed1684a1cebd6bc89257564310959bdf1bf911e4580fb0837b0479a39",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:69c0d899909cefc7b59bbb15443b751f6d171dd4b26a716822bb204f960f97c2",
+    "checkpoint_digest": "sha256:5335f31f75701aaa0976bdc240eae249fc48b399a673f4f136024f7586bf5720",
     "checkpoint_version": 1,
-    "covered_transaction_head_digest": "sha256:26cad4ef6463aa2097b2c2e32fe527909e28cc853134afde49bfd6d08fba6e58",
+    "covered_transaction_head_digest": "sha256:c2e2a1bed1684a1cebd6bc89257564310959bdf1bf911e4580fb0837b0479a39",
     "genesis_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
     "logical_state": {
       "context_vm": {
@@ -38,7 +38,7 @@
             },
             "partition": "history",
             "role": "user",
-            "tokens": 12,
+            "tokens": 11,
             "tool_calls": []
           },
           {
@@ -74,7 +74,7 @@
         ],
         "next_handle_id": 1,
         "partition_tokens": {
-          "history": 17,
+          "history": 16,
           "knowledge": 0,
           "system": 0
         },
@@ -120,6 +120,7 @@
         "tasks": [
           {
             "capability_ids": [],
+            "child_budget_remaining": null,
             "lifecycle": "running",
             "parent_task_id": null,
             "process": null,
@@ -317,7 +318,7 @@
         "accepted_inputs": [
           {
             "input_id": "in-acted",
-            "record_digest": "sha256:c11c4df0cac6f4fc6bc330ef35a771f68ea651ab032268bfbf708d2b8aaa3ac6",
+            "record_digest": "sha256:4c57a522743b7a6412b6764e7359180929d098b0daf86a9793d09933ba4245ff",
             "step_seq": "2"
           },
           {
@@ -327,12 +328,12 @@
           },
           {
             "input_id": "in-results",
-            "record_digest": "sha256:26cad4ef6463aa2097b2c2e32fe527909e28cc853134afde49bfd6d08fba6e58",
+            "record_digest": "sha256:c2e2a1bed1684a1cebd6bc89257564310959bdf1bf911e4580fb0837b0479a39",
             "step_seq": "3"
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:9f2f4c6e3b06d578cdac04d71f98e2e1831ab1dced6e4e20b6572593dfb7d608",
+            "record_digest": "sha256:74b7999e76564efaedc5271fb014b8979b0ee33569bad0e1042e407f0ba1e5f8",
             "step_seq": "1"
           }
         ],
@@ -356,7 +357,7 @@
                   {
                     "content": "Proceed with the task described in [TASK STATE].",
                     "role": "user",
-                    "tokens": 12
+                    "tokens": 11
                   },
                   {
                     "content": "",
@@ -597,13 +598,13 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:78af9ae43db2d446884f20a25800061e12ffc7133b58a59631323b73cbb6cf04",
+    "state_digest": "sha256:3d69c35ecc1971fc9eccba433747e144ba5813e949c9609f6a2b04fa0dde53bd",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"
   },
-  "covered_head": "sha256:26cad4ef6463aa2097b2c2e32fe527909e28cc853134afde49bfd6d08fba6e58",
+  "covered_head": "sha256:c2e2a1bed1684a1cebd6bc89257564310959bdf1bf911e4580fb0837b0479a39",
   "description": "A full-state logical checkpoint taken mid-turn (spec 12.1, 12.3). base == through == the durable head, so the bounded tail is empty and a restore replays nothing before the post-checkpoint records. The logical state is partitioned four ways and the header repeats none of it: the pending `call_provider` effect, the replay ledger and the terminal slot live in `transition`, the task table in `scheduler`, the handle table in `context_vm`, the live policy and the provider-tool causation in `syscall`.",
-  "state_digest": "sha256:78af9ae43db2d446884f20a25800061e12ffc7133b58a59631323b73cbb6cf04",
+  "state_digest": "sha256:3d69c35ecc1971fc9eccba433747e144ba5813e949c9609f6a2b04fa0dde53bd",
   "through_step_seq": "3"
 }

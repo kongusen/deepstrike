@@ -1760,6 +1760,16 @@ fn protocol_action_from_wire(
             verifier: None,
             required_evidence: Vec::new(),
         },
+        // The wire tag remains reserved, but A-00R removed the non-durable adaptive scheduler
+        // producer. No host should receive this effect until request fingerprinting and durable
+        // measurement semantics are approved.
+        EffectKind::MeasurePrompt(_) => {
+            return Err(Error::Other(
+                "the Rust runner received reserved measure_prompt effect with no enabled \
+                 scheduler producer"
+                    .to_string(),
+            ));
+        }
     };
     Ok(HostAction {
         effect_id,

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { createInterface } from "node:readline"
-import type { ToolCall, ToolSchema, StreamEvent } from "../types.js"
+import type { ToolCall, ToolSchema, StreamEvent, ContentBlock } from "../types.js"
 import type { ToolResultEvent } from "../types.js"
 import type { RegisteredTool } from "../tools/index.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
@@ -8,6 +8,52 @@ import { LocalExecutionPlane } from "./execution-plane.js"
 import type { CredentialVault } from "./credential-vault.js"
 import { formatToolError } from "../tools/errors.js"
 import { operationAbortSignal } from "./reliability.js"
+
+/** Raw MCP `tools/call` response `content` block shapes we accept (text/image/audio). */
+export interface McpContentBlock {
+  type: string
+  text?: string
+  data?: string
+  mimeType?: string
+}
+
+/**
+ * spc_012-N-02: pure conversion, unit-testable without spawning a subprocess. Prior behavior
+ * silently dropped every non-`"text"` block (INV-012-01 violation — an MCP tool returning a
+ * screenshot lost the image with no trace). `output` stays the text projection for backward
+ * compatibility with the 24 existing call sites — when non-text blocks exist the projection
+ * carries an explicit `[modality]` placeholder, so text-only providers (spc_012-N-04) degrade visibly instead
+ * of swallowing the block. `contentParts` is populated (and only populated) when the response
+ * actually contains a non-text block, so pure-text tool calls see zero behavior change.
+ */
+export function mcpResultToToolOutput(result: {
+  content?: McpContentBlock[]
+  isError?: boolean
+}): { output: string; isError: boolean; contentParts?: ContentBlock[] } {
+  const blocks = result.content ?? []
+  const hasNonText = blocks.some(c => c.type !== "text")
+  if (!hasNonText) {
+    const text = blocks
+      .filter(c => c.type === "text")
+      .map(c => c.text ?? "")
+      .join("\n")
+    return { output: text || JSON.stringify(result), isError: result.isError ?? false }
+  }
+  const output = blocks
+    .map(c => (c.type === "text" ? c.text ?? "" : `[${c.type}]`))
+    .join("\n")
+  const contentParts: ContentBlock[] = blocks.map(c => {
+    if (c.type === "text") return { type: "text", text: c.text ?? "" }
+    if (c.type === "image") {
+      return { type: "image", source: { kind: "base64", data: c.data ?? "" }, mediaType: c.mimeType }
+    }
+    if (c.type === "audio") {
+      return { type: "audio", source: { kind: "base64", data: c.data ?? "" }, mediaType: c.mimeType ?? "audio/wav" }
+    }
+    return { type: "text", text: JSON.stringify(c) }
+  })
+  return { output, isError: result.isError ?? false, contentParts }
+}
 
 export interface McpServerConfig {
   /** Executable to run (e.g. "npx", "python3", "/usr/local/bin/my-mcp-server"). */
@@ -121,18 +167,17 @@ class McpConnection {
   schemas(): ToolSchema[] { return this._schemas }
   hasSchema(name: string): boolean { return this.schemaNames.has(name) }
 
-  async execute(call: ToolCall, signal?: AbortSignal): Promise<{ output: string; isError: boolean }> {
+  async execute(
+    call: ToolCall,
+    signal?: AbortSignal,
+  ): Promise<{ output: string; isError: boolean; contentParts?: ContentBlock[] }> {
     try {
       const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
       const result = await this.request("tools/call", { name: call.name, arguments: args }, signal) as {
-        content?: Array<{ type: string; text?: string }>
+        content?: McpContentBlock[]
         isError?: boolean
       }
-      const text = (result.content ?? [])
-        .filter(c => c.type === "text")
-        .map(c => c.text ?? "")
-        .join("\n")
-      return { output: text || JSON.stringify(result), isError: result.isError ?? false }
+      return mcpResultToToolOutput(result)
     } catch (err) {
       return { output: formatToolError(err), isError: true }
     }
@@ -232,7 +277,10 @@ export class McpProxyPlane implements ExecutionPlane {
     }
 
     const tasks = Array.from(groups.entries()).map(async ([conn, serverCalls]) => {
-      const results: Array<{ call: ToolCall; result: { output: string; isError: boolean } }> = []
+      const results: Array<{
+        call: ToolCall
+        result: { output: string; isError: boolean; contentParts?: ContentBlock[] }
+      }> = []
       for (const call of serverCalls) {
         const signal = operationAbortSignal(ctx.operation, this.opts.timeoutMs ?? 30_000)
         results.push({ call, result: await conn.execute(call, signal) })
@@ -242,7 +290,14 @@ export class McpProxyPlane implements ExecutionPlane {
 
     for (const settled of await Promise.all(tasks)) {
       for (const { call, result } of settled) {
-        yield { type: "tool_result", callId: call.id, name: call.name, content: result.output, isError: result.isError } as ToolResultEvent
+        yield {
+          type: "tool_result",
+          callId: call.id,
+          name: call.name,
+          content: result.output,
+          isError: result.isError,
+          contentParts: result.contentParts,
+        } as ToolResultEvent
       }
     }
   }

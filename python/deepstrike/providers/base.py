@@ -122,6 +122,36 @@ class CircuitBreaker:
             logger.warning("Circuit breaker opened after %d failures", self._failures)
 
 
+def _content_block_to_anthropic(block: dict) -> dict:
+  """spc_012-P-03: a ContentBlock-shaped dict inside a structured tool result → Anthropic wire
+  block. Anthropic's tool_result content natively accepts text and image blocks. Anything else
+  degrades to an explicit ``[modality]`` placeholder visible to the model, never silently
+  dropped (INV-012-01)."""
+  kind = block.get("type")
+  if kind == "text":
+    return {"type": "text", "text": block.get("text", "")}
+  if kind == "image":
+    src = block.get("source") or {}
+    if src.get("kind") == "base64":
+      return {"type": "image", "source": {"type": "base64", "media_type": block.get("media_type") or "image/png", "data": src.get("data", "")}}
+    if src.get("kind") == "url":
+      return {"type": "image", "source": {"type": "url", "url": src.get("url", "")}}
+    return {"type": "text", "text": "[image]"}
+  if kind == "tool_result":
+    # INV-012-03 forbids nesting; flatten defensively rather than recurse.
+    return {"type": "text", "text": "[tool_result]"}
+  return {"type": "text", "text": f"[{kind}]"}
+
+
+def _tool_result_anthropic_content(p: Any) -> "str | list[dict]":
+  """spc_012-P-03: structured `content_parts` win when present; otherwise the legacy text
+  projection (`output`) is the content, byte-identical to the pre-spc_012 behavior."""
+  content_parts = getattr(p, "content_parts", None)
+  if content_parts:
+    return [_content_block_to_anthropic(b) for b in content_parts]
+  return p.output
+
+
 def to_anthropic_content(msg: Message) -> str | list[dict]:
     """Convert Message to Anthropic API content format."""
     if not getattr(msg, "content_parts", None):
@@ -141,7 +171,7 @@ def to_anthropic_content(msg: Message) -> str | list[dict]:
             parts.append({
                 "type": "tool_result",
                 "tool_use_id": p.call_id,
-                "content": p.output,
+                "content": _tool_result_anthropic_content(p),
                 "is_error": p.is_error,
             })
     return parts or msg.content
@@ -198,7 +228,7 @@ def to_anthropic_messages(
                 {
                     "type": "tool_result",
                     "tool_use_id": p.call_id,
-                    "content": p.output,
+                    "content": _tool_result_anthropic_content(p),
                     "is_error": p.is_error,
                 }
                 for p in (getattr(msg, "content_parts", None) or [])
@@ -253,6 +283,10 @@ def to_openai_message_params(context: "RenderedContext") -> list[dict]:
     # bindings, where the state is already inside turns.
     for msg in turns_with_state_appended(context):
         if msg.role == "tool":
+            # spc_012-P-03 (parity with Node N-04): OpenAI **chat completions** tool-role
+            # messages accept text only. Explicit text-only degradation via the `output`
+            # projection (visible `[modality]` placeholder, INV-012-01); the Responses API
+            # has native structured support (see Node openai-responses.ts).
             for p in (getattr(msg, "content_parts", None) or []):
                 if p.type == "tool_result":
                     result.append({

@@ -1,0 +1,67 @@
+{
+  "message": {
+    "content": "The weather is sunny.",
+    "role": "assistant"
+  },
+  "replay": null,
+  "request": {
+    "body": {
+      "messages": [
+        {
+          "content": "You are a weather assistant.\n\nKnown fact: the Eiffel Tower is in Paris.",
+          "role": "system"
+        },
+        {
+          "content": "Weather in Paris? Use your tools.",
+          "role": "user"
+        },
+        {
+          "content": "Checking the weather for Paris.",
+          "role": "assistant"
+        },
+        {
+          "content": "sunny, 24C",
+          "role": "tool"
+        },
+        {
+          "content": "Here is a photo I took.\n[image]",
+          "images": [
+            "aGVsbG8="
+          ],
+          "role": "user"
+        },
+        {
+          "content": "Now checking Lyon with a screenshot tool.",
+          "role": "assistant"
+        },
+        {
+          "content": "cloudy, 18C\n[image]",
+          "role": "tool"
+        }
+      ],
+      "model": "llama3",
+      "stream": false,
+      "tools": [
+        {
+          "function": {
+            "description": "Get the current weather for a city",
+            "name": "get_weather",
+            "parameters": {
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "url": "http://localhost:11434/api/chat"
+  }
+}

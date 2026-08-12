@@ -1,0 +1,38 @@
+[
+  {
+    "model": "llama3",
+    "policy": {
+      "maxTurns": 20
+    }
+  },
+  {
+    "model": "llama3.2",
+    "policy": {
+      "maxTurns": 20
+    }
+  },
+  {
+    "model": "llama3.1-70b",
+    "policy": {
+      "maxTurns": 20
+    }
+  },
+  {
+    "model": "qwen2.5",
+    "policy": {
+      "maxTurns": 20
+    }
+  },
+  {
+    "model": "mistral-nemo",
+    "policy": {
+      "maxTurns": 20
+    }
+  },
+  {
+    "model": "totally-unknown-xyz",
+    "policy": {
+      "maxTurns": 20
+    }
+  }
+]

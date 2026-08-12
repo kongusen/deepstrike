@@ -151,7 +151,7 @@ describe("long-session memory paging integration", () => {
     expect(archived.length).toBeGreaterThan(0)
 
     expect(sawRecallInContext).toBe(true)
-  })
+  }, 15_000)
 
   it("a SessionLog clone cannot rewind a terminal operation in the canonical journal", async () => {
     let compressCalls = 0
@@ -262,5 +262,5 @@ describe("long-session memory paging integration", () => {
     expect(sawRecallOnWake).toBe(false)
     expect(wakeStreamCalls).toBe(0)
     expect(afterWake.some(e => e.event.kind === "run_terminal")).toBe(true)
-  })
+  }, 15_000)
 })

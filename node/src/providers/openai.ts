@@ -2,8 +2,10 @@ import OpenAI from "openai"
 import type { Message, ProviderDescriptor, ProviderReplay, ProviderRunState, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys, openAICachedPromptTokens, stablePromptCacheKey, ThinkingTagStreamExtractor } from "./base.js"
+import { normalizeOpenAIUsage } from "./usage-normalizer.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
 import type { ReplayabilityAssessment } from "./replay-validator.js"
+import { assertContextModalitySupported, tryGetModelCapabilities } from "./model-capabilities.js"
 
 const OPENAI_POLICIES: Record<string, RuntimePolicy> = {
   "gpt-5.5":       { maxTurns: 60 },
@@ -301,12 +303,14 @@ export class OpenAIChatProvider implements LLMProvider {
     // usage event the runner reads. The kernel treats "length" as a truncation (== Anthropic
     // "max_tokens"); other reasons ("stop"/"tool_calls") pass through harmlessly.
     let finishReason: string | undefined
+    let rawUsage: unknown
     for await (const chunk of stream) {
       if (chunk.usage) {
         totalTokens = chunk.usage.total_tokens
         inputTokens = chunk.usage.prompt_tokens ?? 0
         outputTokens = chunk.usage.completion_tokens ?? 0
         cacheReadTokens = openAICachedPromptTokens(chunk.usage)
+        rawUsage = chunk.usage
         continue
       }
       const choice = chunk.choices[0]
@@ -365,7 +369,18 @@ export class OpenAIChatProvider implements LLMProvider {
 
     rememberStream()
     yield* emitPendingToolCalls()
-    if (totalTokens > 0) yield { type: "usage", totalTokens, inputTokens, outputTokens, ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}), ...(finishReason ? { stopReason: finishReason } : {}) } as StreamEvent
+    if (totalTokens > 0) {
+      const providerUsage = normalizeOpenAIUsage(rawUsage)
+      yield {
+        type: "usage",
+        totalTokens,
+        inputTokens,
+        outputTokens,
+        ...(cacheReadTokens > 0 ? { cacheReadInputTokens: cacheReadTokens } : {}),
+        ...(finishReason ? { stopReason: finishReason } : {}),
+        ...(providerUsage ? { providerUsage } : {}),
+      } as StreamEvent
+    }
   }
 
   /**

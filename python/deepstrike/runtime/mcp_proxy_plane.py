@@ -30,6 +30,45 @@ class McpServerConfig:
 
 # ── Internal MCP client ───────────────────────────────────────────────────────
 
+def mcp_result_to_tool_output(result: dict) -> tuple[str, bool, list[dict] | None]:
+  """spc_012-P-02: pure conversion, unit-testable without spawning a subprocess. Prior behavior
+  silently dropped every non-``"text"`` block (INV-012-01 violation — an MCP tool returning a
+  screenshot lost the image with no trace; same bug as the Node mcp-proxy-plane.ts one).
+  ``output`` stays the text projection for backward compatibility — when non-text blocks exist
+  it carries an explicit ``[modality]`` placeholder so text-only providers degrade visibly.
+  ``content_parts`` is populated (and only populated) when the response actually contains a
+  non-text block, so pure-text tool calls see zero behavior change."""
+  blocks = result.get("content") or []
+  has_non_text = any(c.get("type") != "text" for c in blocks)
+  if not has_non_text:
+    text = "\n".join(c.get("text", "") for c in blocks if c.get("type") == "text")
+    return (text or json.dumps(result)), result.get("isError", False), None
+  output = "\n".join(
+    c.get("text", "") if c.get("type") == "text" else f"[{c.get('type')}]" for c in blocks
+  )
+  content_parts: list[dict] = []
+  for c in blocks:
+    kind = c.get("type")
+    if kind == "text":
+      content_parts.append({"type": "text", "text": c.get("text", "")})
+    elif kind == "image":
+      content_parts.append({
+        "type": "image",
+        "source": {"kind": "base64", "data": c.get("data", "")},
+        "media_type": c.get("mimeType"),
+      })
+    elif kind == "audio":
+      content_parts.append({
+        "type": "audio",
+        "source": {"kind": "base64", "data": c.get("data", "")},
+        "media_type": c.get("mimeType") or "audio/wav",
+      })
+    else:
+      # Unknown block types serialize as text instead of disappearing (INV-012-01).
+      content_parts.append({"type": "text", "text": json.dumps(c)})
+  return output, result.get("isError", False), content_parts
+
+
 class _McpConnection:
   def __init__(self, server_name: str, config: McpServerConfig, vault: CredentialVault) -> None:
     self._name = server_name
@@ -120,16 +159,13 @@ class _McpConnection:
   def has_schema(self, name: str) -> bool:
     return name in self._schema_names
 
-  async def execute(self, call: ToolCall) -> tuple[str, bool]:
+  async def execute(self, call: ToolCall) -> tuple[str, bool, list[dict] | None]:
     try:
       args = json.loads(call.arguments or "{}")
       result: dict = await self._request("tools/call", {"name": call.name, "arguments": args})
-      text = "\n".join(
-        c.get("text", "") for c in result.get("content", []) if c.get("type") == "text"
-      )
-      return (text or json.dumps(result)), result.get("isError", False)
+      return mcp_result_to_tool_output(result)
     except Exception as exc:
-      return format_tool_error(exc), True
+      return format_tool_error(exc), True, None
 
   async def stop(self) -> None:
     if self._reader_task:
@@ -226,20 +262,23 @@ class McpProxyPlane:
     for call in unknown:
       yield ToolResultEvent(call_id=call.id, name=call.name, content=f"unknown MCP tool: {call.name}", is_error=True)
 
-    async def run_group(conn: _McpConnection, group: list[ToolCall]) -> list[tuple[ToolCall, str, bool]]:
+    async def run_group(conn: _McpConnection, group: list[ToolCall]) -> list[tuple[ToolCall, str, bool, list[dict] | None]]:
       results = []
       for call in group:
-        output, is_error = await run_with_operation(
+        output, is_error, content_parts = await run_with_operation(
           conn.execute(call), ctx.operation, timeout_ms=self._timeout_ms,
         )
-        results.append((call, output, is_error))
+        results.append((call, output, is_error, content_parts))
       return results
 
     tasks = [asyncio.create_task(run_group(conn, group)) for conn, group in groups.items()]
     try:
       for task in tasks:
-        for call, output, is_error in await task:
-          yield ToolResultEvent(call_id=call.id, name=call.name, content=output, is_error=is_error)
+        for call, output, is_error, content_parts in await task:
+          yield ToolResultEvent(
+            call_id=call.id, name=call.name, content=output, is_error=is_error,
+            content_parts=content_parts,
+          )
     finally:
       for task in tasks:
         if not task.done():

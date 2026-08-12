@@ -58,7 +58,10 @@ describe("renewal-boundary memory re-query (K4)", () => {
       // 400-char outputs against a 200-token window push ρ past the renewal threshold fast; once
       // the first renewal fired, output shrinks so pressure subsides and the re-fetched recall
       // line survives to the next render instead of being wiped by back-to-back renewals.
-      [tool("bulk", "bulk", { type: "object", properties: {} }, () => (sawRenewal ? "ok" : "z".repeat(400)))],
+      // spc_011-C-01: varied phrase-repeated text, not a single repeated character — "z".repeat(400)
+      // compresses far below the ~100 effective tokens/turn this test needs under the real-BPE
+      // default engine (011-C-01); repeated identical bytes are exactly what BPE merges hardest.
+      [tool("bulk", "bulk", { type: "object", properties: {} }, () => (sawRenewal ? "ok" : "The quick fox jumps over lazy dogs and writes long context reports daily. ".repeat(7)))],
       {
         maxTokens: 200,
         maxTurns: 30,

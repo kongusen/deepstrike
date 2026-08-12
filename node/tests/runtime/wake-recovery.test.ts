@@ -233,7 +233,11 @@ describe("RuntimeRunner wake recovery", () => {
       provider,
       [tool("ping", "Ping", { type: "object", properties: {} }, () => {
         toolRuns += 1
-        return "pong ".repeat(200)
+        // spc_011-C-01: a single repeated 5-char word ("pong ".repeat(200)) compresses far below
+        // maxTokens:256 under the real-BPE-backed default engine (011-C-01) — repeated identical
+        // substrings are exactly what BPE merges most aggressively. Varied phrase-repeated text
+        // delivers a comparable token count per character the old char/4 math assumed.
+        return "The quick fox jumps over lazy dogs and writes long context reports daily. ".repeat(30)
       })],
       { maxTokens: 256, maxTurns: 4 },
     )
@@ -266,17 +270,22 @@ describe("RuntimeRunner wake recovery", () => {
       maxTokens: 1000,
       maxTurns: 4,
     })
+    // spc_011-C-01: repeated single tokens ("seed "/"a"/"prior answer ") compress far below what
+    // char/4 math assumed under the real-BPE-backed default engine (011-C-01) — see the same note
+    // on the previous test. Varied phrase-repeated text restores a comparable token-per-character
+    // density.
+    const phrase = "The quick fox jumps over lazy dogs and writes long context reports daily. "
     const sessionId = "reactive-compact"
     await sessionLog.append(sessionId, {
       kind: "run_started",
       run_id: "seed",
-      goal: "seed ".repeat(40),
+      goal: phrase.repeat(8),
       criteria: [],
     })
     await sessionLog.append(sessionId, {
       kind: "llm_completed",
       turn: 0,
-      content: "prior answer ".repeat(20),
+      content: phrase.repeat(8),
       tool_calls: [],
     })
     await sessionLog.append(sessionId, {
@@ -288,7 +297,7 @@ describe("RuntimeRunner wake recovery", () => {
 
     const text = await collectText(runner.run({
       sessionId,
-      goal: "a".repeat(400),
+      goal: phrase.repeat(8),
     }))
 
     expect(text).toBe("recovered")

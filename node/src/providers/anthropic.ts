@@ -1,8 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { CacheBreakpointStrategy, Message, ProviderDescriptor, ProviderReplay, ProviderRunState, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { CacheBreakpointStrategy, Message, ProviderDescriptor, ProviderReplay, ProviderRunState, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, RuntimePolicy, PromptMeasurement } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicContent, toAnthropicMessages } from "./base.js"
+import { normalizeAnthropicUsage } from "./usage-normalizer.js"
+import { assertContextModalitySupported, tryGetModelCapabilities } from "./model-capabilities.js"
 
 const CLAUDE_POLICIES: Record<string, RuntimePolicy> = {
   "claude-opus-4-1":          { maxTurns: 50 },
@@ -163,6 +165,26 @@ export class AnthropicProvider implements LLMProvider {
     throw lastErr
   }
 
+  /** spc_011-C-03: native preflight token count via `messages.countTokens` — reuses the exact
+   *  same request-building helpers `complete()` uses, so the counted request matches what would
+   *  actually be sent. `cache_control` blocks (irrelevant to counting) ride along harmlessly. */
+  async countTokens(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<PromptMeasurement> {
+    const strategy = resolveCacheBreakpointStrategy(extensions)
+    const system = this.buildSystem(context, strategy)
+    const msgs = this.buildMessages(context, strategy)
+    const resp = await this.client.messages.countTokens({
+      model: this.model,
+      ...(system ? { system } : {}),
+      messages: msgs,
+      ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system), strategy) } : {}),
+    } as unknown as Anthropic.MessageCountTokensParams)
+    return {
+      inputTokens: resp.input_tokens,
+      source: { kind: "native", provider: "anthropic" },
+      confidence: "exact",
+    }
+  }
+
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const strategy = resolveCacheBreakpointStrategy(extensions)
     const system = this.buildSystem(context, strategy)
@@ -212,6 +234,17 @@ export class AnthropicProvider implements LLMProvider {
           // stop_reason is only present on message_delta (the closing frame). `max_tokens` drives
           // the kernel's output-cap recovery; other reasons (end_turn/tool_use) are informational.
           const stopReason = (evt as { delta?: { stop_reason?: string | null } }).delta?.stop_reason
+          // Built from the already-accumulated running totals above, not the raw per-chunk
+          // `usage` — individual message_delta chunks can omit fields (see the Math.max comment
+          // above), so normalizing the sparse per-chunk object directly would undercount.
+          const providerUsage = normalizeAnthropicUsage(
+            {
+              input_tokens: uncachedInput,
+              cache_read_input_tokens: cacheReadTokens,
+              cache_creation_input_tokens: cacheCreationTokens,
+              output_tokens: outputTokens,
+            },
+          )
           yield {
             type: "usage",
             totalTokens: inputTokens + outputTokens,
@@ -221,6 +254,7 @@ export class AnthropicProvider implements LLMProvider {
             cacheCreationInputTokens: cacheCreationTokens,
             ...(bySlot ? { cacheReadInputTokensBySlot: bySlot } : {}),
             ...(stopReason ? { stopReason } : {}),
+            ...(providerUsage ? { providerUsage } : {}),
           } as UsageEvent
         }
       } else if (evt.type === "content_block_start") {

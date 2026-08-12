@@ -39,6 +39,18 @@ export interface ModelProfile {
     maxTurns?: number
     timeoutMs?: number
   }
+  /**
+   * spc_011-D-01: Track D capability facts not already covered by the fields above (contextWindow/
+   * modalities/tools/reasoning). Optional and populated per-model as it's verified against vendor
+   * docs — the internal capability projection falls back to conservative defaults for un-annotated models
+   * rather than requiring all ~90 entries in `modelProfiles` to carry it up front.
+   */
+  maxOutputTokens?: number
+  parallelToolCalls?: boolean
+  structuredOutput?: boolean
+  promptCaching?: boolean
+  tokenCounting?: "native" | "local-exact" | "heuristic"
+  media?: { imageUrl?: boolean; imageBase64?: boolean; fileId?: boolean; audioUrl?: boolean; audioBase64?: boolean }
 }
 
 export const endpointProfiles = {
@@ -222,6 +234,15 @@ export const modelProfiles = {
     tools: { supported: true },
     reasoning: { supported: true, preserveAcrossToolTurns: false },
     policy: { maxTurns: 25 },
+    // spc_011-D-01: verified against `anthropic.ts`/`base.ts` (this codebase's actual wire, not
+    // just vendor docs) — audio is NOT reachable (toAnthropicContent throws UnsupportedModalityError
+    // on `type: "audio"`), image is (base64 AND url source both implemented), cache_control is used.
+    maxOutputTokens: 64_000,
+    parallelToolCalls: true,
+    structuredOutput: false,
+    promptCaching: true,
+    tokenCounting: "native",
+    media: { imageUrl: true, imageBase64: true, fileId: false, audioUrl: false, audioBase64: false },
   },
   "anthropic/claude-sonnet-4-0": {
     id: "anthropic/claude-sonnet-4-0",
@@ -306,6 +327,17 @@ export const modelProfiles = {
     modalities: { input: ["text", "image"], output: ["text"] },
     tools: { supported: true }, reasoning: { supported: false, preserveAcrossToolTurns: false },
     policy: { maxTurns: 25 },
+    // spc_011-D-01: verified against `openai.ts`/`base.ts` — image_url accepts base64-data-uri
+    // AND direct url; input_audio exists in toOpenAIContent but is an audio-preview-variant
+    // feature, not this table's plain gpt-4o entry (matches its own `modalities.input`, no audio).
+    // 011-C-04 already proved there is no OpenAI preflight token-count endpoint (heuristic only);
+    // automatic prompt caching (011-C-07's `prompt_cache_key`) is confirmed live in this file.
+    maxOutputTokens: 16_384,
+    parallelToolCalls: true,
+    structuredOutput: true,
+    promptCaching: true,
+    tokenCounting: "heuristic",
+    media: { imageUrl: true, imageBase64: true, fileId: false, audioUrl: false, audioBase64: false },
   },
   "openai/gpt-4o-mini": {
     id: "openai/gpt-4o-mini", providerId: "openai", defaultEndpointId: "openai.chat",
@@ -686,6 +718,16 @@ export const modelProfiles = {
     modalities: { input: ["text", "image", "audio"], output: ["text"] },
     tools: { supported: true }, reasoning: { supported: true, preserveAcrossToolTurns: false },
     policy: { maxTurns: 35 },
+    // spc_011-D-01: verified against `gemini.ts` — inlineData (base64) AND fileData (url) both
+    // implemented for image; audio goes through the same inlineData path (011-C-05 also added
+    // `countTokens()`, a real native precount call, hence "native" here); implicit cache hits are
+    // read back from `cachedContentTokenCount` in the same file (011-C-07), so promptCaching:true.
+    maxOutputTokens: 65_536,
+    parallelToolCalls: true,
+    structuredOutput: true,
+    promptCaching: true,
+    tokenCounting: "native",
+    media: { imageUrl: true, imageBase64: true, fileId: false, audioUrl: false, audioBase64: true },
   },
   "gemini/gemini-2.5-flash": {
     id: "gemini/gemini-2.5-flash", providerId: "gemini", defaultEndpointId: "gemini.google",

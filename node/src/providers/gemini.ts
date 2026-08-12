@@ -1,9 +1,11 @@
 import { GoogleGenerativeAI, type Content, type Part, type RequestOptions, type Tool } from "@google/generative-ai"
-import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy, PromptMeasurement } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, turnsWithStateAppended } from "./base.js"
 import { endpointProfiles } from "./profiles.js"
 import { UnsupportedModalityError } from "./base.js"
+import { normalizeGeminiUsage } from "./usage-normalizer.js"
+import { assertContextModalitySupported, tryGetModelCapabilities } from "./model-capabilities.js"
 
 const GEMINI_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["gemini.google"].baseURL
 
@@ -23,6 +25,11 @@ export function buildContents(turns: Message[]): Content[] {
   const contents: Content[] = []
   for (const msg of turns) {
     if (msg.role === "tool") {
+      // spc_012-N-04: Gemini `functionResponse` on the 1.5/2.x models this provider targets
+      // accepts only a JSON `response` object — multimodal `functionResponse.parts` exists only
+      // on Gemini 3 (not in this repo's model matrix). Explicit text-only degradation via the
+      // `output` projection (visible `[modality]` placeholder, INV-012-01); Gemini-3 native
+      // support is a recorded future option if a Gemini 3 model is ever added.
       const parts: Part[] = (msg.contentParts ?? [])
         .filter(p => p.type === "tool_result")
         .map(p => {
@@ -197,13 +204,41 @@ export class GeminiProvider implements LLMProvider {
       // Gemini implicit/explicit cache hits are reported as cachedContentTokenCount,
       // a subset of promptTokenCount (which stays the full prompt for accounting).
       const cachedTokens = (usage as { cachedContentTokenCount?: number }).cachedContentTokenCount ?? 0
+      const providerUsage = normalizeGeminiUsage(usage)
       yield {
         type: "usage",
         totalTokens: usage.totalTokenCount,
         inputTokens: usage.promptTokenCount ?? 0,
         outputTokens: usage.candidatesTokenCount ?? 0,
         ...(cachedTokens > 0 ? { cacheReadInputTokens: cachedTokens } : {}),
+        ...(providerUsage ? { providerUsage } : {}),
       } as StreamEvent
+    }
+  }
+
+  /**
+   * spc_011-C-05: preflight native token count via `GenerativeModel.countTokens` — reuses the
+   * same contents/tools/vendorConfig construction `complete()` uses so the counted request and
+   * the sent request never diverge.
+   */
+  async countTokens(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<PromptMeasurement> {
+    const system = context.systemText || undefined
+    const contents = buildContents(turnsWithStateAppended(context))
+    const geminiTools = buildTools(tools)
+    const vc = this.vendorConfig(extensions)
+    const allTools = [...geminiTools, ...((vc.tools as Tool[] | undefined) ?? [])]
+    const m = this.genAI.getGenerativeModel({
+      ...this.modelExtensions(extensions),
+      model: this.model,
+      ...(system ? { systemInstruction: system } : {}),
+      ...(allTools.length ? { tools: allTools } : {}),
+      ...(vc.generationConfig ? { generationConfig: vc.generationConfig } : {}),
+    }, this.requestOptions)
+    const resp = await m.countTokens({ contents })
+    return {
+      inputTokens: resp.totalTokens,
+      source: { kind: "native", provider: "gemini" },
+      confidence: "exact",
     }
   }
 

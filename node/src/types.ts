@@ -30,9 +30,52 @@ export interface ToolResultPart {
   callId: string
   output: string
   isError: boolean
+  /**
+   * spc_012-N-01: structured multimodal tool output, additive alongside `output`. When present,
+   * `output` must still hold the constructor's own text projection of the same content (same
+   * projection of the same blocks. The current type cannot enforce that invariant; A-02's
+   * corrective tests intentionally keep the conflicting-state case red until the content model
+   * has one canonical source of truth.
+   */
+  contentParts?: ContentBlock[]
 }
 
 export type ContentPart = TextPart | ImagePart | AudioPart | ToolResultPart
+
+/**
+ * spc_011-B-05: canonical multimodal content, additive alongside `ContentPart` during the
+ * migration. `ContentBlockImage`/`ContentBlockAudio`/etc.
+ * are distinctly named (not reusing `ImagePart`/`AudioPart`) since those names are already taken
+ * by `ContentPart`'s variants with a different shape (`url?/data?` inline vs `source: MediaSource`).
+ */
+export type MediaSource =
+  | { kind: "url"; url: string }
+  | { kind: "base64"; data: string }
+  | { kind: "fileId"; id: string }
+  | { kind: "object"; handle: string }
+
+export interface ContentBlockText { type: "text"; text: string }
+export interface ContentBlockImage { type: "image"; source: MediaSource; mediaType?: string; providerOptions?: Record<string, unknown> }
+export interface ContentBlockAudio { type: "audio"; source: MediaSource; mediaType?: string; providerOptions?: Record<string, unknown> }
+export interface ContentBlockVideo { type: "video"; source: MediaSource; mediaType?: string; providerOptions?: Record<string, unknown> }
+export interface ContentBlockFile { type: "file"; source: MediaSource; filename?: string; mediaType?: string; providerOptions?: Record<string, unknown> }
+/**
+ * spc_011-B-04/B-05 parity: `content: ContentBlock[]` (not `output: string`) so a multimodal tool
+ * result isn't flattened — but this coexists with `ToolResultPart.output: string` rather than
+ * renaming it. The Rust side found the equivalent rename touches 54 call sites deeply embedded in
+ * the `context/` compression pipeline and the user chose docs-only over a forced merge; Node has
+ * ~24 call sites spanning core runtime (`runner.ts`/`kernel-step.ts`/`execution-plane.ts`, not
+ * just providers), the same shape of problem, so the same non-disruptive choice applies here.
+ */
+export interface ContentBlockToolResult { type: "tool_result"; callId: string; content: ContentBlock[]; isError: boolean }
+
+export type ContentBlock =
+  | ContentBlockText
+  | ContentBlockImage
+  | ContentBlockAudio
+  | ContentBlockVideo
+  | ContentBlockFile
+  | ContentBlockToolResult
 
 export interface Message {
   role: "system" | "user" | "assistant" | "tool"
@@ -65,12 +108,17 @@ export interface ToolResult {
   isFatal?: boolean
   errorKind?: ToolErrorKind
   tokenCount?: number
+  /** spc_012-N-01: same additive contract as `ToolResultPart.contentParts` (see there). */
+  contentParts?: ContentBlock[]
 }
 
 export interface ToolSchema {
   name: string
   description: string
   parameters: string // JSON-encoded JSON Schema
+  /** spc_001: vendor-specific extension bag, keyed by provider name. Preserved through
+   *  normalization/lowering, never flattened into portable fields. */
+  providerOptions?: Record<string, unknown>
 }
 
 export interface StreamEvent {
@@ -114,6 +162,8 @@ export interface UsageEvent extends StreamEvent {
    *  output-cap truncation, which drives the kernel's max-output-tokens recovery. Absent when the
    *  provider doesn't report one. */
   stopReason?: string
+  /** Normalized postflight usage parsed from this same raw provider response. */
+  providerUsage?: ProviderUsage
 }
 
 export type ToolChunk =
@@ -149,6 +199,9 @@ export interface ToolResultEvent extends StreamEvent {
   isError: boolean
   isFatal?: boolean
   errorKind?: ToolErrorKind
+  /** spc_012-N-02: structured multimodal blocks when the tool returned non-text content
+   *  (e.g. an MCP screenshot). `content` stays the text projection; see `ToolResultPart.contentParts`. */
+  contentParts?: ContentBlock[]
 }
 
 /** R3-1: a workflow node's agent called the `submit_workflow_nodes` tool. The runner intercepts it
@@ -283,6 +336,39 @@ export interface TokenUsage {
   cacheReadInputTokens?: number
   /** Prompt tokens written to cache (billed ~1.25x). Subset of inputTokens. */
   cacheCreationInputTokens?: number
+}
+
+/** Raw postflight token facts normalized across provider wire shapes. */
+export interface ProviderUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadInputTokens?: number
+  cacheCreationInputTokens?: number
+  /** Output tokens spent on hidden reasoning (OpenAI `completion_tokens_details.reasoning_tokens` /
+   *  Responses `output_tokens_details.reasoning_tokens`). A SUBSET of `outputTokens`, not additional
+   *  — vendors that don't report a separate count (Anthropic, Gemini via this SDK) leave this unset
+   *  rather than guessing. */
+  reasoningTokens?: number
+}
+
+/** Node-side mirror of the reserved Rust `context::measurement` types — where a
+ *  preflight token count came from. Field names/shape intentionally match the Rust
+ *  `MeasurementSource` enum (`kind`-tagged, snake_case variant names) so the two sides can be
+ *  compared/round-tripped without a translation layer. A-00R removed the non-durable adaptive
+ *  scheduler producer; the shape remains for the native provider meter implementations. */
+export type MeasurementSource =
+  | { kind: "native"; provider: string }
+  | { kind: "local_exact"; tokenizer: string }
+  | { kind: "heuristic" }
+
+export type MeasurementConfidence = "exact" | "high_confidence" | "low_confidence"
+
+/** A single preflight token-count fact for a candidate render, for a specific provider/model —
+ *  the Node counterpart of Rust's `PromptMeasurement` (spc_011-C-02). */
+export interface PromptMeasurement {
+  inputTokens: number
+  source: MeasurementSource
+  confidence: MeasurementConfidence
 }
 
 export interface ProviderToolSpec {
@@ -452,6 +538,17 @@ export interface LLMProvider {
    * candidate) before issuing the request. Seed any persisted replay first.
    */
   assessReplayability?(context: RenderedContext, extensions?: Record<string, unknown>): ReplayabilityAssessment
+  /**
+   * spc_011-C-02/03: preflight token count via the provider's own native counting endpoint
+   * (Anthropic `messages.countTokens` and Gemini `countTokens`),
+   * where the vendor offers one. Optional — providers without a native endpoint simply omit it,
+   * and callers fall back to `FallbackEstimator` (Rust `context::token_engine`, spc_011-C-01) or
+   * a local tokenizer. Not currently invoked by any dispatch loop (nothing in the Rust kernel
+   * emits `EffectKind::MeasurePrompt` yet — see its doc comment); this method exists so the
+   * capability remains directly callable, but no dispatch trigger is enabled until request
+   * fingerprinting and durable measurement semantics are defined.
+   */
+  countTokens?(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<PromptMeasurement>
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
   stream(
     context: RenderedContext,

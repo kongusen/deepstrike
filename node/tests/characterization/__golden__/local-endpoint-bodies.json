@@ -1,0 +1,497 @@
+[
+  {
+    "body": {
+      "max_tokens": 8096,
+      "messages": [
+        {
+          "content": "Weather in Paris? Use your tools.",
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "Checking the weather for Paris.",
+              "type": "text"
+            },
+            {
+              "id": "call_1",
+              "input": {
+                "city": "Paris"
+              },
+              "name": "get_weather",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "sunny, 24C",
+              "is_error": false,
+              "tool_use_id": "call_1",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "Here is a photo I took.",
+              "type": "text"
+            },
+            {
+              "cache_control": {
+                "type": "ephemeral"
+              },
+              "source": {
+                "data": "aGVsbG8=",
+                "media_type": "image/png",
+                "type": "base64"
+              },
+              "type": "image"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "text": "Now checking Lyon with a screenshot tool.",
+              "type": "text"
+            },
+            {
+              "id": "call_2",
+              "input": {
+                "city": "Lyon"
+              },
+              "name": "get_weather",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "cache_control": {
+                "type": "ephemeral"
+              },
+              "content": [
+                {
+                  "text": "cloudy, 18C",
+                  "type": "text"
+                },
+                {
+                  "source": {
+                    "data": "d29ybGQ=",
+                    "media_type": "image/png",
+                    "type": "base64"
+                  },
+                  "type": "image"
+                }
+              ],
+              "is_error": false,
+              "tool_use_id": "call_2",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "claude-opus-4-1",
+      "system": [
+        {
+          "cache_control": {
+            "type": "ephemeral"
+          },
+          "text": "You are a weather assistant.",
+          "type": "text"
+        },
+        {
+          "cache_control": {
+            "type": "ephemeral"
+          },
+          "text": "Known fact: the Eiffel Tower is in Paris.",
+          "type": "text"
+        }
+      ],
+      "tools": [
+        {
+          "description": "Get the current weather for a city",
+          "input_schema": {
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          },
+          "name": "get_weather"
+        }
+      ]
+    },
+    "method": "POST",
+    "path": "/v1/messages"
+  },
+  {
+    "body": {
+      "messages": [
+        {
+          "content": "You are a weather assistant.\n\nKnown fact: the Eiffel Tower is in Paris.",
+          "role": "system"
+        },
+        {
+          "content": "Weather in Paris? Use your tools.",
+          "role": "user"
+        },
+        {
+          "content": "Checking the weather for Paris.",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"city\":\"Paris\"}",
+                "name": "get_weather"
+              },
+              "id": "call_1",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "sunny, 24C",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        },
+        {
+          "content": [
+            {
+              "text": "Here is a photo I took.",
+              "type": "text"
+            },
+            {
+              "image_url": {
+                "url": "data:image/png;base64,aGVsbG8="
+              },
+              "type": "image_url"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": "Now checking Lyon with a screenshot tool.",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"city\":\"Lyon\"}",
+                "name": "get_weather"
+              },
+              "id": "call_2",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "cloudy, 18C\n[image]",
+          "role": "tool",
+          "tool_call_id": "call_2"
+        }
+      ],
+      "model": "gpt-4o",
+      "prompt_cache_key": "ds-1327b326",
+      "tools": [
+        {
+          "function": {
+            "description": "Get the current weather for a city",
+            "name": "get_weather",
+            "parameters": {
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "path": "/v1/chat/completions"
+  },
+  {
+    "body": {
+      "input": [
+        {
+          "content": "Weather in Paris? Use your tools.",
+          "role": "user"
+        },
+        {
+          "content": "Checking the weather for Paris.",
+          "role": "assistant"
+        },
+        {
+          "arguments": "{\"city\":\"Paris\"}",
+          "call_id": "call_1",
+          "name": "get_weather",
+          "type": "function_call"
+        },
+        {
+          "call_id": "call_1",
+          "output": "sunny, 24C",
+          "type": "function_call_output"
+        },
+        {
+          "content": [
+            {
+              "text": "Here is a photo I took.",
+              "type": "input_text"
+            },
+            {
+              "detail": "auto",
+              "image_url": "data:image/png;base64,aGVsbG8=",
+              "type": "input_image"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": "Now checking Lyon with a screenshot tool.",
+          "role": "assistant"
+        },
+        {
+          "arguments": "{\"city\":\"Lyon\"}",
+          "call_id": "call_2",
+          "name": "get_weather",
+          "type": "function_call"
+        },
+        {
+          "call_id": "call_2",
+          "output": [
+            {
+              "text": "cloudy, 18C",
+              "type": "input_text"
+            },
+            {
+              "image_url": "data:image/png;base64,d29ybGQ=",
+              "type": "input_image"
+            }
+          ],
+          "type": "function_call_output"
+        }
+      ],
+      "instructions": "You are a weather assistant.\n\nKnown fact: the Eiffel Tower is in Paris.",
+      "model": "gpt-4.1",
+      "tools": [
+        {
+          "description": "Get the current weather for a city",
+          "name": "get_weather",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "path": "/v1/responses"
+  },
+  {
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "Weather in Paris? Use your tools."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "city": "Paris"
+                },
+                "name": "get_weather"
+              }
+            },
+            {
+              "text": "Checking the weather for Paris."
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "get_weather",
+                "response": {
+                  "output": "sunny, 24C"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "Here is a photo I took."
+            },
+            {
+              "inlineData": {
+                "data": "aGVsbG8=",
+                "mimeType": "image/png"
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "city": "Lyon"
+                },
+                "name": "get_weather"
+              }
+            },
+            {
+              "text": "Now checking Lyon with a screenshot tool."
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "get_weather",
+                "response": {
+                  "output": "cloudy, 18C\n[image]"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "generationConfig": {},
+      "safetySettings": [],
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "You are a weather assistant.\n\nKnown fact: the Eiffel Tower is in Paris."
+          }
+        ],
+        "role": "system"
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "description": "Get the current weather for a city",
+              "name": "get_weather",
+              "parameters": {
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ],
+                "type": "object"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "method": "POST",
+    "path": "/v1beta/models/gemini-2.0-flash:generateContent"
+  },
+  {
+    "body": {
+      "messages": [
+        {
+          "content": "You are a weather assistant.\n\nKnown fact: the Eiffel Tower is in Paris.",
+          "role": "system"
+        },
+        {
+          "content": "Weather in Paris? Use your tools.",
+          "role": "user"
+        },
+        {
+          "content": "Checking the weather for Paris.",
+          "role": "assistant"
+        },
+        {
+          "content": "sunny, 24C",
+          "role": "tool"
+        },
+        {
+          "content": "Here is a photo I took.\n[image]",
+          "images": [
+            "aGVsbG8="
+          ],
+          "role": "user"
+        },
+        {
+          "content": "Now checking Lyon with a screenshot tool.",
+          "role": "assistant"
+        },
+        {
+          "content": "cloudy, 18C\n[image]",
+          "role": "tool"
+        }
+      ],
+      "model": "llama3",
+      "stream": false,
+      "tools": [
+        {
+          "function": {
+            "description": "Get the current weather for a city",
+            "name": "get_weather",
+            "parameters": {
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "method": "POST",
+    "path": "/api/chat"
+  }
+]

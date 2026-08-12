@@ -1,0 +1,33 @@
+{
+  "events": [
+    {
+      "cacheCreationInputTokens": 0,
+      "cacheReadInputTokens": 0,
+      "inputTokens": 42,
+      "outputTokens": 1,
+      "providerUsage": {
+        "inputTokens": 42,
+        "outputTokens": 1
+      },
+      "totalTokens": 43,
+      "type": "usage"
+    },
+    {
+      "delta": "truncated mid-sen",
+      "type": "text_delta"
+    },
+    {
+      "cacheCreationInputTokens": 0,
+      "cacheReadInputTokens": 0,
+      "inputTokens": 42,
+      "outputTokens": 9,
+      "providerUsage": {
+        "inputTokens": 42,
+        "outputTokens": 9
+      },
+      "stopReason": "max_tokens",
+      "totalTokens": 51,
+      "type": "usage"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "events": [
+    {
+      "delta": "truncated mid-sen",
+      "type": "text_delta"
+    },
+    {
+      "inputTokens": 42,
+      "outputTokens": 9,
+      "providerUsage": {
+        "inputTokens": 42,
+        "outputTokens": 9
+      },
+      "stopReason": "length",
+      "totalTokens": 51,
+      "type": "usage"
+    }
+  ]
+}

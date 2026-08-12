@@ -1,0 +1,144 @@
+{
+  "message": {
+    "content": "The weather is sunny.",
+    "role": "assistant",
+    "tokenCount": 9,
+    "toolCalls": []
+  },
+  "replay": null,
+  "request": {
+    "max_tokens": 8096,
+    "messages": [
+      {
+        "content": "Weather in Paris? Use your tools.",
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "Checking the weather for Paris.",
+            "type": "text"
+          },
+          {
+            "id": "call_1",
+            "input": {
+              "city": "Paris"
+            },
+            "name": "get_weather",
+            "type": "tool_use"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "content": "sunny, 24C",
+            "is_error": false,
+            "tool_use_id": "call_1",
+            "type": "tool_result"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "Here is a photo I took.",
+            "type": "text"
+          },
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "source": {
+              "data": "aGVsbG8=",
+              "media_type": "image/png",
+              "type": "base64"
+            },
+            "type": "image"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": [
+          {
+            "text": "Now checking Lyon with a screenshot tool.",
+            "type": "text"
+          },
+          {
+            "id": "call_2",
+            "input": {
+              "city": "Lyon"
+            },
+            "name": "get_weather",
+            "type": "tool_use"
+          }
+        ],
+        "role": "assistant"
+      },
+      {
+        "content": [
+          {
+            "cache_control": {
+              "type": "ephemeral"
+            },
+            "content": [
+              {
+                "text": "cloudy, 18C",
+                "type": "text"
+              },
+              {
+                "source": {
+                  "data": "d29ybGQ=",
+                  "media_type": "image/png",
+                  "type": "base64"
+                },
+                "type": "image"
+              }
+            ],
+            "is_error": false,
+            "tool_use_id": "call_2",
+            "type": "tool_result"
+          }
+        ],
+        "role": "user"
+      }
+    ],
+    "model": "deepseek-chat",
+    "system": [
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "You are a weather assistant.",
+        "type": "text"
+      },
+      {
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "text": "Known fact: the Eiffel Tower is in Paris.",
+        "type": "text"
+      }
+    ],
+    "tools": [
+      {
+        "description": "Get the current weather for a city",
+        "input_schema": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "name": "get_weather"
+      }
+    ]
+  }
+}

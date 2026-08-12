@@ -1,13 +1,47 @@
 import OpenAI from "openai"
-import type { Message, ProviderRunState, RenderedContext, StreamEvent, TextDelta, ToolCallEvent, ToolSchema, LLMProvider } from "../types.js"
+import type { Message, ProviderRunState, RenderedContext, StreamEvent, TextDelta, ToolCallEvent, ToolResultPart, ToolSchema, LLMProvider } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, omitExtensionKeys } from "./base.js"
 import { normalizeToolCall } from "./base.js"
 import { UnsupportedModalityError } from "./base.js"
+import { normalizeOpenAIUsage } from "./usage-normalizer.js"
+import { assertContextModalitySupported, tryGetModelCapabilities } from "./model-capabilities.js"
 
 export interface OpenAIResponsesRunState extends ProviderRunState {
   previousResponseId?: string
   coveredMessageCount: number
+}
+
+/**
+ * spc_012-N-04: the Responses API natively accepts structured `function_call_output.output`
+ * content arrays (`input_text` / `input_image`) — verified against OpenAI's function-calling
+ * update ("images and files as function call outputs"). Structured `contentParts` therefore
+ * serialize natively here; anything without a Responses wire form (audio, `fileId`/`object`
+ * sources, nested tool_result) degrades to an explicit `[modality]` placeholder text item,
+ * never silently dropped (INV-012-01).
+ */
+function toolResultResponsesOutput(part: ToolResultPart): string | Array<Record<string, unknown>> {
+  if (!part.contentParts?.length) return part.output
+  const out: Array<Record<string, unknown>> = []
+  for (const block of part.contentParts) {
+    if (block.type === "text") {
+      out.push({ type: "input_text", text: block.text })
+      continue
+    }
+    if (block.type === "image") {
+      const src = block.source
+      if (src.kind === "base64") {
+        out.push({ type: "input_image", image_url: `data:${block.mediaType ?? "image/png"};base64,${src.data}` })
+      } else if (src.kind === "url") {
+        out.push({ type: "input_image", image_url: src.url })
+      } else {
+        out.push({ type: "input_text", text: "[image]" })
+      }
+      continue
+    }
+    out.push({ type: "input_text", text: `[${block.type}]` })
+  }
+  return out
 }
 
 export class OpenAIResponsesAdapter {
@@ -56,7 +90,7 @@ export class OpenAIResponsesAdapter {
           input.push({
             type: "function_call_output",
             call_id: part.callId,
-            output: part.output,
+            output: toolResultResponsesOutput(part),
           })
         }
         continue
@@ -85,7 +119,7 @@ export class OpenAIResponsesAdapter {
       } else if (st.role === "tool") {
         for (const part of st.contentParts ?? []) {
           if (part.type !== "tool_result") continue
-          input.push({ type: "function_call_output", call_id: part.callId, output: part.output })
+          input.push({ type: "function_call_output", call_id: part.callId, output: toolResultResponsesOutput(part) })
         }
       } else {
         input.push({ role: st.role, content: this.buildMessageContent(st) })
@@ -282,12 +316,19 @@ export class OpenAIResponsesProvider implements LLMProvider {
           // Responses API reports prompt-cache hits as input_tokens_details.cached_tokens,
           // a subset of input_tokens (the full prompt, kept for accounting).
           const cachedTokens = evt.response.usage.input_tokens_details?.cached_tokens ?? 0
+          // Only computed when there's real per-field data to normalize — a thin usage report
+          // (total_tokens only, no input_tokens/output_tokens) matches the same conditional-field
+          // convention the two lines below already follow, rather than attaching a misleadingly
+          // "complete" {inputTokens:0, outputTokens:0} object.
+          const hasDetail = Boolean(evt.response.usage.input_tokens || evt.response.usage.output_tokens)
+          const providerUsage = hasDetail ? normalizeOpenAIUsage(evt.response.usage) : undefined
           yield {
             type: "usage",
             totalTokens: evt.response.usage.total_tokens,
             ...(evt.response.usage.input_tokens ? { inputTokens: evt.response.usage.input_tokens } : {}),
             ...(evt.response.usage.output_tokens ? { outputTokens: evt.response.usage.output_tokens } : {}),
             ...(cachedTokens > 0 ? { cacheReadInputTokens: cachedTokens } : {}),
+            ...(providerUsage ? { providerUsage } : {}),
           } as StreamEvent
         }
       }

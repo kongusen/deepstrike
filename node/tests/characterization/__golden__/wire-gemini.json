@@ -1,0 +1,120 @@
+{
+  "message": {
+    "content": "The weather is sunny.",
+    "role": "assistant",
+    "tokenCount": 9,
+    "toolCalls": []
+  },
+  "replay": null,
+  "request": {
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "Weather in Paris? Use your tools."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "city": "Paris"
+                },
+                "name": "get_weather"
+              }
+            },
+            {
+              "text": "Checking the weather for Paris."
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "get_weather",
+                "response": {
+                  "output": "sunny, 24C"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "text": "Here is a photo I took."
+            },
+            {
+              "inlineData": {
+                "data": "aGVsbG8=",
+                "mimeType": "image/png"
+              }
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "city": "Lyon"
+                },
+                "name": "get_weather"
+              }
+            },
+            {
+              "text": "Now checking Lyon with a screenshot tool."
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "name": "get_weather",
+                "response": {
+                  "output": "cloudy, 18C\n[image]"
+                }
+              }
+            }
+          ],
+          "role": "user"
+        }
+      ]
+    },
+    "modelArgs": {
+      "model": "gemini-2.0-flash",
+      "systemInstruction": "You are a weather assistant.\n\nKnown fact: the Eiffel Tower is in Paris.",
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "description": "Get the current weather for a city",
+              "name": "get_weather",
+              "parameters": {
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "city"
+                ],
+                "type": "object"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

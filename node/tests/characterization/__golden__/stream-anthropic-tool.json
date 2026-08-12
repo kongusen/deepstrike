@@ -1,0 +1,54 @@
+{
+  "events": [
+    {
+      "cacheCreationInputTokens": 4,
+      "cacheReadInputTokens": 8,
+      "cacheReadInputTokensBySlot": {
+        "messages": 4,
+        "system": 4
+      },
+      "inputTokens": 54,
+      "outputTokens": 1,
+      "providerUsage": {
+        "cacheCreationInputTokens": 4,
+        "cacheReadInputTokens": 8,
+        "inputTokens": 54,
+        "outputTokens": 1
+      },
+      "totalTokens": 55,
+      "type": "usage"
+    },
+    {
+      "delta": "Checking.",
+      "type": "text_delta"
+    },
+    {
+      "arguments": {
+        "city": "Paris"
+      },
+      "id": "toolu_1",
+      "name": "get_weather",
+      "type": "tool_call"
+    },
+    {
+      "cacheCreationInputTokens": 4,
+      "cacheReadInputTokens": 8,
+      "cacheReadInputTokensBySlot": {
+        "messages": 4,
+        "system": 4
+      },
+      "inputTokens": 54,
+      "outputTokens": 9,
+      "providerUsage": {
+        "cacheCreationInputTokens": 4,
+        "cacheReadInputTokens": 8,
+        "inputTokens": 54,
+        "outputTokens": 9
+      },
+      "stopReason": "tool_use",
+      "totalTokens": 63,
+      "type": "usage"
+    }
+  ],
+  "request": null
+}

@@ -1,4 +1,4 @@
-import type { Message, ContentPart, RenderedContext } from "../types.js"
+import type { ContentBlock, Message, ContentPart, RenderedContext } from "../types.js"
 
 export class CircuitBreaker {
   private failures = 0
@@ -139,10 +139,44 @@ export function toAnthropicContent(msg: Message): string | Array<Record<string, 
       throw new UnsupportedModalityError("audio", "anthropic")
     }
     if (p.type === "tool_result") {
-      return { type: "tool_result", tool_use_id: p.callId, content: p.output, is_error: p.isError }
+      return { type: "tool_result", tool_use_id: p.callId, content: toolResultAnthropicContent(p), is_error: p.isError }
     }
     return { type: "text", text: "" }
   })
+}
+
+/**
+ * spc_012-N-03: a `ContentBlock` inside a structured tool result → Anthropic wire block.
+ * Anthropic's `tool_result.content` natively accepts text and image blocks. Anything else
+ * (audio/video/file, `fileId`/`object` sources with no Anthropic wire form) degrades to an
+ * explicit `[modality]` placeholder visible to the model, never silently dropped (INV-012-01).
+ */
+function contentBlockToAnthropic(block: ContentBlock): Record<string, unknown> {
+  if (block.type === "text") return { type: "text", text: block.text }
+  if (block.type === "image") {
+    const src = block.source
+    if (src.kind === "base64") {
+      return { type: "image", source: { type: "base64", media_type: block.mediaType ?? "image/png", data: src.data } }
+    }
+    if (src.kind === "url") {
+      return { type: "image", source: { type: "url", url: src.url } }
+    }
+    return { type: "text", text: "[image]" }
+  }
+  if (block.type === "tool_result") {
+    // INV-012-03 forbids nesting; flatten defensively rather than recurse.
+    return { type: "text", text: "[tool_result]" }
+  }
+  return { type: "text", text: `[${block.type}]` }
+}
+
+/**
+ * spc_012-N-03: structured `contentParts` win when present; otherwise the legacy text
+ * projection (`output`) is the content, byte-identical to the pre-spc_012 behavior.
+ */
+function toolResultAnthropicContent(p: Extract<ContentPart, { type: "tool_result" }>): string | Array<Record<string, unknown>> {
+  if (p.contentParts?.length) return p.contentParts.map(contentBlockToAnthropic)
+  return p.output
 }
 
 /**
@@ -171,7 +205,7 @@ export function toAnthropicMessages(
     if (msg.role === "tool") {
       const parts = (msg.contentParts ?? [])
         .filter((p): p is Extract<ContentPart, { type: "tool_result" }> => p.type === "tool_result")
-        .map(p => ({ type: "tool_result", tool_use_id: p.callId, content: p.output, is_error: p.isError }))
+        .map(p => ({ type: "tool_result", tool_use_id: p.callId, content: toolResultAnthropicContent(p), is_error: p.isError }))
       if (parts.length) result.push({ role: "user", content: parts })
       continue
     }
@@ -251,6 +285,11 @@ export function toOpenAIMessageParams(context: RenderedContext): Array<Record<st
   // bindings, where the state is already inside `turns`.
   for (const msg of turnsWithStateAppended(context)) {
     if (msg.role === "tool") {
+      // spc_012-N-04: OpenAI **chat completions** tool-role messages accept text only — no
+      // structured tool_result content exists on this wire. Explicit text-only degradation:
+      // `output` is the constructor's text projection, which carries a visible `[modality]`
+      // placeholder for any structured block (INV-012-01 — degraded, not silently dropped).
+      // The Responses API (openai-responses.ts) does have native structured support and uses it.
       const parts = (msg.contentParts ?? [])
         .filter((p): p is Extract<ContentPart, { type: "tool_result" }> => p.type === "tool_result")
       for (const p of parts) {

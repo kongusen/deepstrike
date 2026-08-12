@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/deepstrike-core",
+    "crates/deepstrike-tokenizer",
     "crates/deepstrike-py",
     "crates/deepstrike-node",
     "crates/deepstrike-wasm",
@@ -17,6 +18,7 @@ repository = "https://github.com/kongusen/deepstrike"
 
 [workspace.dependencies]
 deepstrike-core = { path = "crates/deepstrike-core", version = "0.2.52" }
+deepstrike-tokenizer = { path = "crates/deepstrike-tokenizer", version = "0.2.52" }
 notify = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

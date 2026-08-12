@@ -1,0 +1,122 @@
+{
+  "anthropic.messages": {
+    "baseURL": "https://api.anthropic.com",
+    "id": "anthropic.messages",
+    "protocol": "anthropic-messages",
+    "providerId": "anthropic"
+  },
+  "baai.self-hosted.embeddings": {
+    "baseURL": "https://huggingface.co/BAAI",
+    "id": "baai.self-hosted.embeddings",
+    "protocol": "self-hosted-embeddings",
+    "providerId": "baai"
+  },
+  "deepseek.anthropic": {
+    "baseURL": "https://api.deepseek.com/anthropic",
+    "id": "deepseek.anthropic",
+    "protocol": "anthropic-messages",
+    "providerId": "deepseek"
+  },
+  "deepseek.openai": {
+    "baseURL": "https://api.deepseek.com",
+    "id": "deepseek.openai",
+    "protocol": "openai-chat",
+    "providerId": "deepseek"
+  },
+  "gemini.google": {
+    "baseURL": "https://generativelanguage.googleapis.com",
+    "id": "gemini.google",
+    "protocol": "gemini",
+    "providerId": "gemini"
+  },
+  "gemini.google.embeddings": {
+    "baseURL": "https://generativelanguage.googleapis.com",
+    "id": "gemini.google.embeddings",
+    "protocol": "gemini-embeddings",
+    "providerId": "gemini"
+  },
+  "glm.anthropic": {
+    "baseURL": "https://open.bigmodel.cn/api/anthropic",
+    "id": "glm.anthropic",
+    "protocol": "anthropic-messages",
+    "providerId": "glm"
+  },
+  "glm.openai": {
+    "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+    "id": "glm.openai",
+    "protocol": "openai-chat",
+    "providerId": "glm"
+  },
+  "glm.openai.embeddings": {
+    "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+    "id": "glm.openai.embeddings",
+    "protocol": "openai-embeddings",
+    "providerId": "glm"
+  },
+  "kimi.anthropic": {
+    "baseURL": "https://api.moonshot.cn/anthropic",
+    "id": "kimi.anthropic",
+    "protocol": "anthropic-messages",
+    "providerId": "kimi"
+  },
+  "kimi.openai": {
+    "baseURL": "https://api.moonshot.cn/v1",
+    "id": "kimi.openai",
+    "protocol": "openai-chat",
+    "providerId": "kimi"
+  },
+  "minimax.anthropic": {
+    "baseURL": "https://api.minimaxi.com/anthropic",
+    "id": "minimax.anthropic",
+    "protocol": "anthropic-messages",
+    "providerId": "minimax"
+  },
+  "minimax.openai": {
+    "baseURL": "https://api.minimaxi.com/v1",
+    "id": "minimax.openai",
+    "protocol": "openai-chat",
+    "providerId": "minimax"
+  },
+  "openai.chat": {
+    "baseURL": "https://api.openai.com/v1",
+    "id": "openai.chat",
+    "protocol": "openai-chat",
+    "providerId": "openai"
+  },
+  "openai.embeddings": {
+    "baseURL": "https://api.openai.com/v1",
+    "id": "openai.embeddings",
+    "protocol": "openai-embeddings",
+    "providerId": "openai"
+  },
+  "openai.responses": {
+    "baseURL": "https://api.openai.com/v1",
+    "id": "openai.responses",
+    "protocol": "openai-responses",
+    "providerId": "openai"
+  },
+  "qwen.anthropic": {
+    "baseURL": "https://dashscope-intl.aliyuncs.com/apps/anthropic",
+    "id": "qwen.anthropic",
+    "protocol": "anthropic-messages",
+    "providerId": "qwen"
+  },
+  "qwen.dashscope": {
+    "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "id": "qwen.dashscope",
+    "protocol": "openai-chat",
+    "providerId": "qwen"
+  },
+  "qwen.dashscope.embeddings": {
+    "baseURL": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "id": "qwen.dashscope.embeddings",
+    "protocol": "openai-embeddings",
+    "providerId": "qwen"
+  },
+  "qwen.dashscope.multimodal-embeddings": {
+    "baseURL": "https://dashscope.aliyuncs.com/api/v1/services/embeddings/multimodal-embedding/multimodal-embedding",
+    "id": "qwen.dashscope.multimodal-embeddings",
+    "protocol": "dashscope-multimodal-embeddings",
+    "providerId": "qwen"
+  }
+}

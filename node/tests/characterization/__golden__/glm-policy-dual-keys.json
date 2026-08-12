@@ -1,0 +1,9 @@
+{
+  "bare": {
+    "maxTurns": 50
+  },
+  "prefixed": {
+    "maxTurns": 50
+  },
+  "unknownModel": {}
+}

@@ -1,0 +1,90 @@
+{
+  "message": {
+    "content": "The weather is sunny.",
+    "role": "assistant",
+    "tokenCount": 9,
+    "toolCalls": []
+  },
+  "replay": null,
+  "request": {
+    "input": [
+      {
+        "content": "Weather in Paris? Use your tools.",
+        "role": "user"
+      },
+      {
+        "content": "Checking the weather for Paris.",
+        "role": "assistant"
+      },
+      {
+        "arguments": "{\"city\":\"Paris\"}",
+        "call_id": "call_1",
+        "name": "get_weather",
+        "type": "function_call"
+      },
+      {
+        "call_id": "call_1",
+        "output": "sunny, 24C",
+        "type": "function_call_output"
+      },
+      {
+        "content": [
+          {
+            "text": "Here is a photo I took.",
+            "type": "input_text"
+          },
+          {
+            "detail": "auto",
+            "image_url": "data:image/png;base64,aGVsbG8=",
+            "type": "input_image"
+          }
+        ],
+        "role": "user"
+      },
+      {
+        "content": "Now checking Lyon with a screenshot tool.",
+        "role": "assistant"
+      },
+      {
+        "arguments": "{\"city\":\"Lyon\"}",
+        "call_id": "call_2",
+        "name": "get_weather",
+        "type": "function_call"
+      },
+      {
+        "call_id": "call_2",
+        "output": [
+          {
+            "text": "cloudy, 18C",
+            "type": "input_text"
+          },
+          {
+            "image_url": "data:image/png;base64,d29ybGQ=",
+            "type": "input_image"
+          }
+        ],
+        "type": "function_call_output"
+      }
+    ],
+    "instructions": "You are a weather assistant.\n\nKnown fact: the Eiffel Tower is in Paris.",
+    "model": "gpt-4.1",
+    "tools": [
+      {
+        "description": "Get the current weather for a city",
+        "name": "get_weather",
+        "parameters": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        },
+        "type": "function"
+      }
+    ]
+  }
+}

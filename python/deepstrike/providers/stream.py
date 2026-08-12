@@ -51,6 +51,9 @@ class ToolResultEvent:
     is_error: bool = False
     is_fatal: bool = False
     error_kind: str | None = None
+    # spc_012-P-02: structured multimodal blocks when the tool returned non-text content
+    # (e.g. an MCP screenshot). ContentBlock-shaped dicts; `content` stays the text projection.
+    content_parts: list[dict] | None = None
 
 
 @dataclass

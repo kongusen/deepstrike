@@ -233,6 +233,18 @@ def _message_from_kernel(raw: dict[str, Any]) -> Message:
     )
   else:
     text = str(content or "")
+  if content_parts is None and isinstance(raw.get("tool_call_id"), str):
+    # Parity with Node kernel-step.ts (`raw.tool_call_id` branch): a kernel tool-result message
+    # carries flat text content plus `tool_call_id` — materialize the tool_result part so
+    # provider serializers can pair it with the tool_use block (previously the id was silently
+    # dropped here and role-"tool" messages fell through `to_anthropic_messages`' parts filter
+    # to nothing), and so spc_012-P-03's structured re-attachment can match by call_id.
+    content_parts = [ContentPartObj(
+      type="tool_result",
+      call_id=str(raw.get("tool_call_id") or ""),
+      output=text,
+      is_error=False,
+    )]
   return Message(
     role=str(raw.get("role") or "user"),
     content=text,

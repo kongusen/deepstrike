@@ -2,6 +2,7 @@ pub mod compression;
 pub mod config;
 pub mod fault;
 pub mod manager;
+pub mod measurement;
 pub mod partitions;
 pub mod policy;
 pub mod pressure;

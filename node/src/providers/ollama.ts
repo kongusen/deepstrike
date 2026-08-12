@@ -1,5 +1,7 @@
-import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy, UsageEvent } from "../types.js"
 import { normalizeToolCall, omitExtensionKeys, turnsWithStateAppended, UnsupportedModalityError } from "./base.js"
+import { normalizeOllamaUsage } from "./usage-normalizer.js"
+import { assertContextModalitySupported, tryGetModelCapabilities } from "./model-capabilities.js"
 
 // Prefix-based policy for local models (first match wins)
 const OLLAMA_PREFIX_POLICIES: Array<[string, RuntimePolicy]> = [
@@ -31,6 +33,9 @@ export class OllamaProvider implements LLMProvider {
   }
 
   private toOllamaMessages(context: RenderedContext) {
+    // spc_012-N-04: Ollama's wire is OpenAI-chat-like — tool-role messages are text-only.
+    // Explicit degradation via the text projection (`content`/`output` carry a visible
+    // `[modality]` placeholder for structured blocks, INV-012-01), same class as openai-chat.
     const result = []
     if (context.systemText) result.push({ role: "system", content: context.systemText })
     for (const m of turnsWithStateAppended(context)) {
@@ -91,6 +96,7 @@ export class OllamaProvider implements LLMProvider {
     const decoder = new TextDecoder()
     let buf = ""
     const pendingToolCalls = new Map<string, { id: string; name: string; arguments: Record<string, unknown> }>()
+    let finalChunk: { done?: boolean; prompt_eval_count?: number; eval_count?: number } | undefined
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -100,7 +106,12 @@ export class OllamaProvider implements LLMProvider {
       for (const line of lines) {
         if (!line.trim()) continue
         try {
-          const chunk = JSON.parse(line) as { message?: { content?: string; tool_calls?: Array<{ function: { name: string; arguments: unknown } }> } }
+          const chunk = JSON.parse(line) as {
+            message?: { content?: string; tool_calls?: Array<{ function: { name: string; arguments: unknown } }> }
+            done?: boolean
+            prompt_eval_count?: number
+            eval_count?: number
+          }
           if (chunk.message?.content) yield { type: "text_delta", delta: chunk.message.content } as TextDelta
           for (const tc of chunk.message?.tool_calls ?? []) {
             const norm = normalizeToolCall("", tc.function.name, tc.function.arguments)
@@ -115,11 +126,24 @@ export class OllamaProvider implements LLMProvider {
               })
             }
           }
+          // spc_011-C-07: Ollama's `done: true` chunk carries the request's usage figures — this
+          // provider had zero usage extraction before this card.
+          if (chunk.done) finalChunk = chunk
         } catch { /* skip malformed lines */ }
       }
     }
     for (const tc of pendingToolCalls.values()) {
       yield { type: "tool_call", id: tc.id, name: tc.name, arguments: tc.arguments } as ToolCallEvent
+    }
+    if (finalChunk?.prompt_eval_count !== undefined || finalChunk?.eval_count !== undefined) {
+      const providerUsage = normalizeOllamaUsage(finalChunk)!
+      yield {
+        type: "usage",
+        totalTokens: providerUsage.inputTokens + providerUsage.outputTokens,
+        inputTokens: providerUsage.inputTokens,
+        outputTokens: providerUsage.outputTokens,
+        providerUsage,
+      } as UsageEvent
     }
   }
 }

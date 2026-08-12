@@ -12,6 +12,7 @@ thiserror = { workspace = true }
 compact_str = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
+deepstrike-tokenizer = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = "1"

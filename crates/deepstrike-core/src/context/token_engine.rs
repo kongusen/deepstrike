@@ -38,6 +38,48 @@ impl TokenCounter for CharApproxCounter {
     }
 }
 
+/// spc_011-C-01: real-BPE-backed counter, the production default. `CharApproxCounter`'s
+/// char/4 divisor only holds for English text — on CJK-heavy text it underestimates real BPE
+/// counts by 40-70% (its own doc comment claims "~0.5 tokens/char" for CJK, but the
+/// implementation applies the same 0.25 tokens/char divisor to every script). This wraps
+/// `deepstrike-tokenizer`'s real cl100k BPE tokenizer (previously an orphaned crate — not a
+/// workspace member, zero call sites anywhere) and adds a fixed margin on top. That only
+/// guarantees a value above the selected `cl100k_base` estimate; it does not prove that the
+/// result is conservative for every provider model. Native Anthropic/Gemini token counts take
+/// precedence where callers explicitly request them.
+pub struct FallbackEstimator {
+    tokenizer: deepstrike_tokenizer::Tokenizer,
+    /// Multiplier applied on top of the raw BPE count. `1.1` is a starting margin over
+    /// `cl100k_base`, not an empirical claim about any provider tokenizer.
+    safety_margin: f64,
+}
+
+impl FallbackEstimator {
+    pub fn new(backend: deepstrike_tokenizer::TokenizerBackend, safety_margin: f64) -> Self {
+        Self { tokenizer: deepstrike_tokenizer::Tokenizer::new(backend), safety_margin }
+    }
+}
+
+impl Default for FallbackEstimator {
+    fn default() -> Self {
+        Self::new(deepstrike_tokenizer::TokenizerBackend::Cl100k, 1.1)
+    }
+}
+
+impl TokenCounter for FallbackEstimator {
+    fn count(&self, text: &str) -> u32 {
+        let raw = self.tokenizer.count(text) as f64;
+        ((raw * self.safety_margin).ceil() as u32).max(1)
+    }
+
+    fn truncate<'a>(&self, text: &'a str, max_tokens: u32) -> &'a str {
+        // Budget in *raw* BPE tokens so that, after the margin is applied by `count`, the
+        // truncated text's reported count still fits within `max_tokens`.
+        let raw_budget = ((max_tokens as f64) / self.safety_margin).floor() as u32;
+        self.tokenizer.truncate(text, raw_budget)
+    }
+}
+
 /// Cheaply cloneable token engine shared across the context subsystem.
 /// All token counting and truncation goes through this single object —
 /// pressure, compression, and render use the same backend.
@@ -45,8 +87,18 @@ impl TokenCounter for CharApproxCounter {
 pub struct ContextTokenEngine(Arc<dyn TokenCounter>);
 
 impl ContextTokenEngine {
+    /// Deterministic char/4 approximation. Kept as an explicit, opt-in constructor for tests
+    /// that pin exact token counts (many do, calibrated to this specific math) — **not** used
+    /// by any production call site as of spc_011-C-01; see [`Self::fallback_estimator`].
     pub fn char_approx() -> Self {
         Self(Arc::new(CharApproxCounter))
+    }
+
+    /// spc_011-C-01: the production default token engine. Real-BPE-backed (see
+    /// [`FallbackEstimator`]), replacing the previous `char_approx()` default that
+    /// underestimated CJK-heavy text by 40-70%.
+    pub fn fallback_estimator() -> Self {
+        Self(Arc::new(FallbackEstimator::default()))
     }
 
     pub fn count(&self, text: &str) -> u32 {
@@ -71,7 +123,7 @@ impl ContextTokenEngine {
     fn count_part(&self, part: &ContentPart) -> u32 {
         match part {
             ContentPart::Text { text } => self.count(text),
-            ContentPart::ToolResult { output, .. } => self.count(output.as_str()),
+            ContentPart::ToolResult { output, .. } => self.count(output),
             // Image/Audio: modality heuristic from ContentPart::estimate_tokens — never
             // treat base64/url payloads as UTF-8 text (that blind-spots compression ρ).
             ContentPart::Image { .. } | ContentPart::Audio { .. } => {
@@ -190,6 +242,66 @@ mod tests {
         assert_eq!(e.count_message(&low), 85);
         assert_eq!(e.count_message(&auto), 255);
         assert_eq!(e.count_message(&high), 680);
+    }
+
+    /// spc_011-C-01 Red: `CharApproxCounter` (char/4) badly underestimates real BPE token
+    /// counts on CJK-heavy text — its own doc comment claims "~0.5 tokens/char" for CJK, but
+    /// the implementation divides by 4 (0.25 tokens/char) regardless of script, which is only
+    /// correct for English. This reproduces the underestimate against a sample matching this
+    /// repo's own actual workload (Chinese spec/status prose), not a synthetic worst case.
+    #[test]
+    fn char_approx_severely_underestimates_cjk_heavy_text_vs_real_bpe() {
+        let sample = "核实 `ContextTokenEngine` 默认使用 `CharApproxCounter`（4 字符≈1 token），\
+而 `ContextManager::new()` 明确默认初始化 `ContextTokenEngine::char_approx()`。这就能解释实际观察到的 \
+20%～30% 少算问题。这个值直接进入 Context ρ → Snip → Micro → Collapse → Auto → Renewal 决策链路，\
+低估会导致压缩没有按时触发，继续 append 下去最终造成 Provider context overflow。";
+
+        let approx = CharApproxCounter.count(sample);
+        let real = deepstrike_tokenizer::Tokenizer::new(deepstrike_tokenizer::TokenizerBackend::Cl100k)
+            .count(sample);
+
+        let underestimate_pct = 1.0 - (approx as f64 / real as f64);
+        assert!(
+            underestimate_pct > 0.30,
+            "expected char_approx to underestimate real BPE count by >30% on CJK-heavy text, \
+             got approx={approx} real={real} ({:.1}%)",
+            underestimate_pct * 100.0
+        );
+    }
+
+    /// The production default (`fallback_estimator`) must not reproduce the CJK underestimate
+    /// above: its fixed margin keeps it at or above the selected `cl100k_base` count.
+    #[test]
+    fn fallback_estimator_does_not_underestimate_cjk_heavy_text() {
+        let sample = "核实 `ContextTokenEngine` 默认使用 `CharApproxCounter`（4 字符≈1 token），\
+而 `ContextManager::new()` 明确默认初始化 `ContextTokenEngine::char_approx()`。这就能解释实际观察到的 \
+20%～30% 少算问题。";
+
+        let e = ContextTokenEngine::fallback_estimator();
+        let estimated = e.count(sample);
+        let real = deepstrike_tokenizer::Tokenizer::new(deepstrike_tokenizer::TokenizerBackend::Cl100k)
+            .count(sample);
+
+        assert!(
+            estimated >= real,
+            "fallback_estimator margin must stay above its cl100k base \
+             (estimated={estimated} real={real})"
+        );
+    }
+
+    /// The default production engine (`ContextManager::new`) must be the fallback estimator,
+    /// not `char_approx` — this is the actual bug: the constructor call site, not the counter
+    /// implementation itself (which stays correct as an explicit, deterministic test helper).
+    #[test]
+    fn context_manager_new_does_not_default_to_char_approx() {
+        let cjk = "这是一段包含中文的示例文本，用来验证生产路径默认引擎不再是字符近似计数器。";
+        let mgr = crate::context::manager::ContextManager::new(100_000);
+        let default_engine_count = mgr.engine.count(cjk);
+        let char_approx_count = ContextTokenEngine::char_approx().count(cjk);
+        assert_ne!(
+            default_engine_count, char_approx_count,
+            "ContextManager::new() must not use char_approx as its token engine"
+        );
     }
 
     #[test]

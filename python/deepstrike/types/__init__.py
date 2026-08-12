@@ -18,6 +18,7 @@ from deepstrike.types.agent import (
   milestone_check_result_to_kernel,
   sub_agent_result_to_kernel,
 )
+from deepstrike.types.content import RenderedMessage, StructuredToolResultPart
 
 __all__ = [
   "AgentCapabilityFilter",
@@ -31,6 +32,8 @@ __all__ = [
   "MilestonePhase",
   "MilestonePolicy",
   "MILESTONE_UNVERIFIED_REASON",
+  "RenderedMessage",
+  "StructuredToolResultPart",
   "SubAgentResult",
   "agent_identity_sub",
   "agent_run_spec_to_kernel",

@@ -22,7 +22,13 @@ impl RuleSummarizer {
         if max_tokens == 0 {
             return String::new();
         }
-        let engine = ContextTokenEngine::char_approx();
+        // spc_011-C-01: production default, not char/4 approximation — see
+        // `ContextTokenEngine::fallback_estimator` doc comment. This call site constructs its
+        // own engine rather than taking the caller's configured one (`compress()` already
+        // threads a caller-supplied `&ContextTokenEngine` through to `Compressor::compress`,
+        // but not here) — a latent inconsistency noted in spc_011 §6.4, out of scope for this
+        // card to fix (would require a signature change, not just a default-value swap).
+        let engine = ContextTokenEngine::fallback_estimator();
         let archived_tokens = messages
             .iter()
             .map(|message| {

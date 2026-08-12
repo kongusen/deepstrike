@@ -1,0 +1,30 @@
+{
+  "events": [
+    {
+      "delta": "Checking.",
+      "type": "text_delta"
+    },
+    {
+      "arguments": {
+        "city": "Paris"
+      },
+      "id": "call_1",
+      "name": "get_weather",
+      "type": "tool_call"
+    },
+    {
+      "cacheReadInputTokens": 8,
+      "inputTokens": 42,
+      "outputTokens": 9,
+      "providerUsage": {
+        "cacheReadInputTokens": 8,
+        "inputTokens": 42,
+        "outputTokens": 9
+      },
+      "stopReason": "tool_calls",
+      "totalTokens": 51,
+      "type": "usage"
+    }
+  ],
+  "request": null
+}

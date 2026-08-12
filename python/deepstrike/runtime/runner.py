@@ -23,6 +23,7 @@ from deepstrike._kernel import (
   TaskUpdate,
 )
 from deepstrike.providers.base import LLMProvider, RenderedContext
+from deepstrike.types.content import RenderedMessage, StructuredToolResultPart
 from deepstrike.providers.stream import (
   DoneEvent,
   EntropyAlertEvent,
@@ -444,6 +445,71 @@ class RuntimeRunner:
     self._workflow_continuation_action: KernelRunnerAction | None = None
     self._fallback_payload_store: Any = None
     self._deferred_host_events: list[dict[str, Any]] = []
+    # spc_012-P-03: SDK-side side channel for structured tool output. The kernel wire
+    # (`wire::effect::ToolResult.output: String`) is text-only by design (deferred upgrade), so
+    # multimodal blocks from an execution plane (e.g. an MCP screenshot, spc_012-P-02) are kept
+    # here keyed by call_id and re-attached onto the rendered context's tool_result parts right
+    # before the provider call. Session-scoped, not durable: after a wake/restore the map is
+    # empty and those results degrade to their text projection (pre-spc_012 behavior).
+    self._structured_tool_outputs: dict[str, list[dict]] = {}
+
+  def _with_structured_tool_outputs(self, context: RenderedContext) -> RenderedContext:
+    """Re-attach side-channel structured tool output onto a rendered context's tool_result
+    parts (matched by call_id) before it goes to the provider. Copy-on-write: returns
+    `context` unchanged when nothing matches, so the common all-text path is untouched.
+    Structured parts are plain Python `StructuredToolResultPart` shims (duck-typed against
+    the pyo3 ContentPartObj) — the pyo3 binding deliberately gained no new field
+    (spc_012-R-07 premise correction)."""
+    if not self._structured_tool_outputs:
+      return context
+
+    def attach(msg):
+      parts = getattr(msg, "content_parts", None)
+      if not parts:
+        return msg
+      if not any(
+        getattr(p, "type", None) == "tool_result"
+        and getattr(p, "call_id", None) in self._structured_tool_outputs
+        and getattr(p, "content_parts", None) is None
+        for p in parts
+      ):
+        return msg
+      new_parts = [
+        StructuredToolResultPart(
+          call_id=p.call_id,
+          output=p.output,
+          is_error=p.is_error,
+          content_parts=self._structured_tool_outputs[p.call_id],
+        )
+        if (
+          getattr(p, "type", None) == "tool_result"
+          and getattr(p, "call_id", None) in self._structured_tool_outputs
+          and getattr(p, "content_parts", None) is None
+        )
+        else p
+        for p in parts
+      ]
+      return RenderedMessage(
+        role=msg.role,
+        content=msg.content,
+        token_count=getattr(msg, "token_count", None),
+        tool_calls=list(getattr(msg, "tool_calls", None) or []),
+        content_parts=new_parts,
+      )
+
+    turns = [attach(m) for m in context.turns]
+    state_turn = attach(context.state_turn) if context.state_turn is not None else None
+    if all(t is o for t, o in zip(turns, context.turns)) and state_turn is context.state_turn:
+      return context
+    return RenderedContext(
+      system_text=context.system_text,
+      turns=turns,
+      system_stable=context.system_stable,
+      system_knowledge=context.system_knowledge,
+      state_turn=state_turn,
+      frozen_prefix_len=context.frozen_prefix_len,
+      budget_overflow=context.budget_overflow,
+    )
 
   def resolve_kernel_journal(self) -> KernelJournal:
     """Resolve the canonical durability capability without conflating it with SessionLog."""
@@ -2115,7 +2181,7 @@ class RuntimeRunner:
         provider_effect_id = action.effect_id
         final_tool_calls: list[ToolCall] = []
         final_text = ""
-        context = action.context or RenderedContext()
+        context = self._with_structured_tool_outputs(action.context or RenderedContext())
         # I5: governance schema-level pre-filter — mirrors Node. Tools that the policy denies are
         # dropped from the schema before the provider sees them; the model never tries them.
         turn_tools = action.tools or []
@@ -2460,6 +2526,8 @@ class RuntimeRunner:
               if hasattr(result, "error_kind"):
                 result.error_kind = getattr(evt, "error_kind", None)
               tool_results.append(result)
+              if evt.content_parts:
+                self._structured_tool_outputs[evt.call_id] = evt.content_parts
             elif isinstance(evt, ToolArgumentRepairedEvent):
               await self._opts.session_log.append(session_id, {
                 "kind": "tool_argument_repaired",

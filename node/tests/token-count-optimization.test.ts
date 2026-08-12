@@ -53,6 +53,7 @@ describe("Token Count Optimization", () => {
         outputTokens: 20,
         cacheReadInputTokens: 0,
         cacheCreationInputTokens: 0,
+        providerUsage: { inputTokens: 100, outputTokens: 20 },
       })
     })
 
@@ -140,6 +141,7 @@ describe("Token Count Optimization", () => {
         totalTokens: 65,
         inputTokens: 50,
         outputTokens: 15,
+        providerUsage: { inputTokens: 50, outputTokens: 15 },
       })
     })
   })
@@ -185,6 +187,7 @@ describe("Token Count Optimization", () => {
         totalTokens: 78,
         inputTokens: 60,
         outputTokens: 18,
+        providerUsage: { inputTokens: 60, outputTokens: 18 },
       })
     })
   })
@@ -231,6 +234,7 @@ describe("Token Count Optimization", () => {
         totalTokens: 105,
         inputTokens: 80,
         outputTokens: 25,
+        providerUsage: { inputTokens: 80, outputTokens: 25 },
       })
     })
   })
@@ -276,6 +280,7 @@ describe("Token Count Optimization", () => {
         totalTokens: 120,
         inputTokens: 90,
         outputTokens: 30,
+        providerUsage: { inputTokens: 90, outputTokens: 30 },
       })
     })
   })

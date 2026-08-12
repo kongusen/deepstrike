@@ -35,6 +35,20 @@ function estimateTokens(context: RenderedContext): number {
   return Math.max(1, Math.ceil(contextText(context).length / 4))
 }
 
+/** spc_011-C-01: varied filler text whose real-BPE effective token count (under the
+ *  `FallbackEstimator` default, margin 1.1) approximates `size / 4` — the char/4 assumption K09's
+ *  phase comments are written against. A single repeated character (the old generator) compresses
+ *  far below that under real BPE, which is what broke K09 when the default engine changed; the
+ *  1.2x calibration factor was measured empirically against this exact phrase at K09's `size`
+ *  values (600/5100/9000 chars → ratio stable ~4.7-4.8 chars/effective-token). */
+function fillText(size: number): string {
+  const phrase = "The quick fox jumps over lazy dogs and writes long context reports daily. "
+  const targetChars = Math.round(size * 1.2)
+  let out = ""
+  while (out.length < targetChars) out += phrase
+  return out.slice(0, targetChars)
+}
+
 class ScriptedProvider implements LLMProvider {
   readonly calls: RenderedContext[] = []
   readonly inputTokens: number[] = []
@@ -369,6 +383,15 @@ describe("E2E mechanism contract tests", () => {
   // engine use count_message() (char/4), giving correct 300t values for 1200-char
   // messages, which SnipCompact correctly truncates.
   it("K09 triggers all four compression tiers and retains content in preserved tail", async () => {
+    // spc_011-C-01 note: this test's `fill` tool used to do `char.repeat(size)` — a single
+    // repeated character. That was fine under the old char/4 approximation (every char "costs"
+    // the same regardless of content), but the real BPE-backed default engine (011-C-01)
+    // compresses long identical-byte runs into a handful of tokens, so a `size`-character fill
+    // of one repeated char no longer delivers the ~size/4 tokens every phase comment below
+    // assumes. `fillText` generates varied phrase-repeated text instead, scaled by a measured
+    // calibration factor (~1.2x chars) so it delivers approximately the same effective token
+    // count the old char/4 math would have — every phase's magic numbers stay meaningful without
+    // re-deriving the whole cascade's rho arithmetic from scratch.
     const RETAIN_ANCHOR = "KEEP-ME-OMEGA-77"
 
     // Cumulative detection flags: markers disappear when messages are archived,
@@ -445,7 +468,7 @@ describe("E2E mechanism contract tests", () => {
       // snip_per_msg = 0.05*4000 = 200t. Message(300t) > 200t → SnipCompact truncates it.
       // After truncation: 9*100t savings → partition drops to ≈1945t, rho=0.486.
       return [
-        { type: "text_delta", delta: "z".repeat(1200) },
+        { type: "text_delta", delta: fillText(1200) },
         { type: "tool_call", id: `p0-${call}`, name: "fill", arguments: { size: 60, kind: "tiny" } },
       ]
     }, { emitUsage: false })
@@ -468,9 +491,8 @@ describe("E2E mechanism contract tests", () => {
           properties: { size: { type: "number" }, kind: { type: "string" } },
           required: ["size"],
         }, args => {
-          const { size, kind } = args as { size: number; kind?: string }
-          const char = kind === "micro" ? "M" : kind === "auto" ? "A" : kind === "small" ? "s" : "z"
-          return char.repeat(size)
+          const { size } = args as { size: number; kind?: string }
+          return fillText(size)
         }),
       ],
       // The compression-ladder script deliberately repeats identical `fill` calls (same args) many

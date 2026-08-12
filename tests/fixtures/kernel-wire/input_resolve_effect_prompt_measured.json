@@ -1,0 +1,24 @@
+{
+  "abi_version": 3,
+  "operation_id": "op-2026-08-11-0001",
+  "input_id": "caller-supplied-idempotency-key-21",
+  "observed_at_ms": "1754900000000",
+  "input": {
+    "kind": "resolve_effect",
+    "effect_id": "op-2026-08-11-0001:step:1:effect:0",
+    "outcome": {
+      "status": "succeeded",
+      "result": {
+        "kind": "prompt_measured",
+        "measurement": {
+          "input_tokens": 4200,
+          "source": {
+            "kind": "native",
+            "provider": "anthropic"
+          },
+          "confidence": "exact"
+        }
+      }
+    }
+  }
+}
