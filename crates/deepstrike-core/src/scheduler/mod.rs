@@ -1,4 +1,5 @@
 pub mod budget_grant;
+pub mod cross_operation;
 pub mod entropy;
 pub mod mailbox;
 pub mod milestone;
@@ -9,6 +10,12 @@ pub mod tcb;
 pub mod wait_index;
 
 pub use budget_grant::{BudgetGrant, ResourceBudget};
+pub use cross_operation::{
+    CrossOperationMessage, CrossOperationRouter, CrossOperationRouterSnapshot,
+    DeliveryFailure, DeliverySettlement, DeliveryState, OperationAddress,
+    OperationRegistration, PayloadAvailability, PayloadLocator, RouteOutcome,
+    CROSS_OPERATION_IPC_ABI_VERSION,
+};
 pub use entropy::{EntropySample, EntropyTracker, EntropyWatchConfig};
 pub use mailbox::{Channel, LogicalTime, Mailbox, MailboxMessage, MessageId};
 pub use milestone::MilestoneTracker;
