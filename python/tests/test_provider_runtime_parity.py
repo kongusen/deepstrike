@@ -15,6 +15,13 @@ from deepstrike.providers.provider_error import (
 )
 from deepstrike.providers.stop_reason import canonicalize_stop_reason
 from deepstrike.providers.usage import ProviderUsage, normalize_usage
+from deepstrike.providers.model_registry import (
+    CapabilityState,
+    EffectiveCapability,
+    ModelRegistry,
+    model_registry,
+    resolve_effective_capabilities,
+)
 
 
 class FakeOpenAIError(Exception):
@@ -202,6 +209,83 @@ def test_normalize_usage_reasoning_tokens() -> None:
         output_tokens=8,
         reasoning_tokens=3,
     )
+
+
+def test_registry_resolves_known_openai_chat() -> None:
+    reg = model_registry.resolve("openai/gpt-4o")
+    assert reg is not None
+    assert reg.descriptor.provider_id == "openai"
+    assert reg.default_endpoint_id == "openai.chat"
+    assert reg.descriptor.kind == "generation"
+
+
+def test_registry_resolves_openai_responses_model() -> None:
+    reg = model_registry.resolve("openai/gpt-5.4")
+    assert reg is not None
+    assert reg.default_endpoint_id == "openai.responses"
+
+
+def test_registry_resolves_openai_embedding() -> None:
+    reg = model_registry.resolve("openai/text-embedding-3-small")
+    assert reg is not None
+    assert reg.default_endpoint_id == "openai.embeddings"
+    assert reg.descriptor.kind == "embedding"
+
+
+def test_registry_resolves_unknown_provider_fail_open() -> None:
+    assert model_registry.resolve("custom/unknown") is None
+
+
+def test_registry_resolves_with_explicit_provider() -> None:
+    reg = model_registry.resolve("claude-sonnet-4-6", provider_id="anthropic")
+    assert reg is not None
+    assert reg.descriptor.provider_id == "anthropic"
+    assert reg.default_endpoint_id == "anthropic.messages"
+
+
+def test_registry_runtime_policy_for_known_model() -> None:
+    reg = model_registry.resolve("openai/gpt-4o")
+    assert reg.recommended_runtime_policy is not None
+    assert reg.recommended_runtime_policy.max_turns == 25
+
+
+def test_registry_unknown_model_has_no_policy() -> None:
+    reg = model_registry.resolve("openai/unknown-model")
+    assert reg is not None
+    assert reg.recommended_runtime_policy is None
+
+
+def test_effective_capabilities_tri_state_unknown_model() -> None:
+    runtime = model_registry.resolve_provider_runtime("openai", "unknown-model")
+    assert runtime.model is not None
+    assert runtime.protocol == "openai-chat"
+    # Protocol supports tools, model intrinsic is unknown -> effective stays unknown.
+    assert runtime.effective_capabilities.tools.state == "unknown"
+
+
+def test_effective_capabilities_known_tools_supported() -> None:
+    from deepstrike.providers.model_registry import ModelDescriptor
+    model = ModelDescriptor(
+        id="openai/gpt-4o",
+        provider_id="openai",
+        kind="generation",
+        intrinsic_tools=True,
+    )
+    caps = resolve_effective_capabilities(model, "openai.chat")
+    assert caps.tools == EffectiveCapability(state="supported", value=True, evidence=("model", "protocol"))
+
+
+def test_native_token_counting_only_on_verified_endpoints() -> None:
+    runtime = model_registry.resolve_provider_runtime("anthropic", "claude-sonnet-4-6")
+    assert runtime.effective_capabilities.native_token_counting.state == "supported"
+    runtime = model_registry.resolve_provider_runtime("openai", "gpt-4o")
+    assert runtime.effective_capabilities.native_token_counting.state == "unknown"
+
+
+def test_registry_provider_prefix_inference() -> None:
+    reg = model_registry.resolve("anthropic/claude-opus-4-1")
+    assert reg is not None
+    assert reg.default_endpoint_id == "anthropic.messages"
 
 
 def test_provider_error_retains_cause_internally() -> None:
