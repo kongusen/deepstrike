@@ -35,4 +35,27 @@ describe("P1-B B0: skill allowed_tools pipe", () => {
     expect(skillMetadataToKernel(byName.debug).allowed_tools).toEqual(["read", "grep", "bash"])
     expect("allowed_tools" in skillMetadataToKernel(byName.plain)).toBe(false)
   })
+
+  it("forwards an explicitly constructed capability grant without teaching frontmatter to parse authority", () => {
+    const grant = {
+      id: "read-src",
+      kind: "tool",
+      resource: "/repo/src/**",
+      actions: ["read"],
+      constraints: [],
+      lease: null,
+      delegatable: false,
+      issuer: "skill:review",
+    }
+
+    expect(skillMetadataToKernel({
+      name: "review",
+      description: "Review source files",
+      capabilityGrants: [grant],
+    }).capability_grants).toEqual([grant])
+    expect("capability_grants" in skillMetadataToKernel({
+      name: "plain",
+      description: "No grants declared",
+    })).toBe(false)
+  })
 })

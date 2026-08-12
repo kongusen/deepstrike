@@ -16,6 +16,9 @@ export interface SkillMetadata {
   whenToUse?: string
   effort?: number
   estimatedTokens?: number
+  /** Optional structured grants supplied by the SDK caller. They are not parsed from simple
+   *  SKILL.md frontmatter: the canonical kernel validates their attenuation at activation. */
+  capabilityGrants?: Array<Record<string, unknown>>
   /** P1-B tool gating: tool ids this skill needs. When the skill is active, the kernel narrows the
    *  exposed toolset to `stable-core ∪ allowedTools`. Parsed from `allowed_tools:` frontmatter
    *  (comma-separated or `[a, b]`). Absent ⇒ the skill does not narrow (back-compat). */

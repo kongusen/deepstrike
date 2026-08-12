@@ -435,6 +435,10 @@ pub struct SkillMetadata {
     pub when_to_use: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<String>,
+    /// Fine-grained authority made effective while this skill is active. The mounting agent's
+    /// authority is only known at start time, so attenuation is checked by each activation path.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_grants: Vec<crate::types::capability::Capability>,
     /// Effort level 1–5; scales the per-skill token budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<u8>,
@@ -983,6 +987,7 @@ pub fn resolve_operation_config(
     let skill_catalog = resolve_skill_catalog(
         &config.skill_catalog,
         kernel_limits.collection_limits.skill_catalog,
+        kernel_limits.collection_limits.capability_grants,
         &tool_catalog,
     )?;
     let host_effect_support = resolve_host_effect_support(&config.host_effect_support)?;
@@ -1901,6 +1906,7 @@ fn resolve_tool_catalog(
 fn resolve_skill_catalog(
     catalog: &[SkillMetadata],
     bound: u32,
+    capability_grants_bound: u32,
     tools: &[ToolSchema],
 ) -> Result<Vec<SkillMetadata>, WireRejection> {
     if catalog.len() > bound as usize {
@@ -1930,6 +1936,13 @@ fn resolve_skill_catalog(
                 "skill {:?} declares effort {}; the range is 1..=5",
                 skill.name,
                 skill.effort.unwrap_or_default()
+            )));
+        }
+        if skill.capability_grants.len() > capability_grants_bound as usize {
+            return Err(too_many(format!(
+                "skill {:?} declares {} capability grants; the resolved bound is {capability_grants_bound}",
+                skill.name,
+                skill.capability_grants.len()
             )));
         }
         for tool in &skill.allowed_tools {
@@ -2198,6 +2211,7 @@ mod tests {
                 description: "run a literature sweep".to_string(),
                 when_to_use: Some("sources,citations".to_string()),
                 allowed_tools: vec!["search".to_string()],
+                capability_grants: Vec::new(),
                 effort: Some(3),
                 estimated_tokens: Some(900),
             }],
@@ -2653,6 +2667,35 @@ mod tests {
                 "only ever narrow the catalog",
             ),
             (
+                "a skill cannot exceed the capability-grants collection limit",
+                Box::new(|config| {
+                    config
+                        .kernel_limits
+                        .as_mut()
+                        .unwrap()
+                        .collection_limits
+                        .as_mut()
+                        .unwrap()
+                        .capability_grants = Some(0);
+                    config.skill_catalog[0].capability_grants =
+                        vec![crate::types::capability::Capability {
+                            id: crate::types::capability::CapabilityId("read-src".into()),
+                            kind: crate::types::capability::CapabilityKind::Tool,
+                            resource: crate::types::capability::ResourceSelector(
+                                "/repo/src/**".into(),
+                            ),
+                            actions: crate::types::capability::ActionSet(
+                                ["read".into()].into_iter().collect(),
+                            ),
+                            constraints: crate::types::capability::ConstraintSet::default(),
+                            lease: None,
+                            delegatable: false,
+                            issuer: crate::types::capability::Principal("root".into()),
+                        }];
+                }),
+                "capability grants",
+            ),
+            (
                 "the exposure baseline cannot name an undeclared tool",
                 Box::new(|config| {
                     config.feature_policy.as_mut().unwrap().stable_core_tool_ids =
@@ -2915,6 +2958,7 @@ mod tests {
                 description: String::new(),
                 when_to_use: None,
                 allowed_tools: Vec::new(),
+                capability_grants: Vec::new(),
                 effort: None,
                 estimated_tokens: None,
             }],

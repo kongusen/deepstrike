@@ -123,6 +123,11 @@ def skill_metadata_to_kernel(skill: Any) -> dict[str, Any]:
   allowed_tools = getattr(skill, "allowed_tools", None)
   if allowed_tools:
     out["allowed_tools"] = list(allowed_tools)
+  # SPC-015-01: grants are structured caller-provided descriptors. Do not infer them from
+  # scalar skill frontmatter; the canonical kernel validates attenuation on activation.
+  capability_grants = getattr(skill, "capability_grants", None)
+  if capability_grants:
+    out["capability_grants"] = list(capability_grants)
   return out
 
 

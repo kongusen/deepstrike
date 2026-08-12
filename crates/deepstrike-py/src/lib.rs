@@ -730,7 +730,6 @@ impl TaskUpdate {
 // ───────────────────────────────────────── Skill types ─────────────────────────────────────────
 
 #[pyclass]
-#[derive(Clone)]
 struct SkillMetadata {
     #[pyo3(get, set)]
     name: String,
@@ -741,6 +740,8 @@ struct SkillMetadata {
     #[pyo3(get, set)]
     allowed_tools: Vec<String>,
     #[pyo3(get, set)]
+    capability_grants: Vec<PyObject>,
+    #[pyo3(get, set)]
     effort: Option<u8>,
     #[pyo3(get, set)]
     estimated_tokens: u32,
@@ -749,12 +750,13 @@ struct SkillMetadata {
 #[pymethods]
 impl SkillMetadata {
     #[new]
-    #[pyo3(signature = (name, description = String::new(), when_to_use = None, allowed_tools = None, effort = None, estimated_tokens = 0))]
+    #[pyo3(signature = (name, description = String::new(), when_to_use = None, allowed_tools = None, capability_grants = None, effort = None, estimated_tokens = 0))]
     fn new(
         name: String,
         description: String,
         when_to_use: Option<String>,
         allowed_tools: Option<Vec<String>>,
+        capability_grants: Option<Vec<PyObject>>,
         effort: Option<u8>,
         estimated_tokens: u32,
     ) -> Self {
@@ -763,6 +765,7 @@ impl SkillMetadata {
             description,
             when_to_use,
             allowed_tools: allowed_tools.unwrap_or_default(),
+            capability_grants: capability_grants.unwrap_or_default(),
             effort,
             estimated_tokens,
         }

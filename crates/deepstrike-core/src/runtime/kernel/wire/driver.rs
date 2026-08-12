@@ -2336,6 +2336,16 @@ impl CanonicalOperationDriver {
                         ),
                     )));
                 }
+                ensure_skill_grants_are_attenuated(
+                    engine.ctx.skill_capability_grants(&activate.name),
+                    engine.task_capabilities(caller.as_str()),
+                )
+                .map_err(|violations| {
+                    SyscallRefusal::Rejected(SyscallRejection::new(
+                        "skill",
+                        skill_grant_attenuation_message(&activate.name, &violations),
+                    ))
+                })?;
                 let expires_at_turn = activate
                     .lease_turns
                     .map(|turns| engine.turn.saturating_add(turns));
@@ -3969,6 +3979,16 @@ impl CanonicalOperationDriver {
                     ),
                 ));
             }
+            ensure_skill_grants_are_attenuated(
+                engine.ctx.skill_capability_grants(&activate.name),
+                engine.root_capabilities(),
+            )
+            .map_err(|violations| {
+                KernelFault::new(
+                    KernelFaultCode::InvalidAuthority,
+                    skill_grant_attenuation_message(&activate.name, &violations),
+                )
+            })?;
         }
         let turn = engine.turn;
         for activate in &activation.activate {
@@ -5831,9 +5851,31 @@ fn core_skill(skill: &super::config::SkillMetadata) -> crate::types::skill::Skil
             .iter()
             .map(|tool| tool.as_str().into())
             .collect(),
+        capability_grants: skill.capability_grants.clone(),
         effort: skill.effort,
         estimated_tokens: skill.estimated_tokens.unwrap_or(0),
     }
+}
+
+fn ensure_skill_grants_are_attenuated(
+    grants: &[crate::types::capability::Capability],
+    parent_capabilities: &[crate::types::capability::Capability],
+) -> Result<(), Vec<crate::types::capability::Capability>> {
+    crate::types::capability::caps_subset(grants, parent_capabilities)
+}
+
+fn skill_grant_attenuation_message(
+    skill_name: &str,
+    violations: &[crate::types::capability::Capability],
+) -> String {
+    format!(
+        "skill {skill_name:?} declares capability grants that would widen the mounting agent's authority: {}",
+        violations
+            .iter()
+            .map(|capability| capability.id.0.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn core_tool_schema(schema: &WireToolSchema) -> crate::types::message::ToolSchema {
@@ -6103,6 +6145,27 @@ mod tests {
         )
     }
 
+    fn agent_start_with_capabilities(
+        id: &str,
+        observed_at_ms: u64,
+        requested_capabilities: Vec<crate::types::capability::Capability>,
+    ) -> WireEnvelope {
+        envelope(
+            id,
+            observed_at_ms,
+            KernelInput::StartOperation(StartOperation {
+                entry: RootEntry::Agent(RootAgentEntry {
+                    task: LogicalTask::new("write the research brief"),
+                    run_spec: None,
+                }),
+                initial_context: InitialContext {
+                    requested_capabilities,
+                    ..InitialContext::default()
+                },
+            }),
+        )
+    }
+
     fn wire_node(node_id: &str, goal: &str, depends_on: &[&str]) -> WireNode {
         WireNode {
             node_id: NodeId::new(node_id).unwrap(),
@@ -6265,6 +6328,7 @@ mod tests {
                     description: "debug helper".to_string(),
                     when_to_use: None,
                     allowed_tools: Vec::new(),
+                    capability_grants: Vec::new(),
                     effort: None,
                     estimated_tokens: None,
                 }],
@@ -7238,6 +7302,21 @@ mod tests {
             "a rejected capability mutation publishes no effect of its own; the turn still \
              continues (the §5k syscall-only continuation)"
         );
+    }
+
+    #[test]
+    fn a_skill_without_capability_grants_keeps_name_only_activation_semantics() {
+        let (mut runtime, provider) = agent_awaiting_provider();
+        runtime.submit(&provider_result(
+            "in-skill",
+            1_700_000_002_000,
+            &provider,
+            vec![tool_call("call-1", "skill", json!({"name": "debug"}))],
+        ));
+
+        let engine = runtime.driver.engine().unwrap();
+        assert!(engine.ctx.active_skills.contains_key("debug"));
+        assert!(engine.ctx.active_skill_capabilities().is_empty());
     }
 
     #[test]
@@ -12148,6 +12227,202 @@ mod tests {
                 .active_skills
                 .iter()
                 .any(|(skill, _)| skill == "debug")
+        );
+    }
+
+    #[test]
+    fn skill_capability_grants_must_attenuate_root_authority_before_activation() {
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+            ResourceSelector,
+        };
+
+        let root_grant = Capability {
+            id: CapabilityId("root-read-src".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/src/**".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: true,
+            issuer: Principal("root".into()),
+        };
+        let overbroad_skill_grant = Capability {
+            id: CapabilityId("read-repo".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/**".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: false,
+            issuer: Principal("skill:debug".into()),
+        };
+
+        let mut runtime = Runtime::new();
+        runtime.submit(&syscall_config_with(|config| {
+            config.skill_catalog[0].capability_grants = vec![overbroad_skill_grant];
+        }));
+        runtime.submit(&agent_start_with_capabilities(
+            "in-start",
+            1_700_000_001_000,
+            vec![root_grant],
+        ));
+        let before = runtime.driver.engine().unwrap().ctx.active_skills.clone();
+
+        let fault = runtime.reject(&control(
+            "in-overbroad-skill",
+            1_700_000_002_000,
+            HostCommand::ApplySkillActivation(ApplySkillActivationCommand {
+                activate: vec![super::super::command::SkillActivation {
+                    name: "debug".to_string(),
+                    lease_turns: None,
+                }],
+                deactivate: Vec::new(),
+            }),
+        ));
+        assert_eq!(fault.code, KernelFaultCode::InvalidAuthority);
+        assert_eq!(runtime.driver.engine().unwrap().ctx.active_skills, before);
+    }
+
+    #[test]
+    fn model_skill_activation_rejects_overbroad_grants_as_an_audit_fact() {
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+            ResourceSelector,
+        };
+
+        let root_grant = Capability {
+            id: CapabilityId("root-read-src".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/src/**".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: true,
+            issuer: Principal("root".into()),
+        };
+        let overbroad_skill_grant = Capability {
+            id: CapabilityId("read-repo".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/**".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: false,
+            issuer: Principal("skill:debug".into()),
+        };
+
+        let mut runtime = Runtime::new();
+        runtime.submit(&syscall_config_with(|config| {
+            config.skill_catalog[0].capability_grants = vec![overbroad_skill_grant];
+        }));
+        let started = runtime.submit(&agent_start_with_capabilities(
+            "in-start",
+            1_700_000_001_000,
+            vec![root_grant],
+        ));
+        let provider = sole_effect(&started).effect_id.clone();
+
+        runtime.submit(&provider_result(
+            "in-overbroad-skill",
+            1_700_000_002_000,
+            &provider,
+            vec![tool_call("call-1", "skill", json!({"name": "debug"}))],
+        ));
+
+        let rejected = rejections(&runtime);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].0, "skill");
+        assert!(rejected[0].2.contains("would widen"));
+        assert!(
+            runtime
+                .driver
+                .engine()
+                .unwrap()
+                .ctx
+                .active_skills
+                .is_empty()
+        );
+        assert_eq!(
+            runtime.pending_effect_kinds(),
+            vec![EffectKindTag::CallProvider]
+        );
+    }
+
+    #[test]
+    fn skill_capability_grants_are_effective_only_for_a_legal_active_skill() {
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+            ResourceSelector,
+        };
+
+        let root_grant = Capability {
+            id: CapabilityId("root-read-src".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/src/**".into()),
+            actions: ActionSet(["read".into(), "write".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: true,
+            issuer: Principal("root".into()),
+        };
+        let narrowed_skill_grant = Capability {
+            id: CapabilityId("read-utils".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/src/utils/**".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: false,
+            issuer: Principal("skill:debug".into()),
+        };
+
+        let mut runtime = Runtime::new();
+        runtime.submit(&syscall_config_with(|config| {
+            config.skill_catalog[0].capability_grants = vec![narrowed_skill_grant.clone()];
+        }));
+        runtime.submit(&agent_start_with_capabilities(
+            "in-start",
+            1_700_000_001_000,
+            vec![root_grant],
+        ));
+        runtime.submit(&control(
+            "in-narrowed-skill",
+            1_700_000_002_000,
+            HostCommand::ApplySkillActivation(ApplySkillActivationCommand {
+                activate: vec![super::super::command::SkillActivation {
+                    name: "debug".to_string(),
+                    lease_turns: None,
+                }],
+                deactivate: Vec::new(),
+            }),
+        ));
+        assert_eq!(
+            runtime
+                .driver
+                .engine()
+                .unwrap()
+                .ctx
+                .active_skill_capabilities(),
+            vec![narrowed_skill_grant]
+        );
+
+        runtime.submit(&control(
+            "in-deactivate-skill",
+            1_700_000_003_000,
+            HostCommand::ApplySkillActivation(ApplySkillActivationCommand {
+                activate: Vec::new(),
+                deactivate: vec!["debug".to_string()],
+            }),
+        ));
+        assert!(
+            runtime
+                .driver
+                .engine()
+                .unwrap()
+                .ctx
+                .active_skill_capabilities()
+                .is_empty()
         );
     }
 

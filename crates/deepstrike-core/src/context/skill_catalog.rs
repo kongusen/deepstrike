@@ -1,6 +1,7 @@
 use compact_str::CompactString;
 use std::collections::HashMap;
 
+use crate::types::capability::Capability;
 use crate::types::message::ToolSchema;
 use crate::types::skill::SkillMetadata;
 
@@ -61,6 +62,15 @@ impl SkillCatalog {
         self.available
             .get(name)
             .map(|s| s.allowed_tools.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Fine-grained capability grants declared by a skill. The caller is responsible for
+    /// attenuation validation against the mounting agent before making these effective.
+    pub fn capability_grants(&self, name: &str) -> &[Capability] {
+        self.available
+            .get(name)
+            .map(|skill| skill.capability_grants.as_slice())
             .unwrap_or(&[])
     }
 

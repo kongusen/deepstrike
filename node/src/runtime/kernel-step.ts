@@ -235,6 +235,8 @@ export function skillMetadataToKernel(skill: SkillMetadata): Record<string, unkn
   if (skill.effort !== undefined) out.effort = skill.effort
   // P1-B: forward declared tool ids (additive; omitted when empty so existing skills' wire is unchanged).
   if (skill.allowedTools?.length) out.allowed_tools = skill.allowedTools
+  // SPC-015-01: structured grants are caller-supplied rather than inferred from scalar frontmatter.
+  if (skill.capabilityGrants?.length) out.capability_grants = skill.capabilityGrants
   return out
 }
 

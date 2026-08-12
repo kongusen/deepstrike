@@ -1,6 +1,8 @@
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
+use super::capability::Capability;
+
 /// Cheap, frontmatter-only metadata for a skill.
 /// SDK layer parses skill files (markdown + YAML) and produces these structs.
 /// The kernel uses metadata for goal-matching and budget planning without ever
@@ -14,6 +16,10 @@ pub struct SkillMetadata {
     pub when_to_use: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_tools: Vec<CompactString>,
+    /// Fine-grained authority this skill makes effective while it is active. The operation driver
+    /// must prove these are attenuations of the mounting agent's capabilities before activation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capability_grants: Vec<Capability>,
     /// Effort level 1-5; controls per-skill token budget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<u8>,
@@ -40,6 +46,7 @@ impl SkillMetadata {
             description: description.into(),
             when_to_use: None,
             allowed_tools: Vec::new(),
+            capability_grants: Vec::new(),
             effort: None,
             estimated_tokens: 0,
         }

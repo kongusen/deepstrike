@@ -9,7 +9,7 @@ use super::skill_catalog::SkillCatalog;
 use super::task_state::{TaskState, TaskUpdate};
 use super::token_engine::ContextTokenEngine;
 use crate::mm::handle::{Handle, HandleId, HandleKind, HandleTable, Residency};
-use crate::types::capability::{CapabilityKind, CapabilityManifest};
+use crate::types::capability::{Capability, CapabilityKind, CapabilityManifest};
 use crate::types::message::{Content, ContentPart, Message, ToolSchema};
 use crate::types::skill::SkillMetadata;
 use compact_str::CompactString;
@@ -816,6 +816,20 @@ impl ContextManager {
         Some(union)
     }
 
+    /// Fine-grained authority contributed by active skills. Activation is checked by the canonical
+    /// driver before it mutates this set; deactivation and lease expiry remove grants by removing
+    /// the skill name from `active_skills`.
+    pub fn active_skill_capabilities(&self) -> Vec<Capability> {
+        self.active_skills
+            .keys()
+            .flat_map(|name| self.skills.capability_grants(name).iter().cloned())
+            .collect()
+    }
+
+    pub fn skill_capability_grants(&self, name: &str) -> &[Capability] {
+        self.skills.capability_grants(name)
+    }
+
     pub fn skill_tool_schema(&self) -> Option<ToolSchema> {
         self.skills.build_tool_schema()
     }
@@ -1270,6 +1284,43 @@ mod tests {
         // An active skill with NO declared tools ⇒ unbounded ⇒ do not narrow (D3, errs-open).
         mgr.activate_skill("plain");
         assert!(mgr.active_skill_tool_filter().is_none());
+    }
+
+    #[test]
+    fn active_skill_capability_grants_follow_activation_deactivation_and_lease_expiry() {
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, ConstraintSet, Principal, ResourceSelector,
+        };
+
+        let grant = Capability {
+            id: CapabilityId("read-src".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/src/**".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: false,
+            issuer: Principal("root".into()),
+        };
+        let mut review = SkillMetadata::new("review", "Review source files");
+        review.capability_grants = vec![grant.clone()];
+
+        let mut mgr = ContextManager::new(1_000);
+        mgr.set_available_skills(vec![review]);
+        assert!(mgr.active_skill_capabilities().is_empty());
+
+        mgr.activate_skill("review");
+        assert_eq!(mgr.active_skill_capabilities(), vec![grant.clone()]);
+
+        mgr.deactivate_skill("review");
+        assert!(mgr.active_skill_capabilities().is_empty());
+
+        mgr.activate_skill_leased("review", Some(3));
+        mgr.sweep_expired_skill_leases(2);
+        assert_eq!(mgr.active_skill_capabilities(), vec![grant]);
+
+        mgr.sweep_expired_skill_leases(3);
+        assert!(mgr.active_skill_capabilities().is_empty());
     }
 
     #[test]

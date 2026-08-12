@@ -526,6 +526,20 @@ impl LoopStateMachine {
         self.tasks.get(task_id).map(|task| task.state)
     }
 
+    /// Fine-grained capabilities held by a task. Skill activation uses the derived syscall caller
+    /// as the parent set for the same attenuation rule that governs child-task delegation.
+    pub fn task_capabilities(&self, task_id: &str) -> &[crate::types::capability::Capability] {
+        self.tasks
+            .get(task_id)
+            .map(|task| task.capabilities.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// The root operation's capability set, used by host control-plane mutations.
+    pub fn root_capabilities(&self) -> &[crate::types::capability::Capability] {
+        self.task_capabilities("root")
+    }
+
     /// §10.4 · the launch effect for these tasks has been published. Moves each of them from
     /// `PendingLaunch` to `Starting`, and never downgrades a task that already advanced.
     pub fn mark_tasks_starting(&mut self, task_ids: &[String]) {
