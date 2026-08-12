@@ -154,3 +154,56 @@ def test_factory_attaches_runtime_and_provider_entry_uses_it_for_source_prefligh
     assert provider._resolved_runtime.model_id == provider._model
     with pytest.raises(ContentValidationError, match="audio url source is explicitly unsupported"):
         provider._build_messages(context)
+
+
+def test_file_id_affinity_must_match_the_resolved_provider_endpoint() -> None:
+    runtime = model_registry.resolve_provider_runtime(
+        "openai",
+        "gpt-5.5",
+        endpoint_id="openai.responses",
+    )
+    context = RenderedContext(turns=[RenderedMessage(
+        role="tool",
+        content_parts=[StructuredToolResultPart(
+            call_id="call-file",
+            output="[file]",
+            content_parts=[{
+                "type": "file",
+                "source": {
+                    "kind": "fileId",
+                    "id": "file_1",
+                    "affinity": {"providerId": "openai", "endpointId": "openai.chat"},
+                },
+            }],
+        )],
+    )])
+
+    with pytest.raises(ContentValidationError, match="belongs to openai/openai.chat"):
+        normalize_canonical_adapter_input(context, [], resolved=runtime)
+
+
+@pytest.mark.parametrize("affinity", [
+    None,
+    {"providerId": "openai", "endpointId": "openai.responses"},
+])
+def test_file_id_is_valid_at_its_affine_or_legacy_current_endpoint(affinity: dict | None) -> None:
+    runtime = model_registry.resolve_provider_runtime(
+        "openai",
+        "gpt-5.5",
+        endpoint_id="openai.responses",
+    )
+    source = {"kind": "fileId", "id": "file_1"}
+    if affinity is not None:
+        source["affinity"] = affinity
+    context = RenderedContext(turns=[RenderedMessage(
+        role="tool",
+        content_parts=[StructuredToolResultPart(
+            call_id="call-file",
+            output="[file]",
+            content_parts=[{"type": "file", "source": source}],
+        )],
+    )])
+
+    canonical = normalize_canonical_adapter_input(context, [], resolved=runtime)
+
+    assert canonical.resolved is runtime
