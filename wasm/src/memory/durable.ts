@@ -20,7 +20,9 @@ export class DurableMemory implements Memory {
       kinds: options.kinds ?? [],
       ...(options.minScore === undefined ? {} : { min_score: options.minScore }),
     }
-    return (await this.store.search(this.agentId, request)).map(hit => hit.record)
+    return (await this.store.search(this.agentId, request))
+      .map(hit => hit.record)
+      .filter(record => sameScope(record.scope, this.scope))
   }
 
   async get(recordId: string): Promise<MemoryRecord | null> {

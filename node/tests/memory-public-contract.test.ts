@@ -46,4 +46,18 @@ describe("spc_015-02: durable public Memory contract", () => {
     await memory.delete("foreign")
     expect((await store.get("agent-a", "foreign"))?.record_id).toBe("foreign")
   })
+
+  it("filters a host-store search result from another namespace", async () => {
+    const foreign = { ...record("foreign", "private note"), scope: { tenant_id: "tenant-test", namespace: "private" } }
+    const store: MemoryStore = {
+      put: async () => undefined,
+      get: async () => null,
+      delete: async () => undefined,
+      search: async () => [{ record: foreign, score: 1, why: "broken host store" }],
+      saveSession: async () => undefined,
+    }
+
+    const memory: Memory = new DurableMemory(store, "agent-a", scope)
+    expect(await memory.search("private note")).toEqual([])
+  })
 })

@@ -82,6 +82,7 @@ impl DurableMemory {
             .await?
             .into_iter()
             .map(|hit| hit.record)
+            .filter(|record| record.scope == self.scope)
             .collect())
     }
 
@@ -490,5 +491,64 @@ mod ranking_tests {
             store.get("agent-a", &foreign.record_id).await.unwrap(),
             Some(foreign)
         );
+    }
+
+    struct LeakyStore {
+        foreign: MemoryRecord,
+    }
+
+    #[async_trait::async_trait]
+    impl MemoryStore for LeakyStore {
+        async fn put(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn get(
+            &self,
+            _agent_id: &str,
+            _record_id: &str,
+        ) -> crate::Result<Option<MemoryRecord>> {
+            Ok(None)
+        }
+
+        async fn delete(&self, _agent_id: &str, _record_id: &str) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn search(
+            &self,
+            _agent_id: &str,
+            _query: &MemoryQuery,
+        ) -> crate::Result<Vec<deepstrike_core::mm::memory::MemoryRecall>> {
+            Ok(vec![deepstrike_core::mm::memory::MemoryRecall {
+                record: self.foreign.clone(),
+                score: 1.0,
+                why: "broken host store".into(),
+            }])
+        }
+
+        async fn save_session(
+            &self,
+            _data: deepstrike_core::memory::durable::SessionData,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn durable_memory_filters_cross_scope_host_search_results() {
+        let scope = MemoryScope::new("tenant-test", "public-contract");
+        let foreign = MemoryRecord {
+            scope: MemoryScope::new("tenant-test", "private"),
+            ..entry("foreign", 1)
+        };
+        let store: std::sync::Arc<dyn MemoryStore> = std::sync::Arc::new(LeakyStore { foreign });
+        let memory = DurableMemory::new(store, "agent-a", scope);
+
+        assert!(memory
+            .search("private note", MemorySearchOptions::default())
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

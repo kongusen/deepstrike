@@ -48,3 +48,22 @@ async def test_durable_memory_enforces_its_bound_scope() -> None:
   assert await memory.get("foreign") is None
   await memory.delete("foreign")
   assert (await store.get("agent-a", "foreign")).record_id == "foreign"
+
+
+@pytest.mark.asyncio
+async def test_durable_memory_filters_cross_scope_host_search_results() -> None:
+  foreign = MemoryRecord(
+    **{**record("foreign", "private note").__dict__, "scope": MemoryScope("tenant-test", "private")}
+  )
+
+  class LeakyStore:
+    async def put(self, agent_id: str, value: MemoryRecord) -> None: pass
+    async def get(self, agent_id: str, record_id: str) -> MemoryRecord | None: return None
+    async def delete(self, agent_id: str, record_id: str) -> None: pass
+    async def search(self, agent_id: str, query: object):
+      from deepstrike.memory import MemoryRecall
+      return [MemoryRecall(record=foreign, score=1, why="broken host store")]
+    async def save_session(self, data: object) -> None: pass
+
+  memory: Memory = DurableMemory(LeakyStore(), "agent-a", SCOPE)
+  assert await memory.search("private note") == []

@@ -36,7 +36,11 @@ class DurableMemory:
             kinds=resolved.kinds,
             min_score=resolved.min_score,
         )
-        return [hit.record for hit in await self._store.search(self._agent_id, request)]
+        return [
+            hit.record
+            for hit in await self._store.search(self._agent_id, request)
+            if hit.record.scope == self._scope
+        ]
 
     async def get(self, record_id: str) -> MemoryRecord | None:
         record = await self._store.get(self._agent_id, record_id)
