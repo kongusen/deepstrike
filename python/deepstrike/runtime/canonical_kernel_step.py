@@ -35,6 +35,7 @@ from deepstrike.runtime.kernel_step import (
   _message_from_kernel,
   encode_canonical_content_parts,
 )
+from deepstrike.providers.provider_error import canonical_provider_failure_kind
 
 
 MAX_CHAIN_POSITION = 9_007_199_254_740_991
@@ -550,9 +551,21 @@ class CanonicalRunnerRuntime:
       }})
     if kind == "provider_error":
       message = str(event.get("message") or "")
-      if re.search(r"context|token.*limit|too long", message, re.I):
+      error_kind = event.get("error_kind")
+      has_structured_kind = isinstance(error_kind, str)
+      context_overflow = error_kind == "context_overflow" or (
+        error_kind in (None, "unknown") and re.search(r"context|token.*limit|too long", message, re.I)
+      )
+      if context_overflow:
         return await self._resolve(event, {"kind": "provider", "outcome": {"kind": "context_overflow"}})
-      return await self._failed(event, "transport_exhausted", message, True)
+      retryable = event.get("retryable")
+      failure_kind = canonical_provider_failure_kind(error_kind) if has_structured_kind else "transport_exhausted"
+      return await self._failed(
+        event,
+        failure_kind,
+        message,
+        retryable if isinstance(retryable, bool) else True,
+      )
     if kind == "tool_results":
       results = []
       for raw in event.get("results") or []:

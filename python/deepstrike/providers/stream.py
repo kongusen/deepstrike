@@ -72,6 +72,9 @@ class UsageEvent:
     # Provider stop reason — "max_tokens" (Anthropic) / "length" (OpenAI) flag an output-cap
     # truncation that drives the kernel's max-output-tokens recovery. None when not reported.
     stop_reason: "str | None" = None
+    # Original provider spelling, retained for Node/Python diagnostics only; never forwarded
+    # to the canonical kernel.
+    raw_stop_reason: "str | None" = None
 
 
 @dataclass

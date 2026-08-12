@@ -23,6 +23,10 @@ from deepstrike._kernel import (
   TaskUpdate,
 )
 from deepstrike.providers.base import LLMProvider, RenderedContext
+from deepstrike.providers.provider_error import (
+  classify_provider_error,
+  provider_error_event_fields,
+)
 from deepstrike.types.content import RenderedMessage, StructuredToolResultPart, normalize_tool_result
 from deepstrike.providers.stream import (
   DoneEvent,
@@ -2256,17 +2260,22 @@ class RuntimeRunner:
             # give-up policy lives in the kernel (one place), not duplicated across the four SDK runners.
             # `continue` re-enters the loop: a recovered turn persists its compaction archive via the
             # loop-top _append_observations, and a terminal `done` exits through `is_terminal()`.
+            provider_err = classify_provider_error(
+              getattr(self._opts.provider, "descriptor", lambda: type("D", (), {"provider": "unknown"})())().provider,
+              exc,
+            )
             action = await action_host(runtime, self._pending_observations, {
               "kind": "provider_error",
               "effect_id": provider_effect_id,
-              "message": format_tool_error(exc),
+              "message": provider_err.message,
+              **provider_error_event_fields(provider_err),
             })
             # Withholding (query.ts parity): surface the raw provider error only when the kernel
             # could NOT recover (it returned a terminal). On a recovered retry (call_provider) the
             # error stays hidden, so embedders that terminate on `error` events don't see a phantom
             # failure mid-recovery.
             if getattr(action, "kind", None) == "done":
-              yield ErrorEvent(message=format_tool_error(exc))
+              yield ErrorEvent(message=provider_err.message)
             continue
 
         # #2-B-ii: stream aborted (preempt/interrupt) via the break path — end the turn now.
