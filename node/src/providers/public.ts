@@ -10,12 +10,26 @@ export { CircuitBreaker } from "./base.js"
 export { OpenAIResponsesAdapter } from "./openai-responses.js"
 export type { OpenAIResponsesRunState } from "./openai-responses.js"
 export { OpenAIChatAdapter } from "./openai-chat.js"
+export { GeminiAdapter } from "./gemini-adapter.js"
+export type {
+  GeminiRequestPlan,
+  GeminiStreamState,
+} from "./gemini-adapter.js"
+export { ProtocolResponseError } from "./protocol-adapter.js"
+export type {
+  AdapterDecodeInput,
+  AdapterOutput,
+  AdapterStreamInput,
+  CanonicalStopReason,
+  ProtocolAdapter,
+} from "./protocol-adapter.js"
 export { endpointProfiles } from "./endpoints.js"
 export type { EndpointProfile, EndpointProfileId, EndpointProtocol, ProviderId } from "./endpoints.js"
 export { modelRegistry, resolveEffectiveCapability } from "./model-registry.js"
 export {
   ContentValidationError,
   ToolResultProjectionConflictError,
+  normalizeCanonicalContext,
   normalizeCanonicalAdapterInput,
   normalizeToolResultPart,
   projectToolOutputToText,

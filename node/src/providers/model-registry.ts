@@ -6,6 +6,7 @@ import {
   type EndpointProtocol,
   type ProviderId,
 } from "./endpoints.js"
+import { GEMINI_PROTOCOL_CAPABILITIES } from "./gemini-adapter.js"
 
 export type ModelKind = "generation" | "embedding"
 export type InputModality = "text" | "image" | "audio" | "video" | "file"
@@ -368,10 +369,7 @@ export const protocolRuntimeCapabilities: Record<GenerationProtocol, ProtocolRun
     parallelToolCalls: true, structuredOutput: true, reasoningReplay: "optional", promptCaching: true,
     mediaForms: { imageUrl: true, imageBase64: true, fileId: true },
   },
-  gemini: {
-    acceptedInputModalities: ["text", "image", "audio"], emittedOutputModalities: ["text"], tools: true,
-    reasoningReplay: "none", mediaForms: { imageUrl: true, imageBase64: true, audioBase64: true },
-  },
+  gemini: GEMINI_PROTOCOL_CAPABILITIES,
   "ollama-chat": {
     acceptedInputModalities: ["text", "image"], emittedOutputModalities: ["text"], tools: true,
     reasoningReplay: "none", mediaForms: { imageBase64: true },

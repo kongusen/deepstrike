@@ -1,91 +1,21 @@
-import { GoogleGenerativeAI, type Content, type Part, type RequestOptions, type Tool } from "@google/generative-ai"
-import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy, PromptMeasurement } from "../types.js"
+import { GoogleGenerativeAI, type Content, type RequestOptions } from "@google/generative-ai"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, PromptMeasurement } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker, normalizeToolCall, turnsWithStateAppended } from "./base.js"
+import { CircuitBreaker } from "./base.js"
 import { endpointProfiles } from "./endpoints.js"
-import { UnsupportedModalityError } from "./base.js"
-import { normalizeGeminiUsage } from "./usage-normalizer.js"
-import { normalizeToolResultPart, projectToolOutputToText } from "./content-normalization.js"
+import {
+  normalizeCanonicalAdapterInput,
+  normalizeCanonicalContext,
+  type CanonicalAdapterInput,
+} from "./content-normalization.js"
+import { GeminiAdapter, canonicalGeminiContents, geminiVendorConfig } from "./gemini-adapter.js"
+
+type ResolvedGeminiRuntime = CanonicalAdapterInput["resolved"]
 
 const GEMINI_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["gemini.google"].baseURL
 
 export function buildContents(turns: Message[]): Content[] {
-  const contents: Content[] = []
-  for (const msg of turns) {
-    if (msg.role === "tool") {
-      // spc_012-N-04: Gemini `functionResponse` on the 1.5/2.x models this provider targets
-      // accepts only a JSON `response` object — multimodal `functionResponse.parts` exists only
-      // on Gemini 3 (not in this repo's model matrix). Explicit text-only degradation via the
-      // `output` projection (visible `[modality]` placeholder, INV-012-01); Gemini-3 native
-      // support is a recorded future option if a Gemini 3 model is ever added.
-      const parts: Part[] = (msg.contentParts ?? [])
-        .filter(p => p.type === "tool_result")
-        .map(p => {
-          if (p.type !== "tool_result") return { text: "" }
-          let toolName = p.callId
-          for (let i = turns.length - 1; i >= 0; i--) {
-            const turn = turns[i]
-            if (turn.role === "assistant" && turn.toolCalls) {
-              const matched = turn.toolCalls.find(tc => tc.id === p.callId)
-              if (matched) {
-                toolName = matched.name
-                break
-              }
-            }
-          }
-          return {
-            functionResponse: {
-              name: toolName,
-              response: { output: projectToolOutputToText(normalizeToolResultPart(p).blocks) },
-            },
-          }
-        })
-      if (parts.length) contents.push({ role: "user", parts })
-      continue
-    }
-    const role = msg.role === "assistant" ? "model" : "user"
-    const parts: Part[] = []
-    if (msg.toolCalls?.length) {
-      for (const tc of msg.toolCalls) {
-        let args: Record<string, unknown> = {}
-        try { args = JSON.parse(tc.arguments) } catch { args = {} }
-        parts.push({ functionCall: { name: tc.name, args } })
-      }
-    }
-    // Multimodal: render contentParts (text + image) when present, else the plain
-    // text body. Without this, image inputs to Gemini were silently dropped.
-    if (msg.contentParts?.length) {
-      for (const p of msg.contentParts) {
-        if (p.type === "text") parts.push({ text: p.text })
-        else if (p.type === "image") {
-          if (p.data) parts.push({ inlineData: { mimeType: p.mediaType ?? "image/png", data: p.data } })
-          else if (p.url) parts.push({ fileData: { mimeType: p.mediaType ?? "image/png", fileUri: p.url } } as Part)
-        } else if (p.type === "audio") {
-          if (!p.data) throw new UnsupportedModalityError("audio", "gemini")
-          parts.push({ inlineData: { mimeType: p.mediaType ?? "audio/wav", data: p.data } })
-        } else if (p.type === "tool_result") {
-          // tool results are handled via functionResponse on tool role messages
-        } else {
-          throw new UnsupportedModalityError(String((p as { type?: string }).type ?? "unknown"), "gemini")
-        }
-      }
-    } else if (msg.content) {
-      parts.push({ text: msg.content })
-    }
-    if (parts.length) contents.push({ role, parts })
-  }
-  return contents
-}
-
-function buildTools(tools: ToolSchema[]): Tool[] {
-  if (!tools.length) return []
-  return [{
-    functionDeclarations: tools.map(t => ({
-      name: t.name,
-      description: t.description,
-      parameters: JSON.parse(t.parameters),
-    })),
-  }]
+  return canonicalGeminiContents(normalizeCanonicalContext({ systemText: "", turns }))
 }
 
 export class GeminiProvider implements LLMProvider {
@@ -95,6 +25,7 @@ export class GeminiProvider implements LLMProvider {
   private baseDelay: number
   private requestOptions: RequestOptions
   private readonly resolvedRuntimePolicy: RuntimePolicy
+  private readonly adapter = new GeminiAdapter()
 
   constructor(
     apiKey: string,
@@ -102,6 +33,7 @@ export class GeminiProvider implements LLMProvider {
     retry = { maxRetries: 3, baseDelay: 1000 },
     baseURL: string = GEMINI_BASE,
     runtimePolicy: RuntimePolicy = {},
+    private resolvedRuntime?: ResolvedGeminiRuntime,
   ) {
     this.genAI = withServerRuntimeGuard(() => new GoogleGenerativeAI(apiKey))
     this.circuit = new CircuitBreaker()
@@ -115,43 +47,76 @@ export class GeminiProvider implements LLMProvider {
     return this.resolvedRuntimePolicy
   }
 
+  bindResolvedRuntime(resolved: ResolvedGeminiRuntime): void {
+    if (
+      resolved.identity.protocol !== "gemini"
+      || resolved.identity.modelId !== this.model
+    ) {
+      throw new Error("GeminiProvider received a mismatched resolved runtime")
+    }
+    this.resolvedRuntime = resolved
+  }
+
+  private adapterInput(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+  ): CanonicalAdapterInput {
+    if (!this.resolvedRuntime) {
+      // Direct class construction is a published compatibility path. A-07 replaces it with
+      // injected runtime profiles; until then this local descriptor contains no Registry lookup.
+      const resolved = {
+        identity: {
+          providerId: "gemini",
+          modelId: this.model,
+          endpointId: "gemini.google",
+          protocol: "gemini",
+        },
+        model: { id: `gemini/${this.model}`, providerId: "gemini", kind: "generation", intrinsic: {} },
+        endpoint: endpointProfiles["gemini.google"],
+        adapter: this,
+        effectiveCapabilities: {
+          inputModalities: Object.fromEntries(["text", "image", "audio", "video", "file"].map(
+            modality => [modality, { state: modality === "video" || modality === "file" ? "unsupported" : "unknown", evidence: [] }],
+          )),
+          outputModalities: Object.fromEntries(["text", "image", "audio", "embedding"].map(
+            modality => [modality, { state: "unknown", evidence: [] }],
+          )),
+          tools: { state: "unknown", evidence: [] },
+          reasoning: { state: "unknown", evidence: [] },
+          parallelToolCalls: { state: "unknown", evidence: [] },
+          structuredOutput: { state: "unknown", evidence: [] },
+          promptCaching: { state: "unknown", evidence: [] },
+          nativeTokenCounting: { state: "unknown", evidence: [] },
+          mediaForms: Object.fromEntries(
+            ["imageUrl", "imageBase64", "fileId", "audioUrl", "audioBase64"].map(
+              form => [form, { state: "unknown", evidence: [] }],
+            ),
+          ),
+        },
+      } as unknown as ResolvedGeminiRuntime
+      return normalizeCanonicalAdapterInput({ context, tools, resolved, extensions })
+    }
+    return normalizeCanonicalAdapterInput({
+      context,
+      tools,
+      resolved: this.resolvedRuntime,
+      extensions,
+    })
+  }
+
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const system = context.systemText || undefined
-    const contents = buildContents(turnsWithStateAppended(context))
-    const geminiTools = buildTools(tools)
+    const input = this.adapterInput(context, tools, extensions)
+    const plan = this.adapter.buildRequest(input)
 
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
       try {
-        const vc = this.vendorConfig(extensions)
-        const allTools = [...geminiTools, ...((vc.tools as Tool[] | undefined) ?? [])]
-        const m = this.genAI.getGenerativeModel({
-          ...this.modelExtensions(extensions),
-          model: this.model,
-          ...(system ? { systemInstruction: system } : {}),
-          ...(allTools.length ? { tools: allTools } : {}),
-          ...(vc.generationConfig ? { generationConfig: vc.generationConfig } : {}),
-        }, this.requestOptions)
-        const resp = await m.generateContent({ contents })
+        const m = this.genAI.getGenerativeModel(plan.modelParams, this.requestOptions)
+        const resp = await m.generateContent(plan.request)
         this.circuit.recordSuccess()
-        const candidate = resp.response.candidates?.[0]
-        let content = ""
-        const toolCalls = []
-        for (const part of candidate?.content.parts ?? []) {
-          if (part.text) content += part.text
-          else if (part.functionCall) {
-            const tc = normalizeToolCall(part.functionCall.name, part.functionCall.name, part.functionCall.args)
-            if (tc) toolCalls.push(tc)
-          }
-        }
-        const usage = resp.response.usageMetadata
-        return {
-          role: "assistant",
-          content,
-          tokenCount: usage?.candidatesTokenCount ?? usage?.totalTokenCount,
-          toolCalls,
-        }
+        return this.adapter.decodeComplete(resp.response, { input }).message
       } catch (err) {
         lastErr = err
         this.circuit.recordFailure()
@@ -162,52 +127,17 @@ export class GeminiProvider implements LLMProvider {
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const system = context.systemText || undefined
-    const contents = buildContents(turnsWithStateAppended(context))
-    const geminiTools = buildTools(tools)
-
-    const vc = this.vendorConfig(extensions)
-    const allTools = [...geminiTools, ...((vc.tools as Tool[] | undefined) ?? [])]
-    const m = this.genAI.getGenerativeModel({
-      ...this.modelExtensions(extensions),
-      model: this.model,
-      ...(system ? { systemInstruction: system } : {}),
-      ...(allTools.length ? { tools: allTools } : {}),
-      ...(vc.generationConfig ? { generationConfig: vc.generationConfig } : {}),
-    }, this.requestOptions)
-
-    const result = await m.generateContentStream({ contents })
-    const toolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = []
+    const input = this.adapterInput(context, tools, extensions)
+    const plan = this.adapter.buildRequest(input)
+    const m = this.genAI.getGenerativeModel(plan.modelParams, this.requestOptions)
+    const result = await m.generateContentStream(plan.request)
+    const state = this.adapter.createStreamState({ input })
 
     for await (const chunk of result.stream) {
-      for (const part of chunk.candidates?.[0]?.content.parts ?? []) {
-        if (part.text) yield { type: "text_delta", delta: part.text } as TextDelta
-        else if (part.functionCall) {
-          const { name, args } = part.functionCall
-          toolCalls.push({ id: `call_${toolCalls.length + 1}`, name, args: args as Record<string, unknown> })
-        }
-      }
+      for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
     }
 
-    for (const tc of toolCalls) {
-      yield { type: "tool_call", id: tc.id, name: tc.name, arguments: tc.args } as ToolCallEvent
-    }
-
-    const usage = (await result.response).usageMetadata
-    if (usage?.totalTokenCount) {
-      // Gemini implicit/explicit cache hits are reported as cachedContentTokenCount,
-      // a subset of promptTokenCount (which stays the full prompt for accounting).
-      const cachedTokens = (usage as { cachedContentTokenCount?: number }).cachedContentTokenCount ?? 0
-      const providerUsage = normalizeGeminiUsage(usage)
-      yield {
-        type: "usage",
-        totalTokens: usage.totalTokenCount,
-        inputTokens: usage.promptTokenCount ?? 0,
-        outputTokens: usage.candidatesTokenCount ?? 0,
-        ...(cachedTokens > 0 ? { cacheReadInputTokens: cachedTokens } : {}),
-        ...(providerUsage ? { providerUsage } : {}),
-      } as StreamEvent
-    }
+    for (const event of this.adapter.finishStream(state, await result.response).events) yield event
   }
 
   /**
@@ -216,39 +146,14 @@ export class GeminiProvider implements LLMProvider {
    * the sent request never diverge.
    */
   async countTokens(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<PromptMeasurement> {
-    const system = context.systemText || undefined
-    const contents = buildContents(turnsWithStateAppended(context))
-    const geminiTools = buildTools(tools)
-    const vc = this.vendorConfig(extensions)
-    const allTools = [...geminiTools, ...((vc.tools as Tool[] | undefined) ?? [])]
-    const m = this.genAI.getGenerativeModel({
-      ...this.modelExtensions(extensions),
-      model: this.model,
-      ...(system ? { systemInstruction: system } : {}),
-      ...(allTools.length ? { tools: allTools } : {}),
-      ...(vc.generationConfig ? { generationConfig: vc.generationConfig } : {}),
-    }, this.requestOptions)
-    const resp = await m.countTokens({ contents })
+    const plan = this.adapter.buildRequest(this.adapterInput(context, tools, extensions))
+    const m = this.genAI.getGenerativeModel(plan.modelParams, this.requestOptions)
+    const resp = await m.countTokens(plan.request)
     return {
       inputTokens: resp.totalTokens,
       source: { kind: "native", provider: "gemini" },
       confidence: "exact",
     }
-  }
-
-  private modelExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
-    if (!extensions) return {}
-    // Strip keys handled explicitly elsewhere (incl. the vendor server-tool / structured-output keys
-    // consumed by `vendorConfig`) so they never leak raw into getGenerativeModel.
-    // Strip keys handled explicitly: the SDK fields set below + the named vendor keys consumed by
-    // `vendorConfig`. A caller-provided raw `generationConfig` still passes through (and is merged with
-    // any structured-output config at the call site).
-    const {
-      model: _model, systemInstruction: _systemInstruction, tools: _tools,
-      google_search: _gs, response_mime_type: _rmt, response_schema: _rs,
-      ...rest
-    } = extensions
-    return rest
   }
 
   /**
@@ -260,16 +165,6 @@ export class GeminiProvider implements LLMProvider {
    *    pairing this with google_search).
    */
   vendorConfig(extensions?: Record<string, unknown>): { tools?: unknown[]; generationConfig?: Record<string, unknown> } {
-    const ext = extensions ?? {}
-    const tools: unknown[] = []
-    if (ext.google_search) tools.push({ googleSearch: typeof ext.google_search === "object" ? ext.google_search : {} })
-    // Seed from any caller-provided raw generationConfig, then layer the named structured-output keys.
-    const gc: Record<string, unknown> = { ...(ext.generationConfig as Record<string, unknown> | undefined) }
-    if (ext.response_mime_type != null) gc.responseMimeType = ext.response_mime_type
-    if (ext.response_schema != null) gc.responseSchema = ext.response_schema
-    return {
-      ...(tools.length ? { tools } : {}),
-      ...(Object.keys(gc).length ? { generationConfig: gc } : {}),
-    }
+    return geminiVendorConfig(extensions ?? {})
   }
 }

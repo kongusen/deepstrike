@@ -228,6 +228,18 @@ function normalizeMessage(message: Message): CanonicalMessage {
   }
 }
 
+export function normalizeCanonicalContext(context: RenderedContext): CanonicalRenderedContext {
+  return {
+    systemText: context.systemText,
+    ...(context.systemStable !== undefined ? { systemStable: context.systemStable } : {}),
+    ...(context.systemKnowledge !== undefined ? { systemKnowledge: context.systemKnowledge } : {}),
+    turns: context.turns.map(normalizeMessage),
+    ...(context.stateTurn ? { stateTurn: normalizeMessage(context.stateTurn) } : {}),
+    ...(context.frozenPrefixLen !== undefined ? { frozenPrefixLen: context.frozenPrefixLen } : {}),
+    ...(context.budgetOverflow !== undefined ? { budgetOverflow: context.budgetOverflow } : {}),
+  }
+}
+
 function validateCanonicalMessage(
   message: CanonicalMessage,
   resolved: ResolvedProviderRuntime<unknown>,
@@ -256,15 +268,7 @@ export function normalizeCanonicalAdapterInput(input: {
   extensions?: Readonly<Record<string, unknown>>
 }): CanonicalAdapterInput {
   const canonical: CanonicalAdapterInput = {
-    context: {
-      systemText: input.context.systemText,
-      ...(input.context.systemStable !== undefined ? { systemStable: input.context.systemStable } : {}),
-      ...(input.context.systemKnowledge !== undefined ? { systemKnowledge: input.context.systemKnowledge } : {}),
-      turns: input.context.turns.map(normalizeMessage),
-      ...(input.context.stateTurn ? { stateTurn: normalizeMessage(input.context.stateTurn) } : {}),
-      ...(input.context.frozenPrefixLen !== undefined ? { frozenPrefixLen: input.context.frozenPrefixLen } : {}),
-      ...(input.context.budgetOverflow !== undefined ? { budgetOverflow: input.context.budgetOverflow } : {}),
-    },
+    context: normalizeCanonicalContext(input.context),
     tools: input.tools,
     resolved: input.resolved,
     extensions: input.extensions ?? {},

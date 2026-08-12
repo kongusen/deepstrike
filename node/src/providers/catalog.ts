@@ -61,7 +61,7 @@ export function resolveProviderRuntime(options: CreateProviderOptions): Resolved
     if (!protocol) throw new Error(`No Node provider factory for ${options.model} on ${endpoint.id}`)
     const adapter = make(options.apiKey, model, options.retry, baseURL, registration.recommendedRuntimePolicy)
     const preserveEndpointIdentity = options.baseURL === undefined || options.endpoint !== undefined
-    return {
+    const resolved: ResolvedProviderRuntime = {
       identity: {
         providerId,
         modelId: model,
@@ -80,6 +80,11 @@ export function resolveProviderRuntime(options: CreateProviderOptions): Resolved
         ? { runtimePolicy: registration.recommendedRuntimePolicy }
         : {}),
     }
+    const bind = (adapter as LLMProvider & {
+      bindResolvedRuntime?: (runtime: ResolvedProviderRuntime) => void
+    }).bindResolvedRuntime
+    bind?.call(adapter, resolved)
+    return resolved
   }
 
   throw new Error(`No Node provider factory for ${options.model} on ${endpoint.id}`)

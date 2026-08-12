@@ -158,6 +158,8 @@ export interface UsageEvent extends StreamEvent {
    *  output-cap truncation, which drives the kernel's max-output-tokens recovery. Absent when the
    *  provider doesn't report one. */
   stopReason?: string
+  /** Original provider spelling for diagnostics only. RuntimeRunner never forwards it to Kernel. */
+  rawStopReason?: string
   /** Normalized postflight usage parsed from this same raw provider response. */
   providerUsage?: ProviderUsage
 }
