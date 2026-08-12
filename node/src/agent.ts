@@ -4,6 +4,7 @@ import type { MCPServer } from "./mcp-server.js"
 import type { JsonSchema } from "./runtime/output-schema.js"
 import type { Guardrail } from "./guardrail.js"
 import type { Skill } from "./skill.js"
+import type { Knowledge } from "./knowledge/public.js"
 
 /** spc_001 §2.1: dual-mode model reference — either an explicit vendor model name, or a
  *  capability-based requirement the Host routes to a concrete model. Routing logic for the
@@ -26,7 +27,7 @@ export interface AgentOptions {
   mcpServers?: MCPServer[]
   skills?: Skill[]
   memory?: WorkingMemory
-  knowledge?: unknown[] // placeholder
+  knowledge?: Knowledge[]
   handoffs?: unknown[] // placeholder
   providerOptions?: Record<string, unknown>
   outputSchema?: JsonSchema
@@ -45,7 +46,7 @@ export class Agent {
   readonly mcpServers?: MCPServer[]
   readonly skills?: Skill[]
   readonly memory?: WorkingMemory
-  readonly knowledge?: unknown[]
+  readonly knowledge?: Knowledge[]
   readonly handoffs?: unknown[]
   readonly providerOptions?: Record<string, unknown>
   readonly outputSchema?: JsonSchema
