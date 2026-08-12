@@ -230,12 +230,16 @@ export class OllamaAdapter implements ProtocolAdapter<
     )
     const usage = this.normalizeUsage(terminal)
     if (usage) {
+      const rawStopReason = terminal?.done_reason
+      const stopReason = this.normalizeStopReason(rawStopReason)
       events.push({
         type: "usage",
         totalTokens: usage.inputTokens + usage.outputTokens,
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         providerUsage: usage,
+        ...(stopReason ? { stopReason } : {}),
+        ...(rawStopReason ? { rawStopReason } : {}),
       } as UsageEvent)
     }
     return { events }

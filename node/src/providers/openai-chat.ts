@@ -431,13 +431,15 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
     events.push(...pendingToolEvents(state))
     if (state.totalTokens > 0) {
       const providerUsage = this.normalizeUsage(state.rawUsage)
+      const stopReason = this.normalizeStopReason(state.finishReason)
       events.push({
         type: "usage",
         totalTokens: state.totalTokens,
         inputTokens: state.inputTokens,
         outputTokens: state.outputTokens,
         ...(state.cacheReadTokens > 0 ? { cacheReadInputTokens: state.cacheReadTokens } : {}),
-        ...(state.finishReason ? { stopReason: state.finishReason } : {}),
+        ...(stopReason ? { stopReason } : {}),
+        ...(state.finishReason ? { rawStopReason: state.finishReason } : {}),
         ...(providerUsage ? { providerUsage } : {}),
       } as UsageEvent)
     }
@@ -472,7 +474,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
     if (raw === undefined) return undefined
     if (raw === "length") return "max_tokens"
     if (raw === "stop") return "end_turn"
-    if (raw === "tool_calls") return "tool_use"
+    if (raw === "tool_calls" || raw === "function_call") return "tool_use"
     if (raw === "content_filter") return "content_filter"
     return "other"
   }

@@ -154,10 +154,8 @@ export interface UsageEvent extends StreamEvent {
    *  that carried a `cache_control` breakpoint on the request. Missing when the provider doesn't
    *  honor `cache_control` (OpenAI-family auto-cache) or when no breakpoints were placed. */
   cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number }
-  /** Provider stop reason for the response — `max_tokens` (Anthropic) / `length` (OpenAI) flag an
-   *  output-cap truncation, which drives the kernel's max-output-tokens recovery. Absent when the
-   *  provider doesn't report one. */
-  stopReason?: string
+  /** Canonical provider stop reason. `max_tokens` drives the kernel's output-cap recovery. */
+  stopReason?: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "content_filter" | "other"
   /** Original provider spelling for diagnostics only. RuntimeRunner never forwards it to Kernel. */
   rawStopReason?: string
   /** Normalized postflight usage parsed from this same raw provider response. */

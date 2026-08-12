@@ -11,7 +11,8 @@
         "inputTokens": 42,
         "outputTokens": 9
       },
-      "stopReason": "length",
+      "rawStopReason": "length",
+      "stopReason": "max_tokens",
       "totalTokens": 51,
       "type": "usage"
     }

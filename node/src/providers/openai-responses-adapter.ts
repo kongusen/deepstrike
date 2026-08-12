@@ -289,7 +289,7 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
       let args: Record<string, unknown> = {}
       try { args = JSON.parse(call.argsBuffer || "{}") as Record<string, unknown> } catch { args = {} }
       events.push({ type: "tool_call", id: call.id, name: call.name, arguments: args } as ToolCallEvent)
-    } else if (chunk.type === "response.completed") {
+    } else if (chunk.type === "response.completed" || chunk.type === "response.incomplete") {
       const response = chunk.response as Record<string, any>
       runStatePatch = {
         previousResponseId: String(response.id),
@@ -302,6 +302,10 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
         const cacheReadInputTokens = cacheReadTokens(usage)
         const inputTokens = numberField(usage, "input_tokens")
         const outputTokens = numberField(usage, "output_tokens")
+        const rawStopReason = typeof response.incomplete_details?.reason === "string"
+          ? response.incomplete_details.reason
+          : undefined
+        const stopReason = this.normalizeStopReason(rawStopReason)
         if (totalTokens && totalTokens > 0) {
           events.push({
             type: "usage",
@@ -310,6 +314,8 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
             ...(outputTokens ? { outputTokens } : {}),
             ...(cacheReadInputTokens ? { cacheReadInputTokens } : {}),
             ...(providerUsage && (inputTokens || outputTokens) ? { providerUsage } : {}),
+            ...(stopReason ? { stopReason } : {}),
+            ...(rawStopReason ? { rawStopReason } : {}),
           } as UsageEvent)
         }
       }
@@ -348,7 +354,9 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
 
   normalizeStopReason(raw: string | undefined): CanonicalStopReason | undefined {
     if (raw === undefined) return undefined
-    return raw === "max_output_tokens" ? "max_tokens" : "other"
+    if (raw === "max_output_tokens") return "max_tokens"
+    if (raw === "content_filter") return "content_filter"
+    return "other"
   }
 
   // Published compatibility helpers retained while internally routing through canonical input.

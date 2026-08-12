@@ -3,10 +3,9 @@
  * chunk sequence (text delta + tool call + usage) through the provider's `stream()` and lock
  * the emitted event sequence AND the request params the stream call was built with.
  *
- * Scenario (b) locks the CURRENT (pre-A-08) stopReason passthrough behavior: Anthropic
- * `max_tokens` and OpenAI-chat `length` flow through UN-normalized today. Gemini, Responses
- * and Ollama emit no stopReason at all today — that absence is also characterized here, it is
- * the gap A-08 will close.
+ * A-09 intentionally re-blesses only the stop-reason fields: `stopReason` is canonical across
+ * protocols and `rawStopReason` preserves the provider spelling for Node-side diagnostics.
+ * Request bodies, delta ordering, tool calls and usage counts remain characterized unchanged.
  */
 import { AnthropicProvider } from "../../src/providers/anthropic.js"
 import { OpenAIChatProvider } from "../../src/providers/openai.js"
@@ -178,7 +177,7 @@ describe("spc_013-A-00 characterization: stream chunk → event sequences", () =
     expectGolden("stream-anthropic-tool", { request: captured.req ?? null, events: await collectStream(provider) })
   })
 
-  it("anthropic-messages: stopReason passthrough (pre-A-08 behavior)", async () => {
+  it("anthropic-messages: canonical stopReason with raw diagnostics", async () => {
     const provider = new AnthropicProvider("sk-char", "claude-opus-4-1")
     const captured: { req?: unknown } = {}
     stubAnthropicStream(provider, captured, ANTHROPIC_CAP_STREAM)
@@ -192,28 +191,28 @@ describe("spc_013-A-00 characterization: stream chunk → event sequences", () =
     expectGolden("stream-openai-chat-tool", { request: captured.req ?? null, events: await collectStream(provider) })
   })
 
-  it("openai-chat: stopReason passthrough (pre-A-08 behavior: raw 'length')", async () => {
+  it("openai-chat: canonical stopReason with raw diagnostics", async () => {
     const provider = new OpenAIChatProvider("sk-char", "gpt-4o")
     const captured: { req?: unknown } = {}
     stubOpenAiChatStream(provider, captured, OPENAI_CHAT_CAP_STREAM)
     expectGolden("stream-openai-chat-stopreason-before", { events: await collectStream(provider) })
   })
 
-  it("openai-responses: tool-call stream (no stopReason today — the gap A-08 closes)", async () => {
+  it("openai-responses: tool-call stream", async () => {
     const provider = new OpenAIResponsesProvider("sk-char", "gpt-4.1")
     const captured: { req?: unknown } = {}
     stubResponsesStream(provider, captured, RESPONSES_TOOL_STREAM)
     expectGolden("stream-openai-responses-tool", { request: captured.req ?? null, events: await collectStream(provider) })
   })
 
-  it("google-generate-content: tool-call stream (no stopReason today)", async () => {
+  it("google-generate-content: tool-call stream", async () => {
     const provider = new GeminiProvider("sk-char", "gemini-2.0-flash")
     const captured: { req?: unknown } = {}
     stubGeminiStream(provider, captured, GEMINI_TOOL_STREAM)
     expectGolden("stream-gemini-tool", { request: captured.req ?? null, events: await collectStream(provider) })
   })
 
-  it("ollama: tool-call stream (no stopReason today)", async () => {
+  it("ollama: tool-call stream with canonical stopReason", async () => {
     const provider = new OllamaProvider("llama3")
     const original = globalThis.fetch
     try {

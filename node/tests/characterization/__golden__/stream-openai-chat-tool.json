@@ -21,7 +21,8 @@
         "inputTokens": 42,
         "outputTokens": 9
       },
-      "stopReason": "tool_calls",
+      "rawStopReason": "tool_calls",
+      "stopReason": "tool_use",
       "totalTokens": 51,
       "type": "usage"
     }

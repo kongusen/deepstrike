@@ -29,10 +29,11 @@ describe("provider surfaces stop_reason on the usage event", () => {
 
     const usage = events.find(e => e.type === "usage") as UsageEvent | undefined
     expect(usage).toBeDefined()
-    expect(usage?.stopReason).toBe("length")
+    expect(usage?.stopReason).toBe("max_tokens")
+    expect(usage?.rawStopReason).toBe("length")
   })
 
-  it("OpenAI leaves stopReason undefined on a clean stop", async () => {
+  it("OpenAI maps a clean stop to canonical end_turn", async () => {
     const provider = new OpenAIChatProvider("test-key")
     ;(provider as unknown as { client: { chat: { completions: { create(): Promise<AsyncIterable<Record<string, unknown>>> } } } }).client = {
       chat: { completions: { async create() {
@@ -47,7 +48,8 @@ describe("provider surfaces stop_reason on the usage event", () => {
     for await (const event of provider.stream(context, [])) events.push(event)
 
     const usage = events.find(e => e.type === "usage") as UsageEvent | undefined
-    // "stop" is reported but is not a truncation — the kernel ignores it (no spurious recovery).
-    expect(usage?.stopReason).toBe("stop")
+    // Clean stop is canonicalized and keeps the provider spelling for diagnostics.
+    expect(usage?.stopReason).toBe("end_turn")
+    expect(usage?.rawStopReason).toBe("stop")
   })
 })

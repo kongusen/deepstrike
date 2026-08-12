@@ -392,6 +392,7 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
           ...(state.cacheCreationTokens ? { cacheCreationInputTokens: state.cacheCreationTokens } : {}),
         }
         const rawStopReason = chunk.delta?.stop_reason as string | undefined
+        const stopReason = this.normalizeStopReason(rawStopReason)
         const bySlot = estimateCacheRead(state.cacheReadTokens, state.cacheSlots)
         events.push({
           type: "usage",
@@ -401,7 +402,8 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
           cacheReadInputTokens: state.cacheReadTokens,
           cacheCreationInputTokens: state.cacheCreationTokens,
           ...(bySlot ? { cacheReadInputTokensBySlot: bySlot } : {}),
-          ...(rawStopReason ? { stopReason: rawStopReason } : {}),
+          ...(stopReason ? { stopReason } : {}),
+          ...(rawStopReason ? { rawStopReason } : {}),
           providerUsage,
         } as UsageEvent)
       }

@@ -19,6 +19,8 @@
         "inputTokens": 42,
         "outputTokens": 9
       },
+      "rawStopReason": "stop",
+      "stopReason": "end_turn",
       "totalTokens": 51,
       "type": "usage"
     }
