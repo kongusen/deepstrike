@@ -28,6 +28,7 @@ from .base import (
     normalize_tool_call,
     wire_request_extensions,
 )
+from .stop_reason import canonicalize_stop_reason
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +333,10 @@ class OpenAIResponsesProvider:
                 run_state["previous_response_id"] = response.id
                 run_state["covered_message_count"] = len(context.turns) + 1
                 usage = getattr(response, "usage", None)
+                raw_stop_reason: str | None = None
+                incomplete_details = getattr(response, "incomplete_details", None)
+                if incomplete_details is not None:
+                    raw_stop_reason = getattr(incomplete_details, "reason", None)
                 total = getattr(usage, "total_tokens", 0) if usage else 0
                 if total:
                     details = getattr(usage, "input_tokens_details", None)
@@ -341,4 +346,6 @@ class OpenAIResponsesProvider:
                         input_tokens=getattr(usage, "input_tokens", 0) or 0,
                         output_tokens=getattr(usage, "output_tokens", 0) or 0,
                         cache_read_input_tokens=int(cached or 0),
+                        stop_reason=canonicalize_stop_reason(raw_stop_reason),
+                        raw_stop_reason=raw_stop_reason,
                     )

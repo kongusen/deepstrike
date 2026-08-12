@@ -8,6 +8,7 @@ from .stream import StreamEvent, TextDelta, ToolCallEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended
 from deepstrike.providers.base import UnsupportedModalityError
 from deepstrike.types.content import normalize_tool_result, project_tool_output_to_text
+from .stop_reason import canonicalize_stop_reason
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,7 @@ class OllamaProvider:
 
     async def _stream_gen(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
         pending_tool_calls: dict[str, dict] = {}
+        raw_stop_reason: str | None = None
 
         async with httpx.AsyncClient() as client:
             async with client.stream(
@@ -145,6 +147,11 @@ class OllamaProvider:
                         continue
                     chunk = json.loads(line)
                     msg = chunk.get("message", {})
+                    done = chunk.get("done", False)
+                    if done:
+                        reason = chunk.get("done_reason")
+                        if isinstance(reason, str) and reason:
+                            raw_stop_reason = reason
 
                     if text := msg.get("content"):
                         yield TextDelta(delta=text)
@@ -164,3 +171,14 @@ class OllamaProvider:
 
         for tc in pending_tool_calls.values():
             yield ToolCallEvent(id=tc["id"], name=tc["name"], arguments=tc["arguments"])
+
+        # Ollama does not report usage on the stream; emit the stop-reason carrier only.
+        if raw_stop_reason is not None:
+            from .stream import UsageEvent
+            yield UsageEvent(
+                total_tokens=0,
+                input_tokens=0,
+                output_tokens=0,
+                stop_reason=canonicalize_stop_reason(raw_stop_reason),
+                raw_stop_reason=raw_stop_reason,
+            )

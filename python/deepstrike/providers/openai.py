@@ -9,6 +9,7 @@ from .stream import StreamEvent, TextDelta, ToolCallEvent, ThinkingDelta, UsageE
 from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, stable_prompt_cache_key, to_openai_message_params, ThinkingTagStreamExtractor, wire_request_extensions
 from .replay import ReasoningReplayMixin, assistant_replay_key
 from .replay_validator import validate_openai_chat_replay
+from .stop_reason import canonicalize_stop_reason
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +319,8 @@ class OpenAIProvider(ReasoningReplayMixin):
                     input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
                     output_tokens=getattr(usage, "completion_tokens", 0) or 0,
                     cache_read_input_tokens=openai_cached_prompt_tokens(usage),
-                    stop_reason=finish_reason_seen,
+                    stop_reason=canonicalize_stop_reason(finish_reason_seen),
+                    raw_stop_reason=finish_reason_seen,
                 )
                 continue
             choice = chunk.choices[0] if chunk.choices else None

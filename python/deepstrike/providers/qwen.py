@@ -9,6 +9,7 @@ from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, n
 from .replay import ReasoningReplayMixin
 from .anthropic_compatible import AnthropicCompatibleProvider
 from .vendor_profiles import QWEN_POLICIES as _QWEN_POLICIES, ANTHROPIC_VENDOR_PROFILES
+from .stop_reason import canonicalize_stop_reason
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +303,7 @@ class QwenProvider(ReasoningReplayMixin):
         final_text = ""
         final_tool_calls: list[ToolCall] = []
         last_usage = None
+        finish_reason_seen: str | None = None
 
         stream = await self._generation.call(**kwargs)
         async for chunk in stream:
@@ -335,6 +337,8 @@ class QwenProvider(ReasoningReplayMixin):
                 if tc.function.arguments:
                     tool_call_bufs[idx]["args_buf"] = tc.function.arguments
 
+            if choice.finish_reason:
+                finish_reason_seen = choice.finish_reason
             if choice.finish_reason == "tool_calls":
                 for idx, tb in tool_call_bufs.items():
                     if idx in emitted_tool_call_indexes:
@@ -373,4 +377,6 @@ class QwenProvider(ReasoningReplayMixin):
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_input_tokens=openai_cached_prompt_tokens(last_usage),
+                stop_reason=canonicalize_stop_reason(finish_reason_seen),
+                raw_stop_reason=finish_reason_seen,
             )

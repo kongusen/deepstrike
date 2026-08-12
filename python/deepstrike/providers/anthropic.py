@@ -6,6 +6,7 @@ from anthropic import AsyncAnthropic
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, parse_tool_arguments, to_anthropic_content, to_anthropic_messages
+from .stop_reason import canonicalize_stop_reason
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +270,8 @@ class AnthropicProvider:
                             cache_read_input_tokens=cache_read,
                             cache_creation_input_tokens=cache_creation,
                             cache_read_input_tokens_by_slot=by_slot,
-                            stop_reason=stop_reason,
+                            stop_reason=canonicalize_stop_reason(stop_reason),
+                            raw_stop_reason=stop_reason,
                         )
                 elif event.type == "content_block_start":
                     idx = event.index
