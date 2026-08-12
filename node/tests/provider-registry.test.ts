@@ -2,7 +2,7 @@ import { PROVIDER_REGISTRY, providerRegistryKey } from "../src/providers/registr
 import { endpointProfiles } from "../src/providers/endpoints.js"
 
 // Endpoint protocols that produce a chat/completions provider (vs embeddings).
-const CHAT_PROTOCOLS = new Set(["anthropic-messages", "openai-chat", "openai-responses", "gemini"])
+const CHAT_PROTOCOLS = new Set(["anthropic-messages", "openai-chat", "openai-responses", "gemini", "ollama-chat"])
 
 describe("provider registry (P3)", () => {
   it("contains exactly the expected (vendor, wire) pairs", () => {
@@ -21,6 +21,7 @@ describe("provider registry (P3)", () => {
       "minimax:openai-chat",
       "minimax:anthropic-messages",
       "gemini:gemini",
+      "ollama:ollama-chat",
     ]))
   })
 

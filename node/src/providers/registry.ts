@@ -8,6 +8,7 @@ import { QwenProvider, QwenAnthropicProvider } from "./qwen.js"
 import { GLMProvider, GLMAnthropicProvider } from "./glm.js"
 import { MiniMaxOpenAIProvider, MiniMaxAnthropicProvider } from "./minimax.js"
 import { GeminiProvider } from "./gemini.js"
+import { OllamaProvider } from "./ollama.js"
 
 export type ProviderRetry = { maxRetries: number; baseDelay: number }
 
@@ -54,4 +55,5 @@ export const PROVIDER_REGISTRY: Record<string, ProviderMaker> = {
   "minimax:anthropic-messages":   (k, m, r, b, p) => new MiniMaxAnthropicProvider(k, m, r, b, p),
 
   "gemini:gemini":                (k, m, r, b, p) => new GeminiProvider(k, m, r, b, p),
+  "ollama:ollama-chat":            (_k, m, _r, b, p) => new OllamaProvider(m, b, p),
 }

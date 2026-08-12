@@ -23,7 +23,6 @@ import type {
 } from "./content-normalization.js"
 import { projectToolOutputToText } from "./content-normalization.js"
 import { normalizeToolCall } from "./base.js"
-import type { ProtocolRuntimeCapabilities } from "./model-registry.js"
 import {
   type AdapterDecodeInput,
   type AdapterOutput,
@@ -31,15 +30,8 @@ import {
   type CanonicalStopReason,
   type ProtocolAdapter,
   ProtocolResponseError,
+  GEMINI_PROTOCOL_CAPABILITIES,
 } from "./protocol-adapter.js"
-
-export const GEMINI_PROTOCOL_CAPABILITIES: ProtocolRuntimeCapabilities = {
-  acceptedInputModalities: ["text", "image", "audio"],
-  emittedOutputModalities: ["text"],
-  tools: true,
-  reasoningReplay: "none",
-  mediaForms: { imageUrl: true, imageBase64: true, audioBase64: true },
-}
 
 export interface GeminiRequestPlan {
   modelParams: ModelParams & Record<string, unknown>

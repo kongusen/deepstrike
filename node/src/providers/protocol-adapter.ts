@@ -11,6 +11,22 @@ import type {
   ProtocolRuntimeCapabilities,
 } from "./model-registry.js"
 
+export const GEMINI_PROTOCOL_CAPABILITIES: ProtocolRuntimeCapabilities = {
+  acceptedInputModalities: ["text", "image", "audio"],
+  emittedOutputModalities: ["text"],
+  tools: true,
+  reasoningReplay: "none",
+  mediaForms: { imageUrl: true, imageBase64: true, audioBase64: true },
+}
+
+export const OLLAMA_PROTOCOL_CAPABILITIES: ProtocolRuntimeCapabilities = {
+  acceptedInputModalities: ["text", "image"],
+  emittedOutputModalities: ["text"],
+  tools: true,
+  reasoningReplay: "none",
+  mediaForms: { imageBase64: true },
+}
+
 export type CanonicalStopReason =
   | "end_turn"
   | "tool_use"
