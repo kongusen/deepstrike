@@ -1,17 +1,15 @@
 from __future__ import annotations
-import json
 import logging
 from typing import AsyncIterator
 try:
     from google import genai as google_genai
 except ImportError:  # pragma: no cover - exercised only when optional provider dep is absent.
     google_genai = None
-from deepstrike._kernel import Message, ToolCall, ToolSchema
-from .stream import StreamEvent, TextDelta, ToolCallEvent, UsageEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended, UnsupportedModalityError
-from deepstrike.types.content import normalize_tool_result, project_tool_output_to_text
-from .stop_reason import canonicalize_stop_reason
-from .usage import normalize_usage
+from deepstrike._kernel import Message, ToolSchema
+from .stream import StreamEvent
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy
+from .gemini_adapter import GeminiAdapter
+from deepstrike.types.content import normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +41,7 @@ class GeminiProvider:
         self._api_key = api_key
         self._client = None
         self._model = None
+        self._adapter = GeminiAdapter(model)
 
     def _create_client(self, api_key: str):
         if google_genai is None:
@@ -62,112 +61,13 @@ class GeminiProvider:
         return _GEMINI_POLICIES.get(self._model_name, RuntimePolicy())
 
     def _build_contents(self, turns: list[Message]) -> list[dict]:
-        contents = []
-        for msg in turns:
-            if msg.role == "tool":
-                parts = []
-                for p in getattr(msg, "content_parts", []):
-                    if p.type == "tool_result":
-                        tool_name = p.call_id
-                        for turn in reversed(turns):
-                            if turn.role == "assistant" and turn.tool_calls:
-                                matched = next((tc for tc in turn.tool_calls if tc.id == p.call_id), None)
-                                if matched:
-                                    tool_name = matched.name
-                                    break
-                        parts.append({
-                            "function_response": {
-                                "name": tool_name,
-                                "response": {
-                                    "output": project_tool_output_to_text(
-                                        normalize_tool_result(
-                                            p.call_id,
-                                            p.output,
-                                            p.is_error,
-                                            getattr(p, "content_parts", None),
-                                        ).blocks
-                                    )
-                                },
-                            }
-                        })
-                if parts:
-                    contents.append({"role": "user", "parts": parts})
-                continue
-
-            role = "model" if msg.role == "assistant" else "user"
-            parts = []
-            if msg.tool_calls:
-                for tc in msg.tool_calls:
-                    try:
-                        args = json.loads(tc.arguments)
-                    except json.JSONDecodeError:
-                        args = {}
-                    parts.append({"function_call": {"name": tc.name, "args": args}})
-            # Multimodal: render content_parts (text + image) when present, else the
-            # plain text body. Without this, image inputs to Gemini were dropped.
-            cparts = getattr(msg, "content_parts", None) or []
-            if cparts:
-                for p in cparts:
-                    if p.type == "text":
-                        parts.append({"text": p.text})
-                    elif p.type == "image":
-                        if getattr(p, "data", None):
-                            parts.append({"inline_data": {"mime_type": p.media_type or "image/png", "data": p.data}})
-                        elif getattr(p, "url", None):
-                            parts.append({"file_data": {"mime_type": p.media_type or "image/png", "file_uri": p.url}})
-                    elif p.type == "audio":
-                        if not getattr(p, "data", None):
-                            raise UnsupportedModalityError("audio", "gemini")
-                        parts.append({"inline_data": {"mime_type": p.media_type or "audio/wav", "data": p.data}})
-                    elif p.type == "tool_result":
-                        pass
-                    else:
-                        raise UnsupportedModalityError(getattr(p, "type", "unknown"), "gemini")
-            elif msg.content:
-                parts.append({"text": msg.content})
-            if parts:
-                contents.append({"role": role, "parts": parts})
-        return contents
+        return self._adapter.build_contents(turns)
 
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
-        if not tools:
-            return None
-        declarations = [
-            {
-                "name": t.name,
-                "description": t.description,
-                "parameters_json_schema": json.loads(t.parameters),
-            }
-            for t in tools
-        ]
-        return [{"function_declarations": declarations}]
+        return self._adapter.build_tools(tools)
 
     def _build_config(self, system: str | None, tools: list[ToolSchema], extensions: dict | None = None) -> dict | None:
-        ext = extensions or {}
-        config: dict = {}
-        if system:
-            config["system_instruction"] = system
-        tool_defs = list(self._build_tools(tools) or [])
-        # Google Search grounding (server tool; gemini-2.0+). Coexists with function tools on current
-        # models. `google_search` truthy → default tool; a dict passes config through.
-        gs = ext.get("google_search")
-        if gs:
-            tool_defs.append({"google_search": gs if isinstance(gs, dict) else {}})
-        if tool_defs:
-            config["tools"] = tool_defs
-            config["automatic_function_calling"] = {"disable": True}
-        # Thinking (gemini-2.5 / 3 only; caller-provided budget/include_thoughts — 0=off, -1=auto).
-        if ext.get("thinking_config") is not None:
-            config["thinking_config"] = ext["thinking_config"]
-        # Structured output (not combinable with google_search — the API rejects that pairing).
-        if ext.get("response_mime_type") is not None:
-            config["response_mime_type"] = ext["response_mime_type"]
-        if ext.get("response_schema") is not None:
-            config["response_schema"] = ext["response_schema"]
-        # Explicit context cache reference (the `cachedContents/…` name from create_context_cache()).
-        if ext.get("cached_content") is not None:
-            config["cached_content"] = ext["cached_content"]
-        return config or None
+        return self._adapter.build_config(system, tools, extensions)
 
     async def create_context_cache(
         self,
@@ -196,81 +96,34 @@ class GeminiProvider:
             cfg["display_name"] = display_name
         return await client.aio.caches.create(model=model or self._model_name, config=cfg)
 
-    def _response_parts(self, response) -> list:
-        if getattr(response, "parts", None):
-            return list(response.parts)
-        candidates = getattr(response, "candidates", None) or []
-        if not candidates:
-            return []
-        return list(getattr(candidates[0].content, "parts", []) or [])
-
-    def _part_text(self, part) -> str | None:
-        text = getattr(part, "text", None)
-        if text is not None:
-            return text
-        if isinstance(part, dict):
-            return part.get("text")
-        return None
-
-    def _part_function_call(self, part):
-        fc = getattr(part, "function_call", None)
-        if fc is not None:
-            return fc
-        if isinstance(part, dict):
-            return part.get("function_call")
-        return None
-
-    def _function_call_name_args(self, function_call) -> tuple[str, dict]:
-        if isinstance(function_call, dict):
-            return str(function_call.get("name") or ""), dict(function_call.get("args") or {})
-        return str(getattr(function_call, "name", "") or ""), dict(getattr(function_call, "args", {}) or {})
-
-    def _usage_tokens(self, response) -> int | None:
-        usage = getattr(response, "usage_metadata", None)
-        return getattr(usage, "total_token_count", None) if usage else None
+    def _canonical_input(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None):
+        return normalize_canonical_adapter_input(
+            context,
+            tools,
+            extensions=extensions,
+            resolved=getattr(self, "_resolved_runtime", None),
+        )
 
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
-        system = context.system_text or None
-        contents = self._build_contents(turns_with_state_appended(context, getattr(self, "_resolved_runtime", None)))
-        config = self._build_config(system, tools, extensions)
+        adapter_input = self._canonical_input(context, tools, extensions)
+        plan = self._adapter.build_request(adapter_input)
 
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
                 if self._model is not None:
-                    resp = await self._model.generate_content_async(contents)
+                    resp = await self._model.generate_content_async(plan.contents)
                 else:
                     resp = await self._require_client().aio.models.generate_content(
                         model=self._model_name,
-                        contents=contents,
-                        config=config,
+                        contents=plan.contents,
+                        config=plan.config,
                     )
                 self._circuit.record_success()
-
-                content = ""
-                tool_calls: list[ToolCall] = []
-
-                for part in self._response_parts(resp):
-                    text = self._part_text(part)
-                    if text:
-                        content += text
-                        continue
-                    fc = self._part_function_call(part)
-                    if fc:
-                        name, args = self._function_call_name_args(fc)
-                        tc = normalize_tool_call(name, name, args)
-                        if tc:
-                            tool_calls.append(tc)
-
-                return Message(
-                    role="assistant",
-                    content=content,
-                    token_count=self._usage_tokens(resp),
-                    tool_calls=tool_calls or None,
-                )
+                return self._adapter.decode_complete(resp, adapter_input)
             except Exception as exc:
                 last_exc = exc
                 self._circuit.record_failure()
@@ -282,56 +135,21 @@ class GeminiProvider:
         raise last_exc or RuntimeError("Complete failed")
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
-        system = context.system_text or None
-        contents = self._build_contents(turns_with_state_appended(context, getattr(self, "_resolved_runtime", None)))
-        config = self._build_config(system, tools, extensions)
-
-        tool_calls: list[dict] = []
-        last_usage = None
-        raw_stop_reason: str | None = None
+        adapter_input = self._canonical_input(context, tools, extensions)
+        plan = self._adapter.build_request(adapter_input)
+        stream_state = self._adapter.create_stream_state(adapter_input)
 
         if self._model is not None:
-            stream = await self._model.generate_content_async(contents, stream=True)
+            stream = await self._model.generate_content_async(plan.contents, stream=True)
         else:
             stream = await self._require_client().aio.models.generate_content_stream(
                 model=self._model_name,
-                contents=contents,
-                config=config,
+                contents=plan.contents,
+                config=plan.config,
             )
 
         async for chunk in stream:
-            # usage_metadata is cumulative and populated on the final chunk(s).
-            if getattr(chunk, "usage_metadata", None):
-                last_usage = chunk.usage_metadata
-            candidates = getattr(chunk, "candidates", None) or []
-            if candidates:
-                finish = getattr(candidates[0], "finish_reason", None)
-                if isinstance(finish, str) and finish:
-                    raw_stop_reason = finish
-            for part in self._response_parts(chunk):
-                text = self._part_text(part)
-                if text:
-                    yield TextDelta(delta=text)
-                    continue
-                fc = self._part_function_call(part)
-                if fc:
-                    name, args = self._function_call_name_args(fc)
-                    tool_calls.append({"id": f"call_{len(tool_calls) + 1}", "name": name, "args": args})
-
-        for tc in tool_calls:
-            yield ToolCallEvent(id=tc["id"], name=tc["name"], arguments=tc["args"])
-
-        if last_usage is not None:
-            # Implicit/explicit cache hits surface as cached_content_token_count,
-            # a subset of prompt_token_count (kept as the full prompt count).
-            total = getattr(last_usage, "total_token_count", 0) or 0
-            if total:
-                yield UsageEvent(
-                    total_tokens=total,
-                    input_tokens=getattr(last_usage, "prompt_token_count", 0) or 0,
-                    output_tokens=getattr(last_usage, "candidates_token_count", 0) or 0,
-                    cache_read_input_tokens=getattr(last_usage, "cached_content_token_count", 0) or 0,
-                    stop_reason=canonicalize_stop_reason(raw_stop_reason),
-                    raw_stop_reason=raw_stop_reason,
-                    provider_usage=normalize_usage(last_usage),
-                )
+            for event in self._adapter.push_stream_chunk(chunk, stream_state).events:
+                yield event
+        for event in self._adapter.finish_stream(stream_state).events:
+            yield event

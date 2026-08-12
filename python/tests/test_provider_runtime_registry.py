@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from deepstrike._kernel import Message, ToolSchema
 from deepstrike.providers.base import RenderedContext
-from deepstrike.providers.factories import deepseek, glm, kimi, minimax, qwen
+from deepstrike.providers.factories import deepseek, gemini, glm, kimi, minimax, qwen
 from deepstrike.providers.openai import OpenAIProvider
 from deepstrike.providers.runtime_registry import (
     OPENAI_CHAT_DIALECTS,
@@ -84,6 +84,13 @@ def test_runtime_profile_resolves_region_endpoint_and_dialect_from_tables() -> N
 def test_runtime_profile_uses_the_same_dialect_default_model_as_the_factory() -> None:
     runtime, _, _ = resolve_runtime_profile("glm", protocol="openai")
     assert runtime.model_id == glm(api_key="key")._model == "glm-5.2"
+
+
+def test_factory_attaches_runtime_for_gemini_before_its_sdk_model_is_initialized() -> None:
+    provider = gemini(api_key="key")
+
+    assert provider._resolved_runtime.provider_id == "gemini"
+    assert provider._resolved_runtime.model_id == provider._model_name == "gemini-2.0-flash"
 
 
 def test_kimi_cache_helper_remains_available_from_table_constructed_provider() -> None:

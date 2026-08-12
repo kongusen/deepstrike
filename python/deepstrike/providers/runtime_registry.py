@@ -315,7 +315,7 @@ def create_provider(
         dialect=dialect,
     )
     # Private additive attachment avoids changing the established provider constructor ABI.
-    provider_model = getattr(provider, "_model", getattr(provider, "_model_name", runtime.model_id))
+    provider_model = getattr(provider, "_model", None) or getattr(provider, "_model_name", runtime.model_id)
     runtime = model_registry.resolve_provider_runtime(
         provider_id,
         provider_model,
