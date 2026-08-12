@@ -1,6 +1,8 @@
 import { Agent } from "../src/agent.js"
 import type { Knowledge } from "../src/knowledge/public.js"
 import type { KnowledgeSource } from "../src/knowledge/source.js"
+import type { Handoff } from "../src/handoff-target.js"
+import type { HandoffArtifact } from "../src/collaboration/handoff.js"
 
 describe("spc_010-04: typed Agent knowledge", () => {
   it("stores every public knowledge source form without changing KnowledgeSource", async () => {
@@ -22,5 +24,20 @@ describe("spc_010-04: typed Agent knowledge", () => {
       "file", "directory", "text", "url", "vector", "custom",
     ])
     expect(await vectorRetriever.retrieve("goal")).toEqual(["result"])
+  })
+})
+
+describe("spc_010-05: typed Agent handoffs", () => {
+  it("stores control-transfer descriptors without conflating them with sprint artifacts", () => {
+    const handoffs: Handoff[] = [{
+      agent: { name: "reviewer" },
+      description: "review the result",
+      inputSchema: { type: "object", required: ["draft"] },
+    }]
+    const agent = new Agent({ name: "writer", handoffs })
+
+    expect(agent.handoffs?.[0].inputSchema).toEqual({ type: "object", required: ["draft"] })
+    const artifact: Pick<HandoffArtifact, "goal" | "sprint"> = { goal: "ship", sprint: 1 }
+    expect(artifact.goal).toBe("ship")
   })
 })

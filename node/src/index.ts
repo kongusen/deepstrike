@@ -116,6 +116,7 @@ export { AgentPool } from "./collaboration/pool.js"
 export { Agent } from "./agent.js"
 export type { AgentOptions, ModelRef, ModelRequirement } from "./agent.js"
 export type { Guardrail } from "./guardrail.js"
+export type { AgentRef, Handoff } from "./handoff-target.js"
 
 // ── Signals (the `RuntimeOptions.signalSource` surface) ─────────────────────
 export type {

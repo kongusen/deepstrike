@@ -5,6 +5,7 @@ import type { JsonSchema } from "./runtime/output-schema.js"
 import type { Guardrail } from "./guardrail.js"
 import type { Skill } from "./skill.js"
 import type { Knowledge } from "./knowledge/public.js"
+import type { Handoff } from "./handoff-target.js"
 
 /** spc_001 §2.1: dual-mode model reference — either an explicit vendor model name, or a
  *  capability-based requirement the Host routes to a concrete model. Routing logic for the
@@ -28,7 +29,7 @@ export interface AgentOptions {
   skills?: Skill[]
   memory?: WorkingMemory
   knowledge?: Knowledge[]
-  handoffs?: unknown[] // placeholder
+  handoffs?: Handoff[]
   providerOptions?: Record<string, unknown>
   outputSchema?: JsonSchema
   metadata?: Record<string, unknown>
@@ -47,7 +48,7 @@ export class Agent {
   readonly skills?: Skill[]
   readonly memory?: WorkingMemory
   readonly knowledge?: Knowledge[]
-  readonly handoffs?: unknown[]
+  readonly handoffs?: Handoff[]
   readonly providerOptions?: Record<string, unknown>
   readonly outputSchema?: JsonSchema
   readonly metadata?: Record<string, unknown>
