@@ -13,6 +13,7 @@ import {
   resolveCredential,
   resolveCredentialSync,
   type CredentialOptions,
+  type ProviderCredential,
 } from "./credentials.js"
 import type { ModelCatalog } from "./model-catalog.js"
 
@@ -38,15 +39,19 @@ export function createProvider(options: CreateProviderOptions): LLMProvider {
 
 export function resolveProviderRuntime(options: CreateProviderOptions): ResolvedProviderRuntime {
   const draft = resolveRuntimeDraft(options)
-  const credential = resolveCredentialSync(draft.credentialRequest, options)
-  return constructResolvedRuntime(draft, credential)
+  const credential = draft.providerId === "ollama"
+    ? { type: "api_key" as const, value: "" }
+    : resolveCredentialSync(draft.credentialRequest, options)
+  return constructResolvedRuntime(draft, credential, options)
 }
 
 /** I/O-capable equivalent for host credential resolvers and dynamic catalogs. */
 export async function resolveProviderRuntimeAsync(options: CreateProviderOptions): Promise<ResolvedProviderRuntime> {
   const draft = await resolveRuntimeDraftAsync(options)
-  const credential = await resolveCredential(draft.credentialRequest, options)
-  return constructResolvedRuntime(draft, credential)
+  const credential = draft.providerId === "ollama"
+    ? { type: "api_key" as const, value: "" }
+    : await resolveCredential(draft.credentialRequest, options)
+  return constructResolvedRuntime(draft, credential, options)
 }
 
 export async function createProviderAsync(options: CreateProviderOptions): Promise<LLMProvider> {
@@ -123,7 +128,8 @@ function resolveRuntimeDraftWithRegistration(
 
 function constructResolvedRuntime(
   draft: RuntimeDraft,
-  credential: { type: "api_key" | "bearer"; value: string },
+  credential: ProviderCredential,
+  options: CreateProviderOptions,
 ): ResolvedProviderRuntime {
   const make = PROVIDER_REGISTRY[providerRegistryKey(draft.providerId, draft.endpoint.protocol)]
   if (!make) throw new Error(`No Node provider factory for ${draft.model} on ${draft.endpoint.id}`)
@@ -132,8 +138,8 @@ function constructResolvedRuntime(
   const adapter = make(
     credential.value,
     draft.model,
-    undefined,
-    draft.endpoint.baseURL,
+    options.retry,
+    options.baseURL ?? draft.endpoint.baseURL,
     draft.registration.recommendedRuntimePolicy,
     credential.type,
   )
@@ -145,7 +151,10 @@ function constructResolvedRuntime(
     effectiveCapabilities: resolveEffectiveModelCapabilities({
       model: draft.registration.descriptor,
       protocol,
-      endpointCapabilities: endpointCapabilitiesFor(draft.endpointId, true),
+      endpointCapabilities: endpointCapabilitiesFor(
+        draft.endpointId,
+        options.baseURL === undefined || options.endpoint !== undefined,
+      ),
     }),
     ...(draft.registration.recommendedRuntimePolicy ? { runtimePolicy: draft.registration.recommendedRuntimePolicy } : {}),
   }

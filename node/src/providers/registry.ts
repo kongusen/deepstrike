@@ -33,13 +33,14 @@ export function providerRegistryKey(providerId: string, protocol: string): strin
 
 function openAIChatMaker(dialectId: OpenAIChatDialectId): ProviderMaker {
   const dialect = openAIChatDialects[dialectId]
-  return (apiKey, model, retry, baseURL, runtimePolicy) => new OpenAIChatProvider(
+  return (apiKey, model, retry, baseURL, runtimePolicy, authMode) => new OpenAIChatProvider(
     apiKey,
     model,
     retry,
     baseURL ?? endpointProfiles[dialect.endpointId].baseURL,
     runtimePolicy,
     dialect,
+    authMode,
   )
 }
 

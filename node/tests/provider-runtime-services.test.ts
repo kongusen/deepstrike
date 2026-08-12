@@ -98,6 +98,24 @@ describe("spc_015-03 credential resolver", () => {
       .toMatchObject({ authToken: secret, apiKey: null })
     expect(JSON.stringify(runtime.identity)).not.toContain(secret)
   })
+
+  it("preserves explicit retry and custom endpoint inputs through provider construction", () => {
+    const runtime = resolveProviderRuntime({
+      model: "openai/gpt-4o",
+      apiKey: "key",
+      baseURL: "https://gateway.example.test/v1",
+      retry: { maxRetries: 7, baseDelay: 13 },
+    })
+    const adapter = runtime.adapter as unknown as {
+      client: { baseURL: string }
+      maxRetries: number
+      baseDelay: number
+    }
+
+    expect(adapter.client.baseURL).toBe("https://gateway.example.test/v1")
+    expect(adapter.maxRetries).toBe(7)
+    expect(adapter.baseDelay).toBe(13)
+  })
 })
 
 describe("spc_015-04 static and dynamic model catalogs", () => {

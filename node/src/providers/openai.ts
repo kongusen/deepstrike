@@ -72,6 +72,7 @@ export class OpenAIChatProvider implements LLMProvider {
     baseURL: string = endpointProfiles["openai.chat"].baseURL,
     runtimePolicy: RuntimePolicy = {},
     dialect: OpenAIChatWireDialect = openAIChatDialects.openai,
+    authMode: "api_key" | "bearer" = "api_key",
   ) {
     const options: Required<OpenAIProviderOptions> = typeof apiKeyOrOptions === "string"
       ? { apiKey: apiKeyOrOptions, model, retry, baseURL }
@@ -85,6 +86,7 @@ export class OpenAIChatProvider implements LLMProvider {
     this.client = withServerRuntimeGuard(() => new OpenAI({
       apiKey: options.apiKey,
       baseURL: options.baseURL,
+      ...(authMode === "bearer" ? { defaultHeaders: { Authorization: `Bearer ${options.apiKey}` } } : {}),
     }))
     this.circuit = new CircuitBreaker()
     this.maxRetries = options.retry.maxRetries
