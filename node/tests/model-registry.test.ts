@@ -111,7 +111,7 @@ describe("SPC-013 A-01 model registry", () => {
     const here = path.dirname(fileURLToPath(import.meta.url))
     for (const file of [
       "anthropic-adapter.ts", "gemini-adapter.ts", "ollama-adapter.ts",
-      "openai-chat.ts", "openai-responses.ts", "protocol-adapter.ts",
+      "openai-chat.ts", "openai-responses-adapter.ts", "protocol-adapter.ts",
     ]) {
       const source = fs.readFileSync(path.join(here, "../src/providers", file), "utf8")
       expect(source).not.toMatch(/from ["']\.\/model-registry\.js["']|modelRegistry|resolveProviderRuntime|getRuntimePolicy|getModelProfile/)

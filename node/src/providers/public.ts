@@ -8,7 +8,11 @@ export type { BackendProviderOptions } from "./factories.js"
 export { OpenAIChatProvider } from "./openai.js"
 export { CircuitBreaker } from "./base.js"
 export { OpenAIResponsesAdapter } from "./openai-responses.js"
-export type { OpenAIResponsesRunState } from "./openai-responses.js"
+export type {
+  OpenAIResponsesRequestPlan,
+  OpenAIResponsesRunState,
+  OpenAIResponsesStreamState,
+} from "./openai-responses.js"
 export { OpenAIChatAdapter } from "./openai-chat.js"
 export { GeminiAdapter } from "./gemini-adapter.js"
 export { OllamaAdapter, OllamaNdjsonDecoder } from "./ollama-adapter.js"

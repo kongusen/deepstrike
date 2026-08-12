@@ -62,3 +62,14 @@ export const OLLAMA_PROTOCOL_CAPABILITIES: ProtocolRuntimeCapabilities = {
   reasoningReplay: "none",
   mediaForms: { imageBase64: true },
 }
+
+export const OPENAI_RESPONSES_PROTOCOL_CAPABILITIES: ProtocolRuntimeCapabilities = {
+  acceptedInputModalities: ["text", "image", "file"],
+  emittedOutputModalities: ["text"],
+  tools: true,
+  parallelToolCalls: true,
+  structuredOutput: true,
+  reasoningReplay: "optional",
+  promptCaching: true,
+  mediaForms: { imageUrl: true, imageBase64: true, fileId: true },
+}

@@ -10,6 +10,7 @@ import {
   ANTHROPIC_PROTOCOL_CAPABILITIES,
   GEMINI_PROTOCOL_CAPABILITIES,
   OLLAMA_PROTOCOL_CAPABILITIES,
+  OPENAI_RESPONSES_PROTOCOL_CAPABILITIES,
   type GenerationProtocol,
   type InputModality,
   type OutputModality,
@@ -341,11 +342,7 @@ export const protocolRuntimeCapabilities: Record<GenerationProtocol, ProtocolRun
     parallelToolCalls: true, structuredOutput: true, reasoningReplay: "optional", promptCaching: true,
     mediaForms: { imageUrl: true, imageBase64: true, audioBase64: true },
   },
-  "openai-responses": {
-    acceptedInputModalities: ["text", "image", "file"], emittedOutputModalities: ["text"], tools: true,
-    parallelToolCalls: true, structuredOutput: true, reasoningReplay: "optional", promptCaching: true,
-    mediaForms: { imageUrl: true, imageBase64: true, fileId: true },
-  },
+  "openai-responses": OPENAI_RESPONSES_PROTOCOL_CAPABILITIES,
   gemini: GEMINI_PROTOCOL_CAPABILITIES,
   "ollama-chat": OLLAMA_PROTOCOL_CAPABILITIES,
 }
