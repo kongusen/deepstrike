@@ -1,0 +1,24 @@
+{
+  "name": "researcher",
+  "instructions": "Dig up facts and cite sources.",
+  "model": "gpt-5",
+  "tools": [
+    {
+      "type": "function",
+      "name": "web_search",
+      "description": "Search the web for information",
+      "parameters": {
+        "type": "object",
+        "properties": { "query": { "type": "string" } },
+        "required": ["query"]
+      }
+    }
+  ],
+  "handoffs": [
+    {
+      "agent": "writer",
+      "description": "Hand off to the writer agent once research is complete"
+    }
+  ],
+  "guardrails": [{ "name": "no_pii" }]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "filesystem",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+  "env": { "LOG_LEVEL": "info" }
+}

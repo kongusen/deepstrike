@@ -20,6 +20,9 @@ export interface ToolExecContext {
 export interface RegisteredTool {
   schema: ToolSchema
   execute(args: Record<string, unknown>, ctx?: ToolExecContext): Promise<string> | AsyncIterable<ToolChunk>
+  /** spc_001: vendor-specific extension bag, keyed by provider name. Preserved through
+   *  normalization/lowering, never flattened into portable fields. */
+  providerOptions?: Record<string, unknown>
 }
 
 /** Fail at registration, not as a vendor 400 at call time: every major provider (OpenAI-compat,

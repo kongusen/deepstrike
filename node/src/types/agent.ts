@@ -82,6 +82,9 @@ export interface AgentRunSpec {
    *  parent's meta-tool availability (same mechanism trusted workflow nodes use) — the child's surface
    *  is a subset of the parent's, never a privilege escalation. */
   toolAccess?: "inherit" | "filtered"
+  /** spc_001: vendor-specific extension bag, keyed by provider name (e.g. `{ openai: {...} }`).
+   *  Preserved through normalization/lowering, never flattened into portable fields. */
+  providerOptions?: Record<string, unknown>
 }
 
 /** Kernel process-table observation (Phase 3 canonical spawn signal). */

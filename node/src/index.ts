@@ -112,6 +112,10 @@ export type { GovernanceVerdict, GovernancePolicy, GovernanceConstraint } from "
 // Parallel fan-out / sub-agent delegation. The full orchestration layer is in `@deepstrike/sdk/workflow`.
 export { AgentPool } from "./collaboration/pool.js"
 
+// ── Ecosystem Surface Contract (spc_001) ────────────────────────────────────
+export { Agent } from "./agent.js"
+export type { AgentOptions, ModelRef, ModelRequirement } from "./agent.js"
+
 // ── Signals (the `RuntimeOptions.signalSource` surface) ─────────────────────
 export type {
   RuntimeSignal,
@@ -125,7 +129,7 @@ export type {
   Message, ToolCall, ToolResult, ToolSchema,
   ContentPart, TextPart, ImagePart, AudioPart,
   ContentBlock, MediaSource, ContentBlockText, ContentBlockImage, ContentBlockAudio,
-  ContentBlockVideo, ContentBlockFile, ContentBlockToolResult,
+  ContentBlockVideo, ContentBlockFile,
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, ToolAuditFailedEvent, DoneEvent, ErrorEvent,
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
