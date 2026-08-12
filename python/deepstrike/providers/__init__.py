@@ -41,6 +41,7 @@ from .replay_validator import (
 from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 from .openai_responses import OpenAIResponsesProvider, OpenAIResponsesAdapter
+from .embedding import EmbeddingRequestPlan, EmbeddingResult, OpenAIEmbeddingAdapter
 from .qwen import QwenProvider, QwenAnthropicProvider
 from .deepseek import DeepSeekProvider, DeepSeekAnthropicProvider
 from .minimax import MiniMaxAnthropicProvider, MiniMaxOpenAIProvider
@@ -55,6 +56,7 @@ from .factories import deepseek, kimi, qwen, glm, minimax, gemini, ollama
 __all__ = [
     "LLMProvider", "ContextBudgetOverflow", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
     "OpenAIResponsesProvider", "OpenAIResponsesAdapter",
+    "EmbeddingRequestPlan", "EmbeddingResult", "OpenAIEmbeddingAdapter",
     # Backend factories (one per backend; `protocol=` selects the wire where a backend speaks both):
     "deepseek", "kimi", "qwen", "glm", "minimax", "gemini", "ollama",
     "RetryConfig", "CircuitBreaker", "normalize_tool_call", "parse_tool_arguments",
