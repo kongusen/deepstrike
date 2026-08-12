@@ -13,6 +13,7 @@ threads across turns — keys ``previous_response_id`` and ``covered_message_cou
 from __future__ import annotations
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
@@ -30,7 +31,8 @@ from .base import (
 )
 from .stop_reason import canonicalize_stop_reason
 from .usage import normalize_usage
-from deepstrike.types.content import normalize_canonical_adapter_input
+from .protocol_adapter import AdapterOutput, ProtocolResponseError
+from deepstrike.types.content import CanonicalAdapterInput, normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,17 @@ _OPENAI_RESPONSES_POLICIES: dict[str, RuntimePolicy] = {
     "o3-mini":      RuntimePolicy(max_turns=25),
     "o4-mini":      RuntimePolicy(max_turns=25),
 }
+
+
+@dataclass(frozen=True)
+class OpenAIResponsesRequestPlan:
+    params: dict[str, Any]
+
+
+@dataclass
+class OpenAIResponsesStreamState:
+    input: Any
+    function_calls: dict[int, dict] = field(default_factory=dict)
 
 
 def _message_content(message: Message) -> Any:
@@ -84,6 +97,24 @@ def _message_content(message: Message) -> Any:
 
 
 class OpenAIResponsesAdapter:
+    protocol = "openai-responses"
+
+    def __init__(self, model: str = "gpt-4.1") -> None:
+        self._model = model
+
+    @staticmethod
+    def _get(raw: Any, name: str) -> Any:
+        return raw.get(name) if isinstance(raw, dict) else getattr(raw, name, None)
+
+    @classmethod
+    def _number(cls, raw: Any, field: str) -> int | None:
+        value = cls._get(raw, field)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ProtocolResponseError("openai-responses", f"usage.{field} must be a non-negative number")
+        return int(value)
+
     def build_tools(self, tools: list[ToolSchema]) -> list[dict]:
         return [
             {
@@ -171,6 +202,142 @@ class OpenAIResponsesAdapter:
                     tool_calls.append(tc)
         return {"content": content, "tool_calls": tool_calls}
 
+    def _builtin_tools(self, extensions: dict[str, Any]) -> list[dict]:
+        tools: list[dict] = []
+        web_search = extensions.get("web_search")
+        if web_search:
+            tools.append({"type": "web_search", **web_search} if isinstance(web_search, dict) else {"type": "web_search"})
+        builtin = extensions.get("builtin_tools")
+        if isinstance(builtin, list):
+            tools.extend(builtin)
+        return tools
+
+    def build_request(
+        self,
+        input: CanonicalAdapterInput,
+        state: ProviderRunState | None = None,
+    ) -> OpenAIResponsesRequestPlan:
+        extensions = input.extensions
+        params = {
+            **wire_request_extensions(
+                extensions,
+                extra_omit=("input", "instructions", "previous_response_id", "web_search", "builtin_tools"),
+            ),
+            "model": input.resolved.model_id if input.resolved is not None else self._model,
+            "input": self.build_input(input.context, state, input.resolved),
+        }
+        instructions = self.build_instructions(input.context)
+        if instructions:
+            params["instructions"] = instructions
+        if state and state.get("previous_response_id"):
+            params["previous_response_id"] = state["previous_response_id"]
+        tools = [*self.build_tools(list(input.tools)), *self._builtin_tools(extensions)]
+        if tools:
+            params["tools"] = tools
+        return OpenAIResponsesRequestPlan(params=params)
+
+    def normalize_usage(self, raw: Any):
+        if raw is None:
+            return None
+        if not isinstance(raw, dict) and not hasattr(raw, "input_tokens"):
+            raise ProtocolResponseError("openai-responses", "usage must be an object")
+        self._number(raw, "input_tokens")
+        self._number(raw, "output_tokens")
+        self._number(raw, "total_tokens")
+        input_details = self._get(raw, "input_tokens_details")
+        if input_details is not None:
+            if not isinstance(input_details, dict) and not hasattr(input_details, "cached_tokens"):
+                raise ProtocolResponseError("openai-responses", "usage.input_tokens_details must be an object")
+            self._number(input_details, "cached_tokens")
+        output_details = self._get(raw, "output_tokens_details")
+        if output_details is not None:
+            if not isinstance(output_details, dict) and not hasattr(output_details, "reasoning_tokens"):
+                raise ProtocolResponseError("openai-responses", "usage.output_tokens_details must be an object")
+            self._number(output_details, "reasoning_tokens")
+        return normalize_usage(raw)
+
+    def decode_complete(self, raw: Any, input: CanonicalAdapterInput) -> Message:
+        output = self._get(raw, "output") or []
+        decoded = self.decode_output([
+            item if isinstance(item, dict) else item.model_dump() if hasattr(item, "model_dump") else item
+            for item in output
+        ])
+        usage = self._get(raw, "usage")
+        self.normalize_usage(usage)
+        token_count = self._number(usage, "output_tokens") if usage is not None else None
+        if token_count is None and usage is not None:
+            token_count = self._number(usage, "total_tokens")
+        return Message(role="assistant", content=decoded["content"], tool_calls=decoded["tool_calls"] or None, token_count=token_count)
+
+    def create_stream_state(
+        self,
+        input: CanonicalAdapterInput,
+        state: ProviderRunState | None = None,
+    ) -> OpenAIResponsesStreamState:
+        return OpenAIResponsesStreamState(input=input)
+
+    def push_stream_chunk(self, chunk: Any, state: OpenAIResponsesStreamState) -> AdapterOutput:
+        kind = self._get(chunk, "type")
+        events: list[StreamEvent] = []
+        if kind == "response.output_text.delta":
+            events.append(TextDelta(delta=self._get(chunk, "delta") or ""))
+        elif kind == "response.output_item.added":
+            item = self._get(chunk, "item")
+            if self._get(item, "type") == "function_call":
+                state.function_calls[int(self._get(chunk, "output_index"))] = {
+                    "id": self._get(item, "call_id"),
+                    "name": self._get(item, "name"),
+                    "args_buf": self._get(item, "arguments") or "",
+                }
+        elif kind == "response.function_call_arguments.delta":
+            call = state.function_calls.get(int(self._get(chunk, "output_index")))
+            if call:
+                call["args_buf"] += self._get(chunk, "delta") or ""
+        elif kind == "response.function_call_arguments.done":
+            call = state.function_calls.get(int(self._get(chunk, "output_index")))
+            if call:
+                call["args_buf"] = self._get(chunk, "arguments") or call["args_buf"]
+        elif kind == "response.output_item.done":
+            item = self._get(chunk, "item")
+            if self._get(item, "type") == "function_call":
+                call = state.function_calls.get(int(self._get(chunk, "output_index"))) or {
+                    "id": self._get(item, "call_id"),
+                    "name": self._get(item, "name"),
+                    "args_buf": self._get(item, "arguments") or "{}",
+                }
+                try:
+                    args = json.loads(call["args_buf"] or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                events.append(ToolCallEvent(id=call["id"], name=call["name"], arguments=args))
+        elif kind in {"response.completed", "response.incomplete"}:
+            response = self._get(chunk, "response")
+            response_id = self._get(response, "id")
+            patch = {"covered_message_count": len(state.input.context.turns) + 1}
+            if response_id:
+                patch["previous_response_id"] = response_id
+            usage = self._get(response, "usage")
+            provider_usage = self.normalize_usage(usage)
+            total = self._number(usage, "total_tokens") if usage is not None else None
+            if total:
+                details = self._get(usage, "input_tokens_details")
+                incomplete_details = self._get(response, "incomplete_details")
+                raw_stop_reason = self._get(incomplete_details, "reason") if incomplete_details is not None else None
+                events.append(UsageEvent(
+                    total_tokens=total,
+                    input_tokens=self._number(usage, "input_tokens") or 0,
+                    output_tokens=self._number(usage, "output_tokens") or 0,
+                    cache_read_input_tokens=self._number(details, "cached_tokens") if details is not None else 0,
+                    stop_reason=canonicalize_stop_reason(raw_stop_reason),
+                    raw_stop_reason=raw_stop_reason,
+                    provider_usage=provider_usage,
+                ))
+            return AdapterOutput(events=events, run_state_patch=patch)
+        return AdapterOutput(events=events)
+
+    def finish_stream(self, state: OpenAIResponsesStreamState, final: Any = None) -> AdapterOutput:
+        return self.push_stream_chunk(final, state) if final is not None else AdapterOutput()
+
 
 class OpenAIResponsesProvider:
     """OpenAI Responses API provider. Opt-in stateful continuation via ``previous_response_id``."""
@@ -187,7 +354,7 @@ class OpenAIResponsesProvider:
         self._circuit = CircuitBreaker(self._retry)
         self._base_url = base_url.rstrip("/")
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self._responses = OpenAIResponsesAdapter()
+        self._responses = OpenAIResponsesAdapter(model)
 
     def runtime_policy(self) -> RuntimePolicy:
         return _OPENAI_RESPONSES_POLICIES.get(self._model, RuntimePolicy())
@@ -218,57 +385,33 @@ class OpenAIResponsesProvider:
         )
 
     def _builtin_tools(self, extensions: dict | None) -> list[dict]:
-        """Responses API built-in server tools from extensions (sit in the same tools[] list as
-        function tools): `web_search: True` or a config dict; and a `builtin_tools` list passed through
-        verbatim for file_search ({"type":"file_search","vector_store_ids":[...]}) / code_interpreter
-        ({"type":"code_interpreter","container":{"type":"auto"}})."""
-        ext = extensions or {}
-        out: list[dict] = []
-        ws = ext.get("web_search")
-        if ws:
-            out.append({"type": "web_search", **ws} if isinstance(ws, dict) else {"type": "web_search"})
-        out.extend(ext.get("builtin_tools") or [])
-        return out
+        return self._responses._builtin_tools(extensions or {})
 
     def _all_tools(self, tools: list[ToolSchema], extensions: dict | None) -> list[dict]:
         defs = list(self._responses.build_tools(tools)) if tools else []
         defs.extend(self._builtin_tools(extensions))
         return defs
 
+    def _canonical_input(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None):
+        return normalize_canonical_adapter_input(
+            context,
+            tools,
+            extensions=extensions,
+            resolved=getattr(self, "_resolved_runtime", None),
+        )
+
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
+        adapter_input = self._canonical_input(context, tools, extensions)
+        plan = self._responses.build_request(adapter_input)
         last_exc: Exception | None = None
         for attempt in range(self._retry.max_retries):
             try:
-                instructions = self._responses.build_instructions(context)
-                req: dict[str, Any] = {
-                    **self._request_extensions(extensions),
-                    "model": self._model,
-                    "input": self._responses.build_input(context, resolved=getattr(self, "_resolved_runtime", None)),
-                }
-                if instructions:
-                    req["instructions"] = instructions
-                all_tools = self._all_tools(tools, extensions)
-                if all_tools:
-                    req["tools"] = all_tools
-                resp = await self._client.responses.create(**req)
+                resp = await self._client.responses.create(**plan.params)
                 self._circuit.record_success()
-                output = getattr(resp, "output", None) or []
-                decoded = self._responses.decode_output(
-                    [o if isinstance(o, dict) else o.model_dump() for o in output]
-                )
-                usage = getattr(resp, "usage", None)
-                token_count = None
-                if usage is not None:
-                    token_count = getattr(usage, "output_tokens", None) or getattr(usage, "total_tokens", None)
-                return Message(
-                    role="assistant",
-                    content=decoded["content"],
-                    tool_calls=decoded["tool_calls"] or None,
-                    token_count=token_count,
-                )
+                return self._responses.decode_complete(resp, adapter_input)
             except Exception as exc:
                 last_exc = exc
                 self._circuit.record_failure()
@@ -286,75 +429,19 @@ class OpenAIResponsesProvider:
         state: ProviderRunState | None = None,
     ) -> AsyncIterator[StreamEvent]:
         run_state = self._as_run_state(state)
-        instructions = self._responses.build_instructions(context)
-        function_calls: dict[int, dict] = {}
-
-        req: dict[str, Any] = {
-            **self._request_extensions(extensions),
-            "model": self._model,
-            "input": self._responses.build_input(context, run_state, getattr(self, "_resolved_runtime", None)),
-            "stream": True,
-        }
-        if instructions:
-            req["instructions"] = instructions
-        if run_state.get("previous_response_id"):
-            req["previous_response_id"] = run_state["previous_response_id"]
-        all_tools = self._all_tools(tools, extensions)
-        if all_tools:
-            req["tools"] = all_tools
-
-        stream = await self._client.responses.create(**req)
+        adapter_input = self._canonical_input(context, tools, extensions)
+        plan = self._responses.build_request(adapter_input, run_state)
+        stream = await self._client.responses.create(**{**plan.params, "stream": True})
+        stream_state = self._responses.create_stream_state(adapter_input, run_state)
 
         async for evt in stream:
-            etype = getattr(evt, "type", None)
-            if etype == "response.output_text.delta":
-                yield TextDelta(delta=getattr(evt, "delta", "") or "")
-            elif etype == "response.output_item.added" and getattr(getattr(evt, "item", None), "type", None) == "function_call":
-                item = evt.item
-                function_calls[evt.output_index] = {
-                    "id": item.call_id,
-                    "name": item.name,
-                    "args_buf": getattr(item, "arguments", "") or "",
-                }
-            elif etype == "response.function_call_arguments.delta":
-                call = function_calls.get(evt.output_index)
-                if call:
-                    call["args_buf"] += getattr(evt, "delta", "") or ""
-            elif etype == "response.function_call_arguments.done":
-                call = function_calls.get(evt.output_index)
-                if call:
-                    call["args_buf"] = getattr(evt, "arguments", "") or call["args_buf"]
-            elif etype == "response.output_item.done" and getattr(getattr(evt, "item", None), "type", None) == "function_call":
-                item = evt.item
-                call = function_calls.get(evt.output_index) or {
-                    "id": item.call_id,
-                    "name": item.name,
-                    "args_buf": getattr(item, "arguments", "") or "{}",
-                }
-                try:
-                    args = json.loads(call["args_buf"] or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                yield ToolCallEvent(id=call["id"], name=call["name"], arguments=args)
-            elif etype == "response.completed":
-                response = evt.response
-                run_state["previous_response_id"] = response.id
-                run_state["covered_message_count"] = len(context.turns) + 1
-                usage = getattr(response, "usage", None)
-                raw_stop_reason: str | None = None
-                incomplete_details = getattr(response, "incomplete_details", None)
-                if incomplete_details is not None:
-                    raw_stop_reason = getattr(incomplete_details, "reason", None)
-                total = getattr(usage, "total_tokens", 0) if usage else 0
-                if total:
-                    details = getattr(usage, "input_tokens_details", None)
-                    cached = getattr(details, "cached_tokens", 0) if details else 0
-                    yield UsageEvent(
-                        total_tokens=total,
-                        input_tokens=getattr(usage, "input_tokens", 0) or 0,
-                        output_tokens=getattr(usage, "output_tokens", 0) or 0,
-                        cache_read_input_tokens=int(cached or 0),
-                        stop_reason=canonicalize_stop_reason(raw_stop_reason),
-                        raw_stop_reason=raw_stop_reason,
-                        provider_usage=normalize_usage(usage),
-                    )
+            output = self._responses.push_stream_chunk(evt, stream_state)
+            if output.run_state_patch:
+                run_state.update(output.run_state_patch)
+            for event in output.events:
+                yield event
+        output = self._responses.finish_stream(stream_state)
+        if output.run_state_patch:
+            run_state.update(output.run_state_patch)
+        for event in output.events:
+            yield event
