@@ -43,7 +43,7 @@ describe("root surface", () => {
 
 describe("subpath barrels", () => {
   it("providers carries backend factories + the base class + runtime registry", () => {
-    for (const n of ["deepseek", "kimi", "qwen", "glm", "minimax", "gemini", "ollama", "OpenAIChatProvider", "endpointProfiles", "modelRegistry", "CircuitBreaker"])
+    for (const n of ["deepseek", "kimi", "qwen", "glm", "minimax", "gemini", "ollama", "OpenAIChatProvider", "endpointProfiles", "modelRegistry", "CircuitBreaker", "ProviderError", "classifyProviderError"])
       expect(providers).toHaveProperty(n)
     for (const n of ["modelProfiles", "getModelProfile"])
       expect(providers).not.toHaveProperty(n)

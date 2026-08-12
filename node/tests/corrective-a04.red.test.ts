@@ -71,6 +71,8 @@ describe("SPC-013 A-04 Ollama ProtocolAdapter lifecycle", () => {
           inputTokens: 12,
           outputTokens: 3,
           providerUsage: { inputTokens: 12, outputTokens: 3 },
+          stopReason: "max_tokens",
+          rawStopReason: "length",
         },
       ],
     })
