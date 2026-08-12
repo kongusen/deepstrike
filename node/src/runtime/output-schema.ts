@@ -12,7 +12,7 @@ export interface SchemaValidation {
   errors: string[]
 }
 
-type JsonSchema = Record<string, unknown>
+export type JsonSchema = Record<string, unknown>
 
 function typeOfValue(v: unknown): string {
   if (v === null) return "null"

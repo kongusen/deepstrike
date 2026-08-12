@@ -57,3 +57,25 @@ describe("spc_001-06: Agent.model dual-mode (ModelRef)", () => {
     expect(agent.model).toEqual({ capability: { reasoning: true } })
   })
 })
+
+describe("spc_010-01: Agent output schema and metadata", () => {
+  it("stores an output schema and metadata without interpreting either", () => {
+    const outputSchema = {
+      type: "object",
+      required: ["answer"],
+      properties: { answer: { type: "string" } },
+    }
+    const metadata = { team: "research", priority: 1 }
+    const agent = new Agent({ name: "researcher", outputSchema, metadata })
+
+    expect(agent.outputSchema).toEqual(outputSchema)
+    expect(agent.metadata).toEqual(metadata)
+  })
+
+  it("leaves output schema and metadata undefined when omitted", () => {
+    const agent = new Agent({ name: "minimal" })
+
+    expect(agent.outputSchema).toBeUndefined()
+    expect(agent.metadata).toBeUndefined()
+  })
+})
