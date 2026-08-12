@@ -1,6 +1,7 @@
 import { Agent } from "../src/agent.js"
 import { tool } from "../src/tools/index.js"
 import { fromAnthropicMcpConfig } from "../src/compat/anthropic/mcp.js"
+import type { Skill } from "../src/skill.js"
 
 describe("spc_001-02: Agent public class", () => {
   it("stores constructor fields and exposes them as read properties", () => {
@@ -94,5 +95,19 @@ describe("spc_010-02: Agent guardrails", () => {
 
   it("leaves guardrails undefined when omitted", () => {
     expect(new Agent({ name: "minimal" }).guardrails).toBeUndefined()
+  })
+})
+
+describe("spc_010-03: typed Agent skills", () => {
+  it("preserves Skill provider options and exposes Skill fields without a cast", () => {
+    const skills: Skill[] = [{
+      name: "research",
+      instructions: "cite sources",
+      providerOptions: { openai: { reasoningEffort: "high" } },
+    }]
+    const agent = new Agent({ name: "researcher", skills })
+
+    expect(agent.skills?.[0].instructions).toBe("cite sources")
+    expect(agent.skills?.[0].providerOptions).toEqual({ openai: { reasoningEffort: "high" } })
   })
 })

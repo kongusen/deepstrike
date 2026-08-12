@@ -11,6 +11,7 @@ export interface Skill {
   mcpServers?: unknown[] // placeholder
   knowledge?: unknown[] // placeholder
   metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
 }
 
 /** Loads one skill by name from a skill directory, reusing the existing frontmatter scanner and
