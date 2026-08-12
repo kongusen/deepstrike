@@ -79,3 +79,20 @@ describe("spc_010-01: Agent output schema and metadata", () => {
     expect(agent.metadata).toBeUndefined()
   })
 })
+
+describe("spc_010-02: Agent guardrails", () => {
+  it("stores typed guardrails without assigning execution semantics", () => {
+    const guardrails = [{
+      name: "no-pii",
+      description: "do not return personal data",
+      metadata: { severity: "high" },
+    }]
+    const agent = new Agent({ name: "researcher", guardrails })
+
+    expect(agent.guardrails).toEqual(guardrails)
+  })
+
+  it("leaves guardrails undefined when omitted", () => {
+    expect(new Agent({ name: "minimal" }).guardrails).toBeUndefined()
+  })
+})

@@ -2,6 +2,7 @@ import type { RegisteredTool } from "./tools/index.js"
 import type { WorkingMemory } from "./memory/public.js"
 import type { MCPServer } from "./mcp-server.js"
 import type { JsonSchema } from "./runtime/output-schema.js"
+import type { Guardrail } from "./guardrail.js"
 
 /** spc_001 §2.1: dual-mode model reference — either an explicit vendor model name, or a
  *  capability-based requirement the Host routes to a concrete model. Routing logic for the
@@ -29,6 +30,7 @@ export interface AgentOptions {
   providerOptions?: Record<string, unknown>
   outputSchema?: JsonSchema
   metadata?: Record<string, unknown>
+  guardrails?: Guardrail[]
 }
 
 /** spc_001 §2.1: public Agent contract — a thin field-storage wrapper today, with lowering to the
@@ -47,6 +49,7 @@ export class Agent {
   readonly providerOptions?: Record<string, unknown>
   readonly outputSchema?: JsonSchema
   readonly metadata?: Record<string, unknown>
+  readonly guardrails?: Guardrail[]
 
   constructor(options: AgentOptions) {
     this.name = options.name
@@ -62,5 +65,6 @@ export class Agent {
     this.providerOptions = options.providerOptions
     this.outputSchema = options.outputSchema
     this.metadata = options.metadata
+    this.guardrails = options.guardrails
   }
 }

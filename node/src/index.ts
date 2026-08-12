@@ -115,6 +115,7 @@ export { AgentPool } from "./collaboration/pool.js"
 // ── Ecosystem Surface Contract (spc_001) ────────────────────────────────────
 export { Agent } from "./agent.js"
 export type { AgentOptions, ModelRef, ModelRequirement } from "./agent.js"
+export type { Guardrail } from "./guardrail.js"
 
 // ── Signals (the `RuntimeOptions.signalSource` surface) ─────────────────────
 export type {
