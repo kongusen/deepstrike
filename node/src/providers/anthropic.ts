@@ -25,6 +25,7 @@ import {
   type CanonicalAdapterInput,
 } from "./content-normalization.js"
 import { endpointProfiles, type ProviderId } from "./endpoints.js"
+import { circuitOpenError, classifyProviderError } from "./provider-error.js"
 
 interface AnthropicProviderOptions {
   baseURL?: string
@@ -180,8 +181,15 @@ export class AnthropicProvider implements LLMProvider {
     tools: ToolSchema[],
     extensions?: Record<string, unknown>,
   ): Promise<Message> {
-    if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const { input, plan } = this.buildPlan(context, tools, extensions)
+    const provider = this.providerName()
+    if (this.circuit.isOpen()) throw circuitOpenError(provider)
+    let input: CanonicalAdapterInput
+    let plan: AnthropicRequestPlan
+    try {
+      ;({ input, plan } = this.buildPlan(context, tools, extensions))
+    } catch (error) {
+      throw classifyProviderError(provider, error)
+    }
 
     let lastErr: unknown
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
@@ -201,7 +209,7 @@ export class AnthropicProvider implements LLMProvider {
         }
       }
     }
-    throw lastErr
+    throw classifyProviderError(provider, lastErr)
   }
 
   /** Native measurement belongs to the verified official endpoint, not the wire protocol. */
@@ -238,18 +246,23 @@ export class AnthropicProvider implements LLMProvider {
     _state?: ProviderRunState,
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
-    const { input, plan } = this.buildPlan(context, tools, extensions)
-    const state = this.adapter.createStreamState({ input })
-    for await (const chunk of this.streamMessage(plan.params, plan.transport, signal)) {
-      for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
-    }
-    const final = this.adapter.finishStream(state)
-    for (const event of final.events) yield event
-    if (final.replay?.native_blocks) {
-      this.rememberNativeBlocks(
-        { content: state.finalText, toolCalls: state.finalToolCalls },
-        final.replay.native_blocks,
-      )
+    const provider = this.providerName()
+    try {
+      const { input, plan } = this.buildPlan(context, tools, extensions)
+      const state = this.adapter.createStreamState({ input })
+      for await (const chunk of this.streamMessage(plan.params, plan.transport, signal)) {
+        for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
+      }
+      const final = this.adapter.finishStream(state)
+      for (const event of final.events) yield event
+      if (final.replay?.native_blocks) {
+        this.rememberNativeBlocks(
+          { content: state.finalText, toolCalls: state.finalToolCalls },
+          final.replay.native_blocks,
+        )
+      }
+    } catch (error) {
+      throw classifyProviderError(provider, error)
     }
   }
 

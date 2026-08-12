@@ -9,6 +9,7 @@ import {
   type CanonicalAdapterInput,
 } from "./content-normalization.js"
 import { GeminiAdapter, canonicalGeminiContents, geminiVendorConfig } from "./gemini-adapter.js"
+import { circuitOpenError, classifyProviderError } from "./provider-error.js"
 
 type ResolvedGeminiRuntime = CanonicalAdapterInput["resolved"]
 
@@ -106,9 +107,15 @@ export class GeminiProvider implements LLMProvider {
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
-    if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const input = this.adapterInput(context, tools, extensions)
-    const plan = this.adapter.buildRequest(input)
+    if (this.circuit.isOpen()) throw circuitOpenError("gemini")
+    let input: CanonicalAdapterInput
+    let plan: ReturnType<GeminiAdapter["buildRequest"]>
+    try {
+      input = this.adapterInput(context, tools, extensions)
+      plan = this.adapter.buildRequest(input)
+    } catch (error) {
+      throw classifyProviderError("gemini", error)
+    }
 
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
@@ -123,21 +130,25 @@ export class GeminiProvider implements LLMProvider {
         if (i < this.maxRetries - 1) await new Promise(r => setTimeout(r, this.baseDelay * 2 ** i))
       }
     }
-    throw lastErr
+    throw classifyProviderError("gemini", lastErr)
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const input = this.adapterInput(context, tools, extensions)
-    const plan = this.adapter.buildRequest(input)
-    const m = this.genAI.getGenerativeModel(plan.modelParams, this.requestOptions)
-    const result = await m.generateContentStream(plan.request)
-    const state = this.adapter.createStreamState({ input })
+    try {
+      const input = this.adapterInput(context, tools, extensions)
+      const plan = this.adapter.buildRequest(input)
+      const m = this.genAI.getGenerativeModel(plan.modelParams, this.requestOptions)
+      const result = await m.generateContentStream(plan.request)
+      const state = this.adapter.createStreamState({ input })
 
-    for await (const chunk of result.stream) {
-      for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
+      for await (const chunk of result.stream) {
+        for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
+      }
+
+      for (const event of this.adapter.finishStream(state, await result.response).events) yield event
+    } catch (error) {
+      throw classifyProviderError("gemini", error)
     }
-
-    for (const event of this.adapter.finishStream(state, await result.response).events) yield event
   }
 
   /**

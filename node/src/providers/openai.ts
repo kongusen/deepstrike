@@ -28,6 +28,7 @@ import {
   type OpenAIChatTurnReasoning,
   type OpenAIChatWireDialect,
 } from "./openai-chat-dialects.js"
+import { circuitOpenError, classifyProviderError } from "./provider-error.js"
 
 /** Options-object form for `OpenAIProvider`. */
 export interface OpenAIProviderOptions {
@@ -195,9 +196,16 @@ export class OpenAIChatProvider implements LLMProvider {
     tools: ToolSchema[],
     extensions?: Record<string, unknown>,
   ): Promise<Message> {
-    if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const input = this.adapterInput(context, tools, extensions)
-    const plan = this.chat.buildRequest(input, this.dialect)
+    const provider = this.dialect.providerId
+    if (this.circuit.isOpen()) throw circuitOpenError(provider)
+    let input: CanonicalAdapterInput
+    let plan: ReturnType<OpenAIChatAdapter["buildRequest"]>
+    try {
+      input = this.adapterInput(context, tools, extensions)
+      plan = this.chat.buildRequest(input, this.dialect)
+    } catch (error) {
+      throw classifyProviderError(provider, error)
+    }
     let lastError: unknown
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
@@ -220,7 +228,7 @@ export class OpenAIChatProvider implements LLMProvider {
         }
       }
     }
-    throw lastError
+    throw classifyProviderError(provider, lastError)
   }
 
   async *stream(
@@ -230,38 +238,43 @@ export class OpenAIChatProvider implements LLMProvider {
     _state?: ProviderRunState,
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
-    const input = this.adapterInput(context, tools, extensions)
-    const plan = this.chat.buildRequest(input, this.dialect)
-    const state = this.chat.createStreamState({ input }, this.dialect)
-    const stream = await this.client.chat.completions.create({
-      ...plan.params,
-      stream: true,
-      stream_options: { include_usage: true },
-    } as unknown as OpenAI.ChatCompletionCreateParamsStreaming, signal ? { signal } : undefined)
-    for await (const chunk of stream as unknown as AsyncIterable<OpenAIChatStreamChunk>) {
-      const output = this.chat.pushStreamChunk(chunk, state)
-      if (output.replay) {
-        this.rememberReplay({
-          content: state.accumulatedContent,
-          toolCalls: Object.values(state.toolCallBuffers).map(call => ({
-            id: call.id,
-            name: call.name,
-            arguments: call.argsBuffer || "{}",
-          })),
-        }, output.replay)
+    const provider = this.dialect.providerId
+    try {
+      const input = this.adapterInput(context, tools, extensions)
+      const plan = this.chat.buildRequest(input, this.dialect)
+      const state = this.chat.createStreamState({ input }, this.dialect)
+      const stream = await this.client.chat.completions.create({
+        ...plan.params,
+        stream: true,
+        stream_options: { include_usage: true },
+      } as unknown as OpenAI.ChatCompletionCreateParamsStreaming, signal ? { signal } : undefined)
+      for await (const chunk of stream as unknown as AsyncIterable<OpenAIChatStreamChunk>) {
+        const output = this.chat.pushStreamChunk(chunk, state)
+        if (output.replay) {
+          this.rememberReplay({
+            content: state.accumulatedContent,
+            toolCalls: Object.values(state.toolCallBuffers).map(call => ({
+              id: call.id,
+              name: call.name,
+              arguments: call.argsBuffer || "{}",
+            })),
+          }, output.replay)
+        }
+        for (const event of output.events) yield event
       }
-      for (const event of output.events) yield event
+      const final = this.chat.finishStream(state)
+      for (const event of final.events) yield event
+      this.rememberReplay({
+        content: state.accumulatedContent,
+        toolCalls: Object.values(state.toolCallBuffers).map(call => ({
+          id: call.id,
+          name: call.name,
+          arguments: call.argsBuffer || "{}",
+        })),
+      }, final.replay)
+    } catch (error) {
+      throw classifyProviderError(provider, error)
     }
-    const final = this.chat.finishStream(state)
-    for (const event of final.events) yield event
-    this.rememberReplay({
-      content: state.accumulatedContent,
-      toolCalls: Object.values(state.toolCallBuffers).map(call => ({
-        id: call.id,
-        name: call.name,
-        arguments: call.argsBuffer || "{}",
-      })),
-    }, final.replay)
   }
 
   // Compatibility-only white-box seams. Runtime request shaping uses the dialect through adapter.

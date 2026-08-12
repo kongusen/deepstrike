@@ -20,6 +20,7 @@ import {
   type OpenAIResponsesRunState,
   type OpenAIResponsesStreamChunk,
 } from "./openai-responses-adapter.js"
+import { circuitOpenError, classifyProviderError } from "./provider-error.js"
 
 export { OpenAIResponsesAdapter } from "./openai-responses-adapter.js"
 export type {
@@ -102,9 +103,15 @@ export class OpenAIResponsesProvider implements LLMProvider {
     tools: ToolSchema[],
     extensions?: Record<string, unknown>,
   ): Promise<Message> {
-    if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const input = this.adapterInput(context, tools, extensions)
-    const plan = this.responses.buildRequest(input)
+    if (this.circuit.isOpen()) throw circuitOpenError("openai")
+    let input: CanonicalAdapterInput
+    let plan: ReturnType<OpenAIResponsesAdapter["buildRequest"]>
+    try {
+      input = this.adapterInput(context, tools, extensions)
+      plan = this.responses.buildRequest(input)
+    } catch (error) {
+      throw classifyProviderError("openai", error)
+    }
     let lastError: unknown
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
@@ -123,7 +130,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
       }
     }
 
-    throw lastError
+    throw classifyProviderError("openai", lastError)
   }
 
   async *stream(
@@ -133,29 +140,33 @@ export class OpenAIResponsesProvider implements LLMProvider {
     state?: ProviderRunState,
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent> {
-    const runState = this.asRunState(state)
-    const input = this.adapterInput(context, tools, extensions)
-    const plan = this.responses.buildRequest(input, runState)
-    const streamState = this.responses.createStreamState({ input }, runState)
-    const stream = await this.client.responses.create(
-      { ...plan.params, stream: true } as unknown as OpenAI.Responses.ResponseCreateParamsStreaming,
-      signal ? { signal } : undefined,
-    )
+    try {
+      const runState = this.asRunState(state)
+      const input = this.adapterInput(context, tools, extensions)
+      const plan = this.responses.buildRequest(input, runState)
+      const streamState = this.responses.createStreamState({ input }, runState)
+      const stream = await this.client.responses.create(
+        { ...plan.params, stream: true } as unknown as OpenAI.Responses.ResponseCreateParamsStreaming,
+        signal ? { signal } : undefined,
+      )
 
-    for await (const chunk of stream as unknown as AsyncIterable<OpenAIResponsesStreamChunk>) {
-      const output = this.responses.pushStreamChunk(chunk, streamState)
-      for (const event of output.events) yield event
-      if (output.runStatePatch) {
-        Object.assign(runState, output.runStatePatch)
-        if (state) Object.assign(state, output.runStatePatch)
+      for await (const chunk of stream as unknown as AsyncIterable<OpenAIResponsesStreamChunk>) {
+        const output = this.responses.pushStreamChunk(chunk, streamState)
+        for (const event of output.events) yield event
+        if (output.runStatePatch) {
+          Object.assign(runState, output.runStatePatch)
+          if (state) Object.assign(state, output.runStatePatch)
+        }
       }
-    }
 
-    const final = this.responses.finishStream(streamState)
-    for (const event of final.events) yield event
-    if (final.runStatePatch) {
-      Object.assign(runState, final.runStatePatch)
-      if (state) Object.assign(state, final.runStatePatch)
+      const final = this.responses.finishStream(streamState)
+      for (const event of final.events) yield event
+      if (final.runStatePatch) {
+        Object.assign(runState, final.runStatePatch)
+        if (state) Object.assign(state, final.runStatePatch)
+      }
+    } catch (error) {
+      throw classifyProviderError("openai", error)
     }
   }
 

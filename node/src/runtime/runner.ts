@@ -109,6 +109,7 @@ import {
 } from "./context-policy.js"
 import { composeSystemPrompt, type InstructionProfile } from "../harness/manifest.js"
 import { attachToolOutputOverlay, normalizeToolResultContent } from "../providers/content-normalization.js"
+import { providerErrorEventFields, providerErrorMessage } from "../providers/provider-error.js"
 import { NudgeEngine, type NudgeRule } from "../harness/nudge.js"
 
 export interface SchedulerPolicy {
@@ -2270,6 +2271,7 @@ export class RuntimeRunner {
             this.interrupted = true
             this.cancellationReason ??= "user"
           } else {
+            const message = providerErrorMessage(err, formatToolError)
             // Reactive recovery is now a kernel decision. Forward the raw provider error and
             // dispatch whatever the kernel returns: `call_provider` to retry with a freshly
             // compacted context, or `done` to terminate with an honest `ContextOverflow`. The
@@ -2280,14 +2282,15 @@ export class RuntimeRunner {
             action = await this.commitKernelAction(runtime, this.pendingObservations, {
               kind: "provider_error",
               effect_id: providerEffectId,
-              message: formatToolError(err),
+              message,
+              ...providerErrorEventFields(err),
             })
             // Withholding (query.ts parity): surface the raw provider error only when the kernel
             // could NOT recover (it returned a terminal). On a recovered retry (`call_provider`)
             // the error stays hidden, so embedders that terminate on `error` events don't see a
             // phantom failure mid-recovery.
             if (action.kind === "done") {
-              yield { type: "error", message: formatToolError(err) } as ErrorEvent
+              yield { type: "error", message } as ErrorEvent
             }
             continue
           }

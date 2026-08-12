@@ -23,6 +23,11 @@ export type {
   GeminiStreamState,
 } from "./gemini-adapter.js"
 export { ProtocolResponseError } from "./protocol-adapter.js"
+export {
+  ProviderError,
+  classifyProviderError,
+} from "./provider-error.js"
+export type { ProviderErrorKind, ProviderErrorOptions } from "./provider-error.js"
 export type {
   AdapterDecodeInput,
   AdapterOutput,

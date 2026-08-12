@@ -5,6 +5,7 @@ import {
 } from "./content-normalization.js"
 import { endpointProfiles } from "./endpoints.js"
 import { OllamaAdapter, type OllamaChunk } from "./ollama-adapter.js"
+import { classifyProviderError, ProviderError } from "./provider-error.js"
 
 type ResolvedOllamaRuntime = CanonicalAdapterInput["resolved"]
 
@@ -71,41 +72,64 @@ export class OllamaProvider implements LLMProvider {
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
-    const input = this.adapterInput(context, tools, extensions)
-    const body = { ...this.adapter.buildRequest(input), stream: false }
-    const resp = await fetch(`${this.baseUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })
-    if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`)
-    const data = await resp.json() as OllamaChunk
-    return this.adapter.decodeComplete(data, { input }).message
+    try {
+      const input = this.adapterInput(context, tools, extensions)
+      const body = { ...this.adapter.buildRequest(input), stream: false }
+      const resp = await fetch(`${this.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      if (!resp.ok) throw ollamaHttpError(resp.status)
+      const data = await resp.json() as OllamaChunk
+      return this.adapter.decodeComplete(data, { input }).message
+    } catch (error) {
+      throw classifyProviderError("ollama", error)
+    }
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
-    const input = this.adapterInput(context, tools, extensions)
-    const body = { ...this.adapter.buildRequest(input), stream: true }
-    const resp = await fetch(`${this.baseUrl}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    })
-    if (!resp.ok) throw new Error(`Ollama error: ${resp.status}`)
-    const reader = resp.body!.getReader()
-    const decoder = new TextDecoder()
-    const ndjson = this.adapter.createNdjsonDecoder()
-    const state = this.adapter.createStreamState({ input })
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      for (const chunk of ndjson.push(decoder.decode(value, { stream: true }))) {
+    try {
+      const input = this.adapterInput(context, tools, extensions)
+      const body = { ...this.adapter.buildRequest(input), stream: true }
+      const resp = await fetch(`${this.baseUrl}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      if (!resp.ok) throw ollamaHttpError(resp.status)
+      if (!resp.body) {
+        throw new ProviderError({
+          provider: "ollama",
+          kind: "protocol",
+          retryable: false,
+          message: "Ollama stream response has no body",
+        })
+      }
+      const reader = resp.body.getReader()
+      const decoder = new TextDecoder()
+      const ndjson = this.adapter.createNdjsonDecoder()
+      const state = this.adapter.createStreamState({ input })
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        for (const chunk of ndjson.push(decoder.decode(value, { stream: true }))) {
+          for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
+        }
+      }
+      for (const chunk of ndjson.finish(decoder.decode())) {
         for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
       }
+      for (const event of this.adapter.finishStream(state, state.finalChunk).events) yield event
+    } catch (error) {
+      throw classifyProviderError("ollama", error)
     }
-    for (const chunk of ndjson.finish(decoder.decode())) {
-      for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
-    }
-    for (const event of this.adapter.finishStream(state, state.finalChunk).events) yield event
   }
+}
+
+function ollamaHttpError(status: number): ProviderError {
+  return classifyProviderError("ollama", Object.assign(
+    new Error(`Ollama error: ${status}`),
+    { status },
+  ))
 }

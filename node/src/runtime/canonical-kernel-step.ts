@@ -64,6 +64,22 @@ function totalUsageTokens(terminal: Record<string, unknown>): number {
   return Number.isSafeInteger(input + output) ? input + output : 0
 }
 
+function canonicalProviderFailureKind(kind: unknown): "transport_exhausted" | "protocol_error" | "unknown" {
+  switch (kind) {
+    case "transport":
+    case "rate_limit":
+    case "model_unavailable":
+      return "transport_exhausted"
+    case "auth":
+    case "invalid_request":
+    case "modality":
+    case "protocol":
+      return "protocol_error"
+    default:
+      return "unknown"
+  }
+}
+
 export function canonicalUnsupportedEffectResolution(
   effectId: string,
   effectKind: string,
@@ -996,7 +1012,9 @@ export class CanonicalRunnerRuntime {
       }
       case "provider_error": {
         const message = String(event.message ?? "")
-        const contextOverflow = /context|token.*limit|too long/i.test(message)
+        const hasStructuredKind = typeof event.error_kind === "string"
+        const contextOverflow = event.error_kind === "context_overflow"
+          || (!hasStructuredKind && /context|token.*limit|too long/i.test(message))
         input = contextOverflow
           ? {
               kind: "resolve_effect",
@@ -1006,7 +1024,12 @@ export class CanonicalRunnerRuntime {
                 result: { kind: "provider", outcome: { kind: "context_overflow" } },
               },
             }
-          : this.failedEffect(event, "transport_exhausted", message, true)
+          : this.failedEffect(
+              event,
+              hasStructuredKind ? canonicalProviderFailureKind(event.error_kind) : "transport_exhausted",
+              message,
+              typeof event.retryable === "boolean" ? event.retryable : true,
+            )
         break
       }
       case "tool_results": {
