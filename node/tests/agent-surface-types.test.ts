@@ -6,6 +6,38 @@ import type { HandoffArtifact } from "../src/collaboration/handoff.js"
 import type { Session } from "../src/session.js"
 import type { SessionData } from "../src/memory/protocols.js"
 import type { SessionLog } from "../src/runtime/session-log.js"
+import type { MCPServer } from "../src/mcp-server.js"
+import type { KnowledgeSourceRef, McpTransport } from "../src/index.js"
+
+describe("spc_001: public descriptor provider options", () => {
+  it("preserves vendor extensions on public descriptor contracts", () => {
+    const mcp: MCPServer = {
+      transport: { kind: "http", url: "https://example.test/mcp" },
+      providerOptions: { openai: { approvalMode: "never" } },
+    }
+    const knowledge: Knowledge = {
+      source: { kind: "text", content: "facts" },
+      providerOptions: { anthropic: { citations: true } },
+    }
+    const handoff: Handoff = {
+      agent: "reviewer",
+      providerOptions: { google: { transferMode: "explicit" } },
+    }
+    const session: Session = {
+      id: "session-provider-options",
+      providerOptions: { custom: { tenant: "acme" } },
+    }
+    const source: KnowledgeSourceRef = { kind: "text", content: "root entrypoint" }
+    const transport: McpTransport = { kind: "http", url: "https://example.test/root" }
+
+    expect(JSON.parse(JSON.stringify(mcp)).providerOptions).toEqual({ openai: { approvalMode: "never" } })
+    expect(JSON.parse(JSON.stringify(knowledge)).providerOptions).toEqual({ anthropic: { citations: true } })
+    expect(JSON.parse(JSON.stringify(handoff)).providerOptions).toEqual({ google: { transferMode: "explicit" } })
+    expect(JSON.parse(JSON.stringify(session)).providerOptions).toEqual({ custom: { tenant: "acme" } })
+    expect(source.kind).toBe("text")
+    expect(transport.kind).toBe("http")
+  })
+})
 
 describe("spc_010-04: typed Agent knowledge", () => {
   it("stores every public knowledge source form without changing KnowledgeSource", async () => {

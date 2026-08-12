@@ -8,4 +8,5 @@ export interface Handoff {
   description?: string
   inputSchema?: JsonSchema
   metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
 }

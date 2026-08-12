@@ -15,4 +15,5 @@ export interface Knowledge {
   source: KnowledgeSourceRef
   description?: string
   metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
 }

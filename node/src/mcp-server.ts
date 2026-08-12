@@ -16,4 +16,5 @@ export interface MCPServer {
   prompts?: boolean
   auth?: Record<string, unknown>
   metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
 }

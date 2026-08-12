@@ -7,4 +7,5 @@ export interface Session {
   userId?: string
   state?: Record<string, unknown>
   metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
 }

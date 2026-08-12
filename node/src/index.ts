@@ -116,6 +116,8 @@ export { AgentPool } from "./collaboration/pool.js"
 export { Agent } from "./agent.js"
 export type { AgentOptions, ModelRef, ModelRequirement } from "./agent.js"
 export type { Guardrail } from "./guardrail.js"
+export type { MCPServer, McpTransport } from "./mcp-server.js"
+export type { Knowledge, KnowledgeSourceRef } from "./knowledge/public.js"
 export type { AgentRef, Handoff } from "./handoff-target.js"
 export type { Session } from "./session.js"
 
