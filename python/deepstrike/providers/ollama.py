@@ -1,14 +1,12 @@
 from __future__ import annotations
-import json
 import logging
 from typing import AsyncIterator
 import httpx
 from deepstrike._kernel import Message, ToolSchema
-from .stream import StreamEvent, TextDelta, ToolCallEvent
-from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended
-from deepstrike.providers.base import UnsupportedModalityError
-from deepstrike.types.content import normalize_tool_result, project_tool_output_to_text
-from .stop_reason import canonicalize_stop_reason
+from .stream import StreamEvent
+from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy
+from .ollama_adapter import OllamaAdapter
+from deepstrike.types.content import normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +33,7 @@ class OllamaProvider:
         self._base_url = base_url.rstrip("/")
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
+        self._adapter = OllamaAdapter(model)
 
     def runtime_policy(self) -> RuntimePolicy:
         m = self._model.lower()
@@ -44,48 +43,14 @@ class OllamaProvider:
         return RuntimePolicy(max_turns=20)
 
     def _build_body(self, context: RenderedContext, tools: list[ToolSchema], stream: bool, extensions: dict | None = None) -> dict:
-        msgs = []
-        if context.system_text:
-            msgs.append({"role": "system", "content": context.system_text})
-        for m in turns_with_state_appended(context, getattr(self, "_resolved_runtime", None)):
-            entry: dict = {"role": m.role, "content": m.content}
-            parts = getattr(m, "content_parts", None)
-            if parts:
-                if any(p.type == "audio" for p in parts):
-                    raise UnsupportedModalityError("audio", "ollama")
-                images = [p.data for p in parts if p.type == "image" and p.data]
-                tool_results = [p for p in parts if p.type == "tool_result"]
-                if tool_results:
-                    part = tool_results[0]
-                    entry["content"] = project_tool_output_to_text(
-                        normalize_tool_result(
-                            part.call_id,
-                            part.output,
-                            part.is_error,
-                            getattr(part, "content_parts", None),
-                        ).blocks
-                    )
-                if images:
-                    entry["images"] = images
-            msgs.append(entry)
-        body: dict = {
-            **{k: v for k, v in (extensions or {}).items() if k not in {"model", "messages", "tools", "stream"}},
-            "model": self._model,
-            "messages": msgs,
-            "stream": stream,
-        }
-        if tools:
-            body["tools"] = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": json.loads(t.parameters),
-                    },
-                }
-                for t in tools
-            ]
+        canonical = normalize_canonical_adapter_input(
+            context,
+            tools,
+            extensions=extensions,
+            resolved=getattr(self, "_resolved_runtime", None),
+        )
+        body = self._adapter.build_request(canonical)
+        body["stream"] = stream
         return body
 
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
@@ -104,18 +69,12 @@ class OllamaProvider:
                     resp.raise_for_status()
                     data = resp.json()
 
-                msg = data.get("message", {})
-                content_text = msg.get("content") or ""
-                tool_calls = []
-                for tc in msg.get("tool_calls") or []:
-                    fn = tc.get("function", {})
-                    normalized = normalize_tool_call(tc.get("id", ""), fn.get("name", ""), fn.get("arguments", {}))
-                    if normalized:
-                        tool_calls.append(normalized)
-
                 self._circuit.record_success()
-                from deepstrike._kernel import Message as KMessage
-                return KMessage(role="assistant", content=content_text, token_count=0, tool_calls=tool_calls)
+                canonical = normalize_canonical_adapter_input(
+                    context, tools, extensions=extensions,
+                    resolved=getattr(self, "_resolved_runtime", None),
+                )
+                return self._adapter.decode_complete(data, canonical)
             except Exception as exc:
                 last_exc = exc
                 self._circuit.record_failure()
@@ -131,8 +90,12 @@ class OllamaProvider:
         return self._stream_gen(context, tools, extensions)
 
     async def _stream_gen(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
-        pending_tool_calls: dict[str, dict] = {}
-        raw_stop_reason: str | None = None
+        canonical = normalize_canonical_adapter_input(
+            context, tools, extensions=extensions,
+            resolved=getattr(self, "_resolved_runtime", None),
+        )
+        state = self._adapter.create_stream_state(canonical)
+        decoder = self._adapter.create_ndjson_decoder()
 
         async with httpx.AsyncClient() as client:
             async with client.stream(
@@ -142,43 +105,19 @@ class OllamaProvider:
                 timeout=120,
             ) as resp:
                 resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    chunk = json.loads(line)
-                    msg = chunk.get("message", {})
-                    done = chunk.get("done", False)
-                    if done:
-                        reason = chunk.get("done_reason")
-                        if isinstance(reason, str) and reason:
-                            raw_stop_reason = reason
+                if hasattr(resp, "aiter_text"):
+                    async for text in resp.aiter_text():
+                        for chunk in decoder.push(text):
+                            for event in self._adapter.push_stream_chunk(chunk, state).events:
+                                yield event
+                else:
+                    async for line in resp.aiter_lines():
+                        for chunk in decoder.push(f"{line}\n"):
+                            for event in self._adapter.push_stream_chunk(chunk, state).events:
+                                yield event
+                for chunk in decoder.finish():
+                    for event in self._adapter.push_stream_chunk(chunk, state).events:
+                        yield event
 
-                    if text := msg.get("content"):
-                        yield TextDelta(delta=text)
-
-                    for tc in msg.get("tool_calls") or []:
-                        fn = tc.get("function", {})
-                        args = fn.get("arguments", {})
-                        normalized = normalize_tool_call("", fn.get("name", ""), args)
-                        if normalized:
-                            key = f"{normalized.name}:{normalized.arguments}"
-                            if key not in pending_tool_calls:
-                                pending_tool_calls[key] = {
-                                    "id": f"call_{len(pending_tool_calls) + 1}",
-                                    "name": normalized.name,
-                                    "arguments": args,
-                                }
-
-        for tc in pending_tool_calls.values():
-            yield ToolCallEvent(id=tc["id"], name=tc["name"], arguments=tc["arguments"])
-
-        # Ollama does not report usage on the stream; emit the stop-reason carrier only.
-        if raw_stop_reason is not None:
-            from .stream import UsageEvent
-            yield UsageEvent(
-                total_tokens=0,
-                input_tokens=0,
-                output_tokens=0,
-                stop_reason=canonicalize_stop_reason(raw_stop_reason),
-                raw_stop_reason=raw_stop_reason,
-            )
+        for event in self._adapter.finish_stream(state).events:
+            yield event

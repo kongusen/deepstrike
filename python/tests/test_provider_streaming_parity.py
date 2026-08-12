@@ -1,11 +1,12 @@
 import pytest
+import importlib
 
 from deepstrike.providers.openai import OpenAIProvider
 from deepstrike.providers.gemini import GeminiProvider
 from deepstrike.providers.ollama import OllamaProvider
 from deepstrike.providers.base import RenderedContext
 from deepstrike._kernel import Message
-from deepstrike.providers.stream import TextDelta, ThinkingDelta, ToolCallEvent
+from deepstrike.providers.stream import TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 
 
 @pytest.mark.asyncio
@@ -117,6 +118,31 @@ async def test_gemini_keeps_duplicate_function_names_distinct(monkeypatch):
     events = [event async for event in gen]
     tool_events = [e for e in events if isinstance(e, ToolCallEvent)]
     assert [(e.id, e.arguments) for e in tool_events] == [("call_1", {"q": "a"}), ("call_2", {"q": "b"})]
+
+
+@pytest.mark.asyncio
+async def test_ollama_provider_preserves_unterminated_final_ndjson_record(monkeypatch):
+    provider = OllamaProvider("llama3")
+
+    class FakeResponse:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        def raise_for_status(self): pass
+        async def aiter_text(self):
+            yield '{"message":{"content":"tail"},"done":true,"done_reason":"stop","prompt_eval_count":2,"eval_count":1}'
+
+    class FakeClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *args): return False
+        def stream(self, *args, **kwargs): return FakeResponse()
+
+    ollama_module = importlib.import_module("deepstrike.providers.ollama")
+    monkeypatch.setattr(ollama_module.httpx, "AsyncClient", lambda: FakeClient())
+
+    events = [event async for event in provider.stream(RenderedContext(turns=[Message(role="user", content="hi")]), [])]
+
+    assert TextDelta(delta="tail") in events
+    assert any(isinstance(event, UsageEvent) and event.stop_reason == "end_turn" for event in events)
 
 
 def test_cache_hit_rate_matches_node_semantics():
