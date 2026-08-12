@@ -1,9 +1,30 @@
 import Anthropic from "@anthropic-ai/sdk"
-import type { CacheBreakpointStrategy, Message, ProviderDescriptor, ProviderReplay, ProviderRunState, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, RuntimePolicy, PromptMeasurement } from "../types.js"
+import type {
+  CacheBreakpointStrategy,
+  LLMProvider,
+  Message,
+  PromptMeasurement,
+  ProviderDescriptor,
+  ProviderReplay,
+  ProviderRunState,
+  RenderedContext,
+  RuntimePolicy,
+  StreamEvent,
+  ToolSchema,
+} from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
-import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicContent, toAnthropicMessages } from "./base.js"
-import { normalizeAnthropicUsage } from "./usage-normalizer.js"
+import { CircuitBreaker } from "./base.js"
+import {
+  AnthropicMessagesAdapter,
+  type AnthropicRequestPlan,
+  type AnthropicStreamChunk,
+} from "./anthropic-adapter.js"
+import {
+  normalizeCanonicalAdapterInput,
+  type CanonicalAdapterInput,
+} from "./content-normalization.js"
+import { endpointProfiles, type ProviderId } from "./endpoints.js"
 
 interface AnthropicProviderOptions {
   baseURL?: string
@@ -18,14 +39,19 @@ export interface AnthropicProviderConfig extends AnthropicProviderOptions {
   retry?: { maxRetries: number; baseDelay: number }
 }
 
+type ResolvedAnthropicRuntime = CanonicalAdapterInput["resolved"]
+
 export class AnthropicProvider implements LLMProvider {
   private client: Anthropic
   private circuit: CircuitBreaker
   private maxRetries: number
   private baseDelay: number
   protected readonly model: string
-  private nativeAssistantBlocks = new Map<string, Array<Record<string, unknown>>>()
+  private readonly adapter = new AnthropicMessagesAdapter()
+  private readonly nativeAssistantBlocks = new Map<string, Array<Record<string, unknown>>>()
   private readonly resolvedRuntimePolicy: RuntimePolicy
+  private readonly directNativeTokenCounting: boolean
+  private resolvedRuntime?: ResolvedAnthropicRuntime
 
   // Accepts the options object (`new AnthropicProvider({ apiKey, model, baseURL })`) or the legacy
   // positional form (still used by the Anthropic-compatible backend subclasses' `super(...)` calls).
@@ -50,13 +76,15 @@ export class AnthropicProvider implements LLMProvider {
     this.maxRetries = c.retry?.maxRetries ?? 3
     this.baseDelay = c.retry?.baseDelay ?? 1000
     this.resolvedRuntimePolicy = c.runtimePolicy ?? {}
+    this.directNativeTokenCounting = c.baseURL === undefined
+      || c.baseURL === endpointProfiles["anthropic.messages"].baseURL
   }
 
   runtimePolicy(): RuntimePolicy {
     return this.resolvedRuntimePolicy
   }
 
-  /** Identity advertised in the descriptor; overridden by Anthropic-compatible vendors (e.g. MiniMax). */
+  /** Identity advertised in the descriptor; overridden by Anthropic-compatible vendors. */
   protected providerName(): string {
     return "anthropic"
   }
@@ -78,6 +106,17 @@ export class AnthropicProvider implements LLMProvider {
     }
   }
 
+  bindResolvedRuntime(resolved: ResolvedAnthropicRuntime): void {
+    if (
+      resolved.identity.protocol !== "anthropic-messages"
+      || resolved.identity.providerId !== this.providerName()
+      || resolved.identity.modelId !== this.model
+    ) {
+      throw new Error("AnthropicProvider received a mismatched resolved runtime")
+    }
+    this.resolvedRuntime = resolved
+  }
+
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
     const blocks = this.nativeAssistantBlocks.get(assistantReplayKey(message))
     return blocks?.length ? { native_blocks: blocks } : undefined
@@ -88,283 +127,169 @@ export class AnthropicProvider implements LLMProvider {
       this.nativeAssistantBlocks.set(assistantReplayKey(message), replay.native_blocks)
       return
     }
-    // Legacy log without persisted native blocks: reconstruct neutral
-    // text + tool_use blocks from the transcript so a tool-use turn can be
-    // replayed. Thinking blocks were never persisted, so they are not recovered.
     const blocks = reconstructAnthropicBlocks(message)
     if (blocks.length) this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
 
-  /**
-   * Build tool definitions. A cache breakpoint is anchored on the final tool
-   * only when the system blocks won't carry one (`anchorCache`). When structured
-   * system blocks are present, their breakpoints already cache the tools prefix
-   * (tools render before system), so a redundant tool breakpoint would only burn
-   * one of Anthropic's 4 cache_control slots — slots the message history needs.
-   */
-  private buildTools(tools: ToolSchema[], anchorCache: boolean, strategy: CacheBreakpointStrategy) {
-    // Tool cache_control is emitted under "default" and "tools-only". "system-only",
-    // "frozen-prefix", and "none" all skip it.
-    const emitOnLastTool = anchorCache &&
-      (strategy === "default" || strategy === "tools-only")
-    return tools.map((t, i) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: JSON.parse(t.parameters),
-      ...(emitOnLastTool && i === tools.length - 1 ? { cache_control: { type: "ephemeral" as const } } : {}),
-    }))
+  private adapterInput(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+  ): CanonicalAdapterInput {
+    const providerId = this.providerName() as ProviderId
+    const endpoint = Object.values(endpointProfiles).find(profile =>
+      profile.providerId === providerId && profile.protocol === "anthropic-messages",
+    ) ?? endpointProfiles["anthropic.messages"]
+    const resolved = this.resolvedRuntime ?? {
+      identity: {
+        providerId,
+        modelId: this.model,
+        endpointId: endpoint.id,
+        protocol: "anthropic-messages",
+      },
+      model: {
+        id: `${providerId}/${this.model}`,
+        providerId,
+        kind: "generation",
+        intrinsic: {},
+      },
+      endpoint,
+      adapter: this,
+      effectiveCapabilities: compatibilityCapabilities(),
+    } as unknown as ResolvedAnthropicRuntime
+    return normalizeCanonicalAdapterInput({
+      context,
+      tools,
+      resolved,
+      extensions,
+      replayForMessage: message => this.peekProviderReplay(message),
+    })
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
+  private buildPlan(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+  ): { input: CanonicalAdapterInput; plan: AnthropicRequestPlan } {
+    const input = this.adapterInput(context, tools, extensions)
+    return { input, plan: this.adapter.buildRequest(input) }
+  }
+
+  async complete(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+  ): Promise<Message> {
     if (this.circuit.isOpen()) throw new Error("Circuit breaker open")
-    const strategy = resolveCacheBreakpointStrategy(extensions)
-    const system = this.buildSystem(context, strategy)
-    const msgs = this.buildMessages(context, strategy)
-    assertCacheBudget(system, tools.length)
-    const requestExtensions = this.requestExtensions(extensions)
+    const { input, plan } = this.buildPlan(context, tools, extensions)
 
     let lastErr: unknown
-    for (let i = 0; i < this.maxRetries; i++) {
+    for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
-        const resp = await this.createMessage({
-          ...requestExtensions,
-          model: this.model,
-          max_tokens: typeof extensions?.max_tokens === "number" ? extensions.max_tokens : 8096,
-          ...(system ? { system } : {}),
-          messages: msgs,
-          ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system), strategy) } : {}),
-        }, extensions)
+        const raw = await this.createMessage(plan.params, plan.transport)
         this.circuit.recordSuccess()
-        let content = ""
-        const toolCalls = []
-        for (const block of resp.content) {
-          if (block.type === "text") content += block.text
-          else if (block.type === "tool_use") {
-            const tc = normalizeToolCall(block.id, block.name, block.input)
-            if (tc) toolCalls.push(tc)
-          }
+        const decoded = this.adapter.decodeComplete(raw, { input })
+        if (decoded.replay?.native_blocks) {
+          this.rememberNativeBlocks(decoded.message, decoded.replay.native_blocks)
         }
-        const message = { role: "assistant" as const, content, tokenCount: resp.usage.output_tokens, toolCalls }
-        this.rememberNativeBlocks(message, resp.content as unknown as Array<Record<string, unknown>>)
-        return message
-      } catch (err) {
-        lastErr = err
+        return decoded.message
+      } catch (error) {
+        lastErr = error
         this.circuit.recordFailure()
-        if (i < this.maxRetries - 1) await new Promise(r => setTimeout(r, this.baseDelay * 2 ** i))
+        if (attempt < this.maxRetries - 1) {
+          await new Promise(resolve => setTimeout(resolve, this.baseDelay * 2 ** attempt))
+        }
       }
     }
     throw lastErr
   }
 
-  /** spc_011-C-03: native preflight token count via `messages.countTokens` — reuses the exact
-   *  same request-building helpers `complete()` uses, so the counted request matches what would
-   *  actually be sent. `cache_control` blocks (irrelevant to counting) ride along harmlessly. */
-  async countTokens(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<PromptMeasurement> {
-    const strategy = resolveCacheBreakpointStrategy(extensions)
-    const system = this.buildSystem(context, strategy)
-    const msgs = this.buildMessages(context, strategy)
-    const resp = await this.client.messages.countTokens({
-      model: this.model,
+  /** Native measurement belongs to the verified official endpoint, not the wire protocol. */
+  async countTokens(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+  ): Promise<PromptMeasurement> {
+    const enabled = this.resolvedRuntime
+      ? this.resolvedRuntime.effectiveCapabilities.nativeTokenCounting.state === "supported"
+      : this.providerName() === "anthropic" && this.directNativeTokenCounting
+    if (!enabled) {
+      throw new Error(`Native token counting is unavailable on ${this.providerName()} Anthropic-compatible endpoint`)
+    }
+    const { plan } = this.buildPlan(context, tools, extensions)
+    const { model, system, messages, tools: requestTools } = plan.params
+    const response = await this.client.messages.countTokens({
+      model,
       ...(system ? { system } : {}),
-      messages: msgs,
-      ...(tools.length ? { tools: this.buildTools(tools, !Array.isArray(system), strategy) } : {}),
+      messages,
+      ...(requestTools ? { tools: requestTools } : {}),
     } as unknown as Anthropic.MessageCountTokensParams)
     return {
-      inputTokens: resp.input_tokens,
+      inputTokens: response.input_tokens,
       source: { kind: "native", provider: "anthropic" },
       confidence: "exact",
     }
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
-    const strategy = resolveCacheBreakpointStrategy(extensions)
-    const system = this.buildSystem(context, strategy)
-    const msgs = this.buildMessages(context, strategy)
-    assertCacheBudget(system, tools.length)
-    const requestExtensions = this.requestExtensions(extensions)
-    const builtTools = tools.length ? this.buildTools(tools, !Array.isArray(system), strategy) : undefined
-    // I1: capture which slots will carry cache_control so cache_read_input_tokens can be
-    // attributed pro-rata when the response arrives. Honest annotation: Anthropic returns one
-    // scalar (no per-slot breakdown), so this is an estimate, not authoritative.
-    const slotBp = countCacheControlSlots(system, builtTools, msgs)
-    const toolBlocks: Record<number, { id: string; name: string; argsBuf: string }> = {}
-    const nativeBlocks: Record<number, Record<string, unknown>> = {}
-    let finalText = ""
-    const finalToolCalls: Array<{ id: string; name: string; arguments: string }> = []
-
-    const stream = this.streamMessage({
-      ...requestExtensions,
-      model: this.model,
-      max_tokens: typeof extensions?.max_tokens === "number" ? extensions.max_tokens : 8096,
-      ...(system ? { system } : {}),
-      messages: msgs,
-      ...(builtTools ? { tools: builtTools } : {}),
-    }, extensions, signal)
-
-    let uncachedInput = 0
-    let cacheReadTokens = 0
-    let cacheCreationTokens = 0
-    let outputTokens = 0
-    for await (const evt of stream) {
-      if (evt.type === "message_start" || evt.type === "message_delta") {
-        const usage = evt.usage ?? evt.message?.usage
-        if (usage) {
-          // input + cache counts are cumulative and pinned at message_start; a
-          // later message_delta may omit them (null), so Math.max keeps the
-          // running totals from being clobbered back to zero.
-          uncachedInput = Math.max(uncachedInput, usage.input_tokens ?? 0)
-          cacheReadTokens = Math.max(cacheReadTokens, usage.cache_read_input_tokens ?? 0)
-          cacheCreationTokens = Math.max(cacheCreationTokens, usage.cache_creation_input_tokens ?? 0)
-          outputTokens = Math.max(outputTokens, usage.output_tokens ?? 0)
-          // inputTokens is the FULL prompt size (uncached + cache read + cache
-          // write). The kernel reads it as the authoritative prompt size for
-          // context-pressure/compaction — excluding cached tokens would make a
-          // cache-heavy turn look tiny and suppress compaction until a 413.
-          const inputTokens = uncachedInput + cacheReadTokens + cacheCreationTokens
-          const bySlot = estimateCacheReadBySlot(cacheReadTokens, slotBp)
-          // stop_reason is only present on message_delta (the closing frame). `max_tokens` drives
-          // the kernel's output-cap recovery; other reasons (end_turn/tool_use) are informational.
-          const stopReason = (evt as { delta?: { stop_reason?: string | null } }).delta?.stop_reason
-          // Built from the already-accumulated running totals above, not the raw per-chunk
-          // `usage` — individual message_delta chunks can omit fields (see the Math.max comment
-          // above), so normalizing the sparse per-chunk object directly would undercount.
-          const providerUsage = normalizeAnthropicUsage(
-            {
-              input_tokens: uncachedInput,
-              cache_read_input_tokens: cacheReadTokens,
-              cache_creation_input_tokens: cacheCreationTokens,
-              output_tokens: outputTokens,
-            },
-          )
-          yield {
-            type: "usage",
-            totalTokens: inputTokens + outputTokens,
-            inputTokens,
-            outputTokens,
-            cacheReadInputTokens: cacheReadTokens,
-            cacheCreationInputTokens: cacheCreationTokens,
-            ...(bySlot ? { cacheReadInputTokensBySlot: bySlot } : {}),
-            ...(stopReason ? { stopReason } : {}),
-            ...(providerUsage ? { providerUsage } : {}),
-          } as UsageEvent
-        }
-      } else if (evt.type === "content_block_start") {
-        nativeBlocks[evt.index] = { ...(evt.content_block as unknown as Record<string, unknown>) }
-        if (evt.content_block.type === "tool_use") {
-          toolBlocks[evt.index] = { id: evt.content_block.id, name: evt.content_block.name, argsBuf: "" }
-        }
-      } else if (evt.type === "content_block_delta") {
-        const d = evt.delta
-        if (d.type === "text_delta") {
-          finalText += d.text
-          nativeBlocks[evt.index] = { ...nativeBlocks[evt.index], text: String(nativeBlocks[evt.index]?.text ?? "") + d.text }
-          yield { type: "text_delta", delta: d.text } as TextDelta
-        } else if (d.type === "thinking_delta") {
-          nativeBlocks[evt.index] = { ...nativeBlocks[evt.index], thinking: String(nativeBlocks[evt.index]?.thinking ?? "") + d.thinking }
-          yield { type: "thinking_delta", delta: d.thinking } as ThinkingDelta
-        } else if (d.type === "signature_delta") {
-          nativeBlocks[evt.index] = { ...nativeBlocks[evt.index], signature: String(nativeBlocks[evt.index]?.signature ?? "") + d.signature }
-        } else if (d.type === "input_json_delta" && toolBlocks[evt.index]) {
-          toolBlocks[evt.index].argsBuf += d.partial_json
-        }
-      } else if (evt.type === "content_block_stop" && toolBlocks[evt.index] !== undefined) {
-        const tb = toolBlocks[evt.index]
-        delete toolBlocks[evt.index]
-        let args: Record<string, unknown> = {}
-        try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
-        nativeBlocks[evt.index] = { ...nativeBlocks[evt.index], input: args }
-        finalToolCalls.push({ id: tb.id, name: tb.name, arguments: JSON.stringify(args) })
-        yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
-      }
+  async *stream(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+    _state?: ProviderRunState,
+    signal?: AbortSignal,
+  ): AsyncIterable<StreamEvent> {
+    const { input, plan } = this.buildPlan(context, tools, extensions)
+    const state = this.adapter.createStreamState({ input })
+    for await (const chunk of this.streamMessage(plan.params, plan.transport, signal)) {
+      for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
     }
-
-    this.rememberNativeBlocks(
-      { content: finalText, toolCalls: finalToolCalls },
-      Object.keys(nativeBlocks).map(Number).sort((a, b) => a - b).map(index => nativeBlocks[index]),
-    )
-  }
-
-  private requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
-    return omitExtensionKeys(extensions, ["model", "messages", "system", "tools", "max_tokens", "stream"])
-  }
-
-  private hasBetas(extensions?: Record<string, unknown>): boolean {
-    const betas = extensions?.betas
-    return Array.isArray(betas) && betas.length > 0
+    const final = this.adapter.finishStream(state)
+    for (const event of final.events) yield event
+    if (final.replay?.native_blocks) {
+      this.rememberNativeBlocks(
+        { content: state.finalText, toolCalls: state.finalToolCalls },
+        final.replay.native_blocks,
+      )
+    }
   }
 
   private createMessage(
     params: Record<string, unknown>,
-    extensions?: Record<string, unknown>,
-  ): Promise<any> {
-    return this.hasBetas(extensions)
-      ? this.client.beta.messages.create(params as unknown as Parameters<typeof this.client.beta.messages.create>[0])
+    transport: AnthropicRequestPlan["transport"],
+  ): Promise<Record<string, unknown>> {
+    return (transport === "beta"
+      ? this.client.beta.messages.create(
+        params as unknown as Parameters<typeof this.client.beta.messages.create>[0],
+      )
       : this.client.messages.create(params as unknown as Anthropic.MessageCreateParamsNonStreaming)
+    ) as unknown as Promise<Record<string, unknown>>
   }
 
   private streamMessage(
     params: Record<string, unknown>,
-    extensions?: Record<string, unknown>,
+    transport: AnthropicRequestPlan["transport"],
     signal?: AbortSignal,
-  ): AsyncIterable<any> {
-    // #2-B-ii: forward the abort signal as a request option so a preempt cancels the HTTP request.
-    const opts = signal ? { signal } : undefined
-    return (this.hasBetas(extensions)
-      ? this.client.beta.messages.stream(params as unknown as Parameters<typeof this.client.beta.messages.stream>[0], opts)
-      : this.client.messages.stream(params as unknown as Anthropic.MessageStreamParams, opts)
-    ) as unknown as AsyncIterable<any>
+  ): AsyncIterable<AnthropicStreamChunk> {
+    const options = signal ? { signal } : undefined
+    return (transport === "beta"
+      ? this.client.beta.messages.stream(
+        params as unknown as Parameters<typeof this.client.beta.messages.stream>[0],
+        options,
+      )
+      : this.client.messages.stream(
+        params as unknown as Anthropic.MessageStreamParams,
+        options,
+      )
+    ) as unknown as AsyncIterable<AnthropicStreamChunk>
   }
 
-  private buildSystem(context: RenderedContext, strategy: CacheBreakpointStrategy): Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> | string | undefined {
-    // B3 note: the system shape is content-driven — 0 blocks (string), 1 block
-    // (stable only), or 2 blocks (stable + knowledge). The first turn `systemKnowledge`
-    // appears, the block count rises 1→2, which is a one-time prompt-cache invalidation
-    // (the knowledge prefix didn't exist to cache before). It is byte-stable thereafter;
-    // dynamic per-turn knowledge belongs in the uncached tail, not this block. An empty
-    // knowledge string is intentionally never emitted (the API rejects empty text blocks).
-    if (!context.systemStable && !context.systemKnowledge) {
-      return context.systemText || undefined
-    }
-    // System cache_control is emitted under "default" and "system-only". Other strategies
-    // keep the text-block structure for protocol parity but omit cache_control.
-    const emitOnSystemBlocks = strategy === "default" || strategy === "system-only"
-    const cc = { type: "ephemeral" as const }
-    const blocks: Array<{ type: "text"; text: string; cache_control?: { type: "ephemeral" } }> = []
-    if (context.systemStable) {
-      blocks.push({ type: "text", text: context.systemStable, ...(emitOnSystemBlocks ? { cache_control: cc } : {}) })
-    }
-    if (context.systemKnowledge) {
-      blocks.push({ type: "text", text: context.systemKnowledge, ...(emitOnSystemBlocks ? { cache_control: cc } : {}) })
-    }
-    return blocks.length ? blocks : undefined
+  // Compatibility-only test seams. Request construction itself belongs to the adapter.
+  private buildSystem(context: RenderedContext, strategy: CacheBreakpointStrategy): unknown {
+    return this.buildPlan(context, [], { cacheBreakpointStrategy: strategy }).plan.params.system
   }
 
-  private buildMessages(context: RenderedContext, strategy: CacheBreakpointStrategy): Anthropic.MessageParam[] {
-    const msgs = toAnthropicMessages(context.turns, message =>
-      this.nativeAssistantBlocks.get(assistantReplayKey(message))
-    ) as unknown as Anthropic.MessageParam[]
-
-    // Cache breakpoints anchor on the stable history; the volatile State turn is
-    // appended AFTER them as the uncached tail (so the history prefix re-reads
-    // across turns). On un-rebuilt bindings stateTurn is absent and the state is
-    // already inside `turns` — rendered as-is above. `frozenPrefixLen` (P1-E) pins
-    // the deep breakpoint at the compaction boundary; absent ⇒ rolling-pair fallback.
-    applyMessageCacheControl(msgs, context.frozenPrefixLen, strategy)
-    if (context.stateTurn) {
-      // Render through toAnthropicMessages so assistant tool_use blocks and
-      // tool-role tool_result parts are serialized correctly — toAnthropicContent
-      // only handles contentParts/content and would silently drop toolCalls.
-      const stateMsgs = toAnthropicMessages([context.stateTurn], message =>
-        this.nativeAssistantBlocks.get(assistantReplayKey(message))
-      ) as unknown as Anthropic.MessageParam[]
-      msgs.push(...stateMsgs)
-    }
-
-    if (msgs.length === 0) {
-      msgs.push({ role: "user", content: "Proceed." })
-    }
-
-    return msgs
+  private buildMessages(context: RenderedContext, strategy: CacheBreakpointStrategy): unknown {
+    return this.buildPlan(context, [], { cacheBreakpointStrategy: strategy }).plan.params.messages
   }
 
   private rememberNativeBlocks(
@@ -372,163 +297,45 @@ export class AnthropicProvider implements LLMProvider {
     blocks: Array<Record<string, unknown>>,
   ): void {
     if (!blocks.length) return
-    if (!message.toolCalls?.length && !blocks.some(b => b.type === "thinking")) return
+    if (!message.toolCalls?.length && !blocks.some(block => block.type === "thinking")) return
     this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
 }
 
-/** Recognised cache-breakpoint strategy values; any other input (incl. undefined) falls to `"default"`. */
-const CACHE_BREAKPOINT_STRATEGIES = new Set<CacheBreakpointStrategy>([
-  "default", "tools-only", "system-only", "frozen-prefix", "none",
-])
-
-/** Pull `cacheBreakpointStrategy` from per-call extensions; unrecognised values → `"default"`. */
-function resolveCacheBreakpointStrategy(extensions?: Record<string, unknown>): CacheBreakpointStrategy {
-  const raw = extensions?.cacheBreakpointStrategy
-  if (typeof raw === "string" && CACHE_BREAKPOINT_STRATEGIES.has(raw as CacheBreakpointStrategy)) {
-    return raw as CacheBreakpointStrategy
-  }
-  return "default"
-}
-
-/**
- * I1: count which slots of the outgoing request carry a `cache_control` breakpoint. Used to
- * pro-rata-attribute the response's `cache_read_input_tokens` (a single scalar with no per-slot
- * breakdown) across the slots that contributed to the cache hit. Returns whether each slot has
- * any breakpoint — not the actual count, since pro-rata only needs the contributing slot set.
- */
-function countCacheControlSlots(
-  system: undefined | string | Array<{ cache_control?: unknown }>,
-  builtTools: undefined | Array<{ cache_control?: unknown }>,
-  msgs: Array<{ content: unknown }>,
-): { system: boolean; tools: boolean; messages: boolean } {
-  const sysBp = Array.isArray(system) && system.some(b => b?.cache_control != null)
-  const toolBp = !!builtTools && builtTools.some(t => t?.cache_control != null)
-  let msgBp = false
-  for (const m of msgs) {
-    if (Array.isArray(m.content)) {
-      if ((m.content as Array<{ cache_control?: unknown }>).some(b => b?.cache_control != null)) {
-        msgBp = true
-        break
-      }
-    }
-  }
-  return { system: sysBp, tools: toolBp, messages: msgBp }
-}
-
-/**
- * I1: split the response's `cache_read_input_tokens` evenly across the slots that carried a
- * cache_control breakpoint on the request. Returns undefined when there's no cache read or no
- * contributing slot — in those cases the consumer is better off seeing the field absent than
- * seeing all zeros. The remainder (if the total doesn't divide evenly) lands on the first
- * contributing slot to keep the sum exact.
- */
-function estimateCacheReadBySlot(
-  cacheRead: number,
-  slotBp: { system: boolean; tools: boolean; messages: boolean },
-): { system?: number; tools?: number; messages?: number } | undefined {
-  if (cacheRead <= 0) return undefined
-  const count = (slotBp.system ? 1 : 0) + (slotBp.tools ? 1 : 0) + (slotBp.messages ? 1 : 0)
-  if (count === 0) return undefined
-  const share = Math.floor(cacheRead / count)
-  const remainder = cacheRead - share * count
-  const out: { system?: number; tools?: number; messages?: number } = {}
-  let firstDone = false
-  const give = (): number => {
-    if (!firstDone) { firstDone = true; return share + remainder }
-    return share
-  }
-  if (slotBp.system) out.system = give()
-  if (slotBp.tools) out.tools = give()
-  if (slotBp.messages) out.messages = give()
-  return out
-}
-
-/** Anthropic accepts at most this many cache_control breakpoints per request. */
-const MAX_CACHE_BREAKPOINTS = 4
-
-/**
- * Number of rolling cache breakpoints to spend on the message history. Anthropic
- * allows 4 cache_control breakpoints total; the static system/tools prefix
- * consumes up to 2 (systemStable + systemKnowledge), leaving 2 for the history.
- */
-const MESSAGE_CACHE_BREAKPOINTS = 2
-
-/**
- * Regression guard: fail loudly if the static (system + tools) breakpoints plus
- * the rolling message budget could exceed Anthropic's hard limit, instead of
- * letting the API reject the request with an opaque 400. Uses the worst-case
- * message count (`MESSAGE_CACHE_BREAKPOINTS`), so it can only fire if a future
- * change adds a system partition or raises the message budget.
- */
-function assertCacheBudget(system: unknown, toolCount: number): void {
-  const systemBreakpoints = Array.isArray(system) ? system.length : 0
-  const toolBreakpoints = toolCount > 0 && !Array.isArray(system) ? 1 : 0
-  const worstCase = systemBreakpoints + toolBreakpoints + MESSAGE_CACHE_BREAKPOINTS
-  if (worstCase > MAX_CACHE_BREAKPOINTS) {
-    throw new Error(
-      `Anthropic cache_control budget exceeded: ${systemBreakpoints} system + ${toolBreakpoints} tool + ${MESSAGE_CACHE_BREAKPOINTS} message > ${MAX_CACHE_BREAKPOINTS}`,
-    )
+function compatibilityCapabilities(): ResolvedAnthropicRuntime["effectiveCapabilities"] {
+  const unknown = { state: "unknown" as const, evidence: [] }
+  const unsupported = { state: "unsupported" as const, evidence: ["protocol" as const] }
+  return {
+    inputModalities: {
+      text: unknown,
+      image: unknown,
+      audio: unsupported,
+      video: unsupported,
+      file: unsupported,
+    },
+    outputModalities: {
+      text: unknown,
+      image: unsupported,
+      audio: unsupported,
+      embedding: unsupported,
+    },
+    tools: unknown,
+    reasoning: unknown,
+    parallelToolCalls: unknown,
+    structuredOutput: unsupported,
+    promptCaching: unknown,
+    nativeTokenCounting: unknown,
+    mediaForms: {
+      imageUrl: unknown,
+      imageBase64: unknown,
+      fileId: unsupported,
+      audioUrl: unsupported,
+      audioBase64: unsupported,
+    },
   }
 }
 
-/**
- * Place the (≤2) message-history cache breakpoints. The final message always gets
- * one — it writes the current full prefix for the next turn to read. The second is
- * placed by one of two strategies:
- *
- *   • **Deep anchor (P1-E)** — when `frozenPrefixLen` marks a distinct frozen prefix
- *     (the compaction boundary), pin the second breakpoint there. It is byte-stable
- *     across turns, so `[0..frozen]` is re-read cheaply every turn and is immune to
- *     the 20-block lookback miss that strikes heavy tool turns (>20 blocks/turn); the
- *     tail breakpoint then writes only the incremental `[frozen..tail]`.
- *   • **Rolling fallback** — otherwise (older binding / no compaction yet / whole
- *     render hot), roll the second breakpoint to the nearest preceding user turn, the
- *     previous turn's read anchor (Anthropic's 20-block lookback bridges light turns).
- *
- * Without any of this the cached prefix stops at the end of `system` and every turn
- * re-bills the entire tool-result history at full price (~quadratic cumulative cost).
- * cache_control attaches to the last content block of each target, promoting a bare
- * string body to a text block.
- */
-function applyMessageCacheControl(msgs: Anthropic.MessageParam[], frozenPrefixLen: number | undefined, strategy: CacheBreakpointStrategy): void {
-  if (!msgs.length) return
-  // Message-level cache_control is emitted under "default" and "frozen-prefix" only.
-  // "tools-only", "system-only", and "none" skip the history entirely.
-  if (strategy === "tools-only" || strategy === "system-only" || strategy === "none") return
-  const targets = new Set<number>([msgs.length - 1])
-  if (typeof frozenPrefixLen === "number" && frozenPrefixLen >= 1 && frozenPrefixLen < msgs.length) {
-    // Deep anchor at the frozen-prefix boundary (last frozen turn). Fixed between compactions.
-    targets.add(frozenPrefixLen - 1)
-  } else if (strategy === "default") {
-    // Rolling fallback is part of the default strategy only — `"frozen-prefix"` deliberately
-    // skips it so a verify can isolate the deep-anchor contribution from the rolling pair.
-    for (let i = msgs.length - 2; i >= 0 && targets.size < MESSAGE_CACHE_BREAKPOINTS; i--) {
-      if (msgs[i].role === "user") targets.add(i)
-    }
-  }
-  for (const idx of targets) markLastBlockCacheable(msgs[idx])
-}
-
-/** Attach an ephemeral cache breakpoint to a message's final content block. */
-function markLastBlockCacheable(msg: Anthropic.MessageParam): void {
-  const cache_control = { type: "ephemeral" as const }
-  if (typeof msg.content === "string") {
-    if (!msg.content) return // don't synthesize an empty (API-rejected) text block
-    msg.content = [{ type: "text", text: msg.content, cache_control }]
-    return
-  }
-  if (Array.isArray(msg.content) && msg.content.length) {
-    const last = msg.content[msg.content.length - 1] as { cache_control?: { type: "ephemeral" } }
-    last.cache_control = cache_control
-  }
-}
-
-/**
- * Reconstruct Anthropic assistant content blocks from a neutral transcript when
- * no provider replay was persisted. Only meaningful for tool-use turns: a plain
- * text turn needs no native blocks to replay.
- */
+/** Reconstruct neutral replay only for legacy tool-use turns without persisted native blocks. */
 function reconstructAnthropicBlocks(
   message: Pick<Message, "content" | "toolCalls">,
 ): Array<Record<string, unknown>> {
@@ -536,10 +343,10 @@ function reconstructAnthropicBlocks(
   if (!toolCalls.length) return []
   const blocks: Array<Record<string, unknown>> = []
   if (message.content) blocks.push({ type: "text", text: message.content })
-  for (const tc of toolCalls) {
+  for (const call of toolCalls) {
     let input: Record<string, unknown> = {}
-    try { input = JSON.parse(tc.arguments || "{}") as Record<string, unknown> } catch { input = {} }
-    blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input })
+    try { input = JSON.parse(call.arguments || "{}") as Record<string, unknown> } catch { input = {} }
+    blocks.push({ type: "tool_use", id: call.id, name: call.name, input })
   }
   return blocks
 }

@@ -7,6 +7,7 @@ import type {
   ToolResultPart,
   ToolSchema,
   ToolCall,
+  ProviderReplay,
 } from "../types.js"
 import type {
   EffectiveModelCapabilities,
@@ -33,6 +34,8 @@ export interface CanonicalToolResult {
   readonly callId: string
   readonly blocks: readonly ToolOutputBlock[]
   readonly isError: boolean
+  /** Preserves the caller's explicit block-vs-legacy-text wire intent without duplicating content. */
+  readonly contentForm?: "legacy_text" | "blocks"
 }
 
 export type CanonicalMessageBlock = ToolOutputBlock | CanonicalToolResult
@@ -40,8 +43,11 @@ export type CanonicalMessageBlock = ToolOutputBlock | CanonicalToolResult
 export interface CanonicalMessage {
   readonly role: Message["role"]
   readonly blocks: readonly CanonicalMessageBlock[]
+  /** `blocks` remains authoritative; this only preserves an observable wire-shape distinction. */
+  readonly contentForm?: "legacy_text" | "blocks"
   readonly toolCalls?: readonly ToolCall[]
   readonly tokenCount?: number
+  readonly providerReplay?: ProviderReplay
 }
 
 export interface CanonicalRenderedContext {
@@ -119,11 +125,23 @@ export function projectToolOutputToText(blocks: readonly ToolOutputBlock[]): str
 
 export function normalizeToolResultPart(part: ToolResultPart): CanonicalToolResult {
   if (part.contentParts === undefined) {
-    return { type: "tool_result", callId: part.callId, blocks: [{ type: "text", text: part.output }], isError: part.isError }
+    return {
+      type: "tool_result",
+      callId: part.callId,
+      blocks: [{ type: "text", text: part.output }],
+      isError: part.isError,
+      contentForm: "legacy_text",
+    }
   }
   const projection = projectToolOutputToText(part.contentParts)
   if (projection !== part.output) throw new ToolResultProjectionConflictError(part.callId)
-  return { type: "tool_result", callId: part.callId, blocks: part.contentParts, isError: part.isError }
+  return {
+    type: "tool_result",
+    callId: part.callId,
+    blocks: part.contentParts,
+    isError: part.isError,
+    contentForm: "blocks",
+  }
 }
 
 function attachMessage(
@@ -193,7 +211,11 @@ function validateSourceAffinity(
   }
 }
 
-function normalizeMessage(message: Message): CanonicalMessage {
+function normalizeMessage(
+  message: Message,
+  replayForMessage?: (message: Message) => ProviderReplay | undefined,
+): CanonicalMessage {
+  const providerReplay = replayForMessage?.(message)
   const blocks: CanonicalMessageBlock[] = message.contentParts === undefined
     ? [{ type: "text", text: message.content }]
     : message.contentParts.map(part => {
@@ -223,18 +245,23 @@ function normalizeMessage(message: Message): CanonicalMessage {
   return {
     role: message.role,
     blocks,
+    contentForm: message.contentParts === undefined ? "legacy_text" : "blocks",
     ...(message.toolCalls ? { toolCalls: message.toolCalls } : {}),
     ...(message.tokenCount !== undefined ? { tokenCount: message.tokenCount } : {}),
+    ...(providerReplay ? { providerReplay } : {}),
   }
 }
 
-export function normalizeCanonicalContext(context: RenderedContext): CanonicalRenderedContext {
+export function normalizeCanonicalContext(
+  context: RenderedContext,
+  replayForMessage?: (message: Message) => ProviderReplay | undefined,
+): CanonicalRenderedContext {
   return {
     systemText: context.systemText,
     ...(context.systemStable !== undefined ? { systemStable: context.systemStable } : {}),
     ...(context.systemKnowledge !== undefined ? { systemKnowledge: context.systemKnowledge } : {}),
-    turns: context.turns.map(normalizeMessage),
-    ...(context.stateTurn ? { stateTurn: normalizeMessage(context.stateTurn) } : {}),
+    turns: context.turns.map(message => normalizeMessage(message, replayForMessage)),
+    ...(context.stateTurn ? { stateTurn: normalizeMessage(context.stateTurn, replayForMessage) } : {}),
     ...(context.frozenPrefixLen !== undefined ? { frozenPrefixLen: context.frozenPrefixLen } : {}),
     ...(context.budgetOverflow !== undefined ? { budgetOverflow: context.budgetOverflow } : {}),
   }
@@ -266,9 +293,10 @@ export function normalizeCanonicalAdapterInput(input: {
   tools: readonly ToolSchema[]
   resolved: ResolvedProviderRuntime<unknown>
   extensions?: Readonly<Record<string, unknown>>
+  replayForMessage?: (message: Message) => ProviderReplay | undefined
 }): CanonicalAdapterInput {
   const canonical: CanonicalAdapterInput = {
-    context: normalizeCanonicalContext(input.context),
+    context: normalizeCanonicalContext(input.context, input.replayForMessage),
     tools: input.tools,
     resolved: input.resolved,
     extensions: input.extensions ?? {},

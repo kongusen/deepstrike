@@ -9,23 +9,12 @@ import type { CanonicalAdapterInput } from "./content-normalization.js"
 import type {
   GenerationProtocol,
   ProtocolRuntimeCapabilities,
-} from "./model-registry.js"
+} from "./protocol-capabilities.js"
 
-export const GEMINI_PROTOCOL_CAPABILITIES: ProtocolRuntimeCapabilities = {
-  acceptedInputModalities: ["text", "image", "audio"],
-  emittedOutputModalities: ["text"],
-  tools: true,
-  reasoningReplay: "none",
-  mediaForms: { imageUrl: true, imageBase64: true, audioBase64: true },
-}
-
-export const OLLAMA_PROTOCOL_CAPABILITIES: ProtocolRuntimeCapabilities = {
-  acceptedInputModalities: ["text", "image"],
-  emittedOutputModalities: ["text"],
-  tools: true,
-  reasoningReplay: "none",
-  mediaForms: { imageBase64: true },
-}
+export {
+  GEMINI_PROTOCOL_CAPABILITIES,
+  OLLAMA_PROTOCOL_CAPABILITIES,
+} from "./protocol-capabilities.js"
 
 export type CanonicalStopReason =
   | "end_turn"

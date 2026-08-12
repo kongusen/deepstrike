@@ -7,20 +7,26 @@ import {
   type ProviderId,
 } from "./endpoints.js"
 import {
+  ANTHROPIC_PROTOCOL_CAPABILITIES,
   GEMINI_PROTOCOL_CAPABILITIES,
   OLLAMA_PROTOCOL_CAPABILITIES,
-} from "./protocol-adapter.js"
+  type GenerationProtocol,
+  type InputModality,
+  type OutputModality,
+  type ProtocolRuntimeCapabilities,
+  type ProtocolRuntimeCapabilityOverrides,
+} from "./protocol-capabilities.js"
+
+export type {
+  GenerationProtocol,
+  InputModality,
+  OutputModality,
+  ProtocolRuntimeCapabilities,
+  ProtocolRuntimeCapabilityOverrides,
+} from "./protocol-capabilities.js"
 
 export type ModelKind = "generation" | "embedding"
-export type InputModality = "text" | "image" | "audio" | "video" | "file"
-export type OutputModality = "text" | "image" | "audio" | "embedding"
 export type CapabilityState = "supported" | "unsupported" | "unknown"
-export type GenerationProtocol =
-  | "anthropic-messages"
-  | "openai-chat"
-  | "openai-responses"
-  | "gemini"
-  | "ollama-chat"
 
 export const MODEL_CAPABILITY_STATES: readonly CapabilityState[] = [
   "supported",
@@ -51,34 +57,6 @@ export interface ModelRegistration {
 export interface DynamicModelDescriptorResolver {
   readonly providerId: ProviderId
   resolve(modelId: string): ModelRegistration
-}
-
-export interface ProtocolRuntimeCapabilities {
-  acceptedInputModalities: readonly InputModality[]
-  emittedOutputModalities: readonly OutputModality[]
-  tools: boolean
-  parallelToolCalls?: boolean
-  structuredOutput?: boolean
-  reasoningReplay: "none" | "optional" | "required"
-  promptCaching?: boolean
-  mediaForms: {
-    imageUrl?: boolean
-    imageBase64?: boolean
-    fileId?: boolean
-    audioUrl?: boolean
-    audioBase64?: boolean
-  }
-}
-
-export interface ProtocolRuntimeCapabilityOverrides {
-  acceptedInputModalities?: readonly InputModality[]
-  emittedOutputModalities?: readonly OutputModality[]
-  tools?: boolean
-  parallelToolCalls?: boolean
-  structuredOutput?: boolean
-  reasoningReplay?: ProtocolRuntimeCapabilities["reasoningReplay"]
-  promptCaching?: boolean
-  mediaForms?: Partial<ProtocolRuntimeCapabilities["mediaForms"]>
 }
 
 export interface EndpointRuntimeCapabilities {
@@ -357,11 +335,7 @@ function ollamaPolicy(modelId: string): RuntimePolicy {
 }
 
 export const protocolRuntimeCapabilities: Record<GenerationProtocol, ProtocolRuntimeCapabilities> = {
-  "anthropic-messages": {
-    acceptedInputModalities: ["text", "image"], emittedOutputModalities: ["text"], tools: true,
-    parallelToolCalls: true, structuredOutput: false, reasoningReplay: "required", promptCaching: true,
-    mediaForms: { imageUrl: true, imageBase64: true },
-  },
+  "anthropic-messages": ANTHROPIC_PROTOCOL_CAPABILITIES,
   "openai-chat": {
     acceptedInputModalities: ["text", "image", "audio"], emittedOutputModalities: ["text"], tools: true,
     parallelToolCalls: true, structuredOutput: true, reasoningReplay: "optional", promptCaching: true,

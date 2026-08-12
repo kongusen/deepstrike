@@ -109,11 +109,12 @@ describe("SPC-013 A-01 model registry", () => {
 
   it("keeps protocol adapters independent from the registry", () => {
     const here = path.dirname(fileURLToPath(import.meta.url))
-    for (const file of ["openai-chat.ts", "openai-responses.ts"]) {
+    for (const file of [
+      "anthropic-adapter.ts", "gemini-adapter.ts", "ollama-adapter.ts",
+      "openai-chat.ts", "openai-responses.ts", "protocol-adapter.ts",
+    ]) {
       const source = fs.readFileSync(path.join(here, "../src/providers", file), "utf8")
-      const adapterBody = source.match(/export class OpenAI(?:Chat|Responses)Adapter[\s\S]*?(?=\nexport class |$)/)?.[0]
-      expect(adapterBody).toBeDefined()
-      expect(adapterBody).not.toMatch(/modelRegistry|resolveProviderRuntime|getRuntimePolicy|getModelProfile/)
+      expect(source).not.toMatch(/from ["']\.\/model-registry\.js["']|modelRegistry|resolveProviderRuntime|getRuntimePolicy|getModelProfile/)
     }
   })
 
