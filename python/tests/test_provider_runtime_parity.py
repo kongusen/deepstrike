@@ -14,6 +14,7 @@ from deepstrike.providers.provider_error import (
     provider_error_event_fields,
 )
 from deepstrike.providers.stop_reason import canonicalize_stop_reason
+from deepstrike.providers.usage import ProviderUsage, normalize_usage
 
 
 class FakeOpenAIError(Exception):
@@ -138,6 +139,69 @@ def test_bare_exception_has_unknown_kind_and_no_sensitive_fields() -> None:
     assert err.kind == "unknown"
     fields = provider_error_event_fields(err)
     assert fields == {"error_kind": "unknown", "retryable": False}
+
+
+def test_normalize_usage_missing_returns_none() -> None:
+    assert normalize_usage(None) is None
+    assert normalize_usage({}) is None
+
+
+def test_normalize_usage_openai_shape() -> None:
+    raw = {
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "total_tokens": 15,
+        "prompt_tokens_details": {"cached_tokens": 3},
+    }
+    usage = normalize_usage(raw)
+    assert usage == ProviderUsage(
+        input_tokens=10,
+        output_tokens=5,
+        cache_read_input_tokens=3,
+        cache_creation_input_tokens=0,
+    )
+
+
+def test_normalize_usage_anthropic_shape() -> None:
+    raw = {
+        "input_tokens": 20,
+        "output_tokens": 7,
+        "cache_read_input_tokens": 4,
+        "cache_creation_input_tokens": 2,
+    }
+    usage = normalize_usage(raw)
+    assert usage == ProviderUsage(
+        input_tokens=20,
+        output_tokens=7,
+        cache_read_input_tokens=4,
+        cache_creation_input_tokens=2,
+    )
+
+
+def test_normalize_usage_rejects_non_numeric() -> None:
+    with pytest.raises(ProviderError) as exc:
+        normalize_usage({"input_tokens": "ten"})
+    assert exc.value.kind == "protocol"
+
+
+def test_normalize_usage_rejects_negative() -> None:
+    with pytest.raises(ProviderError) as exc:
+        normalize_usage({"input_tokens": -1, "output_tokens": 0})
+    assert exc.value.kind == "protocol"
+
+
+def test_normalize_usage_reasoning_tokens() -> None:
+    raw = {
+        "input_tokens": 10,
+        "output_tokens": 8,
+        "output_tokens_details": {"reasoning_tokens": 3},
+    }
+    usage = normalize_usage(raw)
+    assert usage == ProviderUsage(
+        input_tokens=10,
+        output_tokens=8,
+        reasoning_tokens=3,
+    )
 
 
 def test_provider_error_retains_cause_internally() -> None:

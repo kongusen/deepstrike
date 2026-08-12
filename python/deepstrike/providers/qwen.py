@@ -10,6 +10,7 @@ from .replay import ReasoningReplayMixin
 from .anthropic_compatible import AnthropicCompatibleProvider
 from .vendor_profiles import QWEN_POLICIES as _QWEN_POLICIES, ANTHROPIC_VENDOR_PROFILES
 from .stop_reason import canonicalize_stop_reason
+from .usage import normalize_usage
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,12 @@ class QwenProvider(ReasoningReplayMixin):
             input_tokens = getattr(last_usage, "input_tokens", 0) or 0
             output_tokens = getattr(last_usage, "output_tokens", 0) or 0
             total = getattr(last_usage, "total_tokens", 0) or (input_tokens + output_tokens)
-            yield UsageEvent(total_tokens=total, input_tokens=input_tokens, output_tokens=output_tokens)
+            yield UsageEvent(
+                total_tokens=total,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                provider_usage=normalize_usage(last_usage),
+            )
 
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
         if self._circuit.is_open():
@@ -379,4 +385,5 @@ class QwenProvider(ReasoningReplayMixin):
                 cache_read_input_tokens=openai_cached_prompt_tokens(last_usage),
                 stop_reason=canonicalize_stop_reason(finish_reason_seen),
                 raw_stop_reason=finish_reason_seen,
+                provider_usage=normalize_usage(last_usage),
             )

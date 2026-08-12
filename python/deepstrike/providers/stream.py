@@ -2,6 +2,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Union
 import json
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .usage import ProviderUsage
 
 
 @dataclass
@@ -75,6 +79,8 @@ class UsageEvent:
     # Original provider spelling, retained for Node/Python diagnostics only; never forwarded
     # to the canonical kernel.
     raw_stop_reason: "str | None" = None
+    # Normalized postflight token facts parsed from the same raw provider response.
+    provider_usage: "ProviderUsage | None" = None
 
 
 @dataclass

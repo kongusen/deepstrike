@@ -11,6 +11,7 @@ from .stream import StreamEvent, TextDelta, ToolCallEvent, UsageEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, turns_with_state_appended, UnsupportedModalityError
 from deepstrike.types.content import normalize_tool_result, project_tool_output_to_text
 from .stop_reason import canonicalize_stop_reason
+from .usage import normalize_usage
 
 logger = logging.getLogger(__name__)
 
@@ -332,4 +333,5 @@ class GeminiProvider:
                     cache_read_input_tokens=getattr(last_usage, "cached_content_token_count", 0) or 0,
                     stop_reason=canonicalize_stop_reason(raw_stop_reason),
                     raw_stop_reason=raw_stop_reason,
+                    provider_usage=normalize_usage(last_usage),
                 )

@@ -10,6 +10,7 @@ from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedConte
 from .replay import ReasoningReplayMixin, assistant_replay_key
 from .replay_validator import validate_openai_chat_replay
 from .stop_reason import canonicalize_stop_reason
+from .usage import normalize_usage
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +322,7 @@ class OpenAIProvider(ReasoningReplayMixin):
                     cache_read_input_tokens=openai_cached_prompt_tokens(usage),
                     stop_reason=canonicalize_stop_reason(finish_reason_seen),
                     raw_stop_reason=finish_reason_seen,
+                    provider_usage=normalize_usage(usage),
                 )
                 continue
             choice = chunk.choices[0] if chunk.choices else None

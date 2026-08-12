@@ -29,6 +29,7 @@ from .base import (
     wire_request_extensions,
 )
 from .stop_reason import canonicalize_stop_reason
+from .usage import normalize_usage
 
 logger = logging.getLogger(__name__)
 
@@ -348,4 +349,5 @@ class OpenAIResponsesProvider:
                         cache_read_input_tokens=int(cached or 0),
                         stop_reason=canonicalize_stop_reason(raw_stop_reason),
                         raw_stop_reason=raw_stop_reason,
+                        provider_usage=normalize_usage(usage),
                     )
