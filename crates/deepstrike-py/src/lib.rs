@@ -244,12 +244,18 @@ struct ContentPartObj {
     output: Option<String>,
     #[pyo3(get, set)]
     is_error: Option<bool>,
+    #[pyo3(get, set)]
+    file_id: Option<String>,
+    #[pyo3(get, set)]
+    provider_id: Option<String>,
+    #[pyo3(get, set)]
+    endpoint_id: Option<String>,
 }
 
 #[pymethods]
 impl ContentPartObj {
     #[new]
-    #[pyo3(signature = (r#type, text=None, url=None, data=None, media_type=None, detail=None, call_id=None, output=None, is_error=None))]
+    #[pyo3(signature = (r#type, text=None, url=None, data=None, media_type=None, detail=None, call_id=None, output=None, is_error=None, file_id=None, provider_id=None, endpoint_id=None))]
     fn new(
         r#type: String,
         text: Option<String>,
@@ -260,6 +266,9 @@ impl ContentPartObj {
         call_id: Option<String>,
         output: Option<String>,
         is_error: Option<bool>,
+        file_id: Option<String>,
+        provider_id: Option<String>,
+        endpoint_id: Option<String>,
     ) -> Self {
         Self {
             r#type,
@@ -271,6 +280,9 @@ impl ContentPartObj {
             call_id,
             output,
             is_error,
+            file_id,
+            provider_id,
+            endpoint_id,
         }
     }
 
@@ -286,6 +298,9 @@ impl ContentPartObj {
             call_id: None,
             output: None,
             is_error: None,
+            file_id: None,
+            provider_id: None,
+            endpoint_id: None,
         }
     }
 
@@ -302,6 +317,9 @@ impl ContentPartObj {
             call_id: None,
             output: None,
             is_error: None,
+            file_id: None,
+            provider_id: None,
+            endpoint_id: None,
         }
     }
 
@@ -318,6 +336,9 @@ impl ContentPartObj {
             call_id: None,
             output: None,
             is_error: None,
+            file_id: None,
+            provider_id: None,
+            endpoint_id: None,
         }
     }
 
@@ -333,6 +354,9 @@ impl ContentPartObj {
             call_id: None,
             output: None,
             is_error: None,
+            file_id: None,
+            provider_id: None,
+            endpoint_id: None,
         }
     }
 
@@ -400,6 +424,9 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             call_id: None,
             output: None,
             is_error: None,
+            file_id: None,
+            provider_id: None,
+            endpoint_id: None,
         },
         ContentPart::Image {
             url,
@@ -416,6 +443,9 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             call_id: None,
             output: None,
             is_error: None,
+            file_id: None,
+            provider_id: None,
+            endpoint_id: None,
         },
         ContentPart::Audio { data, media_type } => ContentPartObj {
             r#type: "audio".into(),
@@ -427,6 +457,9 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             call_id: None,
             output: None,
             is_error: None,
+            file_id: None,
+            provider_id: None,
+            endpoint_id: None,
         },
         ContentPart::ToolResult {
             call_id,
@@ -442,6 +475,9 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             call_id: Some(call_id.to_string()),
             output: Some(output.clone()),
             is_error: Some(*is_error),
+            file_id: None,
+            provider_id: None,
+            endpoint_id: None,
         },
     }
 }

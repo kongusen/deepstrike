@@ -162,6 +162,8 @@ def message_to_kernel(message: Message) -> dict[str, Any]:
           "data": part.data or "",
           "media_type": part.media_type or "audio/wav",
         })
+      elif part.type == "file":
+        raise ValueError("fileId content is not supported by the kernel wire")
     out["content"] = parts
   else:
     out["content"] = message.content

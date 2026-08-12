@@ -121,6 +121,20 @@ def _validate_media_part(part: Any) -> None:
   _require_non_empty(data if data else url, f"{kind} source")
 
 
+def _validate_file_part(part: Any, resolved: "ResolvedProviderRuntime | None") -> None:
+  _require_non_empty(getattr(part, "file_id", None), "fileId")
+  _require_non_empty(getattr(part, "provider_id", None), "fileId providerId")
+  _require_non_empty(getattr(part, "endpoint_id", None), "fileId endpointId")
+  _reject_unsupported_capability(resolved, "file", "fileId")
+  if resolved is not None and (
+    part.provider_id != resolved.provider_id or part.endpoint_id != resolved.endpoint_id
+  ):
+    raise ContentValidationError(
+      f"Provider file {part.file_id} belongs to {part.provider_id}/{part.endpoint_id}, "
+      f"not {resolved.provider_id}/{resolved.endpoint_id}"
+    )
+
+
 def _reject_unsupported_capability(
   resolved: "ResolvedProviderRuntime | None",
   modality: str,
@@ -188,6 +202,8 @@ def validate_rendered_message(
     elif kind in {"image", "audio"}:
       _validate_media_part(part)
       _reject_unsupported_capability(resolved, kind, "base64" if getattr(part, "data", None) else "url")
+    elif kind == "file":
+      _validate_file_part(part, resolved)
     elif kind == "tool_result":
       output = getattr(part, "output", "")
       if not isinstance(output, str):

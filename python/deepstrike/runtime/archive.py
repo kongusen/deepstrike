@@ -49,6 +49,9 @@ class FileArchiveStore:
                         "call_id": getattr(p, "call_id", None),
                         "output": getattr(p, "output", None),
                         "is_error": getattr(p, "is_error", None),
+                        "file_id": getattr(p, "file_id", None),
+                        "provider_id": getattr(p, "provider_id", None),
+                        "endpoint_id": getattr(p, "endpoint_id", None),
                     })
             lines.append(json.dumps({
                 "role": msg.role,
@@ -95,6 +98,9 @@ class FileArchiveStore:
                             call_id=p.get("call_id"),
                             output=p.get("output"),
                             is_error=p.get("is_error") or False,
+                            file_id=p.get("file_id"),
+                            provider_id=p.get("provider_id"),
+                            endpoint_id=p.get("endpoint_id"),
                         )
                         parts_list.append(part)
                 

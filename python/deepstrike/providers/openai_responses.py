@@ -91,6 +91,8 @@ def _message_content(message: Message) -> Any:
                     "detail": part.detail or "auto",
                     "image_url": image_url,
                 })
+        elif part.type == "file":
+            content.append({"type": "input_file", "file_id": part.file_id})
         elif part.type == "audio":
             raise UnsupportedModalityError("audio", "openai-responses")
     return content

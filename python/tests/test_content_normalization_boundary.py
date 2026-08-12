@@ -9,6 +9,8 @@ from deepstrike.providers.base import RenderedContext, to_openai_message_params
 from deepstrike.providers.model_registry import ModelDescriptor, model_registry, resolve_effective_capabilities
 from deepstrike.providers.openai_responses import OpenAIResponsesAdapter
 from deepstrike.providers.runtime_registry import create_provider
+from deepstrike.runtime.kernel_step import message_to_kernel
+from deepstrike.runtime.archive import FileArchiveStore
 from deepstrike.types.content import (
     ContentValidationError,
     RenderedMessage,
@@ -207,3 +209,44 @@ def test_file_id_is_valid_at_its_affine_or_legacy_current_endpoint(affinity: dic
     canonical = normalize_canonical_adapter_input(context, [], resolved=runtime)
 
     assert canonical.resolved is runtime
+
+
+def test_pyo3_file_carrier_enforces_affinity_serializes_to_responses_and_refuses_kernel_wire() -> None:
+    runtime = model_registry.resolve_provider_runtime(
+        "openai", "gpt-5.5", endpoint_id="openai.responses",
+    )
+    message = Message(role="user", content="", content_parts=[ContentPartObj(
+        "file",
+        file_id="file_1",
+        provider_id="openai",
+        endpoint_id="openai.responses",
+    )])
+    context = RenderedContext(turns=[message])
+
+    canonical = normalize_canonical_adapter_input(context, [], resolved=runtime)
+
+    assert OpenAIResponsesAdapter().build_input(context, resolved=runtime) == [{
+        "role": "user", "content": [{"type": "input_file", "file_id": "file_1"}],
+    }]
+    assert canonical.resolved is runtime
+    with pytest.raises(ValueError, match="fileId content is not supported by the kernel wire"):
+        message_to_kernel(message)
+
+
+@pytest.mark.asyncio
+async def test_file_carrier_survives_python_archive_round_trip(tmp_path) -> None:
+    archive = FileArchiveStore(tmp_path)
+    message = Message(role="user", content="", content_parts=[ContentPartObj(
+        "file",
+        file_id="file_1",
+        provider_id="openai",
+        endpoint_id="openai.responses",
+    )])
+
+    archive_ref = await archive.write("session", 1, [message])
+    restored = await archive.read(archive_ref)
+
+    part = restored[0].content_parts[0]
+    assert (part.type, part.file_id, part.provider_id, part.endpoint_id) == (
+        "file", "file_1", "openai", "openai.responses",
+    )
