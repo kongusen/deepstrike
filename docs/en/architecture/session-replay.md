@@ -9,7 +9,7 @@ SessionLog (append-only evidence)
     +
 opaque logical checkpoint + bounded KernelJournal tail
     +
-Host stores (DreamStore, ArchiveStore, FileSessionLog)
+Host stores (MemoryStore, ArchiveStore, FileSessionLog)
 ```
 
 The kernel never writes disk; the SDK owns I/O. The kernel emits checkpoint candidates, canonical records, and observations. SessionLog is audit and offline diagnostic evidence, not the production source of truth for reconstructing workflow graphs.

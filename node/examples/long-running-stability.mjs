@@ -40,7 +40,7 @@ const {
 const { FileArchiveStore } = await loadSdkModule("planes/public.js")
 
 const sessionLog = new FileSessionLog(path.join(runRoot, "sessions"))
-const dreamStore = createJsonDreamStore(path.join(runRoot, "memory"))
+const memoryStore = createJsonMemoryStore(path.join(runRoot, "memory"))
 const knowledgeSource = createStaticKnowledgeSource()
 const executionPlane = new LocalExecutionPlane().register(
   buildRecordStepTool(config, stepsPath),
@@ -48,7 +48,7 @@ const executionPlane = new LocalExecutionPlane().register(
   buildVerifyCheckpointTool(config, stepsPath),
 )
 
-await seedMemory(dreamStore, config.agentId, config.sessionId)
+await seedMemory(memoryStore, config.agentId, config.sessionId)
 
 const runtimeOptions = {
   provider: dryRun ? createDryRunProvider() : createLlmProvider(config, { createProvider, OllamaProvider }),
@@ -64,7 +64,7 @@ const runtimeOptions = {
     `Run directory: ${runRoot}`,
   ],
   skillDir: path.join(exampleDir, "skills"),
-  dreamStore,
+  memoryStore,
   knowledgeSource,
   schedulerPolicy: {
     version: 1,
@@ -97,7 +97,7 @@ printConfig(config, runRoot, dryRun)
 
 if (dryRun) {
   const latestSeq = await sessionLog.latestSeq(config.sessionId)
-  const memories = await dreamStore.loadMemories(config.agentId)
+  const memories = await memoryStore.list(config.agentId)
   const knowledge = await knowledgeSource.retrieve("stability memory skill", 3)
   console.log("\nDry run completed.")
   console.log(JSON.stringify({
@@ -417,66 +417,57 @@ async function printRunSummary(params) {
 }
 
 async function seedMemory(store, agentId, sessionId) {
-  const existing = await store.loadMemories(agentId)
+  const existing = await store.list(agentId)
   if (existing.length > 0) return
   const now = Date.now()
-  await store.commit(agentId, {
-    toAdd: [{
-      record_id: "stability_seed",
-      scope: { tenant_id: "examples", namespace: agentId },
-      name: "stability_seed",
-      kind: "project",
-      content: "Previous stability runs should verify ordered tool calls, checkpoint continuity, external payload handling, and wake recovery.",
-      description: "Stability-run verification checklist",
-      provenance: {
-        author: "host",
-        trust: "host_verified",
-        evidence_refs: [],
-        session_id: sessionId,
-      },
-      created_at: now,
-      updated_at: now,
-      recall_count: 0,
-      confidence: 1,
-      links: [],
-      pinned: true,
-    }],
-    toRemoveIndices: [],
-    stats: {
-      insightsProcessed: 1,
-      duplicatesRemoved: 0,
-      conflictsResolved: 0,
-      entriesAdded: 1,
+  await store.put(agentId, {
+    record_id: "stability_seed",
+    scope: { tenant_id: "examples", namespace: agentId },
+    name: "stability_seed",
+    kind: "project",
+    content: "Previous stability runs should verify ordered tool calls, checkpoint continuity, external payload handling, and wake recovery.",
+    description: "Stability-run verification checklist",
+    provenance: {
+      author: "host",
+      trust: "host_verified",
+      evidence_refs: [],
+      session_id: sessionId,
     },
-  }, existing)
+    created_at: now,
+    updated_at: now,
+    recall_count: 0,
+    confidence: 1,
+    links: [],
+    pinned: true,
+  })
 }
 
-function createJsonDreamStore(root) {
+function createJsonMemoryStore(root) {
   const storePath = (agentId, fileName) => path.join(root, sanitizeFileName(agentId), fileName)
   return {
-    async loadSessions(agentId) {
-      return readJson(storePath(agentId, "sessions.json"), [])
-    },
-    async loadMemories(agentId) {
+    async list(agentId) {
       return readJson(storePath(agentId, "memories.json"), [])
     },
-    async commit(agentId, result, existing) {
-      const removals = new Set(result.toRemoveIndices ?? [])
-      const retained = existing.filter((_, index) => !removals.has(index))
-      const next = [...retained]
-      for (const incoming of result.toAdd ?? []) {
-        const index = next.findIndex(record =>
-          record.scope.tenant_id === incoming.scope.tenant_id
-          && record.scope.namespace === incoming.scope.namespace
-          && record.kind === incoming.kind
-          && record.name === incoming.name)
-        if (index >= 0) next[index] = incoming
-        else next.push(incoming)
-      }
+    async put(agentId, incoming) {
+      const next = await this.list(agentId)
+      const index = next.findIndex(record =>
+        record.scope.tenant_id === incoming.scope.tenant_id
+        && record.scope.namespace === incoming.scope.namespace
+        && record.kind === incoming.kind
+        && record.name === incoming.name)
+      if (index >= 0) next[index] = incoming
+      else next.push(incoming)
       await writeJson(storePath(agentId, "memories.json"), next)
     },
+    async get(agentId, recordId) {
+      return (await this.list(agentId)).find(record => record.record_id === recordId) ?? null
+    },
+    async delete(agentId, recordId) {
+      await writeJson(storePath(agentId, "memories.json"), (await this.list(agentId))
+        .filter(record => record.record_id !== recordId))
+    },
     async search(agentId, query) {
-      const memories = await this.loadMemories(agentId)
+      const memories = await this.list(agentId)
       const terms = tokenize(query.query)
       return memories
         .filter(memory => memory.scope.tenant_id === query.scope.tenant_id
@@ -489,7 +480,7 @@ function createJsonDreamStore(root) {
         .map(entry => ({ record: entry.memory, score: entry.score, why: "lexical match" }))
     },
     async saveSession(data) {
-      const sessions = await this.loadSessions(data.agentId)
+      const sessions = await readJson(storePath(data.agentId, "sessions.json"), [])
       sessions.push(data)
       await writeJson(storePath(data.agentId, "sessions.json"), sessions)
     },

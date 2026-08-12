@@ -1,6 +1,6 @@
 """L2 — Assistant with memory (Python mirror of 02-memory-assistant/main.ts).
 
-The same sourced-Q&A agent from L1, now given a DreamStore. Two things change:
+The same sourced-Q&A agent from L1, now given a MemoryStore. Two things change:
   • RECALL — at the start of every run the runner recalls relevant memories (pre_query_memory,
     default-on) and injects them into the decaying history, so the model sees prior knowledge on
     turn one; the agent can also query memory on demand via the `memory` meta-tool.
@@ -49,7 +49,7 @@ from deepstrike import (  # noqa: E402
     RuntimeOptions,
     LocalExecutionPlane,
     InMemorySessionLog,
-    InMemoryDreamStore,
+    InMemoryMemoryStore,
     MemoryProvenance,
     MemoryQuery,
     MemoryRecord,
@@ -130,22 +130,22 @@ async def main() -> None:
     for t in studio_tools():
         plane.register(t)
     # One store shared by both sessions. A memory written in session A is recalled in session B.
-    dream_store = InMemoryDreamStore()
+    memory_store = InMemoryMemoryStore()
 
     if dry_run:
         print("● L2 wiring check (no provider call)")
         print(f"  agent id : {AGENT_ID}  (memory is keyed per agent, not per session)")
-        print("  store    : InMemoryDreamStore  → run-start recall + the 'memory' query tool turn on")
+        print("  store    : InMemoryMemoryStore  → run-start recall + the 'memory' query tool turn on")
         print(f"  scope    : {MEMORY_SCOPE.tenant_id}/{MEMORY_SCOPE.namespace}")
         print("  write    : runner.write_memory(record)  → the one governed gate")
-        print("  ✓ configure dream_store + agent_id + memory_scope to enable durable recall.")
+        print("  ✓ configure memory_store + agent_id + memory_scope to enable durable recall.")
         return
 
     runner = RuntimeRunner(RuntimeOptions(
         provider=resolve_provider(),
         execution_plane=plane,
         session_log=InMemorySessionLog(),
-        dream_store=dream_store,
+        memory_store=memory_store,
         agent_id=AGENT_ID,
         memory_scope=MEMORY_SCOPE,
         max_tokens=200_000,

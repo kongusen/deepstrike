@@ -27,7 +27,7 @@ code_refs:
 | **Syscall & 安全** | `syscall/`、`governance/` | 统一 trap；permission、rate limit、constraint、veto、sandbox |
 | **调度 & 进程** | `scheduler/`、`proc/` | L* loop、`TaskTable`、`Tcb`、`AgentProcess` 视图 |
 | **Context VM** | `context/` | 分区、渲染、压缩、renewal、Skill catalog、task_state |
-| **内存管理** | `mm/`、`memory/` | Handle 表、residency、semantic memory、idle pipeline |
+| **内存管理** | `mm/`、`memory/` | Handle 表、residency、semantic memory、session extraction |
 | **作业调度** | `orchestration/` | Workflow DAG、Loop/Classify/Tournament、Reduce |
 | **信号** | `signals/` | 路由到 context signals 分区 |
 | **ABI** | `runtime/kernel/wire.rs` | `KernelInput` / `PlannedStep` / `KernelObservation` |

@@ -5,11 +5,17 @@ use deepstrike_core::mm::memory::{
     MemoryScope, MemoryTrustLevel,
 };
 
-/// Durable-memory host storage. `upsert` is the only mutation and is called only after the
-/// kernel's `WriteMemory` gate accepts the record.
+/// Durable-memory host storage. Runner writes through `put` only after the kernel's
+/// `WriteMemory` gate accepts the record.
 #[async_trait]
-pub trait DreamStore: Send + Sync {
-    async fn upsert(&self, agent_id: &str, record: MemoryRecord) -> crate::Result<()>;
+pub trait MemoryStore: Send + Sync {
+    async fn put(&self, agent_id: &str, record: MemoryRecord) -> crate::Result<()>;
+
+    /// Return one record by its agent-local id, or `None` when it does not exist.
+    async fn get(&self, agent_id: &str, record_id: &str) -> crate::Result<Option<MemoryRecord>>;
+
+    /// Delete one record by its agent-local id. Missing records are a successful no-op.
+    async fn delete(&self, agent_id: &str, record_id: &str) -> crate::Result<()>;
 
     /// Semantic search over the agent's long-term memories.
     /// Called on demand during a session when the LLM invokes the `memory` meta-tool.
@@ -21,6 +27,87 @@ pub trait DreamStore: Send + Sync {
         &self,
         data: deepstrike_core::memory::durable::SessionData,
     ) -> crate::Result<()>;
+}
+
+/// Search options for an agent-bound [`DurableMemory`] descriptor.
+#[derive(Debug, Clone, Default)]
+pub struct MemorySearchOptions {
+    pub top_k: Option<usize>,
+    pub kinds: Vec<MemoryKind>,
+    pub min_score: Option<f64>,
+}
+
+/// Public durable memory bound to one agent and scope.
+///
+/// This is separate from [`WorkingMemory`], which is an in-process scratch pad, and from
+/// [`MemoryStore`], which remains host-owned storage for runners and public descriptors.
+pub struct DurableMemory {
+    store: std::sync::Arc<dyn MemoryStore>,
+    agent_id: String,
+    scope: MemoryScope,
+}
+
+impl DurableMemory {
+    pub fn new(
+        store: std::sync::Arc<dyn MemoryStore>,
+        agent_id: impl Into<String>,
+        scope: MemoryScope,
+    ) -> Self {
+        Self {
+            store,
+            agent_id: agent_id.into(),
+            scope,
+        }
+    }
+
+    pub fn namespace(&self) -> &str {
+        &self.scope.namespace
+    }
+
+    pub async fn search(
+        &self,
+        query: impl Into<String>,
+        options: MemorySearchOptions,
+    ) -> crate::Result<Vec<MemoryRecord>> {
+        let request = MemoryQuery {
+            scope: self.scope.clone(),
+            query: query.into(),
+            top_k: options.top_k.unwrap_or(5),
+            kinds: options.kinds,
+            min_score: options.min_score,
+        };
+        Ok(self
+            .store
+            .search(&self.agent_id, &request)
+            .await?
+            .into_iter()
+            .map(|hit| hit.record)
+            .collect())
+    }
+
+    pub async fn get(&self, record_id: &str) -> crate::Result<Option<MemoryRecord>> {
+        Ok(self
+            .store
+            .get(&self.agent_id, record_id)
+            .await?
+            .filter(|record| record.scope == self.scope))
+    }
+
+    pub async fn put(&self, record: MemoryRecord) -> crate::Result<()> {
+        if record.scope != self.scope {
+            return Err(crate::Error::Other(
+                "memory record scope must match the bound Memory scope".into(),
+            ));
+        }
+        self.store.put(&self.agent_id, record).await
+    }
+
+    pub async fn delete(&self, record_id: &str) -> crate::Result<()> {
+        if self.get(record_id).await?.is_some() {
+            self.store.delete(&self.agent_id, record_id).await?;
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn parse_extracted_memories(
@@ -137,18 +224,18 @@ impl WorkingMemory {
     }
 }
 
-/// `InMemoryDreamStore` — a lightweight `DreamStore` backed by per-agent in-memory maps.
+/// `InMemoryMemoryStore` — a lightweight `MemoryStore` backed by per-agent in-memory maps.
 ///
 /// Rust port of node/src/memory/in-memory-store.ts. Use for benchmarks, unit tests, and local
 /// development where persistent memory isn't needed. `search()` is a deterministic reference
 /// ranker: distinct lexical overlap first, metadata recency second, insertion order last.
-pub struct InMemoryDreamStore {
+pub struct InMemoryMemoryStore {
     memories: std::sync::Mutex<std::collections::HashMap<String, Vec<MemoryRecord>>>,
     initial_memories: Vec<MemoryRecord>,
     saved_sessions: std::sync::Mutex<Vec<SessionData>>,
 }
 
-impl InMemoryDreamStore {
+impl InMemoryMemoryStore {
     pub fn new() -> Self {
         Self::with_initial_memories(Vec::new())
     }
@@ -166,15 +253,15 @@ impl InMemoryDreamStore {
     }
 }
 
-impl Default for InMemoryDreamStore {
+impl Default for InMemoryMemoryStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl DreamStore for InMemoryDreamStore {
-    async fn upsert(&self, agent_id: &str, incoming: MemoryRecord) -> crate::Result<()> {
+impl MemoryStore for InMemoryMemoryStore {
+    async fn put(&self, agent_id: &str, incoming: MemoryRecord) -> crate::Result<()> {
         let mut memories = self.memories.lock().unwrap();
         let kept = memories
             .entry(agent_id.to_string())
@@ -188,6 +275,25 @@ impl DreamStore for InMemoryDreamStore {
         } else {
             kept.push(incoming);
         }
+        Ok(())
+    }
+
+    async fn get(&self, agent_id: &str, record_id: &str) -> crate::Result<Option<MemoryRecord>> {
+        let mut memories = self.memories.lock().unwrap();
+        Ok(memories
+            .entry(agent_id.to_string())
+            .or_insert_with(|| self.initial_memories.clone())
+            .iter()
+            .find(|record| record.record_id == record_id)
+            .cloned())
+    }
+
+    async fn delete(&self, agent_id: &str, record_id: &str) -> crate::Result<()> {
+        let mut memories = self.memories.lock().unwrap();
+        let records = memories
+            .entry(agent_id.to_string())
+            .or_insert_with(|| self.initial_memories.clone());
+        records.retain(|record| record.record_id != record_id);
         Ok(())
     }
 
@@ -287,7 +393,7 @@ fn is_han(character: char) -> bool {
 
 #[cfg(test)]
 mod ranking_tests {
-    use super::{DreamStore, InMemoryDreamStore};
+    use super::{DurableMemory, InMemoryMemoryStore, MemorySearchOptions, MemoryStore};
     use deepstrike_core::mm::memory::{
         MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecord, MemoryScope,
         MemoryTrustLevel,
@@ -320,7 +426,7 @@ mod ranking_tests {
 
     #[tokio::test]
     async fn search_uses_query_and_never_falls_back_to_unrelated_entries() {
-        let store = InMemoryDreamStore::with_initial_memories(vec![
+        let store = InMemoryMemoryStore::with_initial_memories(vec![
             entry("database migration checklist", 1),
             entry("rust scheduler fairness", 2),
             entry("newer unrelated note", 3),
@@ -345,6 +451,44 @@ mod ranking_tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn durable_memory_binds_crud_to_one_agent_scope() {
+        let store: std::sync::Arc<dyn MemoryStore> =
+            std::sync::Arc::new(InMemoryMemoryStore::new());
+        let scope = MemoryScope::new("tenant-test", "public-contract");
+        let memory = DurableMemory::new(store.clone(), "agent-a", scope.clone());
+        let record = MemoryRecord {
+            scope: scope.clone(),
+            ..entry("architecture", 1)
+        };
+
+        memory.put(record.clone()).await.unwrap();
+        assert_eq!(memory.namespace(), "public-contract");
+        assert_eq!(memory.get(&record.record_id).await.unwrap(), Some(record.clone()));
+        assert_eq!(
+            memory
+                .search("architecture", MemorySearchOptions::default())
+                .await
+                .unwrap(),
+            vec![record.clone()]
+        );
+        memory.delete(&record.record_id).await.unwrap();
+        assert_eq!(memory.get(&record.record_id).await.unwrap(), None);
+
+        let foreign = MemoryRecord {
+            scope: MemoryScope::new("tenant-test", "private"),
+            ..entry("foreign", 2)
+        };
+        assert!(memory.put(foreign.clone()).await.is_err());
+        store.put("agent-a", foreign.clone()).await.unwrap();
+        assert_eq!(memory.get(&foreign.record_id).await.unwrap(), None);
+        memory.delete(&foreign.record_id).await.unwrap();
+        assert_eq!(
+            store.get("agent-a", &foreign.record_id).await.unwrap(),
+            Some(foreign)
         );
     }
 }

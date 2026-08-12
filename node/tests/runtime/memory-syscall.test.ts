@@ -2,7 +2,7 @@ import { RuntimeRunner } from "../../src/runtime/runner.js"
 import { InMemorySessionLog } from "../../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
-import type { DreamStore, MemoryRecall, MemoryRecord } from "../../src/memory/protocols.js"
+import type { MemoryStore, MemoryRecall, MemoryRecord } from "../../src/memory/protocols.js"
 
 const scope = { tenant_id: "agent-memory", namespace: "runtime-tests" }
 const memory = (name: string, content: string): MemoryRecord => ({
@@ -20,12 +20,14 @@ const provider: LLMProvider = {
 }
 
 describe("Phase-7 memory syscalls", () => {
-  it("validates WriteMemory through the kernel and upserts to DreamStore", async () => {
+  it("validates WriteMemory through the kernel and upserts to MemoryStore", async () => {
     let committed: MemoryRecord | null = null
-    const dreamStore: DreamStore = {
-      upsert: async (_agentId, record) => {
+    const memoryStore: MemoryStore = {
+      put: async (_agentId, record) => {
         committed = record
       },
+      get: async () => null,
+      delete: async () => {},
       saveSession: async () => {},
       search: async () => [],
     }
@@ -36,7 +38,7 @@ describe("Phase-7 memory syscalls", () => {
       executionPlane: new LocalExecutionPlane(),
       maxTokens: 1024,
       agentId: "agent-memory",
-      dreamStore,
+      memoryStore,
     })
 
     await runner.writeMemory(memory(
@@ -51,7 +53,7 @@ describe("Phase-7 memory syscalls", () => {
     expect(events.some(e => e.event.kind === "memory_written")).toBe(true)
   })
 
-  it("validates QueryMemory through the kernel and returns DreamStore hits", async () => {
+  it("validates QueryMemory through the kernel and returns MemoryStore hits", async () => {
     const hit: MemoryRecall = {
       record: memory("testing", "Use small focused tests."),
       score: 0.9,
@@ -64,8 +66,10 @@ describe("Phase-7 memory syscalls", () => {
       executionPlane: new LocalExecutionPlane(),
       maxTokens: 1024,
       agentId: "agent-memory",
-      dreamStore: {
-        upsert: async () => {},
+      memoryStore: {
+        put: async () => {},
+        get: async () => null,
+        delete: async () => {},
         saveSession: async () => {},
         search: async (_agentId, query) => query.query.includes("tests") && query.top_k === 1 ? [hit] : [],
       },
@@ -91,8 +95,10 @@ describe("Phase-7 memory syscalls", () => {
       executionPlane: new LocalExecutionPlane(),
       maxTokens: 1024,
       agentId: "agent-memory",
-      dreamStore: {
-        upsert: async () => {},
+      memoryStore: {
+        put: async () => {},
+        get: async () => null,
+        delete: async () => {},
         saveSession: async () => {},
         search: async () => [],
       },

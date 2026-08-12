@@ -14,7 +14,7 @@ Memory is the Agent OS **Memory Plane**. It separates short-lived reasoning stat
 |-------|--------------|
 | Working | Scratch pad for the current run; no cross-session durability guarantee |
 | Session | Part of the evidence chain; auditable and recoverable |
-| Durable | DreamStore is host-authoritative: it owns the full cross-session record set, computes retention host-side, and decides eviction and pinning |
+| Durable | MemoryStore is host-authoritative: it owns the full cross-session record set, computes retention host-side, and decides eviction and pinning |
 | Syscall | `write_memory` / `query_memory` are validated by the kernel before SDK execution |
 
 Memory is not "automatically append old messages." It is a policy-constrained knowledge device: what gets written, when it is written, and how it is retrieved must remain auditable and replayable.
@@ -27,7 +27,7 @@ Memory is not "automatically append old messages." It is a policy-constrained kn
 |-------|-------------|
 | Working | `WorkingMemory` scratch pad |
 | Session | Per-run session data |
-| Durable | `DreamStore` persistence + idle pipeline consolidation |
+| Durable | `MemoryStore` persistence + session extraction |
 
 Meta-tool / syscall: `memory` tool plus `write_memory` / `query_memory` kernel events.
 
@@ -35,20 +35,20 @@ Meta-tool / syscall: `memory` tool plus `write_memory` / `query_memory` kernel e
 
 ## Level 1: write / query
 
-Implement the `DreamStore` protocol (`memory/protocols.py`) and pass it to the runner:
+Implement the `MemoryStore` protocol (`memory/protocols.py`) and pass it to the runner:
 
 ```python
 class MyStore:
-    async def load_memories(self, agent_id): return []
-    async def load_sessions(self, agent_id): return []
-    async def commit(self, agent_id, result, existing): ...
+    async def put(self, agent_id, record): ...
+    async def get(self, agent_id, record_id): return None
+    async def delete(self, agent_id, record_id): ...
     async def save_session(self, data): ...
-    async def search(self, agent_id, query, top_k=5): return []
+    async def search(self, agent_id, query): return []
 
 runner = RuntimeRunner(RuntimeOptions(
     ...,
     agent_id="my-agent",
-    dream_store=MyStore(),
+    memory_store=MyStore(),
 ))
 
 await runner.write_memory({
@@ -73,7 +73,7 @@ hits = await runner.query_memory({
 Reference test: `python/tests/test_memory_syscall.py`
 
 ```python
-# From test_write_memory_commits_to_dream_store_after_kernel_validation
+# From test_write_memory_commits_to_memory_store_after_kernel_validation
 await runner.write_memory({
     "metadata": {
         "name": "prefers-small-tests",
@@ -121,12 +121,12 @@ def pre_query(goal: str, phase: str | None = None):
 RuntimeOptions(
     ...,
     pre_query_memory=pre_query,
-    dream_store=store,
+    memory_store=store,
     agent_id="my-agent",
 )
 ```
 
-Before turn 1, searches the dream store; hits land in **history as an ordinary turn** —
+Before turn 1, searches the durable `MemoryStore`; hits land in **history as an ordinary turn** —
 single-use fact content that decays with the compression pyramid, never pinned into the
 knowledge partition. A sprint renewal rebuilds history wholesale, so the hook re-fires with
 `phase="renewal"`, giving the new sprint a fresh recall pass. Pre-existing hooks that don't
@@ -134,23 +134,18 @@ accept `phase` (`lambda goal: [...]`) keep working unchanged.
 
 ---
 
-## Level 4: Idle pipeline (Dreaming)
+## Level 4: Session extraction
 
-Kernel `idle_pipeline.rs` runs two phases:
-
-```
-Phase 1: TraceAnalyzer (rules) → SynthesizeInsights (SDK calls LLM)
-Phase 2: SynthesisResult → MemoryCurator (dedupe/conflict) → CommitMemories
-```
+At session completion, the runner saves the transcript and extracts candidate records through the provider or `memory_summarizer`. Each record still returns through the kernel `write_memory` gate before it reaches `MemoryStore`.
 
 SDK configuration:
 
 ```python
 RuntimeOptions(
     ...,
-    dream_provider=synthesis_provider,
-    dream_summarizer=custom_summarizer,
-    dream_system_prompt="Extract durable insights from sessions...",
+    memory_provider=synthesis_provider,
+    memory_summarizer=custom_summarizer,
+    memory_system_prompt="Extract durable insights from sessions...",
 )
 ```
 
@@ -160,14 +155,14 @@ RuntimeOptions(
 
 Recall is a scored query with feedback, and forgetting is retention-based eviction — both host-authoritative.
 
-- **Recall journaling.** When `query_memory` routes a hit, the kernel derives the record's next `recall_count` from that hit and emits a `memory_recalled` observation. The host `DreamStore.recordRecall` folds it back, so a record that keeps getting recalled accrues usage without the kernel holding the durable ledger.
+- **Recall journaling.** When `query_memory` routes a hit, the kernel derives the record's next `recall_count` from that hit and emits a `memory_recalled` observation. The host `MemoryStore.recordRecall` folds it back, so a record that keeps getting recalled accrues usage without the kernel holding the durable ledger.
 - **Promotion on threshold.** Crossing `MemoryPolicy.promotion_recall_threshold` emits a `promotion_suggested` observation (edge-triggered — once, on the crossing), surfaced to the host via the `onPromotionSuggested` callback so a frequently-recalled record can be pinned into durable knowledge.
-- **Retention & eviction.** `memory_retention_score` ranks records by usage, kind, confidence, recency, and size (pinned records sort to the top). The host `DreamStore` uses it to evict cold records to capacity — forgetting is a deterministic ranking, not FIFO.
+- **Retention & eviction.** `memory_retention_score` ranks records by usage, kind, confidence, recency, and size (pinned records sort to the top). The host `MemoryStore` uses it to evict cold records to capacity — forgetting is a deterministic ranking, not FIFO.
 
 ```python
 RuntimeOptions(
     memory_policy=MemoryPolicy(promotion_recall_threshold=3),
-    on_promotion_suggested=lambda rec: dream_store.set_pinned(rec.record_id, True),
+    on_promotion_suggested=lambda rec: memory_store.set_pinned(rec.record_id, True),
 )
 ```
 
@@ -194,7 +189,7 @@ RuntimeOptions(
 
 - `write_memory` validates metadata and content against `MemoryPolicy` before `commit`
 - `query_memory` runs search, ranks hits, and surfaces them as kernel observations
-- Idle pipeline runs after session idle; synthesis is SDK-owned, curation is kernel-governed
+- Session extraction runs after completion; SDK synthesis returns through kernel-governed writes
 
 ---
 
@@ -202,4 +197,4 @@ RuntimeOptions(
 
 - [Context Engineering](./context-engineering) — knowledge partition
 - [Governance](./governance) — syscall trap
-- `InMemoryDreamStore` — development implementation
+- `InMemoryMemoryStore` — development implementation

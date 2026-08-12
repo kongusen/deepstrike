@@ -6,7 +6,7 @@
  * Design principles:
  * - Kernel defines memory types and validation rules
  * - SDK performs I/O and selection
- * - Semantic reranking remains an optional DreamStore capability
+ * - Semantic reranking remains an optional MemoryStore capability
  */
 
 import type {
@@ -30,7 +30,7 @@ export type {
  * Select relevant memories for the current context.
  *
  * The reference selector is deterministic and provider-independent: lexical overlap first,
- * recency second. Semantic/embedding reranking belongs in a DreamStore plugin.
+ * recency second. Semantic/embedding reranking belongs in a MemoryStore plugin.
  *
  * @param query - Memory query from kernel
  * @param memoryIndex - Memory index entries

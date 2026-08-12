@@ -6,7 +6,7 @@ import assert from "node:assert/strict"
 import { tool, WorkingMemory, Governance, SignalGateway, ScheduledPrompt } from "@deepstrike/sdk"
 import { AttemptLoop, RuntimeAttemptBody, VerdictFnJudge } from "@deepstrike/sdk/harness"
 import type { ErrorEvent, DoneEvent, ToolResultEvent } from "@deepstrike/sdk"
-import { makeAgent, makeProvider, collectEvents, text, memoryRecord, MockDreamStore, MockKnowledgeSource, SKILL_DIR } from "./helpers.js"
+import { makeAgent, makeProvider, collectEvents, text, memoryRecord, MockMemoryStore, MockKnowledgeSource, SKILL_DIR } from "./helpers.js"
 
 // ─── A: Tools + Governance ────────────────────────────────────────────────
 
@@ -146,19 +146,15 @@ describe("AttemptLoop + Tools", () => {
   })
 })
 
-// ─── F: Agent + DreamStore ────────────────────────────────────────────────
+// ─── F: Agent + MemoryStore ────────────────────────────────────────────────
 
-describe("Agent + DreamStore (memory-enabled run)", () => {
+describe("Agent + MemoryStore (memory-enabled run)", () => {
   it("pre-seeded memory is accessible during run", { timeout: 90_000 }, async () => {
-    const store = new MockDreamStore()
+    const store = new MockMemoryStore()
     const agentId = "combo-mem-agent"
-    await store.commit(agentId, {
-      toAdd: [memoryRecord("secret-code", "The secret code word is BANANA.", 0.95)],
-      toRemoveIndices: [],
-      stats: { insightsProcessed: 1, duplicatesRemoved: 0, conflictsResolved: 0, entriesAdded: 1 },
-    }, [])
+    await store.put(agentId, memoryRecord("secret-code", "The secret code word is BANANA.", 0.95))
 
-    const result = await makeAgent({ dreamStore: store, agentId }).run(
+    const result = await makeAgent({ memoryStore: store, agentId }).run(
       "What is the secret code word from your memory? If unknown, say 'unknown'.",
     )
     assert.ok(result.length > 0)

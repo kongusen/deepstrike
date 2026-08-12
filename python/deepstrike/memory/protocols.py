@@ -64,6 +64,39 @@ class MemoryRecallLifecycle:
     last_recalled_at: int
 
 
+@dataclass(frozen=True)
+class MemorySearchOptions:
+    top_k: int = 5
+    kinds: list[MemoryKind] = field(default_factory=list)
+    min_score: float | None = None
+
+
+@runtime_checkable
+class Memory(Protocol):
+    """Public durable memory bound to one agent and scope, distinct from ``WorkingMemory``."""
+
+    namespace: str | None
+
+    async def search(self, query: str, options: MemorySearchOptions | None = None) -> list[MemoryRecord]: ...
+    async def get(self, record_id: str) -> MemoryRecord | None: ...
+    async def put(self, record: MemoryRecord) -> None: ...
+    async def delete(self, record_id: str) -> None: ...
+
+
+@runtime_checkable
+class MemoryStore(Protocol):
+    """Host-owned storage protocol behind an agent-bound public ``Memory`` adapter."""
+
+    async def put(self, agent_id: str, record: MemoryRecord) -> None: ...
+    async def get(self, agent_id: str, record_id: str) -> MemoryRecord | None: ...
+    async def delete(self, agent_id: str, record_id: str) -> None: ...
+    async def search(self, agent_id: str, query: "MemoryQuery") -> list[MemoryRecall]: ...
+    async def save_session(self, data: "SessionData") -> None: ...
+    async def record_recall(self, agent_id: str, recalls: list[MemoryRecallLifecycle]) -> None: ...
+    async def set_pinned(self, agent_id: str, record_id: str, pinned: bool) -> None: ...
+
+
+
 @dataclass
 class SessionData:
     session_id: str
@@ -73,25 +106,3 @@ class SessionData:
     metadata: Any = None
     created_at_ms: int = 0
     updated_at_ms: int = 0
-
-
-@runtime_checkable
-class DreamStore(Protocol):
-    """Durable store whose only mutation is a gated record upsert."""
-
-    async def upsert(self, agent_id: str, record: MemoryRecord) -> None:
-        """Persist one canonical record after the kernel WriteMemory gate accepts it."""
-        ...
-
-    async def search(self, agent_id: str, query: MemoryQuery) -> list[MemoryRecall]:
-        """Semantic search over the agent's long-term memories. Called on demand during a run."""
-        ...
-
-    async def save_session(self, data: "SessionData") -> None:
-        """Persist a completed session before the runner's one extraction pass."""
-        ...
-
-    # Optional lifecycle methods (not part of the runtime_checkable required surface so existing
-    # stores keep passing isinstance). The runner calls them via getattr when present:
-    #   async def record_recall(agent_id: str, recalls: list[MemoryRecallLifecycle]) -> None  # M3
-    #   async def set_pinned(agent_id: str, record_id: str, pinned: bool) -> None              # M4

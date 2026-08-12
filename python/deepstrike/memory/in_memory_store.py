@@ -1,4 +1,4 @@
-"""`InMemoryDreamStore` — lightweight `DreamStore` backed by per-agent dicts.
+"""`InMemoryMemoryStore` — lightweight `MemoryStore` backed by per-agent dicts.
 
 Python port of node/src/memory/in-memory-store.ts. Use for benchmarks, unit tests,
 and local development where persistent memory isn't needed.
@@ -9,7 +9,7 @@ import time
 from typing import Callable, Iterable
 
 from deepstrike.memory.protocols import (
-    DreamStore,
+    MemoryStore,
     MemoryQuery,
     MemoryRecall,
     MemoryRecallLifecycle,
@@ -24,8 +24,8 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-class InMemoryDreamStore(DreamStore):
-    """Reference ``DreamStore``. Search returns a genuine relevance score (never stored confidence);
+class InMemoryMemoryStore(MemoryStore):
+    """Reference ``MemoryStore``. Search returns a genuine relevance score (never stored confidence);
     the store is the authority for the full record set, so it bounds itself by value-ordered
     retention eviction (M3) and mirrors recall lifecycle and pin state (M3/M4)."""
 
@@ -71,7 +71,7 @@ class InMemoryDreamStore(DreamStore):
         scored.sort(key=lambda row: (-row[0], row[1]))
         return [record for _score, _index, record in scored[: self._max_records]]
 
-    async def upsert(self, agent_id: str, incoming: MemoryRecord) -> None:
+    async def put(self, agent_id: str, incoming: MemoryRecord) -> None:
         kept = list(self._records_for(agent_id))
         index = next((i for i, record in enumerate(kept) if record.scope == incoming.scope and record.kind == incoming.kind and record.name == incoming.name), None)
         if index is None:
@@ -79,6 +79,14 @@ class InMemoryDreamStore(DreamStore):
         else:
             kept[index] = incoming
         self._memories[agent_id] = self._evict_to_capacity(kept)
+
+    async def get(self, agent_id: str, record_id: str) -> MemoryRecord | None:
+        return next((record for record in self._records_for(agent_id) if record.record_id == record_id), None)
+
+    async def delete(self, agent_id: str, record_id: str) -> None:
+        self._memories[agent_id] = [
+            record for record in self._records_for(agent_id) if record.record_id != record_id
+        ]
 
     async def search(self, agent_id: str, query: MemoryQuery) -> list[MemoryRecall]:
         candidates = [record for record in self._records_for(agent_id)

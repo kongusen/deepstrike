@@ -82,7 +82,7 @@ Syscall::Spawn → quota + trust checks → SDK orchestrator → ChildCompleted 
 
 ## Memory syscalls (outside the tool loop too)
 
-`WriteMemory` / `QueryMemory` go through validation and DreamStore commit/search — never bypass governance. `QueryMemory` hits land in `history` as ordinary turns (single-use, decaying with compaction), not in the durable `knowledge` partition — only skill bodies, `initial_memory`, and host-pinned references live there (see [Context Engineering · Level 5](../guides/context-engineering.md)).
+`WriteMemory` / `QueryMemory` go through validation and MemoryStore commit/search — never bypass governance. `QueryMemory` hits land in `history` as ordinary turns (single-use, decaying with compaction), not in the durable `knowledge` partition — only skill bodies, `initial_memory`, and host-pinned references live there (see [Context Engineering · Level 5](../guides/context-engineering.md)).
 
 ## Suspend & resume
 

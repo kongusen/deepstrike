@@ -37,7 +37,7 @@ features:
     details: Syscall trap、配额、rate limit、denied tool result — 不是 SDK 事后拦截。
   - icon: 💾
     title: Memory Syscall
-    details: writeMemory / queryMemory 内核校验 + DreamStore + 空闲整理管线。
+    details: writeMemory / queryMemory 内核校验 + MemoryStore + session extraction。
   - icon: 🤝
     title: 多 Agent 协作
     details: Sub-agent 隔离、ReactiveSession、Contract、Handoff。

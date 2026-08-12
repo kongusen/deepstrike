@@ -3,14 +3,14 @@
  *
  * Measures whether a pre-populated long-term memory shortcuts the agent's investigation. Both
  * variants share the same task — "diagnose last week's outage" — but the `memory-preloaded`
- * variant ships a `DreamStore` with the actual root cause already stored. We expect the agent to
+ * variant ships a `MemoryStore` with the actual root cause already stored. We expect the agent to
  * surface the memory entry, skip the multi-tool drill-down, and finish in fewer turns at lower
  * cost; the unloaded variant must investigate via logs / db queries.
  *
- * Uses `InMemoryDreamStore` from the SDK (`@deepstrike/sdk`) — public since v0.2.21.
+ * Uses `InMemoryMemoryStore` from the SDK (`@deepstrike/sdk`) — public since v0.2.21.
  *
  * Variants:
- *   - `memory-empty`    (baseline) — `dreamStore` is an empty in-memory store.
+ *   - `memory-empty`    (baseline) — `memoryStore` is an empty in-memory store.
  *   - `memory-preloaded`           — same store with a single highly relevant memory entry
  *                                    pre-seeded. The kernel's memory subsystem surfaces it on
  *                                    the first `memory_query`.
@@ -21,7 +21,7 @@
 
 import { loadSdk } from "../utils/sdk.mjs"
 
-// Lazy SDK accessor — also used by mkTools below. InMemoryDreamStore is a public SDK export
+// Lazy SDK accessor — also used by mkTools below. InMemoryMemoryStore is a public SDK export
 // since v0.2.21.
 let _sdk
 async function getSdk() {
@@ -151,10 +151,10 @@ export const memoryRecallScenario = {
     "memory-empty": {
       description: "no pre-seeded memory — agent must investigate via tools (baseline)",
       setup: async () => {
-        const { InMemoryDreamStore } = await getSdk()
+        const { InMemoryMemoryStore } = await getSdk()
         return {
           runtimeOverlay: {
-            dreamStore: new InMemoryDreamStore([]),
+            memoryStore: new InMemoryMemoryStore([]),
             agentId: AGENT_ID,
             extensions: { degradeMissingReasoningReplay: true },
           },
@@ -164,10 +164,10 @@ export const memoryRecallScenario = {
     "memory-preloaded": {
       description: "memory store carries the actual root cause — kernel surfaces it on memory_query",
       setup: async () => {
-        const { InMemoryDreamStore } = await getSdk()
+        const { InMemoryMemoryStore } = await getSdk()
         return {
           runtimeOverlay: {
-            dreamStore: new InMemoryDreamStore(PRELOADED),
+            memoryStore: new InMemoryMemoryStore(PRELOADED),
             agentId: AGENT_ID,
             extensions: { degradeMissingReasoningReplay: true },
           },
@@ -181,10 +181,10 @@ export const memoryRecallScenario = {
     "memory-preloaded-via-prefetch": {
       description: "preloaded store + preQueryMemory hook surfaces it on turn 0 (no meta-tool roundtrip)",
       setup: async () => {
-        const { InMemoryDreamStore } = await getSdk()
+        const { InMemoryMemoryStore } = await getSdk()
         return {
           runtimeOverlay: {
-            dreamStore: new InMemoryDreamStore(PRELOADED),
+            memoryStore: new InMemoryMemoryStore(PRELOADED),
             agentId: AGENT_ID,
             preQueryMemory: () => ["payment service outage root cause"],
             extensions: { degradeMissingReasoningReplay: true },

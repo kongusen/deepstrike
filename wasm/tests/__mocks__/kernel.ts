@@ -484,16 +484,6 @@ export class CanonicalKernel {
   }
 }
 
-export class IdlePipeline {
-  constructor(_agentId: string) {}
-  feedTrigger() {
-    return { kind: "noop" }
-  }
-  feedSynthesisResult(_content: string) {
-    return { kind: "noop" }
-  }
-}
-
 export class Governance {
   blockTool(_name: string): void {}
   setTime(_nowMs: number): void {}

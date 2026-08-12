@@ -95,7 +95,7 @@ function linkAbort(signal: AbortSignal | undefined, runner: { interrupt(): void 
 function deriveMetaTools(permitted: Set<string>, opts: RuntimeOptions): Set<string> {
   const metaTools = new Set<string>()
   if (permitted.has("skill") && opts.skillDir) metaTools.add("skill")
-  if (permitted.has("memory") && opts.dreamStore) metaTools.add("memory")
+  if (permitted.has("memory") && opts.memoryStore) metaTools.add("memory")
   if (permitted.has("knowledge") && opts.knowledgeSource) metaTools.add("knowledge")
   if (permitted.has("update_plan") && opts.enablePlanTool) metaTools.add("update_plan")
   return metaTools
@@ -106,7 +106,7 @@ function deriveMetaTools(permitted: Set<string>, opts: RuntimeOptions): Set<stri
 function availableMetaTools(opts: RuntimeOptions): Set<string> {
   const metaTools = new Set<string>()
   if (opts.skillDir) metaTools.add("skill")
-  if (opts.dreamStore) metaTools.add("memory")
+  if (opts.memoryStore) metaTools.add("memory")
   if (opts.knowledgeSource) metaTools.add("knowledge")
   if (opts.enablePlanTool) metaTools.add("update_plan")
   return metaTools
@@ -174,7 +174,7 @@ export class SubAgentOrchestrator {
       systemPrompt,
       sessionLog: ctx.sessionLog,
       skillDir: metaTools.has("skill") ? ctx.parentOpts.skillDir : undefined,
-      dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
+      memoryStore: metaTools.has("memory") ? ctx.parentOpts.memoryStore : undefined,
       knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
       enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
       // Nested vehicle: the child joins the inherited runGroup for lineage/settlement only — it

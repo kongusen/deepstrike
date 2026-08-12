@@ -7,15 +7,21 @@ from deepstrike.tools.registry import tool
 
 
 @pytest.mark.asyncio
-async def test_semantic_page_out_commits_dream_summary():
+async def test_semantic_page_out_commits_memory_summary():
   commit_calls = 0
   last_summary = ""
 
-  class RecordingDreamStore:
-    async def upsert(self, agent_id: str, record: MemoryRecord):
+  class RecordingMemoryStore:
+    async def put(self, agent_id: str, record: MemoryRecord):
       nonlocal commit_calls, last_summary
       commit_calls += 1
       last_summary = record.content
+
+    async def get(self, agent_id: str, record_id: str):
+      return None
+
+    async def delete(self, agent_id: str, record_id: str):
+      pass
 
     async def save_session(self, data):
       pass
@@ -37,7 +43,7 @@ async def test_semantic_page_out_commits_dream_summary():
         return
       yield TextDelta(delta="done")
 
-  async def dream_summarizer(archived, ctx):
+  async def memory_summarizer(archived, ctx):
     return f"python long-term summary for {ctx.get('action', 'compress')}"
 
   @tool
@@ -56,8 +62,8 @@ async def test_semantic_page_out_commits_dream_summary():
     max_turns=20,
     agent_id="agent-semantic-py",
     memory_scope=MemoryScope("agent-semantic-py", "semantic-page-out"),
-    dream_store=RecordingDreamStore(),
-    dream_summarizer=dream_summarizer,
+    memory_store=RecordingMemoryStore(),
+    memory_summarizer=memory_summarizer,
   ))
 
   await collect_text(runner.run(session_id="semantic-page-out-py", goal="fill until compact"))

@@ -6,7 +6,7 @@
 // ║   @deepstrike/sdk/providers  — backend provider classes + profiles         ║
 // ║   @deepstrike/sdk/workflow   — orchestration, reducers, contracts, specs   ║
 // ║   @deepstrike/sdk/planes     — worktree / sandbox / mcp / vpc planes        ║
-// ║   @deepstrike/sdk/memory     — dream + working memory, knowledge sources    ║
+// ║   @deepstrike/sdk/memory     — durable + working memory, knowledge sources  ║
 // ║   @deepstrike/sdk/harness    — eval harnesses + judge                       ║
 // ║   @deepstrike/sdk/os         — profiles, diagnostics, signals, replay tests ║
 // ╚══════════════════════════════════════════════════════════════════════════╝

@@ -1,7 +1,7 @@
 /**
  * L2 — Assistant with memory.
  *
- * The same sourced-Q&A agent from L1, now given a `DreamStore`. Two things change:
+ * The same sourced-Q&A agent from L1, now given a `MemoryStore`. Two things change:
  *   • RECALL — at the start of every run the runner recalls relevant memories (`preQueryMemory`,
  *     default-on) and injects them into the decaying history, so the model sees prior knowledge on
  *     turn one; the agent can also query memory on demand via the `memory` meta-tool.
@@ -20,7 +20,7 @@
  */
 import { RuntimeRunner, LocalExecutionPlane, InMemorySessionLog } from "@deepstrike/sdk"
 import type { TextDelta } from "@deepstrike/sdk"
-import { InMemoryDreamStore } from "@deepstrike/sdk/memory"
+import { InMemoryMemoryStore } from "@deepstrike/sdk/memory"
 import type { MemoryRecord, MemoryScope } from "@deepstrike/sdk/memory"
 import { studioTools } from "../shared/studio-tools.js"
 import { resolveProvider, parseArgs, loadEnv } from "../shared/provider.js"
@@ -37,15 +37,15 @@ async function main(): Promise<void> {
   const plane = new LocalExecutionPlane()
   for (const t of studioTools()) plane.register(t)
   // One store shared by both sessions. A memory written in session A is recalled in session B.
-  const dreamStore = new InMemoryDreamStore()
+  const memoryStore = new InMemoryMemoryStore()
 
   if (dryRun) {
     console.log("● L2 wiring check (no provider call)")
     console.log(`  agent id : ${AGENT_ID}  (memory is keyed per agent, not per session)`)
-    console.log(`  store    : InMemoryDreamStore  → run-start recall + the 'memory' query tool turn on`)
+    console.log(`  store    : InMemoryMemoryStore  → run-start recall + the 'memory' query tool turn on`)
     console.log(`  scope    : ${MEMORY_SCOPE.tenant_id}/${MEMORY_SCOPE.namespace}`)
     console.log(`  write    : runner.writeMemory(record)  → the one governed gate`)
-    console.log("  ✓ configure dreamStore + agentId + memoryScope to enable durable recall.")
+    console.log("  ✓ configure memoryStore + agentId + memoryScope to enable durable recall.")
     return
   }
 
@@ -53,7 +53,7 @@ async function main(): Promise<void> {
     provider: resolveProvider(),
     executionPlane: plane,
     sessionLog: new InMemorySessionLog(),
-    dreamStore,
+    memoryStore,
     agentId: AGENT_ID,
     memoryScope: MEMORY_SCOPE,
     maxTokens: 200_000,

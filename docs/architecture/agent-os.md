@@ -17,7 +17,7 @@ LLM 产出结构化计划（WorkflowSpec / submit_workflow_nodes）
 deepstrike-core  ──  调度：gated spawn · 预算 · 信任边界 · 可快照
         │
         ▼
-宿主 SDK  ──  跑 provider、工具、worktree、DreamStore、Webhook
+宿主 SDK  ──  跑 provider、工具、worktree、MemoryStore、Webhook
 ```
 
 **控制流在内核，I/O 在宿主**——这是 Agent OS 的核心分工。

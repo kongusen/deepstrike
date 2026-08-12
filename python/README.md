@@ -110,7 +110,7 @@ async for event in runner.run(session_id="readme-1", goal="Summarize README.md")
 ```text
 ┌─────────────────────────────────────────────────────────┐
 │  RuntimeRunner (Layer 1.5)                              │
-│  LLMProvider · ExecutionPlane · SessionLog · DreamStore │
+│  LLMProvider · ExecutionPlane · SessionLog · MemoryStore │
 └───────────────────────────┬─────────────────────────────┘
                             │ durable prepare / append / commit
 ┌───────────────────────────▼─────────────────────────────┐
@@ -136,13 +136,13 @@ The mechanisms above are not internal refactors — they change what you can bui
 Tool calls, spawns, compression, and signals pass through one kernel gate with an explicit lifecycle (Ready / Running / Blocked / Suspended). You implement I/O; the kernel decides *when* and *whether*. Node, Python, and Rust share the same decision path, so `wake(session_id)` and cross-language tooling see consistent behavior.
 
 **Longer, sturdier sessions (external payloads + semantic page-out)**
-The host atomically persists oversized tool results before submitting an `External` result. Core journals only the opaque locator, digest, size, and preview; `read_result` becomes a correlated `LoadPayload` effect. When pressure triggers semantic eviction, the SDK summarizes archived content into `DreamStore`.
+The host atomically persists oversized tool results before submitting an `External` result. Core journals only the opaque locator, digest, size, and preview; `read_result` becomes a correlated `LoadPayload` effect. When pressure triggers semantic eviction, the SDK summarizes archived content into `MemoryStore`.
 
 **Safety and governance by default (OS native profile)**  
 Every run loads declarative `governance_policy` (deny / ask_user / rate-limit / param rules) and in-kernel signal routing (`signal_policy`, default queue 64). Dangerous tools, external interrupts, and approval flows are policy — not ad-hoc checks in your handlers.
 
 **Long-term memory as syscalls (Phase-7)**  
-`write_memory` and `query_memory` run outside the main tool loop: kernel validation before `DreamStore.commit`, search → `select_memories` → `memory_retrieval_result` on query. Failed writes emit `memory_validation_failed` for audit; good memory is durable without polluting history.
+`write_memory` and `query_memory` run outside the main tool loop: kernel validation before `MemoryStore.put`, search → `select_memories` → `memory_retrieval_result` on query. Failed writes emit `memory_validation_failed` for audit; good memory is durable without polluting history.
 
 **Multi-agent and multi-signal orchestration**  
 Sub-agents register in the kernel process table (`agent_process_changed`); parent runs suspend explicitly until `sub_agent_completed`. Signals get disposition (Interrupt / Queue / Observe / Dropped) in-kernel, so gateways, cron, and heartbeats compose with the main loop instead of racing it.
@@ -156,7 +156,7 @@ Page-out, signals, processes, budgets, and memory events land in `SessionLog` wi
 | External interrupts | `signal_source` + in-kernel `signal_policy` |
 | Spawn / memory-write quotas | `resource_quota` (`set_resource_quota`) |
 | Huge tool output | Canonical external payload; optional custom `payload_store` |
-| Durable recall across runs | `DreamStore` + semantic `page_out` via `dream_summarizer` |
+| Durable recall across runs | `MemoryStore` + semantic `page_out` via `memory_summarizer` |
 | Programmatic memory I/O | `runner.write_memory()` / `runner.query_memory()` |
 | Debug / compliance | `SessionLog` events + OS snapshot helpers |
 
@@ -304,14 +304,14 @@ runner = RuntimeRunner(RuntimeOptions(
     skill_dir="./skills",
     knowledge_source=my_ks,
     signal_source=gw,
-    dream_store=my_store,
+    memory_store=my_store,
     agent_id="my-agent",
     initial_memory=["..."],
 
     # Memory paging & compression (SDK-side I/O)
     compression_store=archive_store,
-    dream_provider=dream_llm,
-    dream_summarizer=my_dream_summarizer,  # semantic page_out → DreamStore
+    memory_provider=memory_llm,
+    memory_summarizer=my_memory_summarizer,  # semantic page_out → MemoryStore
 
     # Sub-agents & milestones
     run_spec=AgentRunSpec(
@@ -336,8 +336,8 @@ runner = RuntimeRunner(RuntimeOptions(
 | `prompt_budget` | Provider-envelope overhead, output reserve, and safety margin deducted from the context window |
 | `on_permission_request` | Resolves `tool_gated` + `suspended` → kernel `resume` with approved/denied call IDs |
 | `compression_store` | Writes archived messages on `compressed` observations |
-| `dream_summarizer` | Summarizes `page_out { tier_hint: "semantic" }` into `DreamStore` during a run |
-| `dream_provider` | Separate LLM for `dream()` idle consolidation (falls back to `provider`) |
+| `memory_summarizer` | Summarizes `page_out { tier_hint: "semantic" }` into `MemoryStore` during a run |
+| `memory_provider` | Separate LLM for durable-memory extraction (falls back to `provider`) |
 | `payload_store` | Canonical opaque payload storage (default: `.payloads/`) |
 
 Validate policies before starting a run:
@@ -470,12 +470,12 @@ mem.get("step")  # 1
 mem.clear()
 ```
 
-### DreamStore (long-term memory)
+### MemoryStore (long-term memory)
 
 ```python
-from deepstrike import DreamStore
+from deepstrike import MemoryStore
 
-class MyStore(DreamStore):
+class MyStore(MemoryStore):
     async def load_sessions(self, agent_id): ...
     async def load_memories(self, agent_id): ...
     async def commit(self, agent_id, result, existing): ...
@@ -486,7 +486,7 @@ runner = RuntimeRunner(RuntimeOptions(
     provider=provider,
     session_log=InMemorySessionLog(),
     execution_plane=plane,
-    dream_store=MyStore(),
+    memory_store=MyStore(),
     agent_id="my-agent",  # enables memory meta-tool + semantic page-out archival
 ))
 ```
@@ -495,31 +495,21 @@ Three memory paths:
 
 | Path | When | What happens |
 |------|------|--------------|
-| In-session `memory(query)` | LLM calls meta-tool | `DreamStore.search()` → history tool result |
+| In-session `memory(query)` | LLM calls meta-tool | `MemoryStore.search()` → history tool result |
 | `initial_memory` | Run start | Injected into Slot 2 (`system_knowledge`) |
-| Semantic `page_out` | Kernel evicts with `tier_hint: "semantic"` | SDK summarizes via `dream_summarizer` / `dream_provider` → `DreamStore.commit()` |
-| `dream(agent_id)` | Explicit idle call | `IdlePipeline` batch-consolidates past sessions |
-
-```python
-import time
-from deepstrike.providers.stream import DoneEvent
-
-async for event in runner.dream("my-agent", now_ms=int(time.time() * 1000)):
-    if isinstance(event, DoneEvent):
-        print(event.dream_result)
-```
+| Semantic `page_out` | Kernel evicts with `tier_hint: "semantic"` | SDK summarizes via `memory_summarizer` / `memory_provider` → gated `write_memory()` |
 
 Custom semantic summarizer:
 
 ```python
-async def dream_summarizer(archived, ctx):
+async def memory_summarizer(archived, ctx):
     return f"Long-term summary for action={ctx.get('action')}"
 
 runner = RuntimeRunner(RuntimeOptions(
     # ...
-    dream_store=MyStore(),
+    memory_store=MyStore(),
     agent_id="my-agent",
-    dream_summarizer=dream_summarizer,
+    memory_summarizer=memory_summarizer,
 ))
 ```
 

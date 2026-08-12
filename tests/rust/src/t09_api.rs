@@ -53,7 +53,7 @@ where
         system_prompt: None,
         initial_memory: vec![],
         skill_dir: None,
-        dream_store: None,
+        memory_store: None,
         knowledge_source: None,
         signal_source: None,
         governance: None,
@@ -117,11 +117,11 @@ impl KnowledgeSource for MockKnowledgeSource {
     }
 }
 
-struct MockDreamStore {
+struct MockMemoryStore {
     committed: Arc<Mutex<bool>>,
 }
 
-impl MockDreamStore {
+impl MockMemoryStore {
     fn empty() -> Self {
         Self {
             committed: Arc::new(Mutex::new(false)),
@@ -130,9 +130,19 @@ impl MockDreamStore {
 }
 
 #[async_trait]
-impl DreamStore for MockDreamStore {
-    async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> deepstrike_sdk::Result<()> {
+impl MemoryStore for MockMemoryStore {
+    async fn put(&self, _agent_id: &str, _record: MemoryRecord) -> deepstrike_sdk::Result<()> {
         *self.committed.lock().unwrap() = true;
+        Ok(())
+    }
+    async fn get(
+        &self,
+        _agent_id: &str,
+        _record_id: &str,
+    ) -> deepstrike_sdk::Result<Option<MemoryRecord>> {
+        Ok(None)
+    }
+    async fn delete(&self, _agent_id: &str, _record_id: &str) -> deepstrike_sdk::Result<()> {
         Ok(())
     }
     async fn search(
@@ -455,10 +465,10 @@ async fn tools_plus_governance_allowed_tool_works() {
 
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY"]
-async fn agent_with_dream_store_enables_memory_tool() {
-    let store = MockDreamStore::empty();
+async fn agent_with_memory_store_enables_memory_tool() {
+    let store = MockMemoryStore::empty();
     let runner = make_runner_with(|_, opts| {
-        opts.dream_store = Some(Box::new(store));
+        opts.memory_store = Some(Box::new(store));
         opts.agent_id = Some("memory-agent".into());
     });
 

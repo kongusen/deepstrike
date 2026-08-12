@@ -72,7 +72,7 @@
 
     <text x="618" y="169" class="card-title" text-anchor="start">证据与持久存储</text>
     <text x="618" y="193" class="card-text" text-anchor="start">SessionLog · ABI 事务 · checkpoint</text>
-<text x="618" y="211" class="card-text" text-anchor="start">DreamStore · Archive · 外置 payload</text>
+<text x="618" y="211" class="card-text" text-anchor="start">MemoryStore · Archive · 外置 payload</text>
 
   </g>
 

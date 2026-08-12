@@ -27,7 +27,7 @@ Under the [Agent OS](/en/architecture/agent-os) narrative, DeepStrike splits int
 | **Syscall & security** | `syscall/`, `governance/` | Unified trap; permission, rate limit, veto |
 | **Schedule & process** | `scheduler/`, `proc/` | L* loop, `TaskTable`, `Tcb`, `AgentProcess` view |
 | **Context VM** | `context/` | Partitions, render, compression, skills, task_state |
-| **Memory mgmt** | `mm/`, `memory/` | Handles, residency, semantic memory, idle pipeline |
+| **Memory mgmt** | `mm/`, `memory/` | Handles, residency, semantic memory, session extraction |
 | **Job scheduler** | `orchestration/` | Workflow DAG, control-flow nodes, Reduce |
 | **Signals** | `signals/` | Route into context state partition |
 | **ABI** | `runtime/kernel/wire.rs` | KernelInput / PlannedStep / KernelObservation |

@@ -1,7 +1,7 @@
 /**
  * T5: every memory query route shares ONE kernel recall lifecycle.
  *
- * The prefetch path used to call `dreamStore.search` directly and hand-assemble a history
+ * The prefetch path used to call `memoryStore.search` directly and hand-assemble a history
  * message, so `memory_recalled` never fired for prefetched hits — recall counts froze and
  * promotions could never trigger. Prefetch now routes each query through the kernel's
  * `query_memory → memory_query_result` effect: the kernel injects each routed hit into
@@ -12,7 +12,7 @@
  */
 import { createRunner } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
-import type { DreamStore, MemoryRecall, MemoryRecallLifecycle } from "../src/memory/protocols.js"
+import type { MemoryStore, MemoryRecall, MemoryRecallLifecycle } from "../src/memory/protocols.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent } from "../src/types.js"
 
 const scope = { tenant_id: "agent-lifecycle", namespace: "t5" }
@@ -31,8 +31,10 @@ function record(recordId: string, content: string, recallCount: number) {
 function trackingStore(initialCount = 0, opts: { withRecordRecall?: boolean; failSearch?: boolean } = {}) {
   const state = { recallCount: initialCount }
   const recallCalls: MemoryRecallLifecycle[][] = []
-  const store: DreamStore = {
-    upsert: async () => {},
+  const store: MemoryStore = {
+    put: async () => {},
+    get: async () => null,
+    delete: async () => {},
     saveSession: async () => {},
     search: async (): Promise<MemoryRecall[]> => {
       if (opts.failSearch) throw new Error("store offline")
@@ -64,11 +66,11 @@ function textProvider(onContext?: (context: RenderedContext) => void): LLMProvid
   }
 }
 
-function runnerOpts(store: DreamStore, extra: Record<string, unknown> = {}) {
+function runnerOpts(store: MemoryStore, extra: Record<string, unknown> = {}) {
   return {
     agentId: "agent-lifecycle",
     memoryScope: scope,
-    dreamStore: store,
+    memoryStore: store,
     preQueryMemory: () => [{ scope, query: "past facts", top_k: 5, kinds: [] }],
     ...extra,
   }

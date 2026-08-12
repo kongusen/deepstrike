@@ -67,7 +67,7 @@ export function resolveProvider(opts: RuntimeOptions, modelHint?: string): Runti
 function deriveMetaTools(permitted: Set<string>, opts: RuntimeOptions): Set<string> {
   const metaTools = new Set<string>()
   if (permitted.has("skill") && opts.skillContentMap?.size) metaTools.add("skill")
-  if (permitted.has("memory") && opts.dreamStore) metaTools.add("memory")
+  if (permitted.has("memory") && opts.memoryStore) metaTools.add("memory")
   if (permitted.has("knowledge") && opts.knowledgeSource) metaTools.add("knowledge")
   if (permitted.has("update_plan") && opts.enablePlanTool) metaTools.add("update_plan")
   return metaTools
@@ -78,7 +78,7 @@ function deriveMetaTools(permitted: Set<string>, opts: RuntimeOptions): Set<stri
 function availableMetaTools(opts: RuntimeOptions): Set<string> {
   const metaTools = new Set<string>()
   if (opts.skillContentMap?.size) metaTools.add("skill")
-  if (opts.dreamStore) metaTools.add("memory")
+  if (opts.memoryStore) metaTools.add("memory")
   if (opts.knowledgeSource) metaTools.add("knowledge")
   if (opts.enablePlanTool) metaTools.add("update_plan")
   return metaTools
@@ -146,7 +146,7 @@ export class SubAgentOrchestrator {
       systemPrompt,
       sessionLog: ctx.sessionLog,
       skillContentMap: metaTools.has("skill") ? ctx.parentOpts.skillContentMap : undefined,
-      dreamStore: metaTools.has("memory") ? ctx.parentOpts.dreamStore : undefined,
+      memoryStore: metaTools.has("memory") ? ctx.parentOpts.memoryStore : undefined,
       knowledgeSource: metaTools.has("knowledge") ? ctx.parentOpts.knowledgeSource : undefined,
       enablePlanTool: metaTools.has("update_plan") ? ctx.parentOpts.enablePlanTool : undefined,
       // The child runs under ITS OWN spec, never the parent's: the spread above would otherwise

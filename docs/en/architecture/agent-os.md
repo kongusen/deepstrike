@@ -17,7 +17,7 @@ LLM produces a structured plan (WorkflowSpec / submit_workflow_nodes)
 deepstrike-core  ──  schedule: gated spawn · budgets · trust · snapshots
         │
         ▼
-Host SDK  ──  run providers, tools, worktrees, DreamStore, webhooks
+Host SDK  ──  run providers, tools, worktrees, MemoryStore, webhooks
 ```
 
 **Control flow in the kernel, I/O in the host** — the core split of Agent OS.

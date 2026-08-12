@@ -1,30 +1,30 @@
 /**
- * `InMemoryDreamStore` — a lightweight `DreamStore` implementation backed by per-agent `Map`s.
+ * `InMemoryMemoryStore` — a lightweight `MemoryStore` implementation backed by per-agent `Map`s.
  * WASM port of node/src/memory/in-memory-store.ts. See that file for the full design.
  *
  * Search returns a genuine relevance score (never stored confidence); the store bounds itself by
  * value-ordered retention eviction (M3) and mirrors recall lifecycle and pin state (M3/M4).
  */
 import type {
-  DreamStore, MemoryQuery, MemoryRecall, MemoryRecallLifecycle, MemoryRecord, SessionData,
+  MemoryStore, MemoryQuery, MemoryRecall, MemoryRecallLifecycle, MemoryRecord, SessionData,
 } from "./index.js"
 import { rankMemories } from "./ranking.js"
 import { memoryRetentionScore } from "./retention.js"
 
-export interface InMemoryDreamStoreOptions {
+export interface InMemoryMemoryStoreOptions {
   maxRecords?: number
   staleWarningDays?: number
   now?: () => number
 }
 
-export class InMemoryDreamStore implements DreamStore {
+export class InMemoryMemoryStore implements MemoryStore {
   private memories = new Map<string, MemoryRecord[]>()
   readonly savedSessions: SessionData[] = []
   private readonly maxRecords?: number
   private readonly staleWarningDays: number
   private readonly now: () => number
 
-  constructor(private readonly initialMemories: MemoryRecord[] = [], options: InMemoryDreamStoreOptions = {}) {
+  constructor(private readonly initialMemories: MemoryRecord[] = [], options: InMemoryMemoryStoreOptions = {}) {
     this.maxRecords = options.maxRecords
     this.staleWarningDays = options.staleWarningDays ?? 2
     this.now = options.now ?? Date.now
@@ -51,7 +51,7 @@ export class InMemoryDreamStore implements DreamStore {
     return scored.slice(0, this.maxRecords).map(entry => entry.record)
   }
 
-  async upsert(agentId: string, incoming: MemoryRecord): Promise<void> {
+  async put(agentId: string, incoming: MemoryRecord): Promise<void> {
     const kept = [...this.recordsFor(agentId)]
     const index = kept.findIndex(record => record.scope.tenant_id === incoming.scope.tenant_id
         && record.scope.namespace === incoming.scope.namespace
@@ -59,6 +59,14 @@ export class InMemoryDreamStore implements DreamStore {
     if (index >= 0) kept[index] = incoming
     else kept.push(incoming)
     this.memories.set(agentId, this.evictToCapacity(kept))
+  }
+
+  async get(agentId: string, recordId: string): Promise<MemoryRecord | null> {
+    return this.recordsFor(agentId).find(record => record.record_id === recordId) ?? null
+  }
+
+  async delete(agentId: string, recordId: string): Promise<void> {
+    this.memories.set(agentId, this.recordsFor(agentId).filter(record => record.record_id !== recordId))
   }
 
   async search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]> {

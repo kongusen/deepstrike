@@ -1,6 +1,6 @@
 """T5: every memory query route shares ONE kernel recall lifecycle.
 
-The prefetch path used to call ``dream_store.search`` directly and hand-assemble a history
+The prefetch path used to call ``memory_store.search`` directly and hand-assemble a history
 message, so ``memory_recalled`` never fired for prefetched hits — recall counts froze and
 promotions could never trigger. Prefetch now routes each query through the kernel's
 ``query_memory → memory_query_result`` effect: the kernel injects each routed hit into history
@@ -42,7 +42,13 @@ class TrackingStore:
         if with_record_recall:
             self.record_recall = self._record_recall
 
-    async def upsert(self, *args, **kwargs):
+    async def put(self, *args, **kwargs):
+        return None
+
+    async def get(self, *args, **kwargs):
+        return None
+
+    async def delete(self, *args, **kwargs):
         return None
 
     async def save_session(self, *args, **kwargs):
@@ -79,7 +85,7 @@ def make_runner(store, **extra) -> RuntimeRunner:
     opts = dict(
         agent_id="agent-lifecycle",
         memory_scope=SCOPE,
-        dream_store=store,
+        memory_store=store,
         pre_query_memory=lambda goal: [MemoryQuery(SCOPE, "past facts", top_k=5)],
     )
     opts.update(extra)

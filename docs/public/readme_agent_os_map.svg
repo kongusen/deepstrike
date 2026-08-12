@@ -72,7 +72,7 @@
 
     <text x="618" y="169" class="card-title" text-anchor="start">Evidence &amp; durable stores</text>
     <text x="618" y="193" class="card-text" text-anchor="start">SessionLog · ABI transactions · checkpoints</text>
-<text x="618" y="211" class="card-text" text-anchor="start">DreamStore · archives · external payloads</text>
+<text x="618" y="211" class="card-text" text-anchor="start">MemoryStore · archives · external payloads</text>
 
   </g>
 

@@ -3,7 +3,7 @@
 code_refs:
   node: [RuntimeRunner, LLMProvider, SessionLog, Governance]
   fields:
-    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, dream_store, memory_policy, pre_query_memory, knowledge_source, dream_provider, dream_summarizer, governance, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
+    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, memory_store, memory_policy, pre_query_memory, knowledge_source, memory_provider, memory_summarizer, governance, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
 ---
 
 # RuntimeOptions 参考
@@ -48,12 +48,12 @@ Python `RuntimeRunner` 的配置中心。定义：`python/deepstrike/runtime/run
 | `skill_dir` | Skill `.md` 目录 |
 | `stable_core_tool_ids` | Skill 门控下始终暴露的工具 |
 | `skill_lease_turns` | K3：skill 激活 N 轮后自动卸载（工具集回宽 + knowledge 钉边界摘除）；None=永久 |
-| `dream_store` | 长期记忆 store |
+| `memory_store` | 长期记忆 store |
 | `memory_policy` | 校验与 retrieval 配置 |
 | `pre_query_memory` | run 前 memory 预取钩子 |
 | `knowledge_source` | 外部知识源 |
-| `dream_provider` | idle pipeline 合成 LLM |
-| `dream_summarizer` | 自定义 summarizer |
+| `memory_provider` | durable memory 提取 LLM |
+| `memory_summarizer` | 语义归档摘要器 |
 
 ## Governance
 

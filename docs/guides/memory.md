@@ -14,7 +14,7 @@ Memory 是 Agent OS 的 **Memory Plane**。它把短期推理状态、session �
 |----|---------|
 | Working | 当前 run 的 scratch pad，不承诺跨 session 持久化 |
 | Session | 证据链的一部分，可审计、可恢复 |
-| Durable | DreamStore 是宿主权威：它拥有完整的跨 session 记录集，在宿主侧计算 retention，并决定驱逐与钉选 |
+| Durable | MemoryStore 是宿主权威：它拥有完整的跨 session 记录集，在宿主侧计算 retention，并决定驱逐与钉选 |
 | Syscall | `write_memory` / `query_memory` 先经 kernel 校验再由 SDK 执行 |
 
 Memory 不应该被理解成“自动塞历史消息”。它是一个受策略约束的知识设备：写什么、何时写、如何检索，都需要能被审计和回放。
@@ -27,7 +27,7 @@ Memory 不应该被理解成“自动塞历史消息”。它是一个受策略�
 |----|------|
 | Working | `WorkingMemory` scratch pad |
 | Session | 单次 run 的 session data |
-| Durable | `DreamStore` 持久化 + idle pipeline 整理 |
+| Durable | `MemoryStore` 持久化 + session extraction 整理 |
 
 Meta-tool / syscall：`memory` 工具 + `write_memory` / `query_memory` kernel events。
 
@@ -35,20 +35,20 @@ Meta-tool / syscall：`memory` 工具 + `write_memory` / `query_memory` kernel e
 
 ## Level 1：write / query
 
-实现 `DreamStore` 协议（`memory/protocols.py`），传入 runner：
+实现 `MemoryStore` 协议（`memory/protocols.py`），传入 runner：
 
 ```python
 class MyStore:
-    async def load_memories(self, agent_id): return []
-    async def load_sessions(self, agent_id): return []
-    async def commit(self, agent_id, result, existing): ...
+    async def put(self, agent_id, record): ...
+    async def get(self, agent_id, record_id): return None
+    async def delete(self, agent_id, record_id): ...
     async def save_session(self, data): ...
-    async def search(self, agent_id, query, top_k=5): return []
+    async def search(self, agent_id, query): return []
 
 runner = RuntimeRunner(RuntimeOptions(
     ...,
     agent_id="my-agent",
-    dream_store=MyStore(),
+    memory_store=MyStore(),
 ))
 
 await runner.write_memory({
@@ -106,32 +106,27 @@ def pre_query(goal: str, phase: str | None = None):
 RuntimeOptions(
     ...,
     pre_query_memory=pre_query,
-    dream_store=store,
+    memory_store=store,
     agent_id="my-agent",
 )
 ```
 
-启动前 search dream store，hits 作为**普通轮次注入 history**（单次使用的事实内容，随压缩金字塔自然衰减——不钉进 knowledge 分区）。sprint renewal 会整体重建 history，钩子随即以 `phase="renewal"` 重发一次，让新 sprint 从新鲜召回开始。不接受 `phase` 参数的旧钩子（`lambda goal: [...]`）继续照常工作。
+启动前搜索 durable `MemoryStore`，hits 作为**普通轮次注入 history**（单次使用的事实内容，随压缩金字塔自然衰减，不钉进 knowledge 分区）。sprint renewal 会整体重建 history，钩子随即以 `phase="renewal"` 重发一次，让新 sprint 从新鲜召回开始。
 
 ---
 
-## Level 4：Idle Pipeline（Dreaming）
+## Level 4：Session extraction
 
-内核 `idle_pipeline.rs` 两阶段：
-
-```
-Phase 1: TraceAnalyzer（规则）→ SynthesizeInsights（SDK 调 LLM）
-Phase 2: SynthesisResult → MemoryCurator（去重/冲突）→ CommitMemories
-```
+Runner 在 session 结束后保存 transcript，并通过 provider 或 `memory_summarizer` 提取候选记录；每条记录仍回到 kernel `write_memory` gate 后写入 `MemoryStore`。
 
 SDK 配置：
 
 ```python
 RuntimeOptions(
     ...,
-    dream_provider=synthesis_provider,
-    dream_summarizer=custom_summarizer,
-    dream_system_prompt="Extract durable insights from sessions...",
+    memory_provider=synthesis_provider,
+    memory_summarizer=custom_summarizer,
+    memory_system_prompt="Extract durable insights from sessions...",
 )
 ```
 
@@ -141,14 +136,14 @@ RuntimeOptions(
 
 召回是一次带反馈的打分查询，遗忘是基于 retention 的驱逐——两者都由宿主权威掌控。
 
-- **Recall journaling。** 当 `query_memory` 命中一条记录时，kernel 依据这次命中推导出该记录的下一个 `recall_count`，并 emit 一个 `memory_recalled` observation。宿主的 `DreamStore.recordRecall` 把它折回，因此一条被反复召回的记录会累积使用度，而无需 kernel 持有 durable ledger。
+- **Recall journaling。** 当 `query_memory` 命中一条记录时，kernel 依据这次命中推导出该记录的下一个 `recall_count`，并 emit 一个 `memory_recalled` observation。宿主的 `MemoryStore.recordRecall` 把它折回，因此一条被反复召回的记录会累积使用度，而无需 kernel 持有 durable ledger。
 - **达到阈值即提升。** 越过 `MemoryPolicy.promotion_recall_threshold` 会 emit 一个 `promotion_suggested` observation（边沿触发——仅在越过的那一刻一次），通过 `onPromotionSuggested` 回调呈现给宿主，好让一条被频繁召回的记录钉进 durable knowledge。
-- **Retention 与驱逐。** `memory_retention_score` 按使用度、kind、confidence、recency 和 size 给记录排名（钉选记录排到最前）。宿主的 `DreamStore` 用它把冷记录驱逐到容量以内——遗忘是一次确定性排名，而不是 FIFO。
+- **Retention 与驱逐。** `memory_retention_score` 按使用度、kind、confidence、recency 和 size 给记录排名（钉选记录排到最前）。宿主的 `MemoryStore` 用它把冷记录驱逐到容量以内——遗忘是一次确定性排名，而不是 FIFO。
 
 ```python
 RuntimeOptions(
     memory_policy=MemoryPolicy(promotion_recall_threshold=3),
-    on_promotion_suggested=lambda rec: dream_store.set_pinned(rec.record_id, True),
+    on_promotion_suggested=lambda rec: memory_store.set_pinned(rec.record_id, True),
 )
 ```
 
@@ -175,4 +170,4 @@ RuntimeOptions(
 
 - [Context 工程](./context-engineering) — knowledge 分区
 - [Governance](./governance) — syscall trap
-- `InMemoryDreamStore` — 开发用实现
+- `InMemoryMemoryStore` — 开发用实现

@@ -6,7 +6,7 @@ import type { RegisteredTool, ToolExecContext } from "../tools/index.js"
 import { isAsyncIterable, maybeWarnFailureShapedChunk, normalizeToolChunk, toolChunkText, validateToolArguments } from "../tools/index.js"
 import { formatToolError } from "../tools/errors.js"
 import { readSkillFile } from "../skills/loader.js"
-import type { DreamStore, MemoryScope } from "../memory/protocols.js"
+import type { MemoryStore, MemoryScope } from "../memory/protocols.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { OperationContext } from "./reliability.js"
 
@@ -16,7 +16,7 @@ export interface RunContext {
   agentId?: string
   memoryScope?: MemoryScope
   skillDir?: string
-  dreamStore?: DreamStore
+  memoryStore?: MemoryStore
   knowledgeSource?: KnowledgeSource
   onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
   onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
@@ -73,8 +73,8 @@ export class LocalExecutionPlane implements ExecutionPlane {
     for (const c of memoryCalls) {
       const args = tryParseJson(c.arguments) as Record<string, unknown>
       const topK = typeof args?.top_k === "number" ? args.top_k : 5
-      const entries = (ctx.dreamStore && ctx.agentId && ctx.memoryScope)
-        ? await ctx.dreamStore.search(ctx.agentId, {
+      const entries = (ctx.memoryStore && ctx.agentId && ctx.memoryScope)
+        ? await ctx.memoryStore.search(ctx.agentId, {
           scope: ctx.memoryScope,
           query: String(args?.query ?? ""),
           top_k: topK,

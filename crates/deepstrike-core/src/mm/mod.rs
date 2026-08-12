@@ -1,7 +1,7 @@
 //! Memory-management paging decisions (Phase 4) and long-term memory management (Phase 7).
 //!
 //! The kernel decides **when** to page working context out/in; SDKs perform **how**
-//! (durable store, embedding search, idle pipeline). No I/O in this module.
+//! (durable store, embedding search, session extraction). No I/O in this module.
 //!
 //! Phase 7 extends this module with memory classification and validation rules.
 

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::message::Message;
 
-/// A completed session's transcript as fed into the dream pipeline over FFI.
+/// A completed session's transcript as fed into host-side durable-memory extraction over FFI.
 /// Persistence is an SDK concern; the kernel only analyzes the payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionData {

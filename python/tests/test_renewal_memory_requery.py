@@ -25,8 +25,14 @@ RECALL_HIT = MemoryRecall(MemoryRecord(
 ), 0.9, "fixture")
 
 
-class FakeDreamStore:
-    async def upsert(self, *args, **kwargs):
+class FakeMemoryStore:
+    async def put(self, *args, **kwargs):
+        return None
+
+    async def get(self, *args, **kwargs):
+        return None
+
+    async def delete(self, *args, **kwargs):
         return None
 
     async def search(self, agent_id, query: MemoryQuery):
@@ -75,7 +81,7 @@ async def test_renewal_refires_prefetch_with_phase_and_lands_in_history():
         max_turns=30,
         agent_id="agent-k4",
         memory_scope=SCOPE,
-        dream_store=FakeDreamStore(),
+        memory_store=FakeMemoryStore(),
         repeat_fuse=False,
         pre_query_memory=pre_query,
     ))

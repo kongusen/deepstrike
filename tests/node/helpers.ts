@@ -15,7 +15,7 @@ import {
   type StreamEvent,
 } from "@deepstrike/sdk"
 import type {
-  DreamStore,
+  MemoryStore,
   KnowledgeSource,
   MemoryQuery,
   MemoryRecall,
@@ -42,7 +42,7 @@ export interface MakeRunnerOptions {
   systemPrompt?: string
   initialMemory?: string[]
   skillDir?: string
-  dreamStore?: DreamStore
+  memoryStore?: MemoryStore
   agentId?: string
   memoryScope?: MemoryScope
   knowledgeSource?: KnowledgeSource
@@ -92,7 +92,7 @@ export function makeRunner(options: MakeRunnerOptions = {}): RunnerHandle {
     systemPrompt: options.systemPrompt,
     initialMemory: options.initialMemory,
     skillDir: options.skillDir,
-    dreamStore: options.dreamStore,
+    memoryStore: options.memoryStore,
     agentId: options.agentId,
     memoryScope: options.memoryScope,
     knowledgeSource: options.knowledgeSource,
@@ -139,11 +139,11 @@ export function memoryRecord(
   }
 }
 
-export class MockDreamStore implements DreamStore {
+export class MockMemoryStore implements MemoryStore {
   private memories = new Map<string, MemoryRecord[]>()
   savedSessions: SessionData[] = []
 
-  async upsert(agentId: string, incoming: MemoryRecord): Promise<void> {
+  async put(agentId: string, incoming: MemoryRecord): Promise<void> {
     const kept = [...(this.memories.get(agentId) ?? [])]
     const index = kept.findIndex(record => record.scope.tenant_id === incoming.scope.tenant_id
       && record.scope.namespace === incoming.scope.namespace
@@ -151,6 +151,15 @@ export class MockDreamStore implements DreamStore {
     if (index >= 0) kept[index] = incoming
     else kept.push(incoming)
     this.memories.set(agentId, kept)
+  }
+
+  async get(agentId: string, recordId: string): Promise<MemoryRecord | null> {
+    return this.memories.get(agentId)?.find(record => record.record_id === recordId) ?? null
+  }
+
+  async delete(agentId: string, recordId: string): Promise<void> {
+    this.memories.set(agentId, (this.memories.get(agentId) ?? [])
+      .filter(record => record.record_id !== recordId))
   }
 
   async search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]> {

@@ -46,8 +46,26 @@ export interface MemoryQuery {
 /** One record's recall lifecycle, mirrored from the kernel's `memory_recalled` observation (M3). */
 export interface MemoryRecallLifecycle { record_id: string; recall_count: number; last_recalled_at: number }
 
-export interface DreamStore {
-  upsert(agentId: string, record: MemoryRecord): Promise<void>
+export interface MemorySearchOptions {
+  topK?: number
+  kinds?: MemoryKind[]
+  minScore?: number
+}
+
+/** Public durable memory bound to one agent and scope, distinct from `WorkingMemory`. */
+export interface Memory {
+  readonly namespace?: string
+  search(query: string, options?: MemorySearchOptions): Promise<MemoryRecord[]>
+  get(recordId: string): Promise<MemoryRecord | null>
+  put(record: MemoryRecord): Promise<void>
+  delete(recordId: string): Promise<void>
+}
+
+/** Host-owned durable storage behind an agent-bound public `Memory` descriptor. */
+export interface MemoryStore {
+  put(agentId: string, record: MemoryRecord): Promise<void>
+  get(agentId: string, recordId: string): Promise<MemoryRecord | null>
+  delete(agentId: string, recordId: string): Promise<void>
   search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]>
   /** Persist a completed session before the runner's one extraction pass. */
   saveSession(data: SessionData): Promise<void>

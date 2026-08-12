@@ -77,7 +77,7 @@ src/
 ├── types.ts          # Shared type definitions
 ├── providers/        # LLM adapters (fetch-based SSE)
 ├── tools/            # tool() helper, executeTools (no fs/shell)
-├── memory/           # WorkingMemory + DreamStore interfaces
+├── memory/           # WorkingMemory + MemoryStore interfaces
 ├── knowledge/        # KnowledgeSource interface
 ├── harness/          # AttemptLoop body/judge/carry/stop policies
 ├── signals/          # RuntimeSignal, SignalSource, ScheduledPrompt
@@ -175,7 +175,7 @@ const runner = new RuntimeRunner({
 })
 ```
 
-IndexedDB / KV can back `DreamStore` for cross-session memory. Meta-tool retrieval still lands in **history**.
+IndexedDB / KV can back `MemoryStore` for cross-session memory. Meta-tool retrieval still lands in **history**.
 
 See [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-compression.md).
 
@@ -212,7 +212,7 @@ mem.set("step", 1)
 mem.get("step")   // 1
 ```
 
-For cross-session recall, implement `DreamStore` and set `agentId` on `RuntimeRunner`. In-session `memory(query)` results appear in **history**; preload durable blocks with `initialMemory` → Slot 2.
+For cross-session recall, implement `MemoryStore` and set `agentId` on `RuntimeRunner`. In-session `memory(query)` results appear in **history**; preload durable blocks with `initialMemory` → Slot 2.
 
 ---
 

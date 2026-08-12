@@ -40,7 +40,7 @@ from deepstrike.runtime import (
 )
 from deepstrike.providers.stream import StreamEvent, TextDelta, DoneEvent
 from deepstrike.memory.protocols import (
-    DreamStore, SessionData, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
+    MemoryStore, SessionData, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
     MemoryScope,
 )
 
@@ -114,12 +114,12 @@ def make_runner(**overrides: Any) -> RunnerHandle:
 make_agent = make_runner
 
 
-class MockDreamStore:
+class MockMemoryStore:
     def __init__(self):
         self._memories: dict[str, list[MemoryRecord]] = {}
         self.saved_sessions: list[SessionData] = []
 
-    async def upsert(self, agent_id: str, incoming: MemoryRecord):
+    async def put(self, agent_id: str, incoming: MemoryRecord):
         records = list(self._memories.get(agent_id, []))
         index = next((i for i, record in enumerate(records)
                       if record.scope == incoming.scope and record.kind == incoming.kind and record.name == incoming.name), None)
@@ -128,6 +128,14 @@ class MockDreamStore:
         else:
             records[index] = incoming
         self._memories[agent_id] = records
+
+    async def get(self, agent_id: str, record_id: str) -> MemoryRecord | None:
+        return next((record for record in self._memories.get(agent_id, []) if record.record_id == record_id), None)
+
+    async def delete(self, agent_id: str, record_id: str) -> None:
+        self._memories[agent_id] = [
+            record for record in self._memories.get(agent_id, []) if record.record_id != record_id
+        ]
 
     async def search(self, agent_id: str, query: MemoryQuery) -> list[MemoryRecall]:
         records = [record for record in self._memories.get(agent_id, []) if record.scope == query.scope]

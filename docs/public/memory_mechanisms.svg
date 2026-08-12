@@ -1,7 +1,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike memory lifecycle</title>
-  <desc id="desc">Working, session, and durable memory paths, including kernel-validated writes and queries, prefetch and renewal recall, recall journaling, retention, promotion suggestions, and host-authoritative DreamStore state.</desc>
+  <desc id="desc">Working, session, and durable memory paths, including kernel-validated writes and queries, prefetch and renewal recall, recall journaling, retention, promotion suggestions, and host-authoritative MemoryStore state.</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
@@ -71,7 +71,7 @@
     <rect x="808" y="146" width="344" height="104" rx="6" class="panel"/>
     <rect x="808" y="146" width="5" height="104" rx="2.5" class="accent-fill"/>
     <text x="826" y="175" class="card-title" text-anchor="start">Durable</text>
-    <text x="826" y="199" class="card-text" text-anchor="start">DreamStore owns full record set</text>
+    <text x="826" y="199" class="card-text" text-anchor="start">MemoryStore owns full record set</text>
 <text x="826" y="217" class="card-text" text-anchor="start">Host decides retention, pinning, eviction</text>
 
   </g>
@@ -94,7 +94,7 @@
 
     <text x="292" y="347" class="card-title" text-anchor="start">Scoped query</text>
     <text x="292" y="371" class="card-text" text-anchor="start">Kernel validates memory scope</text>
-<text x="292" y="389" class="card-text" text-anchor="start">DreamStore.search(topK)</text>
+<text x="292" y="389" class="card-text" text-anchor="start">MemoryStore.search(topK)</text>
 
   </g>
 
@@ -144,7 +144,7 @@
     <rect x="374" y="498" width="258" height="112" rx="6" class="panel"/>
 
     <text x="392" y="527" class="card-title" text-anchor="start">Host commit</text>
-    <text x="392" y="551" class="card-text" text-anchor="start">Dedup + durable DreamStore write</text>
+    <text x="392" y="551" class="card-text" text-anchor="start">Dedup + durable MemoryStore write</text>
 <text x="392" y="569" class="card-text" text-anchor="start">memory_written evidence</text>
 
   </g>
@@ -153,9 +153,9 @@
   <g>
     <rect x="700" y="498" width="208" height="112" rx="6" class="panel"/>
 
-    <text x="718" y="527" class="card-title" text-anchor="start">Idle pipeline</text>
+    <text x="718" y="527" class="card-title" text-anchor="start">Session extraction</text>
     <text x="718" y="551" class="card-text" text-anchor="start">Extract + consolidate</text>
-<text x="718" y="569" class="card-text" text-anchor="start">Dream after session boundary</text>
+<text x="718" y="569" class="card-text" text-anchor="start">Extract after session boundary</text>
 
   </g>
     <path d="M908 554H974" class="flow flow-coral"/>
@@ -170,7 +170,7 @@
   </g>
 
   <text x="48" y="660" class="section-title" text-anchor="start">Invariant</text>
-  <text x="1152" y="660" class="section-note" text-anchor="end">DREAMSTORE IS AUTHORITATIVE · RETRIEVAL HITS DECAY · PROMOTION IS ADVISORY</text>
+  <text x="1152" y="660" class="section-note" text-anchor="end">MEMORYSTORE IS AUTHORITATIVE · RETRIEVAL HITS DECAY · PROMOTION IS ADVISORY</text>
     <text x="48" y="690" class="body" text-anchor="start">A recalled fact becomes durable knowledge only when the host explicitly promotes or pins it; the kernel never silently upgrades authority.</text>
 
   <text x="48" y="746" class="footer" text-anchor="start">DEEPSTRIKE · CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST</text>

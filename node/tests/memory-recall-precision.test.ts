@@ -3,7 +3,7 @@
  * over a planted corpus. This is the "召回质量探针" acceptance criterion from the six-mechanisms
  * spec §6.3 — a regression here means recall quality silently fell back toward insertion order.
  */
-import { InMemoryDreamStore } from "../src/memory/in-memory-store.js"
+import { InMemoryMemoryStore } from "../src/memory/in-memory-store.js"
 import type { MemoryQuery, MemoryRecord } from "../src/memory/protocols.js"
 
 const scope = { tenant_id: "t", namespace: "precision" }
@@ -31,7 +31,7 @@ describe("memory recall precision@k (P3 gate)", () => {
   const relevant = new Set(["rel-1", "rel-2"])
 
   it("relevance ranking achieves precision@2 = 1.0 where FIFO/recency would score 0", async () => {
-    const store = new InMemoryDreamStore(corpus)
+    const store = new InMemoryMemoryStore(corpus)
     const hits = await store.search("a", q("kubernetes pod eviction", 2))
     const precision = hits.filter(h => relevant.has(h.record.record_id)).length / hits.length
     expect(precision).toBe(1)
@@ -45,7 +45,7 @@ describe("memory recall precision@k (P3 gate)", () => {
   })
 
   it("a non-matching query returns nothing rather than recency-nearest decoys", async () => {
-    const store = new InMemoryDreamStore(corpus)
+    const store = new InMemoryMemoryStore(corpus)
     expect(await store.search("a", q("unrelated astronomy telescope", 3))).toEqual([])
   })
 })

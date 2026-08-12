@@ -6,15 +6,17 @@
  */
 import { createRunner } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
-import type { DreamStore, MemoryRecall } from "../src/memory/protocols.js"
+import type { MemoryStore, MemoryRecall } from "../src/memory/protocols.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent } from "../src/types.js"
 
 const RECALL = "PREFETCHED_LONGTERM_FACT"
 const scope = { tenant_id: "agent-prequery", namespace: "prefetch" }
 
-function dreamStore(): DreamStore {
+function memoryStore(): MemoryStore {
   return {
-    upsert: async () => {},
+    put: async () => {},
+    get: async () => null,
+    delete: async () => {},
     saveSession: async () => {},
     search: async () => [{
       record: {
@@ -47,7 +49,7 @@ describe("preQueryMemory prefetch lands in history, not knowledge", () => {
     const { runner } = createRunner(provider, [], {
       agentId: "agent-prequery",
       memoryScope: scope,
-      dreamStore: dreamStore(),
+      memoryStore: memoryStore(),
     })
     ;(runner as unknown as { opts: { preQueryMemory: unknown } }).opts.preQueryMemory = () => [{
       scope, query: "past facts", top_k: 5, kinds: [],

@@ -55,7 +55,7 @@ async fn main() {
         system_prompt: None,
         initial_memory: vec![],
         skill_dir: None,
-        dream_store: None,
+        memory_store: None,
         knowledge_source: None,
         signal_source: None,
         governance: None,
@@ -147,7 +147,7 @@ RuntimeOptions {
     skill_dir: Some("./skills".into()),
     knowledge_source: Some(Box::new(my_ks)),
     signal_source: Some(Box::new(rx)),
-    dream_store: Some(Box::new(my_store)),
+    memory_store: Some(Box::new(my_store)),
     agent_id: Some("my-agent".into()),
     initial_memory: vec![],     // preloaded blocks → Slot 2
     governance: None,
@@ -227,21 +227,21 @@ mem.get("step");  // Some(&json!(1))
 mem.clear();
 ```
 
-### DreamStore (long-term memory + dreaming pipeline)
+### MemoryStore (durable long-term memory)
 
 ```rust
 #[async_trait]
-impl DreamStore for MyStore {
-    async fn load_sessions(&self, agent_id: &str) -> Result<Vec<SessionData>> { ... }
-    async fn load_memories(&self, agent_id: &str) -> Result<Vec<MemoryRecord>> { ... }
-    async fn commit(&self, agent_id: &str, result: CurationResult, existing: &[MemoryRecord]) -> Result<()> { ... }
+impl MemoryStore for MyStore {
+    async fn put(&self, agent_id: &str, record: MemoryRecord) -> Result<()> { ... }
+    async fn get(&self, agent_id: &str, record_id: &str) -> Result<Option<MemoryRecord>> { ... }
+    async fn delete(&self, agent_id: &str, record_id: &str) -> Result<()> { ... }
     async fn search(&self, agent_id: &str, query: &MemoryQuery) -> Result<Vec<MemoryRecall>> { ... }
+    async fn save_session(&self, data: SessionData) -> Result<()> { ... }
 }
 
 // In-session: memory(query) → history tool result
 // Preload:    initial_memory → Slot 2
-// Post-session:
-let result = runner.dream("my-agent", now_ms).await?;
+// Post-session: the runner saves the transcript and extracts durable records.
 ```
 
 ---

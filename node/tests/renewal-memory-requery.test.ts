@@ -7,7 +7,7 @@
  */
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
-import type { DreamStore, MemoryRecall } from "../src/memory/protocols.js"
+import type { MemoryStore, MemoryRecall } from "../src/memory/protocols.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent } from "../src/types.js"
 
 const RECALL = "LONGTERM_FACT_FOR_SPRINT"
@@ -20,8 +20,10 @@ describe("renewal-boundary memory re-query (K4)", () => {
     let sawRenewal = false
     let call = 0
 
-    const dreamStore: DreamStore = {
-      upsert: async () => {},
+    const memoryStore: MemoryStore = {
+      put: async () => {},
+      get: async () => null,
+      delete: async () => {},
       saveSession: async () => {},
       search: async () => [{
         record: {
@@ -67,7 +69,7 @@ describe("renewal-boundary memory re-query (K4)", () => {
         maxTurns: 30,
         agentId: "agent-k4",
         memoryScope: scope,
-        dreamStore,
+        memoryStore,
         repeatFuse: false,
         preQueryMemory: (ctx: { goal: string; phase?: string }) => {
           phases.push(ctx.phase)

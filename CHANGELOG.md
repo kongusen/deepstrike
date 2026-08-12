@@ -290,7 +290,7 @@ Four kernel correctness fixes that close unbounded or misclassified agent-loop e
 ### Fixed — memory prefetch recall lifecycle (T5)
 
 - Prefetch / host `queryMemory` / in-run `query_memory` share one kernel route so `memory_recalled`,
-  `DreamStore.recordRecall`, and `promotion_suggested` fire for prefetched hits too (previously
+  `MemoryStore.recordRecall`, and `promotion_suggested` fire for prefetched hits too (previously
   prefetch bypassed the recall journal). Node + Python.
 
 ## [0.2.41] - 2026-07-16
@@ -332,7 +332,7 @@ Four kernel correctness fixes that close unbounded or misclassified agent-loop e
   restored on resume. New guide: **Multimodal Input**.
 - **Memory lifecycle (M3/M4).** Recall journaling (`recall_count` via `memory_recalled` observations),
   retention-based eviction (`memory_retention_score`), and promotion-on-recall-threshold
-  (`promotion_suggested`); the host `DreamStore` is authoritative for the durable record set.
+  (`promotion_suggested`); the host `MemoryStore` is authoritative for the durable record set.
 - **W2 deterministic replay lab** (`deepstrike-lab`) with a golden ReplayReport CI gate over the
   compression pipeline (text and image compaction).
 
@@ -545,7 +545,7 @@ Four kernel correctness fixes that close unbounded or misclassified agent-loop e
   not read them. **All four SDKs.**
 - **`RuntimeOptions.preQueryMemory` — run-start memory pre-fetch.** Optional
   hook called once per run before turn 1 with the request's goal. Each
-  returned query becomes a `dreamStore.search(agentId, q, 5)`, and the hits
+  returned query becomes a `memoryStore.search(agentId, q, 5)`, and the hits
   page into the knowledge partition so the model sees them on turn 1 instead
   of having to discover the same memory via the meta-tool on turn 3+.
   DeepSeek bench (memory-recall scenario) confirms the prefetch variant tracks
@@ -663,14 +663,14 @@ Four kernel correctness fixes that close unbounded or misclassified agent-loop e
 
 ### Added
 
-- **`InMemoryDreamStore` — a process-local `DreamStore`.** Previously lived as `MockDreamStore` in
+- **`InMemoryMemoryStore` — a process-local `MemoryStore`.** Previously lived as `MockMemoryStore` in
   the Node SDK test helpers; promoted to a public export so benchmarks, examples, and downstream
   consumers can use it without copying the boilerplate. Initial-memory seeding (handy for memory
   A/B scenarios), `addSession` / `addMemories` for test setup, `savedSessions` for assertions.
   `search()` is a non-semantic top-K slice — the kernel ranks by score, so insertion order is what
-  surfaces; plug in a real store for semantic search. **All four SDKs** — `InMemoryDreamStore`
+  surfaces; plug in a real store for semantic search. **All four SDKs** — `InMemoryMemoryStore`
   (Node `@deepstrike/sdk`, WASM `@deepstrike/wasm-kernel`, Rust `deepstrike-sdk`) and Python
-  `deepstrike.InMemoryDreamStore`.
+  `deepstrike.InMemoryMemoryStore`.
 
 ## [0.2.20] - 2026-06-16
 
@@ -749,7 +749,7 @@ Four kernel correctness fixes that close unbounded or misclassified agent-loop e
 ### Fixed
 
 - **Meta-tool leakage in workflow child runners.** Child nodes wasted turns calling meta-tools (`skill`, `memory`, `knowledge`, `update_plan`) that were always whitelisted regardless of the node's `permitted_capability_ids`. Two root causes fixed:
-  - **Source leakage:** child runners inherited parent's `skillDir`/`dreamStore`/`knowledgeSource`/`enablePlanTool` via spread operator, causing the kernel to register meta-tool schemas the LLM would then call. Now only sources whose meta-tool is in `permitted_capability_ids` are passed to the child runner.
+  - **Source leakage:** child runners inherited parent's `skillDir`/`memoryStore`/`knowledgeSource`/`enablePlanTool` via spread operator, causing the kernel to register meta-tool schemas the LLM would then call. Now only sources whose meta-tool is in `permitted_capability_ids` are passed to the child runner.
   - **Filter leakage:** `FilteredExecutionPlane` hardcoded `DEFAULT_META_TOOLS` as always-allowed. The orchestrator now derives the `metaTools` set from the manifest and passes it explicitly, so only permitted meta-tools are admitted.
 - Applied consistently across all three runtimes: Node (`sub-agent-orchestrator.ts`), Python (`sub_agent_orchestrator.py`), and WASM (`sub-agent-orchestrator.ts`).
 - **`renderedContextToSdk` dropped `state_turn` and `frozen_prefix_len` from the kernel JSON step path.** The kernel emits these fields in the `call_provider` action's `RenderedContext`, but the Node and WASM SDK's JSON→SDK mapper (`renderedContextToSdk`) never read them — so `stateTurn` was always `undefined` and `frozenPrefixLen` was always missing in the provider context. The NAPI `render()` path (used only for reactive-compact retries) was correct; the primary `step()` path was not. Python was already correct.
@@ -1026,9 +1026,9 @@ These mechanisms move the SDK from “agent loop library” to an **Agent OS run
 | Before (≤ 0.2.4) | After (0.2.5) |
 |---|---|
 | Scheduling, compression, and permission logic scattered in each SDK | Unified syscall trap, TCB lifecycle, and MM eviction funnel — same semantics in Node, Python, and Rust |
-| Large tool outputs and long sessions hit token walls | Layer-1 spool (preview + `.spool/` ref) and semantic page-out → `DreamStore` keep runs going without hard truncation |
+| Large tool outputs and long sessions hit token walls | Layer-1 spool (preview + `.spool/` ref) and semantic page-out → `MemoryStore` keep runs going without hard truncation |
 | Governance and signal routing were optional SDK plugins | OS native profile: declarative `governancePolicy` and in-kernel `attentionPolicy` on by default |
-| Long-term memory mostly via meta-tools and idle pipelines | `writeMemory` / `queryMemory` kernel syscalls with validation, audit events, and retrieval closure |
+| Long-term memory mostly via meta-tools and background consolidation | `writeMemory` / `queryMemory` kernel syscalls with validation, audit events, and retrieval closure |
 | Session logs skewed toward chat + tools | Full OS event stream (`syscall` · `sched` · `mm` · `proc` · `ipc`) and rebuildable OS snapshots |
 
 **For application developers:**
@@ -1069,7 +1069,7 @@ These mechanisms move the SDK from “agent loop library” to an **Agent OS run
 
 - **Defaults on every run:** `governancePolicy` (`DEFAULT_NATIVE_GOVERNANCE_POLICY`) and `attentionPolicy` (`DEFAULT_NATIVE_ATTENTION_POLICY`, queue size 64) loaded into the kernel before `start_run`.
 - Declarative governance (deny / ask_user / rate-limit / param rules) enforced in-kernel before tool execution.
-- `RuntimeOptions.attentionPolicy`, `RuntimeOptions.governancePolicy`, `RuntimeOptions.dreamSummarizer`, `RuntimeOptions.resultSpool` (Node); equivalent options in Python and Rust runners.
+- `RuntimeOptions.attentionPolicy`, `RuntimeOptions.governancePolicy`, `RuntimeOptions.memorySummarizer`, `RuntimeOptions.resultSpool` (Node); equivalent options in Python and Rust runners.
 
 #### SDK — Layer 1 spool I/O (S1)
 
@@ -1077,16 +1077,16 @@ These mechanisms move the SDK from “agent loop library” to an **Agent OS run
 - `LocalExecutionPlane` (Node) transparently resolves `read_file` paths under `.spool/`.
 - Cross-SDK spool parity tests and session-log event mapping.
 
-#### SDK — Semantic page-out → DreamStore (S2)
+#### SDK — Semantic page-out → MemoryStore (S2)
 
-- On kernel `page_out { tier_hint: "semantic" }`, SDK summarizes archived content via `dreamSummarizer` / `dreamProvider` and commits to `DreamStore`.
-- `page_in_requested` satisfied from `DreamStore`, `KnowledgeSource`, and a local semantic page-out cache before feeding `page_in` back to the kernel.
+- On kernel `page_out { tier_hint: "semantic" }`, SDK summarizes archived content via `memorySummarizer` / `memoryProvider` and commits to `MemoryStore`.
+- `page_in_requested` satisfied from `MemoryStore`, `KnowledgeSource`, and a local semantic page-out cache before feeding `page_in` back to the kernel.
 - Layer-5 AutoCompact → semantic page-out contract pinned in core tests.
 
 #### SDK — Phase-7 memory syscalls (Node / Python / Rust)
 
-- **`writeMemory` / `write_memory`:** Kernel `WriteMemory` validation → `DreamStore.commit()` on success; `memory_validation_failed` on reject.
-- **`queryMemory` / `query_memory`:** Kernel `QueryMemory` → `DreamStore.search()` → `selectMemories` (Node `memory/agent.ts`; new Python `deepstrike/memory/agent.py`) → `memory_retrieval_result` fed back to the kernel.
+- **`writeMemory` / `write_memory`:** Kernel `WriteMemory` validation → `MemoryStore.put()` on success; `memory_validation_failed` on reject.
+- **`queryMemory` / `query_memory`:** Kernel `QueryMemory` → `MemoryStore.search()` → `selectMemories` (Node `memory/agent.ts`; new Python `deepstrike/memory/agent.py`) → `memory_retrieval_result` fed back to the kernel.
 - Session events: `memory_written`, `memory_queried`, `memory_validation_failed`, `memory_retrieval_result`.
 - **Wasm:** Session-event type mapping only (no runner-level `writeMemory` / `queryMemory` API yet).
 

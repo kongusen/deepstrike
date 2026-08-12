@@ -14,7 +14,7 @@ use futures::stream::{Stream, StreamExt};
 use crate::Result;
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
-use crate::memory::DreamStore;
+use crate::memory::MemoryStore;
 use crate::run_event::RunEvent;
 use crate::runtime::sandboxed_skill::{
     PythonSkillPolicy, SkillKind, execute_json_skill, execute_python_skill, resolve_skill_path,
@@ -62,7 +62,7 @@ pub struct RunContext<'a> {
     pub agent_id: Option<&'a str>,
     pub memory_scope: Option<&'a MemoryScope>,
     pub skill_dir: Option<&'a Path>,
-    pub dream_store: Option<&'a dyn DreamStore>,
+    pub memory_store: Option<&'a dyn MemoryStore>,
     pub knowledge_source: Option<&'a dyn KnowledgeSource>,
     pub governance: Option<Arc<Mutex<Governance>>>,
     pub on_tool_suspend: Option<ToolSuspendHandler>,
@@ -314,7 +314,7 @@ fn execute_all_local<'a>(
         for c in memory_calls {
             let query = c.arguments.get("query").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let top_k = c.arguments.get("top_k").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-            let (content, is_error) = match (ctx.dream_store, ctx.agent_id, ctx.memory_scope) {
+            let (content, is_error) = match (ctx.memory_store, ctx.agent_id, ctx.memory_scope) {
                 (Some(store), Some(agent_id), Some(scope)) => match store.search(agent_id, &MemoryQuery {
                     scope: scope.clone(),
                     query,

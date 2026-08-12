@@ -25,7 +25,7 @@ DeepStrike 的架构叙事以 **Agent OS** 为中心：把「动态工作流 har
                             │ RuntimeRunner / run_agent
 ┌───────────────────────────▼─────────────────────────────────┐
 │  宿主 SDK（Python · Node · Rust · WASM）                       │
-│  Provider · ExecutionPlane · SessionLog · DreamStore · Signal  │
+│  Provider · ExecutionPlane · SessionLog · MemoryStore · Signal  │
 └───────────────────────────┬─────────────────────────────────┘
                             │ KernelInput / KernelAction
 ┌───────────────────────────▼─────────────────────────────────┐
@@ -80,7 +80,7 @@ DeepStrike 的架构叙事以 **Agent OS** 为中心：把「动态工作流 har
 | Context VM | 四槽位渲染、压缩、Prompt Cache | [Context 工程](../guides/context-engineering) |
 | Syscall + Governance | 工具权限、配额、quarantine | [Governance](../guides/governance) |
 | Workflow DAG | fan-out、classify、loop、tournament | [动态工作流](../guides/workflow) |
-| Memory syscall | writeMemory / queryMemory / Dream | [Memory](../guides/memory) |
+| Memory syscall | writeMemory / queryMemory / durable memory | [Memory](../guides/memory) |
 | AgentProcess / TCB | Sub-agent、隔离、Handoff | [Sub-Agent 与协作](../guides/sub-agents-and-collaboration) |
 
 架构讲 **为什么与整体形状**；指南讲 **怎么用与示例**。

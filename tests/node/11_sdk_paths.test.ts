@@ -6,7 +6,7 @@ import assert from "node:assert/strict"
 import type { DoneEvent, TextDeltaEvent } from "@deepstrike/sdk"
 import { AttemptLoop, LlmEvalJudge, RuntimeAttemptBody } from "@deepstrike/sdk/harness"
 import type { AttemptLoopEvent } from "@deepstrike/sdk/harness"
-import { makeAgent, makeProvider, collectEvents, text, MockDreamStore, MockKnowledgeSource, SKILL_DIR } from "./helpers.js"
+import { makeAgent, makeProvider, collectEvents, text, MockMemoryStore, MockKnowledgeSource, SKILL_DIR } from "./helpers.js"
 
 // ─── system_prompt ────────────────────────────────────────────────────────
 
@@ -32,10 +32,10 @@ describe("initialMemory injection", () => {
 
 // ─── saveSession ──────────────────────────────────────────────────────────
 
-describe("DreamStore.saveSession() auto-call", () => {
+describe("MemoryStore.saveSession() auto-call", () => {
   it("saveSession is called after run completes", { timeout: 60_000 }, async () => {
-    const store = new MockDreamStore()
-    await makeAgent({ dreamStore: store, agentId: "test-agent" }).run('Reply "ok".')
+    const store = new MockMemoryStore()
+    await makeAgent({ memoryStore: store, agentId: "test-agent" }).run('Reply "ok".')
     assert.ok(store.savedSessions.length >= 1, "saveSession should have been called")
     assert.equal(store.savedSessions[0].agentId, "test-agent")
   })

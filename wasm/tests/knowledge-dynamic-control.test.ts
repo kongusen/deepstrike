@@ -6,7 +6,7 @@
  * kernel receives via `kernelEvents`.
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
-import type { DreamStore, MemoryRecall } from "../src/memory/index.js"
+import type { MemoryStore, MemoryRecall } from "../src/memory/index.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
 import { kernelEvents } from "@deepstrike/wasm-kernel"
 
@@ -118,10 +118,10 @@ describe("preQueryMemory prefetch lands in initial history, not knowledge", () =
   it("seeds start_operation history with prefetch content, never seed_knowledge/page_in", async () => {
     kernelEvents.length = 0
     const scope = { tenant_id: "agent-prequery", namespace: "prefetch" }
-    const dreamStore: DreamStore = {
-      loadSessions: async () => [],
-      loadMemories: async () => [],
-      commit: async () => {},
+    const memoryStore: MemoryStore = {
+      put: async () => {},
+      get: async () => null,
+      delete: async () => {},
       saveSession: async () => {},
       search: async () => [{
         record: {
@@ -149,7 +149,7 @@ describe("preQueryMemory prefetch lands in initial history, not knowledge", () =
       maxTokens: 2048,
       agentId: "agent-prequery",
       memoryScope: scope,
-      dreamStore,
+      memoryStore,
       preQueryMemory: () => [{ scope, query: "past facts", top_k: 5, kinds: [] }],
     })
 

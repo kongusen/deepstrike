@@ -2,12 +2,12 @@ import type {
   LLMProvider, Message, ContentPart, RenderedContext, ToolCall, ToolResult, ToolSchema, ToolOutputBlock,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
-  PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, DreamSummarizer,
+  PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, MemorySummarizer,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
 } from "../types.js"
 import { createHash } from "node:crypto"
 import type {
-  DreamStore,
+  MemoryStore,
   MemoryRecord,
   MemoryRecall,
   MemoryScope,
@@ -279,10 +279,10 @@ export interface RuntimeOptions {
   memoryScope?: MemoryScope
   /** I4: optional run-start memory pre-fetch hook. The runner calls this ONCE per run, before the
    *  first LLM turn, with the request's goal and (optional) run-spec. Each returned scoped query
-   *  becomes a `dreamStore.search(agentId, query)` and the resulting hits land in decaying
+   *  becomes a `memoryStore.search(agentId, query)` and the resulting hits land in decaying
    *  HISTORY as an ordinary user turn before turn 1 (single-use retrieval content — never a
    *  permanent knowledge pin; `initialMemory` is the curated CLAUDE.md-analog seed). Returning
-   *  `undefined` / empty array is a no-op. Requires `dreamStore` + `agentId`; missing either ⇒
+   *  `undefined` / empty array is a no-op. Requires `memoryStore` + `agentId`; missing either ⇒
    *  silently skipped (errs-open). Default when unset: one query = the run goal (P10). Bench memory-recall shows -57% turns / -55% dollars when
    *  relevant memories land on turn 1 instead of being discovered via the meta-tool on turn 3+. */
   preQueryMemory?: (ctx: {
@@ -312,7 +312,7 @@ export interface RuntimeOptions {
    *  scanned skills fed); empty array ⇒ no skills (a legitimate narrowing — unlike an empty
    *  `allowedToolIds`, which the runner reads as "no gating"). Only takes effect when `skillDir` is set. */
   skillFilter?: string[]
-  dreamStore?: DreamStore
+  memoryStore?: MemoryStore
   /** M4: advisory callback when a recalled record crosses the promotion threshold. The host/model
    *  decides whether to pin the record or promote its content into knowledge. */
   onPromotionSuggested?: (info: { recordId: string; recallCount: number }) => void
@@ -419,7 +419,7 @@ export interface RuntimeOptions {
    */
   nestedGroupVehicle?: boolean
   /**
-   * Optional canonical long-term memory policy. Enabling memory still requires `dreamStore` +
+   * Optional canonical long-term memory policy. Enabling memory still requires `memoryStore` +
    * `agentId`; storage location is configured on that host store, not in the kernel contract.
    */
   memoryPolicy?: MemoryPolicy
@@ -514,15 +514,15 @@ export interface RuntimeOptions {
   /** G2: custom reducers for `NodeKind::Reduce` workflow nodes, merged over the built-ins
    *  (`concat` / `dedupe_lines` / `merge_json_arrays` / `count`). A reduce node runs no LLM. */
   reducers?: ReducerRegistry
-  /** Optional system prompt injected into the dream synthesis call. */
-  dreamSystemPrompt?: string
-  /** Custom LLM provider used for background memory consolidation (dream loop). */
-  dreamProvider?: LLMProvider
+  /** Optional system prompt injected into durable-memory synthesis. */
+  memorySystemPrompt?: string
+  /** Custom LLM provider used for durable-memory consolidation. */
+  memoryProvider?: LLMProvider
   /**
-   * Optional LLM summarizer for semantic page_out events. When unset, `dreamProvider`
-   * (or the runtime provider) is used to produce long-term summaries for DreamStore.
+   * Optional LLM summarizer for semantic page_out events. When unset, `memoryProvider`
+   * (or the runtime provider) is used to produce long-term summaries for MemoryStore.
    */
-  dreamSummarizer?: DreamSummarizer
+  memorySummarizer?: MemorySummarizer
   /**
    * Optional async LLM summarizer. When provided, a background call is fired
    * after each compression event to produce a richer semantic summary.
@@ -697,8 +697,8 @@ export class RuntimeRunner {
   }
 
   private async persistMemoryToStore(memory: MemoryRecord, agentId: string): Promise<void> {
-    if (!this.opts.dreamStore) throw new Error("memory persistence requires dreamStore")
-    await this.opts.dreamStore.upsert(agentId, memory)
+    if (!this.opts.memoryStore) throw new Error("memory persistence requires memoryStore")
+    await this.opts.memoryStore.put(agentId, memory)
   }
 
   private async retrieveMemoryFromStore(
@@ -706,14 +706,14 @@ export class RuntimeRunner {
     requestedK: number,
     agentId: string,
   ): Promise<MemoryRecall[]> {
-    if (!this.opts.dreamStore) throw new Error("memory queries require dreamStore")
-    return (await this.opts.dreamStore.search(agentId, { ...query, top_k: requestedK }))
+    if (!this.opts.memoryStore) throw new Error("memory queries require memoryStore")
+    return (await this.opts.memoryStore.search(agentId, { ...query, top_k: requestedK }))
       .slice(0, requestedK)
   }
 
   /**
    * Route a host-originated renewal prefetch into canonical knowledge commands. This is not an
-   * agent syscall: the host selects records from its store, then the kernel owns the only mutation
+   * agent syscall: the host selects records from its store, then the kernel owns the write
    * of live semantic context. `seenRecordIds` is the prefetch's dedupe horizon.
    */
   private async prefetchMemoryIntoKnowledge(
@@ -757,7 +757,7 @@ export class RuntimeRunner {
   ): Promise<void> {
     const sessionId = opts.sessionId ?? this.currentSessionId
     const agentId = opts.agentId ?? this.opts.agentId
-    if (!this.opts.dreamStore || !agentId) return
+    if (!this.opts.memoryStore || !agentId) return
     const policy = this.opts.memoryPolicy
     if (policy?.validationEnabled !== false) {
       const error = !memory.name.trim()
@@ -799,7 +799,7 @@ export class RuntimeRunner {
   ): Promise<MemoryRecall[]> {
     const sessionId = opts.sessionId ?? this.currentSessionId
     const agentId = opts.agentId ?? this.opts.agentId
-    if (!this.opts.dreamStore || !agentId) return []
+    if (!this.opts.memoryStore || !agentId) return []
     const hits = await this.retrieveMemoryFromStore(query, query.top_k, agentId)
     await this.applyHostMemoryRecallLifecycle(hits, agentId)
     await this.logMemoryRetrievalResult(sessionId, hits)
@@ -816,7 +816,7 @@ export class RuntimeRunner {
       recall_count: hit.record.recall_count + 1,
       last_recalled_at: Date.now(),
     }))
-    await this.opts.dreamStore?.recordRecall?.(agentId, recalls)
+    await this.opts.memoryStore?.recordRecall?.(agentId, recalls)
     const threshold = this.opts.memoryPolicy?.promotionRecallThreshold
     if (threshold === undefined) return
     for (let index = 0; index < hits.length; index += 1) {
@@ -1042,8 +1042,8 @@ export class RuntimeRunner {
   private async mirrorMemoryLifecycle(obs: KernelObservation): Promise<void> {
     if (obs.kind === "memory_recalled" && obs.recalls?.length) {
       const agentId = this.opts.agentId
-      if (agentId && this.opts.dreamStore?.recordRecall) {
-        await this.opts.dreamStore.recordRecall(agentId, obs.recalls)
+      if (agentId && this.opts.memoryStore?.recordRecall) {
+        await this.opts.memoryStore.recordRecall(agentId, obs.recalls)
       }
     }
     if (obs.kind === "promotion_suggested" && obs.record_id) {
@@ -2037,7 +2037,7 @@ export class RuntimeRunner {
       })
     }
 
-    if (this.opts.dreamStore && this.opts.agentId) {
+    if (this.opts.memoryStore && this.opts.agentId) {
       await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
     }
     // Install optional memory policy. Maps the ergonomic camelCase option onto the kernel's
@@ -2160,7 +2160,7 @@ export class RuntimeRunner {
     // I4/T5: pre-fetch memory before root start so the model sees it on turn 1 instead of
     // discovering it via the `memory` tool later. Accepted hits enter `initial_context.messages`
     // and are therefore frozen into the canonical start record. Skipped on restore (the checkpoint
-    // or journal already owns them) and when dreamStore/agentId is absent.
+    // or journal already owns them) and when memoryStore/agentId is absent.
     // P0-C: the skill loaded and in effect going into the current turn (updated when the model's
     // `skill` tool call resolves). Drives the per-turn `activeSkill` metric → dwell measurement.
     let activeSkill: string | undefined
@@ -2579,7 +2579,7 @@ export class RuntimeRunner {
           agentId: this.opts.agentId,
           memoryScope: this.opts.memoryScope,
           skillDir: this.opts.skillDir,
-          dreamStore: this.opts.dreamStore,
+          memoryStore: this.opts.memoryStore,
           knowledgeSource: this.opts.knowledgeSource,
           onToolSuspend: this.opts.onToolSuspend,
           onPermissionRequest: this.opts.onPermissionRequest,
@@ -2951,7 +2951,7 @@ export class RuntimeRunner {
       this.activeGroupBudgetScope = undefined
     }
 
-    if (this.opts.dreamStore && this.opts.agentId) {
+    if (this.opts.memoryStore && this.opts.agentId) {
       const newMsgs = runtime.drainNewMessages().map(m => ({
         role: m.role,
         content: m.content,
@@ -2969,13 +2969,13 @@ export class RuntimeRunner {
             createdAtMs: sessionStart,
             updatedAtMs: Date.now(),
           }
-          await this.opts.dreamStore.saveSession(completedSession)
+          await this.opts.memoryStore.saveSession(completedSession)
           if (this.opts.memoryScope) {
             const extracted = await extractSessionMemories(
-              this.opts.dreamProvider ?? this.opts.provider,
+              this.opts.memoryProvider ?? this.opts.provider,
               completedSession,
               this.opts.memoryScope,
-              this.opts.dreamSystemPrompt,
+              this.opts.memorySystemPrompt,
             )
             for (const memory of extracted) {
               await this.writeMemory(memory, { sessionId, agentId: this.opts.agentId })
@@ -3015,7 +3015,7 @@ export class RuntimeRunner {
     runtime: CanonicalRunnerRuntime,
     phase: "initial" | "renewal",
   ): Promise<KernelRunnerAction | undefined> {
-    if (!this.opts.dreamStore || !this.opts.agentId || !this.opts.memoryScope) return undefined
+    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return undefined
     // P10: recall is default-on (CC session-start recall) — with no hook configured,
     // the goal itself is the query. preQueryMemory stays as the targeting override.
     const preQuery = this.opts.preQueryMemory
@@ -3058,7 +3058,7 @@ export class RuntimeRunner {
   }
 
   private async prefetchMemoryIntoInitialContext(runtime: CanonicalRunnerRuntime): Promise<void> {
-    if (!this.opts.dreamStore || !this.opts.agentId || !this.opts.memoryScope) return
+    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     const preQuery = this.opts.preQueryMemory
       ?? ((ctx: { goal: string }) => [{
         scope: this.opts.memoryScope!,
@@ -3156,13 +3156,13 @@ export class RuntimeRunner {
     action: string | undefined,
     sessionId: string,
   ): Promise<void> {
-    if (!this.opts.dreamStore || !this.opts.agentId || !this.opts.memoryScope) return
-    const summary = this.opts.dreamSummarizer
-      ? await this.opts.dreamSummarizer.summarize(archived, { action })
+    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
+    const summary = this.opts.memorySummarizer
+      ? await this.opts.memorySummarizer.summarize(archived, { action })
       : await summarizeForLongTermMemory(
-        this.opts.dreamProvider ?? this.opts.provider,
+        this.opts.memoryProvider ?? this.opts.provider,
         archived,
-        this.opts.dreamSystemPrompt,
+        this.opts.memorySystemPrompt,
       )
     // P2 write-funnel: route through the ONE gated WriteMemory syscall so validation,
     // the rolling write quota, dedup, and the memory_written audit all apply. Score is

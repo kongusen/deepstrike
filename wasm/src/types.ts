@@ -224,6 +224,6 @@ export interface LLMProvider {
   ): AsyncIterable<StreamEvent>
 }
 
-export interface DreamSummarizer {
+export interface MemorySummarizer {
   summarize(archived: Message[], context: { action?: string }): Promise<string>
 }

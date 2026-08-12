@@ -143,9 +143,9 @@ from deepstrike.providers.stream import ToolAuditFailedEvent
 from deepstrike.providers.stream import EntropySample, EntropySampleEvent, EntropyAlertEvent
 from deepstrike.memory import (
     WorkingMemory,
-    DreamStore, SessionData, MemoryRecord, MemoryRecall, MemoryQuery,
+    MemoryStore, Memory, MemorySearchOptions, DurableMemory, SessionData, MemoryRecord, MemoryRecall, MemoryQuery,
     MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
-    InMemoryDreamStore,
+    InMemoryMemoryStore,
     RankedMemory, rank_memories,
     extract_session_memories, parse_extracted_memories,
 )
@@ -298,9 +298,9 @@ __all__ = [
     "ToolError", "safe_tool", "ok", "fail", "format_tool_error", "ToolAuditFailedEvent",
     "EntropySample", "EntropySampleEvent", "EntropyAlertEvent",
     "WorkingMemory",
-    "DreamStore", "SessionData", "MemoryRecord", "MemoryRecall", "MemoryQuery",
+    "MemoryStore", "Memory", "MemorySearchOptions", "DurableMemory", "SessionData", "MemoryRecord", "MemoryRecall", "MemoryQuery",
     "MemoryScope", "MemoryProvenance", "MemoryKind", "MemoryAuthor", "MemoryTrustLevel",
-    "InMemoryDreamStore", "RankedMemory", "rank_memories",
+    "InMemoryMemoryStore", "RankedMemory", "rank_memories",
     "extract_session_memories", "parse_extracted_memories",
     "PermissionManager", "PermissionMode", "Permission", "PermissionDecision",
     "AttemptBody", "AttemptBodyContext", "AttemptBodyEvent", "AttemptBodyTerminal",

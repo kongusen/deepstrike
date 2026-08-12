@@ -568,10 +568,10 @@ export interface AsyncSummarizer {
 }
 
 /**
- * Long-term memory summarizer for semantic `page_out` events (Layer 5 contract).
- * The kernel emits `page_out { tier_hint: "semantic" }`; the SDK persists an LLM summary to DreamStore.
+ * Durable-memory summarizer for semantic `page_out` events (Layer 5 contract).
+ * The kernel emits `page_out { tier_hint: "semantic" }`; the SDK persists an LLM summary to MemoryStore.
  */
-export interface DreamSummarizer {
+export interface MemorySummarizer {
   summarize(archived: Message[], context: { action?: string }): Promise<string>
 }
 

@@ -19,8 +19,14 @@ RECALL_HIT = MemoryRecall(MemoryRecord(
 ), 0.9, "fixture")
 
 
-class FakeDreamStore:
-    async def upsert(self, *args, **kwargs):
+class FakeMemoryStore:
+    async def put(self, *args, **kwargs):
+        return None
+
+    async def get(self, *args, **kwargs):
+        return None
+
+    async def delete(self, *args, **kwargs):
         return None
 
     async def search(self, agent_id, query: MemoryQuery):
@@ -58,7 +64,7 @@ async def test_pre_query_memory_lands_in_history_not_knowledge():
         max_turns=4,
         agent_id="agent-prequery",
         memory_scope=SCOPE,
-        dream_store=FakeDreamStore(),
+        memory_store=FakeMemoryStore(),
         pre_query_memory=lambda goal: [MemoryQuery(SCOPE, "past facts")],
     ))
 

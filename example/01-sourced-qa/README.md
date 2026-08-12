@@ -53,6 +53,6 @@ The kernel detects a mid-run transcript and replays it — no special resume API
 
 ## What's next
 
-**L2 · Memory** gives this same assistant a `DreamStore`: it remembers sources and user
+**L2 · Memory** gives this same assistant a `MemoryStore`: it remembers sources and user
 preferences across sessions, deduped through the one governed write gate, and recalls them at
 run-start so the second question on a topic starts from what it already knew.

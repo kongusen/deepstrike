@@ -37,7 +37,7 @@ features:
     details: Syscall traps, quotas, rate limits, denied tool results — not post-hoc SDK filtering.
   - icon: 💾
     title: Memory Syscalls
-    details: Kernel-validated writeMemory / queryMemory + DreamStore + idle consolidation pipeline.
+    details: Kernel-validated writeMemory / queryMemory + MemoryStore + session extraction.
   - icon: 🤝
     title: Multi-Agent Collaboration
     details: Sub-agent isolation, ReactiveSession, contracts, handoff.

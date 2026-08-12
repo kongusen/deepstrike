@@ -3,10 +3,10 @@ import type {
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
-  DreamSummarizer,
+  MemorySummarizer,
 } from "../types.js"
 import type { ToolSuspendEvent } from "./execution-plane.js"
-import type { DreamStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope, SessionData } from "../memory/index.js"
+import type { MemoryStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope, SessionData } from "../memory/index.js"
 import { extractSessionMemories } from "../memory/extraction.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
 import type { SignalSource, RuntimeSignal, SignalDeliveryReceipt } from "../signals/index.js"
@@ -130,7 +130,7 @@ export interface PromptBudget {
  * Long-term memory policy (`set_memory_policy`) — opt-in, kernel-enforced. `validationEnabled:
  * false` admits writes without validation, `maxContentBytes` / `maxNameLength` override the
  * validation limits, and `retrievalTopK` caps `query_memory` breadth. Host storage is configured
- * on the `DreamStore` and never enters this contract. Omitted fields keep the kernel defaults.
+ * on the `MemoryStore` and never enters this contract. Omitted fields keep the kernel defaults.
  */
 export interface MemoryPolicy {
   staleWarningDays?: number
@@ -246,8 +246,8 @@ export interface RuntimeOptions {
   agentId?: string
   memoryScope?: MemoryScope
   /** I4: optional run-start memory pre-fetch hook (mirrors Node SDK). Called once per run before
-   *  the first LLM turn; each returned query string becomes a dreamStore search; hits page into
-   *  the knowledge partition before turn 1. Requires dreamStore + agentId. */
+   *  the first LLM turn; each returned query string becomes a memoryStore search; hits page into
+   *  the knowledge partition before turn 1. Requires memoryStore + agentId. */
   preQueryMemory?: (ctx: {
     goal: string
     /** K4: `"initial"` = pre-turn-1 fetch; `"renewal"` = re-fired after a sprint renewal. */
@@ -257,7 +257,7 @@ export interface RuntimeOptions {
   initialMemory?: string[]
   /** Skill name → markdown body (WASM has no filesystem). */
   skillContentMap?: Map<string, string>
-  dreamStore?: DreamStore
+  memoryStore?: MemoryStore
   /** M4: advisory callback when a recalled record crosses the promotion threshold. */
   onPromotionSuggested?: (info: { recordId: string; recallCount: number }) => void
   knowledgeSource?: KnowledgeSource
@@ -366,9 +366,9 @@ export interface RuntimeOptions {
    *  to exactly their declared tools + meta-tools. (wasm skills come from `skillContentMap`; gating
    *  engages only once that carries per-skill tool lists.) */
   stableCoreToolIds?: string[]
-  dreamProvider?: LLMProvider
-  dreamSummarizer?: DreamSummarizer
-  dreamSystemPrompt?: string
+  memoryProvider?: LLMProvider
+  memorySummarizer?: MemorySummarizer
+  memorySystemPrompt?: string
   payloadStore?: PayloadStore
 }
 
@@ -652,9 +652,9 @@ export class RuntimeRunner {
   }
 
   async writeMemory(memory: MemoryRecord, sessionId?: string): Promise<void> {
-    if (!this.opts.dreamStore || !this.opts.agentId) return
+    if (!this.opts.memoryStore || !this.opts.agentId) return
     try {
-      await this.opts.dreamStore.upsert(this.opts.agentId, memory)
+      await this.opts.memoryStore.put(this.opts.agentId, memory)
     } catch (cause) {
       throw new Error(formatToolError(cause))
     }
@@ -874,7 +874,7 @@ export class RuntimeRunner {
       })
     }
 
-    if (this.opts.dreamStore && this.opts.agentId) {
+    if (this.opts.memoryStore && this.opts.agentId) {
       await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
     }
     if (this.opts.knowledgeSource) {
@@ -922,7 +922,7 @@ export class RuntimeRunner {
             const output = toolResultByCallId.get(tc.id)
             if (output && !this.knowledgePushedSkills.has(name)) {
               this.knowledgePushedSkills.add(name)
-              // K1: keyed — the kernel-side upsert is the authoritative dedup across wake replays.
+              // K1: keyed — the kernel-side put is the authoritative dedup across wake replays.
               this.pushKnowledge({ role: "system", content: output }, undefined, { key: `skill:${name}` })
             }
           } catch { /* skip */ }
@@ -1163,8 +1163,8 @@ export class RuntimeRunner {
       } else if (action.kind === "persist_memory") {
         let error: string | undefined
         try {
-          if (!this.opts.dreamStore || !this.opts.agentId) throw new Error("WASM memory persistence requires dreamStore and agentId")
-          await this.opts.dreamStore.upsert(this.opts.agentId, action.memory as unknown as MemoryRecord)
+          if (!this.opts.memoryStore || !this.opts.agentId) throw new Error("WASM memory persistence requires memoryStore and agentId")
+          await this.opts.memoryStore.put(this.opts.agentId, action.memory as unknown as MemoryRecord)
         } catch (cause) { error = formatToolError(cause) }
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "memory_persist_result",
@@ -1176,8 +1176,8 @@ export class RuntimeRunner {
         let hits: MemoryRecall[] = []
         let error: string | undefined
         try {
-          if (!this.opts.dreamStore || !this.opts.agentId) throw new Error("WASM memory queries require dreamStore and agentId")
-          hits = await this.opts.dreamStore.search(this.opts.agentId, {
+          if (!this.opts.memoryStore || !this.opts.agentId) throw new Error("WASM memory queries require memoryStore and agentId")
+          hits = await this.opts.memoryStore.search(this.opts.agentId, {
             ...(action.query as unknown as MemoryQuery), top_k: action.requestedK,
           })
         } catch (cause) { error = formatToolError(cause) }
@@ -1191,7 +1191,7 @@ export class RuntimeRunner {
         // M3/M4: mirror the kernel's journaled recall lifecycle + surface promotion suggestions.
         for (const obs of this.pendingObservations.slice(obsStart)) {
           if (obs.kind === "memory_recalled" && obs.recalls?.length && this.opts.agentId) {
-            await this.opts.dreamStore?.recordRecall?.(this.opts.agentId, obs.recalls)
+            await this.opts.memoryStore?.recordRecall?.(this.opts.agentId, obs.recalls)
           }
           if (obs.kind === "promotion_suggested" && obs.record_id) {
             this.opts.onPromotionSuggested?.({ recordId: obs.record_id, recallCount: obs.recall_count ?? 0 })
@@ -1258,7 +1258,7 @@ export class RuntimeRunner {
           agentId: this.opts.agentId,
           memoryScope: this.opts.memoryScope,
           skillContentMap: this.opts.skillContentMap,
-          dreamStore: this.opts.dreamStore,
+          memoryStore: this.opts.memoryStore,
           knowledgeSource: this.opts.knowledgeSource,
           onToolSuspend: this.opts.onToolSuspend,
           onPermissionRequest: this.opts.onPermissionRequest,
@@ -1410,10 +1410,10 @@ export class RuntimeRunner {
             const name = (JSON.parse(call.arguments || "{}") as { name?: string }).name
             if (!name) continue
             // With a lease configured, skip the Set optimization: an expired-then-reloaded skill
-            // must re-pin — only the kernel knows the lease state; its upsert dedupes anyway.
+            // must re-pin — only the kernel knows the lease state; its put dedupes anyway.
             if (this.opts.skillLeaseTurns !== undefined || !this.knowledgePushedSkills.has(name)) {
               this.knowledgePushedSkills.add(name)
-              // K1: keyed `skill:<name>` — the kernel-side upsert dedupes across runner instances.
+              // K1: keyed `skill:<name>` — the kernel-side put dedupes across runner instances.
               this.pushKnowledge({ role: "system", content: res.output }, undefined, { key: `skill:${name}` })
             }
           } catch { /* skip */ }
@@ -1561,7 +1561,7 @@ export class RuntimeRunner {
       totalTokens,
     }))
 
-    if (this.opts.dreamStore && this.opts.agentId) {
+    if (this.opts.memoryStore && this.opts.agentId) {
       const newMsgs = runtime.drainNewMessages().map(m => ({
         role: m.role,
         content: m.content,
@@ -1578,13 +1578,13 @@ export class RuntimeRunner {
             createdAtMs: sessionStart,
             updatedAtMs: Date.now(),
           }
-          await this.opts.dreamStore.saveSession(completedSession)
+          await this.opts.memoryStore.saveSession(completedSession)
           if (this.opts.memoryScope) {
             const extracted = await extractSessionMemories(
-              this.opts.dreamProvider ?? this.opts.provider,
+              this.opts.memoryProvider ?? this.opts.provider,
               completedSession,
               this.opts.memoryScope,
-              this.opts.dreamSystemPrompt,
+              this.opts.memorySystemPrompt,
             )
             for (const memory of extracted) await this.writeMemory(memory, sessionId)
           }
@@ -2160,7 +2160,7 @@ export class RuntimeRunner {
     runtime: CanonicalRunnerRuntime,
     phase: "initial" | "renewal",
   ): Promise<void> {
-    if (!this.opts.dreamStore || !this.opts.agentId || !this.opts.memoryScope) return
+    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     // P10: recall is default-on (CC session-start recall) — with no hook configured,
     // the goal itself is the query. preQueryMemory stays as the targeting override.
     const preQuery = this.opts.preQueryMemory
@@ -2170,7 +2170,7 @@ export class RuntimeRunner {
       const lines: string[] = []
       for (const q of queries ?? []) {
         if (!q.query.trim()) continue
-        const hits = await this.opts.dreamStore.search(this.opts.agentId, q)
+        const hits = await this.opts.memoryStore.search(this.opts.agentId, q)
         for (const hit of hits) {
           lines.push(`[memory record_id=${hit.record.record_id} trust=${hit.record.provenance.trust} score=${hit.score.toFixed(3)}] ${hit.record.content}`)
         }
@@ -2185,14 +2185,14 @@ export class RuntimeRunner {
   }
 
   private async archiveSemanticPageOut(archived: Message[], action?: string): Promise<void> {
-    if (!this.opts.dreamStore || !this.opts.agentId || !this.opts.memoryScope) return
+    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     try {
-      const summary = this.opts.dreamSummarizer
-        ? await this.opts.dreamSummarizer.summarize(archived, { action })
+      const summary = this.opts.memorySummarizer
+        ? await this.opts.memorySummarizer.summarize(archived, { action })
         : await summarizeForLongTermMemory(
-          this.opts.dreamProvider ?? this.opts.provider,
+          this.opts.memoryProvider ?? this.opts.provider,
           archived,
-          this.opts.dreamSystemPrompt,
+          this.opts.memorySystemPrompt,
         )
       const now = Date.now()
       const name = `page-out-${now}`

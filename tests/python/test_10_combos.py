@@ -14,7 +14,7 @@ from deepstrike.providers.stream import (
 
 from conftest import (
     make_agent, make_provider, collect_events, text,
-    MockDreamStore, MockKnowledgeSource, SKILL_DIR,
+    MockMemoryStore, MockKnowledgeSource, SKILL_DIR,
 )
 from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord, MemoryScope
 
@@ -176,22 +176,22 @@ class TestAttemptLoopTools:
             assert "25" in outcome.result
 
 
-# ─── F: Agent + DreamStore ──────────────────────────────────────────────────
+# ─── F: Agent + MemoryStore ──────────────────────────────────────────────────
 
-class TestAgentDreamStore:
+class TestAgentMemoryStore:
     @pytest.mark.timeout(120)
     async def test_preseeded_memory_accessible(self):
-        store = MockDreamStore()
+        store = MockMemoryStore()
         agent_id = "combo-mem-agent"
         scope = MemoryScope(agent_id, "combo")
-        await store.upsert(agent_id, MemoryRecord(
+        await store.put(agent_id, MemoryRecord(
                 record_id="record-secret", scope=scope, name="secret-code", kind="reference",
                 content="The secret code word is BANANA.", description="secret code fixture",
                 provenance=MemoryProvenance(author="host", trust="host_verified"),
                 created_at=1, updated_at=1, confidence=0.95,
             ))
 
-        result = await make_agent(dream_store=store, agent_id=agent_id, memory_scope=scope).run(
+        result = await make_agent(memory_store=store, agent_id=agent_id, memory_scope=scope).run(
             "What is the secret code word from your memory? If unknown, say 'unknown'.",
         )
         assert len(result) > 0

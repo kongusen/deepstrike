@@ -1901,7 +1901,7 @@ fn no_stop_reason_terminates_normally() {
 // ---- Layer 5: AutoCompact → semantic page-out (SDK does the LLM summary) ----
 //
 // Contract: AutoCompact keeps a structural summary in-context (sync, zero-I/O) and pages the
-// archived messages out to the *semantic* tier. The SDK's dream/idle pipeline LLM-summarizes
+// archived messages out to the *semantic* tier. The SDK's durable-memory extraction LLM summarizes
 // that tier into long-term memory (configurable LLM, default = the runtime provider). The
 // kernel never calls an LLM — it only decides WHEN/WHAT to page out.
 #[test]

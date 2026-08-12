@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike.memory.in_memory_store import InMemoryDreamStore
+from deepstrike.memory.in_memory_store import InMemoryMemoryStore
 from deepstrike.memory.agent import select_memories
 from deepstrike.memory.protocols import (
     MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecallLifecycle, MemoryRecord, MemoryScope,
@@ -20,7 +20,7 @@ def memory(content: str, updated_at: int, *, record_id: str | None = None, recal
 
 @pytest.mark.asyncio
 async def test_search_uses_query_and_never_falls_back_to_unrelated_entries():
-    store = InMemoryDreamStore([
+    store = InMemoryMemoryStore([
         memory("database migration checklist", 1),
         memory("scheduler fairness in Rust", 2),
         memory("newer unrelated note", 3),
@@ -42,7 +42,7 @@ async def test_selector_ranks_the_query_instead_of_taking_fifo():
 # M3-C: recall score is relevance, not stored confidence (deviation 1).
 @pytest.mark.asyncio
 async def test_score_is_relevance_not_confidence():
-    store = InMemoryDreamStore([
+    store = InMemoryMemoryStore([
         memory("token rotation and token expiry", 20, record_id="hi", confidence=0.1),
         memory("refresh token expires in UTC", 10, record_id="lo", confidence=0.99),
     ])
@@ -56,17 +56,17 @@ async def test_score_is_relevance_not_confidence():
 # M3: value-ordered retention eviction replaces the blind tail-cut; pins are exempt.
 @pytest.mark.asyncio
 async def test_eviction_sheds_lowest_value_and_never_pinned():
-    store = InMemoryDreamStore(max_records=2)
-    await store.upsert("a1", memory("cold", 1, record_id="cold", recall_count=0))
-    await store.upsert("a1", memory("warm", 1, record_id="warm", recall_count=5))
-    await store.upsert("a1", memory("new", 1, record_id="new", recall_count=1))
+    store = InMemoryMemoryStore(max_records=2)
+    await store.put("a1", memory("cold", 1, record_id="cold", recall_count=0))
+    await store.put("a1", memory("warm", 1, record_id="warm", recall_count=5))
+    await store.put("a1", memory("new", 1, record_id="new", recall_count=1))
     ids = {hit.record.record_id for hit in await store.search("a1", MemoryQuery(SCOPE, "cold warm new", top_k=9))}
     assert "cold" not in ids
     assert {"warm", "new"} <= ids
 
-    pinned = InMemoryDreamStore(max_records=1)
-    await pinned.upsert("a1", memory("pinned", 1, record_id="pinned", recall_count=0, pinned=True))
-    await pinned.upsert("a1", memory("hot", 1, record_id="hot", recall_count=9))
+    pinned = InMemoryMemoryStore(max_records=1)
+    await pinned.put("a1", memory("pinned", 1, record_id="pinned", recall_count=0, pinned=True))
+    await pinned.put("a1", memory("hot", 1, record_id="hot", recall_count=9))
     kept = {hit.record.record_id for hit in await pinned.search("a1", MemoryQuery(SCOPE, "pinned hot", top_k=9))}
     assert "pinned" in kept and "hot" not in kept
 
@@ -74,7 +74,7 @@ async def test_eviction_sheds_lowest_value_and_never_pinned():
 # M3/M4: recall + pin lifecycle mirrored from kernel observations.
 @pytest.mark.asyncio
 async def test_record_recall_and_set_pinned_mirror_into_the_store():
-    store = InMemoryDreamStore([memory("a-fact", 1, record_id="rid")])
+    store = InMemoryMemoryStore([memory("a-fact", 1, record_id="rid")])
     await store.record_recall("a1", [MemoryRecallLifecycle(record_id="rid", recall_count=3, last_recalled_at=42)])
     hit = (await store.search("a1", MemoryQuery(SCOPE, "a-fact", top_k=1)))[0]
     assert hit.record.recall_count == 3

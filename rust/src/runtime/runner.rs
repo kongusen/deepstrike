@@ -24,7 +24,7 @@ use futures::StreamExt;
 
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
-use crate::memory::DreamStore;
+use crate::memory::MemoryStore;
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
 use crate::runtime::archive::ArchiveStore;
@@ -131,15 +131,15 @@ pub struct RuntimeOptions {
     /// Required by host-generated memory queries and semantic page-out writes.
     pub memory_scope: Option<MemoryScope>,
     /// I4: optional run-start memory pre-fetch hook. The runner calls this once per run, before
-    /// the first LLM turn, with the goal string; each returned query becomes a `dream_store.search`
+    /// the first LLM turn, with the goal string; each returned query becomes a `memory_store.search`
     /// and the resulting hits page into the knowledge partition before turn 1. Mirrors the Node
     /// SDK `preQueryMemory`. Sync-only in Rust today — async hosts can pre-compute. Errs-open
-    /// when `dream_store` or `agent_id` is missing.
+    /// when `memory_store` or `agent_id` is missing.
     pub pre_query_memory: Option<std::sync::Arc<dyn Fn(&str) -> Vec<MemoryQuery> + Send + Sync>>,
     pub system_prompt: Option<String>,
     pub initial_memory: Vec<String>,
     pub skill_dir: Option<std::path::PathBuf>,
-    pub dream_store: Option<Box<dyn DreamStore>>,
+    pub memory_store: Option<Box<dyn MemoryStore>>,
     pub knowledge_source: Option<Box<dyn KnowledgeSource>>,
     pub signal_source: Option<Box<dyn SignalSource>>,
     pub governance: Option<Arc<tokio::sync::Mutex<Governance>>>,
@@ -317,7 +317,7 @@ impl RuntimeRunner {
         session_id: Option<&str>,
         agent_id: Option<&str>,
     ) -> Result<()> {
-        let Some(store) = &self.opts.dream_store else {
+        let Some(store) = &self.opts.memory_store else {
             return Ok(());
         };
         let Some(agent_id) = agent_id.or(self.opts.agent_id.as_deref()) else {
@@ -393,7 +393,7 @@ impl RuntimeRunner {
             }
         }
 
-        store.upsert(agent_id, memory.clone()).await?;
+        store.put(agent_id, memory.clone()).await?;
         if let Some(timestamps) = quota_guard.as_mut() {
             timestamps.push_back(now_ms);
         }
@@ -419,7 +419,7 @@ impl RuntimeRunner {
         session_id: Option<&str>,
         agent_id: Option<&str>,
     ) -> Result<Vec<MemoryRecall>> {
-        let Some(store) = &self.opts.dream_store else {
+        let Some(store) = &self.opts.memory_store else {
             return Ok(Vec::new());
         };
         let Some(agent_id) = agent_id.or(self.opts.agent_id.as_deref()) else {
@@ -934,7 +934,7 @@ impl RuntimeRunner {
                     serde_json::json!({ "kind": "set_tools", "tools": self.plane.schemas() }),
                 ).await?;
 
-                if self.opts.dream_store.is_some() && self.opts.agent_id.is_some() {
+                if self.opts.memory_store.is_some() && self.opts.agent_id.is_some() {
                     kernel_apply(
                         &kernel,
                         &mut pending_observations,
@@ -1106,12 +1106,12 @@ impl RuntimeRunner {
                 }
 
                 // I4: pre-fetch memory into the knowledge partition before the first LLM turn.
-                // Mirrors Node/WASM/Python preQueryMemory. Errs-open: missing dream_store/agent_id
+                // Mirrors Node/WASM/Python preQueryMemory. Errs-open: missing memory_store/agent_id
                 // or a faulty closure silently skip the pre-fetch.
                 if !resume_mid_run {
                     if let (Some(pre), Some(store), Some(agent_id)) = (
                         self.opts.pre_query_memory.clone(),
-                        self.opts.dream_store.as_ref(),
+                        self.opts.memory_store.as_ref(),
                         self.opts.agent_id.as_deref(),
                     ) {
                         let queries = pre(goal.as_str());
@@ -1694,7 +1694,7 @@ impl RuntimeRunner {
                     HostEffect::PersistMemory { memory } => {
                         let effect_id = action.effect_id.clone();
                         let error = match (
-                            self.opts.dream_store.as_ref(),
+                            self.opts.memory_store.as_ref(),
                             self.opts.agent_id.as_deref(),
                         ) {
                             (Some(store), Some(agent_id)) => {
@@ -1704,13 +1704,13 @@ impl RuntimeRunner {
                                 }
                                 memory.provenance.session_id = Some(session_id.clone());
                                 store
-                                    .upsert(agent_id, memory)
+                                    .put(agent_id, memory)
                                     .await
                                     .err()
                                     .map(|error| error.to_string())
                             }
                             _ => Some(
-                                "memory persistence is unavailable without dream_store and agent_id"
+                                "memory persistence is unavailable without memory_store and agent_id"
                                     .to_string(),
                             ),
                         };
@@ -1727,7 +1727,7 @@ impl RuntimeRunner {
                     HostEffect::QueryMemory { query, requested_k } => {
                         let effect_id = action.effect_id.clone();
                         let (hits, error) = match (
-                            self.opts.dream_store.as_ref(),
+                            self.opts.memory_store.as_ref(),
                             self.opts.agent_id.as_deref(),
                         ) {
                             (Some(store), Some(agent_id)) => {
@@ -1744,7 +1744,7 @@ impl RuntimeRunner {
                             _ => (
                                 Vec::new(),
                                 Some(
-                                    "memory query is unavailable without dream_store and agent_id"
+                                    "memory query is unavailable without memory_store and agent_id"
                                         .to_string(),
                                 ),
                             ),
@@ -1857,7 +1857,7 @@ impl RuntimeRunner {
                             agent_id: self.opts.agent_id.as_deref(),
                             memory_scope: self.opts.memory_scope.as_ref(),
                             skill_dir: self.opts.skill_dir.as_deref(),
-                            dream_store: self.opts.dream_store.as_deref(),
+                            memory_store: self.opts.memory_store.as_deref(),
                             knowledge_source: self.opts.knowledge_source.as_deref(),
                             governance: self.opts.governance.clone(),
                             on_tool_suspend: self.opts.on_tool_suspend.clone(),
@@ -2147,7 +2147,7 @@ impl RuntimeRunner {
                         .await;
 
                         if let (Some(store), Some(agent_id)) =
-                            (&self.opts.dream_store, &self.opts.agent_id)
+                            (&self.opts.memory_store, &self.opts.agent_id)
                         {
                             let new_msgs = kernel.lock().await.drain_new_messages();
                             if !new_msgs.is_empty() {
@@ -2218,7 +2218,7 @@ impl RuntimeRunner {
 
             if let HostEffect::Done { .. } = &action.effect {
                 if let (Some(store), Some(agent_id)) =
-                    (&self.opts.dream_store, &self.opts.agent_id)
+                    (&self.opts.memory_store, &self.opts.agent_id)
                 {
                     let new_msgs = kernel.lock().await.drain_new_messages();
                     if !new_msgs.is_empty() {
@@ -2642,7 +2642,7 @@ impl RuntimeRunner {
 
     async fn archive_semantic_page_out(&self, archived: Vec<Message>, action: Option<String>) {
         let (Some(_store), Some(agent_id), Some(scope)) = (
-            &self.opts.dream_store,
+            &self.opts.memory_store,
             &self.opts.agent_id,
             &self.opts.memory_scope,
         ) else {

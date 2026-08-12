@@ -13,7 +13,7 @@ Update the import path; the symbols themselves are unchanged.
 | `endpointProfiles`, `modelProfiles`, `getModelProfile`, `CircuitBreaker`, `OpenAIChatProvider` | `@deepstrike/sdk` | `@deepstrike/sdk/providers` |
 | `SubAgentOrchestrator`, `defaultSubAgentOrchestrator`, `spawnStandalone`, `builtinReducers`, `resolveReducer`, `FileWorkflowStore`, `ContractBuilder`, `VerificationContract`, `HandoffBus`, `CreatorVerifierMode`, `OrchestrationMode`, `submitWorkflowNodesTool`, `startWorkflowTool`, `generateAndFilter`, `verifyRules`, `genEval`, agent/milestone types | `@deepstrike/sdk` | `@deepstrike/sdk/workflow` |
 | `WorktreeExecutionPlane`, `GitWorktreeManager`, `FilteredExecutionPlane`, `ProcessSandboxPlane`, `McpProxyPlane`, `RemoteVpcPlane`, `NullArchiveStore`, `FileArchiveStore`, credential vaults | `@deepstrike/sdk` | `@deepstrike/sdk/planes` |
-| `WorkingMemory`, `InMemoryDreamStore`, `DreamStore`, `MemoryRecord`, `MemoryRecall`, `MemoryQuery`, `MemoryScope`, `SessionData`, `CurationResult`, `KnowledgeSource`, … | `@deepstrike/sdk` | `@deepstrike/sdk/memory` |
+| `WorkingMemory`, `InMemoryMemoryStore`, `MemoryStore`, `MemoryRecord`, `MemoryRecall`, `MemoryQuery`, `MemoryScope`, `SessionData`, `CurationResult`, `KnowledgeSource`, … | `@deepstrike/sdk` | `@deepstrike/sdk/memory` |
 | `AttemptLoop`, `RuntimeAttemptBody`, judge/carry policies, `judge`, `Criterion`, `Verdict` | `@deepstrike/sdk` | `@deepstrike/sdk/harness` |
 | `osProfile`, `assertNativeProfile`, `KernelPrimitivesDashboard`, `rebuildOsSnapshotFromSessionEvents`, `ReplayProvider`, `extractRecordedMessages`, `PermissionManager`, `PermissionMode`, `SignalGateway`, `ScheduledPrompt`, replay-validator utils, scheduler/quota/policy types | `@deepstrike/sdk` | `@deepstrike/sdk/os` |
 

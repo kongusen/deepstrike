@@ -63,7 +63,7 @@ def _derive_meta_tools(permitted: set[str], opts: RuntimeOptions) -> frozenset[s
   meta: set[str] = set()
   if "skill" in permitted and opts.skill_dir:
     meta.add("skill")
-  if "memory" in permitted and opts.dream_store:
+  if "memory" in permitted and opts.memory_store:
     meta.add("memory")
   if "knowledge" in permitted and opts.knowledge_source:
     meta.add("knowledge")
@@ -78,7 +78,7 @@ def _available_meta_tools(opts: RuntimeOptions) -> frozenset[str]:
   meta: set[str] = set()
   if opts.skill_dir:
     meta.add("skill")
-  if opts.dream_store:
+  if opts.memory_store:
     meta.add("memory")
   if opts.knowledge_source:
     meta.add("knowledge")
@@ -166,7 +166,7 @@ def _build_child_opts(
     agent_id=ctx.spec.identity.agent_id,
     system_prompt=system_prompt,
     skill_dir=ctx.parent_opts.skill_dir if "skill" in meta_tools else None,
-    dream_store=ctx.parent_opts.dream_store if "memory" in meta_tools else None,
+    memory_store=ctx.parent_opts.memory_store if "memory" in meta_tools else None,
     knowledge_source=ctx.parent_opts.knowledge_source if "knowledge" in meta_tools else None,
     enable_plan_tool=ctx.parent_opts.enable_plan_tool if "update_plan" in meta_tools else None,
     # Nested vehicle: the child joins the inherited run_group for lineage/settlement only — it

@@ -53,7 +53,7 @@ runner = RuntimeRunner(RuntimeOptions(
     max_tokens=32_000,
     # 以下为可选高级能力
     skill_dir="./skills",
-    dream_store=store,
+    memory_store=store,
     governance_policy=policy,
     signal_source=gateway,
     run_group=group,

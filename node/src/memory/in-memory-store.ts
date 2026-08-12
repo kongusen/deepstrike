@@ -1,7 +1,7 @@
 /**
- * `InMemoryDreamStore` — a lightweight `DreamStore` implementation backed by per-agent `Map`s.
+ * `InMemoryMemoryStore` — a lightweight `MemoryStore` implementation backed by per-agent `Map`s.
  *
- * Originally lived as `MockDreamStore` in the SDK's test helpers; promoted here so benchmarks,
+ * Originally lived as `MockMemoryStore` in the SDK's test helpers; promoted here so benchmarks,
  * examples, and downstream consumers can use it without copying the boilerplate.
  *
  * Use cases:
@@ -15,7 +15,7 @@
  * mirrors recall lifecycle and pin state. For semantic search, plug in a real store.
  */
 import type {
-  DreamStore,
+  MemoryStore,
   MemoryQuery,
   MemoryRecall,
   MemoryRecallLifecycle,
@@ -25,7 +25,7 @@ import type {
 import { rankMemories } from "./ranking.js"
 import { memoryRetentionScore } from "./retention.js"
 
-export interface InMemoryDreamStoreOptions {
+export interface InMemoryMemoryStoreOptions {
   /** Cap the per-agent record set; a write past it evicts the lowest-value unpinned records (M3). */
   maxRecords?: number
   /** Age (days) past which a record's recall relevance is discounted. Default 2. */
@@ -34,7 +34,7 @@ export interface InMemoryDreamStoreOptions {
   now?: () => number
 }
 
-export class InMemoryDreamStore implements DreamStore {
+export class InMemoryMemoryStore implements MemoryStore {
   private memories = new Map<string, MemoryRecord[]>()
   /** Sessions persisted via `saveSession`; exposed for test assertions. */
   readonly savedSessions: SessionData[] = []
@@ -48,7 +48,7 @@ export class InMemoryDreamStore implements DreamStore {
    */
   constructor(
     private readonly initialMemories: MemoryRecord[] = [],
-    options: InMemoryDreamStoreOptions = {},
+    options: InMemoryMemoryStoreOptions = {},
   ) {
     this.maxRecords = options.maxRecords
     this.staleWarningDays = options.staleWarningDays ?? 2
@@ -64,7 +64,7 @@ export class InMemoryDreamStore implements DreamStore {
     return []
   }
 
-  async upsert(agentId: string, incoming: MemoryRecord): Promise<void> {
+  async put(agentId: string, incoming: MemoryRecord): Promise<void> {
     const kept = [...this.recordsFor(agentId)]
     const index = kept.findIndex(record =>
         record.scope.tenant_id === incoming.scope.tenant_id
@@ -75,6 +75,14 @@ export class InMemoryDreamStore implements DreamStore {
     if (index >= 0) kept[index] = incoming
     else kept.push(incoming)
     this.memories.set(agentId, this.evictToCapacity(kept))
+  }
+
+  async get(agentId: string, recordId: string): Promise<MemoryRecord | null> {
+    return this.recordsFor(agentId).find(record => record.record_id === recordId) ?? null
+  }
+
+  async delete(agentId: string, recordId: string): Promise<void> {
+    this.memories.set(agentId, this.recordsFor(agentId).filter(record => record.record_id !== recordId))
   }
 
   /** M3: value-ordered retention eviction. Sheds the lowest-value unpinned records — the shared

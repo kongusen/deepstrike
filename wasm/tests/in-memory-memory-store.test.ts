@@ -1,4 +1,4 @@
-import { InMemoryDreamStore } from "../src/memory/in-memory-store.js"
+import { InMemoryMemoryStore } from "../src/memory/in-memory-store.js"
 import type { MemoryQuery, MemoryRecord } from "../src/memory/index.js"
 
 const scope = { tenant_id: "tenant-test", namespace: "wasm-store" }
@@ -9,9 +9,19 @@ const memory = (content: string, updated_at: number): MemoryRecord => ({
 })
 const query = (text: string): MemoryQuery => ({ scope, query: text, top_k: 5, kinds: [] })
 
-describe("InMemoryDreamStore search", () => {
+describe("InMemoryMemoryStore search", () => {
+  it("gets and deletes records by agent-local record id", async () => {
+    const store = new InMemoryMemoryStore()
+    const value = { ...memory("delete me", 1), record_id: "delete-me" }
+
+    await store.put("agent", value)
+    await expect(store.get("agent", "delete-me")).resolves.toEqual(value)
+    await store.delete("agent", "delete-me")
+    await expect(store.get("agent", "delete-me")).resolves.toBeNull()
+  })
+
   it("uses lexical relevance and never returns unrelated fallback entries", async () => {
-    const store = new InMemoryDreamStore([
+    const store = new InMemoryMemoryStore([
       memory("database migration checklist", 1),
       memory("scheduler fairness in Rust", 2),
       memory("newer unrelated note", 3),
@@ -25,7 +35,7 @@ describe("InMemoryDreamStore search", () => {
 
   // M3-C: score is relevance, not stored confidence (deviation 1).
   it("scores hits by relevance, not stored confidence", async () => {
-    const store = new InMemoryDreamStore([
+    const store = new InMemoryMemoryStore([
       { ...memory("token rotation and token expiry", 20), record_id: "hi", confidence: 0.1 },
       { ...memory("refresh token expires in UTC", 10), record_id: "lo", confidence: 0.99 },
     ])
@@ -37,10 +47,10 @@ describe("InMemoryDreamStore search", () => {
 
   // M3: value-ordered retention eviction + recall/pin mirroring.
   it("evicts the lowest-value record and mirrors recall/pin lifecycle", async () => {
-    const store = new InMemoryDreamStore([], { maxRecords: 2 })
-    await store.upsert("a1", { ...memory("cold", 1), record_id: "cold", recall_count: 0 })
-    await store.upsert("a1", { ...memory("warm", 1), record_id: "warm", recall_count: 5 })
-    await store.upsert("a1", { ...memory("new", 1), record_id: "new", recall_count: 1 })
+    const store = new InMemoryMemoryStore([], { maxRecords: 2 })
+    await store.put("a1", { ...memory("cold", 1), record_id: "cold", recall_count: 0 })
+    await store.put("a1", { ...memory("warm", 1), record_id: "warm", recall_count: 5 })
+    await store.put("a1", { ...memory("new", 1), record_id: "new", recall_count: 1 })
     const ids = (await store.search("a1", { scope, query: "cold warm new", top_k: 9, kinds: [] })).map(h => h.record.record_id)
     expect(ids).not.toContain("cold")
 

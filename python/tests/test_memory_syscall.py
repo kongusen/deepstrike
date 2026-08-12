@@ -25,13 +25,19 @@ def memory(name: str, content: str) -> MemoryRecord:
 
 
 @pytest.mark.asyncio
-async def test_write_memory_commits_to_dream_store_after_kernel_validation():
+async def test_write_memory_commits_to_memory_store_after_kernel_validation():
   committed = None
 
   class Store:
-    async def upsert(self, agent_id: str, record: MemoryRecord):
+    async def put(self, agent_id: str, record: MemoryRecord):
       nonlocal committed
       committed = record
+
+    async def get(self, agent_id: str, record_id: str):
+      return None
+
+    async def delete(self, agent_id: str, record_id: str):
+      pass
 
     async def save_session(self, data):
       pass
@@ -46,7 +52,7 @@ async def test_write_memory_commits_to_dream_store_after_kernel_validation():
     execution_plane=LocalExecutionPlane(),
     max_tokens=1024,
     agent_id="agent-memory",
-    dream_store=Store(),
+    memory_store=Store(),
   ))
 
   await runner.write_memory(memory("prefers-small-tests", "User prefers focused unit tests for SDK behavior."), session_id="memory-syscall-py")
@@ -58,11 +64,17 @@ async def test_write_memory_commits_to_dream_store_after_kernel_validation():
 
 
 @pytest.mark.asyncio
-async def test_query_memory_returns_dream_store_hits_after_kernel_observation():
+async def test_query_memory_returns_memory_store_hits_after_kernel_observation():
   hit = MemoryRecall(record=memory("testing", "Use small focused tests."), score=0.9, why="fixture")
 
   class Store:
-    async def upsert(self, agent_id: str, record):
+    async def put(self, agent_id: str, record):
+      pass
+
+    async def get(self, agent_id: str, record_id: str):
+      return None
+
+    async def delete(self, agent_id: str, record_id: str):
       pass
 
     async def save_session(self, data):
@@ -78,7 +90,7 @@ async def test_query_memory_returns_dream_store_hits_after_kernel_observation():
     execution_plane=LocalExecutionPlane(),
     max_tokens=1024,
     agent_id="agent-memory",
-    dream_store=Store(),
+    memory_store=Store(),
   ))
 
   hits = await runner.query_memory(MemoryQuery(SCOPE, "Need memory about tests", top_k=1), session_id="memory-query-syscall-py")
@@ -94,9 +106,15 @@ async def test_write_memory_logs_validation_failure_without_commit():
   committed = False
 
   class Store:
-    async def upsert(self, agent_id: str, record):
+    async def put(self, agent_id: str, record):
       nonlocal committed
       committed = True
+
+    async def get(self, agent_id: str, record_id: str):
+      return None
+
+    async def delete(self, agent_id: str, record_id: str):
+      pass
 
     async def save_session(self, data):
       pass
@@ -111,7 +129,7 @@ async def test_write_memory_logs_validation_failure_without_commit():
     execution_plane=LocalExecutionPlane(),
     max_tokens=1024,
     agent_id="agent-memory",
-    dream_store=Store(),
+    memory_store=Store(),
   ))
 
   invalid = memory("", "invalid write")

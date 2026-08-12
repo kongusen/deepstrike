@@ -1,4 +1,4 @@
-// ─── Dream / idle-pipeline types ─────────────────────────────────────────────
+// ─── Durable memory and session-extraction types ────────────────────────────
 import type { Message, ContentPart } from "../types.js"
 
 export interface SessionMessage {
@@ -66,10 +66,30 @@ export interface MemoryRecallLifecycle {
   last_recalled_at: number
 }
 
-export interface DreamStore {
-  /** The only durable memory mutation. Callers must reach this through the kernel WriteMemory gate. */
-  upsert(agentId: string, record: MemoryRecord): Promise<void>
-  /** Semantic search over the agent's long-term memories. Called on demand during a run. */
+/** Search options for the public, agent-bound durable `Memory` descriptor. */
+export interface MemorySearchOptions {
+  topK?: number
+  kinds?: MemoryKind[]
+  minScore?: number
+}
+
+/**
+ * Public durable memory descriptor bound to one agent and scope. It intentionally returns records,
+ * not ranking internals, and is distinct from `WorkingMemory`, the SDK-only scratch pad.
+ */
+export interface Memory {
+  readonly namespace?: string
+  search(query: string, options?: MemorySearchOptions): Promise<MemoryRecord[]>
+  get(id: string): Promise<MemoryRecord | null>
+  put(record: MemoryRecord): Promise<void>
+  delete(id: string): Promise<void>
+}
+
+/** Host-owned durable storage behind an agent-bound public `Memory` descriptor. */
+export interface MemoryStore {
+  put(agentId: string, record: MemoryRecord): Promise<void>
+  get(agentId: string, recordId: string): Promise<MemoryRecord | null>
+  delete(agentId: string, recordId: string): Promise<void>
   search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]>
   /** Persist the completed session before the runner performs its one extraction pass. */
   saveSession(data: SessionData): Promise<void>

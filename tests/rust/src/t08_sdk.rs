@@ -164,7 +164,7 @@ fn runtime_options_can_be_constructed() {
         system_prompt: None,
         initial_memory: vec![],
         skill_dir: None,
-        dream_store: None,
+        memory_store: None,
         knowledge_source: None,
         signal_source: None,
         governance: None,

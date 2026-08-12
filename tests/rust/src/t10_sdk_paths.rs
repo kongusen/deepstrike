@@ -21,13 +21,19 @@ impl KnowledgeSource for TrackingKnowledgeSource {
     }
 }
 
-struct TrackingDreamStore {
+struct TrackingMemoryStore {
     saved: Arc<Mutex<Vec<CoreSessionData>>>,
 }
 
 #[async_trait]
-impl DreamStore for TrackingDreamStore {
-    async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> Result<()> {
+impl MemoryStore for TrackingMemoryStore {
+    async fn put(&self, _agent_id: &str, _record: MemoryRecord) -> Result<()> {
+        Ok(())
+    }
+    async fn get(&self, _agent_id: &str, _record_id: &str) -> Result<Option<MemoryRecord>> {
+        Ok(None)
+    }
+    async fn delete(&self, _agent_id: &str, _record_id: &str) -> Result<()> {
         Ok(())
     }
     async fn search(&self, _agent_id: &str, _query: &MemoryQuery) -> Result<Vec<MemoryRecall>> {
@@ -77,7 +83,7 @@ where
         system_prompt: None,
         initial_memory: vec![],
         skill_dir: None,
-        dream_store: None,
+        memory_store: None,
         knowledge_source: None,
         signal_source: None,
         governance: None,
@@ -146,11 +152,11 @@ async fn initial_memory_is_recalled() {
 #[ignore = "requires OPENAI_API_KEY"]
 async fn save_session_called_after_run() {
     let saved = Arc::new(Mutex::new(vec![]));
-    let store = TrackingDreamStore {
+    let store = TrackingMemoryStore {
         saved: saved.clone(),
     };
     let runner = make_runner_with(|_, opts| {
-        opts.dream_store = Some(Box::new(store));
+        opts.memory_store = Some(Box::new(store));
         opts.agent_id = Some("test-agent".into());
     });
     runner.execute("Reply \"ok\".").await.unwrap();

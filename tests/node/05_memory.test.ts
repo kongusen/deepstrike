@@ -1,10 +1,10 @@
 /**
- * 05_memory.test.ts — WorkingMemory + DreamStore
+ * 05_memory.test.ts — WorkingMemory + MemoryStore
  */
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { WorkingMemory } from "@deepstrike/sdk"
-import { MockDreamStore, TEST_MEMORY_SCOPE, memoryRecord } from "./helpers.js"
+import { MockMemoryStore, TEST_MEMORY_SCOPE, memoryRecord } from "./helpers.js"
 
 describe("WorkingMemory", () => {
   it("stores and retrieves values", () => {
@@ -44,16 +44,25 @@ describe("WorkingMemory", () => {
   })
 })
 
-describe("MockDreamStore", () => {
-  it("upsert adds entries", async () => {
-    const s = new MockDreamStore()
-    await s.upsert("a1", memoryRecord("fact-a", "fact A", 0.9))
+describe("MockMemoryStore", () => {
+  it("put adds entries", async () => {
+    const s = new MockMemoryStore()
+    await s.put("a1", memoryRecord("fact-a", "fact A", 0.9))
     assert.equal((await s.search("a1", { scope: TEST_MEMORY_SCOPE, query: "fact", top_k: 5, kinds: [] })).length, 1)
   })
 
+  it("gets and deletes an agent-local record", async () => {
+    const s = new MockMemoryStore()
+    const record = memoryRecord("fact-a", "fact A", 0.9)
+    await s.put("a1", record)
+    assert.deepEqual(await s.get("a1", record.record_id), record)
+    await s.delete("a1", record.record_id)
+    assert.equal(await s.get("a1", record.record_id), null)
+  })
+
   it("search respects topK", async () => {
-    const s = new MockDreamStore()
-    for (let i = 0; i < 5; i++) await s.upsert("a1", memoryRecord(`m-${i}`, `m${i}`))
+    const s = new MockMemoryStore()
+    for (let i = 0; i < 5; i++) await s.put("a1", memoryRecord(`m-${i}`, `m${i}`))
     assert.equal((await s.search("a1", {
       scope: TEST_MEMORY_SCOPE,
       query: "q",

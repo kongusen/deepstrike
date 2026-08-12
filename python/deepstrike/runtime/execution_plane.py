@@ -29,7 +29,7 @@ from deepstrike.skills.loader import read_skill_file
 if TYPE_CHECKING:
   from deepstrike.governance import Governance
   from deepstrike.knowledge.source import KnowledgeSource
-  from deepstrike.memory.protocols import DreamStore, MemoryScope
+  from deepstrike.memory.protocols import MemoryStore, MemoryScope
   from deepstrike.runtime.reliability import OperationContext
 
 
@@ -77,7 +77,7 @@ class RunContext:
   agent_id: str | None = None
   memory_scope: "MemoryScope | None" = None
   skill_dir: Path | None = None
-  dream_store: "DreamStore | None" = None
+  memory_store: "MemoryStore | None" = None
   knowledge_source: "KnowledgeSource | None" = None
   on_tool_suspend: Callable[[ToolSuspendEvent], Awaitable[Any] | Any] | None = None
   on_permission_request: Callable[[PermissionRequestEvent], Awaitable[PermissionResponse | bool | dict[str, Any]] | PermissionResponse | bool | dict[str, Any]] | None = None
@@ -133,12 +133,12 @@ class LocalExecutionPlane:
       yield ToolResultEvent(call_id=c.id, name=c.name, content=output, is_error=content is None)
 
     for c in memory_calls:
-      if ctx.dream_store and ctx.agent_id and ctx.memory_scope:
+      if ctx.memory_store and ctx.agent_id and ctx.memory_scope:
         from deepstrike.memory.protocols import MemoryQuery
         args = _parse_json(c.arguments)
         query = str(args.get("query", ""))
         top_k = int(args.get("top_k", 5))
-        entries = await ctx.dream_store.search(ctx.agent_id, MemoryQuery(
+        entries = await ctx.memory_store.search(ctx.agent_id, MemoryQuery(
           scope=ctx.memory_scope, query=query, top_k=top_k,
         ))
         output = (
@@ -215,7 +215,7 @@ class LocalExecutionPlane:
       agent_id=ctx.agent_id,
       memory_scope=ctx.memory_scope,
       skill_dir=ctx.skill_dir,
-      dream_store=ctx.dream_store,
+      memory_store=ctx.memory_store,
       knowledge_source=ctx.knowledge_source,
       on_tool_suspend=ctx.on_tool_suspend,
       on_permission_request=ctx.on_permission_request,

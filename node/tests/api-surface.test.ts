@@ -29,7 +29,7 @@ describe("root surface", () => {
     for (const name of [
       // moved to subpaths
       "OpenAIChatProvider", "DeepSeekProvider", "builtinReducers", "SubAgentOrchestrator",
-      "WorktreeExecutionPlane", "McpProxyPlane", "DreamStore", "WorkingMemory",
+      "WorktreeExecutionPlane", "McpProxyPlane", "MemoryStore", "WorkingMemory",
       "HarnessLoop", "EvalLoopHarness", "judge", "osProfile", "ReplayProvider", "PermissionManager",
       // internalized (kernel boundary / low-level builders)
       "workflowSpecToKernel", "agentRunSpecToKernel", "governancePolicyToKernelEvent",
@@ -60,8 +60,8 @@ describe("subpath barrels", () => {
     for (const n of ["WorktreeExecutionPlane", "ProcessSandboxPlane", "McpProxyPlane", "FileArchiveStore"])
       expect(planes).toHaveProperty(n)
   })
-  it("memory carries dream + working memory", () => {
-    for (const n of ["WorkingMemory", "InMemoryDreamStore", "rankMemories", "extractSessionMemories", "parseExtractedMemories"])
+  it("memory carries durable + working memory", () => {
+    for (const n of ["WorkingMemory", "DurableMemory", "InMemoryMemoryStore", "rankMemories", "extractSessionMemories", "parseExtractedMemories"])
       expect(memory).toHaveProperty(n)
   })
   it("harness carries the eval harnesses + judge", () => {

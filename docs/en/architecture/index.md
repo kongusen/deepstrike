@@ -25,7 +25,7 @@ This is not an attempt to emulate a real operating system. It is a runtime bound
                             │ RuntimeRunner / run_agent
 ┌───────────────────────────▼─────────────────────────────────┐
 │  Host SDK (Python · Node · Rust · WASM)                        │
-│  Provider · ExecutionPlane · SessionLog · DreamStore · Signal  │
+│  Provider · ExecutionPlane · SessionLog · MemoryStore · Signal  │
 └───────────────────────────┬─────────────────────────────────┘
                             │ KernelInput / KernelAction
 ┌───────────────────────────▼─────────────────────────────────┐
@@ -80,7 +80,7 @@ The analogy exists to make the boundary concrete: **agent syscalls must be gover
 | Context VM | Four-slot render, compression, prompt cache | [Context engineering](/en/guides/context-engineering) |
 | Syscall + governance | Tool policy, quotas, quarantine | [Governance](/en/guides/governance) |
 | Workflow DAG | fan-out, classify, loop, tournament | [Dynamic workflows](/en/guides/workflow) |
-| Memory syscall | writeMemory / queryMemory / Dream | [Memory](/en/guides/memory) |
+| Memory syscall | writeMemory / queryMemory / durable memory | [Memory](/en/guides/memory) |
 | AgentProcess / TCB | Sub-agents, isolation, handoff | [Sub-agents & collaboration](/en/guides/sub-agents-and-collaboration) |
 
 Architecture explains **why and shape**; guides explain **how with examples**.

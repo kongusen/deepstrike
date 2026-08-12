@@ -97,7 +97,7 @@ impl ExecutionPlane for RemoteVpcPlane {
     ) -> Pin<Box<dyn Stream<Item = Result<RunEvent>> + Send + 'a>> {
         Box::pin(try_stream! {
             let RunContext {
-                agent_id, memory_scope, skill_dir, dream_store, knowledge_source, governance, on_tool_suspend, on_permission_request,
+                agent_id, memory_scope, skill_dir, memory_store, knowledge_source, governance, on_tool_suspend, on_permission_request,
             } = ctx;
 
             let local_names: HashSet<String> =
@@ -112,7 +112,7 @@ impl ExecutionPlane for RemoteVpcPlane {
                     agent_id,
                     memory_scope,
                     skill_dir,
-                    dream_store,
+                    memory_store,
                     knowledge_source,
                     governance: governance.clone(),
                     on_tool_suspend: on_tool_suspend.clone(),

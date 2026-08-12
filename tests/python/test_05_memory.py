@@ -1,12 +1,12 @@
 """
-05 — WorkingMemory + MockDreamStore
+05 — WorkingMemory + MockMemoryStore
 """
 from deepstrike import WorkingMemory
 from deepstrike.memory.protocols import (
     MemoryProvenance, MemoryQuery, MemoryRecord, MemoryScope,
 )
 
-from conftest import MockDreamStore
+from conftest import MockMemoryStore
 
 SCOPE = MemoryScope("test", "root-memory")
 def memory(content: str, confidence: float = 0.5) -> MemoryRecord:
@@ -43,14 +43,22 @@ class TestWorkingMemory:
         assert m.get("k") == "second"
 
 
-class TestMockDreamStore:
+class TestMockMemoryStore:
     async def test_upsert_adds_entries(self):
-        s = MockDreamStore()
-        await s.upsert("a1", memory("fact A", 0.9))
+        s = MockMemoryStore()
+        await s.put("a1", memory("fact A", 0.9))
         assert len(await s.search("a1", MemoryQuery(scope=SCOPE, query="fact", top_k=5))) == 1
 
+    async def test_get_and_delete_are_agent_local(self):
+        s = MockMemoryStore()
+        record = memory("fact A", 0.9)
+        await s.put("a1", record)
+        assert await s.get("a1", record.record_id) == record
+        await s.delete("a1", record.record_id)
+        assert await s.get("a1", record.record_id) is None
+
     async def test_search_respects_top_k(self):
-        s = MockDreamStore()
+        s = MockMemoryStore()
         for i in range(5):
-            await s.upsert("a1", memory(f"m{i}"))
+            await s.put("a1", memory(f"m{i}"))
         assert len(await s.search("a1", MemoryQuery(scope=SCOPE, query="q", top_k=3))) == 3

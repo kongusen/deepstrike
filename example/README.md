@@ -14,7 +14,7 @@ is real** — these examples run the live agent loop, not a scripted transcript.
 | # | Project | New mechanisms | One-line idea |
 |---|---|---|---|
 | **L1** | Sourced Q&A assistant | Tools + Execution Plane · Provider · Session replay/recovery | one agent that answers with citations and resumes after a crash |
-| **L2** | Assistant with memory | Memory (DreamStore, governed write gate, dedup, run-start recall) | remembers sources & preferences across sessions |
+| **L2** | Assistant with memory | Memory (MemoryStore, governed write gate, dedup, run-start recall) | remembers sources & preferences across sessions |
 | **L3** | Assistant with a handbook | Skills (on-demand load + tool gating) · Knowledge | loads a "citation style" skill on demand; narrows the tools it exposes |
 | **L4** | Event-driven assistant | Signals + Reactive (gateway, external triggers, injected notes) | a "new source arrived" webhook wakes it to process the delta |
 | **L5** | Governed assistant | Governance · Resource Quota · OS Profile snapshot | forbids destructive tools, caps tokens/spawns, exports an observability snapshot |

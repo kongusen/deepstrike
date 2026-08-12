@@ -108,7 +108,7 @@ Read the [full curriculum map](./example/README.md) for prerequisites, provider 
 | **Context VM** | Four-slot rendering (`system_stable`, `system_knowledge`, `turns`, `state_turn`), pressure compression, handle paging for large tool results, prompt-cache-aware stable prefixes, and a governed knowledge lifecycle (keyed entries, boundary-deferred eviction, knowledge budget, skill leases). |
 | **Sub-agent isolation** | Roles, context inheritance, capability filters, worktree / read-only / remote isolation, process lineage, contracts, and handoff artifacts. |
 | **Replay and recovery** | Append-only `SessionLog` evidence, provider replay, canonical checkpoint/journal resume, `wake(session_id)`, OS snapshots, and offline repair utilities. |
-| **Memory as an OS device** | Kernel-validated `write_memory` / `query_memory`, DreamStore integration, retrieval closure, idle consolidation, and memory write quotas. |
+| **Memory as an OS device** | Kernel-validated `write_memory` / `query_memory`, MemoryStore integration, session extraction, retrieval closure, and memory write quotas. |
 | **Self-improving harness lab** | Node-first, content-addressed `HarnessManifest` profiles, declarative instruction and nudge surfaces, verifier-anchored failure mining, held-in/held-out validation, and auditable propose–validate–promote lineage. |
 | **Provider routing** | Kernel carries `model_hint`; the host resolves it to OpenAI, Anthropic, Gemini, DeepSeek, Kimi, Qwen, GLM, Minimax, Ollama, or your own provider. |
 | **Multimodal input** | Image and audio via `run({ attachments })` across all four SDKs, per-vendor serialization (Anthropic blocks, OpenAI `image_url` / `input_audio`, Gemini `inlineData`), detail-weighted token accounting, and `UnsupportedModalityError` instead of silent drops. |
@@ -146,7 +146,7 @@ That boundary gives you properties a one-off orchestrator script does not:
 | Layer | Owns | Does not own |
 | :--- | :--- | :--- |
 | **Kernel (`deepstrike-core`)** | State machine, scheduling, syscall disposition, governance, workflow DAGs, budget ledger, context rendering, memory validation, observations | HTTP, filesystem, provider clients, vector stores, subprocesses |
-| **Host SDK** | Runtime loop, provider calls, tool execution, session persistence, DreamStore, archive store, worktree and sandbox integration | Reimplementing spawn gates or workflow semantics |
+| **Host SDK** | Runtime loop, provider calls, tool execution, session persistence, MemoryStore, archive store, worktree and sandbox integration | Reimplementing spawn gates or workflow semantics |
 | **Provider** | Vendor protocol adaptation, streaming, replay envelopes, model-specific runtime policy | Policy decisions |
 | **ExecutionPlane** | Local tools, streaming tools, suspend/resume, worktree cwd injection, process sandbox, remote VPC tools, external payload storage | Context compression |
 

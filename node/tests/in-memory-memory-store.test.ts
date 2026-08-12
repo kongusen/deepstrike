@@ -1,4 +1,4 @@
-import { InMemoryDreamStore } from "../src/memory/in-memory-store.js"
+import { InMemoryMemoryStore } from "../src/memory/in-memory-store.js"
 import type { MemoryQuery, MemoryRecord, SessionData } from "../src/memory/protocols.js"
 
 const scope = { tenant_id: "tenant-test", namespace: "store-tests" }
@@ -19,28 +19,28 @@ const session = (agentId: string, sessionId = "s1"): SessionData => ({
   updatedAtMs: 1,
 })
 
-describe("InMemoryDreamStore", () => {
+describe("InMemoryMemoryStore", () => {
   it("returns no search results for an unknown agent", async () => {
-    const store = new InMemoryDreamStore()
+    const store = new InMemoryMemoryStore()
     expect(await store.search("agent-x", query("anything", 5))).toEqual([])
   })
 
   it("seeds initial memories independently per agent", async () => {
     const seed = [memory("fact-a")]
-    const store = new InMemoryDreamStore(seed)
+    const store = new InMemoryMemoryStore(seed)
     expect((await store.search("a1", query("fact", 5))).map(hit => hit.record.content)).toEqual(["fact-a"])
     expect((await store.search("a2", query("fact", 5))).map(hit => hit.record.content)).toEqual(["fact-a"])
   })
 
   it("upserts by scoped kind and name", async () => {
-    const store = new InMemoryDreamStore()
-    await store.upsert("a1", memory("a", 0.5))
-    await store.upsert("a1", { ...memory("a", 0.9), content: "updated" })
+    const store = new InMemoryMemoryStore()
+    await store.put("a1", memory("a", 0.5))
+    await store.put("a1", { ...memory("a", 0.9), content: "updated" })
     expect((await store.search("a1", query("updated", 5))).map(hit => hit.record.content)).toEqual(["updated"])
   })
 
   it("search ranks lexical matches instead of returning insertion order", async () => {
-    const store = new InMemoryDreamStore([
+    const store = new InMemoryMemoryStore([
       memory("database migration notes", 0.9, 30),
       memory("refresh token expires in UTC", 0.2, 10),
       memory("token rotation and token expiry", 0.1, 20),
@@ -52,7 +52,7 @@ describe("InMemoryDreamStore", () => {
   })
 
   it("uses recency and then insertion order as deterministic tie-breakers", async () => {
-    const store = new InMemoryDreamStore([
+    const store = new InMemoryMemoryStore([
       memory("auth token alpha", 0.1, 10),
       memory("auth token beta", 0.9, 20),
       memory("auth token gamma", 0.5, 20),
@@ -65,14 +65,14 @@ describe("InMemoryDreamStore", () => {
   })
 
   it("returns no memories when a non-empty query has no lexical match", async () => {
-    const store = new InMemoryDreamStore([
+    const store = new InMemoryMemoryStore([
       memory("database migration notes", 0.9, 30),
     ])
     expect(await store.search("a1", query("oauth token", 5))).toEqual([])
   })
 
   it("matches CJK query phrases without requiring whitespace tokenization", async () => {
-    const store = new InMemoryDreamStore([
+    const store = new InMemoryMemoryStore([
       memory("数据库迁移注意事项", 0.9, 30),
       memory("刷新令牌过期时间使用 UTC", 0.2, 10),
     ])
@@ -82,7 +82,7 @@ describe("InMemoryDreamStore", () => {
   })
 
   it("saveSession persists the completed transcript", async () => {
-    const store = new InMemoryDreamStore()
+    const store = new InMemoryMemoryStore()
     await store.saveSession(session("a1", "s-saved"))
     expect(store.savedSessions.length).toBe(1)
     expect(store.savedSessions[0]?.sessionId).toBe("s-saved")
@@ -90,7 +90,7 @@ describe("InMemoryDreamStore", () => {
 
   // M3-C: the recall score is relevance, not the record's stored confidence (deviation 1).
   it("scores hits by relevance, not by stored confidence", async () => {
-    const store = new InMemoryDreamStore([
+    const store = new InMemoryMemoryStore([
       memory("token rotation and token expiry", 0.1, 20), // low confidence, high lexical overlap
       memory("refresh token expires in UTC", 0.99, 10),   // high confidence, lower overlap
     ])
@@ -107,7 +107,7 @@ describe("InMemoryDreamStore", () => {
     const now = 100 * 86_400_000 // day 100
     const fresh = { ...memory("deploy runbook steps", 0.5, now), record_id: "fresh" }
     const stale = { ...memory("deploy runbook steps", 0.5, 0), record_id: "stale", ttl_days: 5 }
-    const store = new InMemoryDreamStore([fresh, stale], { now: () => now, staleWarningDays: 2 })
+    const store = new InMemoryMemoryStore([fresh, stale], { now: () => now, staleWarningDays: 2 })
     const hits = await store.search("a1", query("deploy runbook", 2))
     expect(hits.map(h => h.record.record_id)).toEqual(["fresh", "stale"])
     expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score)
@@ -115,19 +115,19 @@ describe("InMemoryDreamStore", () => {
 
   // M3: value-ordered retention eviction replaces the deleted blind tail-cut.
   it("evicts the lowest-value unpinned record past maxRecords", async () => {
-    const store = new InMemoryDreamStore([], { maxRecords: 2 })
-    await store.upsert("a1", { ...memory("cold"), record_id: "cold", recall_count: 0 })
-    await store.upsert("a1", { ...memory("warm"), record_id: "warm", recall_count: 5 })
-    await store.upsert("a1", { ...memory("new"), record_id: "new", recall_count: 1 })
+    const store = new InMemoryMemoryStore([], { maxRecords: 2 })
+    await store.put("a1", { ...memory("cold"), record_id: "cold", recall_count: 0 })
+    await store.put("a1", { ...memory("warm"), record_id: "warm", recall_count: 5 })
+    await store.put("a1", { ...memory("new"), record_id: "new", recall_count: 1 })
     const ids = (await store.search("a1", query("cold warm new", 9))).map(h => h.record.record_id)
     expect(ids).not.toContain("cold") // never recalled → lowest value → evicted
     expect(ids).toEqual(expect.arrayContaining(["warm", "new"]))
   })
 
   it("never evicts a pinned record even when it is otherwise lowest value", async () => {
-    const store = new InMemoryDreamStore([], { maxRecords: 1 })
-    await store.upsert("a1", { ...memory("pinned"), record_id: "pinned", recall_count: 0, pinned: true })
-    await store.upsert("a1", { ...memory("hot"), record_id: "hot", recall_count: 9 })
+    const store = new InMemoryMemoryStore([], { maxRecords: 1 })
+    await store.put("a1", { ...memory("pinned"), record_id: "pinned", recall_count: 0, pinned: true })
+    await store.put("a1", { ...memory("hot"), record_id: "hot", recall_count: 9 })
     const ids = (await store.search("a1", query("pinned hot", 9))).map(h => h.record.record_id)
     expect(ids).toContain("pinned")
     expect(ids).not.toContain("hot")
@@ -135,7 +135,7 @@ describe("InMemoryDreamStore", () => {
 
   // M3: recall journaling mirrored from the kernel observation.
   it("recordRecall mirrors count and last-recalled into the durable record", async () => {
-    const store = new InMemoryDreamStore([memory("a-fact")])
+    const store = new InMemoryMemoryStore([memory("a-fact")])
     await store.recordRecall("a1", [{ record_id: "record-a-fact", recall_count: 3, last_recalled_at: 42 }])
     const hit = (await store.search("a1", query("a-fact", 1)))[0]
     expect(hit?.record.recall_count).toBe(3)
@@ -144,9 +144,9 @@ describe("InMemoryDreamStore", () => {
 
   // M4: pin mirrored from the host acting on a promotion suggestion.
   it("setPinned marks a record exempt from eviction", async () => {
-    const store = new InMemoryDreamStore([{ ...memory("keep"), record_id: "keep", recall_count: 0 }], { maxRecords: 1 })
+    const store = new InMemoryMemoryStore([{ ...memory("keep"), record_id: "keep", recall_count: 0 }], { maxRecords: 1 })
     await store.setPinned("a1", "keep", true)
-    await store.upsert("a1", { ...memory("hot"), record_id: "hot", recall_count: 9 })
+    await store.put("a1", { ...memory("hot"), record_id: "hot", recall_count: 9 })
     const ids = (await store.search("a1", query("keep hot", 9))).map(h => h.record.record_id)
     expect(ids).toContain("keep")
   })

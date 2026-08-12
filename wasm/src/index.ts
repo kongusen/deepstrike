@@ -104,14 +104,15 @@ export type { RegisteredTool, ToolExecContext } from "./tools/index.js"
 export { safeTool, ok, fail, ToolError, formatToolError } from "./tools/errors.js"
 export type { ToolEnvelope, ToolEnvelopeOk, ToolEnvelopeFail } from "./tools/errors.js"
 export { WorkingMemory } from "./memory/index.js"
-export { InMemoryDreamStore } from "./memory/in-memory-store.js"
-export type { InMemoryDreamStoreOptions } from "./memory/in-memory-store.js"
+export { DurableMemory } from "./memory/durable.js"
+export { InMemoryMemoryStore } from "./memory/in-memory-store.js"
+export type { InMemoryMemoryStoreOptions } from "./memory/in-memory-store.js"
 export { memoryRetentionScore } from "./memory/retention.js"
 export { rankMemories } from "./memory/ranking.js"
 export type { RankableMemory, RankedMemory, RankOptions } from "./memory/ranking.js"
 export { extractSessionMemories, parseExtractedMemories } from "./memory/extraction.js"
 export type {
-  DreamStore, SessionStore, SessionData, SessionMessage, MemoryRecord, MemoryRecall, MemoryRecallLifecycle,
+  MemoryStore, Memory, MemorySearchOptions, SessionStore, SessionData, SessionMessage, MemoryRecord, MemoryRecall, MemoryRecallLifecycle,
   MemoryQuery, MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
 } from "./memory/index.js"
 export type { KnowledgeSource } from "./knowledge/index.js"

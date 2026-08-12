@@ -571,7 +571,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -683,7 +683,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -810,7 +810,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: Some(dir.clone()),
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -911,7 +911,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -1115,7 +1115,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -1225,7 +1225,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -1316,7 +1316,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -1424,7 +1424,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -1465,7 +1465,7 @@ mod tests {
         assert!(*called.lock().unwrap());
     }
 
-    use crate::memory::DreamStore;
+    use crate::memory::MemoryStore;
     use crate::runtime::InMemorySessionLog;
     use deepstrike_core::mm::memory::{
         MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
@@ -1530,7 +1530,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_page_out_observation_does_not_trigger_dream_store_io() {
+    async fn test_page_out_observation_does_not_trigger_memory_store_io() {
         use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
         use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
         use std::sync::Arc;
@@ -1538,15 +1538,35 @@ mod tests {
         let memories = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sessions = Arc::new(std::sync::Mutex::new(Vec::new()));
 
-        struct SharedMockDreamStore {
+        struct SharedMockMemoryStore {
             memories: Arc<std::sync::Mutex<Vec<MemoryRecord>>>,
             sessions: Arc<std::sync::Mutex<Vec<deepstrike_core::memory::durable::SessionData>>>,
         }
 
         #[async_trait::async_trait]
-        impl DreamStore for SharedMockDreamStore {
-            async fn upsert(&self, _agent_id: &str, record: MemoryRecord) -> crate::Result<()> {
+        impl MemoryStore for SharedMockMemoryStore {
+            async fn put(&self, _agent_id: &str, record: MemoryRecord) -> crate::Result<()> {
                 self.memories.lock().unwrap().push(record);
+                Ok(())
+            }
+            async fn get(
+                &self,
+                _agent_id: &str,
+                record_id: &str,
+            ) -> crate::Result<Option<MemoryRecord>> {
+                Ok(self
+                    .memories
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|record| record.record_id == record_id)
+                    .cloned())
+            }
+            async fn delete(&self, _agent_id: &str, record_id: &str) -> crate::Result<()> {
+                self.memories
+                    .lock()
+                    .unwrap()
+                    .retain(|record| record.record_id != record_id);
                 Ok(())
             }
             async fn search(
@@ -1572,7 +1592,7 @@ mod tests {
             }
         }
 
-        let store = SharedMockDreamStore {
+        let store = SharedMockMemoryStore {
             memories: memories.clone(),
             sessions: sessions.clone(),
         };
@@ -1594,7 +1614,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: Some(Box::new(store)),
+            memory_store: Some(Box::new(store)),
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -1662,7 +1682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_write_memory_syscall_commits_to_dream_store() {
+    async fn test_write_memory_syscall_commits_to_memory_store() {
         use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
         use crate::runtime::session_log::SessionLog;
         use std::sync::Arc;
@@ -1676,9 +1696,29 @@ mod tests {
         }
 
         #[async_trait::async_trait]
-        impl DreamStore for Store {
-            async fn upsert(&self, _agent_id: &str, record: MemoryRecord) -> crate::Result<()> {
+        impl MemoryStore for Store {
+            async fn put(&self, _agent_id: &str, record: MemoryRecord) -> crate::Result<()> {
                 self.memories.lock().unwrap().push(record);
+                Ok(())
+            }
+            async fn get(
+                &self,
+                _agent_id: &str,
+                record_id: &str,
+            ) -> crate::Result<Option<MemoryRecord>> {
+                Ok(self
+                    .memories
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|record| record.record_id == record_id)
+                    .cloned())
+            }
+            async fn delete(&self, _agent_id: &str, record_id: &str) -> crate::Result<()> {
+                self.memories
+                    .lock()
+                    .unwrap()
+                    .retain(|record| record.record_id != record_id);
                 Ok(())
             }
             async fn search(
@@ -1722,7 +1762,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: Some(Box::new(Store {
+            memory_store: Some(Box::new(Store {
                 memories: memories.clone(),
                 sessions,
             })),
@@ -1792,9 +1832,19 @@ mod tests {
         }
 
         #[async_trait::async_trait]
-        impl DreamStore for Store {
-            async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
+        impl MemoryStore for Store {
+            async fn put(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
                 *self.commits.lock().unwrap() += 1;
+                Ok(())
+            }
+            async fn get(
+                &self,
+                _agent_id: &str,
+                _record_id: &str,
+            ) -> crate::Result<Option<MemoryRecord>> {
+                Ok(None)
+            }
+            async fn delete(&self, _agent_id: &str, _record_id: &str) -> crate::Result<()> {
                 Ok(())
             }
             async fn search(
@@ -1830,7 +1880,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: Some(Box::new(Store {
+            memory_store: Some(Box::new(Store {
                 commits: commits.clone(),
             })),
             knowledge_source: None,
@@ -1914,7 +1964,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_memory_syscall_returns_dream_store_hits() {
+    async fn test_query_memory_syscall_returns_memory_store_hits() {
         use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
         use crate::runtime::session_log::SessionLog;
         use std::sync::Arc;
@@ -1931,8 +1981,28 @@ mod tests {
         }
 
         #[async_trait::async_trait]
-        impl DreamStore for Store {
-            async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
+        impl MemoryStore for Store {
+            async fn put(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
+                Ok(())
+            }
+            async fn get(
+                &self,
+                _agent_id: &str,
+                record_id: &str,
+            ) -> crate::Result<Option<MemoryRecord>> {
+                Ok(self
+                    .memories
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|record| record.record_id == record_id)
+                    .cloned())
+            }
+            async fn delete(&self, _agent_id: &str, record_id: &str) -> crate::Result<()> {
+                self.memories
+                    .lock()
+                    .unwrap()
+                    .retain(|record| record.record_id != record_id);
                 Ok(())
             }
             async fn search(
@@ -1980,7 +2050,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: Some(Box::new(Store { memories, sessions })),
+            memory_store: Some(Box::new(Store { memories, sessions })),
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -2046,8 +2116,18 @@ mod tests {
 
         struct Store;
         #[async_trait::async_trait]
-        impl DreamStore for Store {
-            async fn upsert(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
+        impl MemoryStore for Store {
+            async fn put(&self, _agent_id: &str, _record: MemoryRecord) -> crate::Result<()> {
+                Ok(())
+            }
+            async fn get(
+                &self,
+                _agent_id: &str,
+                _record_id: &str,
+            ) -> crate::Result<Option<MemoryRecord>> {
+                Ok(None)
+            }
+            async fn delete(&self, _agent_id: &str, _record_id: &str) -> crate::Result<()> {
                 Ok(())
             }
             async fn search(
@@ -2083,7 +2163,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: Some(Box::new(Store)),
+            memory_store: Some(Box::new(Store)),
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -2297,7 +2377,7 @@ mod tests {
             system_prompt: Some("s".repeat(32_768)),
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -2403,7 +2483,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,
@@ -2525,7 +2605,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             skill_dir: None,
-            dream_store: None,
+            memory_store: None,
             knowledge_source: None,
             signal_source: None,
             governance: None,

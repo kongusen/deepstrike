@@ -46,7 +46,7 @@ pub use harness_loop::{
     VerdictFnJudge,
 };
 pub use knowledge::KnowledgeSource;
-pub use memory::{DreamStore, InMemoryDreamStore, WorkingMemory};
+pub use memory::{DurableMemory, InMemoryMemoryStore, MemorySearchOptions, MemoryStore, WorkingMemory};
 pub use providers::RuntimePolicy;
 pub use providers::anthropic::AnthropicProvider;
 pub use providers::openai::{OpenAIProvider, deepseek, kimi, minimax, ollama, qwen};

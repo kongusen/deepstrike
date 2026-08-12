@@ -1,7 +1,7 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against python __all__ — symbols must exist.
 code_refs:
-  python: [RuntimeRunner, RuntimeOptions, AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider, LLMProvider, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent, tool, LocalExecutionPlane, WorkflowSpec, WorkflowNodeSpec, Governance, AgentPool, ReactiveSession, RuntimeSignal, run_agent, run_fanout, DeepSeekProvider, QwenProvider, KimiProvider, OllamaProvider, RenderedContext, streaming_tool, read_file, WorkingMemory, DreamStore, MemoryRecord, MemoryPolicy, fanout_synthesize, generate_and_filter, verify_rules, workflow_spec_to_kernel, ResourceQuota, AgentRunSpec, HandoffBus, AttemptLoop, AttemptJudge, SignalGateway, ScheduledPrompt]
+  python: [RuntimeRunner, RuntimeOptions, AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider, LLMProvider, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent, tool, LocalExecutionPlane, WorkflowSpec, WorkflowNodeSpec, Governance, AgentPool, ReactiveSession, RuntimeSignal, run_agent, run_fanout, DeepSeekProvider, QwenProvider, KimiProvider, OllamaProvider, RenderedContext, streaming_tool, read_file, WorkingMemory, MemoryStore, MemoryRecord, MemoryPolicy, fanout_synthesize, generate_and_filter, verify_rules, workflow_spec_to_kernel, ResourceQuota, AgentRunSpec, HandoffBus, AttemptLoop, AttemptJudge, SignalGateway, ScheduledPrompt]
 ---
 
 # Python API Index
@@ -56,8 +56,8 @@ Public exports for `from deepstrike import ...`, defined in `python/deepstrike/_
 | Symbol | Description |
 |--------|-------------|
 | `WorkingMemory` | In-process scratch |
-| `DreamStore` | Protocol (implement as needed) |
-| `InMemoryDreamStore` | In-memory implementation |
+| `MemoryStore` | Protocol (implement as needed) |
+| `InMemoryMemoryStore` | In-memory implementation |
 | `MemoryRecord` | Memory record |
 | `MemoryPolicy` | Memory policy |
 

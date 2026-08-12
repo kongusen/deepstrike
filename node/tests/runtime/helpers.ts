@@ -2,10 +2,10 @@ import { RuntimeRunner } from "../../src/runtime/runner.js"
 import { InMemorySessionLog } from "../../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import type { RegisteredTool } from "../../src/tools/index.js"
-import type { AsyncSummarizer, DreamSummarizer, LLMProvider, PermissionRequestEvent, PermissionResponse } from "../../src/types.js"
+import type { AsyncSummarizer, MemorySummarizer, LLMProvider, PermissionRequestEvent, PermissionResponse } from "../../src/types.js"
 import type { ToolSuspendEvent } from "../../src/types.js"
 import type { GovernancePolicy } from "../../src/governance.js"
-import type { DreamStore } from "../../src/memory/protocols.js"
+import type { MemoryStore } from "../../src/memory/protocols.js"
 import type { ArchiveStore } from "../../src/runtime/archive.js"
 import type { PayloadStore } from "../../src/runtime/payload-store.js"
 
@@ -20,7 +20,7 @@ export function createRunner(
     sessionLog?: InMemorySessionLog
     agentId?: string
     memoryScope?: import("../../src/memory/protocols.js").MemoryScope
-    dreamStore?: DreamStore
+    memoryStore?: MemoryStore
     compressionStore?: ArchiveStore
     payloadStore?: PayloadStore
     onToolSuspend?: (event: ToolSuspendEvent) => Promise<unknown> | unknown
@@ -29,8 +29,8 @@ export function createRunner(
     signalPolicy?: import("../../src/runtime/os-profile.js").SignalPolicy
     promptBudget?: import("../../src/runtime/runner.js").PromptBudget
     asyncSummarizer?: AsyncSummarizer
-    dreamSummarizer?: DreamSummarizer
-    dreamProvider?: LLMProvider
+    memorySummarizer?: MemorySummarizer
+    memoryProvider?: LLMProvider
     allowedToolIds?: string[]
     baselineToolIds?: string[]
     toolDispatchGate?: "exposed" | "registered"
@@ -63,7 +63,7 @@ export function createRunner(
     maxTurns: opts.maxTurns ?? 25,
     agentId: opts.agentId,
     memoryScope: opts.memoryScope,
-    dreamStore: opts.dreamStore,
+    memoryStore: opts.memoryStore,
     compressionStore: opts.compressionStore,
     payloadStore: opts.payloadStore,
     onToolSuspend: opts.onToolSuspend,
@@ -72,8 +72,8 @@ export function createRunner(
     signalPolicy: opts.signalPolicy,
     promptBudget: opts.promptBudget,
     asyncSummarizer: opts.asyncSummarizer,
-    dreamSummarizer: opts.dreamSummarizer,
-    dreamProvider: opts.dreamProvider,
+    memorySummarizer: opts.memorySummarizer,
+    memoryProvider: opts.memoryProvider,
     allowedToolIds: opts.allowedToolIds,
     baselineToolIds: opts.baselineToolIds,
     toolDispatchGate: opts.toolDispatchGate,

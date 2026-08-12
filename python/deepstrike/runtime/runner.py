@@ -92,7 +92,7 @@ if TYPE_CHECKING:
   from deepstrike.governance import Governance, GovernancePolicy
   from deepstrike.runtime.os_profile import OsProfile, SignalPolicy
   from deepstrike.knowledge.source import KnowledgeSource
-  from deepstrike.memory.protocols import DreamStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope
+  from deepstrike.memory.protocols import MemoryStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope
   from deepstrike.signals.types import SignalSource
   from deepstrike.types.agent import AgentRunSpec, SubAgentResult, MilestonePolicy, MilestoneContract, MilestoneCheckResult
   from deepstrike.runtime.payload_store import PayloadStore
@@ -141,7 +141,7 @@ class MemoryPolicy:
   Opt-in and kernel-enforced: ``validation_enabled=False`` admits writes without validation,
   ``max_content_bytes`` / ``max_name_length`` override the validation limits, and
   ``retrieval_top_k`` caps ``query_memory``'s emitted ``requested_k``. Storage is configured on the
-  host ``DreamStore`` and never enters this contract. Omitted fields keep the kernel defaults.
+  host ``MemoryStore`` and never enters this contract. Omitted fields keep the kernel defaults.
   """
   stale_warning_days: int | None = None
   retrieval_top_k: int | None = None
@@ -225,8 +225,8 @@ class RuntimeOptions:
   agent_id: str | None = None
   memory_scope: "MemoryScope | None" = None
   # I4: run-start memory pre-fetch hook. Callable receiving kwarg `goal=`; returns a list of query
-  # strings (or None). Each query becomes a dreamStore search; hits page into the knowledge
-  # partition before turn 1. Requires dream_store + agent_id. Errs-open. Mirrors Node ``preQueryMemory``.
+  # strings (or None). Each query becomes a memoryStore search; hits page into the knowledge
+  # partition before turn 1. Requires memory_store + agent_id. Errs-open. Mirrors Node ``preQueryMemory``.
   pre_query_memory: "Callable[..., Any] | None" = None
   system_prompt: str | None = None
   initial_memory: list[str] | None = None
@@ -235,7 +235,7 @@ class RuntimeOptions:
   # skills whose name is listed are fed via ``set_available_skills`` (and eligible for knowledge
   # pin on activation). None ⇒ all scanned skills; empty list ⇒ none.
   skill_filter: list[str] | None = None
-  dream_store: "DreamStore | None" = None
+  memory_store: "MemoryStore | None" = None
   #: M4: advisory callback when a recalled record crosses the promotion threshold. Keyword args:
   #: record_id: str, recall_count: int. The host/model decides whether to pin or promote to knowledge.
   on_promotion_suggested: "Callable[..., None] | None" = None
@@ -313,7 +313,7 @@ class RuntimeOptions:
   sub_agent_harness: SubAgentHarnessConfig | None = None
   # G2: custom reducers for NodeKind::Reduce nodes, merged over the built-ins. A reduce node runs no LLM.
   reducers: dict | None = None
-  dream_system_prompt: str | None = None
+  memory_system_prompt: str | None = None
   milestone_policy: "MilestonePolicy | None" = None
   on_milestone_evaluate: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None
   milestone_contract: "MilestoneContract | None" = None
@@ -360,8 +360,8 @@ class RuntimeOptions:
   # exactly their declared tools + meta-tools. Opt-in: with no skill declaring tools, never engages.
   stable_core_tool_ids: "list[str] | None" = None
   payload_store: "PayloadStore | None" = None
-  dream_provider: LLMProvider | None = None
-  dream_summarizer: Callable[[list[Any], dict[str, Any]], Awaitable[str] | str] | None = None
+  memory_provider: LLMProvider | None = None
+  memory_summarizer: Callable[[list[Any], dict[str, Any]], Awaitable[str] | str] | None = None
 
 
 OperationCancellationReason = Literal["user", "deadline", "lease_lost", "host_shutdown"]
@@ -582,7 +582,7 @@ class RuntimeRunner:
   ) -> None:
     resolved_session_id = session_id or self._current_session_id
     resolved_agent_id = agent_id or self._opts.agent_id
-    if not self._opts.dream_store or not resolved_agent_id:
+    if not self._opts.memory_store or not resolved_agent_id:
       return
 
     policy = self._opts.memory_policy
@@ -614,7 +614,7 @@ class RuntimeRunner:
             "error": error,
           })
         return
-    await self._opts.dream_store.upsert(resolved_agent_id, memory)
+    await self._opts.memory_store.put(resolved_agent_id, memory)
     if resolved_session_id:
       await self._opts.session_log.append(resolved_session_id, {
         "kind": "memory_written",
@@ -632,10 +632,10 @@ class RuntimeRunner:
     requested_k: int,
     agent_id: str,
   ) -> list["MemoryRecall"]:
-    if not self._opts.dream_store:
-      raise RuntimeError("memory queries require dream_store")
+    if not self._opts.memory_store:
+      raise RuntimeError("memory queries require memory_store")
     from dataclasses import replace
-    hits = await self._opts.dream_store.search(agent_id, replace(query, top_k=requested_k))
+    hits = await self._opts.memory_store.search(agent_id, replace(query, top_k=requested_k))
     # The kernel faults a memory_query_result whose hit count exceeds requested_k, so cap here.
     return list(hits)[:requested_k]
 
@@ -714,7 +714,7 @@ class RuntimeRunner:
 
     resolved_session_id = session_id or self._current_session_id
     resolved_agent_id = agent_id or self._opts.agent_id
-    if not self._opts.dream_store or not resolved_agent_id:
+    if not self._opts.memory_store or not resolved_agent_id:
       return []
 
     if resolved_session_id:
@@ -796,7 +796,7 @@ class RuntimeRunner:
     """
     if obs.get("kind") == "memory_recalled" and obs.get("recalls"):
       agent_id = self._opts.agent_id
-      record_recall = getattr(self._opts.dream_store, "record_recall", None) if self._opts.dream_store else None
+      record_recall = getattr(self._opts.memory_store, "record_recall", None) if self._opts.memory_store else None
       if agent_id and record_recall is not None:
         from deepstrike.memory.protocols import MemoryRecallLifecycle
         recalls = [
@@ -1891,7 +1891,7 @@ class RuntimeRunner:
         "tool_ids": list(self._opts.stable_core_tool_ids),
       })
 
-    if not resume_mid_run and self._opts.dream_store and self._opts.agent_id:
+    if not resume_mid_run and self._opts.memory_store and self._opts.agent_id:
       await apply_host(runtime, self._pending_observations, {"kind": "set_memory_enabled", "enabled": True})
     if not resume_mid_run and self._opts.knowledge_source:
       await apply_host(runtime, self._pending_observations, {"kind": "set_knowledge_enabled", "enabled": True})
@@ -2458,7 +2458,7 @@ class RuntimeRunner:
           agent_id=self._opts.agent_id,
           memory_scope=self._opts.memory_scope,
           skill_dir=skill_dir,
-          dream_store=self._opts.dream_store,
+          memory_store=self._opts.memory_store,
           knowledge_source=self._opts.knowledge_source,
           on_tool_suspend=self._opts.on_tool_suspend,
           on_permission_request=self._opts.on_permission_request,
@@ -2802,7 +2802,7 @@ class RuntimeRunner:
       )
       self._active_group_budget_scope = None
 
-    if self._opts.dream_store and self._opts.agent_id:
+    if self._opts.memory_store and self._opts.agent_id:
       new_msgs = list(runtime.drain_new_messages())
       if new_msgs:
         try:
@@ -2816,13 +2816,13 @@ class RuntimeRunner:
             created_at_ms=session_start,
             updated_at_ms=now_ms,
           )
-          await self._opts.dream_store.save_session(completed_session)
+          await self._opts.memory_store.save_session(completed_session)
           if self._opts.memory_scope:
             extracted = await extract_session_memories(
-              self._opts.dream_provider or self._opts.provider,
+              self._opts.memory_provider or self._opts.provider,
               completed_session,
               self._opts.memory_scope,
-              self._opts.dream_system_prompt,
+              self._opts.memory_system_prompt,
             )
             for memory in extracted:
               await self.write_memory(memory, session_id=session_id, agent_id=self._opts.agent_id)
@@ -2903,7 +2903,7 @@ class RuntimeRunner:
     self, hits: list[Any], agent_id: str,
   ) -> None:
     """Host-side recall + promotion (ABI v3 — mirrors Node ``applyHostMemoryRecallLifecycle``)."""
-    if not hits or not self._opts.dream_store:
+    if not hits or not self._opts.memory_store:
       return
     from deepstrike.memory.protocols import MemoryRecallLifecycle
     recalled_at = int(time.time() * 1000)
@@ -2915,7 +2915,7 @@ class RuntimeRunner:
       )
       for hit in hits
     ]
-    record_recall = getattr(self._opts.dream_store, "record_recall", None)
+    record_recall = getattr(self._opts.memory_store, "record_recall", None)
     if record_recall is not None:
       await record_recall(agent_id, recalls)
     policy = self._opts.memory_policy
@@ -2934,7 +2934,7 @@ class RuntimeRunner:
 
   async def _memory_prefetch_queries(self, phase: str) -> list[Any]:
     from deepstrike.memory.protocols import MemoryQuery
-    if not (self._opts.dream_store and self._opts.agent_id and self._opts.memory_scope):
+    if not (self._opts.memory_store and self._opts.agent_id and self._opts.memory_scope):
       return []
     hook = self._opts.pre_query_memory or (lambda goal: [MemoryQuery(
       scope=self._opts.memory_scope, query=goal, top_k=5,
@@ -2954,7 +2954,7 @@ class RuntimeRunner:
   async def _prefetch_memory_into_initial_context(self, runtime: CanonicalRunnerRuntime) -> None:
     """Seed recalled memory into initial history before ``start_operation`` (Node parity)."""
     from deepstrike.memory.protocols import MemoryQuery
-    if not (self._opts.dream_store and self._opts.agent_id and self._opts.memory_scope):
+    if not (self._opts.memory_store and self._opts.agent_id and self._opts.memory_scope):
       return
     try:
       seen: set[str] = set()
@@ -2991,7 +2991,7 @@ class RuntimeRunner:
     Returns the current resume action so the caller can keep driving; errs-open.
     """
     from deepstrike.memory.protocols import MemoryQuery
-    if not (self._opts.dream_store and self._opts.agent_id and self._opts.memory_scope):
+    if not (self._opts.memory_store and self._opts.agent_id and self._opts.memory_scope):
       return None
     try:
       seen_record_ids: set[str] = set()
@@ -3023,10 +3023,10 @@ class RuntimeRunner:
     action: str | None,
     session_id: str,
   ) -> None:
-    if not self._opts.dream_store or not self._opts.agent_id or not self._opts.memory_scope:
+    if not self._opts.memory_store or not self._opts.agent_id or not self._opts.memory_scope:
       return
-    if self._opts.dream_summarizer:
-      result = self._opts.dream_summarizer(archived, {"action": action})
+    if self._opts.memory_summarizer:
+      result = self._opts.memory_summarizer(archived, {"action": action})
       summary = await result if inspect.isawaitable(result) else result
     else:
       summary = await self._summarize_for_long_term_memory(archived)
@@ -3045,14 +3045,14 @@ class RuntimeRunner:
     ), session_id=session_id, agent_id=self._opts.agent_id)
 
   async def _summarize_for_long_term_memory(self, archived: list[Any]) -> str:
-    provider = self._opts.dream_provider or self._opts.provider
+    provider = self._opts.memory_provider or self._opts.provider
     transcript = "\n".join(
       f"{getattr(m, 'role', m.get('role') if isinstance(m, dict) else 'unknown')}: "
       f"{getattr(m, 'content', m.get('content') if isinstance(m, dict) else '')}"
       for m in archived
     )
     system_text = "\n\n".join(filter(None, [
-      self._opts.dream_system_prompt,
+      self._opts.memory_system_prompt,
       "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
     ]))
     context = RenderedContext(system_text=system_text, turns=[

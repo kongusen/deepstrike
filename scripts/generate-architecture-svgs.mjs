@@ -141,12 +141,12 @@ function addRuntimeMap({ zh = false } = {}) {
   const hostCards = zh ? [
     ["Provider 适配器", "流式 LLM · 模型路由", "文本 · 图像 · 音频序列化"],
     ["ExecutionPlane", "工具 · 流式 · 挂起 / 恢复", "Worktree · Sandbox · Remote VPC"],
-    ["证据与持久存储", "SessionLog · ABI 事务 · checkpoint", "DreamStore · Archive · 外置 payload"],
+    ["证据与持久存储", "SessionLog · ABI 事务 · checkpoint", "MemoryStore · Archive · 外置 payload"],
     ["外部控制", "审批 · 信号 · Webhook · Cron", "取消 · Deadline · 宿主策略"],
   ] : [
     ["Provider adapters", "Streaming LLM calls · model routing", "Text · image · audio serialization"],
     ["ExecutionPlane", "Tools · streaming · suspend / resume", "Worktrees · sandboxes · remote VPC"],
-    ["Evidence & durable stores", "SessionLog · ABI transactions · checkpoints", "DreamStore · archives · external payloads"],
+    ["Evidence & durable stores", "SessionLog · ABI transactions · checkpoints", "MemoryStore · archives · external payloads"],
     ["External control", "Approvals · signals · webhooks · cron", "Cancellation · deadlines · host policy"],
   ]
   const kernelCards = zh ? [
@@ -222,7 +222,7 @@ add("agent_os_architecture.svg", {
     ${card({ x: 48, y: 272, w: 210, h: 100, title: "RuntimeRunner", body: ["Drive effects", "Append observations"], accent: true })}
     ${card({ x: 274, y: 272, w: 210, h: 100, title: "Provider adapters", body: ["Vendor wire formats", "Streaming + replay"] })}
     ${card({ x: 500, y: 272, w: 210, h: 100, title: "ExecutionPlane", body: ["Local · worktree", "sandbox · remote"] })}
-    ${card({ x: 726, y: 272, w: 210, h: 100, title: "Stores", body: ["SessionLog · DreamStore", "archive · payload"] })}
+    ${card({ x: 726, y: 272, w: 210, h: 100, title: "Stores", body: ["SessionLog · MemoryStore", "archive · payload"] })}
     ${card({ x: 952, y: 272, w: 200, h: 100, title: "External control", body: ["Approvals · signals", "cancel · deadlines"] })}
 
     ${arrow("M600 372V408", true)}
@@ -571,7 +571,7 @@ add("multimodal_mechanisms.svg", {
 
 add("memory_mechanisms.svg", {
   title: "DeepStrike memory lifecycle",
-  desc: "Working, session, and durable memory paths, including kernel-validated writes and queries, prefetch and renewal recall, recall journaling, retention, promotion suggestions, and host-authoritative DreamStore state.",
+  desc: "Working, session, and durable memory paths, including kernel-validated writes and queries, prefetch and renewal recall, recall journaling, retention, promotion suggestions, and host-authoritative MemoryStore state.",
   eyebrow: "MEMORY LIFECYCLE",
   headline: "Durable memory is a governed host device, not hidden context.",
   subtitle: "QUERY · VALIDATE · COMMIT · RECALL · RETAIN · PROMOTE",
@@ -579,11 +579,11 @@ add("memory_mechanisms.svg", {
     ${section(124, "Three memory layers", "THEIR OWNERSHIP AND LIFETIMES ARE DIFFERENT")}
     ${card({ x: 48, y: 146, w: 344, h: 104, title: "Working", body: ["Scratch state for the current run", "No cross-session durability guarantee"] })}
     ${card({ x: 428, y: 146, w: 344, h: 104, title: "Session", body: ["Evidence events in SessionLog", "Auditable and recoverable"] })}
-    ${card({ x: 808, y: 146, w: 344, h: 104, title: "Durable", body: ["DreamStore owns full record set", "Host decides retention, pinning, eviction"], accent: true })}
+    ${card({ x: 808, y: 146, w: 344, h: 104, title: "Durable", body: ["MemoryStore owns full record set", "Host decides retention, pinning, eviction"], accent: true })}
 
     ${section(298, "Recall path", "PREFETCH AND IN-RUN QUERY SHARE ONE JOURNALED ROUTE")}
     ${card({ x: 48, y: 318, w: 210, h: 112, title: "Run start / renewal", body: ["preQueryMemory(goal)", "Re-fires after context renewal"] })}
-    ${card({ x: 274, y: 318, w: 210, h: 112, title: "Scoped query", body: ["Kernel validates memory scope", "DreamStore.search(topK)"] })}
+    ${card({ x: 274, y: 318, w: 210, h: 112, title: "Scoped query", body: ["Kernel validates memory scope", "MemoryStore.search(topK)"] })}
     ${card({ x: 500, y: 318, w: 210, h: 112, title: "Rank + recall", body: ["Host ranks records", "memory_recalled increments count"] })}
     ${card({ x: 726, y: 318, w: 210, h: 112, title: "Context placement", body: ["Hits enter turns history", "Single-use and compressible"] })}
     ${card({ x: 952, y: 318, w: 200, h: 112, title: "Promotion signal", body: ["Threshold crossed", "Host decides whether to pin"] })}
@@ -592,12 +592,12 @@ add("memory_mechanisms.svg", {
     ${section(478, "Write and retention path", "EVERY WRITE PASSES VALIDATION AND RESOURCE QUOTA")}
     ${card({ x: 48, y: 498, w: 258, h: 112, title: "write_memory", body: ["Content + metadata + scope", "Kernel validation + write-rate quota"], accent: true })}
     ${arrow("M306 554H372", true)}
-    ${card({ x: 374, y: 498, w: 258, h: 112, title: "Host commit", body: ["Dedup + durable DreamStore write", "memory_written evidence"] })}
+    ${card({ x: 374, y: 498, w: 258, h: 112, title: "Host commit", body: ["Dedup + durable MemoryStore write", "memory_written evidence"] })}
     ${arrow("M632 554H698", true)}
-    ${card({ x: 700, y: 498, w: 208, h: 112, title: "Idle pipeline", body: ["Extract + consolidate", "Dream after session boundary"] })}
+    ${card({ x: 700, y: 498, w: 208, h: 112, title: "Session extraction", body: ["Extract + consolidate", "After session boundary"] })}
     ${arrow("M908 554H974", true)}
     ${card({ x: 976, y: 498, w: 176, h: 112, title: "Retention", body: ["Recall-aware score", "Host evicts / pins"] })}
-    ${section(660, "Invariant", "DREAMSTORE IS AUTHORITATIVE · RETRIEVAL HITS DECAY · PROMOTION IS ADVISORY")}
+    ${section(660, "Invariant", "MEMORYSTORE IS AUTHORITATIVE · RETRIEVAL HITS DECAY · PROMOTION IS ADVISORY")}
     ${text(48, 690, "A recalled fact becomes durable knowledge only when the host explicitly promotes or pins it; the kernel never silently upgrades authority.", "body")}
   `,
 })

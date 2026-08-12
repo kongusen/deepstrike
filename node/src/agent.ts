@@ -1,5 +1,5 @@
 import type { RegisteredTool } from "./tools/index.js"
-import type { WorkingMemory } from "./memory/public.js"
+import type { Memory, WorkingMemory } from "./memory/public.js"
 import type { MCPServer } from "./mcp-server.js"
 import type { JsonSchema } from "./runtime/output-schema.js"
 import type { Guardrail } from "./guardrail.js"
@@ -27,7 +27,7 @@ export interface AgentOptions {
   tools?: RegisteredTool[]
   mcpServers?: MCPServer[]
   skills?: Skill[]
-  memory?: WorkingMemory
+  memory?: Memory | WorkingMemory
   knowledge?: Knowledge[]
   handoffs?: Handoff[]
   providerOptions?: Record<string, unknown>
@@ -46,7 +46,7 @@ export class Agent {
   readonly tools?: RegisteredTool[]
   readonly mcpServers?: MCPServer[]
   readonly skills?: Skill[]
-  readonly memory?: WorkingMemory
+  readonly memory?: Memory | WorkingMemory
   readonly knowledge?: Knowledge[]
   readonly handoffs?: Handoff[]
   readonly providerOptions?: Record<string, unknown>

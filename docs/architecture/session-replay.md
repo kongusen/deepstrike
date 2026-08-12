@@ -17,7 +17,7 @@ SessionLog (append-only evidence)
     +
 opaque logical checkpoint + bounded KernelJournal tail
     +
-宿主侧 store (DreamStore, ArchiveStore, FileSessionLog)
+宿主侧 store (MemoryStore, ArchiveStore, FileSessionLog)
 ```
 
 内核 **不** 持久化到磁盘——SDK 拥有 I/O——但内核产出 checkpoint candidate、canonical record 和 observation。SessionLog 是审计与离线诊断证据，不是恢复 workflow graph 的生产事实源。
@@ -39,7 +39,7 @@ opaque logical checkpoint + bounded KernelJournal tail
 | `tool_invoked` / `tool_denied` | syscall 审计 |
 | `agent_process_changed` | TCB / sub-agent 生命周期 |
 | `workflow_node_completed` | DAG 推进 |
-| `memory_written` | Dream 提交前校验记录 |
+| `memory_written` | durable memory 写入前校验记录 |
 | `pressure_compact` | Context VM 压缩 |
 
 ## Wake / Resume

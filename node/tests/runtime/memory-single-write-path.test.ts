@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 import { collectText } from "../../src/runtime/runner.js"
 import { createRunner } from "./helpers.js"
 import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
-import type { DreamStore, MemoryRecord } from "../../src/memory/protocols.js"
+import type { MemoryStore, MemoryRecord } from "../../src/memory/protocols.js"
 
 describe("M2 memory single-write path", () => {
   it("extracts once after saveSession and journals every extracted record through WriteMemory", async () => {
@@ -37,24 +37,26 @@ describe("M2 memory single-write path", () => {
         }
       },
     }
-    const dreamStore = {
+    const memoryStore = {
       search: async () => [],
       saveSession: async () => { order.push("save") },
-      upsert: async (_agentId: string, record: MemoryRecord) => {
-        order.push("upsert")
+      get: async () => null,
+      delete: async () => {},
+      put: async (_agentId: string, record: MemoryRecord) => {
+        order.push("put")
         persisted.push(record)
       },
-    } as DreamStore & { upsert(agentId: string, record: MemoryRecord): Promise<void> }
+    } satisfies MemoryStore
     const { runner, sessionLog } = createRunner(provider, [], {
       agentId: "agent-m2",
       memoryScope: { tenant_id: "tenant-m2", namespace: "assistant" },
-      dreamStore,
+      memoryStore,
     })
 
     await collectText(runner.run({ sessionId: "session-m2", goal: "Remember how I test" }))
 
     expect(providerCalls).toBe(2)
-    expect(order).toEqual(["save", "upsert"])
+    expect(order).toEqual(["save", "put"])
     expect(persisted).toHaveLength(1)
     expect(persisted[0]).toMatchObject({
       scope: { tenant_id: "tenant-m2", namespace: "assistant" },
@@ -67,7 +69,7 @@ describe("M2 memory single-write path", () => {
     expect(events.filter(entry => entry.event.kind === "memory_written")).toHaveLength(1)
   })
 
-  it("contains no idle state machine or alternate DreamStore commit path", () => {
+  it("contains no alternate durable-memory write path", () => {
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
     const sources = [
       "src/runtime/runner.ts",
@@ -75,7 +77,6 @@ describe("M2 memory single-write path", () => {
       "../crates/deepstrike-core/src/memory/mod.rs",
     ].map(relative => fs.readFileSync(path.resolve(root, relative), "utf8")).join("\n")
 
-    expect(sources).not.toMatch(/IdlePipeline|idle_pipeline|CommitMemories|loadSessions|load_memories/)
-    expect(sources).not.toMatch(/dreamStore\.commit|store\.commit/)
+    expect(sources).not.toMatch(/legacy_memory_batch|memoryStore\.commit|store\.commit/)
   })
 })

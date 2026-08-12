@@ -5,7 +5,7 @@ import pytest
 from deepstrike import (
     AttemptLoop, AttemptRequest, Criterion, LlmEvalJudge, RuntimeAttemptBody, StopPolicy,
 )
-from conftest import make_agent, make_provider, collect_events, text, MockDreamStore, MockKnowledgeSource, SKILL_DIR
+from conftest import make_agent, make_provider, collect_events, text, MockMemoryStore, MockKnowledgeSource, SKILL_DIR
 
 
 # ─── system_prompt ────────────────────────────────────────────────────────
@@ -35,8 +35,8 @@ class TestInitialMemory:
 class TestSaveSession:
     @pytest.mark.timeout(60)
     async def test_save_session_called_after_run(self):
-        store = MockDreamStore()
-        await make_agent(dream_store=store, agent_id="test-agent").run('Reply "ok".')
+        store = MockMemoryStore()
+        await make_agent(memory_store=store, agent_id="test-agent").run('Reply "ok".')
         assert len(store.saved_sessions) >= 1, "save_session should have been called"
         assert store.saved_sessions[0].agent_id == "test-agent"
 

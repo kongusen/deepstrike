@@ -1,7 +1,7 @@
 import { createRunner, tool } from "./helpers.js"
 import { collectText } from "../../src/runtime/runner.js"
 import type { ArchiveStore } from "../../src/runtime/archive.js"
-import type { DreamStore, MemoryRecall } from "../../src/memory/protocols.js"
+import type { MemoryStore, MemoryRecall } from "../../src/memory/protocols.js"
 import type { InMemorySessionLog } from "../../src/runtime/session-log.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent } from "../../src/types.js"
 
@@ -23,9 +23,11 @@ class InMemoryArchiveStore implements ArchiveStore {
   }
 }
 
-function pagingDreamStore(): DreamStore {
+function pagingMemoryStore(): MemoryStore {
   return {
-    upsert: async () => {},
+    put: async () => {},
+    get: async () => null,
+    delete: async () => {},
     saveSession: async () => {},
     search: async (_agentId, query) => {
       if (query.query.toLowerCase().includes("archived")) {
@@ -120,8 +122,8 @@ describe("long-session memory paging integration", () => {
         maxTurns: 30,
         agentId: AGENT_ID,
         memoryScope: MEMORY_SCOPE,
-        dreamStore: pagingDreamStore(),
-        dreamSummarizer: { async summarize() { return "archived session summary" } },
+        memoryStore: pagingMemoryStore(),
+        memorySummarizer: { async summarize() { return "archived session summary" } },
         compressionStore: archiveStore,
         // The script deliberately repeats an identical `bulk()` call 9 turns in a row to force
         // compression/paging — incidental to the repeat fuse's intent, so disabled for this test.
@@ -174,7 +176,7 @@ describe("long-session memory paging integration", () => {
     }
 
     const archiveStore = new InMemoryArchiveStore()
-    const dreamStore = pagingDreamStore()
+    const memoryStore = pagingMemoryStore()
     const sharedLog = createRunner(
       compressProvider,
       [tool("bulk", "bulk", { type: "object", properties: {} }, () => "y ".repeat(140))],
@@ -183,8 +185,8 @@ describe("long-session memory paging integration", () => {
         maxTurns: 30,
         agentId: AGENT_ID,
         memoryScope: MEMORY_SCOPE,
-        dreamStore,
-        dreamSummarizer: { async summarize() { return "archived session summary" } },
+        memoryStore,
+        memorySummarizer: { async summarize() { return "archived session summary" } },
         compressionStore: archiveStore,
       },
     ).sessionLog
@@ -197,8 +199,8 @@ describe("long-session memory paging integration", () => {
         maxTurns: 30,
         agentId: AGENT_ID,
         memoryScope: MEMORY_SCOPE,
-        dreamStore,
-        dreamSummarizer: { async summarize() { return "archived session summary" } },
+        memoryStore,
+        memorySummarizer: { async summarize() { return "archived session summary" } },
         compressionStore: archiveStore,
         sessionLog: sharedLog,
         // The script deliberately repeats an identical `bulk()` call 14 turns in a row to force
@@ -247,8 +249,8 @@ describe("long-session memory paging integration", () => {
         maxTurns: 10,
         agentId: AGENT_ID,
         memoryScope: MEMORY_SCOPE,
-        dreamStore,
-        dreamSummarizer: { async summarize() { return "archived session summary" } },
+        memoryStore,
+        memorySummarizer: { async summarize() { return "archived session summary" } },
         compressionStore: archiveStore,
         sessionLog: sharedLog,
       },

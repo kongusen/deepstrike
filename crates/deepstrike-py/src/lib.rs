@@ -1315,7 +1315,7 @@ impl Governance {
     }
 }
 
-// ────────────────────────── Dream / idle-pipeline types ──────────────────────────────────────────
+// ────────────────────────── Durable-memory extraction types ────────────────────────────────────────
 
 /// A completed session transcript for durable-memory extraction.
 #[pyclass]

@@ -43,7 +43,7 @@ export interface ResourceQuota {
  *
  * Included in canonical operation configuration, so memory policy is replayable and
  * kernel-enforced. Omitted fields retain the canonical defaults. Host storage belongs to the
- * configured `DreamStore`, never to this contract.
+ * configured `MemoryStore`, never to this contract.
  */
 export interface MemoryPolicy {
   /** Age after which a recalled memory is flagged stale (days). */

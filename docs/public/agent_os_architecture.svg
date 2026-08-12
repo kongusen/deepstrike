@@ -116,7 +116,7 @@
     <rect x="726" y="272" width="210" height="100" rx="6" class="panel"/>
 
     <text x="744" y="301" class="card-title" text-anchor="start">Stores</text>
-    <text x="744" y="325" class="card-text" text-anchor="start">SessionLog · DreamStore</text>
+    <text x="744" y="325" class="card-text" text-anchor="start">SessionLog · MemoryStore</text>
 <text x="744" y="343" class="card-text" text-anchor="start">archive · payload</text>
 
   </g>
