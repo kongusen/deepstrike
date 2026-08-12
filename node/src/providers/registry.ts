@@ -64,7 +64,7 @@ export const PROVIDER_REGISTRY: Record<string, ProviderMaker> = {
     ...(p ? { runtimePolicy: p } : {}),
     ...(authMode === "bearer" ? { authMode: "bearer" as const } : {}),
   }),
-  "openai:openai-responses":      (k, m, r, b, p) => new OpenAIResponsesProvider(k, m, r, b, p),
+  "openai:openai-responses":      (k, m, r, b, p, authMode) => new OpenAIResponsesProvider(k, m, r, b, p, authMode),
 
   "deepseek:anthropic-messages":  (k, m, r, b, p) => new DeepSeekAnthropicProvider(k, m, r, b, p),
 

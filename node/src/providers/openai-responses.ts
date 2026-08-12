@@ -46,8 +46,13 @@ export class OpenAIResponsesProvider implements LLMProvider {
     retry = { maxRetries: 3, baseDelay: 1000 },
     baseURL = "https://api.openai.com/v1",
     runtimePolicy: RuntimePolicy = {},
+    authMode: "api_key" | "bearer" = "api_key",
   ) {
-    this.client = withServerRuntimeGuard(() => new OpenAI({ apiKey, baseURL }))
+    this.client = withServerRuntimeGuard(() => new OpenAI({
+      apiKey,
+      baseURL,
+      ...(authMode === "bearer" ? { defaultHeaders: { Authorization: `Bearer ${apiKey}` } } : {}),
+    }))
     this.circuit = new CircuitBreaker()
     this.maxRetries = retry.maxRetries
     this.baseDelay = retry.baseDelay

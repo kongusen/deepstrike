@@ -99,6 +99,20 @@ describe("spc_015-03 credential resolver", () => {
     expect(JSON.stringify(runtime.identity)).not.toContain(secret)
   })
 
+  it("binds bearer authentication for OpenAI Responses without exposing it in the resolved runtime identity", () => {
+    const secret = "responses-bearer-secret"
+    const runtime = resolveProviderRuntime({
+      model: "openai/gpt-4.1",
+      endpoint: "openai.responses",
+      bearerToken: secret,
+    })
+
+    expect((runtime.adapter as unknown as {
+      client: { _options: { defaultHeaders?: Record<string, string> } }
+    }).client._options.defaultHeaders).toEqual({ Authorization: `Bearer ${secret}` })
+    expect(JSON.stringify(runtime.identity)).not.toContain(secret)
+  })
+
   it("preserves explicit retry and custom endpoint inputs through provider construction", () => {
     const runtime = resolveProviderRuntime({
       model: "openai/gpt-4o",
