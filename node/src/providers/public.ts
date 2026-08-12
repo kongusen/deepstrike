@@ -10,6 +10,17 @@ export { CircuitBreaker } from "./base.js"
 export { OpenAIResponsesAdapter } from "./openai-responses.js"
 export type { OpenAIResponsesRunState } from "./openai-responses.js"
 export { OpenAIChatAdapter } from "./openai-chat.js"
-export { endpointProfiles, modelProfiles, getModelProfile } from "./profiles.js"
-export type { ModelProfileId, ProviderId } from "./profiles.js"
+export { endpointProfiles } from "./endpoints.js"
+export type { EndpointProfile, EndpointProfileId, EndpointProtocol, ProviderId } from "./endpoints.js"
+export { modelRegistry, resolveEffectiveCapability } from "./model-registry.js"
+export type {
+  CapabilityState,
+  EffectiveCapability,
+  EffectiveModelCapabilities,
+  GenerationProtocol,
+  ModelDescriptor,
+  ModelKind,
+  ModelRegistration,
+  ResolvedProviderRuntime,
+} from "./model-registry.js"
 export type { ProviderRunState, ProviderToolSpec, ProviderReplay, RenderedContext, CacheBreakpointStrategy } from "../types.js"

@@ -22,10 +22,12 @@ export class AnthropicCompatibleProvider extends AnthropicProvider {
     model?: string,
     retry?: { maxRetries: number; baseDelay: number },
     baseURL?: string,
+    runtimePolicy?: RuntimePolicy,
   ) {
     super(apiKey, model ?? profile.defaultModel, retry, {
       baseURL: baseURL ?? anthropicVendorBaseURL(profile),
       authMode: "api-key",
+      runtimePolicy,
     })
     this.vendorProfile = profile
   }
@@ -35,6 +37,6 @@ export class AnthropicCompatibleProvider extends AnthropicProvider {
   }
 
   override runtimePolicy(): RuntimePolicy {
-    return this.vendorProfile.policies[this.model] ?? {}
+    return super.runtimePolicy()
   }
 }

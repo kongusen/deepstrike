@@ -100,7 +100,7 @@ export type { AnthropicProviderConfig } from "./providers/anthropic.js"
 export { OpenAIProvider } from "./providers/openai.js"
 export type { OpenAIProviderOptions } from "./providers/openai.js"
 export { OpenAIResponsesProvider } from "./providers/openai-responses.js"
-export { createProvider } from "./providers/catalog.js"
+export { createProvider, resolveProviderRuntime } from "./providers/catalog.js"
 export { UnsupportedModalityError } from "./providers/base.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
 

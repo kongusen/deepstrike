@@ -42,9 +42,11 @@ describe("root surface", () => {
 })
 
 describe("subpath barrels", () => {
-  it("providers carries backend factories + the base class + profiles", () => {
-    for (const n of ["deepseek", "kimi", "qwen", "glm", "minimax", "gemini", "ollama", "OpenAIChatProvider", "endpointProfiles", "CircuitBreaker"])
+  it("providers carries backend factories + the base class + runtime registry", () => {
+    for (const n of ["deepseek", "kimi", "qwen", "glm", "minimax", "gemini", "ollama", "OpenAIChatProvider", "endpointProfiles", "modelRegistry", "CircuitBreaker"])
       expect(providers).toHaveProperty(n)
+    for (const n of ["modelProfiles", "getModelProfile"])
+      expect(providers).not.toHaveProperty(n)
   })
   it("providers no longer exposes the collapsed dual classes", () => {
     for (const n of ["DeepSeekProvider", "DeepSeekAnthropicProvider", "KimiAnthropicProvider", "MiniMaxOpenAIProvider"])

@@ -1,35 +1,16 @@
 import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy, UsageEvent } from "../types.js"
 import { normalizeToolCall, omitExtensionKeys, turnsWithStateAppended, UnsupportedModalityError } from "./base.js"
 import { normalizeOllamaUsage } from "./usage-normalizer.js"
-import { assertContextModalitySupported, tryGetModelCapabilities } from "./model-capabilities.js"
-
-// Prefix-based policy for local models (first match wins)
-const OLLAMA_PREFIX_POLICIES: Array<[string, RuntimePolicy]> = [
-  ["deepseek-r1",  { maxTurns: 40 }],
-  ["qwq",          { maxTurns: 35 }],
-  ["llama3.3",     { maxTurns: 25 }],
-  ["llama3.2",     { maxTurns: 20 }],
-  ["llama3.1",     { maxTurns: 20 }],
-  ["llama3",       { maxTurns: 20 }],
-  ["mistral",      { maxTurns: 20 }],
-  ["gemma2",       { maxTurns: 20 }],
-  ["phi4",         { maxTurns: 20 }],
-  ["phi3",         { maxTurns: 15 }],
-  ["codellama",    { maxTurns: 20 }],
-]
 
 export class OllamaProvider implements LLMProvider {
   constructor(
     private readonly model = "llama3",
     private readonly baseUrl = "http://localhost:11434",
+    private readonly resolvedRuntimePolicy: RuntimePolicy = {},
   ) {}
 
   runtimePolicy(): RuntimePolicy {
-    const m = this.model.toLowerCase()
-    for (const [prefix, policy] of OLLAMA_PREFIX_POLICIES) {
-      if (m.startsWith(prefix)) return policy
-    }
-    return { maxTurns: 20 }
+    return this.resolvedRuntimePolicy
   }
 
   private toOllamaMessages(context: RenderedContext) {

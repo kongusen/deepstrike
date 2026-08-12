@@ -9,7 +9,13 @@ import { GLMAnthropicProvider } from "../src/providers/glm.js"
 import { MiniMaxAnthropicProvider } from "../src/providers/minimax.js"
 import type { LLMProvider } from "../src/types.js"
 
-type Ctor = new (apiKey: string, model?: string, retry?: { maxRetries: number; baseDelay: number }, baseURL?: string) => LLMProvider
+type Ctor = new (
+  apiKey: string,
+  model?: string,
+  retry?: { maxRetries: number; baseDelay: number },
+  baseURL?: string,
+  runtimePolicy?: { maxTurns?: number; timeoutMs?: number },
+) => LLMProvider
 
 interface Case {
   name: string
@@ -80,7 +86,7 @@ describe("Anthropic-compatible vendor providers — golden master", () => {
 
       it("runtimePolicy() matches the known policy table for every model", () => {
         for (const [model, maxTurns] of Object.entries(c.policies)) {
-          const p = new c.Ctor("test-key", model)
+          const p = new c.Ctor("test-key", model, undefined, undefined, { maxTurns })
           expect(p.runtimePolicy()).toEqual({ maxTurns })
         }
       })

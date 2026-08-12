@@ -2,8 +2,8 @@ import type { Message, ProviderDescriptor, ProviderReplay, RuntimePolicy } from 
 import { OpenAIChatProvider } from "./openai.js"
 import { AnthropicCompatibleProvider } from "./anthropic-compatible.js"
 import { omitExtensionKeys } from "./base.js"
-import { endpointProfiles } from "./profiles.js"
-import { QWEN_POLICIES, anthropicVendorProfiles } from "./vendor-profiles.js"
+import { endpointProfiles } from "./endpoints.js"
+import { anthropicVendorProfiles } from "./vendor-profiles.js"
 
 /**
  * Qwen over its Anthropic-compatible endpoint.
@@ -17,8 +17,9 @@ export class QwenAnthropicProvider extends AnthropicCompatibleProvider {
     model?: string,
     retry?: { maxRetries: number; baseDelay: number },
     baseURL?: string,
+    runtimePolicy?: RuntimePolicy,
   ) {
-    super(anthropicVendorProfiles.qwen, apiKey, model, retry, baseURL)
+    super(anthropicVendorProfiles.qwen, apiKey, model, retry, baseURL, runtimePolicy)
   }
 }
 
@@ -35,12 +36,13 @@ export class QwenProvider extends OpenAIChatProvider {
     model: string = "qwen3.6-plus",
     retry?: { maxRetries: number; baseDelay: number },
     baseURL: string = endpointProfiles["qwen.dashscope"].baseURL,
+    runtimePolicy: RuntimePolicy = {},
   ) {
-    super(apiKey, model, retry, baseURL)
+    super(apiKey, model, retry, baseURL, runtimePolicy)
   }
 
   override runtimePolicy(): RuntimePolicy {
-    return QWEN_POLICIES[this.model] ?? {}
+    return super.runtimePolicy()
   }
 
   override descriptor(): ProviderDescriptor {

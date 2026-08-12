@@ -2,24 +2,11 @@ import { GoogleGenerativeAI, type Content, type Part, type RequestOptions, type 
 import type { Message, RenderedContext, ToolSchema, StreamEvent, TextDelta, ToolCallEvent, LLMProvider, RuntimePolicy, PromptMeasurement } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, turnsWithStateAppended } from "./base.js"
-import { endpointProfiles } from "./profiles.js"
+import { endpointProfiles } from "./endpoints.js"
 import { UnsupportedModalityError } from "./base.js"
 import { normalizeGeminiUsage } from "./usage-normalizer.js"
-import { assertContextModalitySupported, tryGetModelCapabilities } from "./model-capabilities.js"
 
 const GEMINI_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["gemini.google"].baseURL
-
-const GEMINI_POLICIES: Record<string, RuntimePolicy> = {
-  "gemini-3-pro-preview":   { maxTurns: 50 },
-  "gemini-3-flash-preview": { maxTurns: 25 },
-  "gemini-3.5-flash":       { maxTurns: 30 },
-  "gemini-2.5-pro":        { maxTurns: 35 },
-  "gemini-2.5-flash":      { maxTurns: 20 },
-  "gemini-2.0-flash":      { maxTurns: 15 },
-  "gemini-2.0-flash-lite": { maxTurns: 10 },
-  "gemini-1.5-pro":        { maxTurns: 30 },
-  "gemini-1.5-flash":      { maxTurns: 15 },
-}
 
 export function buildContents(turns: Message[]): Content[] {
   const contents: Content[] = []
@@ -103,22 +90,25 @@ export class GeminiProvider implements LLMProvider {
   private maxRetries: number
   private baseDelay: number
   private requestOptions: RequestOptions
+  private readonly resolvedRuntimePolicy: RuntimePolicy
 
   constructor(
     apiKey: string,
     private readonly model = "gemini-2.0-flash",
     retry = { maxRetries: 3, baseDelay: 1000 },
     baseURL: string = GEMINI_BASE,
+    runtimePolicy: RuntimePolicy = {},
   ) {
     this.genAI = withServerRuntimeGuard(() => new GoogleGenerativeAI(apiKey))
     this.circuit = new CircuitBreaker()
     this.maxRetries = retry.maxRetries
     this.baseDelay = retry.baseDelay
     this.requestOptions = { baseUrl: baseURL }
+    this.resolvedRuntimePolicy = runtimePolicy
   }
 
   runtimePolicy(): RuntimePolicy {
-    return GEMINI_POLICIES[this.model] ?? {}
+    return this.resolvedRuntimePolicy
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {

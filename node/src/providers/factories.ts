@@ -7,6 +7,7 @@
 import type { LLMProvider } from "../types.js"
 import { PROVIDER_REGISTRY } from "./registry.js"
 import { OllamaProvider } from "./ollama.js"
+import { defaultModelForProvider, getRuntimePolicy, isKnownProviderId } from "./model-registry.js"
 
 /** Options for a backend provider factory. `protocol` only applies to backends with both wires. */
 export interface BackendProviderOptions {
@@ -20,7 +21,15 @@ export interface BackendProviderOptions {
 }
 
 function build(providerId: string, protocol: "openai-chat" | "anthropic-messages", o: BackendProviderOptions): LLMProvider {
-  return PROVIDER_REGISTRY[`${providerId}:${protocol}`](o.apiKey, o.model, o.retry, o.baseURL)
+  if (!isKnownProviderId(providerId)) throw new Error(`Unknown provider: ${providerId}`)
+  const model = o.model ?? defaultModelForProvider(providerId)
+  return PROVIDER_REGISTRY[`${providerId}:${protocol}`](
+    o.apiKey,
+    model,
+    o.retry,
+    o.baseURL,
+    getRuntimePolicy(providerId, model),
+  )
 }
 
 /** DeepSeek. Defaults to the OpenAI-compatible wire (richer reasoning-replay handling). */
@@ -50,10 +59,18 @@ export function minimax(o: BackendProviderOptions): LLMProvider {
 
 /** Google Gemini (single wire). */
 export function gemini(o: Omit<BackendProviderOptions, "protocol">): LLMProvider {
-  return PROVIDER_REGISTRY["gemini:gemini"](o.apiKey, o.model, o.retry, o.baseURL)
+  const model = o.model ?? defaultModelForProvider("gemini")
+  return PROVIDER_REGISTRY["gemini:gemini"](
+    o.apiKey,
+    model,
+    o.retry,
+    o.baseURL,
+    getRuntimePolicy("gemini", model),
+  )
 }
 
 /** Local Ollama (single wire, no API key). */
 export function ollama(o: { model?: string; baseURL?: string } = {}): LLMProvider {
-  return new OllamaProvider(o.model, o.baseURL)
+  const model = o.model ?? defaultModelForProvider("ollama")
+  return new OllamaProvider(model, o.baseURL, getRuntimePolicy("ollama", model))
 }

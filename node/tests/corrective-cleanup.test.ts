@@ -15,6 +15,8 @@ import {
 describe("spc_013-A-00R corrective cleanup", () => {
   it("keeps unpublished mixed capability accessors out of the providers public subpath", () => {
     expect(providers).not.toHaveProperty("getModelCapabilities")
+    expect(providers).not.toHaveProperty("modelProfiles")
+    expect(providers).not.toHaveProperty("getModelProfile")
   })
 
   it("does not expose the unused ProviderProfile view on any runtime provider", () => {

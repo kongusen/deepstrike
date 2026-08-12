@@ -5,31 +5,6 @@ import { CircuitBreaker, omitExtensionKeys, openAICachedPromptTokens, stableProm
 import { normalizeOpenAIUsage } from "./usage-normalizer.js"
 import { OpenAIChatAdapter } from "./openai-chat.js"
 import type { ReplayabilityAssessment } from "./replay-validator.js"
-import { assertContextModalitySupported, tryGetModelCapabilities } from "./model-capabilities.js"
-
-const OPENAI_POLICIES: Record<string, RuntimePolicy> = {
-  "gpt-5.5":       { maxTurns: 60 },
-  "gpt-5.4":       { maxTurns: 50 },
-  "gpt-5.4-mini":  { maxTurns: 25 },
-  "gpt-5.4-nano":  { maxTurns: 15 },
-  "gpt-5.2":       { maxTurns: 50 },
-  "gpt-5.2-pro":   { maxTurns: 60 },
-  "gpt-5.1":       { maxTurns: 50 },
-  "gpt-4o":        { maxTurns: 25 },
-  "gpt-4o-mini":   { maxTurns: 15 },
-  "gpt-4.1":       { maxTurns: 35 },
-  "gpt-4.1-mini":  { maxTurns: 20 },
-  "gpt-4.1-nano":  { maxTurns: 15 },
-  "gpt-5":         { maxTurns: 50 },
-  "gpt-5-pro":     { maxTurns: 60 },
-  "gpt-5-mini":    { maxTurns: 25 },
-  "gpt-5-nano":    { maxTurns: 15 },
-  "o1":            { maxTurns: 50 },
-  "o1-mini":       { maxTurns: 25 },
-  "o3":            { maxTurns: 50 },
-  "o3-mini":       { maxTurns: 25 },
-  "o4-mini":       { maxTurns: 25 },
-}
 
 /** Options-object form for `OpenAIProvider` — the recommended way to construct an OpenAI-compatible
  *  provider (custom `baseURL` no longer needs a positional hole). */
@@ -68,6 +43,7 @@ export class OpenAIChatProvider implements LLMProvider {
   protected baseDelay: number
   protected readonly model: string
   protected readonly chat = new OpenAIChatAdapter()
+  private readonly resolvedRuntimePolicy: RuntimePolicy
 
   // Accepts either the options object (`new OpenAIProvider({ apiKey, model, baseURL })`) or the legacy
   // positional form (still used by the backend subclasses' `super(...)` calls).
@@ -76,6 +52,7 @@ export class OpenAIChatProvider implements LLMProvider {
     model = "gpt-4o",
     retry = { maxRetries: 3, baseDelay: 1000 },
     baseURL = "https://api.openai.com/v1",
+    runtimePolicy: RuntimePolicy = {},
   ) {
     const o: Required<OpenAIProviderOptions> =
       typeof apiKeyOrOptions === "string"
@@ -86,10 +63,11 @@ export class OpenAIChatProvider implements LLMProvider {
     this.circuit = new CircuitBreaker()
     this.maxRetries = o.retry.maxRetries
     this.baseDelay = o.retry.baseDelay
+    this.resolvedRuntimePolicy = runtimePolicy
   }
 
   runtimePolicy(): RuntimePolicy {
-    return OPENAI_POLICIES[this.model] ?? {}
+    return this.resolvedRuntimePolicy
   }
 
   descriptor(): ProviderDescriptor {

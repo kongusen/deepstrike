@@ -1,9 +1,9 @@
 import type { ProviderDescriptor, RuntimePolicy } from "../types.js"
 import { OpenAIChatProvider, type OpenAIChatTurnReasoning } from "./openai.js"
 import { AnthropicCompatibleProvider } from "./anthropic-compatible.js"
-import { endpointProfiles } from "./profiles.js"
+import { endpointProfiles } from "./endpoints.js"
 import { omitExtensionKeys } from "./base.js"
-import { DEEPSEEK_POLICIES, anthropicVendorProfiles } from "./vendor-profiles.js"
+import { anthropicVendorProfiles } from "./vendor-profiles.js"
 
 /**
  * DeepSeek over its Anthropic-compatible endpoint.
@@ -17,8 +17,9 @@ export class DeepSeekAnthropicProvider extends AnthropicCompatibleProvider {
     model?: string,
     retry?: { maxRetries: number; baseDelay: number },
     baseURL?: string,
+    runtimePolicy?: RuntimePolicy,
   ) {
-    super(anthropicVendorProfiles.deepseek, apiKey, model, retry, baseURL)
+    super(anthropicVendorProfiles.deepseek, apiKey, model, retry, baseURL, runtimePolicy)
   }
 }
 
@@ -35,12 +36,13 @@ export class DeepSeekProvider extends OpenAIChatProvider {
     model: string = "deepseek-v4-flash",
     retry?: { maxRetries: number; baseDelay: number },
     baseURL: string = endpointProfiles["deepseek.openai"].baseURL,
+    runtimePolicy: RuntimePolicy = {},
   ) {
-    super(apiKey, model, retry, baseURL)
+    super(apiKey, model, retry, baseURL, runtimePolicy)
   }
 
   override runtimePolicy(): RuntimePolicy {
-    return DEEPSEEK_POLICIES[this.model] ?? {}
+    return super.runtimePolicy()
   }
 
   override descriptor(): ProviderDescriptor {

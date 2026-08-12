@@ -1,8 +1,8 @@
 import type { ProviderDescriptor, RuntimePolicy } from "../types.js"
 import { OpenAIChatProvider } from "./openai.js"
 import { AnthropicCompatibleProvider } from "./anthropic-compatible.js"
-import { endpointProfiles } from "./profiles.js"
-import { KIMI_POLICIES, anthropicVendorProfiles } from "./vendor-profiles.js"
+import { endpointProfiles } from "./endpoints.js"
+import { anthropicVendorProfiles } from "./vendor-profiles.js"
 
 /**
  * Kimi over its Anthropic-compatible endpoint.
@@ -16,8 +16,9 @@ export class KimiAnthropicProvider extends AnthropicCompatibleProvider {
     model?: string,
     retry?: { maxRetries: number; baseDelay: number },
     baseURL?: string,
+    runtimePolicy?: RuntimePolicy,
   ) {
-    super(anthropicVendorProfiles.kimi, apiKey, model, retry, baseURL)
+    super(anthropicVendorProfiles.kimi, apiKey, model, retry, baseURL, runtimePolicy)
   }
 }
 
@@ -27,12 +28,13 @@ export class KimiProvider extends OpenAIChatProvider {
     model: string = "kimi-k2.6",
     retry?: { maxRetries: number; baseDelay: number },
     baseURL: string = endpointProfiles["kimi.openai"].baseURL,
+    runtimePolicy: RuntimePolicy = {},
   ) {
-    super(apiKey, model, retry, baseURL)
+    super(apiKey, model, retry, baseURL, runtimePolicy)
   }
 
   override runtimePolicy(): RuntimePolicy {
-    return KIMI_POLICIES[this.model] ?? {}
+    return super.runtimePolicy()
   }
 
   override descriptor(): ProviderDescriptor {

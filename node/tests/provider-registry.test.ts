@@ -1,5 +1,5 @@
 import { PROVIDER_REGISTRY, providerRegistryKey } from "../src/providers/registry.js"
-import { endpointProfiles } from "../src/providers/profiles.js"
+import { endpointProfiles } from "../src/providers/endpoints.js"
 
 // Endpoint protocols that produce a chat/completions provider (vs embeddings).
 const CHAT_PROTOCOLS = new Set(["anthropic-messages", "openai-chat", "openai-responses", "gemini"])

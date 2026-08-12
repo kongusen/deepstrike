@@ -8,7 +8,6 @@ import {
   validateOpenAIChatReplay,
   type ReplayabilityAssessment,
 } from "./replay-validator.js"
-import { assertContextModalitySupported, tryGetModelCapabilities } from "./model-capabilities.js"
 
 export interface OpenAIChatBuildMessageOptions {
   descriptor?: ProviderDescriptor
@@ -32,10 +31,6 @@ export class OpenAIChatAdapter {
   }
 
   buildMessages(context: RenderedContext, options: OpenAIChatBuildMessageOptions = {}): OpenAI.ChatCompletionMessageParam[] {
-    if (options.descriptor) {
-      const capabilities = tryGetModelCapabilities(options.descriptor.provider, options.descriptor.model)
-      assertContextModalitySupported(context, capabilities, options.descriptor.provider)
-    }
     validateOpenAIChatReplay(context, {
       descriptor: options.descriptor,
       requireNonEmptyReasoningForToolCalls: options.requireNonEmptyReasoningForToolCalls,

@@ -4,22 +4,11 @@ import { assistantReplayKey } from "../runtime/provider-replay.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker, normalizeToolCall, omitExtensionKeys, toAnthropicContent, toAnthropicMessages } from "./base.js"
 import { normalizeAnthropicUsage } from "./usage-normalizer.js"
-import { assertContextModalitySupported, tryGetModelCapabilities } from "./model-capabilities.js"
-
-const CLAUDE_POLICIES: Record<string, RuntimePolicy> = {
-  "claude-opus-4-1":          { maxTurns: 50 },
-  "claude-opus-4-7":          { maxTurns: 50 },
-  "claude-opus-4-6":          { maxTurns: 50 },
-  "claude-opus-4-0":          { maxTurns: 50 },
-  "claude-sonnet-4-6":        { maxTurns: 25 },
-  "claude-sonnet-4-0":        { maxTurns: 25 },
-  "claude-haiku-4-5":         { maxTurns: 15 },
-  "claude-3-5-haiku-latest":  { maxTurns: 15 },
-}
 
 interface AnthropicProviderOptions {
   baseURL?: string
   authMode?: "api-key" | "bearer"
+  runtimePolicy?: RuntimePolicy
 }
 
 /** Options-object form for `AnthropicProvider` — the recommended constructor shape. */
@@ -36,6 +25,7 @@ export class AnthropicProvider implements LLMProvider {
   private baseDelay: number
   protected readonly model: string
   private nativeAssistantBlocks = new Map<string, Array<Record<string, unknown>>>()
+  private readonly resolvedRuntimePolicy: RuntimePolicy
 
   // Accepts the options object (`new AnthropicProvider({ apiKey, model, baseURL })`) or the legacy
   // positional form (still used by the Anthropic-compatible backend subclasses' `super(...)` calls).
@@ -59,10 +49,11 @@ export class AnthropicProvider implements LLMProvider {
     this.circuit = new CircuitBreaker()
     this.maxRetries = c.retry?.maxRetries ?? 3
     this.baseDelay = c.retry?.baseDelay ?? 1000
+    this.resolvedRuntimePolicy = c.runtimePolicy ?? {}
   }
 
   runtimePolicy(): RuntimePolicy {
-    return CLAUDE_POLICIES[this.model] ?? {}
+    return this.resolvedRuntimePolicy
   }
 
   /** Identity advertised in the descriptor; overridden by Anthropic-compatible vendors (e.g. MiniMax). */
