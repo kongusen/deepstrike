@@ -52,6 +52,11 @@ from .glm import GLMProvider, GLMAnthropicProvider
 # v0.2.3 parity: per-backend factory functions are the public surface; the dual classes above remain
 # importable for advanced subclassing but are no longer advertised in __all__.
 from .factories import deepseek, kimi, qwen, glm, minimax, gemini, ollama
+from .request_plan import (
+    PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, PromptMeasurementRecord,
+    create_provider_request_plan, measurement_for_plan, normalize_provider_usage,
+    price_provider_usage, record_prompt_measurement,
+)
 
 __all__ = [
     "LLMProvider", "ContextBudgetOverflow", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
@@ -67,6 +72,9 @@ __all__ = [
     "ProviderReplayValidationError", "validate_openai_chat_replay", "assess_reasoning_replay",
     "DEGRADED_REASONING_PLACEHOLDER",
     "StreamEvent", "TextDelta", "ThinkingDelta",
+    "PricingSnapshot", "ProviderRequestEndpoint", "ProviderRequestPlan", "PromptMeasurementRecord",
+    "create_provider_request_plan", "measurement_for_plan", "normalize_provider_usage",
+    "price_provider_usage", "record_prompt_measurement",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
     "PermissionRequestEvent", "PermissionResolvedEvent", "PermissionResponse",
     "ToolArgumentRepairedEvent",
