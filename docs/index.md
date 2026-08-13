@@ -3,18 +3,18 @@ layout: home
 
 hero:
   name: DeepStrike
-  text: 让 Agent 持续完成工作
-  tagline: 为 Agent 配置工具、记忆、Skill、委托、工作流和可恢复 Session。
+  text: 本地 Agent Process Runtime
+  tagline: 用可持久化的进程树、权限、预算、调度、通信与恢复，让 Agent 持续完成工作。
   image:
     src: /banner.png
     alt: DeepStrike
   actions:
     - theme: brand
+      text: 了解 Agent Runtime
+      link: /architecture/agent-process-runtime
+    - theme: alt
       text: 5 分钟上手
       link: /getting-started/hello-agent
-    - theme: alt
-      text: Agent 能力
-      link: /guides/
     - theme: alt
       text: 教程课程
       link: https://github.com/kongusen/deepstrike/tree/main/example
@@ -23,9 +23,9 @@ hero:
       link: https://github.com/kongusen/deepstrike/wiki
 
 features:
-  - icon: 🧠
-    title: 接入任意 Provider 推理
-    details: 选择适合应用的模型，支持流式输出、多模态输入、路由和可重放测试。
+  - icon: ⚙️
+    title: Agent Process Runtime
+    details: 把根 Agent、子 Agent 和 Workflow 节点统一为具有谱系、生命周期和监督策略的本地运行时任务。
   - icon: 🧰
     title: 使用真实工具
     details: 添加类型化工具、流式工具、MCP Server、文件、沙箱、worktree 和应用自有集成。
@@ -36,11 +36,11 @@ features:
     title: 委托与协作
     details: 运行专注的子 Agent，传递 handoff，扇出研究任务，验证结果，并构建 Reactive peer 团队。
   - icon: ⏳
-    title: 跨时间持续工作
-    details: 等待审批或外部事件，进程重启后恢复 Session，并用有界循环推进长任务。
+    title: 持久等待与恢复
+    details: 等待 Effect、子任务、审批、Signal 或 Timer，进程重启后从 checkpoint 和 replay 继续。
   - icon: ✅
-    title: 让行为可预期
-    details: 使用工具策略、配额、输出 schema、评估 gate 和结构化运行证据。
+    title: 权限、预算与确定性
+    details: 收窄子任务 capability，逐级分配资源预算，并用统一 runnable set 保持调度可预测。
 ---
 
 ## 从你要构建的 Agent 开始
@@ -68,6 +68,7 @@ npm install @deepstrike/wasm
 
 | 你要构建…… | 从这里开始 |
 | --- | --- |
+| 理解 Agent 的运行时模型 | [Agent Process Runtime](/architecture/agent-process-runtime) |
 | 一个使用工具的 Agent | [Hello Agent](/getting-started/hello-agent) |
 | 一个拥有 Memory 或 Skill 的 Agent | [Agent 能力](/guides/) |
 | 一个多 Agent 工作流 | [动态工作流](/guides/workflow) |

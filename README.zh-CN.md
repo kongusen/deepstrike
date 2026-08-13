@@ -7,7 +7,7 @@
 <h1 align="center">DeepStrike</h1>
 
 <p align="center">
-  <strong>为高能力 Agent 提供持久化与治理能力的运行框架。</strong>
+  <strong>面向持久化、可治理 Agent 工作的本地 Agent Process Runtime。</strong>
 </p>
 
 <p align="center">
@@ -28,9 +28,22 @@
 
 ---
 
-DeepStrike 用来构建不止会回答 prompt 的 Agent。你可以为 Agent 配置模型、指令、工具、MCP Server、Skill、Memory、Knowledge 和 Handoff，让它跨多个回合工作，协调其他 Agent，等待外部输入，并在中断后继续运行。
+DeepStrike 是一个本地 Agent Process Runtime，用来构建不止会回答 prompt 的 Agent。你可以为 Agent 配置模型、指令、工具、MCP Server、Skill、Memory、Knowledge 和 Handoff。运行时为这些工作建立可持久化的进程树，让 Agent 跨多个回合工作、协调其他 Agent、等待外部输入，并在中断后继续运行。
 
-框架保留熟悉的 Agent 表达方式，同时把周围的能力做成清晰、可组合、可测试的接口。
+框架保留熟悉的 Agent 表达方式，内核则把生命周期、权限、资源、调度、通信和恢复做成明确、可组合、可测试的运行时语义。
+
+## Agent Process Runtime
+
+每个根 Agent、子 Agent 和 Workflow 节点都进入同一套本地运行时模型。
+
+| 运行时职责 | 提供的保证 |
+| --- | --- |
+| **进程生命周期** | 父子谱系由内核派生，spawn、join、cancel 和 supervision 使用一致语义。 |
+| **持久化调度** | 确定性选择 runnable，并持久等待 Effect、子任务、审批、Signal、Timer、Channel 和 Resource。 |
+| **权限与资源** | 子任务能力只能收窄，九维预算授权不能超过父任务剩余容量。 |
+| **通信与恢复** | 受 capability 检查的本地 IPC、只传 handle 的大对象、checkpoint、journal 和可重放续跑。 |
+
+“Process” 是运行时抽象，不要求每个 Agent 启动一个操作系统进程。SDK 仍是公开 API，运行时内核负责执行其背后的约束。完整模型与本地范围边界见 [Agent Process Runtime](./docs/architecture/agent-process-runtime.md)。
 
 ## Agent 能做什么
 
@@ -132,7 +145,7 @@ DeepStrike 适合需要持久 Session、受控工具、Memory、委托、动态�
 
 ## 当前范围
 
-当前重点是可靠的本地 Agent runtime。它支持本地持久化、replay、恢复、进程监督、确定性工作流调度、权限限制，以及由应用提供的远程工具和 MCP Server 集成。
+当前重点是可靠的本地 Agent Process Runtime。它支持持久进程树、通用等待与唤醒、层级预算、权限衰减、本地 IPC、进程监督、确定性调度、checkpoint/replay 恢复，以及由应用提供的远程工具和 MCP Server 集成。
 
 框架当前不承诺远程 worker lease、任务迁移、分布式接管或分布式消息 broker。外部 effect 采用 at-least-once 语义，数据库、邮件、支付等系统应由应用使用幂等键和 reconciliation。
 
@@ -142,6 +155,7 @@ Billing、pricing、税务和租户计费属于使用 DeepStrike 的应用。框
 
 | 你想要做什么 | 从这里开始 |
 | --- | --- |
+| 理解运行时模型 | [Agent Process Runtime](./docs/architecture/agent-process-runtime.md) |
 | 了解 Agent 模型 | [快速开始](./docs/getting-started/index.md) |
 | 选择 API | [runAgent 与 RuntimeRunner](./docs/getting-started/run-agent-vs-runner.md) |
 | 构建工作流 | [动态工作流](./docs/guides/workflow.md) |

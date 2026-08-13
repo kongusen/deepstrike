@@ -3,7 +3,7 @@ import { enNav, enSidebar, zhNav, zhSidebar } from './shared'
 
 export default defineConfig({
   title: 'DeepStrike',
-  description: 'A framework for Agents with tools, memory, collaboration, and durable sessions',
+  description: 'A local Agent Process Runtime for durable, governed Agent work',
   cleanUrls: true,
   ignoreDeadLinks: [/^https?:\/\/localhost/],
 
@@ -25,7 +25,7 @@ export default defineConfig({
       label: '简体中文',
       lang: 'zh-CN',
       title: 'DeepStrike',
-      description: '为 Agent 提供工具、记忆、协作、治理与可恢复 Session 的框架',
+      description: '面向持久化、可治理 Agent 工作的本地 Agent Process Runtime',
       themeConfig: {
         nav: zhNav,
         sidebar: zhSidebar,
@@ -42,7 +42,7 @@ export default defineConfig({
       lang: 'en-US',
       link: '/en/',
       title: 'DeepStrike',
-      description: 'A framework for Agents with tools, memory, collaboration, and durable sessions',
+      description: 'A local Agent Process Runtime for durable, governed Agent work',
       themeConfig: {
         nav: enNav,
         sidebar: enSidebar,

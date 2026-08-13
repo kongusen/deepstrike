@@ -3,18 +3,18 @@ layout: home
 
 hero:
   name: DeepStrike
-  text: Build Agents that keep working
-  tagline: Give Agents tools, memory, skills, delegation, workflows, and durable sessions.
+  text: A local Agent Process Runtime
+  tagline: Durable process trees, authority, budgets, scheduling, communication, and recovery for Agents that keep working.
   image:
     src: /banner.png
     alt: DeepStrike
   actions:
     - theme: brand
+      text: Explore Agent Runtime
+      link: /en/architecture/agent-process-runtime
+    - theme: alt
       text: Quick Start
       link: /en/getting-started/hello-agent
-    - theme: alt
-      text: Agent Capabilities
-      link: /en/guides/
     - theme: alt
       text: Tutorial Curriculum
       link: https://github.com/kongusen/deepstrike/tree/main/example
@@ -23,9 +23,9 @@ hero:
       link: https://github.com/kongusen/deepstrike/wiki
 
 features:
-  - icon: 🧠
-    title: Reason with any provider
-    details: Connect the model provider that fits your application, with streaming, multimodal input, routing, and replayable tests.
+  - icon: ⚙️
+    title: Agent Process Runtime
+    details: Treat root Agents, child Agents, and workflow nodes as local runtime tasks with lineage, lifecycle, and supervision.
   - icon: 🧰
     title: Use real tools
     details: Add typed tools, streaming tools, MCP servers, files, sandboxes, worktrees, and application-owned integrations.
@@ -36,11 +36,11 @@ features:
     title: Delegate and collaborate
     details: Run focused child Agents, hand off artifacts, fan out research, verify results, and build reactive peer teams.
   - icon: ⏳
-    title: Keep working over time
-    details: Pause for approval or external events, resume sessions after restarts, and pace long-running work with bounded loops.
+    title: Durable wait and recovery
+    details: Wait for effects, children, approvals, signals, or timers, then continue from checkpoints and replay after a restart.
   - icon: ✅
-    title: Make behavior predictable
-    details: Apply tool policies, quotas, output schemas, evaluation gates, and structured runtime evidence.
+    title: Authority, budgets, and determinism
+    details: Attenuate child capabilities, allocate hierarchical resource budgets, and schedule through one predictable runnable set.
 ---
 
 ## Start With The Agent You Need
@@ -68,6 +68,7 @@ npm install @deepstrike/wasm
 
 | You want to build... | Start here |
 | --- | --- |
+| Understand the Agent runtime model | [Agent Process Runtime](/en/architecture/agent-process-runtime) |
 | A single tool-using Agent | [Hello Agent](/en/getting-started/hello-agent) |
 | An Agent with memory or skills | [Agent capabilities](/en/guides/) |
 | A multi-Agent workflow | [Dynamic workflows](/en/guides/workflow) |

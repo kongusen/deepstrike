@@ -7,7 +7,7 @@
 <h1 align="center">DeepStrike</h1>
 
 <p align="center">
-  <strong>A durable, governed runtime for capable Agents.</strong>
+  <strong>A local Agent Process Runtime for durable, governed work.</strong>
 </p>
 
 <p align="center">
@@ -28,9 +28,22 @@
 
 ---
 
-DeepStrike is a runtime for building Agents that can do more than answer a prompt. Give an Agent a model, instructions, tools, MCP servers, skills, memory, knowledge, and handoffs. Then let it work across multiple turns, coordinate other Agents, wait for external input, and recover after interruption.
+DeepStrike is a local Agent Process Runtime for building Agents that can do more than answer a prompt. Give an Agent a model, instructions, tools, MCP servers, skills, memory, knowledge, and handoffs. The runtime gives its work a durable process tree so it can continue across turns, coordinate other Agents, wait for external input, and recover after interruption.
 
-The framework keeps the public Agent model familiar while making the capabilities around it explicit, composable, and testable.
+The framework keeps the public Agent model familiar while the kernel makes lifecycle, authority, resources, scheduling, communication, and recovery explicit, composable, and testable.
+
+## Agent Process Runtime
+
+Every root Agent run, child Agent, and workflow node participates in one local runtime model:
+
+| Runtime responsibility | What it guarantees |
+| --- | --- |
+| **Process lifecycle** | Kernel-derived parent-child lineage with consistent spawn, join, cancel, and supervision semantics. |
+| **Durable scheduling** | Deterministic runnable selection and persistent waits for effects, children, approvals, signals, timers, channels, and resources. |
+| **Authority and resources** | Child capabilities can only narrow; nine-dimensional budget grants cannot exceed parent remaining capacity. |
+| **Communication and recovery** | Capability-checked local IPC, handle-only large objects, checkpoints, journals, and replay-safe continuation. |
+
+“Process” is a runtime abstraction, not a requirement to launch one operating-system process per Agent. The SDK remains the public API; the runtime kernel enforces the invariants behind it. See [Agent Process Runtime](./docs/en/architecture/agent-process-runtime.md) for the complete model and its local-only boundary.
 
 ## What An Agent Can Do
 
@@ -132,7 +145,7 @@ For a stateless chat endpoint or a one-off prompt with no tools, a provider SDK 
 
 ## Current Scope
 
-The current focus is a reliable local runtime for Agents. It supports local persistence, replay, recovery, process supervision, deterministic workflow scheduling, capability restrictions, and host-provided integrations such as remote tools or MCP servers.
+The current focus is a reliable local Agent Process Runtime. It supports durable process trees, generalized wait and wake, hierarchical budgets, capability attenuation, local IPC, process supervision, deterministic scheduling, checkpoint/replay recovery, and host-provided integrations such as remote tools or MCP servers.
 
 The framework does not currently promise remote worker leasing, task migration, distributed takeover, or a distributed message broker. External effects are at-least-once, so applications should use idempotency keys and reconciliation for databases, mail, payments, and similar systems.
 
@@ -142,6 +155,7 @@ Billing, pricing, taxes, and tenant accounting belong to the application using D
 
 | You want to... | Start here |
 | --- | --- |
+| Understand the runtime model | [Agent Process Runtime](./docs/en/architecture/agent-process-runtime.md) |
 | Learn the Agent model | [Getting Started](./docs/en/getting-started/index.md) |
 | Choose an API | [runAgent vs RuntimeRunner](./docs/en/getting-started/run-agent-vs-runner.md) |
 | Build workflows | [Dynamic Workflows](./docs/en/guides/workflow.md) |
