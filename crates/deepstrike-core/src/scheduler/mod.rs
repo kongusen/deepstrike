@@ -5,6 +5,7 @@ pub mod mailbox;
 pub mod milestone;
 pub mod policy;
 pub mod rollback;
+pub mod runnable;
 pub mod state_machine;
 pub mod tcb;
 pub mod wait_index;

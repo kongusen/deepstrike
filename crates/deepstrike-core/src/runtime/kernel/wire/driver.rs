@@ -1016,6 +1016,7 @@ fn restore_scheduler(
             .as_ref()
             .map(|parent| parent.as_str().into());
         tcb.state = restore_task_lifecycle(task)?;
+        tcb.runnable_cause = task.runnable_cause;
         tcb.wait = restore_task_wait(task)?;
         tcb.wait_set = task
             .wait_set
@@ -1996,6 +1997,7 @@ impl CanonicalOperationDriver {
                         .as_ref()
                         .and_then(|parent| TaskId::new(parent.as_str()).ok()),
                     lifecycle: tcb.state.label().to_string(),
+                    runnable_cause: tcb.runnable_cause,
                     termination: match tcb.state {
                         TaskLifecycle::Done(reason) => Some(reason.label().to_string()),
                         _ => None,
@@ -3111,6 +3113,7 @@ impl CanonicalOperationDriver {
             .task_table_mut()
             .register_object(caller.as_str(), descriptor)
             .map_err(local_ipc_refusal)?;
+        engine.observe_local_runnable_tasks();
         Ok(local_ipc_outcome(accepted))
     }
 
@@ -3179,6 +3182,7 @@ impl CanonicalOperationDriver {
             .task_table_mut()
             .register_object(caller.as_str(), descriptor)
             .map_err(local_ipc_refusal)?;
+        engine.observe_local_runnable_tasks();
         Ok(local_ipc_outcome(accepted))
     }
 
@@ -3597,9 +3601,12 @@ impl CanonicalOperationDriver {
             // (signal TTL and deadline escalation, rate-limit windows, the wall-time budget axis)
             // therefore reads a fact the journal already holds, so a replay decides identically.
             engine.observe_accepted_time(context.input.observed_at_ms.get());
-            engine
+            let woken = engine
                 .task_table_mut()
                 .wake_expired_timers(context.input.observed_at_ms.get());
+            if !woken.is_empty() {
+                engine.observe_local_runnable_tasks();
+            }
         }
         match &context.input.input {
             NormalizedPayload::ConfigureOperation(configure) => {
@@ -4595,11 +4602,14 @@ impl CanonicalOperationDriver {
             signal,
             may_issue_request,
         );
-        engine
+        let woken = engine
             .task_table_mut()
             .notify(&WaitKey::Signal(SignalFilter(
                 delivery.signal.signal_id.as_str().into(),
             )));
+        if !woken.is_empty() {
+            engine.observe_local_runnable_tasks();
+        }
         match action {
             Some(action) => self.continue_after(context, action, root_kind),
             // Queued / observed / ignored / dropped: the disposition observation is the whole of
@@ -15766,6 +15776,73 @@ mod tests {
                 .as_str(),
             "owner-a"
         );
+    }
+
+    #[test]
+    fn spc_019_11_canonical_workflow_and_timer_waiter_emit_one_local_runnable_trace() {
+        use crate::scheduler::runnable::LocalRunnableKind;
+        use crate::scheduler::tcb::{LogicalDeadline, TaskLifecycle};
+        use crate::types::agent::{
+            AgentIsolation, AgentRole, ContextInheritance, IsolationManifest,
+        };
+
+        let mut runtime = Runtime::new();
+        runtime.submit(&syscall_config());
+        let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+        let provider = sole_effect(&started).effect_id.clone();
+        let table = runtime.driver.engine.as_mut().unwrap().task_table_mut();
+        table
+            .spawn_child(
+                "root",
+                &IsolationManifest {
+                    agent_id: "timer-waiter".into(),
+                    role: AgentRole::Implement,
+                    isolation: AgentIsolation::Shared,
+                    context_inheritance: ContextInheritance::Full,
+                    permitted_capability_ids: Vec::new(),
+                    requested_capabilities: Vec::new(),
+                    requested_budget: None,
+                },
+                SchedulerBudget::default(),
+                TaskLifecycle::Running,
+            )
+            .unwrap();
+        table.wait_for_timer("timer-waiter", LogicalDeadline(1_700_000_002_000));
+
+        let transition = runtime.submit(&provider_result(
+            "in-workflow",
+            1_700_000_002_000,
+            &provider,
+            vec![tool_call(
+                "call-workflow",
+                "start_workflow",
+                serde_json::to_value(two_node_spec()).unwrap(),
+            )],
+        ));
+        assert_eq!(sole_effect(&transition).tag(), EffectKindTag::SpawnTasks);
+        let trace = runtime
+            .observations()
+            .iter()
+            .filter_map(|observation| match observation {
+                KernelObservation::LocalRunnableTrace { runnable, .. } => Some(runnable),
+                _ => None,
+            })
+            .find(|runnable| runnable.len() == 2)
+            .expect("workflow node and timer waiter share the production trace");
+        assert_eq!(
+            trace
+                .iter()
+                .map(|entry| (entry.id.as_str(), entry.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("timer-waiter", LocalRunnableKind::TimerWaiter),
+                ("wf-node0", LocalRunnableKind::WorkflowNode),
+            ]
+        );
+
+        let checkpoint = runtime.checkpoint().decode().expect("verifies");
+        let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+        assert_eq!(surface(&restored), surface(&runtime));
     }
 
     /// Task 16b · a completed child remains the same process fact after restore: its role,

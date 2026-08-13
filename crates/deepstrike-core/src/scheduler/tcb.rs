@@ -75,6 +75,16 @@ impl TaskLifecycle {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunnableCause {
+    #[default]
+    NestedTask,
+    TimerWaiter,
+    MessageWaiter,
+    EventWaiter,
+}
+
 /// A successful join maps to `Done(Completed)`; any other termination is `Done(<reason>)`.
 impl From<ProcessState> for TaskLifecycle {
     fn from(state: ProcessState) -> Self {
@@ -310,6 +320,8 @@ pub struct Tcb {
     /// (spc_002-05); empty for leaf tasks and for every task predating recursive spawn.
     pub children: BTreeSet<TaskId>,
     pub state: TaskLifecycle,
+    /// Why a Ready child entered the unified local runnable set.
+    pub runnable_cause: RunnableCause,
     pub budget: BudgetLedger,
     pub wait: Option<WaitReason>,
     /// Canonical recoverable wait state. `wait` remains the compatibility projection for the two
@@ -355,6 +367,7 @@ impl Tcb {
             parent: None,
             children: BTreeSet::new(),
             state: TaskLifecycle::Ready,
+            runnable_cause: RunnableCause::NestedTask,
             budget: BudgetLedger::new(budget),
             wait: None,
             wait_set: None,
@@ -401,6 +414,7 @@ impl Tcb {
             parent,
             children: BTreeSet::new(),
             state,
+            runnable_cause: RunnableCause::NestedTask,
             budget: BudgetLedger::new(budget),
             wait: None,
             wait_set: None,
@@ -512,6 +526,30 @@ impl TaskTable {
 
     pub fn all(&self) -> &[Tcb] {
         &self.tasks
+    }
+
+    pub(crate) fn runnable_candidates(&self) -> Vec<super::runnable::LocalRunnable> {
+        let mut tasks: Vec<_> = self
+            .tasks
+            .iter()
+            .filter(|task| task.proc.is_some() && task.state == TaskLifecycle::Ready)
+            .collect();
+        tasks.sort_by(|left, right| left.id.cmp(&right.id));
+        tasks
+            .into_iter()
+            .map(|task| super::runnable::LocalRunnable {
+                id: task.id.to_string(),
+                kind: match task.runnable_cause {
+                    RunnableCause::NestedTask => super::runnable::LocalRunnableKind::NestedTask,
+                    RunnableCause::TimerWaiter => super::runnable::LocalRunnableKind::TimerWaiter,
+                    RunnableCause::MessageWaiter => {
+                        super::runnable::LocalRunnableKind::MessageWaiter
+                    }
+                    RunnableCause::EventWaiter => super::runnable::LocalRunnableKind::EventWaiter,
+                },
+                source_rank: 0,
+            })
+            .collect()
     }
 
     pub fn children_of(&self, parent: &str) -> Vec<&Tcb> {
@@ -671,11 +709,18 @@ impl TaskTable {
             };
 
             if satisfied {
+                let cause = match key {
+                    super::wait_index::WaitKey::Timer(_) => RunnableCause::TimerWaiter,
+                    super::wait_index::WaitKey::Channel(_)
+                    | super::wait_index::WaitKey::External(_) => RunnableCause::MessageWaiter,
+                    _ => RunnableCause::EventWaiter,
+                };
                 self.clear_durable_wait(&task_id);
                 if let Some(task) = self.get_mut(task_id.as_str())
                     && task.state == TaskLifecycle::Suspended
                 {
                     task.state = TaskLifecycle::Ready;
+                    task.runnable_cause = cause;
                     task.wait = None;
                     woken.push(task_id);
                 }
@@ -2104,5 +2149,62 @@ mod tests {
             &descriptor
         ));
         assert_eq!(table.register_object("a", descriptor), Ok(false));
+    }
+
+    #[test]
+    fn spc_019_11_workflow_nested_timer_and_message_work_share_one_stable_trace() {
+        use crate::scheduler::runnable::{LocalRunnable, LocalRunnableKind, order_runnables};
+
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        table.insert(Tcb::spawned_in(
+            &manifest_for("nested"),
+            SchedulerBudget::default(),
+            TaskLifecycle::Ready,
+            Some("root".into()),
+        ));
+        table.insert(Tcb::spawned_in(
+            &manifest_for("timer"),
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            Some("root".into()),
+        ));
+        table.insert(Tcb::spawned_in(
+            &manifest_for("mail"),
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+            Some("root".into()),
+        ));
+        table.wait_for_timer("timer", LogicalDeadline(10));
+        table.wait_for_condition(
+            "mail",
+            &WaitCondition::External(SubscriptionId("mailbox:mail".into())),
+        );
+        table.wake_expired_timers(10);
+        table.notify(&super::super::wait_index::WaitKey::External(
+            SubscriptionId("mailbox:mail".into()),
+        ));
+
+        let mut candidates = table.runnable_candidates();
+        candidates.push(LocalRunnable::workflow("wf-node2", 0));
+        let trace = order_runnables(candidates);
+        assert_eq!(
+            trace
+                .iter()
+                .map(|entry| (entry.id.as_str(), entry.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("mail", LocalRunnableKind::MessageWaiter),
+                ("nested", LocalRunnableKind::NestedTask),
+                ("timer", LocalRunnableKind::TimerWaiter),
+                ("wf-node2", LocalRunnableKind::WorkflowNode),
+            ]
+        );
+
+        let mut restored = table.clone();
+        restored.rebuild_wait_index();
+        let mut restored_candidates = restored.runnable_candidates();
+        restored_candidates.push(LocalRunnable::workflow("wf-node2", 0));
+        assert_eq!(order_runnables(restored_candidates), trace);
     }
 }

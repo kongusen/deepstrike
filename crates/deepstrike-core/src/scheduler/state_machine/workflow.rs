@@ -77,6 +77,45 @@ impl LoopStateMachine {
             .and_then(|run| run.spawn_info_for_agent(agent_id))
     }
 
+    pub(crate) fn observe_local_runnable_tasks(&mut self) {
+        let runnable =
+            crate::scheduler::runnable::order_runnables(self.tasks.runnable_candidates());
+        if !runnable.is_empty() {
+            self.observations
+                .push(KernelObservation::LocalRunnableTrace {
+                    turn: self.turn,
+                    runnable,
+                });
+        }
+    }
+
+    fn order_local_runnables(&mut self, ready: Vec<usize>) -> Vec<usize> {
+        let mut by_id = std::collections::BTreeMap::new();
+        let mut candidates = self.tasks.runnable_candidates();
+        if let Some(run) = self.workflow.as_ref() {
+            for (rank, node) in ready.into_iter().enumerate() {
+                let id = run.current_agent_id(node);
+                by_id.insert(id.clone(), node);
+                candidates.push(crate::scheduler::runnable::LocalRunnable::workflow(
+                    id,
+                    rank as u64,
+                ));
+            }
+        }
+        let runnable = crate::scheduler::runnable::order_runnables(candidates);
+        if !runnable.is_empty() {
+            self.observations
+                .push(KernelObservation::LocalRunnableTrace {
+                    turn: self.turn,
+                    runnable: runnable.clone(),
+                });
+        }
+        runnable
+            .into_iter()
+            .filter_map(|entry| by_id.remove(&entry.id))
+            .collect()
+    }
+
     /// How many nodes the in-flight DAG holds. `0` when none is loaded. The quantity
     /// `Syscall::SubmitNodes` is metered against, and what a host projection reports.
     pub fn workflow_node_count(&self) -> usize {
@@ -375,6 +414,7 @@ impl LoopStateMachine {
             .as_mut()
             .map(|w| w.ready_batch())
             .unwrap_or_default();
+        let ready = self.order_local_runnables(ready);
         let mut spawned_ids: Vec<String> = Vec::new();
         let mut spawned_infos: Vec<crate::orchestration::workflow::WorkflowSpawnInfo> = Vec::new();
         for node in ready {

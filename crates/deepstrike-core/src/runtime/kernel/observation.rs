@@ -174,6 +174,11 @@ pub enum KernelObservation {
         terminal: bool,
         relaunched: bool,
     },
+    /// Deterministic local merge trace shared by DAG nodes and woken/nested task processes.
+    LocalRunnableTrace {
+        turn: u32,
+        runnable: Vec<crate::scheduler::runnable::LocalRunnable>,
+    },
     /// W0-ABI: a workflow batch was spawned — each node's spawn descriptor (agent id + goal +
     /// role/isolation/inheritance) so the SDK can run the kernel-generated nodes.
     WorkflowBatchSpawned {

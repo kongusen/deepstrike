@@ -517,6 +517,8 @@ pub struct TaskControlState {
     #[serde(default)]
     pub parent_task_id: Option<TaskId>,
     pub lifecycle: String,
+    #[serde(default, skip_serializing_if = "is_nested_runnable_cause")]
+    pub runnable_cause: crate::scheduler::tcb::RunnableCause,
     /// Why a `done` task is done. `None` for every other lifecycle.
     #[serde(default)]
     pub termination: Option<String>,
@@ -564,6 +566,10 @@ pub struct TaskControlState {
 
 fn is_default_supervision(value: &crate::scheduler::tcb::SupervisionPolicy) -> bool {
     value == &crate::scheduler::tcb::SupervisionPolicy::default()
+}
+
+fn is_nested_runnable_cause(value: &crate::scheduler::tcb::RunnableCause) -> bool {
+    *value == crate::scheduler::tcb::RunnableCause::NestedTask
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
