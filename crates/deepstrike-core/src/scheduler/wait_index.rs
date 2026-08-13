@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::tcb::{
     ApprovalId, ChannelId, LogicalDeadline, ResourceKey, SignalFilter, SubscriptionId, TaskId,
-    WaitCondition, WaitMode, WaitSet,
+    WaitCondition, WaitSet,
 };
 use crate::runtime::kernel::wire::EffectId;
 
@@ -26,7 +26,7 @@ pub enum WaitKey {
 }
 
 impl WaitKey {
-    fn keys_for(condition: &WaitCondition) -> Vec<WaitKey> {
+    pub(crate) fn keys_for(condition: &WaitCondition) -> Vec<WaitKey> {
         match condition {
             WaitCondition::Effect(id) => vec![WaitKey::Effect(id.clone())],
             WaitCondition::Child(id) => vec![WaitKey::Child(id.clone())],
@@ -38,6 +38,10 @@ impl WaitKey {
             WaitCondition::Resource(key) => vec![WaitKey::Resource(key.clone())],
             WaitCondition::External(id) => vec![WaitKey::External(id.clone())],
         }
+    }
+
+    pub(crate) fn matches(&self, condition: &WaitCondition) -> bool {
+        Self::keys_for(condition).contains(self)
     }
 }
 
@@ -51,12 +55,6 @@ pub struct WaitIndex {
     /// `tasks_by_key`. `BTreeMap` gives cheap "everything due by `now_ms`" range queries without
     /// reaching for a heavier structure than correctness needs.
     timers: BTreeMap<u64, Vec<TaskId>>,
-    /// spc_003 debt closure: tasks registered through [`Self::register_wait_set`] — the
-    /// `WaitSet` itself plus which of its `conditions` (by index) have already fired. Tasks
-    /// registered through the plain [`Self::insert`]/[`Self::wake`] pair never appear here; those
-    /// two mechanisms are independent by design (single-condition legacy waits don't need
-    /// Any/All bookkeeping at all).
-    pending_sets: HashMap<TaskId, (WaitSet, std::collections::BTreeSet<usize>)>,
 }
 
 impl WaitIndex {
@@ -123,8 +121,6 @@ impl WaitIndex {
         for condition in &wait_set.conditions {
             self.insert(task_id.clone(), condition);
         }
-        self.pending_sets
-            .insert(task_id, (wait_set, std::collections::BTreeSet::new()));
     }
 
     /// spc_003 debt closure: notify every task registered under `key` (via
@@ -135,33 +131,7 @@ impl WaitIndex {
     /// with no tracked `WaitSet` (i.e. one only ever registered through [`Self::insert`] directly)
     /// is not touched here — call [`Self::wake`] for that path, as before.
     pub fn notify(&mut self, key: &WaitKey) -> Vec<TaskId> {
-        let candidates = self.tasks_by_key.get(key).cloned().unwrap_or_default();
-        let mut satisfied_tasks = Vec::new();
-        for task_id in candidates {
-            let Some((wait_set, satisfied)) = self.pending_sets.get_mut(&task_id) else {
-                continue;
-            };
-            for (index, condition) in wait_set.conditions.iter().enumerate() {
-                if WaitKey::keys_for(condition).contains(key) {
-                    satisfied.insert(index);
-                }
-            }
-            let is_satisfied = match wait_set.mode {
-                WaitMode::Any => !satisfied.is_empty(),
-                WaitMode::All => satisfied.len() == wait_set.conditions.len(),
-            };
-            if is_satisfied {
-                satisfied_tasks.push(task_id);
-            }
-        }
-        for task_id in &satisfied_tasks {
-            if let Some((wait_set, _)) = self.pending_sets.remove(task_id) {
-                for condition in &wait_set.conditions {
-                    self.remove(task_id, condition);
-                }
-            }
-        }
-        satisfied_tasks
+        self.lookup(key).to_vec()
     }
 
     /// spc_003-05: remove and return every task waiting on a `Timer` whose deadline has passed
@@ -226,7 +196,7 @@ mod tests {
     use crate::scheduler::tcb::{WaitMode, WaitSet};
 
     #[test]
-    fn any_mode_wakes_on_the_first_condition_satisfied() {
+    fn wait_set_registration_indexes_every_condition_without_owning_satisfaction() {
         let mut index = WaitIndex::new();
         let e1 = EffectId::new("e1").unwrap();
         let e2 = EffectId::new("e2").unwrap();
@@ -239,15 +209,19 @@ mod tests {
         };
         index.register_wait_set(TaskId::from("task-1"), wait_set);
 
-        let woken = index.notify(&WaitKey::Effect(e1));
-        assert_eq!(woken, vec![TaskId::from("task-1")]);
-
-        // Fully removed: the still-unfired e2 key must not still reference this task.
-        assert!(index.lookup(&WaitKey::Effect(e2)).is_empty());
+        assert_eq!(
+            index.notify(&WaitKey::Effect(e1)),
+            vec![TaskId::from("task-1")]
+        );
+        assert_eq!(
+            index.lookup(&WaitKey::Effect(e2)),
+            &[TaskId::from("task-1")],
+            "the reverse index reports candidates; the TCB owns satisfaction and cleanup"
+        );
     }
 
     #[test]
-    fn all_mode_waits_for_every_condition_before_waking() {
+    fn notify_is_a_non_mutating_reverse_lookup_for_all_mode_too() {
         let mut index = WaitIndex::new();
         let e1 = EffectId::new("e1").unwrap();
         let e2 = EffectId::new("e2").unwrap();
@@ -260,27 +234,23 @@ mod tests {
         };
         index.register_wait_set(TaskId::from("task-1"), wait_set);
 
-        let woken_after_e1 = index.notify(&WaitKey::Effect(e1.clone()));
-        assert!(
-            woken_after_e1.is_empty(),
-            "All-mode must not wake until every condition has fired"
-        );
-        // Still registered under e2, waiting for the second half.
         assert_eq!(
-            index.lookup(&WaitKey::Effect(e2.clone())),
+            index.notify(&WaitKey::Effect(e1.clone())),
             &[TaskId::from("task-1")]
         );
-
-        let woken_after_e2 = index.notify(&WaitKey::Effect(e2));
-        assert_eq!(woken_after_e2, vec![TaskId::from("task-1")]);
-
-        // A stray redelivery of e1 after the task is already fully woken is a no-op.
-        let woken_again = index.notify(&WaitKey::Effect(e1));
-        assert!(woken_again.is_empty());
+        assert_eq!(
+            index.notify(&WaitKey::Effect(e2)),
+            vec![TaskId::from("task-1")]
+        );
+        assert_eq!(
+            index.notify(&WaitKey::Effect(e1)),
+            vec![TaskId::from("task-1")],
+            "dedupe is durable TCB state, not reverse-index state"
+        );
     }
 
     #[test]
-    fn heterogeneous_any_condition_wakes_on_a_child_or_a_timer() {
+    fn heterogeneous_wait_set_registers_child_and_timer_keys() {
         // Matches spc_003 §2's own usage example: `wait_any(child_result, user_reply, deadline)`.
         let mut index = WaitIndex::new();
         let wait_set = WaitSet {
@@ -292,9 +262,13 @@ mod tests {
         };
         index.register_wait_set(TaskId::from("task-1"), wait_set);
 
-        let woken = index.notify(&WaitKey::Child(TaskId::from("child-1")));
-        assert_eq!(woken, vec![TaskId::from("task-1")]);
-        // The timer side must be cleaned up too — no stray entry left in the timer bucket.
-        assert_eq!(index.expire_timers(u64::MAX), Vec::<TaskId>::new());
+        assert_eq!(
+            index.notify(&WaitKey::Child(TaskId::from("child-1"))),
+            vec![TaskId::from("task-1")]
+        );
+        assert_eq!(
+            index.lookup(&WaitKey::Timer(LogicalDeadline(1_000))),
+            &[TaskId::from("task-1")]
+        );
     }
 }

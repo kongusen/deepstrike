@@ -512,6 +512,10 @@ pub struct TaskControlState {
     /// The children a `sub_agent_join` wait is blocked on. Empty for every other wait.
     #[serde(default)]
     pub waiting_on: Vec<TaskId>,
+    /// Canonical heterogeneous wait state, including partial `All` satisfaction. `None` for the
+    /// two legacy `WaitReason` projections and runnable/terminal tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_set: Option<TaskWaitSetState>,
     #[serde(default)]
     pub capability_ids: Vec<String>,
     /// Sub-agent process identity and join state. `None` only for the root task.
@@ -525,6 +529,29 @@ pub struct TaskControlState {
     /// above, which is the single whole-operation admission grant it was derived from.
     #[serde(default)]
     pub child_budget_remaining: Option<crate::scheduler::budget_grant::ResourceBudget>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskWaitSetState {
+    pub mode: String,
+    pub conditions: Vec<TaskWaitConditionState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub satisfied: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaskWaitConditionState {
+    Effect { effect_id: EffectId },
+    Child { task_id: TaskId },
+    Children { task_ids: Vec<TaskId> },
+    Approval { approval_id: String },
+    Signal { filter: String },
+    Timer { deadline_ms: WireU64 },
+    Channel { channel_id: String },
+    Resource { resource_key: String },
+    External { subscription_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -55,8 +55,8 @@ use super::checkpoint::{
     LogicalTaskState, LogicalToolCall, MessagePartition, MilestoneState, PartitionTokenState,
     PendingPayloadLoadState, PendingProviderCallState, QueuedSignalState, ReferencedMessageBody,
     SchedulerStateV1, SkillLeaseState, StoredMessageBody, StoredMessageState,
-    StructuredMessageBody, SyscallStateV1, TaskAttemptState, TaskControlState, WorkflowGraphState,
-    WorkflowNodeState,
+    StructuredMessageBody, SyscallStateV1, TaskAttemptState, TaskControlState,
+    TaskWaitConditionState, TaskWaitSetState, WorkflowGraphState, WorkflowNodeState,
 };
 use super::command::{
     ApplyCapabilityPatchCommand, ApplyKnowledgeMutationCommand, ApplyPolicyPatchCommand,
@@ -115,7 +115,10 @@ use crate::scheduler::policy::SchedulerBudget;
 use crate::scheduler::state_machine::{
     AdjudicatedTurn, AnsweredCall, IdleContinuation, LoopAction, LoopEvent, LoopStateMachine,
 };
-use crate::scheduler::tcb::{BudgetLedger, ProcInfo, TaskLifecycle, Tcb, WaitReason};
+use crate::scheduler::tcb::{
+    ApprovalId, BudgetLedger, ChannelId, DurableWaitSet, LogicalDeadline, ProcInfo, ResourceKey,
+    SignalFilter, SubscriptionId, TaskLifecycle, Tcb, WaitCondition, WaitMode, WaitReason,
+};
 use crate::signals::queue::QueuedSignalRuntimeState;
 use crate::signals::router::SignalRouterRuntimeState;
 use crate::syscall::{Disposition, Syscall as CoreSyscall};
@@ -1013,6 +1016,17 @@ fn restore_scheduler(
             .map(|parent| parent.as_str().into());
         tcb.state = restore_task_lifecycle(task)?;
         tcb.wait = restore_task_wait(task)?;
+        tcb.wait_set = task
+            .wait_set
+            .as_ref()
+            .map(|wait_set| restore_wait_set(&task.task_id, wait_set))
+            .transpose()?;
+        if tcb.wait.is_some() && tcb.wait_set.is_some() {
+            return Err(incompatible(format!(
+                "task {} carries both a legacy wait and a durable WaitSet",
+                task.task_id
+            )));
+        }
         tcb.caps = task.capability_ids.iter().map(|cap| cap.into()).collect();
         // spc_009-06: restore this task's own checkpointed pool verbatim — never re-derive it from
         // `state.budget_grant` (the `set_budget_grant` call above only restores the whole-operation
@@ -1205,6 +1219,133 @@ fn restore_task_wait(task: &TaskControlState) -> Result<Option<WaitReason>, Kern
             task.task_id
         ))),
     }
+}
+
+fn project_wait_set(wait_set: &DurableWaitSet) -> TaskWaitSetState {
+    TaskWaitSetState {
+        mode: match wait_set.mode {
+            WaitMode::Any => "any",
+            WaitMode::All => "all",
+        }
+        .to_string(),
+        conditions: wait_set
+            .conditions
+            .iter()
+            .map(|condition| match condition {
+                WaitCondition::Effect(effect_id) => TaskWaitConditionState::Effect {
+                    effect_id: effect_id.clone(),
+                },
+                WaitCondition::Child(task_id) => TaskWaitConditionState::Child {
+                    task_id: TaskId::new(task_id.as_str())
+                        .expect("an internal task id is a legal branded ref"),
+                },
+                WaitCondition::Children(task_ids) => TaskWaitConditionState::Children {
+                    task_ids: task_ids
+                        .iter()
+                        .map(|task_id| {
+                            TaskId::new(task_id.as_str())
+                                .expect("an internal task id is a legal branded ref")
+                        })
+                        .collect(),
+                },
+                WaitCondition::Approval(ApprovalId(id)) => TaskWaitConditionState::Approval {
+                    approval_id: id.to_string(),
+                },
+                WaitCondition::Signal(SignalFilter(filter)) => TaskWaitConditionState::Signal {
+                    filter: filter.to_string(),
+                },
+                WaitCondition::Timer(LogicalDeadline(deadline_ms)) => {
+                    TaskWaitConditionState::Timer {
+                        deadline_ms: WireU64::new(*deadline_ms),
+                    }
+                }
+                WaitCondition::Channel(ChannelId(id)) => TaskWaitConditionState::Channel {
+                    channel_id: id.to_string(),
+                },
+                WaitCondition::Resource(ResourceKey(key)) => TaskWaitConditionState::Resource {
+                    resource_key: key.to_string(),
+                },
+                WaitCondition::External(SubscriptionId(id)) => TaskWaitConditionState::External {
+                    subscription_id: id.to_string(),
+                },
+            })
+            .collect(),
+        satisfied: wait_set
+            .satisfied
+            .iter()
+            .map(|index| *index as u32)
+            .collect(),
+    }
+}
+
+fn restore_wait_set(
+    task_id: &TaskId,
+    state: &TaskWaitSetState,
+) -> Result<DurableWaitSet, KernelFault> {
+    let mode = match state.mode.as_str() {
+        "any" => WaitMode::Any,
+        "all" => WaitMode::All,
+        other => {
+            return Err(incompatible(format!(
+                "task {task_id} wait set names mode {other:?}, which this kernel does not know"
+            )));
+        }
+    };
+    if state.conditions.is_empty() {
+        return Err(incompatible(format!(
+            "task {task_id} carries an empty durable WaitSet"
+        )));
+    }
+    let conditions = state
+        .conditions
+        .iter()
+        .map(|condition| match condition {
+            TaskWaitConditionState::Effect { effect_id } => {
+                WaitCondition::Effect(effect_id.clone())
+            }
+            TaskWaitConditionState::Child { task_id } => {
+                WaitCondition::Child(task_id.as_str().into())
+            }
+            TaskWaitConditionState::Children { task_ids } => WaitCondition::Children(
+                task_ids
+                    .iter()
+                    .map(|task_id| task_id.as_str().into())
+                    .collect(),
+            ),
+            TaskWaitConditionState::Approval { approval_id } => {
+                WaitCondition::Approval(ApprovalId(approval_id.as_str().into()))
+            }
+            TaskWaitConditionState::Signal { filter } => {
+                WaitCondition::Signal(SignalFilter(filter.as_str().into()))
+            }
+            TaskWaitConditionState::Timer { deadline_ms } => {
+                WaitCondition::Timer(LogicalDeadline(deadline_ms.get()))
+            }
+            TaskWaitConditionState::Channel { channel_id } => {
+                WaitCondition::Channel(ChannelId(channel_id.as_str().into()))
+            }
+            TaskWaitConditionState::Resource { resource_key } => {
+                WaitCondition::Resource(ResourceKey(resource_key.as_str().into()))
+            }
+            TaskWaitConditionState::External { subscription_id } => {
+                WaitCondition::External(SubscriptionId(subscription_id.as_str().into()))
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut satisfied = BTreeSet::new();
+    for index in &state.satisfied {
+        let index = *index as usize;
+        if index >= conditions.len() || !satisfied.insert(index) {
+            return Err(incompatible(format!(
+                "task {task_id} carries invalid satisfied WaitSet index {index}"
+            )));
+        }
+    }
+    Ok(DurableWaitSet {
+        mode,
+        conditions,
+        satisfied,
+    })
 }
 
 fn termination_from_label(label: &str) -> Option<TerminationReason> {
@@ -1823,6 +1964,7 @@ impl CanonicalOperationDriver {
                             .collect(),
                         _ => Vec::new(),
                     },
+                    wait_set: tcb.wait_set.as_ref().map(project_wait_set),
                     capability_ids: tcb.caps.iter().map(|cap| cap.to_string()).collect(),
                     process: tcb.proc.as_ref().map(|process| ChildProcessState {
                         role: agent_role_label(process.role).to_string(),
@@ -13717,6 +13859,53 @@ mod tests {
             &[("call-1", "three sources found", false)],
         ));
         runtime
+    }
+
+    #[test]
+    fn checkpoint_restore_preserves_partial_durable_wait_set_progress() {
+        use crate::scheduler::tcb::{WaitCondition, WaitMode, WaitSet};
+        use crate::scheduler::wait_index::WaitKey;
+
+        let mut runtime = agent_mid_turn();
+        let first = EffectId::new("wait-effect-1").unwrap();
+        let second = EffectId::new("wait-effect-2").unwrap();
+        let table = runtime.driver.engine_mut().unwrap().task_table_mut();
+        table.register_wait_set(
+            ROOT_TASK_ID,
+            WaitSet {
+                mode: WaitMode::All,
+                conditions: vec![
+                    WaitCondition::Effect(first.clone()),
+                    WaitCondition::Effect(second.clone()),
+                ],
+            },
+        );
+        assert!(table.notify(&WaitKey::Effect(first)).is_empty());
+
+        let checkpoint = runtime.checkpoint().decode().expect("checkpoint verifies");
+        let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
+        let restored_table = restored.driver.engine_mut().unwrap().task_table_mut();
+        assert_eq!(
+            restored_table
+                .get(ROOT_TASK_ID)
+                .unwrap()
+                .wait_set
+                .as_ref()
+                .unwrap()
+                .satisfied
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![0]
+        );
+        assert_eq!(
+            restored_table.notify(&WaitKey::Effect(second)),
+            vec![crate::scheduler::tcb::TaskId::from(ROOT_TASK_ID)]
+        );
+        assert_eq!(
+            restored_table.get(ROOT_TASK_ID).unwrap().state,
+            TaskLifecycle::Ready
+        );
     }
 
     #[test]

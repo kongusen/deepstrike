@@ -159,6 +159,25 @@ pub struct WaitSet {
     pub conditions: Vec<WaitCondition>,
 }
 
+/// The durable half of a task wait. `WaitIndex` can always be rebuilt from `wait_set`; partial
+/// `All` progress cannot, so the satisfied condition indexes live on the TCB and in checkpoints.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DurableWaitSet {
+    pub mode: WaitMode,
+    pub conditions: Vec<WaitCondition>,
+    pub satisfied: BTreeSet<usize>,
+}
+
+impl From<WaitSet> for DurableWaitSet {
+    fn from(wait_set: WaitSet) -> Self {
+        Self {
+            mode: wait_set.mode,
+            conditions: wait_set.conditions,
+            satisfied: BTreeSet::new(),
+        }
+    }
+}
+
 /// spc_003-02: semantic-equivalence mapping for the two existing `WaitReason` variants. `Approval`
 /// carries no id anywhere in the kernel today (verified by grep — the AskUser path constructs a
 /// bare `WaitReason::Approval`), so this mints a fixed placeholder id until governance's AskUser
@@ -268,6 +287,9 @@ pub struct Tcb {
     pub state: TaskLifecycle,
     pub budget: BudgetLedger,
     pub wait: Option<WaitReason>,
+    /// Canonical recoverable wait state. `wait` remains the compatibility projection for the two
+    /// legacy reasons; new heterogeneous waits use this field as their source of truth.
+    pub wait_set: Option<DurableWaitSet>,
     /// Capability ids permitted to this task (mirrors `AgentProcess.permitted_capability_ids`).
     pub caps: Vec<CompactString>,
     /// spc_004 debt closure: this task's own held `Capability` grants (spc_004's resource/
@@ -308,6 +330,7 @@ impl Tcb {
             state: TaskLifecycle::Ready,
             budget: BudgetLedger::new(budget),
             wait: None,
+            wait_set: None,
             caps: Vec::new(),
             capabilities: Vec::new(),
             proc: None,
@@ -352,6 +375,7 @@ impl Tcb {
             state,
             budget: BudgetLedger::new(budget),
             wait: None,
+            wait_set: None,
             caps: manifest.permitted_capability_ids.clone(),
             capabilities: manifest.requested_capabilities.clone(),
             proc: Some(ProcInfo {
@@ -470,6 +494,7 @@ impl TaskTable {
             let (condition, _mode) = <(WaitCondition, WaitMode)>::from(old);
             self.wait_index.remove(&id, &condition);
         }
+        self.clear_durable_wait(&id);
         if let Some(task) = self.get_mut(task_id) {
             task.wait = wait.clone();
         }
@@ -516,14 +541,77 @@ impl TaskTable {
         let Some(id) = self.get(task_id).map(|t| t.id.clone()) else {
             return;
         };
-        self.wait_index.register_wait_set(id, wait_set);
+        if wait_set.conditions.is_empty()
+            || self
+                .get(task_id)
+                .is_some_and(|task| task.state.is_terminal())
+        {
+            return;
+        }
+        self.clear_durable_wait(&id);
+        self.wait_index
+            .register_wait_set(id.clone(), wait_set.clone());
+        if let Some(task) = self.get_mut(task_id) {
+            task.state = TaskLifecycle::Suspended;
+            task.wait = None;
+            task.wait_set = Some(wait_set.into());
+        }
     }
 
     /// spc_003 debt closure: notify every task registered under `key` via
     /// [`Self::register_wait_set`], returning those whose whole `WaitSet` is now satisfied — see
     /// [`super::wait_index::WaitIndex::notify`].
     pub fn notify(&mut self, key: &super::wait_index::WaitKey) -> Vec<TaskId> {
-        self.wait_index.notify(key)
+        let candidates = self.wait_index.lookup(key).to_vec();
+        let mut woken = Vec::new();
+        for task_id in candidates {
+            let terminal = self
+                .get(task_id.as_str())
+                .is_none_or(|task| task.state.is_terminal());
+            if terminal {
+                self.clear_durable_wait(&task_id);
+                continue;
+            }
+
+            let satisfied = if let Some(task) = self.get_mut(task_id.as_str())
+                && let Some(wait_set) = task.wait_set.as_mut()
+            {
+                for (index, condition) in wait_set.conditions.iter().enumerate() {
+                    if key.matches(condition) {
+                        wait_set.satisfied.insert(index);
+                    }
+                }
+                match wait_set.mode {
+                    WaitMode::Any => !wait_set.satisfied.is_empty(),
+                    WaitMode::All => wait_set.satisfied.len() == wait_set.conditions.len(),
+                }
+            } else {
+                false
+            };
+
+            if satisfied {
+                self.clear_durable_wait(&task_id);
+                if let Some(task) = self.get_mut(task_id.as_str())
+                    && task.state == TaskLifecycle::Suspended
+                {
+                    task.state = TaskLifecycle::Ready;
+                    task.wait = None;
+                    woken.push(task_id);
+                }
+            }
+        }
+        woken
+    }
+
+    fn clear_durable_wait(&mut self, task_id: &TaskId) {
+        let wait_set = self
+            .get_mut(task_id.as_str())
+            .and_then(|task| task.wait_set.take());
+        if let Some(wait_set) = wait_set {
+            for condition in &wait_set.conditions {
+                self.wait_index.remove(task_id, condition);
+            }
+        }
     }
 
     /// spc_002-04: the id of this table's own structural root — the task with no `parent` — the
@@ -640,9 +728,10 @@ impl TaskTable {
     /// other sanctioned mutation path — restore reconstructs the whole table row at once, not one
     /// field at a time), so without this the index silently forgets every task that was waiting at
     /// checkpoint time. `insert` is idempotent per task id, so calling this more than once is safe.
-    /// Only touches tasks with `wait.is_some()`; conditions with no `WaitReason` counterpart
-    /// (`Timer`/`Signal`/`Channel`/...) are untouched — they are not restored via `Tcb.wait` at all.
+    /// Durable WaitSets are reinserted from their unsatisfied conditions; the reverse index owns
+    /// no lifecycle/progress state of its own.
     pub fn rebuild_wait_index(&mut self) {
+        self.wait_index = super::wait_index::WaitIndex::new();
         let waiting: Vec<(TaskId, WaitReason)> = self
             .tasks
             .iter()
@@ -651,6 +740,30 @@ impl TaskTable {
         for (id, wait) in waiting {
             let (condition, _mode) = <(WaitCondition, WaitMode)>::from(wait);
             self.wait_index.insert(id, &condition);
+        }
+        let durable: Vec<(TaskId, WaitSet)> = self
+            .tasks
+            .iter()
+            .filter_map(|task| {
+                task.wait_set.as_ref().map(|wait_set| {
+                    (
+                        task.id.clone(),
+                        WaitSet {
+                            mode: wait_set.mode,
+                            conditions: wait_set
+                                .conditions
+                                .iter()
+                                .enumerate()
+                                .filter(|(index, _)| !wait_set.satisfied.contains(index))
+                                .map(|(_, condition)| condition.clone())
+                                .collect(),
+                        },
+                    )
+                })
+            })
+            .collect();
+        for (id, wait_set) in durable {
+            self.wait_index.register_wait_set(id, wait_set);
         }
     }
 
@@ -944,6 +1057,95 @@ mod tests {
 
         let woken = table.notify(&crate::scheduler::wait_index::WaitKey::Effect(e1));
         assert_eq!(woken, vec![TaskId::from("root")]);
+    }
+
+    #[test]
+    fn durable_wait_set_tracks_all_progress_on_the_tcb_and_wakes_ready_once() {
+        use crate::scheduler::wait_index::WaitKey;
+
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        let first = crate::runtime::kernel::wire::EffectId::new("effect-1").unwrap();
+        let second = crate::runtime::kernel::wire::EffectId::new("effect-2").unwrap();
+        table.register_wait_set(
+            "root",
+            WaitSet {
+                mode: WaitMode::All,
+                conditions: vec![
+                    WaitCondition::Effect(first.clone()),
+                    WaitCondition::Effect(second.clone()),
+                ],
+            },
+        );
+
+        assert_eq!(table.get("root").unwrap().state, TaskLifecycle::Suspended);
+        assert_eq!(
+            table.notify(&WaitKey::Effect(first.clone())),
+            Vec::<TaskId>::new()
+        );
+        assert_eq!(
+            table
+                .get("root")
+                .unwrap()
+                .wait_set
+                .as_ref()
+                .unwrap()
+                .satisfied
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![0],
+            "partial All progress is durable task state, not reverse-index state"
+        );
+
+        assert_eq!(
+            table.notify(&WaitKey::Effect(first)),
+            Vec::<TaskId>::new(),
+            "a duplicate event cannot satisfy the missing condition"
+        );
+        assert_eq!(
+            table.notify(&WaitKey::Effect(second)),
+            vec![TaskId::from("root")]
+        );
+        assert_eq!(table.get("root").unwrap().state, TaskLifecycle::Ready);
+        assert!(table.get("root").unwrap().wait_set.is_none());
+        assert_eq!(
+            table.notify(&WaitKey::Effect(
+                crate::runtime::kernel::wire::EffectId::new("effect-2").unwrap()
+            )),
+            Vec::<TaskId>::new(),
+            "a satisfied WaitSet wakes exactly once"
+        );
+    }
+
+    #[test]
+    fn terminal_waiter_is_removed_without_becoming_runnable() {
+        use crate::scheduler::wait_index::WaitKey;
+
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        let effect = crate::runtime::kernel::wire::EffectId::new("effect-terminal").unwrap();
+        table.register_wait_set(
+            "root",
+            WaitSet {
+                mode: WaitMode::Any,
+                conditions: vec![WaitCondition::Effect(effect.clone())],
+            },
+        );
+        table.get_mut("root").unwrap().state = TaskLifecycle::Done(TerminationReason::UserAbort);
+
+        assert!(table.notify(&WaitKey::Effect(effect.clone())).is_empty());
+        assert_eq!(
+            table.get("root").unwrap().state,
+            TaskLifecycle::Done(TerminationReason::UserAbort)
+        );
+        assert!(table.get("root").unwrap().wait_set.is_none());
+        assert!(
+            table
+                .wait_index()
+                .lookup(&WaitKey::Effect(effect))
+                .is_empty()
+        );
     }
 
     #[test]
