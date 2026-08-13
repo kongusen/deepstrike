@@ -58,6 +58,10 @@ pub use syscall::*;
 pub use terminal::*;
 pub use transaction::*;
 
+/// The single supported wire revision. Bindings export this core-owned value so host SDKs do not
+/// maintain independent ABI constants.
+pub const KERNEL_ABI_VERSION: u32 = 3;
+
 /// Absolute structural boundary applied **before** any JSON is parsed (§7.3).
 ///
 /// These are build/construction-time safety limits, not operation configuration:

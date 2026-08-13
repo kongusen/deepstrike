@@ -1670,6 +1670,10 @@ fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
 
 #[pymodule]
 fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add(
+        "KERNEL_ABI_VERSION",
+        deepstrike_core::runtime::kernel::wire::KERNEL_ABI_VERSION,
+    )?;
     // POD types
     m.add_class::<ContentPartObj>()?;
     m.add_class::<Message>()?;
