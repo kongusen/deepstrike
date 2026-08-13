@@ -219,6 +219,26 @@ pub(crate) fn resource_prefix(selector: &ResourceSelector) -> &str {
         .unwrap_or(pattern)
 }
 
+/// Match a concrete resource against the selector's deliberately small wildcard vocabulary.
+/// Exact selectors are exact: `object:owner/7` must not authorize `object:owner/77`.
+pub(crate) fn resource_matches(selector: &ResourceSelector, resource: &str) -> bool {
+    let pattern = selector.0.as_str();
+    if pattern.ends_with("**") || pattern.ends_with('*') {
+        resource.starts_with(resource_prefix(selector))
+    } else {
+        resource == pattern
+    }
+}
+
+fn selector_contains(parent: &ResourceSelector, child: &ResourceSelector) -> bool {
+    let parent_pattern = parent.0.as_str();
+    if parent_pattern.ends_with("**") || parent_pattern.ends_with('*') {
+        resource_prefix(child).starts_with(resource_prefix(parent))
+    } else {
+        child.0 == parent.0
+    }
+}
+
 /// spc_004-02 / spec §3: is `child` a legal narrowing of `parent`? Resource must be a path
 /// subset, actions must be an action subset, constraints must be equal or *more* restrictive
 /// (a superset — attenuation only ever adds limits), and the capability kind must match (a Tool
@@ -235,7 +255,7 @@ pub fn is_attenuation_of(child: &Capability, parent: &Capability) -> bool {
     };
     lease_is_narrower
         && child.kind == parent.kind
-        && resource_prefix(&child.resource).starts_with(resource_prefix(&parent.resource))
+        && selector_contains(&parent.resource, &child.resource)
         && child.actions.0.is_subset(&parent.actions.0)
         && child.constraints.0.is_superset(&parent.constraints.0)
 }
@@ -480,6 +500,13 @@ mod tests {
     fn is_attenuation_of_rejects_a_wider_child_resource() {
         let parent = cap("/repo/src/**", &["read"]);
         let child = cap("/repo/**", &["read"]);
+        assert!(!is_attenuation_of(&child, &parent));
+    }
+
+    #[test]
+    fn exact_parent_resource_rejects_an_adjacent_prefix_child() {
+        let parent = cap("object:owner/7", &["read"]);
+        let child = cap("object:owner/77", &["read"]);
         assert!(!is_attenuation_of(&child, &parent));
     }
 

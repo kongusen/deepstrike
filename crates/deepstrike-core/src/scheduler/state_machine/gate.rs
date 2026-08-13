@@ -36,8 +36,9 @@ impl LoopStateMachine {
                     let turn = self.turn;
                     if let Some(expired) = root.capabilities.iter().find(|capability| {
                         capability.kind == crate::types::capability::CapabilityKind::Tool
-                            && call.name.as_str().starts_with(
-                                crate::types::capability::resource_prefix(&capability.resource),
+                            && crate::types::capability::resource_matches(
+                                &capability.resource,
+                                call.name.as_str(),
                             )
                             && capability
                                 .lease

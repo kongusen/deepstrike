@@ -383,9 +383,7 @@ pub fn object_access_allowed_at(
                 .lease
                 .as_ref()
                 .is_none_or(|lease| !lease.is_expired(now_turn))
-            && resource.starts_with(crate::types::capability::resource_prefix(
-                &capability.resource,
-            ))
+            && crate::types::capability::resource_matches(&capability.resource, &resource)
     })
 }
 
@@ -862,5 +860,38 @@ mod tests {
             !object_access_allowed(std::slice::from_ref(&a_capability), "write", &b_object),
             "the same capability must not authorize an action it never granted"
         );
+    }
+
+    #[test]
+    fn exact_object_capability_does_not_match_an_adjacent_id_prefix() {
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+            ResourceSelector,
+        };
+
+        let object = ObjectDescriptor::external(
+            77,
+            ObjectKind::Artifact,
+            crate::scheduler::tcb::TaskId::from("owner"),
+            1,
+            Residency::External {
+                payload_ref: "payload:77".to_string(),
+                digest: "sha256:77".to_string(),
+                original_size: 10,
+            },
+            "preview",
+        );
+        let capability = Capability {
+            id: CapabilityId("read-7".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("object:owner/7".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: false,
+            issuer: Principal("owner".into()),
+        };
+
+        assert!(!object_access_allowed(&[capability], "read", &object));
     }
 }

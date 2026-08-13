@@ -590,9 +590,7 @@ fn matching_expired_lease(
     let resource = format!("object:{}/{}", object.owner, object.id);
     capabilities.iter().any(|capability| {
         capability.actions.0.contains(action)
-            && resource.starts_with(crate::types::capability::resource_prefix(
-                &capability.resource,
-            ))
+            && crate::types::capability::resource_matches(&capability.resource, &resource)
             && capability
                 .lease
                 .as_ref()
@@ -612,8 +610,9 @@ fn object_action_allowed(
             .as_ref()
             .is_some_and(|lease| lease.is_expired(now_turn))
             && capability.actions.0.contains(action)
-            && format!("object:{}/{}", object.owner, object.id).starts_with(
-                crate::types::capability::resource_prefix(&capability.resource),
+            && crate::types::capability::resource_matches(
+                &capability.resource,
+                &format!("object:{}/{}", object.owner, object.id),
             )
     })
 }

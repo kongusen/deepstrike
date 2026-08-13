@@ -180,9 +180,20 @@ pub struct DurableWaitSet {
 
 impl From<WaitSet> for DurableWaitSet {
     fn from(wait_set: WaitSet) -> Self {
+        let conditions = wait_set
+            .conditions
+            .into_iter()
+            .flat_map(|condition| match condition {
+                WaitCondition::Children(ids) => ids
+                    .into_iter()
+                    .map(WaitCondition::Child)
+                    .collect::<Vec<_>>(),
+                condition => vec![condition],
+            })
+            .collect();
         Self {
             mode: wait_set.mode,
-            conditions: wait_set.conditions,
+            conditions,
             satisfied: BTreeSet::new(),
         }
     }
@@ -1449,6 +1460,29 @@ mod tests {
             )),
             Vec::<TaskId>::new(),
             "a satisfied WaitSet wakes exactly once"
+        );
+    }
+
+    #[test]
+    fn children_condition_in_all_mode_waits_for_every_child() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        table.register_wait_set(
+            "root",
+            WaitSet {
+                mode: WaitMode::All,
+                conditions: vec![WaitCondition::Children(vec!["a".into(), "b".into()])],
+            },
+        );
+
+        assert!(
+            table
+                .notify(&super::super::wait_index::WaitKey::Child("a".into()))
+                .is_empty()
+        );
+        assert_eq!(
+            table.notify(&super::super::wait_index::WaitKey::Child("b".into())),
+            vec![TaskId::from("root")]
         );
     }
 
