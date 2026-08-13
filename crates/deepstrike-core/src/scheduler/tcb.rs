@@ -593,7 +593,11 @@ impl TaskTable {
     /// [`Self::register_wait_set`], returning those whose whole `WaitSet` is now satisfied — see
     /// [`super::wait_index::WaitIndex::notify`].
     pub fn notify(&mut self, key: &super::wait_index::WaitKey) -> Vec<TaskId> {
-        let candidates = self.wait_index.lookup(key).to_vec();
+        let mut candidates = self.wait_index.lookup(key).to_vec();
+        // The reverse index is reconstructed from checkpoint task rows, so its bucket insertion
+        // order can differ from the live registration order. Scheduling order must depend only on
+        // durable identity, not on that ephemeral history.
+        candidates.sort_unstable();
         let mut woken = Vec::new();
         for task_id in candidates {
             let terminal = self
@@ -601,6 +605,9 @@ impl TaskTable {
                 .is_none_or(|task| task.state.is_terminal());
             if terminal {
                 self.clear_durable_wait(&task_id);
+                if let Some(task) = self.get_mut(task_id.as_str()) {
+                    task.wait = None;
+                }
                 continue;
             }
 
@@ -1177,6 +1184,54 @@ mod tests {
                 .lookup(&WaitKey::Effect(effect))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn wake_order_is_identical_before_and_after_reverse_index_rebuild() {
+        use crate::scheduler::wait_index::WaitKey;
+
+        let mut live = TaskTable::new();
+        live.insert(Tcb::root("root", SchedulerBudget::default()));
+        live.insert(Tcb::root("task-a", SchedulerBudget::default()));
+        live.insert(Tcb::root("task-b", SchedulerBudget::default()));
+        let effect = crate::runtime::kernel::wire::EffectId::new("shared-effect").unwrap();
+
+        // Registration order deliberately disagrees with task/checkpoint order. A rebuild only
+        // has durable task rows available, so wake ordering cannot depend on this ephemeral order.
+        live.wait_for_condition("task-b", &WaitCondition::Effect(effect.clone()));
+        live.wait_for_condition("task-a", &WaitCondition::Effect(effect.clone()));
+        let mut restored = live.clone();
+        restored.rebuild_wait_index();
+
+        let key = WaitKey::Effect(effect);
+        let live_order = live.notify(&key);
+        let restored_order = restored.notify(&key);
+        assert_eq!(live_order, restored_order);
+        assert_eq!(
+            live_order,
+            vec![TaskId::from("task-a"), TaskId::from("task-b")]
+        );
+    }
+
+    #[test]
+    fn terminal_legacy_waiter_loses_all_wait_state_without_resuming() {
+        use crate::scheduler::wait_index::WaitKey;
+
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        table.set_wait("root", Some(WaitReason::Approval));
+        table.get_mut("root").unwrap().state = TaskLifecycle::Done(TerminationReason::UserAbort);
+
+        let key = WaitKey::Approval(ApprovalId(CompactString::from("pending")));
+        assert!(table.notify(&key).is_empty());
+        let task = table.get("root").unwrap();
+        assert_eq!(
+            task.state,
+            TaskLifecycle::Done(TerminationReason::UserAbort)
+        );
+        assert!(task.wait.is_none());
+        assert!(task.wait_set.is_none());
+        assert!(table.wait_index().lookup(&key).is_empty());
     }
 
     #[test]
