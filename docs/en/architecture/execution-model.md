@@ -1,6 +1,6 @@
 # Execution Model
 
-This page traces **one agent turn** through Agent OS — what the kernel and host each do after the user sends a goal.
+This page traces **one Agent turn** through the [Agent Process Runtime](./agent-process-runtime) and its Agent OS kernel split: what the kernel and host each do after the user sends a goal.
 
 ## Actors
 

@@ -1,8 +1,8 @@
 # What is Agent OS?
 
-DeepStrike is not "another LLM wrapper." It is an **Agent operating-system microkernel**: the kernel decides **when, whether, and within what budget** to run agent nodes; the host SDK **actually executes** LLM calls and tool I/O.
+Agent OS is the **kernel architecture analogy** behind DeepStrike's [Agent Process Runtime](./agent-process-runtime), not a separate product position beside the runtime. The kernel decides **when, whether, and within what budget** to run Agent nodes; the host SDK **actually executes** LLM calls and tool I/O.
 
-The point is not branding. It is an engineering boundary: once an agent can author plans, call tools, spawn sub-agents, write memory, and append workflow nodes, it needs a governed control plane. DeepStrike implements that control plane as a microkernel.
+The analogy defines an engineering boundary: once an Agent can author plans, call tools, spawn sub-agents, write memory, and append workflow nodes, it needs a governed control plane. DeepStrike implements that control plane as a microkernel and exposes local process, wait, authority, budget, IPC, supervision, and recovery semantics through the Agent Process Runtime.
 
 ## Starting from dynamic workflows
 

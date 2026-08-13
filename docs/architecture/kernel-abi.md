@@ -7,7 +7,7 @@ code_refs:
 
 # Canonical Kernel ABI
 
-Canonical Kernel ABI 是宿主与 Agent OS 内核之间唯一的稳定边界。宿主拥有 provider、工具、凭据、文件系统、payload 和持久化 I/O；内核拥有 operation lifecycle、effect identity、权限、调度、Context VM 和终止裁决。
+Canonical Kernel ABI 是宿主与 [Agent Process Runtime](./agent-process-runtime) 内核之间唯一的稳定边界。Agent OS 描述它的内核分层。宿主拥有 provider、工具、凭据、文件系统、payload 和持久化 I/O；内核拥有 operation lifecycle、effect identity、权限、调度、Context VM 和终止裁决。
 
 ## Envelope
 

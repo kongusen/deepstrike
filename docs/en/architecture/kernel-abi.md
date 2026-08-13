@@ -7,7 +7,7 @@ code_refs:
 
 # Canonical Kernel ABI
 
-The Canonical Kernel ABI is the only stable boundary between the host and the Agent OS kernel. The host owns providers, tools, credentials, filesystems, payloads, and durable I/O. The kernel owns operation lifecycle, effect identity, authority, scheduling, the Context VM, and terminal decisions.
+The Canonical Kernel ABI is the only stable boundary between the host and the [Agent Process Runtime](./agent-process-runtime) kernel; Agent OS describes its kernel split. The host owns providers, tools, credentials, filesystems, payloads, and durable I/O. The kernel owns operation lifecycle, effect identity, authority, scheduling, the Context VM, and terminal decisions.
 
 ## Envelope
 

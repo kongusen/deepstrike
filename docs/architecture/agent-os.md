@@ -1,8 +1,8 @@
 # 什么是 Agent OS？
 
-DeepStrike 不是「又一个 LLM wrapper」。它是一个 **Agent 操作系统微内核**：内核决定 **何时、是否、以何种预算** 运行 agent 节点；宿主 SDK 负责 **真正执行** LLM 调用与工具 I/O。
+Agent OS 是 DeepStrike [Agent Process Runtime](./agent-process-runtime) 的**内核架构类比**，不是与 Runtime 并列的另一套产品定位。内核决定 **何时、是否、以何种预算** 运行 agent 节点；宿主 SDK 负责 **真正执行** LLM 调用与工具 I/O。
 
-这个说法的重点不是品牌化概念，而是工程边界：一旦 agent 能自己写计划、调用工具、派生子 agent、写入记忆、追加 workflow 节点，它就需要一个可治理的控制平面。DeepStrike 把这层控制平面做成微内核。
+这个类比的重点是工程边界：一旦 agent 能自己写计划、调用工具、派生子 agent、写入记忆、追加 workflow 节点，它就需要一个可治理的控制平面。DeepStrike 把这层控制平面做成微内核，并通过本地 Agent Process Runtime 对外提供进程、等待、权限、预算、IPC、监督与恢复语义。
 
 ## 从动态工作流说起
 

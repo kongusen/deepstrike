@@ -1,6 +1,6 @@
 # 执行模型
 
-本文从 **一次 agent turn** 出发，说明 Agent OS 如何在宿主与内核之间协作。读完应能回答：「用户发一句话后，内核与 SDK 各做了什么？」
+本文从 **一次 agent turn** 出发，说明 [Agent Process Runtime](./agent-process-runtime) 如何通过 Agent OS 内核分层在宿主与内核之间协作。读完应能回答：「用户发一句话后，内核与 SDK 各做了什么？」
 
 ## 参与者
 

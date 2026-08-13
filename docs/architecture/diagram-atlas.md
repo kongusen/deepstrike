@@ -1,6 +1,6 @@
 # 系统图谱
 
-这套图描述当前 DeepStrike 的系统边界和运行机制。所有 SVG 共享同一套视觉规范，并由 [`scripts/generate-architecture-svgs.mjs`](https://github.com/kongusen/deepstrike/blob/main/scripts/generate-architecture-svgs.mjs) 统一生成。
+这套图以 [Agent Process Runtime](./agent-process-runtime) 为主线，描述当前 DeepStrike 的系统边界和运行机制。图中的 Agent OS 表示 Runtime 的内核架构类比，不是另一套产品边界。所有 SVG 共享同一套视觉规范，并由 [`scripts/generate-architecture-svgs.mjs`](https://github.com/kongusen/deepstrike/blob/main/scripts/generate-architecture-svgs.mjs) 统一生成。
 
 修改图的规格后，在仓库根目录运行 `node scripts/generate-architecture-svgs.mjs` 即可重新生成整套资产。README 总览提供中英文版本；详细机制图使用统一的英文技术标签，本页给出中文导读。
 

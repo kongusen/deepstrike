@@ -1,6 +1,6 @@
 # System Diagram Atlas
 
-This atlas is the visual map of current DeepStrike. Every diagram is generated from one shared design system and describes a specific ownership boundary or runtime mechanism. The source of truth is [`scripts/generate-architecture-svgs.mjs`](https://github.com/kongusen/deepstrike/blob/main/scripts/generate-architecture-svgs.mjs).
+This atlas follows the [Agent Process Runtime](./agent-process-runtime) as the primary narrative for current DeepStrike. Agent OS labels in the diagrams name the runtime's kernel architecture analogy, not a separate product boundary. Every diagram is generated from one shared design system and describes a specific ownership boundary or runtime mechanism. The source of truth is [`scripts/generate-architecture-svgs.mjs`](https://github.com/kongusen/deepstrike/blob/main/scripts/generate-architecture-svgs.mjs).
 
 Run `node scripts/generate-architecture-svgs.mjs` from the repository root after changing the diagram specification.
 
