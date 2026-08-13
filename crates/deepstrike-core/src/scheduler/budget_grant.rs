@@ -35,6 +35,10 @@ pub struct BudgetGrant {
     pub reserved: ResourceBudget,
     pub consumed: ResourceBudget,
     pub returned: ResourceBudget,
+    /// Durable exactly-once settlement marker. `returned == default()` is not sufficient because
+    /// a legitimate all-untracked grant also returns the default shape.
+    #[serde(default)]
+    pub settled: bool,
 }
 
 /// Card spc_005-02 failure: which of the nine axes the request exceeded, and by how much.
@@ -88,7 +92,34 @@ pub fn reserve(
         reserved: *requested,
         consumed: ResourceBudget::default(),
         returned: ResourceBudget::default(),
+        settled: false,
     })
+}
+
+/// Add measured descendant/direct usage to an existing aggregate. Unlike [`credit`], `None` here
+/// means "no usage recorded yet", not an unbounded pool, so a first `Some(delta)` must become
+/// visible. Saturation keeps malformed/replayed counters from wrapping.
+pub fn accumulate_usage(total: &ResourceBudget, delta: &ResourceBudget) -> ResourceBudget {
+    macro_rules! accumulated {
+        ($field:ident) => {
+            match (total.$field, delta.$field) {
+                (Some(current), Some(add)) => Some(current.saturating_add(add)),
+                (None, Some(add)) => Some(add),
+                (current, None) => current,
+            }
+        };
+    }
+    ResourceBudget {
+        tokens: accumulated!(tokens),
+        cost_microunits: accumulated!(cost_microunits),
+        turns: accumulated!(turns),
+        wall_ms: accumulated!(wall_ms),
+        child_tasks: accumulated!(child_tasks),
+        concurrent_children: accumulated!(concurrent_children),
+        tool_calls: accumulated!(tool_calls),
+        memory_writes: accumulated!(memory_writes),
+        object_bytes: accumulated!(object_bytes),
+    }
 }
 
 /// Card spc_005-05: the booking half of `return_unused()` — add a just-returned amount back into
@@ -184,6 +215,7 @@ mod tests {
             },
             consumed: ResourceBudget::default(),
             returned: ResourceBudget::default(),
+            settled: false,
         };
 
         assert_eq!(grant.parent, TaskId::from("root"));
@@ -305,6 +337,7 @@ mod tests {
             reserved,
             consumed,
             returned: ResourceBudget::default(),
+            settled: false,
         }
     }
 

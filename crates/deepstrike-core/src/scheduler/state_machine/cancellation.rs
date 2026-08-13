@@ -15,13 +15,18 @@ impl LoopStateMachine {
     ) -> LoopAction {
         self.observations.clear();
 
-        let child_ids = self
+        let mut child_ids = self
             .tasks
             .all()
             .iter()
             .filter(|task| task.id.as_str() != "root" && !task.state.is_terminal())
             .map(|task| task.id.clone())
             .collect::<Vec<_>>();
+        child_ids.sort_by(|left, right| {
+            self.tasks
+                .lineage_depth(right.as_str())
+                .cmp(&self.tasks.lineage_depth(left.as_str()))
+        });
         for child_id in child_ids {
             if let Some(task) = self.tasks.get_mut(child_id.as_str()) {
                 task.state = TaskLifecycle::Done(TerminationReason::UserAbort);

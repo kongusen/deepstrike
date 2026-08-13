@@ -493,6 +493,21 @@ impl TaskTable {
             .collect()
     }
 
+    /// Number of parent edges from the structural root to `task_id`. Returns `None` for an
+    /// unknown task or malformed/cyclic lineage; spawn itself cannot create such a cycle.
+    pub(crate) fn lineage_depth(&self, task_id: &str) -> Option<usize> {
+        let mut current = self.get(task_id)?;
+        let mut depth = 0usize;
+        while let Some(parent) = current.parent.as_ref() {
+            depth = depth.checked_add(1)?;
+            if depth > self.tasks.len() {
+                return None;
+            }
+            current = self.get(parent.as_str())?;
+        }
+        Some(depth)
+    }
+
     pub fn wait_index(&self) -> &super::wait_index::WaitIndex {
         &self.wait_index
     }
@@ -718,16 +733,45 @@ impl TaskTable {
         let Some(grant) = self.get(child_id).and_then(|t| t.budget_grant.clone()) else {
             return;
         };
+        if grant.settled {
+            return;
+        }
         let unused = super::budget_grant::return_unused(&grant);
         if let Some(child) = self.get_mut(child_id)
             && let Some(child_grant) = child.budget_grant.as_mut()
         {
             child_grant.returned = unused;
+            child_grant.settled = true;
         }
-        if let Some(parent) = self.get_mut(grant.parent.as_str())
-            && let Some(remaining) = parent.child_budget_remaining
-        {
-            parent.child_budget_remaining = Some(super::budget_grant::credit(&remaining, &unused));
+        if let Some(parent) = self.get_mut(grant.parent.as_str()) {
+            if let Some(remaining) = parent.child_budget_remaining {
+                parent.child_budget_remaining =
+                    Some(super::budget_grant::credit(&remaining, &unused));
+            }
+            // A descendant's actual usage is part of this parent's own received grant. Roll it
+            // upward once so settling the parent cannot refund resources a grandchild consumed.
+            if let Some(parent_grant) = parent.budget_grant.as_mut()
+                && !parent_grant.settled
+            {
+                parent_grant.consumed =
+                    super::budget_grant::accumulate_usage(&parent_grant.consumed, &grant.consumed);
+            }
+        }
+    }
+
+    /// Attach a just-reserved hierarchical grant to its child and seed that child's own grantable
+    /// pool from the reservation. This is the atomic bridge from spawn gate accounting to the TCB.
+    pub(crate) fn attach_child_budget_grant(
+        &mut self,
+        child_id: &str,
+        grant: super::budget_grant::BudgetGrant,
+    ) {
+        if grant.child.as_str() != child_id {
+            return;
+        }
+        if let Some(child) = self.get_mut(child_id) {
+            child.child_budget_remaining = Some(grant.reserved);
+            child.budget_grant = Some(grant);
         }
     }
 

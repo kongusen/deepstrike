@@ -206,7 +206,12 @@ impl LoopStateMachine {
         let Some(pending) = self.pending_preempt.take() else {
             return LoopAction::AwaitingResume;
         };
-        let agent_ids = pending.agent_ids;
+        let mut agent_ids = pending.agent_ids;
+        agent_ids.sort_by(|left, right| {
+            self.tasks
+                .lineage_depth(right.as_str())
+                .cmp(&self.tasks.lineage_depth(left.as_str()))
+        });
 
         // Mark each preempted child terminal (UserAbort); rebuild its `AgentProcess` view row.
         for id in &agent_ids {

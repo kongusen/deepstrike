@@ -32,7 +32,7 @@ impl LoopStateMachine {
         // M1 収口: register the sub-agent as a child task — the single source of truth. The
         // `AgentProcess` view row is reconstructed from the TCB for the observation/session-log.
         // spc_002-04: parent derives from this table's own structural root, not a literal.
-        let mut child = Tcb::spawned_in(
+        let child = Tcb::spawned_in(
             &manifest,
             self.policy.clone(),
             TaskLifecycle::Running,
@@ -41,8 +41,10 @@ impl LoopStateMachine {
         // spc_005-04: `evaluate_syscall` above already reserved this child's budget grant (if the
         // spawn requested one) and debited the parent's remaining pool — attach it now so
         // spc_005-05's completion path knows what to return.
-        child.budget_grant = self.pending_budget_grant.take();
         self.tasks.insert(child);
+        if let Some(grant) = self.pending_budget_grant.take() {
+            self.tasks.attach_child_budget_grant(&agent_id, grant);
+        }
         if let Some(process) = self.tasks.get(&agent_id).and_then(AgentProcess::from_tcb) {
             self.push_agent_process_changed(process);
         }
@@ -75,23 +77,31 @@ impl LoopStateMachine {
             _ => TaskLifecycle::Done(TerminationReason::Error),
         };
         if let Some(task) = self.tasks.get_mut(result.agent_id.as_str()) {
+            let was_terminal = task.state.is_terminal();
             // A workflow completion releases its concurrency slot before it drives the next
             // batch, but stays non-terminal until that atomic transition derives child lineage.
             // `spawn_child` can therefore keep rejecting callers terminal before the transition.
-            task.state = if workflow_owned {
-                TaskLifecycle::Suspended
-            } else {
-                terminal_state
-            };
-            if let Some(info) = task.proc.as_mut() {
-                info.result = Some(result.clone());
-            }
-            // spc_005-05: real per-child consumption, from the two axes the join result actually
-            // reports. Other seven axes stay whatever `budget_grant.consumed` already held (zero,
-            // since nothing meters them yet) — untracked axes return in full, never negative.
-            if let Some(grant) = task.budget_grant.as_mut() {
-                grant.consumed.tokens = Some(result.result.total_tokens_used);
-                grant.consumed.turns = Some(result.result.turns_used);
+            if !was_terminal {
+                task.state = if workflow_owned {
+                    TaskLifecycle::Suspended
+                } else {
+                    terminal_state
+                };
+                if let Some(info) = task.proc.as_mut() {
+                    info.result = Some(result.clone());
+                }
+                // Direct usage accumulates on top of descendant usage already rolled into this
+                // grant. Other axes remain whatever their own producer recorded.
+                if let Some(grant) = task.budget_grant.as_mut() {
+                    grant.consumed = crate::scheduler::budget_grant::accumulate_usage(
+                        &grant.consumed,
+                        &crate::scheduler::budget_grant::ResourceBudget {
+                            tokens: Some(result.result.total_tokens_used),
+                            turns: Some(result.result.turns_used),
+                            ..crate::scheduler::budget_grant::ResourceBudget::default()
+                        },
+                    );
+                }
             }
         }
         let summary = result

@@ -4293,6 +4293,163 @@ fn spc_009_05_root_child_budget_remaining_is_seeded_from_the_rungroup_admission_
 }
 
 #[test]
+fn spc_019_07_nested_live_grants_reserve_settle_and_return_all_nine_axes_once() {
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::syscall::Syscall;
+    use crate::types::agent::AgentRole;
+
+    fn budget(value: u64) -> ResourceBudget {
+        ResourceBudget {
+            tokens: Some(value),
+            cost_microunits: Some(value),
+            turns: Some(value as u32),
+            wall_ms: Some(value),
+            child_tasks: Some(value as u32),
+            concurrent_children: Some(value as u32),
+            tool_calls: Some(value),
+            memory_writes: Some(value),
+            object_bytes: Some(value),
+        }
+    }
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("root operation"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().child_budget_remaining = Some(budget(100));
+
+    let first = WorkflowSpec::new(vec![
+        WorkflowNode::new(RuntimeTask::new("A"), AgentRole::Implement)
+            .with_requested_budget(budget(60)),
+    ]);
+    assert!(matches!(
+        sm.load_workflow_as(first, "root"),
+        LoopAction::SpawnWorkflow { .. }
+    ));
+    let a = sm.tasks.get("wf-node0").unwrap();
+    assert_eq!(a.parent.as_deref(), Some("root"));
+    assert_eq!(a.budget_grant.as_ref().unwrap().reserved, budget(60));
+    assert_eq!(a.child_budget_remaining, Some(budget(60)));
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(budget(40))
+    );
+
+    assert!(sm.append_workflow_nodes(
+        vec![
+            WorkflowNode::new(RuntimeTask::new("B"), AgentRole::Implement)
+                .with_requested_budget(budget(30)),
+        ],
+        None,
+        Syscall::SubmitNodes { count: 0 },
+        "submit_workflow_nodes",
+    ));
+    assert!(matches!(
+        sm.drive_workflow_round("wf-node0"),
+        LoopAction::SpawnWorkflow { .. }
+    ));
+    let b = sm.tasks.get("wf-node1").unwrap();
+    assert_eq!(b.parent.as_deref(), Some("wf-node0"));
+    assert_eq!(b.budget_grant.as_ref().unwrap().reserved, budget(30));
+    assert_eq!(b.child_budget_remaining, Some(budget(30)));
+    assert_eq!(
+        sm.tasks.get("wf-node0").unwrap().child_budget_remaining,
+        Some(budget(30))
+    );
+
+    sm.tasks
+        .get_mut("wf-node1")
+        .unwrap()
+        .budget_grant
+        .as_mut()
+        .unwrap()
+        .consumed = budget(10);
+    sm.tasks.return_child_budget("wf-node1");
+    sm.tasks.return_child_budget("wf-node1");
+    assert_eq!(
+        sm.tasks.get("wf-node0").unwrap().child_budget_remaining,
+        Some(budget(50)),
+        "B returns 20 once to A"
+    );
+    let a_grant = sm
+        .tasks
+        .get_mut("wf-node0")
+        .unwrap()
+        .budget_grant
+        .as_mut()
+        .unwrap();
+    a_grant.consumed = crate::scheduler::budget_grant::credit(&a_grant.consumed, &budget(5));
+    sm.tasks.return_child_budget("wf-node0");
+    sm.tasks.return_child_budget("wf-node0");
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(budget(85)),
+        "root is charged A's 5 plus B's 10, with no duplicate return"
+    );
+}
+
+#[test]
+fn spc_019_07_nested_cancellation_settles_descendants_before_their_parent() {
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::runtime::kernel::wire::CancellationReason;
+    use crate::scheduler::budget_grant::ResourceBudget;
+    use crate::syscall::Syscall;
+    use crate::types::agent::AgentRole;
+
+    let tokens = |value| ResourceBudget {
+        tokens: Some(value),
+        ..ResourceBudget::default()
+    };
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("root operation"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().child_budget_remaining = Some(tokens(100));
+    sm.load_workflow_as(
+        WorkflowSpec::new(vec![
+            WorkflowNode::new(RuntimeTask::new("A"), AgentRole::Implement)
+                .with_requested_budget(tokens(60)),
+        ]),
+        "root",
+    );
+    assert!(sm.append_workflow_nodes(
+        vec![
+            WorkflowNode::new(RuntimeTask::new("B"), AgentRole::Implement)
+                .with_requested_budget(tokens(30)),
+        ],
+        None,
+        Syscall::SubmitNodes { count: 0 },
+        "submit_workflow_nodes",
+    ));
+    sm.drive_workflow_round("wf-node0");
+
+    sm.cancel_operation("op".to_string(), CancellationReason::User, Vec::new());
+
+    assert_eq!(
+        sm.tasks.get("root").unwrap().child_budget_remaining,
+        Some(tokens(100)),
+        "B must return to A before A returns its complete pool to root"
+    );
+    assert!(
+        sm.tasks
+            .get("wf-node0")
+            .unwrap()
+            .budget_grant
+            .as_ref()
+            .unwrap()
+            .settled
+    );
+    assert!(
+        sm.tasks
+            .get("wf-node1")
+            .unwrap()
+            .budget_grant
+            .as_ref()
+            .unwrap()
+            .settled
+    );
+}
+
+#[test]
 fn spc_009_05_no_rungroup_grant_leaves_child_budget_remaining_none() {
     // Zero-signal case: no `set_budget_grant` call at all must leave root's pool `None`, exactly
     // as before this card — no unconditional activation for operations that never declared one.

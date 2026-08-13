@@ -434,6 +434,9 @@ impl LoopStateMachine {
                             });
                         continue;
                     }
+                    if let Some(grant) = self.pending_budget_grant.take() {
+                        self.tasks.attach_child_budget_grant(&agent_id, grant);
+                    }
                     if let Some(run) = self.workflow.as_mut() {
                         run.mark_spawned(node, &agent_id);
                     }

@@ -1029,6 +1029,19 @@ fn restore_scheduler(
         // admission grant for reporting; re-seeding from it here would silently undo every debit a
         // spawn made before this checkpoint was taken).
         tcb.child_budget_remaining = task.child_budget_remaining;
+        tcb.budget_grant = task.budget_grant.clone();
+        if let Some(grant) = tcb.budget_grant.as_ref()
+            && (grant.child.as_str() != task.task_id.as_str()
+                || tcb.parent.as_deref() != Some(grant.parent.as_str()))
+        {
+            return Err(KernelFault::new(
+                KernelFaultCode::CheckpointIncompatible,
+                format!(
+                    "task {} carries a hierarchical budget grant for parent {} and child {}",
+                    task.task_id, grant.parent, grant.child
+                ),
+            ));
+        }
         tcb.proc = task
             .process
             .as_ref()
@@ -1979,6 +1992,7 @@ impl CanonicalOperationDriver {
                     tokens_used: WireU64::new(tcb.budget.total_tokens),
                     turns_used: tcb.budget.turns,
                     child_budget_remaining: tcb.child_budget_remaining,
+                    budget_grant: tcb.budget_grant.clone(),
                 })
                 .collect(),
             attempts: self
@@ -14626,6 +14640,81 @@ mod tests {
                 .task_capabilities("root"),
             &[capability],
             "authority state must not disappear when the reverse runtime is rebuilt"
+        );
+    }
+
+    #[test]
+    fn hierarchical_budget_grant_and_settlement_marker_survive_checkpoint_restore() {
+        use crate::scheduler::budget_grant::{ResourceBudget, debit, reserve};
+        use crate::scheduler::tcb::TaskLifecycle;
+        use crate::types::agent::{
+            AgentIsolation, AgentRole, ContextInheritance, IsolationManifest,
+        };
+
+        let tokens = |value| ResourceBudget {
+            tokens: Some(value),
+            ..ResourceBudget::default()
+        };
+        let mut runtime = Runtime::new();
+        runtime.submit(&configure());
+        runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+        let table = runtime.driver.engine.as_mut().unwrap().task_table_mut();
+        table.get_mut("root").unwrap().child_budget_remaining = Some(tokens(100));
+        let manifest = IsolationManifest {
+            agent_id: "child".into(),
+            role: AgentRole::Implement,
+            isolation: AgentIsolation::Shared,
+            context_inheritance: ContextInheritance::Full,
+            permitted_capability_ids: Vec::new(),
+            requested_capabilities: Vec::new(),
+            requested_budget: Some(tokens(60)),
+        };
+        table
+            .spawn_child(
+                "root",
+                &manifest,
+                SchedulerBudget::default(),
+                TaskLifecycle::Running,
+            )
+            .unwrap();
+        let grant = reserve("root".into(), "child".into(), &tokens(100), &tokens(60)).unwrap();
+        table.get_mut("root").unwrap().child_budget_remaining =
+            Some(debit(&tokens(100), &tokens(60)));
+        table.attach_child_budget_grant("child", grant);
+
+        let checkpoint = runtime.checkpoint().decode().expect("verifies");
+        let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
+        let restored_table = restored.driver.engine.as_mut().unwrap().task_table_mut();
+        assert_eq!(
+            restored_table
+                .get("child")
+                .unwrap()
+                .budget_grant
+                .as_ref()
+                .unwrap()
+                .reserved,
+            tokens(60)
+        );
+        assert_eq!(
+            restored_table.get("child").unwrap().child_budget_remaining,
+            Some(tokens(60))
+        );
+
+        restored_table.return_child_budget("child");
+        restored_table.return_child_budget("child");
+        assert_eq!(
+            restored_table.get("root").unwrap().child_budget_remaining,
+            Some(tokens(100)),
+            "restored grant settles exactly once"
+        );
+        assert!(
+            restored_table
+                .get("child")
+                .unwrap()
+                .budget_grant
+                .as_ref()
+                .unwrap()
+                .settled
         );
     }
 

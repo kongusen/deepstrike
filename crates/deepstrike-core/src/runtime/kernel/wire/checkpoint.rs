@@ -533,6 +533,10 @@ pub struct TaskControlState {
     /// above, which is the single whole-operation admission grant it was derived from.
     #[serde(default)]
     pub child_budget_remaining: Option<crate::scheduler::budget_grant::ResourceBudget>,
+    /// Parent→child reservation and settlement audit. Required to prevent a restart from either
+    /// forgetting a debit or returning the same unused reservation twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_grant: Option<crate::scheduler::budget_grant::BudgetGrant>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

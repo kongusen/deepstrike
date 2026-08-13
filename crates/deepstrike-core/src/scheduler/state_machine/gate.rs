@@ -179,6 +179,10 @@ impl LoopStateMachine {
         caller: Option<&str>,
         manifest: &crate::types::agent::IsolationManifest,
     ) -> Disposition {
+        // A reservation belongs only to this gate evaluation. Every successful caller consumes it
+        // immediately after child creation; clearing here prevents a prior aborted path from
+        // donating its grant to an unrelated later child.
+        self.pending_budget_grant = None;
         let quota = self.resource_quota.as_ref();
         if let Some(max) = quota.and_then(|quota| quota.max_concurrent_subagents) {
             // W-6: a zero-slot pool can never free a slot — Defer would park every workflow node
@@ -297,7 +301,7 @@ impl LoopStateMachine {
         // `IsolationManifest::requested_budget`) or the parent has no `child_budget_remaining` set
         // (unlimited — preserves pre-spc_005 single-layer behavior byte-for-byte).
         if let Some(requested) = manifest.requested_budget.as_ref() {
-            let parent_id = self.tasks.root_id();
+            let parent_id = caller.map(Into::into).or_else(|| self.tasks.root_id());
             let remaining = parent_id
                 .as_ref()
                 .and_then(|id| self.tasks.get(id.as_str()))
