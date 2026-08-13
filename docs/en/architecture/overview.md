@@ -4,9 +4,9 @@ code_refs:
   rust: [KernelInput, PlannedStep, KernelObservation, TaskTable, Tcb, AgentProcess, TaskLifecycle]
 ---
 
-# Kernel / Host Split
+# Agent Process Runtime: Kernel / Host Split
 
-Under the [Agent OS](/en/architecture/agent-os) narrative, DeepStrike splits into **microkernel (`deepstrike-core`)** and **host SDK**. This page maps modules and OS analogies.
+DeepStrike implements the [Agent Process Runtime](/en/architecture/agent-process-runtime) as a **microkernel (`deepstrike-core`)** plus a **host SDK**. Agent OS remains a useful architectural analogy for this split; the developer-facing capability boundary is the local Agent Process Runtime. This page maps modules and OS analogies.
 
 ## Layer diagram
 
@@ -72,6 +72,7 @@ while not done:
 
 ## Further reading
 
+- [Agent Process Runtime](/en/architecture/agent-process-runtime) — public capability model and current boundary
 - [Execution model](/en/architecture/execution-model)
 - [Kernel ABI](/en/architecture/kernel-abi)
 - [Context engineering](/en/guides/context-engineering)

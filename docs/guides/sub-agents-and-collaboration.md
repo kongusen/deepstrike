@@ -1,6 +1,6 @@
 # Sub-Agent 与协作
 
-Sub-Agent 让一个 Agent 把专注职责委托给另一个 Agent。角色、Context 继承、工具访问、隔离、contract 和 handoff 让协作可预测，而不是匿名地多开几个模型调用。
+Sub-Agent 让一个 Agent 把专注职责委托给另一个 Agent。在 [Agent Process Runtime](../architecture/agent-process-runtime) 中，这不是匿名地多开几个模型调用，而是创建一个具有父子谱系、收窄权限、预留预算、可等待和受监督的子任务。角色、Context 继承、工具访问、隔离、contract 和 handoff 共同定义它的公开行为。
 
 **代码**：
 - `python/deepstrike/types/agent.py` — `AgentRunSpec`
@@ -20,6 +20,16 @@ Sub-Agent 让一个 Agent 把专注职责委托给另一个 Agent。角色、Con
 | 交接边界 | Contract 与 HandoffArtifact 把子进程产物变成父进程可消费的证据 |
 
 这样多 Agent 工作就能被追踪、限制，并和工作流、评估自然组合。
+
+## Runtime 保证
+
+| 子 Agent 动作 | Agent Process Runtime 语义 |
+| --- | --- |
+| Spawn | 父节点来自实际 caller；能力只能衰减；预算先预留再启动 |
+| Wait / Join | 父任务进入持久 WaitSet，不占用 runnable 槽位 |
+| Communicate | Mailbox、Channel 和对象 handle 仍受 capability 检查 |
+| Fail | 按 Propagate、Isolate、Restart、Retry 或 Ignore 策略处理并记录监督事件 |
+| Recover | 谱系、等待进度、预算、IPC 与监督状态随 checkpoint 恢复 |
 
 ![Process Isolation & Sub-Agents Mechanisms](/collaboration_mechanisms.svg)
 
@@ -140,6 +150,7 @@ RuntimeOptions(
 
 ## 延伸阅读
 
+- [Agent Process Runtime](../architecture/agent-process-runtime)
 - [Harness 与 Eval](./harness-and-eval)
 - [Milestones](./milestones)
 - [角色与隔离](../concepts/roles-and-isolation)

@@ -1,13 +1,15 @@
-# How Agents Run
+# Agent Process Runtime Overview
 
-DeepStrike gives an Agent a durable working environment around the model call. The Agent receives a goal, decides what it needs, uses the capabilities available to it, and leaves behind enough state to continue later.
+DeepStrike provides a local Agent Process Runtime around the model call. An Agent receives a goal, decides what it needs, and uses available capabilities. The runtime places root Agents, child Agents, and workflow nodes in a durable process tree and maintains their authority, budgets, waits, scheduling, and recovery state.
+
+Read [Agent Process Runtime](./agent-process-runtime) first for the complete capability boundary. This page follows one public Agent turn to show how the application, kernel, provider, and tools cooperate.
 
 ## One Agent turn
 
 ```mermaid
 sequenceDiagram
     participant App as Your application
-    participant Agent as Agent runtime
+    participant Agent as Agent Process Runtime
     participant Model as Model provider
     participant Tools as Tools and integrations
 
@@ -20,7 +22,7 @@ sequenceDiagram
     Agent-->>App: stream events and final answer
 ```
 
-The application owns the provider and integrations. DeepStrike keeps the Agent's decisions, context, policies, and session state together so a long task does not depend on one fragile process loop.
+The application owns the provider and integrations. The DeepStrike kernel maintains the process tree, decision context, policies, waits, and session state so long work does not depend on one fragile async loop.
 
 ## What stays with the Agent
 
@@ -58,6 +60,7 @@ Remote tools, MCP servers, queues, and sandboxes can be connected by the applica
 
 ## Further reading
 
+- [Agent Process Runtime](./agent-process-runtime) — process trees, waits, budgets, IPC, supervision, and recovery
 - [Agent capability guides](/en/guides/)
 - [Sessions and recovery](/en/guides/session-replay-and-recovery)
 - [Implementation reference](./overview)

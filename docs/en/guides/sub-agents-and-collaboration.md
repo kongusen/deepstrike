@@ -1,6 +1,6 @@
 # Sub-Agents & Collaboration
 
-Sub-Agents let one Agent delegate a focused responsibility to another Agent. Roles, context inheritance, tool access, isolation, contracts, and handoffs make collaboration predictable instead of spawning anonymous model calls.
+Sub-Agents let one Agent delegate a focused responsibility to another Agent. In the [Agent Process Runtime](/en/architecture/agent-process-runtime), this does not mean launching anonymous model calls. It creates a child task with parent-child lineage, attenuated authority, reserved budget, durable waits, and supervision. Roles, context inheritance, tool access, isolation, contracts, and handoffs define its public behavior.
 
 **Source code:**
 - `python/deepstrike/types/agent.py` — `AgentRunSpec`
@@ -20,6 +20,16 @@ Sub-Agents let one Agent delegate a focused responsibility to another Agent. Rol
 | Handoff boundary | Contracts and `HandoffArtifact` turn subprocess output into parent-consumable evidence |
 
 This makes multi-Agent work traceable, bounded, and easy to compose with workflows and evaluations.
+
+## Runtime guarantees
+
+| Child-Agent action | Agent Process Runtime semantics |
+| --- | --- |
+| Spawn | Parent comes from the actual caller; authority can only attenuate; budget is reserved before launch |
+| Wait / join | The parent enters a durable wait set without consuming a runnable slot |
+| Communicate | Mailboxes, channels, and object handles remain capability checked |
+| Fail | A Propagate, Isolate, Restart, Retry, or Ignore strategy handles the failure and records a supervision event |
+| Recover | Lineage, wait progress, budgets, IPC, and supervision state return with the checkpoint |
 
 ![Process Isolation & Sub-Agents Mechanisms](/collaboration_mechanisms.svg)
 
@@ -153,6 +163,7 @@ worktree_manager: Any = None  # isolation: "worktree" sub-agents run inside a gi
 
 ## Further reading
 
+- [Agent Process Runtime](/en/architecture/agent-process-runtime)
 - [Harness & Eval](./harness-and-eval)
 - [Milestones](./milestones)
 - [Roles & Isolation](/en/concepts/roles-and-isolation)

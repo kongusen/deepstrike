@@ -2,8 +2,9 @@
 
 Concepts 解释那些会影响 Agent 行为的 **设计选择**。它们位于能力指南和 API 参考之间。
 
-如果把 [Agent 如何运行](../architecture/) 看成整体运行形状，那么 Concepts 回答的是：
+如果把 [Agent Process Runtime](../architecture/agent-process-runtime) 看成整体运行形状，那么 Concepts 回答的是：
 
+- 为什么根 Agent、sub-agent 与 Workflow 节点共享同一棵进程树？
 - 一个 sub-agent 的权限边界到底由哪些字段决定？
 - 为什么 Context 不是 chat log？
 - 为什么 prompt cache 需要 frozen prefix？
@@ -13,6 +14,7 @@ Concepts 解释那些会影响 Agent 行为的 **设计选择**。它们位于�
 
 | 文档 | 代码主入口 | 说明 |
 |------|------------|------|
+| [Agent Process Runtime](../architecture/agent-process-runtime) | `scheduler/tcb.rs`、`scheduler/wait_index.rs`、`runtime/kernel/wire/` | 进程树、持久等待、权限、预算、IPC、监督和恢复如何组成统一运行时 |
 | [角色与隔离](./roles-and-isolation) | `types/agent.rs`、`orchestration/workflow/`、`scheduler/tcb.rs` | sub-agent / workflow node 的 role、isolation、capability、trust 如何变成内核可执行约束 |
 | [Prompt Cache 设计](./prompt-cache-design) | `context/renderer.rs`、`context/manager.rs`、`mm/handle.rs` | 四槽位渲染、state_turn、handle projection、frozen prefix 如何共同保护 cache |
 | [RunGroup 预算](./run-group-budget) | `python/deepstrike/runtime/run_group.py`、`node/src/runtime/run-group.ts`、`scheduler/state_machine/gate.rs` | 多个 stateless run 如何共享累计 token / spawn 治理域 |
@@ -21,7 +23,7 @@ Concepts 解释那些会影响 Agent 行为的 **设计选择**。它们位于�
 
 | 层次 | 关注点 |
 |------|--------|
-| Architecture | Agent run、Session 和协作流程如何组合 |
+| Architecture | Agent Process Runtime 的进程、调度、Effect 和恢复如何组合 |
 | Concepts | 某项能力为什么这样工作，哪些字段会影响它 |
 | Guides | 怎么使用这些机制完成具体任务 |
 | Reference | 类型、参数、事件字段的完整说明 |

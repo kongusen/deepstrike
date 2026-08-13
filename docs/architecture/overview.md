@@ -4,9 +4,9 @@ code_refs:
   rust: [KernelInput, PlannedStep, KernelObservation, TaskTable, Tcb, AgentProcess, TaskLifecycle]
 ---
 
-# 内核与宿主分层
+# Agent Process Runtime 的内核与宿主分层
 
-在 [Agent OS](./agent-os) 叙事下，DeepStrike 分为 **微内核（deepstrike-core）** 与 **宿主 SDK**。本节给出模块地图与 OS 类比对照。
+作为 [Agent Process Runtime](./agent-process-runtime) 的实现，DeepStrike 分为 **微内核（deepstrike-core）** 与 **宿主 SDK**。Agent OS 是帮助理解该分层的架构类比；对开发者而言，主能力边界是本地 Agent Process Runtime。本节给出模块地图与 OS 类比对照。
 
 ## 分层图
 
@@ -123,6 +123,7 @@ async for event in runner.run("分析仓库结构"):
 
 ## 延伸阅读
 
+- [Agent Process Runtime](./agent-process-runtime) — 对外能力模型与当前边界
 - [执行模型](./execution-model) — 逐步 trace
 - [Kernel ABI](./kernel-abi)
 - [Context 工程](../guides/context-engineering)

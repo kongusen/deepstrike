@@ -1,13 +1,15 @@
-# Agent 如何运行
+# Agent Process Runtime 总览
 
-DeepStrike 为模型调用周围的 Agent 提供一个可持久化的工作环境。Agent 接收目标，判断需要什么能力，使用可用工具和知识，并留下足够的状态以便之后继续。
+DeepStrike 为模型调用周围的 Agent 提供一个本地 Agent Process Runtime。Agent 接收目标，判断需要什么能力，使用可用工具和知识；运行时把根 Agent、子 Agent 与 Workflow 节点放进一棵可持久化的进程树，并维护它们的权限、预算、等待、调度和恢复状态。
+
+先阅读 [Agent Process Runtime](./agent-process-runtime) 了解完整能力边界。本页从一次公开 Agent 回合解释应用、内核、Provider 与工具如何协作。
 
 ## 一次 Agent 回合
 
 ```mermaid
 sequenceDiagram
     participant App as 你的应用
-    participant Agent as Agent runtime
+    participant Agent as Agent Process Runtime
     participant Model as Model Provider
     participant Tools as 工具与集成
 
@@ -20,7 +22,7 @@ sequenceDiagram
     Agent-->>App: 流式事件和最终答案
 ```
 
-应用负责 Provider 和外部集成。DeepStrike 把 Agent 的决策、Context、策略和 Session 状态放在一起，让长任务不依赖一段脆弱的进程循环。
+应用负责 Provider 和外部集成。DeepStrike 内核维护 Agent 的进程树、决策 Context、策略、等待和 Session 状态，让长任务不依赖一段脆弱的 async loop。
 
 ## Agent 持有什么
 
@@ -58,6 +60,7 @@ sequenceDiagram
 
 ## 延伸阅读
 
+- [Agent Process Runtime](./agent-process-runtime) — 进程树、等待、预算、IPC、监督与恢复
 - [Agent 能力指南](/guides/)
 - [Session 与恢复](/guides/session-replay-and-recovery)
 - [实现参考](./overview)
