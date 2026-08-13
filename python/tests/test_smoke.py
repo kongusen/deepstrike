@@ -2,6 +2,7 @@ import pytest
 from deepstrike import (
     AnthropicProvider, InMemorySessionLog, LocalExecutionPlane, OpenAIProvider,
     RuntimeOptions, RuntimeRunner, collect_text,
+    Governance,
     Message, ToolSchema, ToolCall, ToolResult,
     tool, read_file,
     RetryConfig,
@@ -21,6 +22,10 @@ from deepstrike.providers.stream import (
 def test_kernel_import():
     from deepstrike.kernel import CanonicalKernel
     assert CanonicalKernel().lifecycle() == "created"
+
+
+def test_governance_public_import_and_default_allow():
+    assert Governance().evaluate("any_tool", "{}").kind == "allow"
 
 
 def test_tool_decorator():

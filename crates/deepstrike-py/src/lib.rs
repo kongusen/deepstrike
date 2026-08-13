@@ -36,10 +36,16 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
+use compact_str::CompactString;
+
+use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
+use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
+use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
+use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::harness::eval::{
-    Criterion as RustCriterion, SkillCandidate as RustSkillCandidate,
     build_eval_messages as rust_build_eval_messages, parse_verdict as rust_parse_verdict,
-    verdict_output_schema as rust_verdict_output_schema,
+    verdict_output_schema as rust_verdict_output_schema, Criterion as RustCriterion,
+    SkillCandidate as RustSkillCandidate,
 };
 use deepstrike_core::runtime::kernel::wire::{
     CanonicalKernel as RustCanonicalKernel, CheckpointBoundary as RustCheckpointBoundary,
@@ -49,10 +55,13 @@ use deepstrike_core::runtime::kernel::wire::{
 };
 use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
+use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
 };
-use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
+use deepstrike_core::types::policy::{
+    GovernanceVerdict as RustGovernanceVerdict, SignalDisposition as RustSignalDisposition,
+};
 use deepstrike_core::types::signal::{
     RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
     SignalType as RustSignalType, Urgency as RustUrgency,
@@ -1144,6 +1153,167 @@ impl SignalRouter {
     }
 }
 
+// ──────────────────────────────────────── Governance ────────────────────────────────────────────
+
+#[pyclass]
+#[derive(Clone)]
+struct GovernanceVerdict {
+    #[pyo3(get)]
+    kind: String,
+    #[pyo3(get)]
+    reason: Option<String>,
+    #[pyo3(get)]
+    retry_after_ms: Option<f64>,
+}
+
+#[pymethods]
+impl GovernanceVerdict {
+    fn __repr__(&self) -> String {
+        format!("GovernanceVerdict(kind={:?})", self.kind)
+    }
+}
+
+fn governance_verdict_from_rust(v: RustGovernanceVerdict) -> GovernanceVerdict {
+    match v {
+        RustGovernanceVerdict::Allow => GovernanceVerdict {
+            kind: "allow".into(),
+            reason: None,
+            retry_after_ms: None,
+        },
+        RustGovernanceVerdict::Deny { reason, .. } => GovernanceVerdict {
+            kind: "deny".into(),
+            reason: Some(reason),
+            retry_after_ms: None,
+        },
+        RustGovernanceVerdict::RateLimited { retry_after_ms } => GovernanceVerdict {
+            kind: "rate_limited".into(),
+            reason: None,
+            retry_after_ms: Some(retry_after_ms as f64),
+        },
+        RustGovernanceVerdict::AskUser { reason } => GovernanceVerdict {
+            kind: "ask_user".into(),
+            reason: Some(reason),
+            retry_after_ms: None,
+        },
+    }
+}
+
+#[pyclass]
+struct Governance {
+    inner: RustGovernancePipeline,
+    agent_id: String,
+    session_id: String,
+}
+
+#[pymethods]
+impl Governance {
+    #[new]
+    #[pyo3(signature = (default_action = "allow"))]
+    fn new(default_action: &str) -> Self {
+        let action = match default_action {
+            "deny" => PermissionAction::Deny,
+            "ask_user" => PermissionAction::AskUser,
+            _ => PermissionAction::Allow,
+        };
+        Self {
+            inner: RustGovernancePipeline::new(action),
+            agent_id: "anonymous".into(),
+            session_id: "".into(),
+        }
+    }
+
+    fn set_identity(&mut self, agent_id: String, session_id: String) {
+        self.agent_id = agent_id;
+        self.session_id = session_id;
+    }
+
+    fn add_permission_rule(&mut self, pattern: String, action: String) {
+        let action = match action.as_str() {
+            "deny" => PermissionAction::Deny,
+            "ask_user" => PermissionAction::AskUser,
+            _ => PermissionAction::Allow,
+        };
+        self.inner.permission.add_rule(PermissionRule {
+            tool_pattern: pattern.into(),
+            action,
+        });
+    }
+
+    fn block_tool(&mut self, name: String) {
+        self.inner.veto.block_tool(name);
+    }
+
+    fn set_rate_limit(&mut self, tool_name: String, max_calls: u32, window_ms: u64) {
+        self.inner.rate_limiter.set_limit(
+            tool_name,
+            RateLimit {
+                max_calls,
+                window_ms,
+            },
+        );
+    }
+
+    fn require_param(&mut self, tool_name: String, param_path: String) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Required,
+        });
+    }
+
+    fn allow_param_values(
+        &mut self,
+        tool_name: String,
+        param_path: String,
+        allowed_values: Vec<String>,
+    ) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Enum(allowed_values),
+        });
+    }
+
+    #[pyo3(signature = (tool_name, param_path, min = None, max = None))]
+    fn limit_param_range(
+        &mut self,
+        tool_name: String,
+        param_path: String,
+        min: Option<f64>,
+        max: Option<f64>,
+    ) {
+        self.inner.constraints.add(ParamConstraint {
+            tool_name,
+            param_path,
+            rule: ConstraintRule::Range { min, max },
+        });
+    }
+
+    fn set_time(&mut self, now_ms: u64) {
+        self.inner.set_time(now_ms);
+    }
+
+    fn evaluate(&mut self, tool_name: String, args_json: String) -> GovernanceVerdict {
+        let args: serde_json::Value = match serde_json::from_str(&args_json) {
+            Ok(value) => value,
+            Err(err) => {
+                return GovernanceVerdict {
+                    kind: "deny".into(),
+                    reason: Some(format!("tool arguments are not valid JSON: {err}")),
+                    retry_after_ms: None,
+                };
+            }
+        };
+        let call = RustToolCall {
+            id: CompactString::new(""),
+            name: CompactString::new(&tool_name),
+            arguments: args,
+        };
+        let caller = AgentIdentity::new(self.agent_id.as_str(), self.session_id.as_str());
+        governance_verdict_from_rust(self.inner.evaluate(&call, &caller))
+    }
+}
+
 // ────────────────────────── Durable-memory extraction types ────────────────────────────────────────
 
 /// A completed session transcript for durable-memory extraction.
@@ -1521,6 +1691,8 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Signal types
     m.add_class::<RuntimeSignal>()?;
     m.add_class::<SignalRouter>()?;
+    m.add_class::<GovernanceVerdict>()?;
+    m.add_class::<Governance>()?;
     // Durable-memory wire values
     m.add_class::<SessionData>()?;
     m.add_class::<MemoryScope>()?;
