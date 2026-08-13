@@ -97,7 +97,7 @@ pub struct WorkflowSpawnInfo {
     /// (entrant / spawn / loop / classify) node. Additive ABI: omitted on the wire when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judge_match: Option<JudgeMatch>,
-    /// Present only for a [`NodeKind::Loop`] iteration spawn (A#2 v2): the loop's `max_iters`. It
+    /// Present only for a [`NodeKind::Loop`] iteration spawn (loop-control): the loop's `max_iters`. It
     /// both *marks* the spawn as a loop iteration — so the SDK knows to solicit and report a
     /// `loop_continue` stop signal from the agent — and gives the cap for the agent's prompt. `None`
     /// for every non-loop node. Mirrors how `reducer` / `judge_match` distinguish reduce / judge
@@ -406,7 +406,7 @@ impl WorkflowRun {
             _ => None,
         };
         let input_agent_ids: Vec<String> = n.depends_on.iter().map(|&d| node_agent_id(d)).collect();
-        // A#2 v2 / classify: surface the control-flow kind so the SDK can solicit + report the
+        // loop-control / classify: surface the control-flow kind so the SDK can solicit + report the
         // matching result signal (`loop_continue` / `classify_branch`), mirroring how `reducer` /
         // `judge_match` distinguish reduce / judge spawns.
         let loop_max_iters = match &n.kind {
@@ -489,8 +489,8 @@ impl WorkflowRun {
 
         match &self.nodes[node].kind {
             NodeKind::Loop { max_iters } => {
-                // v2 semantic stop: the iteration may signal "done" (`loop_continue == Some(false)`),
-                // ending the loop before `max_iters`. `None`/`Some(true)` run to the cap (v1 behavior).
+                // semantic stop: the iteration may signal "done" (`loop_continue == Some(false)`),
+                // ending the loop before `max_iters`. `None`/`Some(true)` run to the cap (run-to-cap behavior).
                 let max_iters = *max_iters;
                 let stop_requested = result.loop_continue == Some(false);
                 let done = self.iter_counts.entry(node).or_insert(0);

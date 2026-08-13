@@ -90,9 +90,14 @@ mod tests {
     fn seeds_only_persisted_provider_replay_from_events() {
         let provider = CapturingProvider::default();
         let replay = ProviderReplay {
+            protocol: "test".into(),
+            provider: None,
+            model: None,
             native_blocks: None,
             reasoning_content: Some("trace".into()),
-            extra: serde_json::Map::new(),
+            reasoning_details: None,
+            native_message: None,
+            tool_calls: None,
         };
         let entries = vec![
             SessionEntry {

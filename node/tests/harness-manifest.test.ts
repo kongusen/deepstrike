@@ -366,36 +366,6 @@ describe("tool/skill surface typing + bounds", () => {
   })
 })
 
-/**
- * `toolDispatchGate` is the ENFORCEMENT half of the exposure ceiling. It is deliberately NOT a
- * harness surface: a proposer that could set it to `"registered"` would switch off the boundary it
- * is otherwise structurally unable to widen. The absent-by-default whitelist (`RUNTIME_PATCH_KEYS`)
- * is what keeps it out — assert that at every gate a patch could enter through.
- */
-describe("toolDispatchGate is NOT an editable harness surface", () => {
-  it("validateManifest rejects it in a runtime patch", () => {
-    expect(() => validateManifest({
-      ...seed(),
-      runtime: { toolDispatchGate: "registered" } as unknown as HarnessManifest["runtime"],
-    })).toThrow(/whitelist/)
-  })
-
-  it("surfaceTier refuses to assign it a tier", () => {
-    expect(() => surfaceTier("runtime.toolDispatchGate")).toThrow(/whitelist/)
-  })
-
-  it("applyPatch rejects it even when a manifest lists it in editableSurfaces", () => {
-    // Belt and braces: the editable-surface list is manifest DATA, so it cannot be the only guard.
-    const m: HarnessManifest = { ...seed(), editableSurfaces: [...seed().editableSurfaces, "runtime.toolDispatchGate"] }
-    expect(() => applyPatch(m, patch({ targetSurface: "runtime.toolDispatchGate", value: "registered" }))).toThrow(/whitelist/)
-  })
-
-  it("applyManifest never folds it onto the runtime options", () => {
-    const m = { ...seed(), runtime: { toolDispatchGate: "registered" } } as unknown as HarnessManifest
-    expect(() => applyManifest(m, { maxTokens: 1 } as unknown as RuntimeOptions)).toThrow(/whitelist/)
-  })
-})
-
 describe("applyManifest intersection fold (capability ceiling)", () => {
   const baseWith = (over: Record<string, unknown>) => ({ maxTokens: 1, ...over } as unknown as RuntimeOptions)
 

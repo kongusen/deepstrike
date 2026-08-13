@@ -23,7 +23,7 @@ class SubAgentRunContext:
   manifest: AgentProcessChangedObservation
   session_log: SessionLog
   harness: SubAgentHarnessConfig | None = None
-  # M5 v2.1: set when this child is a workflow node — propagated so a nested ``start_workflow``
+  # workflow-node: set when this child is a workflow node — propagated so a nested ``start_workflow``
   # FLATTENS to the parent kernel rather than auto-pivoting into its own bootstrap.
   is_workflow_node: bool = False
   # W-N1 tool exposure. The kernel omits an EMPTY ``permitted_capability_ids`` on the wire, so a

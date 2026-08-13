@@ -3,9 +3,8 @@
   "title": "DeepStrike cross-SDK conformance fixture",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "id", "domain", "input", "expected"],
+  "required": ["id", "domain", "input", "expected"],
   "properties": {
-    "schemaVersion": { "const": 1 },
     "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
     "domain": {
       "type": "string",
@@ -22,9 +21,7 @@
     "expected": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["contractVersion"],
       "properties": {
-        "contractVersion": { "type": "integer", "minimum": 1 },
         "canonical": { "type": "object" },
         "error": {
           "type": "object",

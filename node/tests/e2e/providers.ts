@@ -3,8 +3,7 @@
  * Returns null for any provider whose API key is missing (scenario will be skipped).
  */
 import { OpenAIChatProvider } from "../../src/providers/openai.js"
-import { DeepSeekProvider } from "../../src/providers/deepseek.js"
-import { MiniMaxAnthropicProvider } from "../../src/providers/minimax.js"
+import { deepseek, minimax } from "../../src/providers/factories.js"
 import type { LLMProvider } from "../../src/types.js"
 
 export type ProviderName = "openai" | "deepseek" | "minimax"
@@ -22,18 +21,18 @@ export function loadProviders(): Record<ProviderName, LLMProvider | null> {
 
   return {
     openai: openaiKey
-      ? new OpenAIChatProvider(
-          openaiKey,
-          process.env.OPENAI_MODEL ?? "gpt-4o-mini",
-          { maxRetries: 2, baseDelay: 1000 },
-          process.env.OPENAI_BASE_URL,
-        )
+      ? new OpenAIChatProvider({
+          apiKey: openaiKey,
+          model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+          retry: { maxRetries: 2, baseDelay: 1000 },
+          baseURL: process.env.OPENAI_BASE_URL,
+        })
       : null,
     deepseek: deepseekKey
-      ? new DeepSeekProvider(deepseekKey, process.env.DEEPSEEK_MODEL ?? "deepseek-chat")
+      ? deepseek({ apiKey: deepseekKey, model: process.env.DEEPSEEK_MODEL ?? "deepseek-chat" })
       : null,
     minimax: minimaxKey
-      ? new MiniMaxAnthropicProvider(minimaxKey, process.env.MINIMAX_MODEL)
+      ? minimax({ apiKey: minimaxKey, model: process.env.MINIMAX_MODEL })
       : null,
   }
 }

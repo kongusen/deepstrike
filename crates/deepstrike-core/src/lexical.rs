@@ -146,8 +146,8 @@ mod tests {
 
     #[test]
     fn mixed_ascii_and_han_split_into_both_vocabularies() {
-        let output = terms("部署v2服务到prod环境");
-        assert!(output.contains("v2"));
+        let output = terms("部署新版服务到prod环境");
+        assert!(output.contains("新版"));
         assert!(output.contains("prod"));
         assert!(output.contains("部署"));
         assert!(output.contains("服务"));

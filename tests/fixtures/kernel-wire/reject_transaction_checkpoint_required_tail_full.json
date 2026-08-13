@@ -6,7 +6,6 @@
     "message": "the journal tail already holds 3 records; its hard limit is 3; take a checkpoint candidate, install and ack it, then retry this input unchanged — it was never accepted"
   },
   "refused_envelope": {
-    "abi_version": 3,
     "input": {
       "effect_id": "op-driver-1:step:2:effect:0",
       "kind": "resolve_effect",

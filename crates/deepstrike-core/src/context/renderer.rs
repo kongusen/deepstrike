@@ -975,12 +975,12 @@ mod tests {
     #[test]
     fn prefix_fingerprint_detects_system_drift() {
         let mut c = ctx();
-        c.system.push(Message::system("rules v1"), 5);
+        c.system.push(Message::system("original rules"), 5);
         c.history.push(Message::user("turn A"), 5);
         let fp1 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
         c.system.messages.clear();
-        c.system.push(Message::system("rules v2"), 5);
+        c.system.push(Message::system("updated rules"), 5);
         let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
         assert_ne!(fp1.system_stable_hash, fp2.system_stable_hash);

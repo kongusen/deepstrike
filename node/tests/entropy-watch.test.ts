@@ -45,7 +45,7 @@ describe("session entropy (heartbeat watch source)", () => {
 
     expect(samples.length).toBeGreaterThanOrEqual(3)
     const last = samples[samples.length - 1].sample
-    expect(last.scoreVersion).toBe(1)
+    expect(last).not.toHaveProperty("scoreVersion")
     expect(last.failureRate).toBeCloseTo(1.0) // every poke threw
     expect(last.repeatPressure).toBe(0) // fuse off ⇒ repeat axis honestly reads 0
     expect(last.windowTurns).toBe(samples.length)

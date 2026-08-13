@@ -3,7 +3,6 @@ import { sha256Hex } from "../runtime/sha256.js"
 
 export interface ProviderRequestEndpoint { id: string; protocol: string; baseURL: string }
 export interface ProviderRequestPlan {
-  version: 1
   providerId: string
   modelId: string
   endpoint: ProviderRequestEndpoint
@@ -19,7 +18,6 @@ export function estimateProviderPromptTokens(context: RenderedContext, tools: To
   return Math.max(1, Math.ceil(bytes / 4))
 }
 export interface RecordedPromptMeasurement {
-  version: 1
   requestFingerprint: string
   inputTokens: number
   source: { kind: "native"; provider: string } | { kind: "local_exact"; tokenizer: string } | { kind: "heuristic" }
@@ -59,9 +57,9 @@ export type CostObservation =
 
 const EXCLUDED = new Set(["apiKey", "api_key", "bearerToken", "bearer_token", "authorization", "credential", "credentials", "retry", "maxRetries", "baseDelay", "timeout", "signal"])
 
-export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "version" | "fingerprint" | "options"> & { options?: Record<string, unknown> }): ProviderRequestPlan {
+export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "fingerprint" | "options"> & { options?: Record<string, unknown> }): ProviderRequestPlan {
   const value = {
-    version: 1 as const, providerId: input.providerId, modelId: input.modelId, endpoint: sanitizeEndpoint(input.endpoint),
+    providerId: input.providerId, modelId: input.modelId, endpoint: sanitizeEndpoint(input.endpoint),
     context: clone(input.context), tools: clone(input.tools), options: materialOptions(input.options ?? {}),
   }
   return { ...value, fingerprint: sha256Hex(stableJson(value)) }
@@ -90,13 +88,13 @@ export function createProviderRequestPlanForProvider(
   })
 }
 
-export function recordPromptMeasurement(plan: Pick<ProviderRequestPlan, "fingerprint">, measurement: Omit<RecordedPromptMeasurement, "version" | "requestFingerprint">): RecordedPromptMeasurement {
+export function recordPromptMeasurement(plan: Pick<ProviderRequestPlan, "fingerprint">, measurement: Omit<RecordedPromptMeasurement, "requestFingerprint">): RecordedPromptMeasurement {
   if (!Number.isSafeInteger(measurement.inputTokens) || measurement.inputTokens < 0) throw new RangeError("inputTokens must be a non-negative safe integer")
-  return { version: 1, requestFingerprint: plan.fingerprint, inputTokens: measurement.inputTokens, source: clone(measurement.source), confidence: measurement.confidence }
+  return { requestFingerprint: plan.fingerprint, inputTokens: measurement.inputTokens, source: clone(measurement.source), confidence: measurement.confidence }
 }
 
 export function measurementForPlan(plan: Pick<ProviderRequestPlan, "fingerprint">, record: RecordedPromptMeasurement | undefined): RecordedPromptMeasurement | undefined {
-  if (!record || record.version !== 1 || record.requestFingerprint !== plan.fingerprint) return undefined
+  if (!record || record.requestFingerprint !== plan.fingerprint) return undefined
   if (!Number.isSafeInteger(record.inputTokens) || record.inputTokens < 0) return undefined
   if (record.confidence !== "exact" && record.confidence !== "high_confidence" && record.confidence !== "low_confidence") return undefined
   if (!record.source || typeof record.source !== "object") return undefined

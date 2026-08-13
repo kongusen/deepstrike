@@ -86,8 +86,7 @@ class AgentRunSpec:
   # advertised before any skill activates, so ``exposed = meta ∪ ((baseline ∪ stable_core ∪
   # ⋃ active_skills.allowed_tools) ∩ ceiling)``. That makes narrow→wide progressive disclosure
   # expressible: a tool can be reachable after ``skill(x)`` without being advertised beforehand.
-  # None ⇒ legacy behavior (ceiling + errs-open skill narrowing). ``[]`` is meaningful and distinct
-  # from None: the minimal surface (meta-tools + stable-core only). Entries outside the ceiling
+  # None and ``[]`` both mean the minimal surface (meta-tools + stable-core only). Entries outside the ceiling
   # silently intersect away. Lowered from ``RuntimeOptions.baseline_tool_ids``.
   exposure_baseline: "list[str] | None" = None
   # Tool surface for a spawned sub-agent. Host-side only (like ``model_hint``) — NOT sent to the
@@ -119,7 +118,7 @@ class LoopResult:
   turns_used: int
   total_tokens_used: int
   final_message: Any | None = None
-  # A#2 v2 loop stop signal: a loop iteration sets False to end the loop before `max_iters`. None
+  # loop-control loop stop signal: a loop iteration sets False to end the loop before `max_iters`. None
   # (every non-loop result) ⇒ no opinion → run to the cap. Sent only when set.
   loop_continue: bool | None = None
   # A#2 classify routing: a classifier node reports the chosen branch label; the kernel runs that
@@ -129,8 +128,8 @@ class LoopResult:
   tournament_winner: str | None = None
   # ③ loop-agent pacing: the kernel-adjudicated after-round decision, surfaced by the orchestrator
   # from the child's done event ({"action", "delay_ms"?, "reason", "coerced_from"?}). For a loop-node
-  # iteration this is the PRIMARY continuation vocabulary (stop → loop_continue=False); the legacy
-  # text-sniffed signal is the fallback. SDK-internal — stripped by ``sub_agent_result_to_kernel``.
+  # iteration this is the only continuation vocabulary (stop → loop_continue=False).
+  # SDK-internal — stripped by ``sub_agent_result_to_kernel``.
   pace_decision: Any | None = None
   # H4: quality judgment is observable independently from kernel run health.
   attempt: dict[str, Any] | None = None
@@ -182,7 +181,7 @@ def agent_run_spec_to_kernel(spec: AgentRunSpec) -> dict[str, Any]:
   }
   if spec.verification_contract_id:
     out["verification_contract_id"] = spec.verification_contract_id
-  # Exposure baseline: None ⇒ omit the field entirely (kernel ``None`` = legacy behavior); ``[]`` ⇒
+  # Exposure baseline: None ⇒ omit the field entirely (kernel canonical default); ``[]`` ⇒
   # send ``[]`` (kernel ``Some([])`` = the minimal surface). The unset/minimal distinction is
   # load-bearing, so this is deliberately NOT the truthiness idiom ``allowed_tool_ids`` uses.
   if getattr(spec, "exposure_baseline", None) is not None:
@@ -336,7 +335,7 @@ class WorkflowNodeSpec:
   # G2: make this a deterministic reduce node — runs no LLM agent; the runner routes it to the
   # registered reducer of this name over its ``depends_on`` nodes' outputs.
   reducer: str | None = None
-  # A#2 v2: make this a *loop* node — re-run its agent up to ``loop["max_iters"]`` times. An iteration
+  # loop-control: make this a *loop* node — re-run its agent up to ``loop["max_iters"]`` times. An iteration
   # may end the loop early by reporting ``loop_continue=False`` (the runner solicits this).
   loop: dict[str, Any] | None = None
   # A#2: make this a *classify* node — ``classify={"branches": [{"label", "nodes": [idx]}]}``. Its
@@ -418,7 +417,7 @@ class WorkflowSpawnInfo:
   # A#2: present only for a tournament *judge* spawn — the two entrant agent ids whose outputs this
   # judge compares (``{"left", "right"}``). The runner reports the winner as ``tournament_winner``.
   judge_match: dict[str, str] | None = None
-  # A#2 v2: present only for a *loop* iteration spawn — the loop's ``max_iters``. Marks the spawn as a
+  # loop-control: present only for a *loop* iteration spawn — the loop's ``max_iters``. Marks the spawn as a
   # loop iteration so the runner solicits + reports a ``loop_continue`` stop signal.
   loop_max_iters: int | None = None
   # A#2: present only for a *classify* spawn — the branch labels the classifier must choose among.
@@ -557,7 +556,7 @@ def workflow_spec_to_kernel(spec: WorkflowSpec) -> dict[str, Any]:
 # loop-until-done / dynamic fan-out). The runner intercepts the call and routes the nodes to the
 # parent kernel (the child's own kernel holds no workflow).
 # Shared JSON-Schema for a workflow-node batch (a DAG). Used by both ``submit_workflow_nodes``
-# (append) and ``start_workflow`` (M5 v1: author a sub-workflow), so the two tools never drift.
+# (append) and ``start_workflow`` (workflow authoring: author a sub-workflow), so the two tools never drift.
 _workflow_nodes_array_schema: dict[str, Any] = {
   "type": "array",
   "description": "Workflow nodes (a DAG); each runs as a gated sub-agent.",
@@ -641,9 +640,9 @@ submit_workflow_nodes_tool: dict[str, Any] = {
   }),
 }
 
-# M5 v1 (flatten): the tool an agent calls to author a sub-workflow — a cohesive DAG of nodes composed
+# workflow authoring: the tool an agent calls to author a sub-workflow — a cohesive DAG of nodes composed
 # onto the running workflow. Lowers to the same append path as ``submit_workflow_nodes`` (a
-# ``WorkflowSpec`` is a node batch). v2 adds top-level bootstrap (the ``LoadWorkflow`` syscall).
+# ``WorkflowSpec`` is a node batch). Top-level bootstrap uses (the ``LoadWorkflow`` syscall).
 start_workflow_tool: dict[str, Any] = {
   "name": "start_workflow",
   "description": (

@@ -24,13 +24,6 @@ export const MAX_CHAIN_POSITION = JOURNAL_MAX_CHAIN_POSITION
 
 const utf8ByteLength = (value: string): number => new TextEncoder().encode(value).byteLength
 
-let abiVersion: Promise<number> | undefined
-
-function kernelAbiVersion(): Promise<number> {
-  abiVersion ??= import("@deepstrike/wasm-kernel").then(kernel => kernel.kernelAbiVersion())
-  return abiVersion
-}
-
 export type CanonicalKernelInput = Record<string, unknown> & { kind: string }
 
 export interface CanonicalPlannedStep {
@@ -418,7 +411,6 @@ export class CanonicalKernelHost {
     options: CanonicalTransitionOptions = {},
   ): Promise<CanonicalTransition> {
     const inputJson = JSON.stringify({
-      abi_version: await kernelAbiVersion(),
       operation_id: this.operationId,
       input_id: options.inputId ?? `wasm-input-${crypto.randomUUID()}`,
       observed_at_ms: options.observedAtMs ?? String(Date.now()),
@@ -820,8 +812,7 @@ function providerStopReason(value: unknown): string | undefined {
 
 /**
  * Canonical operation runtime used by the WASM host.
- * Every durable transition below is one of the canonical ABI's five input classes; no legacy
- * envelope or synthesized host transaction reaches core or storage.
+ * Every durable transition below is one of the canonical contract's five input classes.
  */
 export class CanonicalRunnerRuntime {
   private readonly host: CanonicalKernelHost
@@ -1027,7 +1018,8 @@ export class CanonicalRunnerRuntime {
       }
       case "provider_error": {
         const message = String(event.message ?? "")
-        const contextOverflow = /context|token.*limit|too long/i.test(message)
+        const errorKind = typeof event.error_kind === "string" ? event.error_kind : "unknown"
+        const contextOverflow = errorKind === "context_overflow"
         input = contextOverflow
           ? {
               kind: "resolve_effect",
@@ -1037,7 +1029,16 @@ export class CanonicalRunnerRuntime {
                 result: { kind: "provider", outcome: { kind: "context_overflow" } },
               },
             }
-          : this.failedEffect(event, "transport_exhausted", message, true)
+          : this.failedEffect(
+              event,
+              ["transport", "rate_limit", "model_unavailable"].includes(errorKind)
+                ? "transport_exhausted"
+                : ["auth", "invalid_request", "modality", "protocol"].includes(errorKind)
+                  ? "protocol_error"
+                  : "unknown",
+              message,
+              typeof event.retryable === "boolean" ? event.retryable : false,
+            )
         break
       }
       case "tool_results": {
@@ -1620,9 +1621,6 @@ export class CanonicalRunnerRuntime {
       }
       delete asObject(execution.entropy_watch).threshold
       delete asObject(execution.entropy_watch).hysteresis
-    }
-    if (config.tool_dispatch_gate !== undefined) {
-      this.featurePolicy().tool_dispatch_gate = config.tool_dispatch_gate
     }
     if (config.knowledge_budget_ratio !== undefined) {
       const context = asObject(this.config.context_policy)

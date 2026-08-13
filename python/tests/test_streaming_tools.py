@@ -35,6 +35,7 @@ async def test_streaming_tool_chunks_are_forwarded_and_aggregated():
         execution_plane=plane,
         max_tokens=2048,
         max_turns=4,
+        baseline_tool_ids=["compose"],
     ))
 
     events = [event async for event in runner.run(goal="compose once")]

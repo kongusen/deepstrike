@@ -1,0 +1,12 @@
+{
+  "id": "provider-request-plan",
+  "domain": "provider_request_plan",
+  "input": {
+    "fixture": "provider-request-plan/canonical.json"
+  },
+  "expected": {
+    "canonical": {
+      "fingerprint": "sha256:e693897c4a4a80d14a36d3346f27a1ca017e67ed9516faa26a2b2ca76f2d6c0b"
+    }
+  }
+}

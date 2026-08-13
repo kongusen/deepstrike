@@ -1,8 +1,9 @@
-import { contextPolicyV1, normalizeContextPolicyV1, ratioToPpm } from "../src/runtime/index.js"
+import { contextPolicy, normalizeContextPolicy, ratioToPpm } from "../src/runtime/index.js"
 
-describe("WASM ContextPolicyV1", () => {
+describe("WASM ContextPolicy", () => {
   it("uses the cross-SDK integer ppm wire", () => {
-    const wire = normalizeContextPolicyV1(contextPolicyV1())
+    const wire = normalizeContextPolicy(contextPolicy())
+    expect(wire).not.toHaveProperty("version")
     expect(wire.pressure_thresholds_ppm).toEqual({
       snip: 700_000,
       micro: 800_000,

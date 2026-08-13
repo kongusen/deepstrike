@@ -192,12 +192,11 @@ export function replayForTurn(
     case "none": return undefined
     case "generic_stream":
       return phase === "stream" && (toolCalls.length > 0 || reasoning.reasoningContent)
-        ? { reasoning_content: reasoning.reasoningContent }
+        ? { protocol: "openai-chat", reasoning_content: reasoning.reasoningContent }
         : undefined
     case "deepseek":
       if (!reasoning.reasoningContent.trim()) return undefined
       return {
-        schema_version: 2,
         provider: dialect.providerId,
         protocol: "openai-chat",
         model,
@@ -209,7 +208,6 @@ export function replayForTurn(
       const hasDetails = reasoning.reasoningDetails !== undefined && reasoning.reasoningDetails !== null
       if (!hasReasoning && !hasDetails) return undefined
       return {
-        schema_version: 2,
         provider: dialect.providerId,
         protocol: "openai-chat",
         model,

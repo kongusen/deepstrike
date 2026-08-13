@@ -6,7 +6,6 @@ from pathlib import Path
 from deepstrike import _kernel
 from deepstrike import kernel as kernel_facade
 from deepstrike.kernel.canonical import (
-  KERNEL_ABI_VERSION,
   CanonicalKernel,
   CanonicalPrepared,
   CanonicalRejected,
@@ -20,7 +19,7 @@ FIXTURE = json.loads(
 
 
 def test_canonical_binding_passes_through_core_record_bytes_and_digest() -> None:
-  assert KERNEL_ABI_VERSION == 3
+  assert not hasattr(_kernel, "KERNEL_ABI_VERSION")
   kernel = CanonicalKernel()
   prepared = kernel.prepare(json.dumps(FIXTURE["links"][0]["envelope"], separators=(",", ":")))
   assert isinstance(prepared, CanonicalPrepared)

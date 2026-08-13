@@ -103,6 +103,7 @@ function createMechanismRunner(
     executionPlane: plane,
     maxTokens: opts.maxTokens ?? 8192,
     maxTurns: opts.maxTurns ?? 25,
+    baselineToolIds: tools.map(tool => tool.schema.name),
     repeatFuse: opts.repeatFuse,
   })
   return { runner, sessionLog }
@@ -197,8 +198,7 @@ describe("E2E mechanism contract tests", () => {
     await collectText(runner.run({ sessionId: "k03-mechanism", goal }))
 
     const first = provider.calls[0]
-    // goal lands in systemText/systemStable (rebuilt kernel), stateTurn (mid kernel), or turns[0] (legacy)
-    const goalContent = [first.systemText, first.systemStable, first.stateTurn?.content, first.turns[0]?.content].filter(Boolean).join("\n")
+    const goalContent = [first.systemText, first.systemStable, first.stateTurn?.content].filter(Boolean).join("\n")
     expect(goalContent).toContain("Count from 1 to 3")
   })
 

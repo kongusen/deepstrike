@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from deepstrike._kernel import ToolCall
 from deepstrike.providers.replay import assistant_replay_key  # re-exported for runtime API stability
@@ -14,43 +14,29 @@ __all__ = [
     "assess_provider_replayability",
 ]
 
-class ProviderReplay(TypedDict, total=False):
-    schema_version: int
-    provider: str
+class ProviderReplay(TypedDict):
     protocol: str
-    model: str
-    native_blocks: list[dict[str, Any]]
-    reasoning_content: str
-    reasoning_details: Any
-    native_message: Any
-    tool_calls: list[Any]
-
-
-def _replay_protocol(replay: dict[str, Any]) -> str | None:
-    """Infer the wire protocol a stored replay envelope belongs to.
-
-    New envelopes carry an explicit ``protocol``; legacy envelopes are inferred
-    from shape (Anthropic ``native_blocks`` vs OpenAI ``reasoning_content`` /
-    ``reasoning_details``)."""
-    if replay.get("protocol"):
-        return replay["protocol"]
-    if replay.get("native_blocks"):
-        return "anthropic-messages"
-    if replay.get("reasoning_content") is not None or replay.get("reasoning_details") is not None:
-        return "openai-chat"
-    return None
+    provider: NotRequired[str]
+    model: NotRequired[str]
+    native_blocks: NotRequired[list[dict[str, Any]]]
+    reasoning_content: NotRequired[str]
+    reasoning_details: NotRequired[Any]
+    native_message: NotRequired[Any]
+    tool_calls: NotRequired[list[Any]]
 
 
 def is_replay_compatible_with_provider(replay: dict[str, Any], descriptor: Any) -> bool:
     """A stored replay may only be seeded into a provider speaking the same wire
     protocol; cross-protocol envelopes are skipped so the new provider
     re-serializes neutral context instead."""
-    if descriptor is None:
-        return True
-    protocol = _replay_protocol(replay)
-    if protocol is None:
-        return True
-    return protocol == getattr(descriptor, "protocol", None)
+    allowed = {"protocol", "provider", "model", "native_blocks", "reasoning_content", "reasoning_details", "native_message", "tool_calls"}
+    unknown = set(replay) - allowed
+    if unknown:
+        raise ValueError(f"provider replay has unknown field {sorted(unknown)[0]}")
+    protocol = replay.get("protocol")
+    if not isinstance(protocol, str) or not protocol:
+        raise ValueError("provider replay protocol is required")
+    return descriptor is None or protocol == getattr(descriptor, "protocol", None)
 
 
 def seed_provider_replay_from_events(provider: Any, events: list[Any]) -> None:
@@ -65,12 +51,9 @@ def seed_provider_replay_from_events(provider: Any, events: list[Any]) -> None:
             continue
         tool_calls = event.get("tool_calls", [])
         stored = event.get("provider_replay")
-        if stored and not is_replay_compatible_with_provider(stored, descriptor):
+        if not stored or not is_replay_compatible_with_provider(stored, descriptor):
             continue
-        # Pass the message even with no persisted replay: a provider may
-        # reconstruct a legacy replay (e.g. Anthropic native_blocks) from the
-        # neutral transcript. Providers that cannot reconstruct simply no-op.
-        seed(event.get("content", ""), tool_calls, stored or {})
+        seed(event.get("content", ""), tool_calls, stored)
 
 
 def peek_provider_replay(provider: Any, content: str, tool_calls: list[ToolCall]) -> ProviderReplay | None:

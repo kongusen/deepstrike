@@ -69,21 +69,6 @@ def judge_goal(criterion: str, left_output: str, right_output: str) -> str:
   )
 
 
-def extract_loop_continue(text: str) -> bool | None:
-  """Extract a loop stop signal from a loop iteration's output. Returns the ``loop_continue`` value,
-  or None when the agent gave no clear signal (⇒ the kernel runs the loop to ``max_iters``). Accepts
-  ``{"loop_continue": bool}`` or, leniently, ``{"done": bool}`` (continue = not done)."""
-  v = extract_json_value(text)
-  if isinstance(v, dict):
-    if isinstance(v.get("loop_continue"), bool):
-      return v["loop_continue"]
-    if isinstance(v.get("loopContinue"), bool):
-      return v["loopContinue"]
-    if isinstance(v.get("done"), bool):
-      return not v["done"]
-  return None
-
-
 def extract_classify_branch(text: str, labels: list[str]) -> str | None:
   """Extract the chosen branch label from a classifier's output. Prefers ``{"branch": "..."}``; falls
   back to a bare label string that exactly matches one of the valid labels. Returns None when no

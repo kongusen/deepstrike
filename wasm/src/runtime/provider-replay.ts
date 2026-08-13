@@ -1,4 +1,4 @@
-import type { LLMProvider, Message, ProviderDescriptor, ProviderProtocol, ProviderReplay, ToolCall } from "../types.js"
+import type { LLMProvider, Message, ProviderDescriptor, ProviderReplay, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
 
 export function assistantReplayKey(message: Pick<Message, "content" | "toolCalls">): string {
@@ -8,27 +8,24 @@ export function assistantReplayKey(message: Pick<Message, "content" | "toolCalls
   })
 }
 
-/** Infer the wire protocol a stored replay envelope belongs to (explicit, or by shape for legacy logs). */
-function replayProtocol(replay: ProviderReplay): ProviderProtocol | undefined {
-  if (replay.protocol) return replay.protocol
-  if (replay.native_blocks?.length) return "anthropic-messages"
-  if (replay.reasoning_content != null || replay.reasoning_details !== undefined) return "openai-chat"
-  return undefined
-}
-
 /**
  * A stored replay may only be seeded into a provider speaking the same wire
  * protocol; on a cross-protocol fallback the incompatible envelope is skipped so
  * the new provider re-serializes neutral context instead.
  */
 export function isReplayCompatibleWithProvider(
-  replay: ProviderReplay,
+  replay: Partial<ProviderReplay>,
   descriptor: ProviderDescriptor | undefined,
 ): boolean {
-  if (!descriptor) return true
-  const protocol = replayProtocol(replay)
-  if (!protocol) return true
-  return protocol === descriptor.protocol
+  assertCanonicalReplay(replay)
+  return !descriptor || replay.protocol === descriptor.protocol
+}
+
+const REPLAY_KEYS = new Set(["protocol", "provider", "model", "native_blocks", "reasoning_content", "reasoning_details", "native_message", "tool_calls"])
+
+function assertCanonicalReplay(replay: Partial<ProviderReplay>): asserts replay is ProviderReplay {
+  for (const key of Object.keys(replay)) if (!REPLAY_KEYS.has(key)) throw new Error(`provider replay has unknown field ${key}`)
+  if (typeof replay.protocol !== "string" || replay.protocol.length === 0) throw new Error("provider replay protocol is required")
 }
 
 export function seedProviderReplayFromEvents(
@@ -41,10 +38,8 @@ export function seedProviderReplayFromEvents(
     if (event.kind !== "llm_completed") continue
     const toolCalls = event.tool_calls ?? []
     const stored = event.provider_replay
-    if (stored && !isReplayCompatibleWithProvider(stored, descriptor)) continue
-    // Pass the message even with no persisted replay: a provider may reconstruct
-    // a legacy replay (e.g. Anthropic native_blocks) from the neutral transcript.
-    provider.seedProviderReplay({ content: event.content, toolCalls }, stored ?? {})
+    if (!stored || !isReplayCompatibleWithProvider(stored, descriptor)) continue
+    provider.seedProviderReplay({ content: event.content, toolCalls }, stored)
   }
 }
 

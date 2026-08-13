@@ -3,11 +3,11 @@ import { replayMessages } from "../src/runtime/runner.js"
 import { toolOutputBlocksToDurable } from "../src/runtime/durable-content.js"
 
 describe("015-07 durable structured ToolResult replay", () => {
-  it("restores a structured result from an additive SessionLog blocks field", async () => {
+  it("restores a structured result from the canonical SessionLog content field", async () => {
     const log = new InMemorySessionLog()
     await log.append("s", { kind: "tool_completed", turn: 1, results: [{
       call_id: "call-1", output: "first\n[image]", is_error: false,
-      content: { schema_version: 1, blocks: toolOutputBlocksToDurable([
+      content: { blocks: toolOutputBlocksToDurable([
         { type: "text", text: "first" },
         { type: "image", source: { kind: "base64", data: "aW1hZ2U=" }, mediaType: "image/png" },
       ]) },
@@ -22,15 +22,14 @@ describe("015-07 durable structured ToolResult replay", () => {
     ])
   })
 
-  it("continues to replay a legacy text-only result", () => {
-    const messages = replayMessages([{ seq: 0, event: { kind: "tool_completed", turn: 1, results: [{ call_id: "legacy", output: "old", is_error: false }] } }])
-    expect(messages[0]?.contentParts?.[0]).toMatchObject({ type: "tool_result", callId: "legacy", output: "old" })
+  it("rejects a text-only persisted result", () => {
+    expect(() => replayMessages([{ seq: 0, event: { kind: "tool_completed", turn: 1, results: [{ call_id: "removed", output: "old", is_error: false }] } }] as never)).toThrow()
   })
 
   it("fails closed when a recorded durable block is malformed", () => {
     expect(() => replayMessages([{ seq: 0, event: { kind: "tool_completed", turn: 1, results: [{
       call_id: "bad", output: "", is_error: false,
-      content: { schema_version: 1, blocks: [{ type: "text", text: "x", unknown: true }] },
+      content: { blocks: [{ type: "text", text: "x", unknown: true }] },
     }] } }])).toThrow(/unknown field/)
   })
 })

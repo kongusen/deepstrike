@@ -30,8 +30,8 @@ export interface ToolResultPart {
   callId: string
   output: string
   isError: boolean
-  /** Legacy transport shape. Provider boundaries normalize this into one canonical block list
-   * and reject `output` when it disagrees with the deterministic block projection. */
+  /** Structured tool output. Provider boundaries normalize this into one canonical block list
+   * and reject `output` when it disagrees with the deterministic text projection. */
   contentParts?: ToolOutputBlock[]
 }
 
@@ -49,8 +49,8 @@ export type MediaSource =
   | {
       kind: "fileId"
       id: string
-      /** Endpoint that issued this provider-owned reference. Legacy values may omit affinity
-       * and are then valid only for the already-resolved current endpoint. */
+      /** Endpoint that issued this provider-owned reference. An omitted affinity constrains the
+       * reference to the already-resolved current endpoint. */
       affinity?: { providerId: string; endpointId: string }
     }
   | { kind: "object"; handle: string; owner?: string; payloadRef?: string }
@@ -70,8 +70,6 @@ export type ToolOutputBlock =
   | ContentBlockVideo
   | ContentBlockFile
 
-/** @deprecated Use `ToolOutputBlock`; retained as a source-compatible name during A-02. */
-export type ContentBlock = ToolOutputBlock
 
 export interface Message {
   role: "system" | "user" | "assistant" | "tool"
@@ -174,7 +172,7 @@ export interface ToolDeltaEvent extends StreamEvent {
   type: "tool_delta"
   callId: string
   name: string
-  /** Backward-compatible text projection when the chunk carries text. */
+  /** Text projection when the chunk carries text. */
   delta?: string
   chunk: Exclude<ToolChunk, string>
 }
@@ -273,12 +271,11 @@ export interface ToolAuditFailedEvent extends StreamEvent {
 
 /** Kernel session-entropy measurement at a completed turn boundary. "Entropy" = session
  *  disorder: repetition, tool failures, rollbacks, context pressure. The component vector is
- *  the contract; `score` is a versioned default fold (`scoreVersion`). All normalized
+ *  the contract; `score` is the canonical default fold. All normalized
  *  components are in [0, 1]. */
 export interface EntropySample {
   turn: number
   score: number
-  scoreVersion: number
   /** Context pressure after this boundary's eviction pass. */
   rho: number
   /** Consecutive-identical-turn streak, normalized against the RepeatFuse deny rung. */
@@ -446,9 +443,8 @@ export interface ProviderDescriptor {
 
 /** Provider-native fields required to replay a turn across requests (thinking blocks, reasoning_content, etc.). */
 export interface ProviderReplay {
-  schema_version?: 1 | 2
   provider?: string
-  protocol?: ProviderProtocol
+  protocol: ProviderProtocol
   model?: string
   /** Anthropic-style assistant content blocks (thinking, text, tool_use). */
   native_blocks?: Array<Record<string, unknown>>
@@ -554,7 +550,7 @@ export interface LLMProvider {
     /** #2-B-ii: when provided, a preempting `InterruptNow` (or `interrupt()`) aborts the in-flight
      *  request. SDK-client providers should forward it to the client (`{ signal }`); the runner also
      *  breaks the consume loop on abort, so providers that ignore it still stop processing immediately
-     *  (only the socket lingers). Optional ⇒ backward-compatible; providers may ignore it. */
+     *  (only the socket lingers). */
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent>
 }

@@ -13,7 +13,7 @@ function estimateTokenCount(text: string): number {
  * Normalize a persisted llm_completed event for recovery. Content is sanitized
  * and token_count backfilled, but the stored `provider_replay` envelope is
  * passed through verbatim — this layer is provider-neutral and never
- * synthesizes protocol-specific replay shapes. Legacy reconstruction is the
+ * synthesizes protocol-specific replay shapes. Canonical replay seeding is the
  * responsibility of the target provider's `seedProviderReplay`.
  */
 export function normalizeLlmCompleted(

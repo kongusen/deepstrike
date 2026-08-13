@@ -13,7 +13,7 @@ function input(
   return {
     context: {
       systemText: "system",
-      turns: [{ role: "user", blocks: [{ type: "text", text: "hi" }], contentForm: "legacy_text" }],
+      turns: [{ role: "user", blocks: [{ type: "text", text: "hi" }], contentForm: "text" }],
     },
     tools: [{ name: "lookup", description: "Lookup", parameters: '{"type":"object"}' }],
     resolved: {
@@ -75,7 +75,6 @@ describe("SPC-013 A-07 OpenAI Chat WireDialect", () => {
         toolCalls: [{ id: "call_1", name: "lookup", arguments: "{}" }],
       },
       replay: {
-        schema_version: 2,
         provider: "deepseek",
         protocol: "openai-chat",
         model: "fixture-model",
@@ -107,14 +106,14 @@ describe("SPC-013 A-07 OpenAI Chat WireDialect", () => {
       requireReasoningReplay: () => false,
       replay: "generic_stream",
     }
-    const provider = new OpenAIChatProvider(
-      "k",
-      "fixture-model",
-      { maxRetries: 1, baseDelay: 0 },
-      "https://fixture.invalid/v1",
-      {},
-      fixture,
-    )
+    const provider = new OpenAIChatProvider({
+      apiKey: "k",
+      model: "fixture-model",
+      retry: { maxRetries: 1, baseDelay: 0 },
+      baseURL: "https://fixture.invalid/v1",
+      runtimePolicy: {},
+      dialect: fixture,
+    })
     let request: Record<string, unknown> | undefined
     ;(provider as any).client = {
       chat: { completions: { create: async (params: Record<string, unknown>) => {

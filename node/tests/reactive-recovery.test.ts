@@ -14,19 +14,23 @@
  * is awkward to construct reliably from a fresh e2e run.
  */
 import { RuntimeRunner } from "../src/runtime/runner.js"
+import { ProviderError } from "../src/providers/provider-error.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
 
 class ThrowingProvider implements LLMProvider {
   calls = 0
-  constructor(private readonly message: string) {}
+  constructor(private readonly message: string, private readonly overflow = false) {}
   async complete(): Promise<Message> {
     return { role: "assistant", content: "", toolCalls: [] }
   }
   // eslint-disable-next-line require-yield
   async *stream(): AsyncIterable<StreamEvent> {
     this.calls += 1
+    if (this.overflow) {
+      throw new ProviderError({ provider: "fixture", kind: "context_overflow", retryable: false, message: this.message })
+    }
     throw new Error(this.message)
   }
 }
@@ -43,7 +47,7 @@ function makeRunner(provider: LLMProvider) {
 
 describe("kernel-owned reactive recovery", () => {
   it("terminates an unrecoverable overflow as context_overflow and surfaces the error", async () => {
-    const provider = new ThrowingProvider("HTTP 413: prompt is too long")
+    const provider = new ThrowingProvider("HTTP 413: prompt is too long", true)
     const events: StreamEvent[] = []
     for await (const evt of makeRunner(provider).run({ sessionId: "overflow", goal: "x" })) {
       events.push(evt)

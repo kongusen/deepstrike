@@ -184,8 +184,7 @@ class OpenAIProvider(ReasoningReplayMixin):
             self._remember_dialect_replay(content, tool_calls, reasoning, phase="complete")
 
     def _remember_stream_replay(self, content: str, tool_calls: list, reasoning: OpenAIChatTurnReasoning) -> None:
-        """Persist replay after a streamed turn. Default reproduces the prior base behavior. Vendors
-        override to store their schema_v2 envelope."""
+        """Persist replay after a streamed turn using the endpoint dialect when one is bound."""
         if self._wire_dialect is not None:
             self._remember_dialect_replay(content, tool_calls, reasoning, phase="stream")
         else:
@@ -208,13 +207,13 @@ class OpenAIProvider(ReasoningReplayMixin):
             if not reasoning.reasoning_content.strip():
                 return
             envelope: dict[str, Any] = {
-                "schema_version": 2, "provider": dialect.provider_id, "protocol": "openai-chat",
+                "provider": dialect.provider_id, "protocol": "openai-chat",
                 "model": self._model, "reasoning_content": reasoning.reasoning_content,
             }
         elif dialect.replay_strategy == "minimax":
             if not reasoning.reasoning_content.strip() and reasoning.reasoning_details is None:
                 return
-            envelope = {"schema_version": 2, "provider": dialect.provider_id, "protocol": "openai-chat", "model": self._model}
+            envelope = {"provider": dialect.provider_id, "protocol": "openai-chat", "model": self._model}
             if reasoning.reasoning_content.strip():
                 envelope["reasoning_content"] = reasoning.reasoning_content
             if reasoning.reasoning_details is not None:

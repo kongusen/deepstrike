@@ -1,0 +1,13 @@
+{
+  "id": "provider-error-unknown-stop",
+  "domain": "provider_error",
+  "input": {
+    "stopReason": "vendor_new_reason"
+  },
+  "expected": {
+    "error": {
+      "code": "unknown_stop_reason",
+      "path": "/stopReason"
+    }
+  }
+}

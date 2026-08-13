@@ -1,12 +1,12 @@
 import pytest
 from deepstrike import (
-    AnthropicProvider, InMemorySessionLog, LocalExecutionPlane, OpenAIProvider, OllamaProvider,
+    AnthropicProvider, InMemorySessionLog, LocalExecutionPlane, OpenAIProvider,
     RuntimeOptions, RuntimeRunner, collect_text,
     Message, ToolSchema, ToolCall, ToolResult,
     tool, read_file,
-    Governance,
     RetryConfig,
 )
+from deepstrike.providers import gemini, ollama
 from deepstrike.kernel import CanonicalKernel, LoopPolicy, RuntimeTask, SignalRouter
 from deepstrike.governance import GovernancePolicy, GovernancePolicyRule
 from deepstrike.providers.stream import (
@@ -235,37 +235,6 @@ async def test_execution_plane_repairs_arguments():
     assert not result_events[0].is_error
 
 
-def test_governance_block_tool():
-    gov = Governance()
-    gov.block_tool("dangerous")
-    verdict = gov.evaluate("dangerous", "{}")
-    assert verdict.kind == "deny"
-
-
-def test_governance_full_pipeline_methods():
-    gov = Governance("deny")
-    gov.add_permission_rule("safe_*", "allow")
-    gov.set_rate_limit("safe_tool", max_calls=1, window_ms=1_000)
-    gov.require_param("safe_tool", "path")
-    gov.set_time(1_000)
-
-    verdict = gov.evaluate("safe_tool", '{"path": "README.md"}')
-    assert verdict.kind == "allow"
-
-    denied = gov.evaluate("unsafe_tool", "{}")
-    assert denied.kind == "deny"
-
-
-def test_governance_denies_malformed_args_json():
-    gov = Governance()
-    gov.allow_param_values("shell", "cmd", ["ls", "pwd"])
-    # Truncated JSON: the cmd constraint can never be evaluated, so the
-    # pipeline must deny (fail-closed), not skip the constraint and allow.
-    verdict = gov.evaluate("shell", '{"cmd": "rm -rf /"')
-    assert verdict.kind == "deny"
-    assert "JSON" in (verdict.reason or "")
-
-
 def test_signal_router():
     router = SignalRouter(max_queue_size=10)
     assert router.depth() == 0
@@ -288,22 +257,21 @@ def test_native_signal_abi_preserves_deadline_and_coalesce_fields():
 
 def test_provider_instantiation():
     assert OpenAIProvider(api_key="test")._model == "gpt-4o"
-    assert OllamaProvider(model="llama3")._model == "llama3"
+    assert ollama(model="llama3")._model == "llama3"
     assert AnthropicProvider(api_key="test", model="claude-opus-4-7")._model == "claude-opus-4-7"
-    from deepstrike.providers import GLMProvider
-    assert GLMProvider(api_key="test")._model == "glm-5.2"
-    assert GLMProvider(api_key="test", model="glm/glm-4-plus").runtime_policy().max_turns == 35
-    from deepstrike.providers import GeminiProvider, KimiProvider, MiniMaxAnthropicProvider, QwenProvider
+    from deepstrike.providers import glm, kimi, minimax, qwen
+    assert glm(api_key="test")._model == "glm-5.2"
+    assert glm(api_key="test", model="glm/glm-4-plus").runtime_policy().max_turns == 35
     assert AnthropicProvider(api_key="test", model="claude-opus-4-1").runtime_policy().max_turns == 50
     assert OpenAIProvider(api_key="test", model="gpt-5.5").runtime_policy().max_turns == 60
-    assert MiniMaxAnthropicProvider(api_key="test", model="MiniMax-M2.7-highspeed").runtime_policy().max_turns == 35
-    assert KimiProvider(api_key="test", model="kimi-k2-thinking").runtime_policy().max_turns == 50
-    assert QwenProvider(api_key="test", model="qwen3.7-max-preview").runtime_policy().max_turns == 45
-    assert QwenProvider(api_key="test", model="qwen3.5-plus").runtime_policy().max_turns == 35
-    assert GeminiProvider(api_key="test", model="gemini-3.5-flash").runtime_policy().max_turns == 30
+    assert minimax(api_key="test", model="MiniMax-M2.7-highspeed").runtime_policy().max_turns == 35
+    assert kimi(api_key="test", model="kimi-k2-thinking").runtime_policy().max_turns == 50
+    assert qwen(api_key="test", model="qwen3.7-max-preview").runtime_policy().max_turns == 45
+    assert qwen(api_key="test", model="qwen3.5-plus").runtime_policy().max_turns == 35
+    assert gemini(api_key="test", model="gemini-3.5-flash").runtime_policy().max_turns == 30
     assert OpenAIProvider(api_key="test", model="gpt-next-custom", base_url="https://gateway.example.com/v1")._base_url == "https://gateway.example.com/v1"
-    assert QwenProvider(api_key="test", model="qwen-next-custom", base_url="https://dashscope-gateway.example.com/v1")._base_url == "https://dashscope-gateway.example.com/v1"
-    assert GeminiProvider(api_key="test", model="gemini-next-custom", base_url="https://gemini-gateway.example.com")._base_url == "https://gemini-gateway.example.com"
+    assert qwen(api_key="test", model="qwen-next-custom", base_url="https://dashscope-gateway.example.com/v1")._base_url == "https://dashscope-gateway.example.com/v1"
+    assert gemini(api_key="test", model="gemini-next-custom", base_url="https://gemini-gateway.example.com")._base_url == "https://gemini-gateway.example.com"
 
 
 def test_retry_config_defaults():
@@ -369,10 +337,11 @@ async def test_ask_user_gated_tool_runs_after_host_approval():
         governance_policy=GovernancePolicy(
             rules=[GovernancePolicyRule(pattern="needs_approval", action="ask_user")],
         ),
-        on_permission_request=lambda request: {
-            "approved": request.tool_name == "needs_approval",
-            "responder": "test-host",
-        },
+            on_permission_request=lambda request: {
+                "approved": request.tool_name == "needs_approval",
+                "responder": "test-host",
+            },
+            baseline_tool_ids=["needs_approval"],
     ))
 
     events = [event async for event in runner.run(session_id="ask-user-approved", goal="run approved tool")]
@@ -406,11 +375,12 @@ async def test_ask_user_gated_tool_is_denied_after_host_rejection():
         governance_policy=GovernancePolicy(
             rules=[GovernancePolicyRule(pattern="needs_approval", action="ask_user")],
         ),
-        on_permission_request=lambda request: {
-            "approved": False,
-            "responder": "test-host",
-            "reason": "user declined",
-        },
+            on_permission_request=lambda request: {
+                "approved": False,
+                "responder": "test-host",
+                "reason": "user declined",
+            },
+            baseline_tool_ids=["needs_approval"],
     ))
 
     events = [event async for event in runner.run(session_id="ask-user-denied", goal="run rejected tool")]

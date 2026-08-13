@@ -1,16 +1,4 @@
-import { Governance, governancePolicyToKernelEvent } from "../src/governance.js"
-
-describe("Governance.evaluate fail-closed on malformed arguments", () => {
-  it("denies a call whose argsJson does not parse instead of skipping constraints", () => {
-    const gov = new Governance("allow")
-    gov.allowParamValues("shell", "cmd", ["ls", "pwd"])
-    // Truncated JSON (e.g. provider cut the stream): the constraint on `cmd` can
-    // never be evaluated, so the pipeline must deny, not fall through to allow.
-    const verdict = gov.evaluate("shell", '{"cmd":"rm -rf /"')
-    expect(verdict.kind).toBe("deny")
-    expect(verdict.reason).toMatch(/JSON|parse/i)
-  })
-})
+import { governancePolicyToKernelEvent } from "../src/governance.js"
 
 describe("governancePolicyToKernelEvent", () => {
   it("maps a declarative policy to the snake_case kernel event", () => {

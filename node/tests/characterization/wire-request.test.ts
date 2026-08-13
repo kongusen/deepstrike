@@ -138,7 +138,7 @@ function stubOllama(captured: { req?: unknown }): void {
 
 describe("spc_013-A-00 characterization: wire request bodies + complete decode", () => {
   it("anthropic-messages (official)", async () => {
-    const provider = new AnthropicProvider("sk-char", "claude-opus-4-1")
+    const provider = new AnthropicProvider({ apiKey: "sk-char", model: "claude-opus-4-1" })
     expectGolden("wire-anthropic", await captureComplete(provider, stubAnthropic))
   })
 
@@ -148,7 +148,7 @@ describe("spc_013-A-00 characterization: wire request bodies + complete decode",
   })
 
   it("openai-chat (official)", async () => {
-    const provider = new OpenAIChatProvider("sk-char", "gpt-4o")
+    const provider = new OpenAIChatProvider({ apiKey: "sk-char", model: "gpt-4o" })
     expectGolden("wire-openai-chat", await captureComplete(provider, stubOpenAiChat))
   })
 

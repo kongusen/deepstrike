@@ -15,7 +15,6 @@ Canonical Kernel ABI 是宿主与 [Agent Process Runtime](./agent-process-runtim
 
 ```json
 {
-  "abi_version": 3,
   "operation_id": "op-42",
   "input_id": "input-7",
   "observed_at_ms": "1785542400000",
@@ -34,7 +33,7 @@ Canonical Kernel ABI 是宿主与 [Agent Process Runtime](./agent-process-runtim
 }
 ```
 
-内核只接受当前 revision，不协商、不降级，也不通过 adapter 恢复旧 operation。
+内核只接受这一种 envelope，不协商、不降级，也不通过 adapter 恢复旧 operation。
 
 ## 五类输入
 
@@ -89,4 +88,4 @@ record 保存 normalized input、previous digest、record digest 和 step digest
 
 - [执行模型](./execution-model)
 - [Session 与恢复](./session-replay)
-- [Canonical Kernel ABI ADR](../decisions/005-canonical-kernel-abi)
+- [One Canonical Mechanism ADR](../decisions/006-one-canonical-mechanism)

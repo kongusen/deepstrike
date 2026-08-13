@@ -1,16 +1,15 @@
 import pytest
 
 from deepstrike.runtime.context_policy import (
-    context_policy_v1,
-    normalize_context_policy_v1,
+    context_policy,
+    normalize_context_policy,
     ratio_to_ppm,
 )
 
 
 def test_normalizes_context_ratios_to_cross_sdk_integer_ppm_wire():
-    wire = normalize_context_policy_v1(context_policy_v1())
+    wire = normalize_context_policy(context_policy())
     assert wire == {
-        "version": 1,
         "pressure_thresholds_ppm": {
             "snip": 700_000,
             "micro": 800_000,
@@ -29,8 +28,8 @@ def test_normalizes_context_ratios_to_cross_sdk_integer_ppm_wire():
 
 def test_context_policy_is_atomically_validated():
     with pytest.raises(ValueError, match="snip < micro"):
-        context_policy_v1({"pressure_thresholds": {"micro": 0.69}})
+        context_policy({"pressure_thresholds": {"micro": 0.69}})
     with pytest.raises(ValueError, match="lower than the snip"):
-        context_policy_v1({"target_after_compress": 0.70})
+        context_policy({"target_after_compress": 0.70})
     with pytest.raises(ValueError, match="between 0 and 1"):
-        context_policy_v1({"renewal_carryover": 1.1})
+        context_policy({"renewal_carryover": 1.1})

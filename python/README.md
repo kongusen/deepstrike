@@ -330,7 +330,7 @@ runner = RuntimeRunner(RuntimeOptions(
 | Option | Purpose |
 |--------|---------|
 | `governance_policy` | Declarative deny / ask_user / rate-limit / param rules installed before canonical root start |
-| `signal_policy` | Versioned in-kernel signal queue/TTL policy (default queue 64) |
+| `signal_policy` | In-kernel signal queue/TTL policy (default queue 64) |
 | `prompt_budget` | Provider-envelope overhead, output reserve, and safety margin deducted from the context window |
 | `on_permission_request` | Resolves `tool_gated` + `suspended` → kernel `resume` with approved/denied call IDs |
 | `compression_store` | Writes archived messages on `compressed` observations |
@@ -518,7 +518,7 @@ from deepstrike import MemoryProvenance, MemoryQuery, MemoryRecord, MemoryScope
 
 scope = MemoryScope(tenant_id="acme", namespace="assistant")
 await runner.write_memory(MemoryRecord(
-    record_id="prefers-small-tests-v1",
+    record_id="prefers-small-tests",
     scope=scope,
     name="prefers-small-tests",
     kind="feedback",

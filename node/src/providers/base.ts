@@ -168,8 +168,7 @@ function contentBlockToAnthropic(block: ToolOutputBlock): Record<string, unknown
 }
 
 /**
- * spc_012-N-03: structured `contentParts` win when present; otherwise the legacy text
- * projection (`output`) is the content, byte-identical to the pre-spc_012 behavior.
+ * Structured `contentParts` win when present; otherwise `output` is the text form.
  */
 function toolResultAnthropicContent(p: Extract<ContentPart, { type: "tool_result" }>): string | Array<Record<string, unknown>> {
   if (p.contentParts !== undefined) return normalizeToolResultPart(p).blocks.map(contentBlockToAnthropic)

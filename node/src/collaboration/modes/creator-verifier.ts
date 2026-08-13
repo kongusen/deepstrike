@@ -14,14 +14,12 @@ export interface CreatorVerifierMetrics {
 /**
  * CreatorVerifierMode — the simplest multi-agent collaboration pattern.
  *
- * By default uses the kernel spawn path via `pool.ensureCoordinator()`.
- * Pass `useLegacyRunners: true` to fall back to independent runner sessions.
+ * Uses the kernel spawn path through an explicitly configured coordinator.
  *
  * Usage:
  * ```ts
  * const pool = new AgentPool()
- *   .add("executor", executorRunner)
- *   .add("verifier", verifierRunner)
+ *   .configureCoordinator(runtimeOptions, sessionId)
  *
  * const mode = new CreatorVerifierMode(pool)
  * const result = await mode.run(contract)
@@ -39,15 +37,13 @@ export class CreatorVerifierMode {
     private pool: AgentPool,
     private options: {
       maxAttempts?: number
-      /** Stable orchestration session for kernel lineage audit. */
-      coordinatorSessionId?: string
     } = {},
   ) {}
 
   async run(contract: VerificationContract): Promise<ContractOutcome> {
     this._total++
 
-    this.pool.ensureCoordinator(this.options.coordinatorSessionId)
+    this.pool.ensureCoordinator()
 
     const loop = new AttemptLoop({
       body: new CreatorVerifierBody(this.pool, contract),
@@ -131,13 +127,13 @@ export class OrchestrationMode {
 
   constructor(
     private pool: AgentPool,
-    private options: { maxAttempts?: number; coordinatorSessionId?: string } = {},
+    private options: { maxAttempts?: number } = {},
   ) {
     this.inner = new CreatorVerifierMode(pool, options)
   }
 
   async run(goal: string): Promise<ContractOutcome & { contract: VerificationContract }> {
-    this.pool.ensureCoordinator(this.options.coordinatorSessionId)
+    this.pool.ensureCoordinator()
     // Step 1: orchestrator produces a VerificationContract
     const contractJson = await this.pool.orchestrate(goal)
     const contract = this._parseContract(contractJson, goal)

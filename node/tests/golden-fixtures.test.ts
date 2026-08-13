@@ -27,7 +27,7 @@ describe("Node canonical ABI fixtures", () => {
     const kernel = new native.CanonicalKernel()
 
     for (const [index, link] of fixture.links.entries()) {
-      expect(link.envelope.abi_version).toBe(native.kernelAbiVersion())
+      expect(link.envelope).not.toHaveProperty("abi_version")
       const prepared = kernel.prepare(JSON.stringify(link.envelope))
       expect(prepared.status).toBe("prepared")
       if (prepared.status !== "prepared") throw new Error("expected prepared transition")

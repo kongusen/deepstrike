@@ -1,6 +1,5 @@
-//! spc_003-03: `WaitIndex` — the reverse index that turns "an event arrived" into "which tasks
-//! wake up" without scanning every task. Pure in-memory data structure; not wired to `TaskTable`
-//! or `Tcb.wait` in this card (that is spc_003-04).
+//! `WaitIndex` is the derived reverse index that turns "an event arrived" into "which tasks wake
+//! up" without scanning every task. It is rebuilt from durable task wait sets after restore.
 
 use std::collections::{BTreeMap, HashMap};
 

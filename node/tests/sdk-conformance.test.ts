@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url"
 import { dirname, join, resolve } from "node:path"
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..")
-const fixturesDir = join(root, "tests", "fixtures", "sdk-conformance", "v1")
+const fixturesDir = join(root, "tests", "fixtures", "sdk-conformance", "canonical")
 const adapter = join(root, "scripts", "sdk-conformance", "node-adapter.mjs")
 
 function runFixture(path: string): Record<string, unknown> {
@@ -27,7 +27,6 @@ function runAdapterFixture(fixture: Record<string, unknown>): Record<string, unk
 
 function promptMeasurementFixture(expectedCanonical: Record<string, unknown>): Record<string, unknown> {
   return {
-    schemaVersion: 1,
     id: "adapter-focused",
     domain: "prompt_measurement",
     input: {
@@ -38,17 +37,16 @@ function promptMeasurementFixture(expectedCanonical: Record<string, unknown>): R
         confidence: "low_confidence",
       },
     },
-    expected: { contractVersion: 1, canonical: expectedCanonical },
+    expected: { canonical: expectedCanonical },
   }
 }
 
 function agentIrFixture(reference: string): Record<string, unknown> {
   return {
-    schemaVersion: 1,
     id: "adapter-focused",
     domain: "agent_ir",
     input: { fixture: reference },
-    expected: { contractVersion: 1, canonical: {} },
+    expected: { canonical: {} },
   }
 }
 
@@ -58,19 +56,17 @@ describe("spc_017 Node SDK conformance adapter", () => {
       const path = join(fixturesDir, name)
       const fixture = JSON.parse(await (await import("node:fs/promises")).readFile(path, "utf8")) as {
         id: string
-        expected: { contractVersion: number; canonical?: Record<string, unknown>; error?: { code: string; path: string } }
+        expected: { canonical?: Record<string, unknown>; error?: { code: string; path: string } }
       }
       const envelope = runFixture(path)
 
       expect(envelope.sdk).toBe("node")
       expect(envelope.fixture).toBe(fixture.id)
-      expect(envelope.contractVersion).toBe(fixture.expected.contractVersion)
       if (fixture.expected.canonical) {
         expect(envelope).toEqual({
           ok: true,
           sdk: "node",
           fixture: fixture.id,
-          contractVersion: fixture.expected.contractVersion,
           canonical: fixture.expected.canonical,
         })
       } else {
@@ -78,7 +74,6 @@ describe("spc_017 Node SDK conformance adapter", () => {
           ok: false,
           sdk: "node",
           fixture: fixture.id,
-          contractVersion: fixture.expected.contractVersion,
           error: fixture.expected.error,
         })
         expect((envelope.error as { message?: unknown }).message).toEqual(expect.any(String))
@@ -88,7 +83,6 @@ describe("spc_017 Node SDK conformance adapter", () => {
 
   it("derives canonical output from the SDK instead of expected fixture shape", () => {
     const envelope = runAdapterFixture(promptMeasurementFixture({
-      version: 1,
       requestFingerprint: "sha256:focused",
       inputTokens: 12,
       source: { kind: "heuristic" },
@@ -100,9 +94,7 @@ describe("spc_017 Node SDK conformance adapter", () => {
       ok: true,
       sdk: "node",
       fixture: "adapter-focused",
-      contractVersion: 1,
       canonical: {
-        version: 1,
         requestFingerprint: "sha256:focused",
         inputTokens: 12,
         source: { kind: "heuristic" },
@@ -112,10 +104,10 @@ describe("spc_017 Node SDK conformance adapter", () => {
   })
 
   it.each([
-    ["absolute path", resolve(root, "tests", "fixtures", "agent-ir", "v1-agent.json")],
+    ["absolute path", resolve(root, "tests", "fixtures", "agent-ir", "canonical-agent.json")],
     ["UNC path", "\\\\server\\share\\agent.json"],
     ["fixtures root", "."],
-    ["parent traversal", "agent-ir/../agent-ir/v1-agent.json"],
+    ["parent traversal", "agent-ir/../agent-ir/canonical-agent.json"],
   ])("rejects an input.fixture %s", (_label, reference) => {
     const envelope = runAdapterFixture(agentIrFixture(reference))
 
@@ -131,7 +123,7 @@ describe("spc_017 Node SDK conformance adapter", () => {
     const directory = mkdtempSync(join(tmpdir(), "deepstrike-sdk-conformance-source-"))
     const outside = join(directory, "agent.json")
     const link = join(root, "tests", "fixtures", `.sdk-conformance-escape-${process.pid}-${Date.now()}.json`)
-    writeFileSync(outside, readFileSync(join(root, "tests", "fixtures", "agent-ir", "v1-agent.json")))
+    writeFileSync(outside, readFileSync(join(root, "tests", "fixtures", "agent-ir", "canonical-agent.json")))
     symlinkSync(outside, link)
     try {
       const envelope = runAdapterFixture(agentIrFixture(link.slice(join(root, "tests", "fixtures").length + 1)))

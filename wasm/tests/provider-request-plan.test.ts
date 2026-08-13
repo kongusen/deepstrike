@@ -2,14 +2,14 @@ import { createProviderRequestPlan, createProviderRequestPlanForProvider, estima
 import { contentDispositionFor, requireContentDisposition } from "../src/providers/content-policy.js"
 import { contentDispositionFor as exportedContentDispositionFor } from "../src/index.js"
 import { decodeCanonicalStopReason, normalizeProviderStopReason } from "../src/providers/stop-reason.js"
-import { OpenAIProvider, QwenProvider } from "../src/providers/openai.js"
+import { OpenAIProvider, qwen } from "../src/providers/openai.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
 describe("spc_016-01 WASM request plan", () => {
   it("uses the shared cross-SDK SHA-256 fingerprint fixture", () => {
-    const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/provider-request-plan/v1.json"), "utf8")) as {
+    const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/provider-request-plan/canonical.json"), "utf8")) as {
       input: Parameters<typeof createProviderRequestPlan>[0]
       fingerprint: string
     }
@@ -42,9 +42,9 @@ describe("spc_016-01 WASM request plan", () => {
   })
 
   it("built-in providers expose the endpoint used by their wire request", () => {
-    expect(createProviderRequestPlanForProvider(new OpenAIProvider("secret"), contextForPlan(), []).endpoint)
+    expect(createProviderRequestPlanForProvider(new OpenAIProvider({ apiKey: "secret" }), contextForPlan(), []).endpoint)
       .toEqual({ id: "openai.chat", protocol: "openai-chat", baseURL: "https://api.openai.com/v1" })
-    expect(createProviderRequestPlanForProvider(new QwenProvider("secret"), contextForPlan(), []).endpoint)
+    expect(createProviderRequestPlanForProvider(qwen({ apiKey: "secret" }), contextForPlan(), []).endpoint)
       .toEqual({ id: "qwen.dashscope", protocol: "openai-chat", baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1" })
     expect(createProviderRequestPlanForProvider(new AnthropicProvider("secret"), contextForPlan(), []).endpoint)
       .toEqual({ id: "anthropic.messages", protocol: "anthropic-messages", baseURL: "https://api.anthropic.com" })
@@ -104,7 +104,7 @@ describe("spc_015-06 WASM content policy", () => {
   })
 
   it("matches the shared cross-SDK content policy fixture", () => {
-    const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/provider-content-policy/v1.json"), "utf8")) as {
+    const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/provider-content-policy/canonical.json"), "utf8")) as {
       cases: Array<{ protocol: string; modality: "text" | "image" | "audio" | "video" | "file"; placement: "message" | "tool_result"; disposition: string }>
     }
     for (const testCase of fixture.cases) {

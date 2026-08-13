@@ -99,7 +99,7 @@ function errorMessage(error: unknown): string {
 }
 
 function classifyKind(error: unknown, status: number | undefined, code: string | undefined): ProviderErrorKind {
-  if (code && CONTEXT_OVERFLOW_CODES.has(code.toLowerCase())) return "context_overflow"
+  if (status === 413 || (code && CONTEXT_OVERFLOW_CODES.has(code.toLowerCase()))) return "context_overflow"
 
   const name = error instanceof Error ? error.name : scalarString(object(error)?.name)
   if (name === "UnsupportedModalityError") return "modality"

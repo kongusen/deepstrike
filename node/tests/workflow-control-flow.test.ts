@@ -7,7 +7,6 @@ import {
   loopInstruction,
   classifyInstruction,
   judgeGoal,
-  extractLoopContinue,
   extractClassifyBranch,
   extractJudgeWinner,
 } from "../src/runtime/workflow-control-flow.js"
@@ -81,13 +80,6 @@ describe("subAgentResultToKernel: control-flow signals", () => {
 })
 
 describe("control-flow extractors", () => {
-  it("extractLoopContinue reads loop_continue / done; undefined when absent", () => {
-    expect(extractLoopContinue('{"loop_continue": false}')).toBe(false)
-    expect(extractLoopContinue('{"loop_continue": true}')).toBe(true)
-    expect(extractLoopContinue('done now: {"done": true}')).toBe(false)
-    expect(extractLoopContinue("no json here")).toBeUndefined()
-  })
-
   it("extractClassifyBranch prefers {branch}, falls back to a bare valid label", () => {
     expect(extractClassifyBranch('{"branch": "bug"}', ["bug", "feature"])).toBe("bug")
     expect(extractClassifyBranch("feature", ["bug", "feature"])).toBe("feature")

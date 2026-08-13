@@ -332,7 +332,6 @@ impl CanonicalKernel {
 fn rejection_fault(rejection: WireRejection) -> KernelFault {
     let code = match rejection.kind {
         WireRejectionKind::PolicyViolation => KernelFaultCode::InvalidConfig,
-        WireRejectionKind::VersionMismatch => KernelFaultCode::VersionMismatch,
         _ => KernelFaultCode::MalformedEnvelope,
     };
     KernelFault::new(code, rejection.message)

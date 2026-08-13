@@ -34,7 +34,7 @@ describe("session-repair", () => {
   })
 
   it("passes a stored provider_replay envelope through verbatim", () => {
-    const stored = { schema_version: 2 as const, provider: "deepseek", protocol: "openai-chat" as const, reasoning_content: "trace" }
+    const stored = { provider: "deepseek", protocol: "openai-chat" as const, reasoning_content: "trace" }
     const repaired = repairEventsForRecovery([{
       seq: 0,
       event: {

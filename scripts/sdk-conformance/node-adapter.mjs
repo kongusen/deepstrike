@@ -58,7 +58,6 @@ async function canonicalFor(fixture) {
       const source = JSON.parse(await readFile(await inputFixturePath(input.fixture), "utf8"))
       const lowered = lowerAgent(normalizeAgent(source))
       return {
-        version: lowered.version,
         name: lowered.name,
         ...(lowered.capabilityFilter ? { capabilityFilter: lowered.capabilityFilter } : {}),
         effectiveCapabilities: lowered.effectiveCapabilities,
@@ -75,7 +74,6 @@ async function canonicalFor(fixture) {
         : input.value
       const result = decodeDurableToolResult(value)
       return {
-        schema_version: result.schema_version,
         call_id: result.call_id,
         is_error: result.is_error,
         blockTypes: result.blocks.map(block => block.type),
@@ -139,7 +137,6 @@ async function main() {
   const base = {
     sdk: "node",
     fixture: fixture.id,
-    contractVersion: fixture.expected?.contractVersion,
   }
   try {
     const canonical = await canonicalFor(fixture)

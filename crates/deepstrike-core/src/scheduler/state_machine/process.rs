@@ -1,6 +1,6 @@
 //! Sub-agent process lifecycle impl for [`super::LoopStateMachine`].
 
-use super::super::tcb::{TaskLifecycle, TaskTable, Tcb, WaitReason};
+use super::super::tcb::{TaskLifecycle, TaskTable, Tcb, WaitCondition, WaitMode, WaitSet};
 use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, SuspendState};
 use crate::AgentRunSpec;
 use crate::proc::AgentProcess;
@@ -53,7 +53,10 @@ impl LoopStateMachine {
         });
         self.set_lifecycle(
             TaskLifecycle::Suspended,
-            Some(WaitReason::SubAgentJoin(vec![manifest.agent_id.clone()])),
+            Some(WaitSet {
+                mode: WaitMode::All,
+                conditions: vec![WaitCondition::Child(manifest.agent_id.clone())],
+            }),
         );
         self.observations.push(KernelObservation::Suspended {
             turn: self.turn,
@@ -70,7 +73,7 @@ impl LoopStateMachine {
             .is_some_and(|w| w.owns_agent(result.agent_id.as_str()));
         // M1 収口: record the join on the child task itself (the source of truth) — both the
         // terminal lifecycle and the result payload — then rebuild the `AgentProcess` view row.
-        // The terminal `TaskLifecycle` preserves the legacy `ProcessState`→`TaskLifecycle` mapping
+        // The terminal `TaskLifecycle` preserves the `ProcessState`→`TaskLifecycle` mapping
         // (`Completed`→`Done(Completed)`, anything else→`Done(Error)`).
         let terminal_state = match result.result.termination {
             TerminationReason::Completed => TaskLifecycle::Done(TerminationReason::Completed),
@@ -152,8 +155,12 @@ impl LoopStateMachine {
 
         let agent_id = result.agent_id.to_string();
         // Suspended awaiting a sub-agent join (lifecycle on the root task, M1d).
-        let awaiting_sub_agent =
-            self.is_suspended() && matches!(self.wait_reason(), Some(WaitReason::SubAgentJoin(_)));
+        let awaiting_sub_agent = self.is_suspended()
+            && self.wait_set().is_some_and(|wait| {
+                wait.conditions
+                    .iter()
+                    .any(|condition| matches!(condition, WaitCondition::Child(_)))
+            });
         let resume_parent = match self.suspend_state.as_mut() {
             Some(SuspendState::SubAgentAwait { agent_ids }) if awaiting_sub_agent => {
                 agent_ids.retain(|id| id != &agent_id);

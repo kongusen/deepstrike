@@ -11,7 +11,7 @@ const context: RenderedContext = { systemText: "", turns: [{ role: "user", conte
 
 describe("provider surfaces stop_reason on the usage event", () => {
   it("OpenAI maps finish_reason=length to stopReason on usage (separate frames)", async () => {
-    const provider = new OpenAIChatProvider("test-key")
+    const provider = new OpenAIChatProvider({ apiKey: "test-key" })
     ;(provider as unknown as { client: { chat: { completions: { create(): Promise<AsyncIterable<Record<string, unknown>>> } } } }).client = {
       chat: { completions: { async create() {
         return { async *[Symbol.asyncIterator]() {
@@ -34,7 +34,7 @@ describe("provider surfaces stop_reason on the usage event", () => {
   })
 
   it("OpenAI maps a clean stop to canonical end_turn", async () => {
-    const provider = new OpenAIChatProvider("test-key")
+    const provider = new OpenAIChatProvider({ apiKey: "test-key" })
     ;(provider as unknown as { client: { chat: { completions: { create(): Promise<AsyncIterable<Record<string, unknown>>> } } } }).client = {
       chat: { completions: { async create() {
         return { async *[Symbol.asyncIterator]() {

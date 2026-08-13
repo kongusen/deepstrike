@@ -150,9 +150,7 @@ impl LoopStateMachine {
         }
     }
 
-    /// Execute one [`EvictionOp`] from an [`EvictionPlan`] — the single compaction execution
-    /// funnel (M3). Each op maps to the appropriate legacy compression path for now (behavior
-    /// preservation); the full refactor (step 3+) will route each to a dedicated executor.
+    /// Execute one [`EvictionOp`] from an [`EvictionPlan`] through the single compaction funnel.
     pub(super) fn execute_eviction_op(&mut self, op: &crate::mm::EvictionOp) {
         use crate::mm::EvictionOp;
         match op {

@@ -73,7 +73,6 @@ async def test_stages_an_outbound_envelope_until_clear(journal: KernelJournal):
     assert await journal.read_outbound_envelope(OP) is None
     envelope = json.dumps(
         {
-            "abi_version": 3,
             "operation_id": OP,
             "input_id": "input-stage-1",
             "observed_at_ms": "1753747200099",
@@ -84,8 +83,8 @@ async def test_stages_an_outbound_envelope_until_clear(journal: KernelJournal):
     await journal.stage_outbound_envelope(OP, envelope)
     assert await journal.read_outbound_envelope(OP) == envelope
 
-    await journal.stage_outbound_envelope(OP, envelope + "+v2")
-    assert await journal.read_outbound_envelope(OP) == envelope + "+v2"
+    await journal.stage_outbound_envelope(OP, envelope + "+updated")
+    assert await journal.read_outbound_envelope(OP) == envelope + "+updated"
 
     await journal.clear_outbound_envelope(OP)
     assert await journal.read_outbound_envelope(OP) is None
@@ -95,7 +94,6 @@ async def test_stages_an_outbound_envelope_until_clear(journal: KernelJournal):
 async def test_file_outbound_envelope_survives_remount(tmp_path: Path):
     envelope = json.dumps(
         {
-            "abi_version": 3,
             "operation_id": OP,
             "input_id": "input-remount",
             "observed_at_ms": "1753747200888",

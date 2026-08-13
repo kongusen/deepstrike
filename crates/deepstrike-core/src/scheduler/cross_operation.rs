@@ -11,8 +11,6 @@ use crate::mm::handle::ObjectDescriptor;
 use crate::scheduler::tcb::TaskId;
 use crate::types::capability::Capability;
 
-pub const CROSS_OPERATION_IPC_ABI_VERSION: u32 = 1;
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationAddress {
@@ -158,7 +156,6 @@ pub struct ReceiverSequenceSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CrossOperationRouterSnapshot {
-    pub version: u32,
     pub max_pending_per_recipient: usize,
     pub operations: Vec<OperationRegistration>,
     pub deliveries: Vec<DurableDelivery>,
@@ -168,7 +165,6 @@ pub struct CrossOperationRouterSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotError {
-    UnsupportedVersion(u32),
     DuplicateOperation(OperationAddress),
     DuplicateDelivery(CompactString),
     DuplicateQueue(OperationAddress),
@@ -419,7 +415,6 @@ impl CrossOperationRouter {
 
     pub fn snapshot(&self) -> CrossOperationRouterSnapshot {
         CrossOperationRouterSnapshot {
-            version: CROSS_OPERATION_IPC_ABI_VERSION,
             max_pending_per_recipient: self.max_pending_per_recipient,
             operations: self.operations.values().cloned().collect(),
             deliveries: self.deliveries.values().cloned().collect(),
@@ -443,9 +438,6 @@ impl CrossOperationRouter {
     }
 
     pub fn from_snapshot(snapshot: CrossOperationRouterSnapshot) -> Result<Self, SnapshotError> {
-        if snapshot.version != CROSS_OPERATION_IPC_ABI_VERSION {
-            return Err(SnapshotError::UnsupportedVersion(snapshot.version));
-        }
         let mut router = Self::new(snapshot.max_pending_per_recipient);
         for operation in snapshot.operations {
             if !router.register(operation.clone()) {

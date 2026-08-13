@@ -109,7 +109,6 @@ export function kernelObservationToSessionEvent(
         kind: "entropy_sample" as const,
         turn: t,
         score: obs.score ?? 0,
-        score_version: obs.score_version ?? 0,
         rho: obs.rho ?? 0,
         repeat_pressure: obs.repeat_pressure ?? 0,
         failure_rate: obs.failure_rate ?? 0,

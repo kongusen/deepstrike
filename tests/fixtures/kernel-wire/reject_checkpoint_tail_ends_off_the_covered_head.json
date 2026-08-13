@@ -1,10 +1,8 @@
 {
   "checkpoint": {
-    "abi_version": 3,
     "base_record_digest": "sha256:7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4",
     "base_step_seq": "2",
-    "checkpoint_digest": "sha256:3744cd76e442d0778fb1fd9c0b66bbb4b3902359aee72a3e8bade7c4cb459bb4",
-    "checkpoint_version": 1,
+    "checkpoint_digest": "sha256:80e2e8bac769a1a0275622555b58e3bbc56f2377c17a4a4ec4a8e8a4f3367459",
     "covered_transaction_head_digest": "sha256:161fcc53e5674fa7b6660f0742c8e4d3eb8996bfd341b49bf57800a06b1d3e56",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
@@ -41,6 +39,7 @@
         }
       },
       "scheduler": {
+        "advertised_tool_ids": null,
         "attempts": [],
         "entropy": {
           "disarmed": false,
@@ -51,6 +50,7 @@
         "milestone": null,
         "queued_signals": [],
         "rounds_completed": 0,
+        "run_spec": null,
         "signal_dedupe_keys": [],
         "started_at_ms": null,
         "subagents_spawned": 0,
@@ -84,7 +84,6 @@
         "lifecycle": "running",
         "pending_effects": [],
         "resolved_config": {
-          "abi_version": 3,
           "budget_grant": null,
           "context_policy": {
             "collapse_old_assistant_narration": true,
@@ -129,8 +128,7 @@
             "knowledge_enabled": false,
             "memory_enabled": false,
             "plan_tool_enabled": false,
-            "stable_core_tool_ids": [],
-            "tool_dispatch_gate": "exposed"
+            "stable_core_tool_ids": []
           },
           "governance_policy": {
             "constraints": [],
@@ -206,15 +204,13 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:20f77f79107771d3fb737c56da801f25e2719cedba0ba243518a26b4e05cf340",
-    "tail_digest": "sha256:455f32684bff42ca05a8519e7a3a9a1314d2438c75a2aeec962a81b08c542fd5",
+    "state_digest": "sha256:8c3903bb7174875d17eb2c8011269a113fc70c480528204df0d70ed74f767608",
+    "tail_digest": "sha256:3eb63ddfab0b7fcf55057e5bb2f1977d793aa39fd5a28a5861fb553719a2b049",
     "tail_inputs": [
       {
         "input": {
-          "abi_version": 3,
           "input": {
             "config": {
-              "abi_version": 3,
               "budget_grant": null,
               "context_policy": {
                 "collapse_old_assistant_narration": true,
@@ -259,8 +255,7 @@
                 "knowledge_enabled": false,
                 "memory_enabled": false,
                 "plan_tool_enabled": false,
-                "stable_core_tool_ids": [],
-                "tool_dispatch_gate": "exposed"
+                "stable_core_tool_ids": []
               },
               "governance_policy": {
                 "constraints": [],
@@ -341,10 +336,8 @@
       },
       {
         "input": {
-          "abi_version": 3,
           "input": {
             "config": {
-              "abi_version": 3,
               "budget_grant": null,
               "context_policy": {
                 "collapse_old_assistant_narration": true,
@@ -389,8 +382,7 @@
                 "knowledge_enabled": false,
                 "memory_enabled": false,
                 "plan_tool_enabled": false,
-                "stable_core_tool_ids": [],
-                "tool_dispatch_gate": "exposed"
+                "stable_core_tool_ids": []
               },
               "governance_policy": {
                 "constraints": [],

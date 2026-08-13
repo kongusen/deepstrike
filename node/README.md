@@ -443,7 +443,7 @@ const runner = new RuntimeRunner({
 | Option | Purpose |
 |--------|---------|
 | `governancePolicy` | Declarative deny / ask_user / rate-limit / param rules installed before canonical root start |
-| `signalPolicy` | Versioned in-kernel signal queue/TTL policy (default queue 64) |
+| `signalPolicy` | In-kernel signal queue/TTL policy (default queue 64) |
 | `promptBudget` | Provider-envelope overhead, output reserve, and safety margin deducted from the context window |
 | `resourceQuota` | M2 declarative limits — `maxConcurrentSubagents` / `maxTotalSubagents` / `maxSpawnDepth` / `maxWorkflowNodes` / `memoryWritesPerWindow` — enforced at the kernel syscall trap (`set_resource_quota`); over-quota spawns roll back, over-rate writes surface as `memory_validation_failed` |
 | `memoryPolicy` | Canonical long-term memory policy: `validationEnabled: false` admits writes without validation, `maxContentBytes` / `maxNameLength` override validation limits, `retrievalTopK` caps `query_memory` breadth, and `staleWarningDays` controls stale recall policy. Storage belongs to the configured `memoryStore`. |

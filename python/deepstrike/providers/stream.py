@@ -159,11 +159,10 @@ class ToolAuditFailedEvent:
 class EntropySample:
     """Kernel session-entropy measurement at a completed turn boundary. "Entropy" = session
     disorder: repetition, tool failures, rollbacks, context pressure. The component vector is
-    the contract; ``score`` is a versioned default fold (``score_version``). All normalized
+    the contract; ``score`` is the canonical default fold. All normalized
     components are in [0, 1]."""
     turn: int = 0
     score: float = 0.0
-    score_version: int = 0
     rho: float = 0.0
     repeat_pressure: float = 0.0
     failure_rate: float = 0.0

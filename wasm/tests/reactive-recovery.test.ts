@@ -5,6 +5,7 @@
  * mirrors the real ladder (bounded compact-and-retry, then honest ContextOverflow terminal).
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
+import { ProviderError } from "../src/providers/provider-error.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
 
 function makeRunner(provider: LLMProvider) {
@@ -22,7 +23,10 @@ describe("kernel-owned reactive recovery (wasm runner wiring)", () => {
     const provider: LLMProvider = {
       async *stream(): AsyncIterable<StreamEvent> {
         calls += 1
-        if (calls === 1) throw new Error("HTTP 413: prompt is too long")
+        if (calls === 1) throw new ProviderError({
+          provider: "fixture", kind: "context_overflow", retryable: false,
+          message: "HTTP 413: prompt is too long",
+        })
         yield { type: "text_delta", delta: "ok" }
       },
       async complete(): Promise<Message> {
@@ -47,7 +51,10 @@ describe("kernel-owned reactive recovery (wasm runner wiring)", () => {
       // eslint-disable-next-line require-yield
       async *stream(): AsyncIterable<StreamEvent> {
         calls += 1
-        throw new Error("413 context_length_exceeded")
+        throw new ProviderError({
+          provider: "fixture", kind: "context_overflow", retryable: false,
+          message: "413 context_length_exceeded",
+        })
       },
       async complete(): Promise<Message> {
         return { role: "assistant", content: "", toolCalls: [] }

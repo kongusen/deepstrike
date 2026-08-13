@@ -355,7 +355,7 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
         ...(usage ? { tokenCount: usage.outputTokens } : {}),
         toolCalls,
       },
-      ...(blocks?.length ? { replay: { native_blocks: blocks } } : {}),
+      ...(blocks?.length ? { replay: { protocol: "anthropic-messages" as const, native_blocks: blocks } } : {}),
     }
   }
 
@@ -467,7 +467,7 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
       .map(index => state.nativeBlocks[index])
     return {
       events: [],
-      ...(blocks.length ? { replay: { native_blocks: blocks } } : {}),
+      ...(blocks.length ? { replay: { protocol: "anthropic-messages" as const, native_blocks: blocks } } : {}),
     }
   }
 

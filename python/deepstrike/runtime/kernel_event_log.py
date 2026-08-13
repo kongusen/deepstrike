@@ -119,7 +119,6 @@ def kernel_observation_to_session_event(
             "kind": "entropy_sample",
             "turn": t,
             "score": obs.get("score") or 0.0,
-            "score_version": obs.get("score_version") or 0,
             "rho": obs.get("rho") or 0.0,
             "repeat_pressure": obs.get("repeat_pressure") or 0.0,
             "failure_rate": obs.get("failure_rate") or 0.0,

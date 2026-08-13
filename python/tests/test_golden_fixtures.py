@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from deepstrike.kernel.canonical import (
-  KERNEL_ABI_VERSION,
   CanonicalKernel,
   CanonicalPrepared,
 )
@@ -19,7 +18,7 @@ def _drive_fixture(name: str) -> CanonicalKernel:
   fixture = json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
   kernel = CanonicalKernel()
   for index, link in enumerate(fixture["links"]):
-    assert link["envelope"]["abi_version"] == KERNEL_ABI_VERSION
+    assert "abi_version" not in link["envelope"]
     prepared = kernel.prepare(json.dumps(link["envelope"], separators=(",", ":")))
     assert isinstance(prepared, CanonicalPrepared)
     assert prepared.step_seq == index

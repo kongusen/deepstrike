@@ -1,82 +1,15 @@
 //! Input envelope and the five-class input taxonomy (spec §7.1, §7.2).
 
-use serde::de::{self, Deserializer, Visitor};
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use super::KernelBootstrapLimits;
 use super::command::HostCommand;
 use super::config::OperationConfig;
 use super::effect::EffectOutcome;
 use super::event::ExternalEvent;
 use super::root::{InitialContext, RootEntry};
 use super::scalar::{EffectId, InputId, OperationId, SCALAR_ERROR_MARKER, WireU64};
-use super::{KERNEL_ABI_VERSION, KernelBootstrapLimits};
-
-// ---------------------------------------------------------------------------------------------
-// revision
-// ---------------------------------------------------------------------------------------------
-
-/// The wire revision marker. Only [`KERNEL_ABI_VERSION`] decodes — §16.2 has no negotiation, no
-/// adapter and no inference from missing fields, so the revision check belongs in the type, not
-/// in one lucky code path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct AbiRevision(u32);
-
-impl AbiRevision {
-    pub const CURRENT: Self = Self(KERNEL_ABI_VERSION);
-
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-}
-
-impl Default for AbiRevision {
-    fn default() -> Self {
-        Self::CURRENT
-    }
-}
-
-impl Serialize for AbiRevision {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u32(self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for AbiRevision {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct RevisionVisitor;
-
-        impl Visitor<'_> for RevisionVisitor {
-            type Value = AbiRevision;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(f, "the kernel ABI revision {KERNEL_ABI_VERSION}")
-            }
-
-            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
-                if value == u64::from(KERNEL_ABI_VERSION) {
-                    Ok(AbiRevision::CURRENT)
-                } else {
-                    Err(E::custom(format!(
-                        "{SCALAR_ERROR_MARKER}: unsupported kernel ABI revision {value}; \
-                         this kernel accepts only revision {KERNEL_ABI_VERSION}"
-                    )))
-                }
-            }
-
-            fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
-                if value < 0 {
-                    return Err(E::custom(format!(
-                        "{SCALAR_ERROR_MARKER}: unsupported kernel ABI revision {value}"
-                    )));
-                }
-                self.visit_u64(value as u64)
-            }
-        }
-
-        deserializer.deserialize_u32(RevisionVisitor)
-    }
-}
 
 // ---------------------------------------------------------------------------------------------
 // envelope
@@ -95,7 +28,6 @@ impl<'de> Deserialize<'de> for AbiRevision {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WireEnvelope {
-    pub abi_version: AbiRevision,
     pub operation_id: OperationId,
     pub input_id: InputId,
     pub observed_at_ms: WireU64,
@@ -110,7 +42,6 @@ impl WireEnvelope {
         input: KernelInput,
     ) -> Self {
         Self {
-            abi_version: AbiRevision::CURRENT,
             operation_id,
             input_id,
             observed_at_ms,
@@ -197,8 +128,7 @@ pub enum InputAuthority {
     HostControlPlane,
 }
 
-/// Operation lifecycle (§6). Wire-local on purpose: the canonical contract owns its own
-/// vocabulary rather than borrowing the legacy protocol's.
+/// Operation lifecycle (§6), owned directly by the canonical wire contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationLifecycle {
@@ -271,8 +201,6 @@ pub enum WireRejectionKind {
     DepthExceeded,
     /// Absolute per-container entry boundary, enforced before parsing.
     CollectionTooLarge,
-    /// The revision marker is absent or is not the single supported revision.
-    VersionMismatch,
     /// The bytes are not JSON at all.
     MalformedJson,
     /// A struct carried a field the contract does not define.
@@ -304,7 +232,6 @@ impl WireRejectionKind {
             Self::InputTooLarge => "input_too_large",
             Self::DepthExceeded => "depth_exceeded",
             Self::CollectionTooLarge => "collection_too_large",
-            Self::VersionMismatch => "version_mismatch",
             Self::MalformedJson => "malformed_json",
             Self::UnknownField => "unknown_field",
             Self::UnknownVariant => "unknown_variant",
@@ -344,17 +271,8 @@ impl std::error::Error for WireRejection {}
 // decode
 // ---------------------------------------------------------------------------------------------
 
-/// Only field read by the revision probe. Everything else is skipped, so a payload from another
-/// revision is answered with a revision fault instead of a deserialization error about a body
-/// this kernel never agreed to parse.
-#[derive(Deserialize)]
-struct AbiRevisionProbe {
-    #[serde(default)]
-    abi_version: Option<u32>,
-}
-
 /// Decode one wire envelope in the mandated order: **measure bytes → absolute structural
-/// boundary → probe revision → decode** (§7.1). Parsing before measuring would let an oversized
+/// boundary → decode** (§7.1). Parsing before measuring would let an oversized
 /// or pathologically nested document allocate first and be rejected second.
 pub fn decode_envelope_json(
     input_json: &str,
@@ -372,21 +290,6 @@ pub fn decode_envelope_json(
     }
 
     scan_structural_boundary(input_json, limits)?;
-
-    let probe: AbiRevisionProbe = serde_json::from_str(input_json).map_err(classify_serde_error)?;
-    match probe.abi_version {
-        Some(KERNEL_ABI_VERSION) => {}
-        other => {
-            let received = other.map_or_else(|| "missing".to_string(), |value| value.to_string());
-            return Err(WireRejection::new(
-                WireRejectionKind::VersionMismatch,
-                format!(
-                    "kernel ABI revision mismatch: input revision {received}, \
-                     this kernel accepts only revision {KERNEL_ABI_VERSION}"
-                ),
-            ));
-        }
-    }
 
     serde_json::from_str(input_json).map_err(classify_serde_error)
 }
@@ -421,8 +324,7 @@ fn classify_serde_error(error: serde_json::Error) -> WireRejection {
 /// bounds **before** any parser allocates. This is a boundary check, not a validator: malformed
 /// JSON is still the parser's business.
 ///
-/// Public because the legacy protocol's decode paths use it too — a boundary that only the new
-/// contract enforces would leave the running kernel unprotected for the whole migration.
+/// Public so every kernel JSON boundary can enforce the same allocation limits before parsing.
 pub fn scan_structural_boundary(
     input_json: &str,
     limits: &KernelBootstrapLimits,

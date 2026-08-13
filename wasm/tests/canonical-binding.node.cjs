@@ -12,7 +12,7 @@ const fixture = JSON.parse(
 )
 const declarations = readFileSync(join(__dirname, "../pkg-node/deepstrike_wasm.d.ts"), "utf8")
 
-assert.equal(native.kernelAbiVersion(), 3)
+assert.equal("kernelAbiVersion" in native, false)
 const kernel = new native.CanonicalKernel()
 
 const prepared = kernel.prepare(JSON.stringify(fixture.links[0].envelope))

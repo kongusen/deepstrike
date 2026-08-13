@@ -8,7 +8,7 @@ Run `node scripts/generate-architecture-svgs.mjs` from the repository root after
 
 ### Complete runtime map
 
-Host-owned I/O surrounds a pure Rust control plane; Self-Harness v2 improves only a bounded profile for the next run.
+Host-owned I/O surrounds a pure Rust control plane; Self-Harness improves only a bounded profile for the next run.
 
 ![DeepStrike runtime mechanism](/readme_agent_os_map.svg)
 
@@ -134,8 +134,8 @@ Ordinary harnesses judge and retry one output while reusing the same runtime, wo
 
 ![Harness and evaluation](/harness_eval_mechanisms.svg)
 
-### Self-Harness v2
+### Self-Harness
 
 Scope-isolated evidence, whitelisted edits, capability ceilings, injection screening, held-out validation, and tiered promotion evolve the next run's profile.
 
-![Self-Harness v2](/self_harness_mechanisms.svg)
+![Self-Harness](/self_harness_mechanisms.svg)

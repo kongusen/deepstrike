@@ -3,7 +3,7 @@
   "domain": "signal",
   "kind": "positive",
   "title": "投递身份与业务信号身份分离，重投递可被区分且可判定幂等",
-  "semantics": "保留 v2 的投递感知信号：每次投递自带投递标识与尝试序号，业务信号标识只回答「这是哪条信号」。这让「同一条信号被重投三次」与「三条不同信号」在内核侧可区分，也让重复投递可判定幂等。缺失投递身份或尝试序号为零的投递被结构化拒绝。",
+  "semantics": "信号具备投递身份：每次投递自带投递标识与尝试序号，业务信号标识只回答「这是哪条信号」。这让「同一条信号被重投三次」与「三条不同信号」在内核侧可区分，也让重复投递可判定幂等。缺失投递身份或尝试序号为零的投递被结构化拒绝。",
   "given": [
     "一个正在运行的操作",
     "宿主观察到一条外部信号"
@@ -20,7 +20,7 @@
   "evidence": {
     "sources": [
       "spec §7.7「External event」",
-      "spec §14.1「signal delivery」与 §3.4 能力对照矩阵（v1 只有 signal ID）",
+      "spec §14.1「signal delivery」与 §3.4 能力对照矩阵",
       "crates/deepstrike-core/src/runtime/kernel/tests.rs::signal_redelivery_attempts_are_correlated_and_distinct",
       "crates/deepstrike-core/src/runtime/kernel/tests.rs::signal_delivery_rejects_missing_identity_or_zero_attempt"
     ]

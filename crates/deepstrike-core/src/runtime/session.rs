@@ -5,20 +5,26 @@ use crate::types::message::{Message, ToolCall, ToolResult};
 
 /// Provider-native replay payload persisted in `llm_completed` for wake/preload recovery.
 ///
-/// The core is provider-neutral: it persists and round-trips the replay envelope
-/// verbatim without interpreting protocol-specific shapes. `native_blocks` and
-/// `reasoning_content` are modeled explicitly because the recovery path reads
-/// them; every other envelope field (`schema_version`, `provider`, `protocol`,
-/// `model`, `reasoning_details`, `native_message`, `tool_calls`, …) is preserved
-/// through `extra` so SDK-owned protocol metadata is never dropped.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+/// The core is provider-neutral but the envelope is strict: protocol identity is mandatory and
+/// removed schema/version fields are rejected before replay can be consumed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ProviderReplay {
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_blocks: Option<Vec<serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
-    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
-    pub extra: serde_json::Map<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_details: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_message: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -223,7 +229,6 @@ pub enum SessionEvent {
     EntropySample {
         turn: u32,
         score: f64,
-        score_version: u32,
         rho: f64,
         repeat_pressure: f64,
         failure_rate: f64,

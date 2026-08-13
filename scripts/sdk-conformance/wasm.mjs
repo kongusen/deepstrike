@@ -29,10 +29,10 @@ const fixture = readJson(fixturePath)
 
 try {
   const canonical = await project(fixture)
-  emit({ ok: true, sdk: "wasm", fixture: fixture.id, contractVersion: fixture.expected.contractVersion, canonical })
+  emit({ ok: true, sdk: "wasm", fixture: fixture.id, canonical })
 } catch (error) {
   const structured = classifyError(fixture, error)
-  emit({ ok: false, sdk: "wasm", fixture: fixture.id, contractVersion: fixture.expected.contractVersion, error: structured })
+  emit({ ok: false, sdk: "wasm", fixture: fixture.id, error: structured })
 }
 
 async function project(value) {
@@ -41,7 +41,6 @@ async function project(value) {
       const raw = readReferenced(value.input.fixture)
       const spec = sdk.lowerAgent(sdk.normalizeAgent(raw))
       return {
-        version: spec.version,
         name: spec.name,
         ...(spec.capabilityFilter ? { capabilityFilter: spec.capabilityFilter } : {}),
         effectiveCapabilities: spec.effectiveCapabilities,
@@ -51,7 +50,6 @@ async function project(value) {
       const input = value.input.fixture ? readReferenced(value.input.fixture) : value.input.value
       const result = sdk.decodeDurableToolResult(input)
       return {
-        schema_version: result.schema_version,
         call_id: result.call_id,
         is_error: result.is_error,
         blockTypes: result.blocks.map(block => block.type),
@@ -170,6 +168,6 @@ function classifyError(fixture, error) {
 }
 function emit(value) { process.stdout.write(`${JSON.stringify(value)}\n`) }
 function fail(message) {
-  emit({ ok: false, sdk: "wasm", fixture: "", contractVersion: 0, error: { code: "adapter_failure", path: "", message } })
+  emit({ ok: false, sdk: "wasm", fixture: "", error: { code: "adapter_failure", path: "", message } })
   process.exit(2)
 }

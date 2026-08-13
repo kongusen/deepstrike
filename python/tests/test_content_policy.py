@@ -80,6 +80,6 @@ def test_bridged_file_result_survives_openai_chat_preflight_as_visible_text() ->
 
 
 def test_matches_shared_cross_sdk_content_policy_fixture() -> None:
-  fixture = json.loads((Path(__file__).parents[2] / "tests/fixtures/provider-content-policy/v1.json").read_text(encoding="utf-8"))
+  fixture = json.loads((Path(__file__).parents[2] / "tests/fixtures/provider-content-policy/canonical.json").read_text(encoding="utf-8"))
   for case in fixture["cases"]:
     assert content_disposition_for(case["protocol"], case["modality"], case["placement"]) == case["disposition"]

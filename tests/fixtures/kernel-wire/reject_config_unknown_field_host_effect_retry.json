@@ -2,7 +2,6 @@
   "expect": "unknown_field",
   "note": "§13.3 · host_effect_retry_attempts is host executor policy, not kernel config",
   "envelope": {
-    "abi_version": 3,
     "operation_id": "op-2026-07-29-0001",
     "input_id": "cfg-reject-3",
     "observed_at_ms": "1753747200000",

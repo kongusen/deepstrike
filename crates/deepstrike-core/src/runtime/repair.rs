@@ -38,8 +38,7 @@ fn normalize_assistant_message_with_cap(message: &mut Message, max_bytes: usize)
 /// Normalize a single `LlmCompleted` for recovery (message fields only).
 ///
 /// Provider-neutral: the stored `provider_replay` envelope is left untouched.
-/// The core never synthesizes a protocol-specific replay shape — legacy
-/// reconstruction is the responsibility of the target provider in the SDK.
+/// The core never synthesizes a protocol-specific replay shape.
 pub fn repair_llm_completed(message: &mut Message, provider_replay: &mut Option<ProviderReplay>) {
     repair_llm_completed_with_cap(message, provider_replay, 0);
 }
@@ -284,9 +283,14 @@ mod tests {
             token_count: Some(1),
         };
         let mut replay = Some(ProviderReplay {
+            protocol: "openai-chat".into(),
+            provider: Some("deepseek".into()),
+            model: None,
             native_blocks: None,
             reasoning_content: Some("trace".into()),
-            extra: serde_json::Map::new(),
+            reasoning_details: None,
+            native_message: None,
+            tool_calls: None,
         });
         repair_llm_completed(&mut message, &mut replay);
         assert_eq!(
@@ -296,9 +300,8 @@ mod tests {
     }
 
     #[test]
-    fn provider_replay_round_trips_unknown_envelope_fields() {
+    fn provider_replay_round_trips_the_canonical_envelope() {
         let json = serde_json::json!({
-            "schema_version": 2,
             "provider": "deepseek",
             "protocol": "openai-chat",
             "model": "deepseek-v4-flash",
@@ -308,10 +311,27 @@ mod tests {
         });
         let replay: ProviderReplay = serde_json::from_value(json.clone()).expect("parse");
         assert_eq!(replay.reasoning_content.as_deref(), Some("trace"));
-        assert_eq!(replay.extra["provider"], "deepseek");
-        assert_eq!(replay.extra["protocol"], "openai-chat");
+        assert_eq!(replay.provider.as_deref(), Some("deepseek"));
+        assert_eq!(replay.protocol, "openai-chat");
         // Re-serialize: the envelope is preserved verbatim.
         assert_eq!(serde_json::to_value(&replay).expect("serialize"), json);
+    }
+
+    #[test]
+    fn versioned_or_protocol_less_replay_is_rejected() {
+        assert!(
+            serde_json::from_value::<ProviderReplay>(serde_json::json!({
+                "schema_version": 2,
+                "protocol": "openai-chat"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ProviderReplay>(serde_json::json!({
+                "reasoning_content": "trace"
+            }))
+            .is_err()
+        );
     }
 
     #[test]

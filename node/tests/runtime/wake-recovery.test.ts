@@ -5,6 +5,7 @@ import { RuntimeRunner, collectText } from "../../src/runtime/runner.js"
 import { FileSessionLog, InMemorySessionLog } from "../../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import { tool } from "../../src/tools/index.js"
+import { ProviderError } from "../../src/providers/provider-error.js"
 import { createRunner } from "./helpers.js"
 import type { LLMProvider, RenderedContext, StreamEvent, ToolSchema, Message } from "../../src/types.js"
 
@@ -134,7 +135,7 @@ describe("RuntimeRunner wake recovery", () => {
     )
   })
 
-  it("FileSessionLog rows alone cannot impersonate a canonical process restart", async () => {
+  it("rejects pre-0.2.60 FileSessionLog tool results before restart", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ds-wake-"))
     try {
       const sessionId = "file-wake"
@@ -179,9 +180,7 @@ describe("RuntimeRunner wake recovery", () => {
         maxTurns: 4,
       })
 
-      await expect(collectText(runner2.wake(sessionId))).rejects.toThrow(
-        "restored canonical operation has no pending effect or terminal",
-      )
+      await expect(collectText(runner2.wake(sessionId))).rejects.toThrow("durable content must be an object")
       expect(provider2.streamCalls).toBe(0)
     } finally {
       await rm(dir, { recursive: true, force: true })
@@ -260,7 +259,14 @@ describe("RuntimeRunner wake recovery", () => {
       async complete() { return { role: "assistant" as const, content: "unused", toolCalls: [] } }
       async *stream() {
         this.streamCalls += 1
-        if (this.streamCalls === 1) throw new Error("413 prompt too long")
+        if (this.streamCalls === 1) {
+          throw new ProviderError({
+            provider: "fixture",
+            kind: "context_overflow",
+            retryable: false,
+            message: "413 prompt too long",
+          })
+        }
         yield { type: "text_delta", delta: "recovered" } as StreamEvent
       }
     }

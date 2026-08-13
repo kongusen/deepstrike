@@ -132,7 +132,6 @@ export interface ToolArgumentRepairedEvent extends StreamEvent {
 export interface EntropySample {
   turn: number
   score: number
-  scoreVersion: number
   rho: number
   repeatPressure: number
   failureRate: number
@@ -215,9 +214,8 @@ export interface PromptMeasurement {
 }
 
 export interface ProviderReplay {
-  schema_version?: 1 | 2
   provider?: string
-  protocol?: ProviderProtocol
+  protocol: ProviderProtocol
   model?: string
   native_blocks?: Array<Record<string, unknown>>
   reasoning_content?: string
@@ -246,7 +244,7 @@ export interface LLMProvider {
     state?: ProviderRunState,
     /** #2-B-ii: when provided, a preempt (`interrupt()`) aborts the in-flight request. SDK-client
      *  providers forward it via `{ signal }`; the runner also breaks the consume loop on abort, so
-     *  providers that ignore it still stop processing immediately. Optional ⇒ backward-compatible. */
+     *  providers that ignore it still stop processing immediately. */
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent>
 }

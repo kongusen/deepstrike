@@ -23,7 +23,7 @@ function countBreakpoints(params: any): number {
 }
 
 function stubProvider(): { provider: AnthropicProvider; captured: () => any } {
-  const provider = new AnthropicProvider("test-key")
+  const provider = new AnthropicProvider({ apiKey: "test-key" })
   let capturedParams: any = null
   ;(provider as any).client = {
     messages: {
@@ -330,7 +330,7 @@ describe("Anthropic Prompt Caching", () => {
   })
 
   it("reports cache read/creation tokens and a hit rate from streamed usage", async () => {
-    const provider = new AnthropicProvider("test-key")
+    const provider = new AnthropicProvider({ apiKey: "test-key" })
     ;(provider as any).client = {
       messages: {
         stream: () => ({

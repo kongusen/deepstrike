@@ -4,7 +4,7 @@ import { Agent, lowerAgent, normalizeAgent, type AgentDefinition } from "../src/
 
 function fixture(): AgentDefinition {
   return JSON.parse(readFileSync(
-    join(process.cwd(), "../tests/fixtures/agent-ir/v1-agent.json"),
+    join(process.cwd(), "../tests/fixtures/agent-ir/canonical-agent.json"),
     "utf8",
   )) as AgentDefinition
 }
@@ -14,7 +14,7 @@ describe("spc_015-09: Canonical Agent IR", () => {
     const raw = fixture()
     const spec = lowerAgent(normalizeAgent(raw))
 
-    expect(spec.version).toBe(1)
+    expect("version" in spec).toBe(false)
     expect(spec.name).toBe("researcher")
     expect(spec.description).toBe("Finds and verifies source material.")
     expect(spec.instructions).toBe("Cite primary sources and state uncertainty.")
@@ -29,7 +29,6 @@ describe("spc_015-09: Canonical Agent IR", () => {
     expect(spec.guardrails).toEqual(raw.guardrails)
     expect(spec.metadata).toEqual(raw.metadata)
     expect(spec.extensions).toEqual(raw.providerOptions)
-    expect(spec.providerOptions).toEqual(spec.extensions)
     expect(spec.inputs.context.knowledge).toEqual(spec.knowledge)
     expect(spec.inputs.capabilities.tools).toEqual(spec.tools)
     expect(spec.inputs.capabilities.mcpServers).toEqual(spec.mcpServers)

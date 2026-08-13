@@ -27,17 +27,13 @@ import {
 import { endpointProfiles, type ProviderId } from "./endpoints.js"
 import { circuitOpenError, classifyProviderError } from "./provider-error.js"
 
-interface AnthropicProviderOptions {
-  baseURL?: string
-  authMode?: "api-key" | "bearer"
-  runtimePolicy?: RuntimePolicy
-}
-
-/** Options-object form for `AnthropicProvider` — the recommended constructor shape. */
-export interface AnthropicProviderConfig extends AnthropicProviderOptions {
+export interface AnthropicProviderConfig {
   apiKey: string
   model?: string
   retry?: { maxRetries: number; baseDelay: number }
+  baseURL?: string
+  authMode?: "api-key" | "bearer"
+  runtimePolicy?: RuntimePolicy
 }
 
 type ResolvedAnthropicRuntime = CanonicalAdapterInput["resolved"]
@@ -54,18 +50,18 @@ export class AnthropicProvider implements LLMProvider {
   private readonly directNativeTokenCounting: boolean
   private resolvedRuntime?: ResolvedAnthropicRuntime
 
-  // Accepts the options object (`new AnthropicProvider({ apiKey, model, baseURL })`) or the legacy
-  // positional form (still used by the Anthropic-compatible backend subclasses' `super(...)` calls).
-  constructor(
-    apiKeyOrConfig: string | AnthropicProviderConfig,
-    model = "claude-sonnet-4-6",
-    retry = { maxRetries: 3, baseDelay: 1000 },
-    options: AnthropicProviderOptions = {},
-  ) {
-    const c: AnthropicProviderConfig =
-      typeof apiKeyOrConfig === "string"
-        ? { apiKey: apiKeyOrConfig, model, retry, ...options }
-        : { model: "claude-sonnet-4-6", retry: { maxRetries: 3, baseDelay: 1000 }, ...apiKeyOrConfig }
+  constructor(config: AnthropicProviderConfig) {
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      throw new TypeError("AnthropicProvider requires a configuration object")
+    }
+    if (typeof config.apiKey !== "string" || config.apiKey.length === 0) {
+      throw new TypeError("AnthropicProvider requires a non-empty apiKey")
+    }
+    const c: AnthropicProviderConfig = {
+      model: "claude-sonnet-4-6",
+      retry: { maxRetries: 3, baseDelay: 1000 },
+      ...config,
+    }
     this.model = c.model ?? "claude-sonnet-4-6"
     this.client = withServerRuntimeGuard(() => new Anthropic({
       ...(c.authMode === "bearer"
@@ -120,16 +116,13 @@ export class AnthropicProvider implements LLMProvider {
 
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
     const blocks = this.nativeAssistantBlocks.get(assistantReplayKey(message))
-    return blocks?.length ? { native_blocks: blocks } : undefined
+    return blocks?.length ? { protocol: "anthropic-messages", native_blocks: blocks } : undefined
   }
 
   seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
-    if (replay.native_blocks?.length) {
+    if (replay.protocol === "anthropic-messages" && replay.native_blocks?.length) {
       this.nativeAssistantBlocks.set(assistantReplayKey(message), replay.native_blocks)
-      return
     }
-    const blocks = reconstructAnthropicBlocks(message)
-    if (blocks.length) this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
 
   private adapterInput(
@@ -296,7 +289,7 @@ export class AnthropicProvider implements LLMProvider {
     ) as unknown as AsyncIterable<AnthropicStreamChunk>
   }
 
-  // Compatibility-only test seams. Request construction itself belongs to the adapter.
+  // White-box test seams. Request construction itself belongs to the adapter.
   private buildSystem(context: RenderedContext, strategy: CacheBreakpointStrategy): unknown {
     return this.buildPlan(context, [], { cacheBreakpointStrategy: strategy }).plan.params.system
   }
@@ -346,20 +339,4 @@ function compatibilityCapabilities(): ResolvedAnthropicRuntime["effectiveCapabil
       audioBase64: unsupported,
     },
   }
-}
-
-/** Reconstruct neutral replay only for legacy tool-use turns without persisted native blocks. */
-function reconstructAnthropicBlocks(
-  message: Pick<Message, "content" | "toolCalls">,
-): Array<Record<string, unknown>> {
-  const toolCalls = message.toolCalls ?? []
-  if (!toolCalls.length) return []
-  const blocks: Array<Record<string, unknown>> = []
-  if (message.content) blocks.push({ type: "text", text: message.content })
-  for (const call of toolCalls) {
-    let input: Record<string, unknown> = {}
-    try { input = JSON.parse(call.arguments || "{}") as Record<string, unknown> } catch { input = {} }
-    blocks.push({ type: "tool_use", id: call.id, name: call.name, input })
-  }
-  return blocks
 }

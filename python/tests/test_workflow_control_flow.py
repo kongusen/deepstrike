@@ -15,7 +15,6 @@ from deepstrike import (
     loop_instruction,
     classify_instruction,
     judge_goal,
-    extract_loop_continue,
     extract_classify_branch,
     extract_judge_winner,
 )
@@ -87,10 +86,6 @@ def test_signal_plumbing_is_additive():
 
 
 def test_extractors():
-    assert extract_loop_continue('{"loop_continue": false}') is False
-    assert extract_loop_continue('done: {"done": true}') is False
-    assert extract_loop_continue("no json") is None
-
     assert extract_classify_branch('{"branch": "bug"}', ["bug", "feature"]) == "bug"
     assert extract_classify_branch("feature", ["bug", "feature"]) == "feature"
     assert extract_classify_branch("garbage", ["bug", "feature"]) is None

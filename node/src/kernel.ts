@@ -4,16 +4,10 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import type { Message } from "./types.js"
 
-export interface GovernanceVerdict {
-  kind: "allow" | "deny" | "rate_limited" | "ask_user"
-  reason?: string
-  retryAfterMs?: number
-}
-
 /**
  * M2 资源配额 — declarative resource limits enforced at the kernel's single syscall trap.
  *
- * Installed through the versioned JSON event ABI (`set_resource_quota`), not a side-channel
+ * Installed through the canonical JSON event contract (`set_resource_quota`), not a side-channel
  * setter, so quota config is replayable and session-loggable like governance/scheduler config.
  * Every field is optional; an omitted field imposes no limit, and omitting the quota entirely
  * preserves the pre-M2 behavior of admitting all spawn / memory-write syscalls.
@@ -59,18 +53,6 @@ export interface MemoryPolicy {
   /** M4: recall count at which the kernel emits an advisory (edge-triggered)
    *  `promotion_suggested` for a recalled record. Omitted = suggestions disabled. */
   promotionRecallThreshold?: number
-}
-
-export interface GovernanceInstance {
-  setIdentity(agentId: string, sessionId: string): void
-  addPermissionRule(pattern: string, action: "allow" | "deny" | "ask_user"): void
-  blockTool(name: string): void
-  setRateLimit(toolName: string, maxCalls: number, windowMs: bigint): void
-  requireParam(toolName: string, paramPath: string): void
-  allowParamValues(toolName: string, paramPath: string, allowedValues: string[]): void
-  limitParamRange(toolName: string, paramPath: string, min?: number, max?: number): void
-  setTime(nowMs: bigint): void
-  evaluate(toolName: string, argsJson: string): GovernanceVerdict
 }
 
 export interface RuntimeSignal {
@@ -183,9 +165,7 @@ export interface CanonicalKernelInstance {
 }
 
 interface KernelModule {
-  Governance: new (defaultAction?: "allow" | "deny" | "ask_user") => GovernanceInstance
   CanonicalKernel: new () => CanonicalKernelInstance
-  kernelAbiVersion(): number
   SignalRouter: new (maxQueueSize: number) => SignalRouterInstance
   // Eval / harness quality gate (0.5.0 fold: free functions, was the EvalPipeline class).
   buildEvalMessages(goal: string, criteria: NativeCriterion[], result: string, attempt: number, extractSkillOnPass: boolean): Message[]

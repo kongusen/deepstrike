@@ -52,8 +52,8 @@ pub use runtime::kernel::wire::{
 };
 pub use runtime::session::SessionEvent;
 pub use runtime::{
-    KERNEL_ABI_VERSION, KernelEventCategory, KernelObservation, KernelPressureAction, OsSnapshot,
-    Primitive, category_for_kind, primitive_for_kind, rebuild_os_snapshot_from_events,
+    KernelEventCategory, KernelObservation, KernelPressureAction, OsSnapshot, Primitive,
+    category_for_kind, primitive_for_kind, rebuild_os_snapshot_from_events,
     reconstruct_messages_with_fallback,
 };
 pub use scheduler::cross_operation::{
@@ -62,7 +62,7 @@ pub use scheduler::cross_operation::{
     PayloadAvailability, PayloadLocator, RouteOutcome,
 };
 pub use scheduler::entropy::{EntropySample, EntropyTracker, EntropyWatchConfig};
-pub use scheduler::tcb::{BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason};
+pub use scheduler::tcb::{BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb};
 pub use syscall::{Disposition, Syscall};
 pub use types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,

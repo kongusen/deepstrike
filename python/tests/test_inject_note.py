@@ -60,6 +60,7 @@ async def test_inject_note_renders_as_signal_after_next_turn_boundary():
         execution_plane=plane,
         max_tokens=2048,
         max_turns=6,
+        baseline_tool_ids=["set_title"],
     ))
     runner_ref.append(runner)
 

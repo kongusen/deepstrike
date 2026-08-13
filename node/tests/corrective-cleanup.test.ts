@@ -21,8 +21,8 @@ describe("spc_013-A-00R corrective cleanup", () => {
 
   it("does not expose the unused ProviderProfile view on any runtime provider", () => {
     const instances: object[] = [
-      new AnthropicProvider("k", "claude-opus-4-1"),
-      new OpenAIChatProvider("k", "gpt-4o"),
+      new AnthropicProvider({ apiKey: "k", model: "claude-opus-4-1" }),
+      new OpenAIChatProvider({ apiKey: "k", model: "gpt-4o" }),
       new OpenAIResponsesProvider("k", "gpt-4.1"),
       new GeminiProvider("k", "gemini-2.0-flash"),
       new OllamaProvider("llama3"),

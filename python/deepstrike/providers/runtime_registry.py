@@ -178,26 +178,19 @@ from .openai import OpenAIProvider
 from .openai_responses import OpenAIResponsesProvider
 from .gemini import GeminiProvider
 from .ollama import OllamaProvider
-from .deepseek import DeepSeekAnthropicProvider
-from .kimi import KimiAnthropicProvider
-from .qwen import QwenProvider, QwenAnthropicProvider
-from .glm import GLMAnthropicProvider
-from .minimax import MiniMaxAnthropicProvider
+from .qwen import _QwenProvider
+from .anthropic_compatible import AnthropicCompatibleProvider
+from .vendor_profiles import ANTHROPIC_VENDOR_PROFILES
 
 _PROVIDER_CLASSES: dict[tuple[str, str], type[LLMProvider]] = {
     ("anthropic", "anthropic-messages"): AnthropicProvider,
     ("openai", "openai-chat"): OpenAIProvider,
     ("openai", "openai-responses"): OpenAIResponsesProvider,
     ("deepseek", "openai-chat"): OpenAIProvider,
-    ("deepseek", "anthropic-messages"): DeepSeekAnthropicProvider,
     ("kimi", "openai-chat"): OpenAIProvider,
-    ("kimi", "anthropic-messages"): KimiAnthropicProvider,
-    ("qwen", "openai-chat"): QwenProvider,
-    ("qwen", "anthropic-messages"): QwenAnthropicProvider,
+    ("qwen", "openai-chat"): _QwenProvider,
     ("glm", "openai-chat"): OpenAIProvider,
-    ("glm", "anthropic-messages"): GLMAnthropicProvider,
     ("minimax", "openai-chat"): OpenAIProvider,
-    ("minimax", "anthropic-messages"): MiniMaxAnthropicProvider,
     ("gemini", "gemini"): GeminiProvider,
     ("ollama", "ollama-chat"): OllamaProvider,
 }
@@ -307,6 +300,17 @@ def create_provider(
     if profile is None:
         raise ValueError(f"Unknown endpoint {runtime.endpoint_id!r}")
     key = (provider_id, profile.protocol)
+    if profile.protocol == "anthropic-messages" and provider_id in ANTHROPIC_VENDOR_PROFILES:
+        provider = AnthropicCompatibleProvider(
+            ANTHROPIC_VENDOR_PROFILES[provider_id],
+            api_key or "",
+            model,
+            retry_config,
+            base_url or profile.base_url,
+        )
+        provider._resolved_runtime = runtime
+        _attach_request_plan_identity(provider, runtime, base_url or profile.base_url)
+        return provider
     cls = _PROVIDER_CLASSES.get(key)
     if cls is None:
         raise ValueError(f"No provider class registered for {key!r}")

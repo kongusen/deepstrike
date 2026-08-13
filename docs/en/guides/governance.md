@@ -132,7 +132,7 @@ def governance_filter_schema(tools: list, policy: GovernancePolicy | None) -> tu
 
 `on_tool_call` is a pre-execution decision boundary. A thrown hook fails closed by default and the
 tool call returns `governance_denied`; only purely advisory hooks should explicitly set
-`on_tool_call_failure="open"`. `on_tool_result` runs after the tool side effect and therefore keeps
+An `on_tool_call` exception always denies execution. `on_tool_result` runs after the tool side effect and therefore keeps
 observer/enrichment failure isolation—it cannot retroactively claim that the tool did not execute.
 
 ---

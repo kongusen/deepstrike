@@ -1,7 +1,7 @@
-"""Strict versioned durable content ABI (016-02).
+"""Strict durable content ABI (016-02).
 
 This module is provider-neutral. It validates durable records before provider-specific projection;
-legacy text and ``output``-only tool results are migrated to one text block.
+Only the canonical block representation is accepted.
 """
 from __future__ import annotations
 
@@ -105,37 +105,18 @@ def _blocks(value: Any) -> list[dict[str, Any]]:
 
 def decode_durable_content(value: Any) -> dict[str, Any]:
   raw = _obj(value, "durable content")
-  _keys(raw, {"schema_version", "blocks"}, "durable content")
-  if raw.get("schema_version") != 1:
-    raise DurableContentError(f"unsupported durable content schema_version {raw.get('schema_version')}")
-  return {"schema_version": 1, "blocks": _blocks(raw.get("blocks"))}
+  _keys(raw, {"blocks"}, "durable content")
+  return {"blocks": _blocks(raw.get("blocks"))}
 
 
 def decode_durable_tool_result(value: Any) -> dict[str, Any]:
   raw = _obj(value, "durable tool result")
-  if "blocks" not in raw and "output" in raw:
-    _keys(raw, {"call_id", "output", "is_error"}, "legacy tool result")
-    return {
-      "schema_version": 1,
-      "call_id": _string(raw.get("call_id"), "tool result call_id"),
-      "is_error": _boolean(raw.get("is_error", False), "legacy tool result is_error"),
-      "blocks": [{"type": "text", "text": _string(raw.get("output"), "legacy tool result output") if raw.get("output") != "" else ""}],
-    }
-  _keys(raw, {"schema_version", "call_id", "is_error", "blocks"}, "durable tool result")
-  if raw.get("schema_version") != 1:
-    raise DurableContentError(f"unsupported durable tool result schema_version {raw.get('schema_version')}")
+  _keys(raw, {"call_id", "is_error", "blocks"}, "durable tool result")
   return {
-    "schema_version": 1,
     "call_id": _string(raw.get("call_id"), "tool result call_id"),
     "is_error": _boolean(raw.get("is_error"), "tool result is_error"),
     "blocks": _blocks(raw.get("blocks")),
   }
-
-
-def migrate_legacy_content(text: str) -> dict[str, Any]:
-  if not isinstance(text, str):
-    raise DurableContentError("legacy content must be a string")
-  return {"schema_version": 1, "blocks": [{"type": "text", "text": text}]}
 
 
 def encode_durable_content(content: dict[str, Any]) -> dict[str, Any]:
@@ -195,4 +176,4 @@ def runtime_blocks_to_durable(blocks: list[dict[str, Any]] | tuple[dict, ...]) -
       **({"media_type": block.get("media_type", block.get("mediaType"))} if block.get("media_type", block.get("mediaType")) else {}),
       **({"provider_options": block.get("provider_options", block.get("providerOptions"))} if block.get("provider_options", block.get("providerOptions")) else {}),
     })
-  return decode_durable_content({"schema_version": 1, "blocks": durable})["blocks"]
+  return decode_durable_content({"blocks": durable})["blocks"]

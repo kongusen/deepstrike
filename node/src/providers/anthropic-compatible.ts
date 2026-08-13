@@ -10,8 +10,7 @@ import { anthropicVendorBaseURL, type AnthropicVendorProfile } from "./vendor-pr
  * `<Vendor>AnthropicProvider` subclasses that existed only to carry that config.
  *
  * Adding a new Anthropic-compatible vendor is now "add a profile" — no new
- * provider class is required (the named `<Vendor>AnthropicProvider` shims are
- * kept only for backward compatibility / `instanceof` checks).
+ * provider class is required.
  */
 export class AnthropicCompatibleProvider extends AnthropicProvider {
   private readonly vendorProfile: AnthropicVendorProfile
@@ -24,7 +23,10 @@ export class AnthropicCompatibleProvider extends AnthropicProvider {
     baseURL?: string,
     runtimePolicy?: RuntimePolicy,
   ) {
-    super(apiKey, model ?? profile.defaultModel, retry, {
+    super({
+      apiKey,
+      model: model ?? profile.defaultModel,
+      retry,
       baseURL: baseURL ?? anthropicVendorBaseURL(profile),
       authMode: "api-key",
       runtimePolicy,

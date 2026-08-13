@@ -7,7 +7,7 @@ use compact_str::CompactString;
 use deepstrike_core::proc::ProcessState;
 use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::*;
-use deepstrike_core::scheduler::tcb::{TaskLifecycle, WaitReason};
+use deepstrike_core::scheduler::tcb::{TaskLifecycle, WaitCondition};
 use deepstrike_core::types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
     ContextInheritance, IsolationManifest,
@@ -134,10 +134,11 @@ fn spawn_sub_agent_emits_process_observation() {
     let action = sm.spawn_sub_agent(spec);
     assert!(matches!(action, LoopAction::AwaitingResume));
     assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
-    assert!(matches!(
-        sm.wait_reason(),
-        Some(WaitReason::SubAgentJoin(_))
-    ));
+    assert!(sm.wait_set().is_some_and(|wait| {
+        wait.conditions
+            .iter()
+            .any(|condition| matches!(condition, WaitCondition::Child(_)))
+    }));
 
     let obs = sm.take_observations();
     assert!(obs.iter().any(|o| matches!(
@@ -277,10 +278,11 @@ fn sub_agent_completed_updates_kernel_process() {
     sm.take_observations();
 
     assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
-    assert!(matches!(
-        sm.wait_reason(),
-        Some(WaitReason::SubAgentJoin(_))
-    ));
+    assert!(sm.wait_set().is_some_and(|wait| {
+        wait.conditions
+            .iter()
+            .any(|condition| matches!(condition, WaitCondition::Child(_)))
+    }));
 
     let result = SubAgentResult {
         agent_id: CompactString::new("worker"),

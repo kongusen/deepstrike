@@ -21,7 +21,7 @@ function makeStubProvider(): {
   captured: { req?: CapturedCountRequest }
   respondWith: (inputTokens: number) => void
 } {
-  const provider = new AnthropicProvider("sk-fake", "claude-opus-5")
+  const provider = new AnthropicProvider({ apiKey: "sk-fake", model: "claude-opus-5" })
   const captured: { req?: CapturedCountRequest } = {}
   let responseTokens = 0
   const client = (provider as unknown as { client: { messages: { countTokens: unknown } } }).client

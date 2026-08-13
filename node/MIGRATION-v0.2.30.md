@@ -43,8 +43,7 @@ but are no longer part of the public `@deepstrike/sdk/providers` surface.
 
 ## 3. Provider constructors are options-objects
 
-The positional `(apiKey, model, retry, baseURL)` hole is gone. The base providers accept an options object
-(the legacy positional form still works on the base classes for now, but is deprecated):
+The positional `(apiKey, model, retry, baseURL)` form is gone. Base providers accept an options object only:
 
 ```diff
 - new OpenAIProvider(apiKey, "mimo-v2.5-pro", undefined, "https://host/v1")

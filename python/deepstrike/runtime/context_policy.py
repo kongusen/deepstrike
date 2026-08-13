@@ -5,11 +5,10 @@ from copy import deepcopy
 from typing import Any, TypedDict
 
 
-CONTEXT_POLICY_VERSION = 1
 PPM_SCALE = 1_000_000
 
 
-class ContextPressureThresholdsV1(TypedDict):
+class ContextPressureThresholds(TypedDict):
     snip: float
     micro: float
     collapse: float
@@ -17,8 +16,8 @@ class ContextPressureThresholdsV1(TypedDict):
     renewal: float
 
 
-class ContextPolicyV1(TypedDict):
-    pressure_thresholds: ContextPressureThresholdsV1
+class ContextPolicy(TypedDict):
+    pressure_thresholds: ContextPressureThresholds
     target_after_compress: float
     preserve_recent_turns: int
     renewal_carryover: float
@@ -26,8 +25,7 @@ class ContextPolicyV1(TypedDict):
     idle_micro_compact_minutes: int
 
 
-class ContextPolicyWireV1(TypedDict):
-    version: int
+class ContextPolicyWire(TypedDict):
     pressure_thresholds_ppm: dict[str, int]
     target_after_compress_ppm: int
     preserve_recent_turns: int
@@ -36,7 +34,7 @@ class ContextPolicyWireV1(TypedDict):
     idle_micro_compact_minutes: int
 
 
-DEFAULT_CONTEXT_POLICY_V1: ContextPolicyV1 = {
+DEFAULT_CONTEXT_POLICY: ContextPolicy = {
     "pressure_thresholds": {
         "snip": 0.70,
         "micro": 0.80,
@@ -52,19 +50,19 @@ DEFAULT_CONTEXT_POLICY_V1: ContextPolicyV1 = {
 }
 
 
-def context_policy_v1(overrides: dict[str, Any] | None = None) -> ContextPolicyV1:
+def context_policy(overrides: dict[str, Any] | None = None) -> ContextPolicy:
     """Resolve ergonomic partial SDK options into a complete, validated policy."""
-    policy = deepcopy(DEFAULT_CONTEXT_POLICY_V1)
+    policy = deepcopy(DEFAULT_CONTEXT_POLICY)
     overrides = overrides or {}
     thresholds = overrides.get("pressure_thresholds")
     policy.update({key: value for key, value in overrides.items() if key != "pressure_thresholds"})  # type: ignore[typeddict-item]
     if thresholds is not None:
         policy["pressure_thresholds"].update(thresholds)
-    normalize_context_policy_v1(policy)
+    normalize_context_policy(policy)
     return policy
 
 
-def normalize_context_policy_v1(policy: ContextPolicyV1) -> ContextPolicyWireV1:
+def normalize_context_policy(policy: ContextPolicy) -> ContextPolicyWire:
     thresholds = policy["pressure_thresholds"]
     pressure_ppm = {
         name: ratio_to_ppm(thresholds[name], f"pressure_thresholds.{name}")
@@ -84,7 +82,6 @@ def normalize_context_policy_v1(policy: ContextPolicyV1) -> ContextPolicyWireV1:
         raise TypeError("collapse_old_assistant_narration must be boolean")
 
     return {
-        "version": CONTEXT_POLICY_VERSION,
         "pressure_thresholds_ppm": pressure_ppm,
         "target_after_compress_ppm": target_ppm,
         "preserve_recent_turns": policy["preserve_recent_turns"],

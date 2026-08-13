@@ -63,7 +63,6 @@ export interface AgentLoweringInputs {
 /** spc_015-09: the canonical, provider-neutral Agent IR between public SDK surfaces and host
  * runtime inputs. It contains neither an execution plan nor a Kernel wire DTO. */
 export interface AgentSpec {
-  version: 1
   name: string
   description?: string
   instructions?: string
@@ -77,7 +76,7 @@ export interface AgentSpec {
   handoffs?: Handoff[]
   guardrails?: Guardrail[]
   metadata?: Record<string, unknown>
-  /** Flat compatibility view of capability declarations. It grants nothing by itself. */
+  /** Declared capabilities. This descriptive view grants nothing by itself. */
   capabilities: AgentCapabilityIR[]
   /** Host ceiling copied from the public Agent, when supplied. Empty axes remain non-narrowing. */
   capabilityFilter?: AgentCapabilityFilter
@@ -85,8 +84,6 @@ export interface AgentSpec {
   effectiveCapabilities: AgentCapabilityIR[]
   /** Namespace-isolated provider extensions. Unknown namespaces are preserved verbatim. */
   extensions: Record<string, unknown>
-  /** @deprecated Read `extensions`; retained as an additive compatibility alias. */
-  providerOptions?: Record<string, unknown>
   inputs: AgentLoweringInputs
 }
 
@@ -189,7 +186,6 @@ export function lowerAgent(agent: Agent): AgentSpec {
   const capabilityFilter = agent.capabilityFilter ? clone(agent.capabilityFilter) : undefined
   const effectiveCapabilities = capabilities.filter(capability => capabilityAllowed(capability, capabilityFilter))
   return {
-    version: 1,
     name: agent.name,
     ...(agent.description ? { description: agent.description } : {}),
     ...(agent.instructions ? { instructions: agent.instructions } : {}),
@@ -207,7 +203,6 @@ export function lowerAgent(agent: Agent): AgentSpec {
     ...(capabilityFilter ? { capabilityFilter } : {}),
     effectiveCapabilities,
     extensions,
-    providerOptions: clone(extensions),
     inputs: {
       run: { name: agent.name, ...(agent.model ? { model: clone(agent.model) } : {}) },
       context: {

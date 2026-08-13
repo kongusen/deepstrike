@@ -18,11 +18,11 @@ import pytest
 from deepstrike import (
     InMemorySessionLog,
     LocalExecutionPlane,
-    MiniMaxAnthropicProvider,
     RuntimeOptions,
     RuntimeRunner,
     collect_text,
 )
+from deepstrike.providers import LLMProvider, minimax
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("MINIMAX_API_KEY"),
@@ -54,8 +54,8 @@ def _two_color_png(w: int, h: int, top: tuple, bottom: tuple) -> str:
     return base64.b64encode(png).decode()
 
 
-def _provider() -> MiniMaxAnthropicProvider:
-    return MiniMaxAnthropicProvider(os.environ["MINIMAX_API_KEY"], os.environ.get("MINIMAX_MODEL"))
+def _provider() -> LLMProvider:
+    return minimax(api_key=os.environ["MINIMAX_API_KEY"], model=os.environ.get("MINIMAX_MODEL"))
 
 
 _GOAL = (

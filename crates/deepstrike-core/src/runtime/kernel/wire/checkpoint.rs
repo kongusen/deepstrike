@@ -1,6 +1,6 @@
 //! The logical checkpoint and its bounded tail (spec §12).
 //!
-//! A checkpoint is *not* a snapshot of the kernel's internals. It is a stable, versioned DTO whose
+//! A checkpoint is *not* a snapshot of the kernel's internals. It is the canonical DTO whose
 //! shape is a contract in its own right, and every design rule below corrects the retired
 //! full-journal recovery format:
 //!
@@ -33,15 +33,9 @@ use std::fmt;
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::types::durable_content::{
-    DurableContent, DurableContentBlock, DurableSource, DurableToolResult,
-};
-use crate::types::message::{Content, ContentPart};
-
-use super::KERNEL_CHECKPOINT_VERSION;
 use super::config::ResolvedOperationConfig;
 use super::effect::{Digest, KernelEffect, LaunchToken, wire_opaque_ref};
-use super::envelope::{AbiRevision, OperationLifecycle};
+use super::envelope::OperationLifecycle;
 use super::fault::{KernelFault, KernelFaultCode};
 use super::record::{NormalizedInput, RecordError, canonical_bytes, canonical_digest};
 use super::root::{ExecutionFocus, LogicalAgentSpec, LogicalTask, RootKind};
@@ -125,92 +119,6 @@ impl From<RecordError> for CheckpointError {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// §12.1 · the checkpoint format revision
-// ---------------------------------------------------------------------------------------------
-
-/// The current checkpoint format revision, fail-closed on the current wire.
-///
-/// A separate axis from [`AbiRevision`] on purpose: the wire contract and the checkpoint layout
-/// can move independently, and DEC-6 renamed the field to `checkpoint_version` so this value could
-/// start at 1 without colliding with retired recovery-format revisions.
-/// Historical revisions are dispatched by [`decode_checkpoint_value`] before this type is used.
-/// It therefore only admits the revision a new checkpoint writes; an unknown revision can never
-/// reach a restore.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct CheckpointRevision(u32);
-
-impl CheckpointRevision {
-    pub const CURRENT: Self = Self(KERNEL_CHECKPOINT_VERSION);
-
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-}
-
-impl Default for CheckpointRevision {
-    fn default() -> Self {
-        Self::CURRENT
-    }
-}
-
-impl fmt::Display for CheckpointRevision {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl Serialize for CheckpointRevision {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u32(self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for CheckpointRevision {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct RevisionVisitor;
-
-        impl Visitor<'_> for RevisionVisitor {
-            type Value = CheckpointRevision;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                write!(
-                    f,
-                    "the current kernel checkpoint revision {KERNEL_CHECKPOINT_VERSION}"
-                )
-            }
-
-            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
-                if value == u64::from(KERNEL_CHECKPOINT_VERSION) {
-                    Ok(CheckpointRevision::CURRENT)
-                } else {
-                    Err(E::custom(
-                        CheckpointError::Incompatible(format!(
-                            "unsupported current checkpoint version {value}; this kernel writes \
-                             version {KERNEL_CHECKPOINT_VERSION}"
-                        ))
-                        .to_string(),
-                    ))
-                }
-            }
-
-            fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
-                if value < 0 {
-                    return Err(E::custom(
-                        CheckpointError::Incompatible(format!(
-                            "unsupported checkpoint version {value}"
-                        ))
-                        .to_string(),
-                    ));
-                }
-                self.visit_u64(value as u64)
-            }
-        }
-
-        deserializer.deserialize_u32(RevisionVisitor)
-    }
-}
-
 wire_opaque_ref!(
     /// Handle the host returns to `ack_checkpoint` once the blob is durably installed (§12.3).
     ///
@@ -255,7 +163,7 @@ impl CanonicalInput {
 // §12.1 · the four logical partitions
 // ---------------------------------------------------------------------------------------------
 
-/// The versioned logical state of one operation, partitioned as §12.1 requires.
+/// The canonical logical state of one operation, partitioned as §12.1 requires.
 ///
 /// The four fields are a *partition*: each piece of correctness state appears in exactly one of
 /// them, and the checkpoint header above repeats none of it. That is the property the historical
@@ -265,10 +173,10 @@ impl CanonicalInput {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogicalKernelState {
-    pub transition: TransitionStateV1,
-    pub syscall: SyscallStateV1,
-    pub scheduler: SchedulerStateV1,
-    pub context_vm: ContextVmStateV1,
+    pub transition: TransitionState,
+    pub syscall: SyscallState,
+    pub scheduler: SchedulerState,
+    pub context_vm: ContextVmState,
 }
 
 /// §12.1 · operation lifecycle, execution focus, the effect ledger, input replay, cancellation and
@@ -279,7 +187,7 @@ pub struct LogicalKernelState {
 /// cuts both ways.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TransitionStateV1 {
+pub struct TransitionState {
     pub lifecycle: OperationLifecycle,
     /// The configuration the genesis record froze (§8.1, §15.2 item 8).
     ///
@@ -307,7 +215,7 @@ pub struct TransitionStateV1 {
     #[serde(default)]
     pub resolved_effects: Vec<ResolvedEffectState>,
     /// Launch tokens the kernel minted with a `SpawnTasks` effect. Effect-resolution bookkeeping,
-    /// not task state — the task table lives in [`SchedulerStateV1`].
+    /// not task state — the task table lives in [`SchedulerState`].
     #[serde(default)]
     pub launch_tokens: Vec<LaunchTokenState>,
     /// §12.3 rule 7 · the input replay/dedupe ledger. An ack must never empty it: it is what turns
@@ -367,7 +275,7 @@ pub struct AcceptedCancellationState {
 /// causation the P1 gate derives a caller from.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SyscallStateV1 {
+pub struct SyscallState {
     /// §13.2 · the revision two concurrent policy writers race on. `None` before the genesis
     /// record installs the policy.
     #[serde(default)]
@@ -427,7 +335,13 @@ pub struct AuthoredMemoryQueryState {
 /// graph, queued signals plus dedupe memory, and the milestone cascade.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SchedulerStateV1 {
+pub struct SchedulerState {
+    /// The active agent's logical run contract. Required even when absent so checkpoints from the
+    /// retired shape cannot be mistaken for current state.
+    pub run_spec: Option<LogicalAgentSpec>,
+    /// Exact task-tool surface advertised by the most recent provider call. `None` means no
+    /// provider call has been emitted yet and is fail-closed, not permissive.
+    pub advertised_tool_ids: Option<Vec<String>>,
     pub turn: u32,
     pub total_tokens: WireU64,
     pub rounds_completed: u32,
@@ -508,8 +422,7 @@ pub struct EntropyTurnState {
 /// The label alone is not *invertible*, though, and Task 16 needs it to be: a restore that rebuilt
 /// a finished task without the reason it finished for would hand the next transition a different
 /// task table than the uninterrupted run had. So the two data-carrying lifecycles travel with their
-/// data beside the label — `termination` for `done`, `waiting_on` for a `sub_agent_join` wait —
-/// rather than by mirroring the internal enum's shape.
+/// data beside the label, while suspended tasks carry one canonical `wait_set`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskControlState {
@@ -522,13 +435,7 @@ pub struct TaskControlState {
     /// Why a `done` task is done. `None` for every other lifecycle.
     #[serde(default)]
     pub termination: Option<String>,
-    #[serde(default)]
-    pub wait: Option<String>,
-    /// The children a `sub_agent_join` wait is blocked on. Empty for every other wait.
-    #[serde(default)]
-    pub waiting_on: Vec<TaskId>,
-    /// Canonical heterogeneous wait state, including partial `All` satisfaction. `None` for the
-    /// two legacy `WaitReason` projections and runnable/terminal tasks.
+    /// Canonical heterogeneous wait state, including partial `All` satisfaction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_set: Option<TaskWaitSetState>,
     #[serde(default)]
@@ -548,7 +455,7 @@ pub struct TaskControlState {
     pub turns_used: u32,
     /// spc_009-06 · this task's own grantable pool (`Tcb.child_budget_remaining`) — `None` for
     /// every task that was never seeded (the common case) or has none left; `Some` once seeded,
-    /// currently only for `root` (spc_009-05). Per-task, unlike [`SchedulerStateV1::budget_grant`]
+    /// currently only for `root` (spc_009-05). Per-task, unlike [`SchedulerState::budget_grant`]
     /// above, which is the single whole-operation admission grant it was derived from.
     #[serde(default)]
     pub child_budget_remaining: Option<crate::scheduler::budget_grant::ResourceBudget>,
@@ -704,7 +611,7 @@ pub struct MilestoneState {
 /// working context.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ContextVmStateV1 {
+pub struct ContextVmState {
     /// **The** home of P3 handle identity and residency.
     #[serde(default)]
     pub handles: Vec<HandleState>,
@@ -789,7 +696,7 @@ pub enum StoredMessageBody {
     /// page-in, never the bytes.
     Reference(ReferencedMessageBody),
     /// A multimodal body the text projection cannot express (image or audio parts), carried as
-    /// versioned provider-neutral durable content.
+    /// canonical provider-neutral durable content.
     ///
     /// It exists so the projection is never *silently* lossy: a body that does not reduce to text
     /// travels whole rather than being flattened to the text parts that happen to be next to it.
@@ -810,7 +717,7 @@ pub struct InlineMessageBody {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReferencedMessageBody {
-    /// The P3 handle that addresses the body. Its residency in [`ContextVmStateV1::handles`] is
+    /// The P3 handle that addresses the body. Its residency in [`ContextVmState::handles`] is
     /// what a page-in reads.
     pub handle_id: u32,
     /// The digest a page-in must reproduce (§7.10 rule 4).
@@ -826,30 +733,13 @@ pub struct ReferencedMessageBody {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StructuredMessageBody {
-    /// Canonical durable content schema. Legacy checkpoints omitted this marker and are read as
-    /// schema 1 after the text/content JSON migration path.
-    #[serde(default = "current_content_schema_version")]
-    pub schema_version: u32,
-    /// Versioned provider-neutral durable content. New checkpoints write this field; the legacy
-    /// `content_json` spelling is retained only for migration and never receives new data.
+    /// Provider-neutral durable content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub durable_content: Option<crate::types::durable_content::DurableContent>,
-    /// The correlated durable tool-result envelope. It is mutually exclusive with
-    /// `durable_content`, which represents a non-tool message body.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub durable_tool_result: Option<crate::types::durable_content::DurableToolResult>,
-    /// Multiple correlated durable results share one `tool` message but preserve one envelope per
-    /// call id. The singular spelling remains readable for checkpoints written before batching.
+    /// Correlated durable results preserve one envelope per call id. A one-result message uses a
+    /// one-element vector; there is no alternate singular representation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub durable_tool_results: Vec<crate::types::durable_content::DurableToolResult>,
-    /// Legacy canonical JSON of the old `Content` enum. It is intentionally optional so new
-    /// checkpoint bytes do not perpetuate a host-language serde shape as the durable ABI.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_json: Option<String>,
-}
-
-fn current_content_schema_version() -> u32 {
-    1
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -985,9 +875,9 @@ pub struct PartitionTokenState {
 pub struct LogicalStateProjection {
     pub root_kind: Option<RootKind>,
     pub focus: Option<ExecutionFocus>,
-    pub syscall: SyscallStateV1,
-    pub scheduler: SchedulerStateV1,
-    pub context_vm: ContextVmStateV1,
+    pub syscall: SyscallState,
+    pub scheduler: SchedulerState,
+    pub context_vm: ContextVmState,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1017,8 +907,6 @@ pub struct CheckpointDraft {
 /// rather than half-way through a restore.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct KernelCheckpoint {
-    checkpoint_version: CheckpointRevision,
-    abi_version: AbiRevision,
     operation_id: OperationId,
     /// The digest of the operation's genesis record — its identity. A checkpoint built from
     /// another operation's journal therefore cannot be installed by accident.
@@ -1047,8 +935,6 @@ pub struct KernelCheckpoint {
 /// The digested body: every field of a checkpoint except the digest that summarises it.
 #[derive(Serialize)]
 struct CheckpointBody<'a> {
-    checkpoint_version: CheckpointRevision,
-    abi_version: AbiRevision,
     operation_id: &'a OperationId,
     genesis_digest: &'a Digest,
     base_step_seq: WireU64,
@@ -1090,8 +976,6 @@ impl KernelCheckpoint {
         let state_digest = canonical_digest(canonical_bytes(&logical_state)?.as_slice());
         let tail_digest = canonical_digest(canonical_bytes(&tail_inputs)?.as_slice());
         let checkpoint_digest = Self::body_digest(&CheckpointBody {
-            checkpoint_version: CheckpointRevision::CURRENT,
-            abi_version: AbiRevision::CURRENT,
             operation_id: &operation_id,
             genesis_digest: &genesis_digest,
             base_step_seq,
@@ -1105,8 +989,6 @@ impl KernelCheckpoint {
         })?;
 
         Ok(Self {
-            checkpoint_version: CheckpointRevision::CURRENT,
-            abi_version: AbiRevision::CURRENT,
             operation_id,
             genesis_digest,
             base_step_seq,
@@ -1126,14 +1008,6 @@ impl KernelCheckpoint {
     }
 
     // ----- read-only accessors -----
-
-    pub fn checkpoint_version(&self) -> u32 {
-        self.checkpoint_version.get()
-    }
-
-    pub fn abi_version(&self) -> u32 {
-        self.abi_version.get()
-    }
 
     pub fn operation_id(&self) -> &OperationId {
         &self.operation_id
@@ -1225,8 +1099,7 @@ impl KernelCheckpoint {
     /// Recompute every digest from the bytes this checkpoint carries and re-check its tail.
     ///
     /// The first two lines of §12.2's ladder. `verify_belongs_to` adds the operation/genesis half;
-    /// the version halves are enforced by the decoder, which cannot produce a checkpoint whose
-    /// `checkpoint_version` or `abi_version` this kernel does not read.
+    /// removed shapes are rejected by strict decoding before a checkpoint can exist.
     pub fn verify(&self) -> Result<(), CheckpointError> {
         validate_durable_message_bodies(&self.logical_state.context_vm)?;
         check_tail(
@@ -1255,8 +1128,6 @@ impl KernelCheckpoint {
             )));
         }
         let checkpoint_digest = Self::body_digest(&CheckpointBody {
-            checkpoint_version: self.checkpoint_version,
-            abi_version: self.abi_version,
             operation_id: &self.operation_id,
             genesis_digest: &self.genesis_digest,
             base_step_seq: self.base_step_seq,
@@ -1301,7 +1172,7 @@ impl KernelCheckpoint {
     }
 }
 
-fn validate_durable_message_bodies(context: &ContextVmStateV1) -> Result<(), CheckpointError> {
+fn validate_durable_message_bodies(context: &ContextVmState) -> Result<(), CheckpointError> {
     let bodies = context
         .messages
         .iter()
@@ -1311,31 +1182,14 @@ fn validate_durable_message_bodies(context: &ContextVmStateV1) -> Result<(), Che
         let StoredMessageBody::Structured(structured) = body else {
             continue;
         };
-        if structured.schema_version
-            != crate::types::durable_content::DurableContent::CURRENT_SCHEMA_VERSION
-        {
-            return Err(CheckpointError::Incompatible(format!(
-                "structured message carries unsupported durable content schema version {}",
-                structured.schema_version
-            )));
-        }
-        let tool_result_count = usize::from(structured.durable_tool_result.is_some())
-            + usize::from(!structured.durable_tool_results.is_empty());
         let body_forms = usize::from(structured.durable_content.is_some())
-            + usize::from(structured.content_json.is_some())
-            + tool_result_count;
+            + usize::from(!structured.durable_tool_results.is_empty());
         if body_forms > 1 {
             return Err(CheckpointError::Incompatible(
                 "structured message carries more than one durable body form".into(),
             ));
         }
-        if let Some(result) = &structured.durable_tool_result {
-            result.validate().map_err(|error| {
-                CheckpointError::Incompatible(format!(
-                    "structured message carries invalid durable tool result: {error}"
-                ))
-            })?;
-        } else if !structured.durable_tool_results.is_empty() {
+        if !structured.durable_tool_results.is_empty() {
             for result in &structured.durable_tool_results {
                 result.validate().map_err(|error| {
                     CheckpointError::Incompatible(format!(
@@ -1349,10 +1203,9 @@ fn validate_durable_message_bodies(context: &ContextVmStateV1) -> Result<(), Che
                     "structured message carries invalid durable content: {error}"
                 ))
             })?;
-        } else if structured.content_json.is_none() {
+        } else {
             return Err(CheckpointError::Incompatible(
-                "structured message carries neither durable content nor a legacy content JSON body"
-                    .into(),
+                "structured message carries no durable content".into(),
             ));
         }
     }
@@ -1480,8 +1333,6 @@ impl CheckpointCandidate {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CheckpointProjection {
-    checkpoint_version: CheckpointRevision,
-    abi_version: AbiRevision,
     operation_id: OperationId,
     genesis_digest: Digest,
     base_step_seq: WireU64,
@@ -1495,90 +1346,10 @@ struct CheckpointProjection {
     checkpoint_digest: Digest,
 }
 
-/// The only historical checkpoint revision the current kernel reads. The raw logical-state value
-/// deliberately preserves v1's old structured-message spelling while its original digest is
-/// verified; after that verification it is decoded into the current logical-state DTO and emitted
-/// as a v2 checkpoint.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CheckpointProjectionV1 {
-    checkpoint_version: CheckpointRevisionV1,
-    abi_version: AbiRevision,
-    operation_id: OperationId,
-    genesis_digest: Digest,
-    base_step_seq: WireU64,
-    base_record_digest: Digest,
-    through_step_seq: WireU64,
-    covered_transaction_head_digest: Digest,
-    logical_state: serde_json::Value,
-    tail_inputs: Vec<CanonicalInput>,
-    state_digest: Digest,
-    tail_digest: Digest,
-    checkpoint_digest: Digest,
-}
-
-/// V1's exact revision marker. It must stay separate from [`CheckpointRevision`]: accepting v1
-/// in the current DTO would let a v1 digest be mistaken for a v2 digest.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(transparent)]
-struct CheckpointRevisionV1(u32);
-
-impl CheckpointRevisionV1 {
-    const VALUE: u32 = 1;
-
-    fn verify(self) -> Result<(), CheckpointError> {
-        if self.0 == Self::VALUE {
-            Ok(())
-        } else {
-            Err(CheckpointError::Incompatible(format!(
-                "v1 migration received checkpoint version {}; expected {}",
-                self.0,
-                Self::VALUE
-            )))
-        }
-    }
-}
-
-/// V1's digested body. `logical_state` must remain raw through verification because v1 structured
-/// message bodies did not carry the v2 `schema_version` default.
-#[derive(Serialize)]
-struct CheckpointBodyV1<'a> {
-    checkpoint_version: CheckpointRevisionV1,
-    abi_version: AbiRevision,
-    operation_id: &'a OperationId,
-    genesis_digest: &'a Digest,
-    base_step_seq: WireU64,
-    base_record_digest: &'a Digest,
-    through_step_seq: WireU64,
-    covered_transaction_head_digest: &'a Digest,
-    logical_state: &'a serde_json::Value,
-    tail_inputs: &'a [CanonicalInput],
-    state_digest: &'a Digest,
-    tail_digest: &'a Digest,
-}
-
 fn decode_checkpoint_value(
     document: serde_json::Value,
 ) -> Result<KernelCheckpoint, CheckpointError> {
-    let version = document
-        .get("checkpoint_version")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| {
-            CheckpointError::NotCanonical(
-                "checkpoint does not carry a non-negative integer checkpoint_version".into(),
-            )
-        })?;
-    let version = u32::try_from(version).map_err(|_| {
-        CheckpointError::Incompatible(format!("unsupported checkpoint version {version}"))
-    })?;
-    match version {
-        CheckpointRevisionV1::VALUE => migrate_checkpoint_v1(document),
-        KERNEL_CHECKPOINT_VERSION => decode_current_checkpoint(document),
-        other => Err(CheckpointError::Incompatible(format!(
-            "unsupported checkpoint version {other}; this kernel reads v1 through an explicit \
-             migration and writes version {KERNEL_CHECKPOINT_VERSION}"
-        ))),
-    }
+    decode_current_checkpoint(document)
 }
 
 fn decode_current_checkpoint(
@@ -1587,8 +1358,6 @@ fn decode_current_checkpoint(
     let projection = serde_json::from_value::<CheckpointProjection>(document)
         .map_err(|error| decode_error(&error.to_string()))?;
     let checkpoint = KernelCheckpoint {
-        checkpoint_version: projection.checkpoint_version,
-        abi_version: projection.abi_version,
         operation_id: projection.operation_id,
         genesis_digest: projection.genesis_digest,
         base_step_seq: projection.base_step_seq,
@@ -1603,253 +1372,6 @@ fn decode_current_checkpoint(
     };
     checkpoint.verify()?;
     Ok(checkpoint)
-}
-
-fn migrate_checkpoint_v1(document: serde_json::Value) -> Result<KernelCheckpoint, CheckpointError> {
-    let projection = serde_json::from_value::<CheckpointProjectionV1>(document)
-        .map_err(|error| decode_error(&error.to_string()))?;
-    projection.checkpoint_version.verify()?;
-
-    // V1 digests bind the original bytes, including structured bodies without a schema marker.
-    // Verify those claims before admitting any default introduced by v2.
-    check_tail(
-        &projection.operation_id,
-        projection.base_step_seq,
-        &projection.base_record_digest,
-        projection.through_step_seq,
-        &projection.covered_transaction_head_digest,
-        &projection.tail_inputs,
-    )?;
-    let state_digest = canonical_digest(canonical_bytes(&projection.logical_state)?.as_slice());
-    if state_digest != projection.state_digest {
-        return Err(CheckpointError::Corrupted(format!(
-            "v1 checkpoint {} through step {}: the logical state hashes to {state_digest}, but \
-             the checkpoint claims {}",
-            projection.operation_id, projection.through_step_seq, projection.state_digest
-        )));
-    }
-    let tail_digest = canonical_digest(canonical_bytes(&projection.tail_inputs)?.as_slice());
-    if tail_digest != projection.tail_digest {
-        return Err(CheckpointError::Corrupted(format!(
-            "v1 checkpoint {} through step {}: the bounded tail hashes to {tail_digest}, but \
-             the checkpoint claims {}",
-            projection.operation_id, projection.through_step_seq, projection.tail_digest
-        )));
-    }
-    let checkpoint_digest = canonical_digest(
-        canonical_bytes(&CheckpointBodyV1 {
-            checkpoint_version: projection.checkpoint_version,
-            abi_version: projection.abi_version,
-            operation_id: &projection.operation_id,
-            genesis_digest: &projection.genesis_digest,
-            base_step_seq: projection.base_step_seq,
-            base_record_digest: &projection.base_record_digest,
-            through_step_seq: projection.through_step_seq,
-            covered_transaction_head_digest: &projection.covered_transaction_head_digest,
-            logical_state: &projection.logical_state,
-            tail_inputs: &projection.tail_inputs,
-            state_digest: &projection.state_digest,
-            tail_digest: &projection.tail_digest,
-        })?
-        .as_slice(),
-    );
-    if checkpoint_digest != projection.checkpoint_digest {
-        return Err(CheckpointError::Corrupted(format!(
-            "v1 checkpoint {} through step {}: the body hashes to {checkpoint_digest}, but the \
-             checkpoint claims {}",
-            projection.operation_id, projection.through_step_seq, projection.checkpoint_digest
-        )));
-    }
-
-    let logical_state = serde_json::from_value::<LogicalKernelState>(projection.logical_state)
-        .map_err(|error| decode_error(&error.to_string()))?;
-    let logical_state = migrate_v1_logical_state(logical_state)?;
-    KernelCheckpoint::assemble(CheckpointDraft {
-        operation_id: projection.operation_id,
-        genesis_digest: projection.genesis_digest,
-        base_step_seq: projection.base_step_seq,
-        base_record_digest: projection.base_record_digest,
-        through_step_seq: projection.through_step_seq,
-        covered_transaction_head_digest: projection.covered_transaction_head_digest,
-        logical_state,
-        tail_inputs: projection.tail_inputs,
-    })
-}
-
-/// Lift v1's `Content` JSON carrier into the v2 body forms before the current state digest is
-/// created. This is deliberately narrow: a legacy body with a mixed or unknown layout does not
-/// acquire guessed semantics merely to keep a checkpoint readable.
-fn migrate_v1_logical_state(
-    mut state: LogicalKernelState,
-) -> Result<LogicalKernelState, CheckpointError> {
-    for message in &mut state.context_vm.messages {
-        message.body = migrate_v1_body(std::mem::replace(
-            &mut message.body,
-            StoredMessageBody::Inline(InlineMessageBody {
-                text: String::new(),
-                tool_call_id: None,
-                is_error: false,
-            }),
-        ))?;
-    }
-    for slot in &mut state.context_vm.knowledge {
-        slot.body = migrate_v1_body(std::mem::replace(
-            &mut slot.body,
-            StoredMessageBody::Inline(InlineMessageBody {
-                text: String::new(),
-                tool_call_id: None,
-                is_error: false,
-            }),
-        ))?;
-    }
-    Ok(state)
-}
-
-fn migrate_v1_body(body: StoredMessageBody) -> Result<StoredMessageBody, CheckpointError> {
-    let StoredMessageBody::Structured(structured) = body else {
-        return Ok(body);
-    };
-    if structured.durable_content.is_some()
-        || structured.durable_tool_result.is_some()
-        || !structured.durable_tool_results.is_empty()
-    {
-        return Err(CheckpointError::Incompatible(
-            "v1 structured message unexpectedly carries a v2 durable body form".into(),
-        ));
-    }
-    let content_json = structured.content_json.ok_or_else(|| {
-        CheckpointError::Incompatible(
-            "v1 structured message has no legacy content JSON body".into(),
-        )
-    })?;
-    let content = serde_json::from_str::<Content>(&content_json).map_err(|error| {
-        CheckpointError::Incompatible(format!(
-            "v1 structured message content does not decode: {error}"
-        ))
-    })?;
-    match content {
-        Content::Text(text) => Ok(StoredMessageBody::Inline(InlineMessageBody {
-            text,
-            tool_call_id: None,
-            is_error: false,
-        })),
-        Content::Parts(parts)
-            if parts
-                .iter()
-                .all(|part| matches!(part, ContentPart::ToolResult { .. })) =>
-        {
-            let results = parts
-                .into_iter()
-                .map(|part| match part {
-                    ContentPart::ToolResult {
-                        call_id,
-                        output,
-                        is_error,
-                        durable_content,
-                    } => {
-                        let result = durable_content.map_or_else(
-                            || {
-                                DurableToolResult::legacy_text(
-                                    call_id.to_string(),
-                                    output,
-                                    is_error,
-                                )
-                            },
-                            |content| DurableToolResult {
-                                schema_version: content.schema_version,
-                                call_id: call_id.to_string(),
-                                is_error,
-                                blocks: content.blocks,
-                            },
-                        );
-                        result.validate().map_err(|error| {
-                            CheckpointError::Incompatible(format!(
-                                "v1 structured message carries invalid durable tool result: {error}"
-                            ))
-                        })?;
-                        Ok(result)
-                    }
-                    _ => unreachable!("the all() guard permits only tool results"),
-                })
-                .collect::<Result<Vec<_>, CheckpointError>>()?;
-            match results.as_slice() {
-                [] => Err(CheckpointError::Incompatible(
-                    "v1 structured message has an empty parts body".into(),
-                )),
-                [result] => Ok(StoredMessageBody::Structured(StructuredMessageBody {
-                    schema_version: DurableContent::CURRENT_SCHEMA_VERSION,
-                    durable_content: None,
-                    durable_tool_result: Some(result.clone()),
-                    durable_tool_results: Vec::new(),
-                    content_json: None,
-                })),
-                _ => Ok(StoredMessageBody::Structured(StructuredMessageBody {
-                    schema_version: DurableContent::CURRENT_SCHEMA_VERSION,
-                    durable_content: None,
-                    durable_tool_result: None,
-                    durable_tool_results: results,
-                    content_json: None,
-                })),
-            }
-        }
-        Content::Parts(parts) => {
-            let blocks = parts
-                .into_iter()
-                .map(migrate_v1_content_part)
-                .collect::<Result<Vec<_>, CheckpointError>>()?;
-            let durable_content = DurableContent {
-                schema_version: DurableContent::CURRENT_SCHEMA_VERSION,
-                blocks,
-            };
-            durable_content.validate().map_err(|error| {
-                CheckpointError::Incompatible(format!(
-                    "v1 structured message carries invalid durable content: {error}"
-                ))
-            })?;
-            Ok(StoredMessageBody::Structured(StructuredMessageBody {
-                schema_version: DurableContent::CURRENT_SCHEMA_VERSION,
-                durable_content: Some(durable_content),
-                durable_tool_result: None,
-                durable_tool_results: Vec::new(),
-                content_json: None,
-            }))
-        }
-    }
-}
-
-fn migrate_v1_content_part(part: ContentPart) -> Result<DurableContentBlock, CheckpointError> {
-    match part {
-        ContentPart::Text { text } => Ok(DurableContentBlock::Text { text }),
-        ContentPart::Image {
-            url,
-            data,
-            media_type,
-            detail,
-        } => {
-            let source = match (url, data) {
-                (Some(url), None) => DurableSource::Url { url },
-                (None, Some(data)) => DurableSource::Base64 { data },
-                _ => {
-                    return Err(CheckpointError::Incompatible(
-                        "v1 image content must have exactly one URL or base64 source".into(),
-                    ));
-                }
-            };
-            Ok(DurableContentBlock::Image {
-                source,
-                media_type,
-                provider_options: detail.map(|detail| serde_json::json!({ "detail": detail })),
-            })
-        }
-        ContentPart::Audio { data, media_type } => Ok(DurableContentBlock::Audio {
-            source: DurableSource::Base64 { data },
-            media_type: Some(media_type),
-            provider_options: None,
-        }),
-        ContentPart::ToolResult { .. } => Err(CheckpointError::Incompatible(
-            "v1 structured message mixes tool results with ordinary content".into(),
-        )),
-    }
 }
 
 /// Recover a rejection's class from the string `serde` hands back.
@@ -1953,7 +1475,7 @@ mod tests {
 
     fn logical_state() -> LogicalKernelState {
         LogicalKernelState {
-            transition: TransitionStateV1 {
+            transition: TransitionState {
                 lifecycle: OperationLifecycle::Running,
                 resolved_config: resolved_config(),
                 root_kind: Some(RootKind::Agent),
@@ -1970,9 +1492,9 @@ mod tests {
                 accepted_cancellation: None,
                 terminal: None,
             },
-            syscall: SyscallStateV1::default(),
-            scheduler: SchedulerStateV1::default(),
-            context_vm: ContextVmStateV1::default(),
+            syscall: SyscallState::default(),
+            scheduler: SchedulerState::default(),
+            context_vm: ContextVmState::default(),
         }
     }
 
@@ -2009,165 +1531,11 @@ mod tests {
     // -----------------------------------------------------------------------------------------
 
     #[test]
-    fn a_checkpoint_states_its_own_versions_from_the_kernels_constants() {
-        let checkpoint = checkpoint();
-        assert_eq!(checkpoint.checkpoint_version(), KERNEL_CHECKPOINT_VERSION);
-        assert_eq!(
-            checkpoint.checkpoint_version(),
-            2,
-            "v2 is the current migration target"
-        );
-        assert_eq!(
-            checkpoint.abi_version(),
-            super::super::KERNEL_ABI_VERSION,
-            "DEC-6 · the ABI revision is read from core's constant, never copied"
-        );
-    }
-
-    fn recompute_v1_digests(document: &mut serde_json::Map<String, Value>) {
-        document.insert(
-            "state_digest".into(),
-            Value::String(
-                canonical_digest(
-                    canonical_bytes(&document["logical_state"])
-                        .unwrap()
-                        .as_slice(),
-                )
-                .to_string(),
-            ),
-        );
-        document.insert(
-            "tail_digest".into(),
-            Value::String(
-                canonical_digest(
-                    canonical_bytes(&document["tail_inputs"])
-                        .unwrap()
-                        .as_slice(),
-                )
-                .to_string(),
-            ),
-        );
-        let mut body = document.clone();
-        body.remove("checkpoint_digest");
-        document.insert(
-            "checkpoint_digest".into(),
-            Value::String(canonical_digest(canonical_bytes(&body).unwrap().as_slice()).to_string()),
-        );
-    }
-
-    #[test]
-    fn a_v1_checkpoint_migrates_to_the_current_canonical_revision() {
-        let mut draft = draft(3, 3, Vec::new());
-        draft
-            .logical_state
-            .context_vm
-            .messages
-            .push(StoredMessageState {
-                partition: MessagePartition::History,
-                role: "user".into(),
-                body: StoredMessageBody::Structured(StructuredMessageBody {
-                    schema_version: 1,
-                    durable_content: None,
-                    durable_tool_result: None,
-                    durable_tool_results: Vec::new(),
-                    content_json: Some("\"v1 body\"".into()),
-                }),
-                tool_calls: Vec::new(),
-                tokens: 2,
-            });
-        let current = KernelCheckpoint::assemble(draft).expect("the v2 canonical form assembles");
-        let mut legacy: serde_json::Map<String, Value> =
-            serde_json::from_slice(current.checkpoint_bytes().as_slice()).unwrap();
-        legacy.insert("checkpoint_version".into(), Value::from(1u64));
-        legacy["logical_state"]["context_vm"]["messages"][0]["body"]
-            .as_object_mut()
-            .unwrap()
-            .remove("schema_version");
-        recompute_v1_digests(&mut legacy);
-        let legacy_checkpoint_digest = legacy["checkpoint_digest"].clone();
-
-        let migrated = KernelCheckpoint::from_checkpoint_bytes(
-            serde_json::to_string(&legacy).unwrap().as_bytes(),
-        )
-        .expect("a verified v1 checkpoint migrates");
-
-        let mut expected_state = current.logical_state().clone();
-        expected_state.context_vm.messages[0].body = StoredMessageBody::Inline(InlineMessageBody {
-            text: "v1 body".into(),
-            tool_call_id: None,
-            is_error: false,
-        });
-
-        assert_eq!(migrated.checkpoint_version(), KERNEL_CHECKPOINT_VERSION);
-        assert_eq!(migrated.logical_state(), &expected_state);
-        assert_eq!(migrated.tail_inputs(), current.tail_inputs());
-        assert_eq!(
-            migrated.state_digest(),
-            &canonical_digest(canonical_bytes(&expected_state).unwrap().as_slice())
-        );
-        assert_eq!(migrated.tail_digest(), current.tail_digest());
-        assert_ne!(
-            migrated.checkpoint_digest().to_string(),
-            legacy_checkpoint_digest,
-            "the current digest must bind the migrated revision"
-        );
-        migrated
-            .verify()
-            .expect("the migration output verifies as v2");
-    }
-
-    #[test]
-    fn a_tampered_v1_state_is_rejected_before_migration_defaults_apply() {
-        let current = checkpoint();
-        let mut legacy: serde_json::Map<String, Value> =
-            serde_json::from_slice(current.checkpoint_bytes().as_slice()).unwrap();
-        legacy.insert("checkpoint_version".into(), Value::from(1u64));
-        recompute_v1_digests(&mut legacy);
-        legacy["logical_state"]["transition"]["lifecycle"] = Value::String("failed".into());
-
-        let error = KernelCheckpoint::from_checkpoint_bytes(
-            serde_json::to_string(&legacy).unwrap().as_bytes(),
-        )
-        .expect_err("a v1 state edit must not be normalised into a valid v2 checkpoint");
-        assert_eq!(error.code(), KernelFaultCode::CheckpointCorrupted);
-        assert!(error.message().contains("v1 checkpoint"));
-    }
-
-    #[test]
-    fn the_frozen_v1_checkpoint_fixture_migrates_and_replays_its_bounded_tail() {
-        let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/kernel-wire/golden_checkpoint_v1_migration.json");
-        let fixture: Value = serde_json::from_str(
-            &fs::read_to_string(fixture_path).expect("the historical fixture is readable"),
-        )
-        .expect("the historical fixture is JSON");
-        let checkpoint_bytes = serde_json::to_vec(&fixture["checkpoint"])
-            .expect("the historical checkpoint is serializable");
-        let migrated = KernelCheckpoint::from_checkpoint_bytes(&checkpoint_bytes)
-            .expect("the frozen v1 checkpoint migrates and verifies");
-
-        assert_eq!(migrated.checkpoint_version(), KERNEL_CHECKPOINT_VERSION);
-        let restored = super::super::restore::restore_operation(
-            Some(&migrated),
-            &[],
-            ConfigDefaults::default(),
-            super::super::transaction::InMemoryRecordIndex::new(),
-        )
-        .expect("the migrated logical state and bounded tail restore");
-        assert_eq!(
-            restored
-                .transaction
-                .head()
-                .expect("tail replay produces a durable head")
-                .digest
-                .to_string(),
-            fixture["expected"]["covered_head"],
-            "replay reaches the historical checkpoint's covered head"
-        );
-        assert_eq!(
-            restored.cost.tail_inputs_replayed, fixture["expected"]["tail_inputs_replayed"],
-            "restore replays the fixture's exact bounded tail"
-        );
+    fn a_checkpoint_has_no_version_axis() {
+        let document: Value =
+            serde_json::from_slice(checkpoint().checkpoint_bytes().as_slice()).unwrap();
+        assert!(document.get("checkpoint_version").is_none());
+        assert!(document.get("abi_version").is_none());
     }
 
     /// The load-bearing invariant of §12.1: each piece of correctness state has exactly one home,
@@ -2244,7 +1612,7 @@ mod tests {
     #[test]
     fn the_dto_is_constructible_without_any_state_machine() {
         let state = LogicalKernelState {
-            transition: TransitionStateV1 {
+            transition: TransitionState {
                 lifecycle: OperationLifecycle::Created,
                 resolved_config: resolved_config(),
                 root_kind: None,
@@ -2257,9 +1625,9 @@ mod tests {
                 accepted_cancellation: None,
                 terminal: None,
             },
-            syscall: SyscallStateV1::default(),
-            scheduler: SchedulerStateV1::default(),
-            context_vm: ContextVmStateV1::default(),
+            syscall: SyscallState::default(),
+            scheduler: SchedulerState::default(),
+            context_vm: ContextVmState::default(),
         };
         let mut draft = draft(0, 0, Vec::new());
         draft.logical_state = state;
@@ -2331,20 +1699,27 @@ mod tests {
     }
 
     #[test]
-    fn structured_message_body_migrates_the_legacy_missing_schema_marker() {
-        let body: StructuredMessageBody = serde_json::from_value(serde_json::json!({
-            "content_json": "{\\\"Text\\\":\\\"hello\\\"}"
-        }))
-        .expect("legacy structured bodies remain readable");
-        assert_eq!(body.schema_version, 1);
+    fn structured_message_body_rejects_removed_body_forms() {
+        assert!(
+            serde_json::from_value::<StructuredMessageBody>(serde_json::json!({
+                "content_json": "{\\\"Text\\\":\\\"hello\\\"}"
+            }))
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<StructuredMessageBody>(serde_json::json!({
+                "schema_version": 1,
+                "durable_content": {"blocks": []}
+            }))
+            .is_err()
+        );
     }
 
     #[test]
     fn structured_message_body_rejects_unknown_fields() {
         assert!(
             serde_json::from_value::<StructuredMessageBody>(serde_json::json!({
-                "schema_version": 1,
-                "durable_content": {"schema_version": 1, "blocks": []},
+                "durable_content": {"blocks": []},
                 "unknown": true,
             }))
             .is_err()
@@ -2352,32 +1727,13 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_rejects_future_durable_content_schema_before_use() {
-        let mut draft = draft(3, 3, Vec::new());
-        draft
-            .logical_state
-            .context_vm
-            .messages
-            .push(StoredMessageState {
-                partition: MessagePartition::History,
-                role: "user".into(),
-                body: StoredMessageBody::Structured(StructuredMessageBody {
-                    schema_version: 2,
-                    durable_content: Some(crate::types::durable_content::DurableContent {
-                        schema_version: 2,
-                        blocks: Vec::new(),
-                    }),
-                    durable_tool_result: None,
-                    durable_tool_results: Vec::new(),
-                    content_json: None,
-                }),
-                tool_calls: Vec::new(),
-                tokens: 0,
-            });
-        assert!(matches!(
-            KernelCheckpoint::assemble(draft),
-            Err(CheckpointError::Incompatible(_))
-        ));
+    fn removed_durable_content_schema_field_is_not_readable() {
+        assert!(
+            serde_json::from_value::<StructuredMessageBody>(serde_json::json!({
+                "durable_content": {"schema_version": 1, "blocks": []}
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -2391,19 +1747,16 @@ mod tests {
                 partition: MessagePartition::History,
                 role: "tool".into(),
                 body: StoredMessageBody::Structured(StructuredMessageBody {
-                    schema_version: 1,
                     durable_content: Some(crate::types::durable_content::DurableContent::text(
                         "wrong",
                     )),
-                    durable_tool_result: Some(
-                        crate::types::durable_content::DurableToolResult::legacy_text(
+                    durable_tool_results: vec![
+                        crate::types::durable_content::DurableToolResult::text(
                             "call-1",
                             "also wrong",
                             false,
                         ),
-                    ),
-                    durable_tool_results: Vec::new(),
-                    content_json: None,
+                    ],
                 }),
                 tool_calls: Vec::new(),
                 tokens: 0,
@@ -2449,34 +1802,19 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognised_checkpoint_version_is_incompatible() {
-        for version in [0u64, 3, 99] {
+    fn removed_version_fields_are_malformed() {
+        for field in ["checkpoint_version", "abi_version"] {
             let error = tampered(|document| {
-                document.insert("checkpoint_version".to_string(), Value::from(version));
+                document.insert(field.to_string(), Value::from(1));
             });
-            assert_eq!(
-                error.code(),
-                KernelFaultCode::CheckpointIncompatible,
-                "checkpoint version {version} must be refused, not guessed at"
-            );
+            assert_eq!(error.code(), KernelFaultCode::MalformedEnvelope);
         }
-    }
-
-    #[test]
-    fn an_abi_revision_this_kernel_does_not_read_is_incompatible() {
-        let error = tampered(|document| {
-            document.insert(
-                "abi_version".to_string(),
-                Value::from(u64::from(super::super::KERNEL_ABI_VERSION) + 1),
-            );
-        });
-        assert_eq!(error.code(), KernelFaultCode::CheckpointIncompatible);
     }
 
     #[test]
     fn an_unknown_field_is_refused_rather_than_ignored() {
         let error = tampered(|document| {
-            // §12.4 deleted `last_step`; a blob that still carries one is a v2 snapshot.
+            // §12.4 deleted `last_step`; retired snapshots must fail closed.
             document.insert("last_step".to_string(), Value::Null);
         });
         assert_eq!(error.code(), KernelFaultCode::MalformedEnvelope);
@@ -2676,10 +2014,10 @@ mod tests {
             || KernelCheckpoint::assemble(draft(2, 4, vec![tail_entry(3), tail_entry(4)])).unwrap();
         vec![
             (
-                "reject_checkpoint_unknown_checkpoint_version.json",
-                "checkpoint_incompatible",
-                "A checkpoint of a revision this kernel does not read is refused at the decode \
-                 boundary, never guessed at (spec 12.1, DEC-6).",
+                "reject_checkpoint_removed_checkpoint_version.json",
+                "malformed_envelope",
+                "A checkpoint carrying the removed checkpoint version field is refused at the \
+                 strict decode boundary.",
                 (
                     full(),
                     Box::new(|d: &mut serde_json::Map<String, Value>| {
@@ -2688,17 +2026,14 @@ mod tests {
                 ),
             ),
             (
-                "reject_checkpoint_abi_revision_future.json",
-                "checkpoint_incompatible",
-                "A checkpoint written against a newer wire revision is incompatible, not corrupt: \
-                 the answer is a different checkpoint, not more tail (spec 16.2).",
+                "reject_checkpoint_removed_abi_version.json",
+                "malformed_envelope",
+                "A checkpoint carrying the removed ABI version field is refused at the strict \
+                 decode boundary.",
                 (
                     full(),
                     Box::new(|d: &mut serde_json::Map<String, Value>| {
-                        d.insert(
-                            "abi_version".into(),
-                            Value::from(u64::from(super::super::KERNEL_ABI_VERSION) + 1),
-                        );
+                        d.insert("abi_version".into(), Value::from(1));
                     }),
                 ),
             ),
@@ -2731,7 +2066,7 @@ mod tests {
             (
                 "reject_checkpoint_unknown_field_last_step.json",
                 "malformed_envelope",
-                "Spec 12.4 deleted `last_step`; a legacy blob that still carries one is refused \
+                "Spec 12.4 deleted `last_step`; a blob that still carries one is refused \
                  rather than partially read.",
                 (
                     full(),

@@ -186,8 +186,8 @@ pub struct LogicalAgentSpec {
     pub verification_contract_id: Option<String>,
     #[serde(default, skip_serializing_if = "CapabilityFilter::is_empty")]
     pub capability_filter: CapabilityFilter,
-    /// Pre-activation tool surface *under* the capability ceiling. `None` ⇒ the ceiling itself;
-    /// `Some([])` is a legitimate, distinct minimal surface.
+    /// Pre-activation task-tool surface *under* the capability ceiling. Missing and empty
+    /// baselines both expose only kernel-owned meta-tools and stable core tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure_baseline: Option<Vec<String>>,
     /// Pure logical pacing policy for one loop round. It contains no host/session identity.

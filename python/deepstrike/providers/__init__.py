@@ -42,15 +42,8 @@ from .anthropic import AnthropicProvider
 from .openai import OpenAIProvider
 from .openai_responses import OpenAIResponsesProvider, OpenAIResponsesAdapter
 from .embedding import EmbeddingRequestPlan, EmbeddingResult, OpenAIEmbeddingAdapter
-from .qwen import QwenProvider, QwenAnthropicProvider
-from .deepseek import DeepSeekProvider, DeepSeekAnthropicProvider
-from .minimax import MiniMaxAnthropicProvider, MiniMaxOpenAIProvider
 from .ollama import OllamaProvider
-from .kimi import KimiProvider, KimiAnthropicProvider
 from .gemini import GeminiProvider
-from .glm import GLMProvider, GLMAnthropicProvider
-# v0.2.3 parity: per-backend factory functions are the public surface; the dual classes above remain
-# importable for advanced subclassing but are no longer advertised in __all__.
 from .factories import deepseek, kimi, qwen, glm, minimax, gemini, ollama
 from .request_plan import (
     PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, PromptMeasurementRecord,

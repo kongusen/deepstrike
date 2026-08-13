@@ -39,7 +39,7 @@ use serde::Serialize;
 use super::checkpoint::{
     AcceptedCancellationState, AcceptedInputState, CanonicalInput, CheckpointCandidate,
     CheckpointDraft, KernelCheckpoint, LaunchTokenState, LogicalKernelState,
-    LogicalStateProjection, ResolvedEffectState, TransitionStateV1,
+    LogicalStateProjection, ResolvedEffectState, TransitionState,
 };
 use super::command::{CancelCommand, HostCommand};
 use super::config::{ConfigDefaults, ResolvedOperationConfig, TailBounds};
@@ -1184,7 +1184,7 @@ where
         &self,
         root_kind: Option<RootKind>,
         focus: Option<ExecutionFocus>,
-    ) -> Result<TransitionStateV1, KernelFault> {
+    ) -> Result<TransitionState, KernelFault> {
         self.transition_state(root_kind, focus)
     }
 
@@ -1197,7 +1197,7 @@ where
         &self,
         root_kind: Option<RootKind>,
         focus: Option<ExecutionFocus>,
-    ) -> Result<TransitionStateV1, KernelFault> {
+    ) -> Result<TransitionState, KernelFault> {
         let config = self.config.as_ref().ok_or_else(|| {
             KernelFault::new(
                 KernelFaultCode::InvalidLifecycle,
@@ -1206,7 +1206,7 @@ where
             )
         })?;
 
-        Ok(TransitionStateV1 {
+        Ok(TransitionState {
             lifecycle: self.lifecycle,
             resolved_config: config.clone(),
             root_kind,
@@ -1793,7 +1793,6 @@ fn corrupt_chain_fault(error: RecordError) -> KernelFault {
 fn rejection_fault(rejection: WireRejection) -> KernelFault {
     let code = match rejection.kind {
         WireRejectionKind::PolicyViolation => KernelFaultCode::InvalidConfig,
-        WireRejectionKind::VersionMismatch => KernelFaultCode::VersionMismatch,
         _ => KernelFaultCode::MalformedEnvelope,
     };
     KernelFault::new(code, rejection.message)

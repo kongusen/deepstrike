@@ -10,7 +10,7 @@ import type {
 import type { SkillMetadata } from "../skills/loader.js"
 import type { RollbackReason } from "./session-log.js"
 
-const CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts:v1]]"
+const CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts]]"
 
 export function encodeCanonicalContentParts(parts: unknown[]): string {
   return `${CANONICAL_CONTENT_PARTS_PREFIX}${Buffer.from(JSON.stringify(parts)).toString("base64url")}`
@@ -200,7 +200,6 @@ export interface KernelObservation {
   node_index?: number
   // entropy_sample / entropy_alert: kernel session-entropy measurement + opt-in watch trip.
   score?: number
-  score_version?: number
   rho?: number
   repeat_pressure?: number
   failure_rate?: number
@@ -358,7 +357,6 @@ export function entropySampleFromObservation(obs: KernelObservation): EntropySam
   return {
     turn: obs.turn ?? 0,
     score: obs.score ?? 0,
-    scoreVersion: obs.score_version ?? 0,
     rho: obs.rho ?? 0,
     repeatPressure: obs.repeat_pressure ?? 0,
     failureRate: obs.failure_rate ?? 0,

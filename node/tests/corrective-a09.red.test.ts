@@ -129,7 +129,7 @@ describe("SPC-013 A-09 canonical stop reasons", () => {
   })
 
   it("drives kernel continuation from OpenAI raw length after adapter normalization", async () => {
-    const provider = new OpenAIChatProvider("k", "fixture", { maxRetries: 1, baseDelay: 0 })
+    const provider = new OpenAIChatProvider({ apiKey: "k", model: "fixture", retry: { maxRetries: 1, baseDelay: 0 } })
     let calls = 0
     ;(provider as any).client = {
       chat: { completions: { create: async () => {

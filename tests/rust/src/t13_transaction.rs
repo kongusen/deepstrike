@@ -10,6 +10,7 @@ use deepstrike_core::runtime::session::{RollbackReason, SessionEvent};
 use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::*;
 use deepstrike_core::types::message::*;
+use deepstrike_core::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
 use deepstrike_core::types::task::RuntimeTask;
 
 fn default_sm() -> LoopStateMachine {
@@ -26,6 +27,10 @@ fn default_sm() -> LoopStateMachine {
             parameters: serde_json::json!({"type": "object"}),
         })
         .collect();
+    sm.run_spec = Some(
+        AgentRunSpec::new(AgentIdentity::new("root", "test-session"), AgentRole::Custom, "test")
+            .with_exposure_baseline(["write_file", "read_file", "deploy"]),
+    );
     sm
 }
 

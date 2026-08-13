@@ -4,16 +4,43 @@ import { collectStreamMessage, toOpenAIMessages } from "./base.js"
 const DEEPSEEK_REASONERS = new Set(["deepseek-reasoner", "deepseek-r1"])
 const MINIMAX_REASONERS = new Set(["MiniMax-M1", "minimax-m1"])
 
+type OpenAIProviderDialect = "openai" | "qwen" | "deepseek" | "minimax"
+
+export interface OpenAIProviderOptions {
+  apiKey: string
+  model?: string
+  baseURL?: string
+  provider?: string
+  endpointId?: string
+  dialect?: OpenAIProviderDialect
+}
+
+export interface BackendProviderOptions {
+  apiKey: string
+  model?: string
+  baseURL?: string
+}
+
 // OpenAI-compatible provider — works for OpenAI, Qwen (DashScope), DeepSeek, MiniMax, Kimi
 export class OpenAIProvider implements LLMProvider {
-  constructor(
-    protected readonly apiKey: string,
-    protected readonly model = "gpt-4o",
-    protected readonly baseUrl = "https://api.openai.com/v1",
-  ) {}
+  protected readonly apiKey: string
+  protected readonly model: string
+  protected readonly baseUrl: string
+  private readonly provider: string
+  private readonly endpoint: string
+  private readonly dialect: OpenAIProviderDialect
 
-  protected providerId(): string { return "openai" }
-  protected endpointId(): string { return "openai.chat" }
+  constructor(options: OpenAIProviderOptions) {
+    this.apiKey = options.apiKey
+    this.model = options.model ?? "gpt-4o"
+    this.baseUrl = options.baseURL ?? "https://api.openai.com/v1"
+    this.provider = options.provider ?? "openai"
+    this.endpoint = options.endpointId ?? "openai.chat"
+    this.dialect = options.dialect ?? "openai"
+  }
+
+  protected providerId(): string { return this.provider }
+  protected endpointId(): string { return this.endpoint }
 
   descriptor(): ProviderDescriptor {
     const reasoning = DEEPSEEK_REASONERS.has(this.model) || MINIMAX_REASONERS.has(this.model)
@@ -63,7 +90,9 @@ export class OpenAIProvider implements LLMProvider {
       body: JSON.stringify(body),
       ...(signal ? { signal } : {}), // #2-B-ii: a preempt aborts the in-flight request at the socket.
     })
-    if (!resp.ok) throw new Error(`OpenAI ${resp.status}: ${await resp.text()}`)
+    if (!resp.ok) {
+      throw Object.assign(new Error(`OpenAI ${resp.status}: ${await resp.text()}`), { status: resp.status })
+    }
 
     const toolAccum: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const reader = resp.body!.getReader()
@@ -113,70 +142,71 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+    if (this.dialect === "qwen") {
+      const enableThinking = Boolean(extensions?.enableThinking)
+      const thinkingBudget = extensions?.thinkingBudget as number | undefined
+      const { enableThinking: _, thinkingBudget: __, expose_reasoning: ___, exposeReasoning: ____, ...passthrough } = extensions ?? {}
+      yield* this.streamInner(context, tools, {
+        ...passthrough,
+        ...(enableThinking ? { enable_thinking: true, ...(thinkingBudget ? { thinking_budget: thinkingBudget } : {}) } : {}),
+      }, enableThinking, signal)
+      return
+    }
+
+    if (this.dialect === "deepseek" || this.dialect === "minimax") {
+      const exposeReasoning = Boolean(extensions?.exposeReasoning)
+      const isReasoner = this.dialect === "deepseek"
+        ? DEEPSEEK_REASONERS.has(this.model)
+        : MINIMAX_REASONERS.has(this.model)
+      const { exposeReasoning: _, expose_reasoning: __, ...passthrough } = extensions ?? {}
+      yield* this.streamInner(context, isReasoner ? [] : tools, passthrough, exposeReasoning, signal)
+      return
+    }
+
     const { expose_reasoning: _, exposeReasoning: __, ...passthrough } = extensions ?? {}
     yield* this.streamInner(context, tools, passthrough, false, signal)
   }
 }
 
-export class QwenProvider extends OpenAIProvider {
-  constructor(apiKey: string, model = "qwen-max") {
-    super(apiKey, model, "https://dashscope.aliyuncs.com/compatible-mode/v1")
-  }
-
-  protected override providerId(): string { return "qwen" }
-  protected override endpointId(): string { return "qwen.dashscope" }
-
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
-    const enableThinking = Boolean(extensions?.enableThinking)
-    const thinkingBudget = extensions?.thinkingBudget as number | undefined
-    const { enableThinking: _, thinkingBudget: __, expose_reasoning: ___, exposeReasoning: ____, ...passthrough } = extensions ?? {}
-    const extra: Record<string, unknown> = {
-      ...passthrough,
-      ...(enableThinking ? { enable_thinking: true, ...(thinkingBudget ? { thinking_budget: thinkingBudget } : {}) } : {}),
-    }
-    yield* this.streamInner(context, tools, extra, enableThinking, signal)
-  }
+export function qwen(options: BackendProviderOptions): LLMProvider {
+  return new OpenAIProvider({
+    ...options,
+    model: options.model ?? "qwen-max",
+    baseURL: options.baseURL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    provider: "qwen",
+    endpointId: "qwen.dashscope",
+    dialect: "qwen",
+  })
 }
 
-export class DeepSeekProvider extends OpenAIProvider {
-  constructor(apiKey: string, model = "deepseek-chat") {
-    super(apiKey, model, "https://api.deepseek.com/v1")
-  }
-
-  protected override providerId(): string { return "deepseek" }
-  protected override endpointId(): string { return "deepseek.openai" }
-
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
-    const exposeReasoning = Boolean(extensions?.exposeReasoning)
-    const isReasoner = DEEPSEEK_REASONERS.has(this.model)
-    const filteredTools = isReasoner ? [] : tools
-    const { exposeReasoning: _, expose_reasoning: __, ...passthrough } = extensions ?? {}
-    yield* this.streamInner(context, filteredTools, passthrough, exposeReasoning, signal)
-  }
+export function deepseek(options: BackendProviderOptions): LLMProvider {
+  return new OpenAIProvider({
+    ...options,
+    model: options.model ?? "deepseek-chat",
+    baseURL: options.baseURL ?? "https://api.deepseek.com/v1",
+    provider: "deepseek",
+    endpointId: "deepseek.openai",
+    dialect: "deepseek",
+  })
 }
 
-export class MiniMaxProvider extends OpenAIProvider {
-  constructor(apiKey: string, model = "MiniMax-Text-01") {
-    super(apiKey, model, "https://api.minimax.chat/v1")
-  }
-
-  protected override providerId(): string { return "minimax" }
-  protected override endpointId(): string { return "minimax.openai" }
-
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
-    const exposeReasoning = Boolean(extensions?.exposeReasoning)
-    const isReasoner = MINIMAX_REASONERS.has(this.model)
-    const filteredTools = isReasoner ? [] : tools
-    const { exposeReasoning: _, expose_reasoning: __, ...passthrough } = extensions ?? {}
-    yield* this.streamInner(context, filteredTools, passthrough, exposeReasoning, signal)
-  }
+export function minimax(options: BackendProviderOptions): LLMProvider {
+  return new OpenAIProvider({
+    ...options,
+    model: options.model ?? "MiniMax-Text-01",
+    baseURL: options.baseURL ?? "https://api.minimax.chat/v1",
+    provider: "minimax",
+    endpointId: "minimax.openai",
+    dialect: "minimax",
+  })
 }
 
-export class KimiProvider extends OpenAIProvider {
-  constructor(apiKey: string, model = "moonshot-v1-8k") {
-    super(apiKey, model, "https://api.moonshot.cn/v1")
-  }
-
-  protected override providerId(): string { return "kimi" }
-  protected override endpointId(): string { return "kimi.openai" }
+export function kimi(options: BackendProviderOptions): LLMProvider {
+  return new OpenAIProvider({
+    ...options,
+    model: options.model ?? "moonshot-v1-8k",
+    baseURL: options.baseURL ?? "https://api.moonshot.cn/v1",
+    provider: "kimi",
+    endpointId: "kimi.openai",
+  })
 }

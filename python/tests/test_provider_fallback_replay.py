@@ -3,7 +3,7 @@ import pytest
 from deepstrike._kernel import ContentPartObj, Message, ToolCall
 from deepstrike.providers.anthropic import AnthropicProvider
 from deepstrike.providers.base import RenderedContext
-from deepstrike.providers.deepseek import DeepSeekProvider
+from deepstrike.providers.factories import deepseek
 from deepstrike.providers.replay_validator import (
     DEGRADED_REASONING_PLACEHOLDER,
     ProviderReplayValidationError,
@@ -34,16 +34,19 @@ def _llm_completed(content, tool_calls, provider_replay=None):
 
 def test_is_replay_compatible_with_provider_gates_by_protocol():
     anthropic = AnthropicProvider("k")
-    deepseek = DeepSeekProvider("k", "deepseek-v4-flash")
+    deepseek_provider = deepseek(api_key="k", model="deepseek-v4-flash")
     assert is_replay_compatible_with_provider({"protocol": "anthropic-messages"}, anthropic.descriptor()) is True
     assert is_replay_compatible_with_provider({"protocol": "openai-chat"}, anthropic.descriptor()) is False
-    # legacy shape inference
-    assert is_replay_compatible_with_provider({"native_blocks": [{"type": "text", "text": "x"}]}, deepseek.descriptor()) is False
-    assert is_replay_compatible_with_provider({"reasoning_content": "t"}, deepseek.descriptor()) is True
-    assert is_replay_compatible_with_provider({"reasoning_content": "t"}, anthropic.descriptor()) is False
-    # unknown shape / no descriptor passes through
-    assert is_replay_compatible_with_provider({}, anthropic.descriptor()) is True
-    assert is_replay_compatible_with_provider({"reasoning_content": "t"}, None) is True
+    # Missing protocol and removed version markers are non-canonical and never inferred.
+    with pytest.raises(ValueError, match="protocol is required"):
+        is_replay_compatible_with_provider({"native_blocks": [{"type": "text", "text": "x"}]}, deepseek_provider.descriptor())
+    with pytest.raises(ValueError, match="protocol is required"):
+        is_replay_compatible_with_provider({"reasoning_content": "t"}, deepseek_provider.descriptor())
+    with pytest.raises(ValueError, match="protocol is required"):
+        is_replay_compatible_with_provider({}, anthropic.descriptor())
+    with pytest.raises(ValueError, match="unknown field schema_version"):
+        is_replay_compatible_with_provider({"protocol": "openai-chat", "schema_version": 1}, deepseek_provider.descriptor())
+    assert is_replay_compatible_with_provider({"protocol": "openai-chat", "reasoning_content": "t"}, None) is True
 
 
 def test_cross_protocol_replay_not_seeded_into_anthropic():
@@ -51,26 +54,21 @@ def test_cross_protocol_replay_not_seeded_into_anthropic():
     tool_calls = [ToolCall(id="c1", name="ping", arguments="{}")]
     seed_provider_replay_from_events(anthropic, [_llm_completed(
         "calling", tool_calls,
-        provider_replay={"schema_version": 2, "provider": "deepseek", "protocol": "openai-chat", "reasoning_content": "x"},
+        provider_replay={"provider": "deepseek", "protocol": "openai-chat", "reasoning_content": "x"},
     )])
     # incompatible envelope skipped entirely; no native blocks seeded
     assert anthropic.peek_provider_replay("calling", tool_calls) is None
 
 
-def test_legacy_anthropic_log_reconstructs_native_blocks():
+def test_missing_replay_is_not_reconstructed():
     anthropic = AnthropicProvider("k")
     tool_calls = [ToolCall(id="c1", name="ping", arguments='{"a":1}')]
     seed_provider_replay_from_events(anthropic, [_llm_completed("calling", tool_calls)])
-    assert anthropic.peek_provider_replay("calling", tool_calls) == {
-        "native_blocks": [
-            {"type": "text", "text": "calling"},
-            {"type": "tool_use", "id": "c1", "name": "ping", "input": {"a": 1}},
-        ],
-    }
+    assert anthropic.peek_provider_replay("calling", tool_calls) is None
 
 
 def test_validator_rejects_orphan_tool_result():
-    provider = DeepSeekProvider("k", "deepseek-chat")
+    provider = deepseek(api_key="k", model="deepseek-chat")
     context = RenderedContext(turns=[
         Message(role="user", content="hi"),
         Message(role="tool", content="", content_parts=[
@@ -82,7 +80,7 @@ def test_validator_rejects_orphan_tool_result():
 
 
 def test_validator_accepts_matched_tool_result():
-    provider = DeepSeekProvider("k", "deepseek-chat")
+    provider = deepseek(api_key="k", model="deepseek-chat")
     context = RenderedContext(turns=[
         Message(role="assistant", content="", tool_calls=[ToolCall(id="c1", name="ping", arguments="{}")]),
         Message(role="tool", content="", content_parts=[
@@ -94,13 +92,13 @@ def test_validator_accepts_matched_tool_result():
 
 
 def test_deepseek_reasoning_model_fails_fast_without_reasoning_replay():
-    provider = DeepSeekProvider("k", "deepseek-v4-flash")
+    provider = deepseek(api_key="k", model="deepseek-v4-flash")
     with pytest.raises(ProviderReplayValidationError, match="non-empty reasoning_content"):
         provider._build_messages(_tool_call_context())
 
 
 def test_validator_rejects_missing_tool_result():
-    provider = DeepSeekProvider("k", "deepseek-chat")
+    provider = deepseek(api_key="k", model="deepseek-chat")
     context = RenderedContext(turns=[
         Message(role="user", content="hi"),
         Message(role="assistant", content="calling", tool_calls=[ToolCall(id="c_unanswered", name="ping", arguments="{}")]),
@@ -111,7 +109,7 @@ def test_validator_rejects_missing_tool_result():
 
 
 def test_validator_rejects_dangling_tool_call_at_end():
-    provider = DeepSeekProvider("k", "deepseek-chat")
+    provider = deepseek(api_key="k", model="deepseek-chat")
     context = RenderedContext(turns=[
         Message(role="assistant", content="calling", tool_calls=[ToolCall(id="c_dangling", name="ping", arguments="{}")]),
     ])
@@ -120,12 +118,12 @@ def test_validator_rejects_dangling_tool_call_at_end():
 
 
 def test_assess_replayability_reports_offending_call_ids():
-    provider = DeepSeekProvider("k", "deepseek-v4-flash")
+    provider = deepseek(api_key="k", model="deepseek-v4-flash")
     assert provider.assess_replayability(_tool_call_context()) == {"ok": False, "offending_call_ids": ["c1"]}
 
 
 def test_assess_replayability_ok_when_reasoning_not_required():
-    provider = DeepSeekProvider("k", "deepseek-v4-flash")
+    provider = deepseek(api_key="k", model="deepseek-v4-flash")
     assert provider.assess_replayability(_tool_call_context(), {"thinking": False}) == {"ok": True, "offending_call_ids": []}
 
 
@@ -134,7 +132,7 @@ def test_assess_provider_replayability_ok_for_providers_without_hook():
 
 
 def test_degrade_missing_reasoning_injects_placeholder():
-    provider = DeepSeekProvider("k", "deepseek-v4-flash")
+    provider = deepseek(api_key="k", model="deepseek-v4-flash")
     msgs = provider._build_messages(_tool_call_context(), {"degrade_missing_reasoning_replay": True})
     assistant = next(m for m in msgs if m["role"] == "assistant")
     assert assistant["reasoning_content"] == DEGRADED_REASONING_PLACEHOLDER

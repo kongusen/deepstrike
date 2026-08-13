@@ -66,9 +66,10 @@ async def test_top_level_start_workflow_does_not_auto_pivot_under_canonical_host
         provider=provider,
         session_log=InMemorySessionLog(),
         execution_plane=plane,
-        sub_agent_orchestrator=orch,
-        max_tokens=8000,
-        max_turns=5,
+            sub_agent_orchestrator=orch,
+            max_tokens=8000,
+            max_turns=5,
+            baseline_tool_ids=["start_workflow"],
     ))
 
     text = ""

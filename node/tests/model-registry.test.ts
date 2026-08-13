@@ -12,14 +12,8 @@ import {
 } from "../src/providers/model-registry.js"
 
 describe("SPC-013 A-01 model registry", () => {
-  it("keeps the retired 96-row table as historical evidence only", () => {
+  it("contains no retired model-table API", () => {
     const here = path.dirname(fileURLToPath(import.meta.url))
-    const baseline = JSON.parse(fs.readFileSync(
-      path.join(here, "characterization/__golden__/model-facts-baseline.json"),
-      "utf8",
-    )) as unknown[]
-    expect(baseline).toHaveLength(96)
-
     const sources = fs.readdirSync(path.join(here, "../src/providers"))
       .filter(file => file.endsWith(".ts"))
       .map(file => fs.readFileSync(path.join(here, "../src/providers", file), "utf8"))
@@ -122,7 +116,7 @@ describe("SPC-013 A-01 model registry", () => {
     const here = path.dirname(fileURLToPath(import.meta.url))
     for (const file of [
       "anthropic.ts", "anthropic-compatible.ts", "openai.ts", "openai-responses.ts",
-      "gemini.ts", "ollama.ts", "deepseek.ts", "kimi.ts", "qwen.ts", "glm.ts", "minimax.ts",
+      "gemini.ts", "ollama.ts",
     ]) {
       const source = fs.readFileSync(path.join(here, "../src/providers", file), "utf8")
       expect(source).not.toMatch(/from ["']\.\/model-registry/)

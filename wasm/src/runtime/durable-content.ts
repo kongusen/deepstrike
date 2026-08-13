@@ -12,7 +12,7 @@ export type DurableContentBlock =
   | { type: "text"; text: string }
   | { type: "image" | "audio" | "video" | "file"; source: DurableSource; media_type?: string; provider_options?: Record<string, unknown> }
 
-export interface DurableContent { schema_version: 1; blocks: DurableContentBlock[] }
+export interface DurableContent { blocks: DurableContentBlock[] }
 export interface DurableToolResult extends DurableContent { call_id: string; is_error: boolean }
 
 function obj(value: unknown, label: string): Record<string, unknown> {
@@ -65,21 +65,14 @@ function block(value: unknown, index: number): DurableContentBlock {
 function blocks(value: unknown): DurableContentBlock[] { if (!Array.isArray(value)) throw new DurableContentError("content blocks must be an array"); return value.map(block) }
 
 export function decodeDurableContent(value: unknown): DurableContent {
-  const raw = obj(value, "durable content"); keys(raw, ["schema_version", "blocks"], "durable content")
-  if (raw.schema_version !== 1) throw new DurableContentError(`unsupported durable content schema_version ${String(raw.schema_version)}`)
-  return { schema_version: 1, blocks: blocks(raw.blocks) }
+  const raw = obj(value, "durable content"); keys(raw, ["blocks"], "durable content")
+  return { blocks: blocks(raw.blocks) }
 }
 export function decodeDurableToolResult(value: unknown): DurableToolResult {
   const raw = obj(value, "durable tool result")
-  if (raw.blocks === undefined && raw.output !== undefined) {
-    keys(raw, ["call_id", "output", "is_error"], "legacy tool result")
-    return { schema_version: 1, call_id: string(raw.call_id, "tool result call_id"), is_error: raw.is_error === undefined ? false : boolean(raw.is_error, "legacy tool result is_error"), blocks: [{ type: "text", text: typeof raw.output === "string" ? raw.output : (() => { throw new DurableContentError("legacy tool result output must be a string") })() }] }
-  }
-  keys(raw, ["schema_version", "call_id", "is_error", "blocks"], "durable tool result")
-  if (raw.schema_version !== 1) throw new DurableContentError(`unsupported durable tool result schema_version ${String(raw.schema_version)}`)
-  return { schema_version: 1, call_id: string(raw.call_id, "tool result call_id"), is_error: boolean(raw.is_error, "tool result is_error"), blocks: blocks(raw.blocks) }
+  keys(raw, ["call_id", "is_error", "blocks"], "durable tool result")
+  return { call_id: string(raw.call_id, "tool result call_id"), is_error: boolean(raw.is_error, "tool result is_error"), blocks: blocks(raw.blocks) }
 }
-export function migrateLegacyContent(text: string): DurableContent { if (typeof text !== "string") throw new DurableContentError("legacy content must be a string"); return { schema_version: 1, blocks: [{ type: "text", text }] } }
 export function encodeDurableContent(content: DurableContent): Record<string, unknown> { return decodeDurableContent(content) as unknown as Record<string, unknown> }
 export function encodeDurableToolResult(result: DurableToolResult): Record<string, unknown> { return decodeDurableToolResult(result) as unknown as Record<string, unknown> }
 export function toolOutputBlocksToDurable(blocks: readonly import("../types.js").ToolOutputBlock[]): DurableContentBlock[] {

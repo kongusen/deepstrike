@@ -1,7 +1,7 @@
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
 use super::partitions::ContextPartitions;
-use super::policy::ContextPolicyV1;
+use super::policy::ContextPolicy;
 use super::pressure::{PressureAction, PressureMonitor};
 use super::renderer::RenderedContext;
 use super::renewal::RenewalPolicy;
@@ -187,7 +187,7 @@ impl ContextManager {
     }
 
     /// Atomically install the stable replay policy and rebuild every component derived from it.
-    pub fn apply_context_policy(&mut self, policy: &ContextPolicyV1) {
+    pub fn apply_context_policy(&mut self, policy: &ContextPolicy) {
         policy.apply_to(&mut self.config);
         self.compression = CompressionPipeline::new(&self.config);
         self.pressure = PressureMonitor::new(self.max_tokens, self.config.clone());

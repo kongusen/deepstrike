@@ -1,7 +1,6 @@
-export const CONTEXT_POLICY_VERSION = 1 as const
 export const PPM_SCALE = 1_000_000 as const
 
-export interface ContextPressureThresholdsV1 {
+export interface ContextPressureThresholds {
   snip: number
   micro: number
   collapse: number
@@ -9,8 +8,8 @@ export interface ContextPressureThresholdsV1 {
   renewal: number
 }
 
-export interface ContextPolicyV1 {
-  pressureThresholds: ContextPressureThresholdsV1
+export interface ContextPolicy {
+  pressureThresholds: ContextPressureThresholds
   targetAfterCompress: number
   preserveRecentTurns: number
   renewalCarryover: number
@@ -18,9 +17,8 @@ export interface ContextPolicyV1 {
   idleMicroCompactMinutes: number
 }
 
-export interface ContextPolicyWireV1 {
-  version: typeof CONTEXT_POLICY_VERSION
-  pressure_thresholds_ppm: ContextPressureThresholdsV1
+export interface ContextPolicyWire {
+  pressure_thresholds_ppm: ContextPressureThresholds
   target_after_compress_ppm: number
   preserve_recent_turns: number
   renewal_carryover_ppm: number
@@ -28,11 +26,11 @@ export interface ContextPolicyWireV1 {
   idle_micro_compact_minutes: number
 }
 
-export interface ContextPolicyOverridesV1 extends Partial<Omit<ContextPolicyV1, "pressureThresholds">> {
-  pressureThresholds?: Partial<ContextPressureThresholdsV1>
+export interface ContextPolicyOverrides extends Partial<Omit<ContextPolicy, "pressureThresholds">> {
+  pressureThresholds?: Partial<ContextPressureThresholds>
 }
 
-export const DEFAULT_CONTEXT_POLICY_V1: Readonly<ContextPolicyV1> = Object.freeze({
+export const DEFAULT_CONTEXT_POLICY: Readonly<ContextPolicy> = Object.freeze({
   pressureThresholds: Object.freeze({ snip: 0.70, micro: 0.80, collapse: 0.90, auto: 0.95, renewal: 0.98 }),
   targetAfterCompress: 0.65,
   preserveRecentTurns: 2,
@@ -42,21 +40,21 @@ export const DEFAULT_CONTEXT_POLICY_V1: Readonly<ContextPolicyV1> = Object.freez
 })
 
 /** Resolve ergonomic partial SDK options into one complete, atomically validated policy. */
-export function contextPolicyV1(overrides: ContextPolicyOverridesV1 = {}): ContextPolicyV1 {
-  const policy: ContextPolicyV1 = {
-    ...DEFAULT_CONTEXT_POLICY_V1,
+export function contextPolicy(overrides: ContextPolicyOverrides = {}): ContextPolicy {
+  const policy: ContextPolicy = {
+    ...DEFAULT_CONTEXT_POLICY,
     ...overrides,
     pressureThresholds: {
-      ...DEFAULT_CONTEXT_POLICY_V1.pressureThresholds,
+      ...DEFAULT_CONTEXT_POLICY.pressureThresholds,
       ...overrides.pressureThresholds,
     },
   }
-  normalizeContextPolicyV1(policy)
+  normalizeContextPolicy(policy)
   return policy
 }
 
 /** Convert the public ratio-based policy to the canonical integer-only ABI wire shape. */
-export function normalizeContextPolicyV1(policy: ContextPolicyV1): ContextPolicyWireV1 {
+export function normalizeContextPolicy(policy: ContextPolicy): ContextPolicyWire {
   const pressure_thresholds_ppm = {
     snip: ratioToPpm(policy.pressureThresholds.snip, "pressureThresholds.snip"),
     micro: ratioToPpm(policy.pressureThresholds.micro, "pressureThresholds.micro"),
@@ -79,7 +77,6 @@ export function normalizeContextPolicyV1(policy: ContextPolicyV1): ContextPolicy
   }
 
   return {
-    version: CONTEXT_POLICY_VERSION,
     pressure_thresholds_ppm,
     target_after_compress_ppm,
     preserve_recent_turns: policy.preserveRecentTurns,

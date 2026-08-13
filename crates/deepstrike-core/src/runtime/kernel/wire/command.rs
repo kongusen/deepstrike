@@ -157,10 +157,8 @@ pub struct ApplyPolicyPatchCommand {
 
 /// The closed set of policies that may change while an operation runs (§13.2).
 ///
-/// Everything absent from this union is boot-only by construction. `SIGNAL_POLICY_VERSION` and
-/// `SignalPolicyConfig.version` are gone: their optimistic-concurrency role is now
-/// [`ApplyPolicyPatchCommand::expected_revision`], and §16.1 leaves exactly two revision markers
-/// on the wire (`abi_version`, `checkpoint_version`).
+/// Everything absent from this union is boot-only by construction. Optimistic concurrency belongs
+/// to [`ApplyPolicyPatchCommand::expected_revision`], not to a policy-format discriminator.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LivePolicyPatch {
@@ -195,12 +193,10 @@ pub struct ReplaceGovernancePolicy {
 
 /// Syscall-gate policy — the complete posture, replaced atomically.
 ///
-/// The same type is the operation's initial governance (§13.1) and the payload of the one live
-/// governance mutation (§13.2). That is deliberate and is *not* the historical mistake: the
-/// legacy `ConfigureRun.governance` and `LoadGovernancePolicy` shared an **implementation** while
-/// living on two wire paths with no authority distinction. Here there is one wire shape, and the
-/// authority is carried by the input class that transports it — `ConfigureOperation` once, or a
-/// revision-guarded [`ApplyPolicyPatchCommand`] afterwards.
+/// The same type is the operation's initial governance (§13.1) and the payload of its live
+/// governance mutation (§13.2). There is one wire shape; authority is carried by the input class
+/// that transports it — `ConfigureOperation` once, or a revision-guarded
+/// [`ApplyPolicyPatchCommand`] afterwards.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GovernancePolicy {

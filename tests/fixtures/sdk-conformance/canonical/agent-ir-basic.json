@@ -1,0 +1,20 @@
+{
+  "id": "agent-ir-basic",
+  "domain": "agent_ir",
+  "input": {
+    "fixture": "agent-ir/canonical-agent.json"
+  },
+  "expected": {
+    "canonical": {
+      "name": "researcher",
+      "capabilityFilter": {
+        "allowedKinds": ["tool", "skill", "mcp_server"],
+        "allowedIds": ["web_search", "citations"]
+      },
+      "effectiveCapabilities": [
+        { "kind": "tool", "id": "web_search", "description": "Search the web for source material." },
+        { "kind": "skill", "id": "citations", "description": "Citation policy." }
+      ]
+    }
+  }
+}

@@ -13,7 +13,7 @@ class CapturingAnthropicProvider extends AnthropicProvider {
   capturedRequest?: Record<string, unknown>
 
   constructor() {
-    super("test-key")
+    super({ apiKey: "test-key" })
     ;(this as unknown as {
       client: { messages: { stream(req: Record<string, unknown>): AsyncIterable<Record<string, unknown>> } }
     }).client = {
@@ -77,9 +77,7 @@ describe("RuntimeRunner thinking wake recovery", () => {
         maxTurns: 4,
       })
 
-      await expect(collectText(runner.wake(sessionId))).rejects.toThrow(
-        "restored canonical operation has no pending effect or terminal",
-      )
+      await expect(collectText(runner.wake(sessionId))).rejects.toThrow("provider replay protocol is required")
       expect(provider.streamCalls).toBe(0)
       expect(provider.capturedRequest).toBeUndefined()
     } finally {

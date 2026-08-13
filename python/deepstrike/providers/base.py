@@ -150,8 +150,7 @@ def _content_block_to_anthropic(block: dict) -> dict:
 
 
 def _tool_result_anthropic_content(p: Any) -> "str | list[dict]":
-  """spc_012-P-03: structured `content_parts` win when present; otherwise the legacy text
-  projection (`output`) is the content, byte-identical to the pre-spc_012 behavior."""
+  """Structured `content_parts` win when present; otherwise `output` is the text form."""
   content_parts = getattr(p, "content_parts", None)
   if content_parts is not None:
     canonical = normalize_tool_result(p.call_id, p.output, p.is_error, content_parts)

@@ -47,6 +47,7 @@ def _runner(provider, poke, **opts) -> tuple[RuntimeRunner, InMemorySessionLog]:
         execution_plane=plane,
         max_tokens=2048,
         max_turns=10,
+        baseline_tool_ids=["poke"],
         **opts,
     ))
     return runner, session_log
@@ -65,7 +66,7 @@ async def test_entropy_sample_streams_every_completed_turn_and_latest_entropy():
 
     assert len(samples) >= 3
     last = samples[-1].sample
-    assert last.score_version == 1
+    assert not hasattr(last, "score_version")
     assert last.failure_rate == pytest.approx(1.0)  # every poke raised
     assert last.repeat_pressure == 0.0  # fuse off ⇒ repeat axis honestly reads 0
     assert last.window_turns == len(samples)

@@ -93,7 +93,7 @@ import {
 import { resolveReducer, type ReducerRegistry } from "./reducers.js"
 import {
   loopInstruction, classifyInstruction, judgeGoal, dependencyOutputsNote,
-  extractLoopContinue, extractClassifyBranch, extractJudgeWinner,
+  extractClassifyBranch, extractJudgeWinner,
 } from "./workflow-control-flow.js"
 import { governancePolicyToKernelEvent, governanceFilterSchema, type GovernancePolicy } from "../governance.js"
 import {
@@ -110,18 +110,17 @@ import { formatToolError } from "../tools/errors.js"
 import { ManagedTaskScope } from "./reliability.js"
 import type { BackgroundTaskErrorHandler, OperationContext } from "./reliability.js"
 import {
-  contextPolicyV1,
-  normalizeContextPolicyV1,
-  type ContextPolicyOverridesV1,
+  contextPolicy,
+  normalizeContextPolicy,
+  type ContextPolicyOverrides,
 } from "./context-policy.js"
 import { composeSystemPrompt, type InstructionProfile } from "../harness/manifest.js"
 import { attachToolOutputOverlay, normalizeToolResultContent } from "../providers/content-normalization.js"
 import { decodeDurableContent, decodeDurableToolResult, durableBlocksToToolOutput, toolOutputBlocksToDurable } from "./durable-content.js"
-import { providerErrorEventFields, providerErrorMessage } from "../providers/provider-error.js"
+import { classifyProviderError, providerErrorEventFields } from "../providers/provider-error.js"
 import { NudgeEngine, type NudgeRule } from "../harness/nudge.js"
 
 export interface SchedulerPolicy {
-  version: 1
   criticalPathWeight: number
   fanoutWeight: number
   ageWeight: number
@@ -134,13 +133,12 @@ export interface SchedulerPolicy {
 
 export function schedulerPolicyToKernel(policy: SchedulerPolicy): Record<string, number> {
   const allowed = new Set([
-    "version", "criticalPathWeight", "fanoutWeight", "ageWeight", "tokenCostWeight",
+    "criticalPathWeight", "fanoutWeight", "ageWeight", "tokenCostWeight",
     "deadlineWeight", "processPriorityWeight", "resourcePressureWeight", "budgetPressureWeight",
   ])
   const unknown = Object.keys(policy).filter(key => !allowed.has(key))
   if (unknown.length > 0) throw new TypeError(`unknown scheduler policy field(s): ${unknown.join(", ")}`)
   return {
-    version: policy.version,
     critical_path_weight: policy.criticalPathWeight,
     fanout_weight: policy.fanoutWeight,
     age_weight: policy.ageWeight,
@@ -344,13 +342,13 @@ export interface RuntimeOptions {
    * AskUser calls surface as `tool_gated` and run through `onPermissionRequest`.
    */
   governancePolicy?: GovernancePolicy
-  /** Version-1 in-kernel signal admission, queue, and expiry policy. */
+  /** In-kernel signal admission, queue, and expiry policy. */
   signalPolicy?: SignalPolicy
   /** Provider-envelope overhead plus output and safety reserves journaled before start. */
   promptBudget?: PromptBudget
   /** Stable replayable context behavior; SDK ratios are normalized to integer ppm on the ABI wire. */
-  contextPolicy?: ContextPolicyOverridesV1
-  /** Versioned deterministic DAG scheduling policy installed atomically through ConfigureRun. */
+  contextPolicy?: ContextPolicyOverrides
+  /** Deterministic DAG scheduling policy installed atomically through ConfigureRun. */
   schedulerPolicy?: SchedulerPolicy
   /**
    * Optional declarative resource quotas (`set_resource_quota`). Bounds spawn concurrency /
@@ -404,12 +402,10 @@ export interface RuntimeOptions {
    * executes. Return `{ block: true, reason }` to veto — the call never runs and the reason is fed
    * back to the model as a denied tool result. This is the seam for STATEFUL host policy (count
    * repeats, budget writes per resource, project-specific rules); keep static allow/deny in
-   * `governancePolicy`. A throwing decision hook fails closed by default.
+   * `governancePolicy`. A throwing decision hook always fails closed.
    */
   onToolCall?: (call: { callId: string; name: string; arguments: string }) =>
     Promise<ToolCallHookDecision | undefined | void> | ToolCallHookDecision | undefined | void
-  /** Failure policy for `onToolCall`. Default `closed`; set `open` only for advisory hooks. */
-  onToolCallFailure?: "closed" | "open"
   /**
    * O5 (the PostToolUse-hook analog): called for each executed tool result before it reaches the
    * kernel. Return `{ replaceOutput }` to swap the result the model sees (redact / annotate), and/or
@@ -475,8 +471,7 @@ export interface RuntimeOptions {
    * synthesizes a minimal run spec. Omitted **or empty** ⇒ no ceiling (all registered tools) — the
    * empty array is NOT a minimal surface here; use `baselineToolIds: []` for that.
    *
-   * Enforcement: `toolDispatchGate` (default `"exposed"`) makes this a real boundary — a call to a
-   * tool outside the advertised set never executes.
+   * Dispatch is always fail-closed: a call outside the advertised set never executes.
    */
   allowedToolIds?: string[]
   /**
@@ -487,27 +482,13 @@ export interface RuntimeOptions {
    *
    *   `exposed = meta ∪ ((baseline ∪ stableCore ∪ ⋃ activeSkills.allowed_tools) ∩ ceiling)`
    *
-   * An active skill that declares no `allowed_tools` contributes nothing — with a baseline set the
-   * surface stays narrow (strict; the legacy errs-open widening is deliberately not inherited).
+   * An active skill that declares no `allowed_tools` contributes nothing and the surface stays narrow.
    *
-   * `undefined` ⇒ legacy behavior, byte-identical (ceiling + errs-open skill narrowing). `[]` is a
-   * legitimate, distinct value: the minimal surface (meta-tools + `stableCoreToolIds` only) — the
+   * `undefined` and `[]` both mean the minimal surface (meta-tools + `stableCoreToolIds` only) — the
    * `allowedToolIds` "empty means no gating" trap does NOT recur here. Entries outside the ceiling
    * silently intersect away (no root-start error), the same fold every id-list surface uses.
    */
   baselineToolIds?: string[]
-  /**
-   * Dispatch enforcement for the exposure surface. `"exposed"` (default) is fail-closed: a tool call
-   * the model was never advertised this turn never reaches the host — the kernel commits a
-   * model-visible `governance_denied` result instead ("Tool 'X' is not part of this run's toolset"),
-   * which feeds the repeat fuse like any other denial. Allowed siblings in the same batch still
-   * execute; `pace` and the meta-tool family always pass through.
-   *
-   * `"registered"` is the escape hatch restoring the pre-gate permissive behavior (any registered
-   * tool the model names executes, even if it was gated out of the tools schema). Set it only when a
-   * host deliberately relies on blind calls to unadvertised tools.
-   */
-  toolDispatchGate?: "exposed" | "registered"
   /** P0-C: optional per-turn metrics sink for tool-gating telemetry (see `TurnMetrics`). Pure
    *  observation; invoked once per LLM turn. Never throws into the run loop (errors are swallowed). */
   onTurnMetrics?: (metrics: TurnMetrics) => void
@@ -962,13 +943,12 @@ export class RuntimeRunner {
 
     const config: Record<string, unknown> = { governance }
     if (this.opts.contextPolicy) {
-      config.context_policy = normalizeContextPolicyV1(contextPolicyV1(this.opts.contextPolicy))
+      config.context_policy = normalizeContextPolicy(contextPolicy(this.opts.contextPolicy))
     }
     if (this.opts.kernelReliability) {
       config.reliability = kernelReliabilityToKernel(this.opts.kernelReliability)
     }
     config.signal_policy = {
-      version: 1,
       queue_max: signalPolicy.queueMax,
       ...(signalPolicy.ttlMs !== undefined ? { ttl_ms: signalPolicy.ttlMs } : {}),
       ...(signalPolicy.deadlineEscalation !== undefined
@@ -1023,11 +1003,6 @@ export class RuntimeRunner {
     // O4: turn-end criteria gate toggle (absent ⇒ kernel default: enabled).
     if (this.opts.criteriaGate !== undefined) {
       config.criteria_gate = this.opts.criteriaGate
-    }
-    // P1: fail-closed dispatch selector (absent ⇒ kernel default "exposed"). "registered" is the
-    // escape hatch back to permissive dispatch; the kernel rejects any other value.
-    if (this.opts.toolDispatchGate !== undefined) {
-      config.tool_dispatch_gate = this.opts.toolDispatchGate
     }
     // K2: knowledge budget ratio (absent ⇒ kernel default 0.25; 0 disables).
     if (this.opts.knowledgeBudgetRatio !== undefined) {
@@ -1202,21 +1177,17 @@ export class RuntimeRunner {
       return withSignal(result, { tournamentWinner: winnerId })
     }
 
-    // A#2 v2 loop iteration: run the increment under the armed pacing trap (workflowNodeToSpec set
+    // loop-control loop iteration: run the increment under the armed pacing trap (workflowNodeToSpec set
     // `loopRound`, and the iteration resumes the loop's stable session — transcript-as-carry).
-    // DW-3 one vocabulary: the kernel-adjudicated `pace` verb IS the continuation signal
-    // (stop → loopContinue=false); the legacy text-sniffed JSON blob survives only as the fallback
-    // when no pace decision arrives (stub orchestrators, harness children), where no signal still
-    // means "run to max_iters" (v1).
+    // The kernel-adjudicated `pace` verb is the only continuation signal. Ending without a pace
+    // decision completes the loop.
     if (node.loop_max_iters != null) {
       const iteration = Number(/-i(\d+)$/.exec(node.agent_id)?.[1] ?? "0")
       const result = await orchestrator.run(
         mkCtx(`${baseSpec.goal}\n\n${loopInstruction(node.loop_max_iters, iteration)}`),
       )
       const pace = result.result.paceDecision
-      if (pace) return withSignal(result, { loopContinue: pace.action !== "stop" })
-      const cont = extractLoopContinue(textOf(result))
-      return cont === undefined ? result : withSignal(result, { loopContinue: cont })
+      return withSignal(result, { loopContinue: pace?.action === "continue" })
     }
 
     // A#2 classify: run the classifier, then extract the chosen branch label; the kernel runs that
@@ -1937,6 +1908,7 @@ export class RuntimeRunner {
             output: `permission denied: ${denyReason}`,
             is_error: true,
             error_kind: "governance_denied",
+            content: { blocks: [{ type: "text", text: `permission denied: ${denyReason}` }] },
           }],
         })
       }
@@ -2113,18 +2085,15 @@ export class RuntimeRunner {
     const startTask: Record<string, unknown> = { goal, criteria }
     let startRunSpec: Record<string, unknown> | undefined
     // P0-A: lower an explicit `runSpec`, the `allowedToolIds` ceiling, and/or the `baselineToolIds`
-    // pre-activation surface to the kernel run spec. Each augments an explicit spec, else
-    // synthesizes a minimal top-level spec carrying just the exposure config (reuses the existing
-    // run_spec wire — no new ABI). Unset on all ⇒ no run_spec ⇒ no gating (铁律: no config = old
-    // behavior).
+    // pre-activation surface to the kernel run spec. Each run has a run spec; an omitted baseline
+    // is the canonical minimal surface.
     const allowedToolIds = this.opts.allowedToolIds
     const hasProfile = allowedToolIds !== undefined && allowedToolIds.length > 0
     // NOT the `length > 0` idiom above: `baselineToolIds: []` is the legitimate minimal surface
     // (meta + stable-core only), so mere presence triggers the lowering.
-    const baselineToolIds = this.opts.baselineToolIds
-    const hasBaseline = baselineToolIds !== undefined
+    const baselineToolIds = this.opts.baselineToolIds ?? this.opts.runSpec?.exposureBaseline ?? []
     const hasMilestoneContract = this.opts.milestoneContract !== undefined
-    if (this.opts.runSpec || hasProfile || hasBaseline || hasMilestoneContract) {
+    {
       const baseSpec: AgentRunSpec = this.opts.runSpec ?? {
         identity: { agentId: this.opts.agentId ?? "root", sessionId, isSubAgent: false },
         role: "custom",
@@ -2133,7 +2102,7 @@ export class RuntimeRunner {
       let spec: AgentRunSpec = hasProfile
         ? { ...baseSpec, capabilityFilter: { ...baseSpec.capabilityFilter, allowedIds: allowedToolIds } }
         : baseSpec
-      if (hasBaseline) spec = { ...spec, exposureBaseline: baselineToolIds }
+      spec = { ...spec, exposureBaseline: baselineToolIds }
       if (hasMilestoneContract && !spec.verificationContractId) {
         spec = { ...spec, verificationContractId: "node-default" }
       }
@@ -2341,7 +2310,9 @@ export class RuntimeRunner {
             this.interrupted = true
             this.cancellationReason ??= "user"
           } else {
-            const message = providerErrorMessage(err, formatToolError)
+            const provider = this.opts.provider.descriptor?.().provider ?? "unknown"
+            const providerError = classifyProviderError(provider, err)
+            const message = providerError.message
             // Reactive recovery is now a kernel decision. Forward the raw provider error and
             // dispatch whatever the kernel returns: `call_provider` to retry with a freshly
             // compacted context, or `done` to terminate with an honest `ContextOverflow`. The
@@ -2353,7 +2324,7 @@ export class RuntimeRunner {
               kind: "provider_error",
               effect_id: providerEffectId,
               message,
-              ...providerErrorEventFields(err),
+              ...providerErrorEventFields(providerError),
             })
             // Withholding (query.ts parity): surface the raw provider error only when the kernel
             // could NOT recover (it returned a terminal). On a recovered retry (`call_provider`)
@@ -2683,8 +2654,7 @@ export class RuntimeRunner {
 
         // O5 (PreToolUse-hook analog): give the host a STATEFUL veto over each kernel-approved
         // call. A blocked call never executes; its reason reaches the model as a committed
-        // governance-denied tool result. Decision failures are closed
-        // unless the host explicitly marks this hook advisory with `onToolCallFailure: "open"`.
+        // governance-denied tool result. Decision failures are closed.
         let executableCalls = normalCalls
         if (this.opts.onToolCall) {
           const allowed: ToolCall[] = []
@@ -2693,9 +2663,7 @@ export class RuntimeRunner {
             try {
               decision = await this.opts.onToolCall({ callId: call.id, name: call.name, arguments: call.arguments })
             } catch (cause) {
-              decision = this.opts.onToolCallFailure === "open"
-                ? undefined
-                : { block: true, reason: `onToolCall hook failed: ${formatToolError(cause)}` }
+              decision = { block: true, reason: `onToolCall hook failed: ${formatToolError(cause)}` }
             }
             if (decision?.block) {
               const reason = decision.reason ?? "blocked by host onToolCall hook"
@@ -2806,7 +2774,9 @@ export class RuntimeRunner {
             output: r.output,
             is_error: r.isError,
             token_count: r.tokenCount,
-            ...(r.contentParts?.length ? { content: { schema_version: 1 as const, blocks: toolOutputBlocksToDurable(r.contentParts) as Record<string, unknown>[] } } : {}),
+            content: { blocks: toolOutputBlocksToDurable(
+              r.contentParts?.length ? r.contentParts : [{ type: "text", text: r.output }],
+            ) as Record<string, unknown>[] },
           })),
         })
         // The canonical provider resolution already activates a successfully resolved `skill` call.
@@ -3468,11 +3438,11 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
       })
     } else if (e.kind === "tool_completed") {
       for (const r of e.results) {
-        const durable = r.content !== undefined
-          ? decodeDurableToolResult({ schema_version: 1, call_id: r.call_id, is_error: r.is_error ?? false, blocks: decodeDurableContent(r.content).blocks })
-          : r.blocks !== undefined
-            ? decodeDurableToolResult({ schema_version: 1, call_id: r.call_id, is_error: r.is_error ?? false, blocks: decodeDurableContent({ schema_version: 1, blocks: r.blocks }).blocks })
-            : decodeDurableToolResult({ call_id: r.call_id, output: r.output, is_error: r.is_error ?? false })
+        const durable = decodeDurableToolResult({
+          call_id: r.call_id,
+          is_error: r.is_error ?? false,
+          blocks: decodeDurableContent(r.content).blocks,
+        })
         messages.push({
           role: "tool",
           content: "",
@@ -3572,11 +3542,11 @@ export async function replayMessagesAsync(
       })
     } else if (e.kind === "tool_completed") {
       for (const r of e.results) {
-        const durable = r.content !== undefined
-          ? decodeDurableToolResult({ schema_version: 1, call_id: r.call_id, is_error: r.is_error ?? false, blocks: decodeDurableContent(r.content).blocks })
-          : r.blocks !== undefined
-            ? decodeDurableToolResult({ schema_version: 1, call_id: r.call_id, is_error: r.is_error ?? false, blocks: decodeDurableContent({ schema_version: 1, blocks: r.blocks }).blocks })
-            : decodeDurableToolResult({ call_id: r.call_id, output: r.output, is_error: r.is_error ?? false })
+        const durable = decodeDurableToolResult({
+          call_id: r.call_id,
+          is_error: r.is_error ?? false,
+          blocks: decodeDurableContent(r.content).blocks,
+        })
         messages.push({
           role: "tool",
           content: "",

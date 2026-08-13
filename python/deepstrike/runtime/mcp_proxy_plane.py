@@ -34,10 +34,10 @@ def mcp_result_to_tool_output(result: dict) -> tuple[str, bool, list[dict] | Non
   """spc_012-P-02: pure conversion, unit-testable without spawning a subprocess. Prior behavior
   silently dropped every non-``"text"`` block (INV-012-01 violation — an MCP tool returning a
   screenshot lost the image with no trace; same bug as the Node mcp-proxy-plane.ts one).
-  ``output`` stays the text projection for backward compatibility — when non-text blocks exist
+  ``output`` is the text projection; when non-text blocks exist
   it carries an explicit ``[modality]`` placeholder so text-only providers degrade visibly.
   ``content_parts`` is populated (and only populated) when the response actually contains a
-  non-text block, so pure-text tool calls see zero behavior change."""
+  non-text block."""
   blocks = result.get("content") or []
   has_non_text = any(c.get("type") != "text" for c in blocks)
   if not has_non_text:

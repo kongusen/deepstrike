@@ -1,16 +1,11 @@
 #![allow(deprecated)]
 
-use compact_str::CompactString;
 use js_sys::Uint8Array;
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
-use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
-use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
-use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
-use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::harness::eval::{
     Criterion as RustCriterion, build_eval_messages as rust_build_eval_messages,
     parse_verdict as rust_parse_verdict, verdict_output_schema as rust_verdict_output_schema,
@@ -23,11 +18,9 @@ use deepstrike_core::runtime::kernel::wire::{
 };
 use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
-use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
 };
-use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
 use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
 use deepstrike_core::types::signal::{
     RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
@@ -354,17 +347,6 @@ pub struct Verdict {
     pub skill_candidate: Option<SkillCandidate>,
 }
 
-#[derive(Tsify, Clone, Serialize, Deserialize)]
-#[tsify(into_wasm_abi)]
-#[serde(rename_all = "camelCase")]
-pub struct GovernanceVerdict {
-    pub kind: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry_after_ms: Option<f64>,
-}
-
 // ────────────────────────────────────── conversion helpers ──────────────────────────────────────
 
 fn role_to_str(role: Role) -> &'static str {
@@ -468,31 +450,6 @@ fn tool_call_from_rust(c: &RustToolCall) -> ToolCall {
     }
 }
 
-fn governance_verdict_from_rust(verdict: RustGovernanceVerdict) -> GovernanceVerdict {
-    match verdict {
-        RustGovernanceVerdict::Allow => GovernanceVerdict {
-            kind: "allow".into(),
-            reason: None,
-            retry_after_ms: None,
-        },
-        RustGovernanceVerdict::Deny { reason, .. } => GovernanceVerdict {
-            kind: "deny".into(),
-            reason: Some(reason),
-            retry_after_ms: None,
-        },
-        RustGovernanceVerdict::RateLimited { retry_after_ms } => GovernanceVerdict {
-            kind: "rate_limited".into(),
-            reason: None,
-            retry_after_ms: Some(retry_after_ms as f64),
-        },
-        RustGovernanceVerdict::AskUser { reason } => GovernanceVerdict {
-            kind: "ask_user".into(),
-            reason: Some(reason),
-            retry_after_ms: None,
-        },
-    }
-}
-
 // ─────────────────────────────── Canonical Kernel ABI ───────────────────────────────
 
 #[derive(Tsify, Serialize)]
@@ -592,12 +549,6 @@ pub enum CanonicalLifecycle {
     Completed,
     Cancelled,
     Failed,
-}
-
-/// The single ABI revision accepted by core. Hosts must read this export instead of copying it.
-#[wasm_bindgen(js_name = kernelAbiVersion)]
-pub fn kernel_abi_version() -> u32 {
-    deepstrike_core::runtime::kernel::wire::KERNEL_ABI_VERSION
 }
 
 /// Durable canonical operation handle. It exposes no direct `step` method.
@@ -994,122 +945,6 @@ pub fn parse_verdict(content: String) -> Verdict {
 #[wasm_bindgen(js_name = verdictOutputSchema)]
 pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
     rust_verdict_output_schema(extract_skill_on_pass).to_string()
-}
-
-// ────────────────────────────────────────────── Governance ──────────────────────────────────────────────
-
-#[wasm_bindgen]
-pub struct Governance {
-    inner: RustGovernancePipeline,
-    agent_id: String,
-    session_id: String,
-}
-
-#[wasm_bindgen]
-impl Governance {
-    #[wasm_bindgen(constructor)]
-    pub fn new(default_action: Option<String>) -> Self {
-        let action = match default_action.as_deref() {
-            Some("deny") => PermissionAction::Deny,
-            Some("ask_user") => PermissionAction::AskUser,
-            _ => PermissionAction::Allow,
-        };
-        Self {
-            inner: RustGovernancePipeline::new(action),
-            agent_id: "anonymous".into(),
-            session_id: "".into(),
-        }
-    }
-
-    #[wasm_bindgen(js_name = setIdentity)]
-    pub fn set_identity(&mut self, agent_id: String, session_id: String) {
-        self.agent_id = agent_id;
-        self.session_id = session_id;
-    }
-
-    #[wasm_bindgen(js_name = addPermissionRule)]
-    pub fn add_permission_rule(&mut self, pattern: String, action: String) {
-        let perm_action = match action.as_str() {
-            "deny" => PermissionAction::Deny,
-            "ask_user" => PermissionAction::AskUser,
-            _ => PermissionAction::Allow,
-        };
-        self.inner.permission.add_rule(PermissionRule {
-            tool_pattern: pattern.into(),
-            action: perm_action,
-        });
-    }
-
-    #[wasm_bindgen(js_name = blockTool)]
-    pub fn block_tool(&mut self, name: String) {
-        self.inner.veto.block_tool(name);
-    }
-
-    #[wasm_bindgen(js_name = setRateLimit)]
-    pub fn set_rate_limit(&mut self, tool_name: String, max_calls: u32, window_ms: f64) {
-        self.inner.rate_limiter.set_limit(
-            tool_name,
-            RateLimit {
-                max_calls,
-                window_ms: window_ms as u64,
-            },
-        );
-    }
-
-    #[wasm_bindgen(js_name = requireParam)]
-    pub fn require_param(&mut self, tool_name: String, param_path: String) {
-        self.inner.constraints.add(ParamConstraint {
-            tool_name,
-            param_path,
-            rule: ConstraintRule::Required,
-        });
-    }
-
-    #[wasm_bindgen(js_name = allowParamValues)]
-    pub fn allow_param_values(
-        &mut self,
-        tool_name: String,
-        param_path: String,
-        allowed_values: Vec<String>,
-    ) {
-        self.inner.constraints.add(ParamConstraint {
-            tool_name,
-            param_path,
-            rule: ConstraintRule::Enum(allowed_values),
-        });
-    }
-
-    #[wasm_bindgen(js_name = limitParamRange)]
-    pub fn limit_param_range(
-        &mut self,
-        tool_name: String,
-        param_path: String,
-        min: Option<f64>,
-        max: Option<f64>,
-    ) {
-        self.inner.constraints.add(ParamConstraint {
-            tool_name,
-            param_path,
-            rule: ConstraintRule::Range { min, max },
-        });
-    }
-
-    #[wasm_bindgen(js_name = setTime)]
-    pub fn set_time(&mut self, now_ms: f64) {
-        self.inner.set_time(now_ms as u64);
-    }
-
-    #[wasm_bindgen]
-    pub fn evaluate(&mut self, tool_name: String, args_json: String) -> GovernanceVerdict {
-        let args = serde_json::from_str(&args_json).unwrap_or(serde_json::Value::Null);
-        let call = RustToolCall {
-            id: CompactString::new(""),
-            name: CompactString::new(&tool_name),
-            arguments: args,
-        };
-        let caller = AgentIdentity::new(&self.agent_id, &self.session_id);
-        governance_verdict_from_rust(self.inner.evaluate(&call, &caller))
-    }
 }
 
 // ────────────────────────────── Durable-memory wire values ──────────────────────────────────────

@@ -7,7 +7,10 @@ use futures::{Stream, StreamExt};
 
 pub mod anthropic;
 pub mod openai;
+pub mod provider_error;
 pub mod request_plan;
+
+pub use provider_error::{ProviderError, ProviderErrorKind};
 
 pub use request_plan::{
     CostObservation, NormalizedProviderUsage, PricingRates, PricingSnapshot,

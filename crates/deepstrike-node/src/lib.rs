@@ -40,10 +40,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
-use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
-use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
-use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::harness::eval::{
     Criterion as RustCriterion, build_eval_messages as rust_build_eval_messages,
     parse_verdict as rust_parse_verdict, verdict_output_schema as rust_verdict_output_schema,
@@ -56,7 +52,6 @@ use deepstrike_core::runtime::kernel::wire::{
 };
 use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
-use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::contract::{
     AcceptanceCriterion as RustAcceptanceCriterion,
     VerificationContract as RustVerificationContract,
@@ -64,7 +59,6 @@ use deepstrike_core::types::contract::{
 use deepstrike_core::types::message::{
     Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
 };
-use deepstrike_core::types::policy::GovernanceVerdict as RustGovernanceVerdict;
 use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
 use deepstrike_core::types::signal::{
     RuntimeSignal as RustRuntimeSignal, SignalSource as RustSignalSource,
@@ -93,7 +87,7 @@ pub struct ContentPartObj {
 pub struct Message {
     pub role: String,
     /// Plain-text content. When `content_parts` is present, this holds only the
-    /// concatenated text segments for backward compatibility.
+    /// concatenated text projection.
     pub content: String,
     /// Structured multimodal content parts. When present, takes precedence over `content`.
     pub content_parts: Option<Vec<ContentPartObj>>,
@@ -458,14 +452,6 @@ pub fn format_contract_for_system_prompt(contract: VerificationContract) -> Stri
     verification_contract_to_rust(contract).format_for_system_prompt()
 }
 
-// ─────────────────────────────── Canonical Kernel ABI ───────────────────────────────
-
-/// The single ABI revision accepted by core. Hosts must read this export instead of copying it.
-#[napi]
-pub fn kernel_abi_version() -> u32 {
-    deepstrike_core::runtime::kernel::wire::KERNEL_ABI_VERSION
-}
-
 #[napi(object)]
 pub struct CanonicalPreparation {
     /// `prepared` | `replayed` | `rejected`.
@@ -797,183 +783,6 @@ impl SignalRouter {
     #[napi]
     pub fn clear_dedup(&mut self) {
         self.inner.clear_dedup();
-    }
-}
-
-// ─────────────────────────────────────────── Governance ───────────────────────────────────────────
-
-/// JS-friendly governance verdict returned by `Governance.evaluate`.
-#[napi(object)]
-#[derive(Clone)]
-pub struct GovernanceVerdict {
-    /// `"allow"` | `"deny"` | `"rate_limited"` | `"ask_user"`
-    pub kind: String,
-    pub reason: Option<String>,
-    /// Milliseconds until the tool may be retried. Only set when `kind === "rate_limited"`.
-    pub retry_after_ms: Option<f64>,
-}
-
-fn verdict_to_js(v: RustGovernanceVerdict) -> GovernanceVerdict {
-    match v {
-        RustGovernanceVerdict::Allow => GovernanceVerdict {
-            kind: "allow".into(),
-            reason: None,
-            retry_after_ms: None,
-        },
-        RustGovernanceVerdict::Deny { reason, .. } => GovernanceVerdict {
-            kind: "deny".into(),
-            reason: Some(reason),
-            retry_after_ms: None,
-        },
-        RustGovernanceVerdict::RateLimited { retry_after_ms } => GovernanceVerdict {
-            kind: "rate_limited".into(),
-            reason: None,
-            retry_after_ms: Some(retry_after_ms as f64),
-        },
-        RustGovernanceVerdict::AskUser { reason } => GovernanceVerdict {
-            kind: "ask_user".into(),
-            reason: Some(reason),
-            retry_after_ms: None,
-        },
-    }
-}
-
-#[napi]
-pub struct Governance {
-    inner: RustGovernancePipeline,
-    agent_id: String,
-    session_id: String,
-}
-
-#[napi]
-impl Governance {
-    /// Create a governance pipeline.
-    /// `defaultAction` controls the fallback when no rule matches: `"allow"` (default) or `"deny"`.
-    #[napi(constructor)]
-    pub fn new(default_action: Option<String>) -> Self {
-        let action = match default_action.as_deref() {
-            Some("deny") => PermissionAction::Deny,
-            Some("ask_user") => PermissionAction::AskUser,
-            _ => PermissionAction::Allow,
-        };
-        Self {
-            inner: RustGovernancePipeline::new(action),
-            agent_id: "anonymous".into(),
-            session_id: "".into(),
-        }
-    }
-
-    /// Set the agent identity used in governance audit logs.
-    #[napi]
-    pub fn set_identity(&mut self, agent_id: String, session_id: String) {
-        self.agent_id = agent_id;
-        self.session_id = session_id;
-    }
-
-    /// Add a permission rule. `pattern` supports globs: `"db.*"`, `"*.delete"`, `"*"`, or exact names.
-    /// `action`: `"allow"` | `"deny"` | `"ask_user"`.
-    /// Rules are evaluated in insertion order; first match wins.
-    #[napi]
-    pub fn add_permission_rule(&mut self, pattern: String, action: String) {
-        let perm_action = match action.as_str() {
-            "deny" => PermissionAction::Deny,
-            "ask_user" => PermissionAction::AskUser,
-            _ => PermissionAction::Allow,
-        };
-        self.inner.permission.add_rule(PermissionRule {
-            tool_pattern: pattern.into(),
-            action: perm_action,
-        });
-    }
-
-    /// Hard-block a tool name (veto stage — cannot be overridden by permission rules).
-    #[napi]
-    pub fn block_tool(&mut self, name: String) {
-        self.inner.veto.block_tool(name);
-    }
-
-    /// Configure a per-tool sliding-window rate limit.
-    #[napi]
-    pub fn set_rate_limit(&mut self, tool_name: String, max_calls: u32, window_ms: BigInt) {
-        self.inner.rate_limiter.set_limit(
-            tool_name,
-            RateLimit {
-                max_calls,
-                window_ms: window_ms.get_u64().1,
-            },
-        );
-    }
-
-    /// Require a parameter path such as `"path"` or `"payload.mode"` to be present.
-    #[napi]
-    pub fn require_param(&mut self, tool_name: String, param_path: String) {
-        self.inner.constraints.add(ParamConstraint {
-            tool_name,
-            param_path,
-            rule: ConstraintRule::Required,
-        });
-    }
-
-    /// Restrict a string parameter path to one of the allowed values.
-    #[napi]
-    pub fn allow_param_values(
-        &mut self,
-        tool_name: String,
-        param_path: String,
-        allowed_values: Vec<String>,
-    ) {
-        self.inner.constraints.add(ParamConstraint {
-            tool_name,
-            param_path,
-            rule: ConstraintRule::Enum(allowed_values),
-        });
-    }
-
-    /// Restrict a numeric parameter path to an inclusive range.
-    #[napi]
-    pub fn limit_param_range(
-        &mut self,
-        tool_name: String,
-        param_path: String,
-        min: Option<f64>,
-        max: Option<f64>,
-    ) {
-        self.inner.constraints.add(ParamConstraint {
-            tool_name,
-            param_path,
-            rule: ConstraintRule::Range { min, max },
-        });
-    }
-
-    /// Advance the internal clock used by rate limiting and audit.
-    #[napi]
-    pub fn set_time(&mut self, now_ms: BigInt) {
-        self.inner.set_time(now_ms.get_u64().1);
-    }
-
-    /// Evaluate a tool call through the full pipeline (Permission → Veto → RateLimit → Constraint → Audit).
-    /// `argsJson`: JSON-encoded tool arguments string.
-    #[napi]
-    pub fn evaluate(&mut self, tool_name: String, args_json: String) -> Result<GovernanceVerdict> {
-        // Fail closed: constraints cannot be evaluated against arguments that do not
-        // parse, so an unparseable payload is a denial, not a skipped check.
-        let args: serde_json::Value = match serde_json::from_str(&args_json) {
-            Ok(value) => value,
-            Err(err) => {
-                return Ok(GovernanceVerdict {
-                    kind: "deny".into(),
-                    reason: Some(format!("tool arguments are not valid JSON: {err}")),
-                    retry_after_ms: None,
-                });
-            }
-        };
-        let call = RustToolCall {
-            id: compact_str::CompactString::new(""),
-            name: compact_str::CompactString::new(&tool_name),
-            arguments: args,
-        };
-        let caller = AgentIdentity::new(self.agent_id.as_str(), self.session_id.as_str());
-        Ok(verdict_to_js(self.inner.evaluate(&call, &caller)))
     }
 }
 

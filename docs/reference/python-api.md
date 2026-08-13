@@ -1,7 +1,7 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against python __all__ — symbols must exist.
 code_refs:
-  python: [RuntimeRunner, RuntimeOptions, AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider, LLMProvider, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent, tool, LocalExecutionPlane, WorkflowSpec, WorkflowNodeSpec, Governance, AgentPool, ReactiveSession, RuntimeSignal, run_agent, run_fanout, DeepSeekProvider, QwenProvider, KimiProvider, OllamaProvider, RenderedContext, streaming_tool, read_file, WorkingMemory, MemoryStore, MemoryRecord, MemoryPolicy, fanout_synthesize, generate_and_filter, verify_rules, workflow_spec_to_kernel, ResourceQuota, AgentRunSpec, HandoffBus, AttemptLoop, AttemptJudge, SignalGateway, ScheduledPrompt]
+  python: [RuntimeRunner, RuntimeOptions, AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider, LLMProvider, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, PermissionRequestEvent, tool, LocalExecutionPlane, WorkflowSpec, WorkflowNodeSpec, AgentPool, ReactiveSession, RuntimeSignal, run_agent, run_fanout, RenderedContext, streaming_tool, read_file, WorkingMemory, MemoryStore, MemoryRecord, MemoryPolicy, fanout_synthesize, generate_and_filter, verify_rules, workflow_spec_to_kernel, ResourceQuota, GovernancePolicy, AgentRunSpec, HandoffBus, AttemptLoop, AttemptJudge, SignalGateway, ScheduledPrompt]
 ---
 
 # Python API 索引
@@ -24,10 +24,6 @@ code_refs:
 | `AnthropicProvider` | Anthropic API |
 | `OpenAIProvider` | OpenAI Chat |
 | `OpenAIResponsesProvider` | OpenAI Responses |
-| `DeepSeekProvider` | DeepSeek |
-| `QwenProvider` | 通义 |
-| `KimiProvider` | Kimi |
-| `OllamaProvider` | Ollama |
 | `LLMProvider` | 基类协议 |
 | `RenderedContext` | 渲染后的上下文 |
 
@@ -76,7 +72,6 @@ code_refs:
 
 | 符号 | 说明 |
 |------|------|
-| `Governance` | 治理 wrapper |
 | `GovernancePolicy` | 声明式策略 |
 | `ResourceQuota` | 资源配额 |
 

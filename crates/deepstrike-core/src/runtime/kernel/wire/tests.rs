@@ -41,7 +41,6 @@ fn sample_envelope(input: KernelInput) -> WireEnvelope {
 
 fn envelope_json(input: Value) -> String {
     serde_json::to_string(&json!({
-        "abi_version": KERNEL_ABI_VERSION,
         "operation_id": "op-1",
         "input_id": "in-1",
         "observed_at_ms": "1700000000000",
@@ -100,42 +99,24 @@ fn all_keys(value: &Value, out: &mut BTreeSet<String>) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// revision
+// canonical shape
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn kernel_abi_revision_is_three_and_checkpoint_revision_is_two() {
-    assert_eq!(KERNEL_ABI_VERSION, 3);
-    assert_eq!(KERNEL_CHECKPOINT_VERSION, 2);
-}
-
-#[test]
-fn wrong_or_missing_revision_is_rejected_before_decoding_the_body() {
-    // a v2 payload: old field name `version`, old event shape — the revision probe fires first,
-    // so the host sees a revision fault instead of a deserialization error about the body.
-    let v2 = r#"{"version":2,"operation_id":"op-1","event_id":"e-1","observed_at_ms":7,
-                 "event":{"kind":"start_run","task":{"goal":"g","criteria":[]}}}"#;
-    assert_eq!(decode_kind(v2), WireRejectionKind::VersionMismatch);
-
-    let missing = r#"{"operation_id":"op-1","input_id":"in-1","observed_at_ms":"1","input":{"kind":"force_compact"}}"#;
-    assert_eq!(decode_kind(missing), WireRejectionKind::VersionMismatch);
-
-    let future = r#"{"abi_version":4,"operation_id":"op-1","input_id":"in-1","observed_at_ms":"1",
-                     "input":{"kind":"host_control","command":{"kind":"force_compact"}}}"#;
-    assert_eq!(decode_kind(future), WireRejectionKind::VersionMismatch);
-}
-
-#[test]
-fn revision_is_fail_closed_even_without_the_probe() {
-    // The typed envelope itself only accepts revision 3, so no decode path can bypass §16.2.
-    let raw = json!({
-        "abi_version": 2,
+fn removed_version_fields_are_unknown() {
+    for field in ["version", "abi_version"] {
+        let mut raw = json!({
         "operation_id": "op-1",
         "input_id": "in-1",
         "observed_at_ms": "1",
         "input": { "kind": "host_control", "command": { "kind": "force_compact" } },
-    });
-    assert!(serde_json::from_value::<WireEnvelope>(raw).is_err());
+        });
+        raw[field] = json!(1);
+        assert_eq!(
+            decode_kind(&serde_json::to_string(&raw).unwrap()),
+            WireRejectionKind::UnknownField
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -289,7 +270,6 @@ fn identities_are_branded_non_empty_strings() {
 #[test]
 fn empty_identities_are_rejected_at_the_envelope_boundary() {
     let raw = json!({
-        "abi_version": KERNEL_ABI_VERSION,
         "operation_id": "",
         "input_id": "in-1",
         "observed_at_ms": "1",
@@ -885,7 +865,7 @@ fn rejection_fixtures_fail_closed_with_the_declared_kind() {
         kinds.insert(expected.to_string());
     }
 
-    for required in ["unknown_field", "unknown_variant", "version_mismatch"] {
+    for required in ["unknown_field", "unknown_variant"] {
         assert!(
             kinds.contains(required),
             "rejection fixtures must cover {required}"

@@ -206,7 +206,7 @@ def validate_rendered_message(
   message: Any,
   resolved: "ResolvedProviderRuntime | None" = None,
 ) -> None:
-  """Validate one legacy message before its canonical provider projection."""
+  """Validate one message before its canonical provider projection."""
   parts = getattr(message, "content_parts", None) or []
   for part in parts:
     kind = getattr(part, "type", "unknown")
@@ -265,7 +265,7 @@ def normalize_canonical_adapter_input(
 
 @dataclass
 class StructuredToolResultPart:
-  """Legacy carrier normalized and validated at provider boundaries."""
+  """Structured carrier normalized and validated at provider boundaries."""
   type: str = "tool_result"
   call_id: str = ""
   output: str = ""

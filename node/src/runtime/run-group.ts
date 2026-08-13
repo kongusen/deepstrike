@@ -52,7 +52,7 @@ export interface GroupMember {
   /** W-N5: what this member IS in the lineage — a `"peer"` persona (ReactiveSession.addPeer) vs a
    *  `"vehicle"` session (run()/runWorkflow envelopes, workflow-node children, loop iterations).
    *  `ReactiveSession.resume()` rebuilds the peer set from `"peer"` members only, so DAG-in-Peer
-   *  usage can't resurrect phantom `wf-node*` personas. Absent (legacy) = unknown. */
+   *  usage can't resurrect phantom `wf-node*` personas. Absent means unknown. */
   kind?: "peer" | "vehicle"
 }
 

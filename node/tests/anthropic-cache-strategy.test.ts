@@ -16,7 +16,7 @@ interface CapturedRequest {
 }
 
 function makeStubProvider(): { provider: AnthropicProvider; captured: { req?: CapturedRequest } } {
-  const provider = new AnthropicProvider("sk-fake", "claude-sonnet-4-6")
+  const provider = new AnthropicProvider({ apiKey: "sk-fake", model: "claude-sonnet-4-6" })
   const captured: { req?: CapturedRequest } = {}
   // Patch the private streamMessage to capture the request and return an empty stream.
   ;(provider as unknown as { streamMessage: (body: CapturedRequest) => AsyncIterable<unknown> }).streamMessage = body => {

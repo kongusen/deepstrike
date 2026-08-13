@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepstrike.providers.qwen import QwenProvider
+from deepstrike.providers.factories import qwen
 from deepstrike.providers.base import RenderedContext
 from deepstrike._kernel import Message
 
@@ -40,7 +40,7 @@ class _FakeGen:
 
 
 def _provider(mode):
-    p = QwenProvider("k")
+    p = qwen(api_key="k")
     p._generation = _FakeGen(mode)
     return p
 

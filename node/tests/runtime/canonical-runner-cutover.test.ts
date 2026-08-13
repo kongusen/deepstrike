@@ -53,10 +53,9 @@ describe("Task 19 — Node canonical host cutover", () => {
     expect(entries.length).toBeGreaterThanOrEqual(3)
 
     const genesis = JSON.parse(Buffer.from(entries[0].record_bytes).toString("utf8")) as {
-      abi_version: number
       canonical_input: { data: string }
     }
-    expect(genesis.abi_version).toBe(3)
+    expect(genesis).not.toHaveProperty("abi_version")
     const canonicalInput = JSON.parse(Buffer.from(genesis.canonical_input.data, "base64").toString("utf8"))
     expect(canonicalInput.input.kind).toBe("configure_operation")
     expect(JSON.stringify(canonicalInput)).not.toContain("session_id")
@@ -78,7 +77,10 @@ describe("Task 19 — Node canonical host cutover", () => {
       kind: "set_tools",
       tools: [{ name: "ping", description: "ping", parameters: { type: "object" } }],
     })
-    const first = await beforeCrash.startAgent({ goal: "ping then finish", criteria: [] })
+    const first = await beforeCrash.startAgent(
+      { goal: "ping then finish", criteria: [] },
+      { exposure_baseline: ["ping"] },
+    )
     expect(first?.kind).toBe("call_provider")
     const pending = await beforeCrash.applyHostEvent({
       kind: "provider_result",
@@ -126,7 +128,10 @@ describe("Task 19 — Node canonical host cutover", () => {
       kind: "set_tools",
       tools: [{ name: "ping", description: "ping", parameters: { type: "object" } }],
     })
-    const first = await beforeCrash.startAgent({ goal: "ping then finish", criteria: [] })
+    const first = await beforeCrash.startAgent(
+      { goal: "ping then finish", criteria: [] },
+      { exposure_baseline: ["ping"] },
+    )
     const pending = await beforeCrash.applyHostEvent({
       kind: "provider_result",
       effect_id: first?.effectId,
@@ -179,7 +184,10 @@ describe("Task 19 — Node canonical host cutover", () => {
       kind: "set_tools",
       tools: [{ name: "ping", description: "ping", parameters: { type: "object" } }],
     })
-    const first = await beforeCrash.startAgent({ goal: "ping then finish", criteria: [] })
+    const first = await beforeCrash.startAgent(
+      { goal: "ping then finish", criteria: [] },
+      { exposure_baseline: ["ping"] },
+    )
     const pending = await beforeCrash.applyHostEvent({
       kind: "provider_result",
       effect_id: first?.effectId,

@@ -113,7 +113,7 @@ function addRuntimeMap({ zh = false } = {}) {
   const t = zh ? {
     file: "readme_agent_os_map_zh.svg",
     title: "DeepStrike 运行机制",
-    desc: "DeepStrike 当前运行边界：宿主拥有真实 I/O，RuntimeRunner 驱动 Canonical Kernel ABI，Rust 内核治理控制流，Self-Harness v2 在隔离外环中改进下一次运行。",
+    desc: "DeepStrike 当前运行边界：宿主拥有真实 I/O，RuntimeRunner 驱动 Canonical Kernel ABI，Rust 内核治理控制流，Self-Harness 在隔离外环中改进下一次运行。",
     eyebrow: "运行机制",
     headline: "所有 Agent 副作用，共用一个受治理的控制环。",
     subtitle: "内核负责控制流 · 宿主负责真实 I/O",
@@ -121,12 +121,12 @@ function addRuntimeMap({ zh = false } = {}) {
     hostNote: "凭据 · 网络 · 文件系统 · 持久存储",
     runtime: "宿主运行循环",
     kernel: "deepstrike-core",
-    harness: "Self-Harness v2 外环",
+    harness: "Self-Harness 外环",
     sdk: "同一 ABI 的宿主 SDK",
   } : {
     file: "readme_agent_os_map.svg",
     title: "DeepStrike runtime mechanism",
-    desc: "The current DeepStrike runtime boundary: host-owned I/O, RuntimeRunner driving the Canonical Kernel ABI, a Rust kernel governing control flow, and an isolated Self-Harness v2 outer loop improving the next run.",
+    desc: "The current DeepStrike runtime boundary: host-owned I/O, RuntimeRunner driving the Canonical Kernel ABI, a Rust kernel governing control flow, and an isolated Self-Harness outer loop improving the next run.",
     eyebrow: "RUNTIME MECHANISM",
     headline: "One governed loop for every agent effect.",
     subtitle: "CONTROL FLOW IN THE KERNEL · REAL I/O IN THE HOST",
@@ -134,7 +134,7 @@ function addRuntimeMap({ zh = false } = {}) {
     hostNote: "CREDENTIALS · NETWORK · FILESYSTEM · DURABLE STORAGE",
     runtime: "Host runtime loop",
     kernel: "deepstrike-core",
-    harness: "Self-Harness v2 outer loop",
+    harness: "Self-Harness outer loop",
     sdk: "Host SDKs on one ABI",
   }
 
@@ -841,9 +841,9 @@ add("harness_eval_mechanisms.svg", {
 })
 
 add("self_harness_mechanisms.svg", {
-  title: "DeepStrike Self-Harness v2",
+  title: "DeepStrike Self-Harness",
   desc: "Verifier-anchored failure evidence is isolated by scope, clustered, mined, patched only through whitelisted surfaces, screened by promotion tier, validated on held-in and held-out tasks, human-vetoed, and persisted as content-addressed lineage.",
-  eyebrow: "SELF-HARNESS v2",
+  eyebrow: "SELF-HARNESS",
   headline: "Improve the harness without letting evidence rewrite authority.",
   subtitle: "SCOPE · WHITELIST · SCREEN · HELD-OUT · TIERED PROMOTION",
   body: `

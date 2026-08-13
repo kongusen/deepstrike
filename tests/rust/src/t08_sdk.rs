@@ -184,7 +184,6 @@ fn runtime_options_can_be_constructed() {
         on_milestone_evaluate: None,
         allowed_tool_ids: None,
         baseline_tool_ids: None,
-        tool_dispatch_gate: None,
         on_turn_metrics: None,
         stable_core_tool_ids: Vec::new(),
         pre_query_memory: None,

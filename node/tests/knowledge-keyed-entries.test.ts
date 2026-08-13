@@ -9,8 +9,8 @@ import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
 import type { LLMProvider, Message, RenderedContext, StreamEvent } from "../src/types.js"
 
-const V1 = "KEYED_REF_CONTENT_V1"
-const V2 = "KEYED_REF_CONTENT_V2"
+const ORIGINAL = "KEYED_REF_CONTENT_ORIGINAL"
+const UPDATED = "KEYED_REF_CONTENT_UPDATED"
 const TMP = "TEMPORARY_NOTE_TO_DROP"
 
 describe("keyed knowledge entries (K1)", () => {
@@ -28,8 +28,8 @@ describe("keyed knowledge entries (K1)", () => {
         if (call === 1) {
           // Stage the lifecycle: keyed append (immediate), same-key upsert (deferred),
           // a second entry that will be marked for removal.
-          await runner.pushKnowledge({ role: "system", content: V1, toolCalls: [] }, undefined, { key: "ref" })
-          await runner.pushKnowledge({ role: "system", content: V2, toolCalls: [] }, undefined, { key: "ref" })
+          await runner.pushKnowledge({ role: "system", content: ORIGINAL, toolCalls: [] }, undefined, { key: "ref" })
+          await runner.pushKnowledge({ role: "system", content: UPDATED, toolCalls: [] }, undefined, { key: "ref" })
           await runner.pushKnowledge({ role: "system", content: TMP, toolCalls: [] }, undefined, { key: "tmp" })
           await runner.removeKnowledge("tmp")
           yield { type: "tool_call", id: `b${call}`, name: "bulk", arguments: {} }
@@ -66,18 +66,18 @@ describe("keyed knowledge entries (K1)", () => {
     const text = await collectText(runner.run({ sessionId: "keyed-entries", goal: "exercise keyed knowledge" }))
     expect(text).toBe("done")
 
-    // Pre-boundary: one entry rendering V1 (upsert staged, not applied); TMP still visible.
-    expect(midRunKnowledge).toContain(V1)
-    expect(midRunKnowledge).not.toContain(V2)
+    // Pre-boundary: the original entry renders (upsert staged, not applied); TMP is still visible.
+    expect(midRunKnowledge).toContain(ORIGINAL)
+    expect(midRunKnowledge).not.toContain(UPDATED)
     expect(midRunKnowledge).toContain(TMP)
 
     // A compaction boundary definitely happened.
     const events = await sessionLog.read("keyed-entries")
     expect(events.some(e => e.event.kind === "compressed")).toBe(true)
 
-    // Post-boundary: upsert applied (V2, exactly one copy), removal applied (TMP gone).
-    expect(finalKnowledge).toContain(V2)
-    expect(finalKnowledge).not.toContain(V1)
+    // Post-boundary: the update and removal have both been applied.
+    expect(finalKnowledge).toContain(UPDATED)
+    expect(finalKnowledge).not.toContain(ORIGINAL)
     expect(finalKnowledge).not.toContain(TMP)
   })
 })

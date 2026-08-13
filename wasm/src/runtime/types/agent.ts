@@ -59,7 +59,7 @@ export interface AgentRunSpec {
    *  The ceiling bounds what this run may EVER expose; the baseline selects which of those are
    *  advertised before any skill activates, so `exposed = meta ∪ ((baseline ∪ stableCore ∪
    *  ⋃ activeSkills.allowed_tools) ∩ ceiling)`. That makes narrow→wide progressive disclosure
-   *  expressible. Absent ⇒ legacy behavior. `[]` is meaningful and distinct from absent: the minimal
+   *  expressible. Absent and `[]` both mean the minimal
    *  surface (meta-tools + stable-core only). Entries outside the ceiling silently intersect away.
    *  Lowered from `RuntimeOptions.baselineToolIds`. */
   exposureBaseline?: string[]
@@ -100,7 +100,7 @@ export interface LoopResult {
   finalMessage?: Message
   turnsUsed: number
   totalTokensUsed: number
-  /** A#2 v2 loop stop signal: a loop iteration sets `false` to end the loop before `max_iters`.
+  /** loop-control loop stop signal: a loop iteration sets `false` to end the loop before `max_iters`.
    *  `undefined` (every non-loop result) ⇒ no opinion → run to the cap. Sent only when set. */
   loopContinue?: boolean
   /** A#2 classify routing: a classifier node reports the chosen branch label here; the kernel runs
@@ -110,7 +110,7 @@ export interface LoopResult {
   tournamentWinner?: string
   /** ③ loop-agent pacing: the kernel-adjudicated after-round decision, surfaced by the orchestrator
    *  from the child's done event. For a loop-node iteration this is the PRIMARY continuation
-   *  vocabulary (stop → loopContinue=false); the legacy text-sniffed signal is the fallback.
+   *  vocabulary (stop → loopContinue=false).
    *  SDK-internal — stripped by `subAgentResultToKernel`. */
   paceDecision?: import("../kernel-step.js").PaceDecision
 }
@@ -177,7 +177,7 @@ export function agentRunSpecToKernel(spec: AgentRunSpec): Record<string, unknown
       ...(spec.loopRound.defaultAction !== undefined ? { default_action: spec.loopRound.defaultAction } : {}),
     }
   }
-  // Exposure baseline: `undefined` ⇒ omit the field entirely (kernel `None` = legacy behavior);
+  // Exposure baseline: `undefined` ⇒ omit the field entirely (kernel canonical default);
   // `[]` ⇒ send `[]` (kernel `Some([])` = the minimal surface). The unset/minimal distinction is
   // load-bearing, so this is deliberately NOT the `length > 0` idiom `allowedToolIds` uses.
   if (spec.exposureBaseline !== undefined) out.exposure_baseline = [...spec.exposureBaseline]
@@ -309,7 +309,7 @@ export interface WorkflowNodeSpec {
   /** G2: make this a deterministic reduce node — runs no LLM; the runner routes it to the registered
    *  reducer of this name over its `dependsOn` nodes' outputs. */
   reducer?: string
-  /** A#2 v2: make this a *loop* node — re-run its agent up to `maxIters` times. An iteration may end
+  /** loop-control: make this a *loop* node — re-run its agent up to `maxIters` times. An iteration may end
    *  the loop early by reporting `loopContinue: false` (the runner solicits this from the agent). */
   loop?: { maxIters: number }
   /** A#2: make this a *classify* node — its agent picks exactly one branch `label`; that branch's
@@ -411,7 +411,7 @@ export interface WorkflowSpawnInfo {
   /** A#2: present only for a tournament *judge* spawn — the two entrant agent ids whose produced
    *  outputs this judge compares. The runner looks them up and reports the winner as `tournamentWinner`. */
   judge_match?: { left: string; right: string }
-  /** A#2 v2: present only for a *loop* iteration spawn — the loop's `max_iters`. Marks the spawn as a
+  /** loop-control: present only for a *loop* iteration spawn — the loop's `max_iters`. Marks the spawn as a
    *  loop iteration so the runner solicits + reports a `loopContinue` stop signal. */
   loop_max_iters?: number
   /** A#2: present only for a *classify* spawn — the branch labels the classifier must choose among.
@@ -545,7 +545,7 @@ export function workflowSpecToKernel(spec: WorkflowSpec): Record<string, unknown
 
 /** R3-1: the tool a workflow-coordinator node's agent calls to append work to the running DAG. */
 /** Shared JSON-Schema for a workflow-node batch (a DAG). Used by both `submit_workflow_nodes`
- *  (append) and `start_workflow` (M5 v1: author a sub-workflow), so the two tools never drift. */
+ *  (append) and `start_workflow` (workflow authoring: author a sub-workflow), so the two tools never drift. */
 const workflowNodesArraySchema = {
   type: "array",
   items: {
@@ -627,9 +627,9 @@ export const submitWorkflowNodesTool: ToolSchema = {
   }),
 }
 
-/** M5 v1 (flatten): the tool an agent calls to author a sub-workflow — a cohesive DAG of nodes
+/** workflow authoring: the tool an agent calls to author a sub-workflow — a cohesive DAG of nodes
  *  composed onto the running workflow. Lowers to the same append path as `submit_workflow_nodes`
- *  (a `WorkflowSpec` is a node batch). v2 adds top-level bootstrap (the `LoadWorkflow` syscall). */
+ *  (a `WorkflowSpec` is a node batch). Top-level bootstrap uses (the `LoadWorkflow` syscall). */
 export const startWorkflowTool: ToolSchema = {
   name: "start_workflow",
   description:

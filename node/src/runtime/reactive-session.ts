@@ -240,16 +240,15 @@ export class ReactiveSession {
    * blackboard continuity comes from the (persistent) `EventStream`. Turn-policy cursor state is not
    * restored. W-N5: vehicle members (workflow envelopes, `wf-node*` children, loop iterations) share
    * the governance domain but are NOT personas — resuming them as peers would resurrect phantoms.
-   * A legacy membership with no kind tags falls back to resuming every member.
+   * Only explicitly tagged peer memberships are resumable.
    */
   static async resume(
     opts: ReactiveSessionOptions & { peerSpecs?: Record<string, ReactivePeerSpec> },
   ): Promise<ReactiveSession> {
     const session = new ReactiveSession(opts)
     const members = await opts.runGroup.budgetStore.members(opts.runGroup.id)
-    const anyTagged = members.some(m => m.kind !== undefined)
     for (const member of members) {
-      if (anyTagged && member.kind !== "peer") continue
+      if (member.kind !== "peer") continue
       session.peerSpecs.set(member.sessionId, opts.peerSpecs?.[member.sessionId] ?? { role: member.role })
     }
     return session

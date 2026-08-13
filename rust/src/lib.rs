@@ -59,7 +59,10 @@ pub use providers::request_plan::{
     RequestPlanError, UnpricedReason, measurement_for_plan, normalize_provider_usage,
     price_provider_usage, record_prompt_measurement,
 };
-pub use providers::{LLMProvider, ProviderRunState, ProviderToolSpec, StreamEvent, TokenUsage};
+pub use providers::{
+    LLMProvider, ProviderError, ProviderErrorKind, ProviderRunState, ProviderToolSpec, StreamEvent,
+    TokenUsage,
+};
 pub use run_event::RunEvent;
 pub use runtime::eval::{Criterion as EvalCriterion, Verdict as EvalVerdict};
 pub use runtime::eval::{build_eval_messages, judge, parse_verdict, verdict_output_schema};
@@ -115,6 +118,8 @@ pub use tools::{
 pub enum Error {
     #[error("provider error: {0}")]
     Provider(String),
+    #[error(transparent)]
+    ProviderFailure(#[from] providers::ProviderError),
     #[error("tool error: {0}")]
     Tool(String),
     #[error("io error: {0}")]

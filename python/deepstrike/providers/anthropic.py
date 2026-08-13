@@ -60,19 +60,12 @@ class AnthropicProvider:
 
     def peek_provider_replay(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
         blocks = self._native_assistant_blocks.get(self._assistant_replay_key_parts(content, tool_calls))
-        return {"native_blocks": blocks} if blocks else None
+        return {"protocol": "anthropic-messages", "native_blocks": blocks} if blocks else None
 
     def seed_provider_replay(self, content: str, tool_calls: list[ToolCall], replay: dict) -> None:
         blocks = replay.get("native_blocks")
-        if blocks:
+        if replay.get("protocol") == "anthropic-messages" and blocks:
             self._native_assistant_blocks[self._assistant_replay_key_parts(content, tool_calls)] = blocks
-            return
-        # Legacy log without persisted native blocks: reconstruct neutral
-        # text + tool_use blocks from the transcript so a tool-use turn can be
-        # replayed. Thinking blocks were never persisted and are not recovered.
-        reconstructed = _reconstruct_anthropic_blocks(content, tool_calls)
-        if reconstructed:
-            self._native_assistant_blocks[self._assistant_replay_key_parts(content, tool_calls)] = reconstructed
 
     def _build_system(self, context: RenderedContext, strategy: str = "default", cache_control: dict | None = None):
         """Structured system blocks with cache_control when the kernel partitioned
@@ -344,21 +337,3 @@ def _tc_field(tc: object, field_name: str) -> object:
     if isinstance(tc, dict):
         return tc.get(field_name)
     return getattr(tc, field_name, None)
-
-
-def _reconstruct_anthropic_blocks(content: str, tool_calls: list) -> list[dict]:
-    """Reconstruct Anthropic assistant content blocks from a neutral transcript
-    when no provider replay was persisted. Only meaningful for tool-use turns."""
-    if not tool_calls:
-        return []
-    blocks: list[dict] = []
-    if content:
-        blocks.append({"type": "text", "text": content})
-    for tc in tool_calls:
-        blocks.append({
-            "type": "tool_use",
-            "id": _tc_field(tc, "id"),
-            "name": _tc_field(tc, "name"),
-            "input": parse_tool_arguments(_tc_field(tc, "arguments")),
-        })
-    return blocks

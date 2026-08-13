@@ -7,7 +7,7 @@ pub mod repair;
 pub mod replay;
 pub mod session;
 
-pub use kernel::{KERNEL_ABI_VERSION, KernelObservation, KernelPressureAction};
+pub use kernel::{KernelObservation, KernelPressureAction};
 
 pub use event_log::{KernelEventCategory, Primitive, category_for_kind, primitive_for_kind};
 pub use repair::{

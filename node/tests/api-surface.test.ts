@@ -1,7 +1,4 @@
-/**
- * v0.2.30 API-surface guard. Locks in the streamlined root surface and the subpath split so a stray
- * re-export can't silently re-bloat the public API. See .local-docs/specs/api-streamline-v0.2.300.md.
- */
+/** Locks in the canonical root surface and subpath split. */
 import * as root from "../src/index.js"
 import * as providers from "../src/providers/public.js"
 import * as workflow from "../src/workflow/public.js"
@@ -18,7 +15,7 @@ describe("root surface", () => {
       "LocalExecutionPlane", "InMemorySessionLog", "FileSessionLog",
       "tool", "streamingTool", "safeTool", "ok", "fail",
       "AnthropicProvider", "OpenAIProvider", "OpenAIResponsesProvider", "createProvider",
-      "Governance", "AgentPool",
+      "AgentPool",
       "ManagedTaskScope", "operationAbortSignal",
     ]) {
       expect(root).toHaveProperty(name)
@@ -85,8 +82,7 @@ describe("provider options-object constructor", () => {
     const p = new OpenAIProvider({ apiKey: "sk-test", model: "mimo-v2.5-pro", baseURL: "https://example.test/v1" })
     expect((p as unknown as { model: string }).model).toBe("mimo-v2.5-pro")
   })
-  it("still accepts the legacy positional form", () => {
-    const p = new OpenAIProvider("sk-test", "gpt-4o")
-    expect((p as unknown as { model: string }).model).toBe("gpt-4o")
+  it("rejects the removed positional form", () => {
+    expect(() => new (OpenAIProvider as any)("sk-test", "gpt-4o")).toThrow()
   })
 })

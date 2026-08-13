@@ -4,8 +4,8 @@ backend speaks both the OpenAI- and Anthropic-compatible wire, the ``protocol`` 
 two have genuinely different request/replay logic, so they stay distinct internal classes). For OpenAI
 itself use the top-level ``OpenAIProvider`` / ``OpenAIResponsesProvider``.
 
-The dual classes still exist (importable from their modules for advanced subclassing); they are simply no
-longer part of the public ``deepstrike.providers`` surface.
+Vendor-specific implementation classes are private; factories are the only public backend construction
+surface.
 """
 from __future__ import annotations
 

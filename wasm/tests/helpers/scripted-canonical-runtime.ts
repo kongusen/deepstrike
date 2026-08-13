@@ -104,7 +104,6 @@ export function wrapScriptedKernel(fake: ScriptedKernel, operationId = "wasm-scr
     },
     async applyHostEvent(event: Record<string, unknown>) {
       const step = JSON.parse(fake.step(JSON.stringify({
-        abi_version: 2,
         operation_id: operationId,
         event,
       }))) as {

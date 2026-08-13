@@ -55,22 +55,22 @@ describe("assistantReplayKey normalization", () => {
 
 describe("OpenAIProvider reasoning replay empty string handling", () => {
   it("does not discard empty string reasoning_content during peek and seed", () => {
-    const provider = new OpenAIProvider("test-key")
+    const provider = new OpenAIProvider({ apiKey: "test-key" })
     const message = {
       content: "output text",
       toolCalls: [{ id: "c1", name: "tool", arguments: '{"a":1}' }]
     }
 
     // Seed empty reasoning content
-    provider.seedProviderReplay(message, { reasoning_content: "" })
+    provider.seedProviderReplay(message, { protocol: "openai-chat", reasoning_content: "" })
 
     // Peek and verify it is not discarded
     const replay = provider.peekProviderReplay(message)
-    expect(replay).toEqual({ reasoning_content: "" })
+    expect(replay).toEqual({ protocol: "openai-chat", reasoning_content: "" })
   })
 
   it("returns undefined if reasoning_content is not set at all", () => {
-    const provider = new OpenAIProvider("test-key")
+    const provider = new OpenAIProvider({ apiKey: "test-key" })
     const message = {
       content: "output text",
       toolCalls: [{ id: "c1", name: "tool", arguments: '{"a":1}' }]

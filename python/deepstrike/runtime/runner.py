@@ -56,7 +56,7 @@ from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPla
 from deepstrike.tools.errors import format_tool_error
 from deepstrike.governance import governance_policy_to_kernel_event
 from deepstrike.runtime.kernel_event_log import kernel_observation_to_session_event
-from deepstrike.runtime.context_policy import context_policy_v1, normalize_context_policy_v1
+from deepstrike.runtime.context_policy import context_policy, normalize_context_policy
 from deepstrike.runtime.kernel_step import (
   capability_marker,
   capability_skill,
@@ -84,7 +84,13 @@ from deepstrike.runtime.session_repair import (
   build_run_terminal_event,
 )
 from deepstrike.runtime.session_log import SessionEntry, SessionEvent, SessionLog
-from deepstrike.runtime.durable_content import decode_durable_content, decode_durable_tool_result, durable_blocks_to_runtime, runtime_blocks_to_durable
+from deepstrike.runtime.durable_content import (
+  DurableContentError,
+  decode_durable_content,
+  decode_durable_tool_result,
+  durable_blocks_to_runtime,
+  runtime_blocks_to_durable,
+)
 from deepstrike.runtime.archive import ArchiveStore
 from deepstrike.runtime.os_profile import assert_native_profile
 from deepstrike.runtime.run_group import GroupBudgetScope, GroupMember, RunGroup
@@ -97,7 +103,7 @@ from deepstrike.signals.types import RuntimeSignal, SignalDeliveryReceipt
 from deepstrike.types.agent import WorkflowOutcome, workflow_node_outcome_from_kernel
 
 if TYPE_CHECKING:
-  from deepstrike.governance import Governance, GovernancePolicy
+  from deepstrike.governance import GovernancePolicy
   from deepstrike.runtime.os_profile import OsProfile, SignalPolicy
   from deepstrike.knowledge.source import KnowledgeSource
   from deepstrike.memory.protocols import MemoryStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope
@@ -163,8 +169,7 @@ class MemoryPolicy:
 
 @dataclass
 class SchedulerPolicy:
-  """Versioned deterministic DAG scheduler policy installed through ConfigureRun."""
-  version: int
+  """Deterministic DAG scheduler policy installed through ConfigureRun."""
   critical_path_weight: int
   fanout_weight: int
   age_weight: int
@@ -254,7 +259,6 @@ class RuntimeOptions:
   knowledge_source: "KnowledgeSource | None" = None
   signal_source: "SignalSource | None" = None
   extensions: dict | None = None
-  governance: "Governance | None" = None
   governance_policy: "GovernancePolicy | None" = None
   signal_policy: "SignalPolicy | dict | None" = None
   prompt_budget: PromptBudget | dict[str, Any] | None = None
@@ -312,9 +316,8 @@ class RuntimeOptions:
   # with {"call_id", "name", "arguments"}. Return {"block": True, "reason": ...} to veto — the call
   # never runs and the reason is fed back to the model as a denied tool result. The seam for
   # STATEFUL host policy (count repeats, per-resource budgets); keep static allow/deny in
-  # governance_policy. A raising decision hook fails closed by default. Sync or async.
+  # governance_policy. A raising decision hook always fails closed. Sync or async.
   on_tool_call: Callable[[dict], Awaitable[dict | None] | dict | None] | None = None
-  on_tool_call_failure: str = "closed"
   # O5 (PostToolUse-hook analog): called for each executed result with {"call_id", "name",
   # "arguments", "output", "is_error"}. Return {"replace_output": str} to swap what the model sees
   # and/or {"note": str} to push a contextual note into the signal stream (same channel as
@@ -343,8 +346,7 @@ class RuntimeOptions:
   # Lowers to the same ``capability_filter`` sub-agents use: augments ``run_spec``'s filter when both
   # set, else synthesizes a minimal spec. None OR empty ⇒ no ceiling (all registered tools) — the
   # empty list is NOT a minimal surface here; use ``baseline_tool_ids=[]`` for that.
-  # Enforcement: ``tool_dispatch_gate`` (default "exposed") makes this a real boundary — a call to a
-  # tool outside the advertised set never executes.
+  # Dispatch is always fail-closed: a call outside the advertised set never executes.
   allowed_tool_ids: "list[str] | None" = None
   # The PRE-ACTIVATION exposure surface, selected from under the ``allowed_tool_ids`` ceiling. Makes
   # narrow→wide progressive disclosure expressible: start the run advertising only these tools, and
@@ -352,19 +354,11 @@ class RuntimeOptions:
   # ∩ the ceiling). Per turn:
   #   exposed = meta ∪ ((baseline ∪ stable_core ∪ ⋃ active_skills.allowed_tools) ∩ ceiling)
   # An active skill that declares no ``allowed_tools`` contributes nothing — with a baseline set the
-  # surface stays narrow (strict; the legacy errs-open widening is deliberately not inherited).
-  # None ⇒ legacy behavior, byte-identical. ``[]`` is a legitimate, DISTINCT value: the minimal
+  # surface stays narrow.
+  # None and ``[]`` both mean the minimal
   # surface (meta-tools + ``stable_core_tool_ids`` only) — the ``allowed_tool_ids`` "empty means no
   # gating" trap does NOT recur here. Entries outside the ceiling silently intersect away.
   baseline_tool_ids: "list[str] | None" = None
-  # Dispatch enforcement for the exposure surface. "exposed" (default) is fail-closed: a tool call
-  # the model was never advertised this turn never reaches the host — the kernel commits a
-  # model-visible governance_denied result instead, which feeds the repeat fuse like any other
-  # denial. Allowed siblings in the same batch still execute; ``pace`` and the meta-tool family
-  # always pass through. "registered" is the escape hatch restoring the pre-gate permissive behavior
-  # (any registered tool the model names executes, even if gated out of the tools schema). Set it
-  # only when a host deliberately relies on blind calls to unadvertised tools.
-  tool_dispatch_gate: "str | None" = None
   # P0-C: optional per-turn metrics sink for tool-gating telemetry (see ``TurnMetrics``). Pure
   # observation; invoked once per LLM turn. Never raises into the run loop (errors are swallowed).
   on_turn_metrics: "Callable[[TurnMetrics], None] | None" = None
@@ -956,8 +950,8 @@ class RuntimeRunner:
     if prompt_budget is not None:
       config["prompt_budget"] = prompt_budget
     if self._opts.context_policy is not None:
-      config["context_policy"] = normalize_context_policy_v1(
-        context_policy_v1(self._opts.context_policy)
+      config["context_policy"] = normalize_context_policy(
+        context_policy(self._opts.context_policy)
       )
     scheduler_policy = _scheduler_policy_to_kernel(self._opts.scheduler_policy)
     if scheduler_policy is not None:
@@ -1026,7 +1020,6 @@ class RuntimeRunner:
       dependency_outputs_note,
       extract_classify_branch,
       extract_judge_winner,
-      extract_loop_continue,
       judge_goal,
       loop_instruction,
     )
@@ -1109,7 +1102,7 @@ class RuntimeRunner:
         output_schema=raw.get("output_schema"),
         # W-N2: the dependency agent ids — a DAG edge carries data, not just ordering.
         input_agent_ids=list(raw.get("input_agent_ids") or []),
-        # A#2 v2: marks a loop-iteration spawn — workflow_node_to_spec keys the W-N6 stable
+        # loop-control: marks a loop-iteration spawn — workflow_node_to_spec keys the W-N6 stable
         # session id and the DW-3 loop_round pacing trap off it.
         loop_max_iters=raw.get("loop_max_iters"),
         # M4/G5: without this the per-node token cap never reaches the child run (node parity).
@@ -1161,22 +1154,17 @@ class RuntimeRunner:
         winner_id = judge["right"] if winner == "right" else judge["left"]
         return _with_signal(result, tournament_winner=winner_id)
 
-      # A#2 v2 loop iteration: run the increment under the armed pacing trap (workflow_node_to_spec
+      # loop-control loop iteration: run the increment under the armed pacing trap (workflow_node_to_spec
       # set ``loop_round``, and the iteration resumes the loop's stable session — transcript-as-
-      # carry). DW-3 one vocabulary: the kernel-adjudicated `pace` verb IS the continuation signal
-      # (stop → loop_continue=False); the legacy text-sniffed JSON blob survives only as the
-      # fallback when no pace decision arrives (stub orchestrators, harness children), where no
-      # signal still means "run to max_iters" (v1).
+      # carry). The kernel-adjudicated ``pace`` verb is the only continuation signal. Ending
+      # without a pace decision completes the loop.
       loop_max = raw.get("loop_max_iters")
       if loop_max is not None:
         m = re.search(r"-i(\d+)$", raw["agent_id"])
         iteration = int(m.group(1)) if m else 0
         result = await _run(f"{base_spec.goal}\n\n{loop_instruction(loop_max, iteration)}")
         pace = getattr(result.result, "pace_decision", None)
-        if pace:
-          return _with_signal(result, loop_continue=pace.get("action") != "stop")
-        cont = extract_loop_continue(_text(result))
-        return result if cont is None else _with_signal(result, loop_continue=cont)
+        return _with_signal(result, loop_continue=bool(pace and pace.get("action") == "continue"))
 
       # A#2 classify: run the classifier, then extract the chosen branch label (kernel prunes the rest).
       labels = raw.get("classify_labels") or []
@@ -1795,6 +1783,7 @@ class RuntimeRunner:
             "output": f"permission denied: {deny_reason}",
             "is_error": True,
             "error_kind": "governance_denied",
+            "content": {"blocks": [{"type": "text", "text": f"permission denied: {deny_reason}"}]},
           }],
         })
 
@@ -1971,45 +1960,44 @@ class RuntimeRunner:
     start_task = {"goal": goal, "criteria": criteria}
     root_run_spec: dict[str, Any] | None = None
     # P0-A: lower an explicit ``run_spec``, the ``allowed_tool_ids`` ceiling, and/or the
-    # ``baseline_tool_ids`` pre-activation surface to the kernel run spec (reuses the existing
-    # run_spec wire — no new ABI). Unset on all => no gating (铁律: no config = old behavior).
+    # ``baseline_tool_ids`` pre-activation surface to the kernel run spec. Every run has a run spec;
+    # an omitted baseline is the canonical minimal surface.
     allowed_tool_ids = self._opts.allowed_tool_ids
     has_profile = bool(allowed_tool_ids)
-    # NOT the truthiness idiom above: ``baseline_tool_ids=[]`` is the legitimate minimal surface
-    # (meta + stable-core only), so mere presence triggers the lowering.
-    baseline_tool_ids = self._opts.baseline_tool_ids
-    has_baseline = baseline_tool_ids is not None
-    if self._opts.run_spec or has_profile or has_baseline or self._opts.milestone_contract:
-      import dataclasses
-      from deepstrike.types.agent import (
-        agent_run_spec_to_kernel,
-        AgentRunSpec,
-        AgentIdentity,
-        AgentCapabilityFilter,
-      )
-      base_spec = self._opts.run_spec or AgentRunSpec(
-        identity=AgentIdentity(
-          agent_id=self._opts.agent_id or "root", session_id=session_id, is_sub_agent=False
+    import dataclasses
+    from deepstrike.types.agent import (
+      agent_run_spec_to_kernel,
+      AgentRunSpec,
+      AgentIdentity,
+      AgentCapabilityFilter,
+    )
+    base_spec = self._opts.run_spec or AgentRunSpec(
+      identity=AgentIdentity(
+        agent_id=self._opts.agent_id or "root", session_id=session_id, is_sub_agent=False
+      ),
+      role="custom",
+      goal=goal,
+    )
+    baseline_tool_ids = (
+      self._opts.baseline_tool_ids
+      if self._opts.baseline_tool_ids is not None
+      else (base_spec.exposure_baseline or [])
+    )
+    if has_profile:
+      base_filter = base_spec.capability_filter or AgentCapabilityFilter()
+      spec = dataclasses.replace(
+        base_spec,
+        capability_filter=AgentCapabilityFilter(
+          allowed_kinds=base_filter.allowed_kinds,
+          allowed_ids=list(allowed_tool_ids),
         ),
-        role="custom",
-        goal=goal,
       )
-      if has_profile:
-        base_filter = base_spec.capability_filter or AgentCapabilityFilter()
-        spec = dataclasses.replace(
-          base_spec,
-          capability_filter=AgentCapabilityFilter(
-            allowed_kinds=base_filter.allowed_kinds,
-            allowed_ids=list(allowed_tool_ids),
-          ),
-        )
-      else:
-        spec = base_spec
-      if has_baseline:
-        spec = dataclasses.replace(spec, exposure_baseline=list(baseline_tool_ids or []))
-      if self._opts.milestone_contract and not spec.verification_contract_id:
-        spec = dataclasses.replace(spec, verification_contract_id="python-default")
-      root_run_spec = agent_run_spec_to_kernel(spec)
+    else:
+      spec = base_spec
+    spec = dataclasses.replace(spec, exposure_baseline=list(baseline_tool_ids))
+    if self._opts.milestone_contract and not spec.verification_contract_id:
+      spec = dataclasses.replace(spec, verification_contract_id="python-default")
+    root_run_spec = agent_run_spec_to_kernel(spec)
 
     os_profile = assert_native_profile(self._opts.os_profile or "native")
     gov_policy = self._opts.governance_policy or os_profile.governance_policy
@@ -2027,16 +2015,12 @@ class RuntimeRunner:
     if prompt_budget is not None:
       config["prompt_budget"] = prompt_budget
     if self._opts.context_policy is not None:
-      config["context_policy"] = normalize_context_policy_v1(
-        context_policy_v1(self._opts.context_policy)
+      config["context_policy"] = normalize_context_policy(
+        context_policy(self._opts.context_policy)
       )
     scheduler_policy = _scheduler_policy_to_kernel(self._opts.scheduler_policy)
     if scheduler_policy is not None:
       config["scheduler_policy"] = scheduler_policy
-    # P1: fail-closed dispatch selector (absent ⇒ kernel default "exposed"). "registered" is the
-    # escape hatch back to permissive dispatch; the kernel rejects any other value.
-    if self._opts.tool_dispatch_gate is not None:
-      config["tool_dispatch_gate"] = str(self._opts.tool_dispatch_gate)
     if not resume_mid_run:
       await apply_host(runtime, self._pending_observations, {
         "kind": "configure_run",
@@ -2257,7 +2241,6 @@ class RuntimeRunner:
               source={"kind": "heuristic"}, confidence="low_confidence",
             )
           recorded_measurements[provider_plan.fingerprint] = {
-            "version": prompt_measurement.version,
             "request_fingerprint": prompt_measurement.request_fingerprint,
             "input_tokens": prompt_measurement.input_tokens,
             "source": prompt_measurement.source,
@@ -2567,8 +2550,7 @@ class RuntimeRunner:
 
         # O5 (PreToolUse-hook analog): give the host a STATEFUL veto over each kernel-approved
         # call. A blocked call never executes; its reason reaches the model as a governance-denied
-        # tool result (the kernel rolls the turn back with the note). Decision failures are closed
-        # unless the host explicitly marks this hook advisory with ``on_tool_call_failure="open"``.
+        # tool result (the kernel rolls the turn back with the note). Decision failures are closed.
         executable_calls = normal_calls
         if self._opts.on_tool_call is not None:
           allowed = []
@@ -2581,10 +2563,7 @@ class RuntimeRunner:
               if inspect.isawaitable(decision):
                 decision = await decision
             except Exception as cause:
-              decision = (
-                None if self._opts.on_tool_call_failure == "open"
-                else {"block": True, "reason": f"on_tool_call hook failed: {format_tool_error(cause)}"}
-              )
+              decision = {"block": True, "reason": f"on_tool_call hook failed: {format_tool_error(cause)}"}
             if decision and decision.get("block"):
               reason = decision.get("reason") or "blocked by host on_tool_call hook"
               yield ToolDeniedEvent(call_id=call.id, tool_name=call.name, reason=reason)
@@ -2684,13 +2663,18 @@ class RuntimeRunner:
 
         await self._opts.session_log.append(session_id, {
           "kind": "tool_completed", "turn": runtime.turn(),
-          "results": [
-            ({"call_id": r.call_id, "output": r.output, "is_error": r.is_error,
-              "is_fatal": getattr(r, "is_fatal", False), "error_kind": getattr(r, "error_kind", None),
-              "token_count": r.token_count, "content": {"schema_version": 1, "blocks": durable_blocks_by_call[r.call_id]}}
-             if r.call_id in durable_blocks_by_call else r)
-            for r in tool_results
-          ],
+          "results": [{
+            "call_id": r.call_id,
+            "output": r.output,
+            "is_error": r.is_error,
+            "is_fatal": getattr(r, "is_fatal", False),
+            "error_kind": getattr(r, "error_kind", None),
+            "token_count": r.token_count,
+            "content": {"blocks": durable_blocks_by_call.get(
+              r.call_id,
+              [{"type": "text", "text": r.output}],
+            )},
+          } for r in tool_results],
         })
         # Canonical provider-result reduction activates a successfully resolved `skill` call. The
         # host only pins its METHOD content — how to do something — for later turns.
@@ -3157,7 +3141,6 @@ def _entropy_sample_from_observation(obs: dict) -> EntropySample:
   return EntropySample(
     turn=int(obs.get("turn") or 0),
     score=float(obs.get("score") or 0.0),
-    score_version=int(obs.get("score_version") or 0),
     rho=float(obs.get("rho") or 0.0),
     repeat_pressure=float(obs.get("repeat_pressure") or 0.0),
     failure_rate=float(obs.get("failure_rate") or 0.0),
@@ -3273,25 +3256,12 @@ def _replay_tool_result_message(result: dict[str, Any], max_bytes: int | None = 
   if content is not None:
     decoded_content = decode_durable_content(content)
     durable = decode_durable_tool_result({
-      "schema_version": 1,
-      "call_id": result.get("call_id"),
-      "is_error": result.get("is_error"),
-      "blocks": decoded_content["blocks"],
-    })
-  elif "blocks" in result:
-    decoded_content = decode_durable_content({"schema_version": 1, "blocks": result["blocks"]})
-    durable = decode_durable_tool_result({
-      "schema_version": 1,
       "call_id": result.get("call_id"),
       "is_error": result.get("is_error"),
       "blocks": decoded_content["blocks"],
     })
   else:
-    durable = decode_durable_tool_result({
-      "call_id": result.get("call_id"),
-      "output": output_raw,
-      "is_error": result.get("is_error", False),
-    })
+    raise DurableContentError("tool result has no canonical content blocks")
   blocks = durable_blocks_to_runtime(durable["blocks"])
   if blocks:
     return RenderedMessage(
@@ -3361,11 +3331,7 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
         if isinstance(r, dict):
           messages.append(_replay_tool_result_message(r, max_bytes))
           continue
-        messages.append(_replay_tool_result_message({
-          "call_id": r.call_id,
-          "output": r.output,
-          "is_error": r.is_error,
-        }, max_bytes))
+        raise DurableContentError("tool result has no canonical content blocks")
     elif kind == "rollbacked":
       len_val = e.get("checkpoint_history_len", 0)
       if len(messages) > len_val:
@@ -3469,11 +3435,7 @@ async def _replay_messages_async(
         if isinstance(r, dict):
           messages.append(_replay_tool_result_message(r, max_bytes))
           continue
-        messages.append(_replay_tool_result_message({
-          "call_id": r.call_id,
-          "output": r.output,
-          "is_error": r.is_error,
-        }, max_bytes))
+        raise DurableContentError("tool result has no canonical content blocks")
     elif kind == "rollbacked":
       len_val = e.get("checkpoint_history_len", 0)
       if len(messages) > len_val:
@@ -3562,7 +3524,7 @@ def _scheduler_policy_to_kernel(
     return None
   if isinstance(policy, dict):
     allowed = {
-      "version", "critical_path_weight", "fanout_weight", "age_weight", "token_cost_weight",
+      "critical_path_weight", "fanout_weight", "age_weight", "token_cost_weight",
       "deadline_weight", "process_priority_weight", "resource_pressure_weight", "budget_pressure_weight",
     }
     unknown = set(policy) - allowed
@@ -3570,7 +3532,6 @@ def _scheduler_policy_to_kernel(
       raise ValueError(f"unknown scheduler policy field(s): {', '.join(sorted(unknown))}")
   get = policy.__getitem__ if isinstance(policy, dict) else lambda key: getattr(policy, key)
   out = {
-    "version": get("version"),
     "critical_path_weight": get("critical_path_weight"),
     "fanout_weight": get("fanout_weight"),
     "age_weight": get("age_weight"),
@@ -3614,7 +3575,6 @@ def _signal_policy_to_kernel(policy: "SignalPolicy | dict[str, Any]") -> dict[st
     policy.get("deadline_escalation") if isinstance(policy, dict) else policy.deadline_escalation
   )
   return {
-    "version": 1,
     "queue_max": queue_max,
     **({"ttl_ms": ttl_ms} if ttl_ms is not None else {}),
     **({"deadline_escalation": deadline_escalation} if deadline_escalation is not None else {}),

@@ -29,7 +29,7 @@ use sha2::{Digest as _, Sha256};
 use super::config::{ConfigDefaults, ResolvedOperationConfig};
 use super::effect::Digest;
 use super::envelope::{
-    AbiRevision, DeliverExternalEvent, HostControl, KernelInput, OperationLifecycle, ResolveEffect,
+    DeliverExternalEvent, HostControl, KernelInput, OperationLifecycle, ResolveEffect,
     StartOperation, WireEnvelope, WireRejection,
 };
 use super::fault::KernelFaultCode;
@@ -257,7 +257,6 @@ fn write_canonical_number(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NormalizedInput {
-    pub abi_version: AbiRevision,
     pub operation_id: OperationId,
     pub input_id: InputId,
     pub observed_at_ms: WireU64,
@@ -345,7 +344,6 @@ impl NormalizedInput {
             KernelInput::HostControl(control) => NormalizedPayload::HostControl(control.clone()),
         };
         Ok(Self {
-            abi_version: envelope.abi_version,
             operation_id: envelope.operation_id.clone(),
             input_id: envelope.input_id.clone(),
             observed_at_ms: envelope.observed_at_ms,
@@ -379,7 +377,6 @@ impl NormalizedInput {
 /// that goes with it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct KernelRecord {
-    abi_version: AbiRevision,
     operation_id: OperationId,
     input_id: InputId,
     step_seq: WireU64,
@@ -410,7 +407,6 @@ pub struct ChainAnchor {
 /// The digested body: every field of a record except the digest that summarises it.
 #[derive(Serialize)]
 struct RecordBody<'a> {
-    abi_version: AbiRevision,
     operation_id: &'a OperationId,
     input_id: &'a InputId,
     step_seq: WireU64,
@@ -501,7 +497,6 @@ impl KernelRecord {
         )?;
 
         Ok(Self {
-            abi_version: AbiRevision::CURRENT,
             operation_id: input.operation_id.clone(),
             input_id: input.input_id.clone(),
             step_seq,
@@ -524,7 +519,6 @@ impl KernelRecord {
         step_digest: &Digest,
     ) -> Result<Digest, RecordError> {
         let body = RecordBody {
-            abi_version: AbiRevision::CURRENT,
             operation_id,
             input_id,
             step_seq,
@@ -537,10 +531,6 @@ impl KernelRecord {
     }
 
     // ----- read-only accessors -----
-
-    pub fn abi_version(&self) -> u32 {
-        self.abi_version.get()
-    }
 
     pub fn operation_id(&self) -> &OperationId {
         &self.operation_id
@@ -736,7 +726,6 @@ pub fn verify_record_chain(records: &[KernelRecord]) -> Result<&Digest, RecordEr
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RecordProjection {
-    abi_version: AbiRevision,
     operation_id: OperationId,
     input_id: InputId,
     step_seq: WireU64,
@@ -759,7 +748,6 @@ impl<'de> Deserialize<'de> for KernelRecord {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let projection = RecordProjection::deserialize(deserializer)?;
         let record = Self {
-            abi_version: projection.abi_version,
             operation_id: projection.operation_id,
             input_id: projection.input_id,
             step_seq: projection.step_seq,
@@ -1248,13 +1236,12 @@ mod tests {
     // -----------------------------------------------------------------------------------------
 
     #[test]
-    fn the_record_is_exactly_the_nine_declared_fields() {
+    fn the_record_is_exactly_the_eight_declared_fields() {
         let value = serde_json::to_value(genesis_record()).unwrap();
         let keys: BTreeSet<String> = value.as_object().unwrap().keys().cloned().collect();
         assert_eq!(
             keys,
             BTreeSet::from([
-                "abi_version".to_string(),
                 "operation_id".to_string(),
                 "input_id".to_string(),
                 "step_seq".to_string(),
@@ -1359,9 +1346,9 @@ mod tests {
     }
 
     #[test]
-    fn a_record_from_another_abi_revision_fails_closed() {
+    fn a_record_with_removed_or_unknown_fields_fails_closed() {
         let mut value = serde_json::to_value(genesis_record()).unwrap();
-        value["abi_version"] = json!(KERNEL_ABI_VERSION + 1);
+        value["abi_version"] = json!(1);
         assert!(serde_json::from_value::<KernelRecord>(value).is_err());
 
         let mut value = serde_json::to_value(genesis_record()).unwrap();

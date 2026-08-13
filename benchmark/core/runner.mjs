@@ -257,8 +257,7 @@ export async function runBench(opts) {
     })
 
     // Persist raw events for debugging / post-hoc replay. With samples>1 each sample writes its
-    // own file so they don't clobber; samples=1 keeps the legacy `<task>.events.json` filename
-    // (which replay fixtures still read by default).
+    // own file so they don't clobber; samples=1 uses the canonical `<task>.events.json` filename.
     try {
       const eventsFilename = samples > 1
         ? `${task.id}${sampleSuffix}.events.json`

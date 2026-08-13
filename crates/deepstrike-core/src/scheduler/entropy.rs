@@ -9,18 +9,14 @@
 //! e.g. inject a corrective note — without re-deriving kernel state from the audit log.
 //!
 //! Two honesty rules govern the shape:
-//! - The component vector is the contract; `score` is only a *versioned* default fold
-//!   ([`ENTROPY_SCORE_VERSION`]). Hosts that care should threshold on components.
+//! - The component vector is the contract; `score` is the canonical default fold. Hosts that care
+//!   about individual causes should threshold on components.
 //! - Measurement is unconditional (one sample per completed turn boundary, like
 //!   `CheckpointTaken`); only the alert — a kernel-side threshold decision — is opt-in
 //!   via [`EntropyWatchConfig`].
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-
-/// Version of the default `score` fold. Bump when the formula or weights change so hosts
-/// thresholding on `score` can detect the semantics shift.
-pub const ENTROPY_SCORE_VERSION: u32 = 1;
 
 /// Sliding window (in completed turns) for the failure/rollback components.
 pub const ENTROPY_WINDOW_TURNS: usize = 8;
@@ -81,7 +77,7 @@ impl Default for EntropyWatchConfig {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EntropySample {
     pub turn: u32,
-    /// Versioned default fold of the components (see [`ENTROPY_SCORE_VERSION`]).
+    /// Canonical default fold of the components.
     pub score: f64,
     /// Context pressure after this boundary's eviction pass (`ContextManager::rho`).
     pub rho: f64,
@@ -245,7 +241,7 @@ impl EntropyTracker {
         };
         let rollback_term = (f64::from(rollbacks_in_window) / ROLLBACK_SATURATION).clamp(0.0, 1.0);
 
-        // v1 fold: repetition and failures dominate (they are the direct "no forward
+        // canonical fold: repetition and failures dominate (they are the direct "no forward
         // progress" evidence), pressure and rollbacks corroborate.
         let score =
             0.35 * repeat_pressure + 0.30 * failure_rate + 0.20 * rho + 0.15 * rollback_term;

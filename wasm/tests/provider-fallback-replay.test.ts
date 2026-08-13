@@ -33,11 +33,12 @@ describe("wasm provider fallback replay (M3 parity)", () => {
     const anthropic = new AnthropicProvider("k", "claude-sonnet-4-6")
     expect(isReplayCompatibleWithProvider({ protocol: "anthropic-messages" }, anthropic.descriptor?.())).toBe(true)
     expect(isReplayCompatibleWithProvider({ protocol: "openai-chat" }, anthropic.descriptor?.())).toBe(false)
-    expect(isReplayCompatibleWithProvider({ reasoning_content: "t" }, anthropic.descriptor?.())).toBe(false)
-    expect(isReplayCompatibleWithProvider({ native_blocks: [{ type: "text", text: "x" }] }, anthropic.descriptor?.())).toBe(true)
+    expect(() => isReplayCompatibleWithProvider({ reasoning_content: "t" }, anthropic.descriptor?.())).toThrow(/protocol is required/)
+    expect(() => isReplayCompatibleWithProvider({ native_blocks: [{ type: "text", text: "x" }] }, anthropic.descriptor?.())).toThrow(/protocol is required/)
+    expect(() => isReplayCompatibleWithProvider({ protocol: "anthropic-messages", schema_version: 1 } as never, anthropic.descriptor?.())).toThrow(/unknown field schema_version/)
   })
 
-  it("drops a cross-protocol replay and reconstructs Anthropic blocks for legacy logs", () => {
+  it("drops cross-protocol replay and never reconstructs missing replay", () => {
     const anthropic = new AnthropicProvider("k", "claude-sonnet-4-6")
     const message = { content: "calling", toolCalls: [{ id: "c1", name: "ping", arguments: '{"a":1}' }] }
     // openai-chat envelope is incompatible -> skipped entirely.
@@ -48,14 +49,10 @@ describe("wasm provider fallback replay (M3 parity)", () => {
     })])
     expect(anthropic.peekProviderReplay?.(message)).toBeUndefined()
 
-    // legacy log with no persisted replay -> Anthropic reconstructs neutral blocks.
     seedProviderReplayFromEvents(anthropic, [llmCompleted({
       content: message.content,
       tool_calls: message.toolCalls,
     })])
-    expect(anthropic.peekProviderReplay?.(message)?.native_blocks).toEqual([
-      { type: "text", text: "calling" },
-      { type: "tool_use", id: "c1", name: "ping", input: { a: 1 } },
-    ])
+    expect(anthropic.peekProviderReplay?.(message)).toBeUndefined()
   })
 })

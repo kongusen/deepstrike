@@ -49,13 +49,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use super::checkpoint::{
-    AuthoredMemoryQueryState, AuthoredMemoryWriteState, ChildProcessState, ContextVmStateV1,
+    AuthoredMemoryQueryState, AuthoredMemoryWriteState, ChildProcessState, ContextVmState,
     EntropyState, EntropyTurnState, HandleState, InlineMessageBody, KnowledgeSlotState,
     LocalChannelState, LogicalCompressionEntry, LogicalKernelState, LogicalPlanStep,
     LogicalStateProjection, LogicalTaskState, LogicalToolCall, MessagePartition, MilestoneState,
     PartitionTokenState, PendingPayloadLoadState, PendingProviderCallState, QueuedSignalState,
-    ReferencedMessageBody, SchedulerStateV1, SkillLeaseState, StoredMessageBody,
-    StoredMessageState, StructuredMessageBody, SyscallStateV1, TaskAttemptState, TaskControlState,
+    ReferencedMessageBody, SchedulerState, SkillLeaseState, StoredMessageBody, StoredMessageState,
+    StructuredMessageBody, SyscallState, TaskAttemptState, TaskControlState,
     TaskWaitConditionState, TaskWaitSetState, WorkflowGraphState, WorkflowNodeState,
 };
 use super::command::{
@@ -117,7 +117,7 @@ use crate::scheduler::state_machine::{
 };
 use crate::scheduler::tcb::{
     ApprovalId, BudgetLedger, ChannelId, DurableWaitSet, LogicalDeadline, ProcInfo, ResourceKey,
-    SignalFilter, SubscriptionId, TaskLifecycle, Tcb, WaitCondition, WaitMode, WaitReason,
+    SignalFilter, SubscriptionId, TaskLifecycle, Tcb, WaitCondition, WaitMode,
 };
 use crate::scheduler::wait_index::WaitKey;
 use crate::signals::queue::QueuedSignalRuntimeState;
@@ -199,10 +199,8 @@ impl TransitionStep for PlannedStep {
 /// canonical `TaskId` is the same string so an `AgentTurn` focus names a row that exists.
 pub const ROOT_TASK_ID: &str = "root";
 
-/// The session slot the canonical path fills on the legacy `AgentIdentity` that `AgentRunSpec`
-/// still declares (§22.6 · Task 11): nothing. Host session identity is not a kernel fact, the
-/// canonical wire has no field for one, and the field itself is deleted with the legacy input enum
-/// in Task 23 — until then the canonical path must be the proof that it is never populated.
+/// The empty session slot used when projecting the logical kernel spec into `AgentRunSpec`.
+/// Host session identity is not a kernel fact and the canonical wire has no field for one.
 const NO_HOST_SESSION: &str = "";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -370,10 +368,7 @@ fn content_to_durable(content: &Content) -> Result<DurableContent, String> {
             .map(content_part_to_durable)
             .collect::<Result<Vec<_>, _>>()?,
     };
-    let content = DurableContent {
-        schema_version: DurableContent::CURRENT_SCHEMA_VERSION,
-        blocks,
-    };
+    let content = DurableContent { blocks };
     content.validate().map_err(|error| error.to_string())?;
     Ok(content)
 }
@@ -422,9 +417,6 @@ fn durable_tool_result_from_content(content: &Content) -> Option<DurableToolResu
     else {
         return None;
     };
-    // A plain text-only ToolResult remains on the legacy checkpoint carrier. The structured
-    // envelope is opted into only by an explicit durable_content field.
-    durable_content.as_ref()?;
     Some(durable_tool_result_from_part(
         call_id,
         output,
@@ -438,18 +430,6 @@ fn durable_tool_results_from_content(content: &Content) -> Option<Vec<DurableToo
         return None;
     };
     if parts.len() < 2 {
-        return None;
-    }
-    let has_durable_content = parts.iter().any(|part| {
-        matches!(
-            part,
-            ContentPart::ToolResult {
-                durable_content: Some(_),
-                ..
-            }
-        )
-    });
-    if !has_durable_content {
         return None;
     }
     let results = parts
@@ -480,12 +460,11 @@ fn durable_tool_result_from_part(
 ) -> DurableToolResult {
     match durable_content {
         Some(content) => DurableToolResult {
-            schema_version: content.schema_version,
             call_id: call_id.to_owned(),
             is_error,
             blocks: content.blocks.clone(),
         },
-        None => DurableToolResult::legacy_text(call_id.to_owned(), output.to_owned(), is_error),
+        None => DurableToolResult::text(call_id.to_owned(), output.to_owned(), is_error),
     }
 }
 
@@ -504,7 +483,6 @@ fn content_from_durable_tool_result(result: &DurableToolResult) -> Result<Conten
         output,
         is_error: result.is_error,
         durable_content: Some(DurableContent {
-            schema_version: result.schema_version,
             blocks: result.blocks.clone(),
         }),
     }]))
@@ -611,7 +589,6 @@ mod durable_content_checkpoint_tests {
     #[test]
     fn checkpoint_rejects_unrestorable_durable_file_source() {
         let content = DurableContent {
-            schema_version: 1,
             blocks: vec![DurableContentBlock::File {
                 source: DurableSource::FileId {
                     id: "file-1".into(),
@@ -630,7 +607,6 @@ mod durable_content_checkpoint_tests {
     #[test]
     fn structured_tool_result_checkpoint_form_keeps_correlation_and_blocks() {
         let result = DurableToolResult {
-            schema_version: 1,
             call_id: "call-screenshot".into(),
             is_error: false,
             blocks: vec![
@@ -680,8 +656,8 @@ mod durable_content_checkpoint_tests {
     }
 
     #[test]
-    fn legacy_multi_tool_results_keep_the_historical_checkpoint_carrier() {
-        let legacy = Content::Parts(vec![
+    fn plain_multi_tool_results_use_the_canonical_checkpoint_carrier() {
+        let content = Content::Parts(vec![
             ContentPart::ToolResult {
                 call_id: "call-1".into(),
                 output: "first".into(),
@@ -696,15 +672,21 @@ mod durable_content_checkpoint_tests {
             },
         ]);
         assert!(
-            message_body_parts(&Message::tool(match legacy.clone() {
+            message_body_parts(&Message::tool(match content.clone() {
                 Content::Parts(parts) => parts,
                 Content::Text(_) => unreachable!(),
             }))
-            .is_none()
+            .is_none(),
+            "multiple call ids require the structured canonical carrier"
         );
-        assert!(durable_tool_results_from_content(&legacy).is_none());
+        assert_eq!(
+            durable_tool_results_from_content(&content)
+                .expect("canonical tool results")
+                .len(),
+            2
+        );
         assert!(
-            content_to_durable(&legacy).is_err(),
+            content_to_durable(&content).is_err(),
             "nested tool results remain forbidden"
         );
     }
@@ -973,8 +955,19 @@ fn restore_urgency(label: &str) -> Result<Urgency, KernelFault> {
 fn restore_scheduler(
     engine: &mut LoopStateMachine,
     config: &ResolvedOperationConfig,
-    state: &SchedulerStateV1,
+    state: &SchedulerState,
 ) -> Result<(), KernelFault> {
+    engine.run_spec = state.run_spec.as_ref().map(agent_run_spec);
+    if let Some(names) = &state.advertised_tool_ids {
+        let unique: std::collections::BTreeSet<&str> = names.iter().map(String::as_str).collect();
+        if unique.len() != names.len() {
+            return Err(KernelFault::new(
+                KernelFaultCode::CheckpointIncompatible,
+                "advertised_tool_ids contains a duplicate tool id",
+            ));
+        }
+    }
+    engine.restore_advertised_tool_ids(state.advertised_tool_ids.clone());
     engine.turn = state.turn;
     engine.restore_budget_usage(state.total_tokens.get(), state.rounds_completed);
     engine.restore_started_at_ms(state.started_at_ms.map(WireU64::get));
@@ -1017,7 +1010,6 @@ fn restore_scheduler(
             .map(|parent| parent.as_str().into());
         tcb.state = restore_task_lifecycle(task)?;
         tcb.runnable_cause = task.runnable_cause;
-        tcb.wait = restore_task_wait(task)?;
         tcb.wait_set = task
             .wait_set
             .as_ref()
@@ -1126,10 +1118,7 @@ fn restore_scheduler(
     // registers a child when its parent row already exists, which the wire's task order does not
     // guarantee. Recompute from the now-complete `parent` links rather than trust insertion order.
     table.rebuild_children();
-    // spc_002-09: `tcb.wait` above (line 624) is set directly, not through `TaskTable::set_wait` —
-    // the index's only other sanctioned mutation path — so a restored waiting task is otherwise
-    // invisible to `wake`/`notify` even though `Tcb.wait` itself is correct. Recompute the index
-    // from every task's now-restored `.wait` field.
+    // WaitIndex is derived state. Recompute it from every task's restored durable wait set.
     table.rebuild_wait_index();
 
     let queued = state
@@ -1245,23 +1234,6 @@ fn restore_task_lifecycle(task: &TaskControlState) -> Result<TaskLifecycle, Kern
         }
     };
     Ok(lifecycle)
-}
-
-fn restore_task_wait(task: &TaskControlState) -> Result<Option<WaitReason>, KernelFault> {
-    match task.wait.as_deref() {
-        None => Ok(None),
-        Some("approval") => Ok(Some(WaitReason::Approval)),
-        Some("sub_agent_join") => Ok(Some(WaitReason::SubAgentJoin(
-            task.waiting_on
-                .iter()
-                .map(|child| child.as_str().into())
-                .collect(),
-        ))),
-        Some(other) => Err(incompatible(format!(
-            "task {} waits on {other:?}, which this kernel does not know",
-            task.task_id
-        ))),
-    }
 }
 
 fn project_wait_set(wait_set: &DurableWaitSet) -> TaskWaitSetState {
@@ -1413,7 +1385,7 @@ fn termination_from_label(label: &str) -> Option<TerminationReason> {
 /// the same body it addressed before, then the allocator is moved past all of them.
 fn restore_context_vm(
     engine: &mut LoopStateMachine,
-    state: &ContextVmStateV1,
+    state: &ContextVmState,
 ) -> Result<(), KernelFault> {
     let ctx = &mut engine.ctx;
     for entry in &state.messages {
@@ -1489,17 +1461,8 @@ fn restore_message(
             reference.is_error,
         ),
         StoredMessageBody::Structured(structured) => {
-            if structured.schema_version != DurableContent::CURRENT_SCHEMA_VERSION {
-                return Err(incompatible(format!(
-                    "the checkpoint carries unsupported durable content schema version {}",
-                    structured.schema_version
-                )));
-            }
             if !structured.durable_tool_results.is_empty() {
-                if structured.durable_tool_result.is_some()
-                    || structured.durable_content.is_some()
-                    || structured.content_json.is_some()
-                {
+                if structured.durable_content.is_some() {
                     return Err(incompatible(
                         "the checkpoint durable tool results must not carry another body form"
                             .to_string(),
@@ -1507,16 +1470,6 @@ fn restore_message(
                 }
                 content_from_durable_tool_results(&structured.durable_tool_results).map_err(|error| incompatible(format!(
                     "the checkpoint carries durable tool results this runtime cannot restore: {error}"
-                )))?
-            } else if let Some(result) = &structured.durable_tool_result {
-                if structured.durable_content.is_some() || structured.content_json.is_some() {
-                    return Err(incompatible(
-                        "the checkpoint durable tool result must not carry another body form"
-                            .to_string(),
-                    ));
-                }
-                content_from_durable_tool_result(result).map_err(|error| incompatible(format!(
-                    "the checkpoint carries durable tool result this runtime cannot restore: {error}"
                 )))?
             } else if let Some(content) = &structured.durable_content {
                 content.validate().map_err(|error| {
@@ -1526,10 +1479,6 @@ fn restore_message(
                 })?;
                 content_from_durable(content).map_err(|error| incompatible(format!(
                     "the checkpoint carries durable content this runtime cannot restore: {error}"
-                )))?
-            } else if let Some(content_json) = &structured.content_json {
-                serde_json::from_str(content_json).map_err(|error| incompatible(format!(
-                    "the checkpoint carries a legacy structured message body that does not decode: {error}"
                 )))?
             } else {
                 return Err(incompatible(
@@ -1793,8 +1742,8 @@ pub struct CanonicalOperationDriver {
     /// The engine's own `LoopAction::EvaluateMilestone` names only a phase, because internally
     /// there is one cascade and a phase id is enough. The wire needs the pair: `phase_id` is
     /// unique only within its contract, so `(contract_id, phase_id)` is the host's complete lookup
-    /// key. Threading it here rather than through the semantic engine keeps the legacy internal
-    /// action untouched (Task 23 owns that) while the canonical projection is already total.
+    /// key. The driver retains that contract id beside the semantic engine so the wire projection
+    /// is total without duplicating host-owned verifier state inside the engine.
     loaded_contract_id: Option<String>,
     staged: Option<StagedFocus>,
     poison: Option<KernelFault>,
@@ -1846,8 +1795,8 @@ impl CanonicalOperationDriver {
 
     /// Return the kernel-issued live attempt for `task_id`.
     ///
-    /// Bindings use this read-only projection when a legacy host completion carries only a task
-    /// identity. The value comes from checkpointed kernel state; hosts must never synthesize it.
+    /// Bindings use this read-only projection to correlate a host completion with the live task
+    /// attempt. The value comes from checkpointed kernel state; hosts must never synthesize it.
     pub fn attempt_id(&self, task_id: &str) -> Option<&AttemptId> {
         self.attempts.get(task_id)
     }
@@ -1877,7 +1826,7 @@ impl CanonicalOperationDriver {
     /// driver rather than the transaction owns.
     ///
     /// Explicitly a **projection**, not a serialisation: every value below is read through a named
-    /// accessor and written into a versioned DTO field. That is the whole point of §12.1 — adding a
+    /// accessor and written into a canonical DTO field. That is the whole point of §12.1 — adding a
     /// field to [`LoopStateMachine`] must not change the checkpoint format, and a checkpoint field
     /// must not silently vanish because an internal one was renamed. It is also why the internal
     /// enums travel as their `label()` plus their carried data: `TaskLifecycle::Done(reason)` and
@@ -1893,8 +1842,8 @@ impl CanonicalOperationDriver {
         }
     }
 
-    fn project_syscall_state(&self) -> SyscallStateV1 {
-        SyscallStateV1 {
+    fn project_syscall_state(&self) -> SyscallState {
+        SyscallState {
             policy_revision: self.policy.as_ref().map(LivePolicyState::revision),
             live_config: self.policy.as_ref().map(|policy| policy.config().clone()),
             provider_calls: self
@@ -1943,9 +1892,9 @@ impl CanonicalOperationDriver {
         }
     }
 
-    fn project_scheduler_state(&self) -> SchedulerStateV1 {
+    fn project_scheduler_state(&self) -> SchedulerState {
         let Some(engine) = self.engine.as_ref() else {
-            return SchedulerStateV1::default();
+            return SchedulerState::default();
         };
         let (total_tokens, subagents_spawned, rounds_completed) = engine.local_budget_usage();
         let signal_state = engine.signal_checkpoint_state();
@@ -1978,7 +1927,9 @@ impl CanonicalOperationDriver {
                     .collect(),
             }
         });
-        SchedulerStateV1 {
+        SchedulerState {
+            run_spec: engine.run_spec.as_ref().map(logical_agent_run_spec),
+            advertised_tool_ids: engine.advertised_tool_ids(),
             turn: engine.turn,
             total_tokens: WireU64::new(total_tokens),
             rounds_completed,
@@ -2001,14 +1952,6 @@ impl CanonicalOperationDriver {
                     termination: match tcb.state {
                         TaskLifecycle::Done(reason) => Some(reason.label().to_string()),
                         _ => None,
-                    },
-                    wait: tcb.wait.as_ref().map(|wait| wait.label().to_string()),
-                    waiting_on: match &tcb.wait {
-                        Some(WaitReason::SubAgentJoin(children)) => children
-                            .iter()
-                            .filter_map(|child| TaskId::new(child.as_str()).ok())
-                            .collect(),
-                        _ => Vec::new(),
                     },
                     wait_set: tcb.wait_set.as_ref().map(project_wait_set),
                     capability_ids: tcb.caps.iter().map(|cap| cap.to_string()).collect(),
@@ -2092,12 +2035,12 @@ impl CanonicalOperationDriver {
         }
     }
 
-    fn project_context_vm_state(&self) -> ContextVmStateV1 {
+    fn project_context_vm_state(&self) -> ContextVmState {
         let Some(engine) = self.engine.as_ref() else {
-            return ContextVmStateV1::default();
+            return ContextVmState::default();
         };
         let ctx = &engine.ctx;
-        ContextVmStateV1 {
+        ContextVmState {
             handles: ctx
                 .handles
                 .all()
@@ -2223,8 +2166,8 @@ impl CanonicalOperationDriver {
     /// checkpoint carries the reference and the digest that verifies a page-in — putting the bytes
     /// back would re-create exactly the round trip §7.10 exists to delete.
     fn project_body(&self, message: &Message) -> StoredMessageBody {
-        // External/paged-out tool results must retain their reference form. Their legacy text
-        // projection is still represented as a `DurableToolResult`, but choosing that form first
+        // External/paged-out tool results must retain their reference form. Their text projection
+        // is represented as a `DurableToolResult`, but choosing that form first
         // would discard the handle digest and make the body unreachable after restore.
         let single_tool_result_is_external =
             match &message.content {
@@ -2246,40 +2189,23 @@ impl CanonicalOperationDriver {
         if !single_tool_result_is_external {
             if let Some(results) = durable_tool_results_from_content(&message.content) {
                 return StoredMessageBody::Structured(StructuredMessageBody {
-                    schema_version: DurableContent::CURRENT_SCHEMA_VERSION,
                     durable_content: None,
-                    durable_tool_result: None,
                     durable_tool_results: results,
-                    content_json: None,
                 });
             }
             if let Some(result) = durable_tool_result_from_content(&message.content) {
                 return StoredMessageBody::Structured(StructuredMessageBody {
-                    schema_version: result.schema_version,
                     durable_content: None,
-                    durable_tool_result: Some(result),
-                    durable_tool_results: Vec::new(),
-                    content_json: None,
+                    durable_tool_results: vec![result],
                 });
             }
         }
         let Some((text, tool_call_id, is_error)) = message_body_parts(message) else {
-            let durable_content = content_to_durable(&message.content).ok();
-            let content_json = if durable_content.is_none() {
-                // Keep the legacy carrier only when the new durable form cannot represent the
-                // content. Writing both forms would make the checkpoint ambiguous on restore.
-                serde_json::to_string(&message.content).ok()
-            } else {
-                None
-            };
+            let durable_content = content_to_durable(&message.content)
+                .expect("every non-tool message uses the canonical durable content model");
             return StoredMessageBody::Structured(StructuredMessageBody {
-                schema_version: DurableContent::CURRENT_SCHEMA_VERSION,
-                durable_content,
-                durable_tool_result: None,
+                durable_content: Some(durable_content),
                 durable_tool_results: Vec::new(),
-                // An unsupported future core content variant is retained in the legacy carrier
-                // rather than triggering a checkpoint-time panic.
-                content_json,
             });
         };
         let Some(call_id) = tool_call_id.as_deref() else {
@@ -5322,12 +5248,9 @@ impl CanonicalOperationDriver {
                     .collect();
                 EffectKind::PreemptTasks(PreemptTasksEffect { attempts, reason })
             }
-            // The engine's action carries the legacy internal trio — criteria, required evidence
-            // and the verifier — and the canonical projection consumes none of them. All three
-            // are host-owned by decision (§5.2, adjudication §5m-3/§5p): the host looks the
-            // verifier and its criteria up from `(contract_id, phase_id)`, which is why the
-            // request carries that pair and nothing else. The internal fields stay for the legacy
-            // path until Task 23 deletes it.
+            // Criteria, required evidence, and verifier execution are host-owned (§5.2,
+            // adjudication §5m-3/§5p). The host resolves them from `(contract_id, phase_id)`, so
+            // the effect carries that pair and no duplicate verifier data.
             LoopAction::EvaluateMilestone {
                 phase_id,
                 criteria: _,
@@ -5347,16 +5270,15 @@ impl CanonicalOperationDriver {
                 &archived,
                 *effect_index,
             )?),
-            // The engine never emits these two: they exist only for the legacy `WriteMemory` /
-            // `QueryMemory` inputs, which the canonical wire replaced with a P1 syscall that mints
-            // the effect directly (see `plan_memory_write` / `plan_memory_query`).
+            // Memory effects are minted directly by the P1 syscall path (see
+            // `plan_memory_write` / `plan_memory_query`), so reaching these semantic actions is an
+            // invalid lifecycle transition.
             action @ (LoopAction::PersistMemory { .. } | LoopAction::QueryMemory { .. }) => {
                 return Err(KernelFault::new(
                     KernelFaultCode::InvalidLifecycle,
                     format!(
-                        "the semantic kernel emitted {}, which only the deleted legacy memory \
-                         inputs can produce; on the canonical wire a memory effect is minted by \
-                         the P1 syscall that proposed it",
+                        "the semantic kernel emitted unexpected {}; memory effects must be minted \
+                         by the P1 syscall that proposed them",
                         loop_action_label(&action)
                     ),
                 ));
@@ -6040,8 +5962,7 @@ fn runtime_task(task: &LogicalTask) -> RuntimeTask {
     }
 }
 
-/// §7.4 · the logical spec carries no host session identity, so the internal identity it builds
-/// carries none either. (Task 11 removes the field from `AgentIdentity` outright.)
+/// The logical spec carries no host session identity, so its internal identity carries none.
 fn agent_run_spec(spec: &LogicalAgentSpec) -> AgentRunSpec {
     AgentRunSpec {
         identity: AgentIdentity::new(ROOT_TASK_ID, NO_HOST_SESSION),
@@ -6052,7 +5973,13 @@ fn agent_run_spec(spec: &LogicalAgentSpec) -> AgentRunSpec {
         goal: spec.goal.clone(),
         verification_contract_id: spec.verification_contract_id.as_deref().map(Into::into),
         capability_filter: AgentCapabilityFilter {
-            allowed_kinds: Vec::new(),
+            allowed_kinds: spec
+                .capability_filter
+                .allowed_kinds
+                .iter()
+                .copied()
+                .map(core_capability_kind)
+                .collect(),
             allowed_ids: spec
                 .capability_filter
                 .allowed_ids
@@ -6074,6 +6001,92 @@ fn agent_run_spec(spec: &LogicalAgentSpec) -> AgentRunSpec {
             .map(|ids| ids.iter().map(|id| id.as_str().into()).collect()),
         requested_capabilities: Vec::new(),
         requested_budget: None,
+    }
+}
+
+fn logical_agent_run_spec(spec: &AgentRunSpec) -> LogicalAgentSpec {
+    LogicalAgentSpec {
+        goal: spec.goal.clone(),
+        role: match spec.role {
+            AgentRole::Custom => None,
+            AgentRole::Explore => Some(WireRole::Explore),
+            AgentRole::Plan => Some(WireRole::Plan),
+            AgentRole::Implement => Some(WireRole::Implement),
+            AgentRole::Verify => Some(WireRole::Verify),
+        },
+        isolation: match spec.isolation {
+            AgentIsolation::Shared => None,
+            AgentIsolation::ReadOnly => Some(WireIsolation::ReadOnly),
+            AgentIsolation::Worktree => Some(WireIsolation::Worktree),
+            AgentIsolation::Remote => Some(WireIsolation::Remote),
+        },
+        context_inheritance: None,
+        verification_contract_id: spec
+            .verification_contract_id
+            .as_ref()
+            .map(ToString::to_string),
+        capability_filter: super::root::CapabilityFilter {
+            allowed_kinds: spec
+                .capability_filter
+                .allowed_kinds
+                .iter()
+                .copied()
+                .map(wire_capability_kind)
+                .collect(),
+            allowed_ids: spec
+                .capability_filter
+                .allowed_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        },
+        exposure_baseline: spec
+            .exposure_baseline
+            .as_ref()
+            .map(|ids| ids.iter().map(ToString::to_string).collect()),
+        loop_round: spec
+            .loop_round
+            .as_ref()
+            .map(|round| super::root::LogicalLoopRoundSpec {
+                max_rounds: round.max_rounds,
+                min_sleep_ms: round.min_sleep_ms.map(WireU64::new),
+                max_sleep_ms: round.max_sleep_ms.map(WireU64::new),
+                default_action: round.default_action.clone(),
+            }),
+        metadata: super::scalar::BoundedJson::new(spec.metadata.clone())
+            .expect("canonical run metadata remains bounded"),
+    }
+}
+
+fn core_capability_kind(
+    kind: super::root::CapabilityKind,
+) -> crate::types::capability::CapabilityKind {
+    use super::root::CapabilityKind as Wire;
+    use crate::types::capability::CapabilityKind as Core;
+    match kind {
+        Wire::Tool => Core::Tool,
+        Wire::Skill => Core::Skill,
+        Wire::Memory => Core::Memory,
+        Wire::Knowledge => Core::Knowledge,
+        Wire::McpServer => Core::McpServer,
+        Wire::Command => Core::Command,
+        Wire::Agent => Core::Agent,
+    }
+}
+
+fn wire_capability_kind(
+    kind: crate::types::capability::CapabilityKind,
+) -> super::root::CapabilityKind {
+    use super::root::CapabilityKind as Wire;
+    use crate::types::capability::CapabilityKind as Core;
+    match kind {
+        Core::Tool => Wire::Tool,
+        Core::Skill => Wire::Skill,
+        Core::Memory => Wire::Memory,
+        Core::Knowledge => Wire::Knowledge,
+        Core::McpServer => Wire::McpServer,
+        Core::Command => Wire::Command,
+        Core::Agent => Wire::Agent,
     }
 }
 
@@ -6249,22 +6262,6 @@ fn signal_summary(signal: &LogicalSignal) -> String {
     }
 }
 
-fn core_capability_kind(
-    kind: super::root::CapabilityKind,
-) -> crate::types::capability::CapabilityKind {
-    use super::root::CapabilityKind as Wire;
-    use crate::types::capability::CapabilityKind as Core;
-    match kind {
-        Wire::Tool => Core::Tool,
-        Wire::Skill => Core::Skill,
-        Wire::Memory => Core::Memory,
-        Wire::Knowledge => Core::Knowledge,
-        Wire::McpServer => Core::McpServer,
-        Wire::Command => Core::Command,
-        Wire::Agent => Core::Agent,
-    }
-}
-
 fn live_policy_label(patch: &super::command::LivePolicyPatch) -> &'static str {
     use super::command::LivePolicyPatch;
     match patch {
@@ -6313,9 +6310,21 @@ fn rendered_context(context: &crate::context::renderer::RenderedContext) -> Wire
 }
 
 fn provider_message(message: &Message) -> ProviderMessage {
-    let (content, tool_call_id) = message_body_parts(message)
-        .map(|(text, tool_call_id, _is_error)| (text, tool_call_id))
-        .unwrap_or_default();
+    let (content, tool_call_id) = match &message.content {
+        Content::Parts(parts) => match parts.as_slice() {
+            [
+                ContentPart::ToolResult {
+                    call_id, output, ..
+                },
+            ] => (output.clone(), Some(call_id.to_string())),
+            _ => message_body_parts(message)
+                .map(|(text, tool_call_id, _is_error)| (text, tool_call_id))
+                .unwrap_or_default(),
+        },
+        Content::Text(_) => message_body_parts(message)
+            .map(|(text, tool_call_id, _is_error)| (text, tool_call_id))
+            .unwrap_or_default(),
+    };
     ProviderMessage {
         role: wire_role_of(message.role),
         content,
@@ -6914,7 +6923,6 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
     }
     let scheduler_policy = config.scheduler_policy;
     engine.set_scheduler_policy(crate::scheduler::policy::SchedulerPolicyConfig {
-        version: crate::scheduler::policy::SCHEDULER_POLICY_VERSION,
         critical_path_weight: i64::from(scheduler_policy.critical_path_weight),
         fanout_weight: i64::from(scheduler_policy.fanout_weight),
         age_weight: i64::from(scheduler_policy.age_weight),
@@ -6939,10 +6947,6 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
         notify_model: execution.entropy_watch.notify_model,
     });
     install_live_policies(&mut engine, config);
-    engine.set_dispatch_gate_exposed(matches!(
-        config.feature_policy.tool_dispatch_gate,
-        super::config::ToolDispatchGate::Exposed
-    ));
     engine
         .ctx
         .set_memory_enabled(config.feature_policy.memory_enabled);
@@ -7179,7 +7183,7 @@ mod tests {
     use crate::runtime::kernel::wire::event::{ChildResult, DeliverSignal, LogicalSignal};
     use crate::runtime::kernel::wire::fault::PrepareToken;
     use crate::runtime::kernel::wire::record::{
-        KernelRecord, RecordPreparation, canonical_bytes, canonical_digest, verify_record_chain,
+        KernelRecord, RecordPreparation, verify_record_chain,
     };
     use crate::runtime::kernel::wire::restore::{
         RestoreCost, RestoredOperation, restore_operation,
@@ -7398,11 +7402,25 @@ mod tests {
             KernelInput::StartOperation(StartOperation {
                 entry: RootEntry::Agent(RootAgentEntry {
                     task: LogicalTask::new("write the research brief"),
-                    run_spec: None,
+                    run_spec: Some(test_agent_spec("write the research brief")),
                 }),
                 initial_context: InitialContext::default(),
             }),
         )
+    }
+
+    /// Most driver fixtures exercise the complete configured tool surface. Keep that authority
+    /// explicit so the tests do not depend on a permissive missing-baseline fallback.
+    fn test_agent_spec(goal: &str) -> LogicalAgentSpec {
+        LogicalAgentSpec {
+            exposure_baseline: Some(
+                syscall_tool_catalog()
+                    .into_iter()
+                    .map(|tool| tool.name)
+                    .collect(),
+            ),
+            ..LogicalAgentSpec::new(goal)
+        }
     }
 
     fn agent_start_with_capabilities(
@@ -7416,7 +7434,7 @@ mod tests {
             KernelInput::StartOperation(StartOperation {
                 entry: RootEntry::Agent(RootAgentEntry {
                     task: LogicalTask::new("write the research brief"),
-                    run_spec: None,
+                    run_spec: Some(test_agent_spec("write the research brief")),
                 }),
                 initial_context: InitialContext {
                     requested_capabilities,
@@ -7434,7 +7452,7 @@ mod tests {
                 .iter()
                 .map(|id| NodeId::new(*id).unwrap())
                 .collect(),
-            run_spec: None,
+            run_spec: Some(test_agent_spec(goal)),
         }
     }
 
@@ -9829,9 +9847,8 @@ mod tests {
         );
     }
 
-    /// The process observation the arc publishes states the logical **parent task**, and the child
-    /// spec the kernel derives for the legacy engine carries an empty session — the canonical path
-    /// cannot populate one because no canonical input has a field for it.
+    /// The process observation states the logical **parent task**, and the child spec carries an
+    /// empty session because canonical kernel input contains no host session identity.
     #[test]
     fn a_spawned_process_is_reported_by_its_logical_parent_task() {
         let (_, _, observations) = canonical_arc();
@@ -11383,11 +11400,8 @@ mod tests {
 
     /// **Task 14 · core does not parse a raw vendor error string.**
     ///
-    /// The legacy path classified overflow by substring-matching provider prose
-    /// (`state_machine/eviction.rs::is_prompt_too_long`, §22.8). On the canonical face that
-    /// reading has no entry point: the same words are ordinary content in a completion, ordinary
-    /// diagnostics in a failure message, and neither reaches a recovery decision. Only the typed
-    /// `ContextOverflow` outcome does.
+    /// Provider prose has no recovery semantics: the same words are ordinary completion content
+    /// or failure diagnostics. Only the typed `ContextOverflow` outcome drives recovery.
     #[test]
     fn vendor_error_prose_is_content_and_never_a_recovery_decision() {
         const VENDOR_PROSE: &str = "HTTP 413: prompt is too long — context_length_exceeded, \
@@ -12425,7 +12439,7 @@ mod tests {
             "the request names the phase the declared cascade is on"
         );
         assert_eq!(
-            evaluate.request.contract_id, "brief-quality-v1",
+            evaluate.request.contract_id, "brief-quality-primary",
             "a phase id is unique only inside its contract, so the request carries the pair the \
              host looks its verifier up by"
         );
@@ -12532,11 +12546,11 @@ mod tests {
         let fault = runtime.reject(&agent_start_under_contract(
             "in-start",
             1_700_000_001_000,
-            "brief-quality-v2",
+            "brief-quality-alternate",
         ));
         assert_eq!(fault.code, KernelFaultCode::InvalidConfig);
         assert!(
-            fault.message.contains("brief-quality-v2"),
+            fault.message.contains("brief-quality-alternate"),
             "{}",
             fault.message
         );
@@ -12550,7 +12564,7 @@ mod tests {
         runtime.submit(&agent_start_under_contract(
             "in-start-ok",
             1_700_000_001_500,
-            "brief-quality-v1",
+            "brief-quality-primary",
         ));
         assert_eq!(runtime.driver.root_kind(), Some(RootKind::Agent));
     }
@@ -12943,7 +12957,7 @@ mod tests {
     /// exercised in both directions.
     fn brief_contract() -> WireVerificationContract {
         WireVerificationContract {
-            contract_id: "brief-quality-v1".to_string(),
+            contract_id: "brief-quality-primary".to_string(),
             phases: vec![
                 WireMilestonePhase {
                     phase_id: "collect".to_string(),
@@ -12987,7 +13001,7 @@ mod tests {
         let started = runtime.submit(&agent_start_under_contract(
             "in-start",
             1_700_000_001_000,
-            "brief-quality-v1",
+            "brief-quality-primary",
         ));
         (runtime, sole_effect(&started).effect_id.clone())
     }
@@ -15126,14 +15140,8 @@ mod tests {
 
         let expected = golden("golden_checkpoint_agent_turn.json", &produced);
         assert_eq!(produced, expected, "the logical checkpoint drifted");
-        assert_eq!(
-            expected["checkpoint"]["checkpoint_version"],
-            json!(super::super::KERNEL_CHECKPOINT_VERSION)
-        );
-        assert_eq!(
-            expected["checkpoint"]["abi_version"],
-            json!(super::super::KERNEL_ABI_VERSION),
-        );
+        assert!(expected["checkpoint"].get("checkpoint_version").is_none());
+        assert!(expected["checkpoint"].get("abi_version").is_none());
         assert_eq!(
             expected["checkpoint"]["base_step_seq"], expected["checkpoint"]["through_step_seq"],
             "a full-state candidate carries no tail",
@@ -15242,81 +15250,6 @@ mod tests {
             vec!["2", "3", "4"],
             "(1, 4] is exactly steps 2, 3 and 4",
         );
-    }
-
-    #[test]
-    fn bless_checkpoint_v1_migration_fixture() {
-        if std::env::var("BLESS_KERNEL_RECORD_FIXTURES").as_deref() != Ok("1") {
-            return;
-        }
-
-        let mut runtime = Runtime::new();
-        runtime.submit(&syscall_config());
-        let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
-        let base = runtime
-            .checkpoint()
-            .decode()
-            .expect("the v1 fixture base checkpoint verifies");
-        let acted = runtime.submit(&provider_result(
-            "in-acted",
-            1_700_000_002_000,
-            &effect_id(started.step_seq),
-            vec![tool_call("call-1", "search", json!({"q": "sources"}))],
-        ));
-        runtime.submit(&tools_resolved(
-            "in-results",
-            1_700_000_003_000,
-            &effect_id(acted.step_seq),
-            &[("call-1", "three sources found", false)],
-        ));
-        let current = runtime
-            .tx
-            .checkpoint_rebase(
-                &CheckpointBoundary {
-                    through_step_seq: base.through_step_seq(),
-                    covered_head: base.covered_transaction_head_digest().clone(),
-                },
-                base.logical_state().clone(),
-            )
-            .expect("the historical bounded-tail shape assembles")
-            .decode()
-            .expect("the current checkpoint verifies");
-        let mut v1: serde_json::Map<String, Value> =
-            serde_json::from_slice(current.checkpoint_bytes().as_slice()).unwrap();
-        v1.insert("checkpoint_version".into(), json!(1));
-        v1["logical_state"]["context_vm"]["messages"][0]["body"] = json!({
-            "form": "structured",
-            "content_json": "\"Proceed with the task described in [TASK STATE].\"",
-        });
-        let state_bytes = canonical_bytes(&v1["logical_state"]).unwrap();
-        v1.insert(
-            "state_digest".into(),
-            Value::String(canonical_digest(state_bytes.as_slice()).to_string()),
-        );
-        let tail_bytes = canonical_bytes(&v1["tail_inputs"]).unwrap();
-        v1.insert(
-            "tail_digest".into(),
-            Value::String(canonical_digest(tail_bytes.as_slice()).to_string()),
-        );
-        let mut body = v1.clone();
-        body.remove("checkpoint_digest");
-        v1.insert(
-            "checkpoint_digest".into(),
-            Value::String(canonical_digest(canonical_bytes(&body).unwrap().as_slice()).to_string()),
-        );
-
-        let fixture = json!({
-            "description": "Frozen v1 bounded-tail checkpoint used to prove explicit v1-to-v2 migration and replay equivalence.",
-            "checkpoint": Value::Object(v1),
-            "expected": {
-                "covered_head": current.covered_transaction_head_digest().as_str(),
-                "tail_inputs_replayed": current.tail_inputs().len(),
-            },
-        });
-        let path = fixture_dir().join("golden_checkpoint_v1_migration.json");
-        let mut text = serde_json::to_string_pretty(&fixture).unwrap();
-        text.push('\n');
-        fs::write(path, text).expect("the historical v1 fixture writes");
     }
 
     /// §12.3 rule 1 · a candidate is a read. Appends continue, and the candidate that was handed
@@ -15924,7 +15857,7 @@ mod tests {
         // `build_engine`, and `budget_grant` is boot-only (absent from `LivePolicyPatch` in
         // `command.rs`), so the genesis record it is already part of is authoritative for the
         // whole operation's lifetime. Verified empirically: the checkpoint round-trip below
-        // reproduces the same `engine.budget_grant()` on both sides with no `SchedulerStateV1`
+        // reproduces the same `engine.budget_grant()` on both sides with no `SchedulerState`
         // field for it at all. The one genuine gap is `child_budget_remaining`, which is derived,
         // per-task, debit-mutated state with no other durable home — that is what this test (and
         // `TaskControlState.child_budget_remaining`) actually closes.
@@ -15980,10 +15913,8 @@ mod tests {
     #[test]
     fn spc_002_09_a_restored_approval_wait_is_indexed_the_same_as_before_checkpoint() {
         // Plan §3.1 "Replay invariants": same checkpoint+journal must reproduce the same WaitSet
-        // state. `Tcb.wait` alone restoring correctly is not the whole story — `WaitIndex` is a
-        // separate structure (spc_003) that a restore must also reproduce, or a task that was
-        // waiting when checkpointed becomes unwakeable (via `wake`/`notify`) after restore even
-        // though its own `Tcb.wait` field looks fine.
+        // state. `WaitIndex` is derived state that restore must reproduce, or a task that was
+        // waiting when checkpointed becomes unwakeable after restore.
         use crate::scheduler::tcb::ApprovalId;
         use crate::scheduler::wait_index::WaitKey;
 
@@ -16205,7 +16136,14 @@ mod tests {
             "the restored runtime is the runtime that crashed",
         );
 
-        drive(&mut restored, &envelopes[4..]);
+        for envelope in &envelopes[4..] {
+            let expected = interrupted.submit(envelope);
+            let actual = restored.submit(envelope);
+            assert_eq!(
+                actual, expected,
+                "each post-restore transition matches the live runtime"
+            );
+        }
         assert_eq!(
             digests(&restored.journal),
             digests(&uninterrupted.journal[4..]),
@@ -16378,7 +16316,6 @@ mod tests {
     fn a_structured_inline_tool_result_survives_checkpoint_restore() {
         let (mut runtime, effect) = agent_awaiting_structured_tool_results();
         let durable = DurableContent {
-            schema_version: 1,
             blocks: vec![
                 DurableContentBlock::Text {
                     text: "captured".into(),
@@ -16426,7 +16363,7 @@ mod tests {
             .messages
             .iter()
             .find_map(|message| match &message.body {
-                StoredMessageBody::Structured(body) => body.durable_tool_result.as_ref(),
+                StoredMessageBody::Structured(body) => body.durable_tool_results.first(),
                 _ => None,
             })
             .expect("structured tool result stays in checkpoint");
@@ -16470,8 +16407,11 @@ mod tests {
                 result: WireToolResult {
                     output: "bad".into(),
                     durable_content: Some(DurableContent {
-                        schema_version: 2,
-                        blocks: Vec::new(),
+                        blocks: vec![DurableContentBlock::Image {
+                            source: DurableSource::Url { url: String::new() },
+                            media_type: None,
+                            provider_options: None,
+                        }],
                     }),
                     is_error: false,
                     disposition: ToolResultDisposition::Recoverable,
@@ -16494,7 +16434,6 @@ mod tests {
         use crate::context::token_engine::ContextTokenEngine;
 
         let durable = DurableContent {
-            schema_version: 1,
             blocks: vec![DurableContentBlock::Image {
                 source: DurableSource::Base64 {
                     data: "aW1hZ2U=".into(),

@@ -44,7 +44,7 @@ class GroupMember:
     # W-N5: what this member IS in the lineage — a "peer" persona (ReactiveSession.add_peer) vs a
     # "vehicle" session (run()/run_workflow envelopes, workflow-node children, loop iterations).
     # ``ReactiveSession.resume()`` rebuilds the peer set from "peer" members only, so DAG-in-Peer
-    # usage can't resurrect phantom ``wf-node*`` personas. None (legacy) = unknown.
+    # usage can't resurrect phantom ``wf-node*`` personas. None means unknown.
     kind: str | None = None  # "peer" | "vehicle"
 
 

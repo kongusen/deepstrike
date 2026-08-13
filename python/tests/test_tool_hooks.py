@@ -40,6 +40,7 @@ def _make_runner(provider, executed, **hooks):
         execution_plane=plane,
         max_tokens=2048,
         max_turns=6,
+        baseline_tool_ids=["write_thing"],
         **hooks,
     ))
 
@@ -64,7 +65,7 @@ def _all_text(calls) -> str:
 
 
 @pytest.mark.asyncio
-async def test_on_tool_call_fails_closed_unless_explicitly_open():
+async def test_on_tool_call_fails_closed_when_policy_backend_is_unavailable():
     def unavailable(_call):
         raise RuntimeError("policy backend unavailable")
 
@@ -73,16 +74,7 @@ async def test_on_tool_call_fails_closed_unless_explicitly_open():
     async for _ in closed.run(goal="write"):
         pass
 
-    open_executed = []
-    opened = _make_runner(
-        TwoToolTurnsProvider(), open_executed,
-        on_tool_call=unavailable, on_tool_call_failure="open",
-    )
-    async for _ in opened.run(goal="write"):
-        pass
-
     assert closed_executed == []
-    assert len(open_executed) > 0
 
 
 @pytest.mark.asyncio

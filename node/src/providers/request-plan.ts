@@ -9,7 +9,6 @@ export interface ProviderRequestEndpoint {
 
 /** One provider-visible request, deliberately excluding credentials and transport-only retries. */
 export interface ProviderRequestPlan {
-  version: 1
   providerId: string
   modelId: string
   endpoint: ProviderRequestEndpoint
@@ -26,7 +25,6 @@ export interface NormalizedProviderUsage extends ProviderUsage {
 
 /** Durable host fact: a specific logical request was counted before execution. */
 export interface RecordedPromptMeasurement {
-  version: 1
   requestFingerprint: string
   inputTokens: number
   source:
@@ -60,12 +58,11 @@ const TRANSPORT_ONLY_KEYS = new Set([
   "credentials", "retry", "maxRetries", "baseDelay", "timeout", "signal", "access_token", "refresh_token", "token", "secret", "x-api-key",
 ])
 
-export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "version" | "fingerprint" | "options"> & {
+export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "fingerprint" | "options"> & {
   options?: Record<string, unknown>
 }): ProviderRequestPlan {
   const options = materialOptions(input.options ?? {})
   const plan = {
-    version: 1 as const,
     providerId: input.providerId,
     modelId: input.modelId,
     endpoint: sanitizeEndpoint(input.endpoint),
@@ -114,10 +111,9 @@ export function estimateProviderPromptTokens(context: RenderedContext, tools: To
 /** Bind a preflight count to its exact provider-visible request. Replay only reuses matching facts. */
 export function recordPromptMeasurement(
   plan: Pick<ProviderRequestPlan, "fingerprint">,
-  measurement: Omit<RecordedPromptMeasurement, "version" | "requestFingerprint">,
+  measurement: Omit<RecordedPromptMeasurement, "requestFingerprint">,
 ): RecordedPromptMeasurement {
   return {
-    version: 1,
     requestFingerprint: plan.fingerprint,
     inputTokens: requireNonNegativeInteger(measurement.inputTokens, "inputTokens"),
     source: clone(measurement.source),
@@ -129,7 +125,7 @@ export function measurementForPlan(
   plan: Pick<ProviderRequestPlan, "fingerprint">,
   recorded: RecordedPromptMeasurement | undefined,
 ): RecordedPromptMeasurement | undefined {
-  if (!recorded || recorded.version !== 1 || recorded.requestFingerprint !== plan.fingerprint) return undefined
+  if (!recorded || recorded.requestFingerprint !== plan.fingerprint) return undefined
   if (!Number.isSafeInteger(recorded.inputTokens) || recorded.inputTokens < 0) return undefined
   if (recorded.confidence !== "exact" && recorded.confidence !== "high_confidence" && recorded.confidence !== "low_confidence") return undefined
   const source = recorded.source

@@ -19,7 +19,7 @@ def test_repair_does_not_synthesize_provider_replay():
 
 
 def test_repair_passes_stored_replay_through():
-  stored = {"schema_version": 2, "provider": "deepseek", "protocol": "openai-chat", "reasoning_content": "trace"}
+  stored = {"provider": "deepseek", "protocol": "openai-chat", "reasoning_content": "trace"}
   entries = [SessionEntry(seq=0, event={
     "kind": "llm_completed",
     "turn": 0,

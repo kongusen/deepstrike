@@ -1,5 +1,4 @@
 {
-  "abi_version": 3,
   "operation_id": "op-2026-07-29-0003",
   "input_id": "caller-supplied-idempotency-key-full",
   "observed_at_ms": "1753747200000",
@@ -173,7 +172,6 @@
         "memory_enabled": true,
         "knowledge_enabled": true,
         "plan_tool_enabled": true,
-        "tool_dispatch_gate": "exposed",
         "stable_core_tool_ids": [
           "search"
         ]

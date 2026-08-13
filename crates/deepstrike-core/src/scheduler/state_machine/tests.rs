@@ -5,6 +5,7 @@
 use super::*;
 use crate::context::skill_catalog::SKILL_TOOL_NAME;
 use crate::runtime::kernel::KernelPressureAction;
+use crate::scheduler::tcb::{ApprovalId, WaitCondition};
 use crate::types::message::Role;
 use crate::types::signal::RuntimeSignal;
 use crate::types::skill::SkillMetadata;
@@ -21,8 +22,21 @@ fn sm() -> LoopStateMachine {
 /// exposed, so a fixture that skipped registration would exercise the denial path instead of the
 /// behavior it claims to test.
 fn sm_with_tools(names: &[&str]) -> LoopStateMachine {
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
     let mut sm = sm();
     sm.tools = names.iter().map(|name| make_tool_schema(name)).collect();
+    let mut spec = AgentRunSpec::new(
+        AgentIdentity::new("root", "test-session"),
+        AgentRole::Custom,
+        "test task",
+    );
+    spec.exposure_baseline = Some(
+        names
+            .iter()
+            .map(|name| compact_str::CompactString::new(*name))
+            .collect(),
+    );
+    sm.run_spec = Some(spec);
     sm
 }
 
@@ -686,16 +700,12 @@ fn max_turns_emits_final_toolless_call_then_terminates() {
 }
 
 /// P1-B B2: once a skill with declared `allowed_tools` is active, `emit_call_llm` exposes only
-/// `meta-tools ∪ stable-core ∪ allowed_tools`. Meta-tools stay (D5); undeclared/inactive = full.
+/// `meta-tools ∪ stable-core ∪ allowed_tools`. Meta-tools stay (D5).
 #[test]
 fn active_skill_gates_exposed_tools_with_stable_core() {
-    let mut sm = sm();
-    sm.tools = vec![
-        make_tool_schema("read"),
-        make_tool_schema("write"),
-        make_tool_schema("bash"),
-        make_tool_schema("grep"),
-    ];
+    let mut sm = sm_with_tools(&["read", "write", "bash", "grep"]);
+    sm.run_spec.as_mut().unwrap().exposure_baseline =
+        Some(vec![compact_str::CompactString::new("read")]);
     // A skill that declares only {read, grep}; stable-core keeps {bash}; `write` is gated out.
     let mut debug = SkillMetadata::new("debug", "Debug helper");
     debug.allowed_tools = vec![
@@ -706,15 +716,14 @@ fn active_skill_gates_exposed_tools_with_stable_core() {
     sm.ctx
         .set_stable_core_tools([compact_str::CompactString::new("bash")]);
 
-    // Before activation: all tools exposed (no narrowing).
+    // Before activation: only the explicit baseline and stable core are exposed.
     match sm.start(RuntimeTask::new("go")) {
         LoopAction::CallLLM { tools, .. } => {
             let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-            assert!(
-                ["read", "write", "bash", "grep"]
-                    .iter()
-                    .all(|n| names.contains(n))
-            );
+            assert!(names.contains(&"read"));
+            assert!(names.contains(&"bash"));
+            assert!(!names.contains(&"write"));
+            assert!(!names.contains(&"grep"));
             // skill meta-tool present (skills registered) and must survive gating later.
             assert!(names.contains(&SKILL_TOOL_NAME));
         }
@@ -838,6 +847,10 @@ fn top_level_run_capability_filter_gates_exposed_tools() {
             compact_str::CompactString::new("search"),
         ],
     };
+    spec.exposure_baseline = Some(vec![
+        compact_str::CompactString::new("read"),
+        compact_str::CompactString::new("search"),
+    ]);
     sm.run_spec = Some(spec);
 
     match sm.start(RuntimeTask::new("do the task")) {
@@ -861,10 +874,9 @@ fn top_level_run_capability_filter_gates_exposed_tools() {
     }
 }
 
-/// Counterpart: with no run spec (the default top-level run), every base tool
-/// is exposed — i.e. gating is strictly opt-in (铁律: no config = old behavior).
+/// With no run spec, registered task tools are not exposed implicitly.
 #[test]
-fn top_level_run_without_spec_exposes_all_tools() {
+fn top_level_run_without_spec_exposes_no_task_tools() {
     let mut sm = sm();
     sm.tools = vec![
         make_tool_schema("read"),
@@ -874,7 +886,10 @@ fn top_level_run_without_spec_exposes_all_tools() {
     match sm.start(RuntimeTask::new("do the task")) {
         LoopAction::CallLLM { tools, .. } => {
             let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-            assert!(names.contains(&"read") && names.contains(&"write") && names.contains(&"bash"));
+            assert!(
+                names.is_empty(),
+                "task tools require an explicit exposure baseline"
+            );
         }
         _ => panic!("expected CallLLM"),
     }
@@ -911,6 +926,7 @@ fn run_capability_filter_id_axis_never_drops_kernel_meta_tools() {
         allowed_kinds: Vec::new(),
         allowed_ids: vec![compact_str::CompactString::new("read")],
     };
+    spec.exposure_baseline = Some(vec![compact_str::CompactString::new("read")]);
     sm.run_spec = Some(spec);
 
     match sm.start(RuntimeTask::new("do the task")) {
@@ -954,6 +970,7 @@ fn run_capability_filter_kind_axis_still_excludes_meta_tool_families() {
         allowed_kinds: vec![CapabilityKind::Tool],
         allowed_ids: vec![compact_str::CompactString::new("read")],
     };
+    spec.exposure_baseline = Some(vec![compact_str::CompactString::new("read")]);
     sm.run_spec = Some(spec);
 
     match sm.start(RuntimeTask::new("look around")) {
@@ -1137,8 +1154,8 @@ fn exposure_baseline_widens_on_skill_activation_and_narrows_on_deactivation() {
 }
 
 /// D2 (strict): with a baseline set, an active skill that declares NO `allowed_tools` contributes
-/// ∅. The legacy filter's errs-open widening ("undeclared skill ⇒ no narrowing") is deliberately
-/// not inherited — a baseline is an opt-in statement that the surface is narrow on purpose.
+/// ∅. A baseline is an opt-in statement that the surface is narrow on purpose; an undeclared
+/// skill cannot widen it.
 #[test]
 fn exposure_baseline_ignores_a_skill_that_declares_no_tools() {
     let mut sm = baseline_sm();
@@ -1154,11 +1171,9 @@ fn exposure_baseline_ignores_a_skill_that_declares_no_tools() {
     );
 }
 
-/// `Some([])` is the minimal surface (meta + stable-core), and `None` on the SAME fixture is the
-/// legacy full-ceiling behavior — pinning that the `allowedToolIds` "[] means no gating" trap does
-/// not recur on this knob.
+/// `Some([])` is the minimal surface (meta + stable-core), while `None` exposes the full ceiling.
 #[test]
-fn exposure_baseline_empty_is_minimal_while_none_is_legacy() {
+fn exposure_baseline_empty_and_none_are_both_minimal() {
     let mut minimal = baseline_sm();
     minimal.run_spec.as_mut().unwrap().exposure_baseline = Some(Vec::new());
     let names = exposed_names(minimal.start(RuntimeTask::new("do the task")));
@@ -1175,22 +1190,22 @@ fn exposure_baseline_empty_is_minimal_while_none_is_legacy() {
         "meta surfaces survive the minimal surface: {names:?}"
     );
 
-    let mut legacy = baseline_sm();
+    let mut absent = baseline_sm();
     assert!(
-        legacy
+        absent
             .run_spec
             .as_ref()
             .unwrap()
             .exposure_baseline
             .is_none()
     );
-    let names = exposed_names(legacy.start(RuntimeTask::new("do the task")));
-    for ceiling_tool in ["read", "write", "bash"] {
-        assert!(
-            names.contains(&ceiling_tool.to_string()),
-            "no baseline ⇒ the full ceiling is exposed pre-activation: {names:?}"
-        );
-    }
+    let names = exposed_names(absent.start(RuntimeTask::new("do the task")));
+    assert!(!names.contains(&"read".to_string()));
+    assert!(!names.contains(&"write".to_string()));
+    assert!(
+        names.contains(&"bash".to_string()),
+        "stable-core remains exposed: {names:?}"
+    );
     assert!(
         !names.contains(&"search".to_string()),
         "the ceiling still applies: {names:?}"
@@ -1269,6 +1284,7 @@ fn unexposed_tool_call_is_denied_while_exposed_sibling_executes() {
         allowed_kinds: Vec::new(),
         allowed_ids: vec![compact_str::CompactString::new("read")],
     };
+    spec.exposure_baseline = Some(vec![compact_str::CompactString::new("read")]);
     sm.run_spec = Some(spec);
     sm.start(RuntimeTask::new("do the task"));
 
@@ -1313,6 +1329,14 @@ fn dispatch_denial_survives_a_sibling_approval_suspend() {
     use crate::governance::pipeline::GovernancePipeline;
     let mut sm = sm();
     sm.tools = vec![make_tool_schema("sensitive.read")];
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    let mut spec = AgentRunSpec::new(
+        AgentIdentity::new("root", "test-session"),
+        AgentRole::Custom,
+        "do the task",
+    );
+    spec.exposure_baseline = Some(vec![compact_str::CompactString::new("sensitive.read")]);
+    sm.run_spec = Some(spec);
     let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
     pipeline.permission.add_rule(PermissionRule {
         tool_pattern: "sensitive.*".into(),
@@ -1431,6 +1455,14 @@ fn governance_denial_is_not_resurrected_by_the_memory_continuation() {
     use crate::governance::pipeline::GovernancePipeline;
     let mut sm = sm();
     sm.tools = vec![make_tool_schema("write_file")];
+    use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
+    let mut spec = AgentRunSpec::new(
+        AgentIdentity::new("root", "test-session"),
+        AgentRole::Custom,
+        "do the task",
+    );
+    spec.exposure_baseline = Some(vec![compact_str::CompactString::new("write_file")]);
+    sm.run_spec = Some(spec);
     sm.ctx.set_memory_enabled(true);
     let mut pipeline = GovernancePipeline::new(PermissionAction::Allow);
     pipeline.permission.add_rule(PermissionRule {
@@ -1475,8 +1507,7 @@ fn governance_denial_is_not_resurrected_by_the_memory_continuation() {
 /// wake-path behavior the resume tests pin.
 #[test]
 fn memory_continuation_still_resumes_genuinely_pending_calls() {
-    let mut sm = sm();
-    sm.tools = vec![make_tool_schema("read")];
+    let mut sm = sm_with_tools(&["read"]);
     sm.ctx.set_memory_enabled(true);
     sm.start(RuntimeTask::new("do the task"));
 
@@ -1529,30 +1560,10 @@ fn dispatch_gate_passes_pace_and_meta_tools_that_were_not_exposed() {
     }
 }
 
-/// The `"registered"` escape hatch restores the pre-gate permissive dispatch.
+/// Missing advertisement state is fail-closed. Canonical restore preserves the last advertised
+/// set, so no permissive resume exception is needed.
 #[test]
-fn registered_dispatch_gate_restores_permissive_execution() {
-    let mut sm = sm();
-    sm.tools = vec![make_tool_schema("read")];
-    sm.set_dispatch_gate_exposed(false);
-    sm.start(RuntimeTask::new("do the task"));
-
-    let action = sm.feed(LoopEvent::LLMResponse {
-        message: assistant_calling(vec![call("c1", "never_exposed")]),
-    });
-    match action {
-        LoopAction::ExecuteTools { calls } => {
-            assert_eq!(calls[0].name.as_str(), "never_exposed");
-        }
-        other => panic!("expected ExecuteTools, got {other:?}"),
-    }
-}
-
-/// Resume safety: the gate arms only once THIS process has advertised a toolset. A kernel that has
-/// not emitted a `CallLLM` yet (rebuilt/resumed session replaying a pending call) passes everything
-/// through — denying there would break resume.
-#[test]
-fn dispatch_gate_unarmed_before_the_first_call_llm() {
+fn dispatch_gate_denies_task_tools_before_the_first_call_llm() {
     let mut sm = sm();
     sm.tools = vec![make_tool_schema("read")];
     assert!(
@@ -1563,10 +1574,12 @@ fn dispatch_gate_unarmed_before_the_first_call_llm() {
     let action = sm.feed(LoopEvent::LLMResponse {
         message: assistant_calling(vec![call("c1", "anything")]),
     });
-    match action {
-        LoopAction::ExecuteTools { calls } => assert_eq!(calls[0].name.as_str(), "anything"),
-        other => panic!("expected ExecuteTools, got {other:?}"),
-    }
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    assert!(sm.ctx.partitions.history.messages.iter().any(|message| {
+        matches!(&message.content, Content::Parts(parts) if parts.iter().any(|part| {
+            matches!(part, ContentPart::ToolResult { call_id, is_error: true, .. } if call_id == "c1")
+        }))
+    }));
 }
 
 /// A model that keeps re-issuing the same phantom tool burns the RepeatFuse exactly like a host
@@ -1718,15 +1731,15 @@ fn knowledge_upsert_applies_at_renewal_boundary() {
     });
     sm.start(RuntimeTask::new("test"));
     sm.ctx
-        .push_knowledge_entry(Some("ref".into()), Message::system("V1"), 5, false);
+        .push_knowledge_entry(Some("ref".into()), Message::system("original"), 5, false);
     sm.ctx
-        .push_knowledge_entry(Some("ref".into()), Message::system("V2"), 5, false);
-    assert!(sm.ctx.render().system_knowledge.contains("V1"));
+        .push_knowledge_entry(Some("ref".into()), Message::system("updated"), 5, false);
+    assert!(sm.ctx.render().system_knowledge.contains("original"));
 
     sm.ctx.renew();
     let rendered = sm.ctx.render().system_knowledge;
-    assert!(rendered.contains("V2"), "upsert applied at renewal");
-    assert!(!rendered.contains("V1"));
+    assert!(rendered.contains("updated"), "upsert applied at renewal");
+    assert!(!rendered.contains("original"));
     assert_eq!(
         sm.ctx.partitions.knowledge.len(),
         1,
@@ -2560,10 +2573,11 @@ fn spawn_sub_agent_suspends_until_completed() {
     let action = sm.spawn_sub_agent(spec);
     assert!(matches!(action, LoopAction::AwaitingResume));
     assert!(sm.is_suspended());
-    assert!(matches!(
-        sm.wait_reason(),
-        Some(WaitReason::SubAgentJoin(_))
-    ));
+    assert!(sm.wait_set().is_some_and(|wait| {
+        wait.conditions
+            .iter()
+            .any(|condition| matches!(condition, WaitCondition::Child(_)))
+    }));
 
     let result = SubAgentResult {
         agent_id: compact_str::CompactString::new("child"),
@@ -2614,7 +2628,7 @@ fn budget_exceeded_observation_on_max_turns() {
 
 // ---- M1a: lifecycle-transition regression baseline ----------------------
 //
-// Pins the canonical `LoopPhase::lifecycle()` / `wait_reason()` projection
+// Pins the canonical lifecycle and durable wait-set projection
 // across real driven transitions. This is the bridge contract that M1d must
 // preserve when `LoopPhase` is split and schedulability moves onto the TCB.
 // If any of these break, the phase→TaskLifecycle mapping has drifted.
@@ -2625,7 +2639,7 @@ fn lifecycle_idle_before_start_is_ready() {
     // M1d: schedulability lives on the root task; before start it is `Ready` and the
     // turn-step `phase` is an inert placeholder.
     assert_eq!(sm.lifecycle(), TaskLifecycle::Ready);
-    assert_eq!(sm.wait_reason(), None);
+    assert_eq!(sm.wait_set(), None);
 }
 
 #[test]
@@ -2634,7 +2648,7 @@ fn lifecycle_running_after_start() {
     sm.start(RuntimeTask::new("hi"));
     assert!(matches!(sm.phase, LoopPhase::Reason));
     assert_eq!(sm.lifecycle(), TaskLifecycle::Running);
-    assert_eq!(sm.wait_reason(), None);
+    assert_eq!(sm.wait_set(), None);
 }
 
 #[test]
@@ -2650,7 +2664,11 @@ fn lifecycle_suspended_on_ask_user_with_approval_wait() {
     sm.feed(LoopEvent::LLMResponse { message: msg });
     assert!(sm.is_suspended());
     assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
-    assert_eq!(sm.wait_reason(), Some(WaitReason::Approval));
+    assert!(sm.wait_set().is_some_and(|wait| {
+        wait.conditions
+            .iter()
+            .any(|condition| matches!(condition, WaitCondition::Approval(_)))
+    }));
 }
 
 #[test]
@@ -2667,10 +2685,11 @@ fn lifecycle_suspended_on_sub_agent_with_join_wait() {
     sm.spawn_sub_agent(spec);
     assert!(sm.is_suspended());
     assert_eq!(sm.lifecycle(), TaskLifecycle::Suspended);
-    assert!(matches!(
-        sm.wait_reason(),
-        Some(WaitReason::SubAgentJoin(_))
-    ));
+    assert!(sm.wait_set().is_some_and(|wait| {
+        wait.conditions
+            .iter()
+            .any(|condition| matches!(condition, WaitCondition::Child(_)))
+    }));
 }
 
 #[test]
@@ -2683,7 +2702,7 @@ fn lifecycle_terminal_is_done_with_no_wait() {
     assert!(matches!(done, LoopAction::Done { .. }));
     assert!(sm.is_terminal());
     assert!(sm.lifecycle().is_terminal());
-    assert_eq!(sm.wait_reason(), None);
+    assert_eq!(sm.wait_set(), None);
 }
 
 #[test]
@@ -2702,7 +2721,7 @@ fn lifecycle_running_again_after_resume_from_suspend() {
     sm.resolve_approval(vec!["call_a".to_string()], vec![]);
     // After resume the loop is driving a turn again — back to a runnable lifecycle.
     assert_eq!(sm.lifecycle(), TaskLifecycle::Running);
-    assert_eq!(sm.wait_reason(), None);
+    assert_eq!(sm.wait_set(), None);
 }
 
 // ---- Phase 0: budget-axis termination baseline -------------------------
@@ -3126,7 +3145,7 @@ fn wf_completed(agent_id: &str) -> crate::types::result::SubAgentResult {
     }
 }
 
-/// A workflow completion that signals the loop should stop early (v2 "until done").
+/// A workflow completion that signals the loop should stop early ("until done").
 fn wf_completed_stop(agent_id: &str) -> crate::types::result::SubAgentResult {
     let mut r = wf_completed(agent_id);
     r.result.loop_continue = Some(false);
@@ -4729,7 +4748,7 @@ fn loop_node_reruns_then_unblocks_dependent_via_drive_workflow() {
 
 #[test]
 fn loop_node_stops_early_on_loop_continue_false() {
-    // A#2 v2 "until done": a Loop{5} node normally runs 5 iterations, but an iteration that
+    // loop-control "until done": a Loop{5} node normally runs 5 iterations, but an iteration that
     // reports loop_continue=Some(false) ends the loop early and promotes the dependent.
     use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
     use crate::types::agent::AgentRole;
@@ -6075,13 +6094,16 @@ fn spc_003_04_set_lifecycle_syncs_wait_index_through_the_real_governance_path() 
     use crate::scheduler::wait_index::WaitKey;
 
     let mut sm = sm();
-    sm.set_lifecycle(TaskLifecycle::Suspended, Some(WaitReason::Approval));
+    let approval = ApprovalId("pending".into());
+    sm.set_lifecycle(
+        TaskLifecycle::Suspended,
+        Some(WaitSet {
+            mode: WaitMode::Any,
+            conditions: vec![WaitCondition::Approval(approval.clone())],
+        }),
+    );
 
-    let (condition, _mode) = <(WaitCondition, WaitMode)>::from(WaitReason::Approval);
-    let key = match condition {
-        WaitCondition::Approval(id) => WaitKey::Approval(id),
-        _ => unreachable!(),
-    };
+    let key = WaitKey::Approval(approval);
     assert_eq!(sm.tasks.wait_index().lookup(&key), &[TaskId::from("root")]);
 
     sm.set_lifecycle(TaskLifecycle::Running, None);

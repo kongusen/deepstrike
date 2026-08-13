@@ -675,7 +675,7 @@ mod tests {
             "urgency": "normal",
             "summary": "signal",
             "payload": null,
-            "topic": "legacy-field",
+            "topic": "removed-field",
             "timestamp_ms": 1
         });
 

@@ -27,7 +27,7 @@ interface SkillMetadata {
   allowedTools?: string[]
 }
 
-export const CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts:v1]]"
+export const CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts]]"
 
 /**
  * Browser/worker-safe transport for typed content. `btoa` and `atob` operate on
@@ -180,7 +180,6 @@ export interface KernelObservation {
   node_index?: number
   // entropy_sample / entropy_alert: kernel session-entropy measurement + opt-in watch trip.
   score?: number
-  score_version?: number
   rho?: number
   repeat_pressure?: number
   failure_rate?: number

@@ -17,7 +17,7 @@ def normalize_llm_completed(event: dict[str, Any], max_bytes: int | None = None)
   Content is sanitized and token_count backfilled, but the stored
   ``provider_replay`` envelope is passed through verbatim. This layer is
   provider-neutral and never synthesizes protocol-specific replay shapes
-  (e.g. Anthropic ``native_blocks``); legacy reconstruction for a given
+  (e.g. Anthropic ``native_blocks``); canonical replay seeding for a given
   protocol is the target provider's ``seed_provider_replay`` responsibility.
   """
   content = sanitize_replay_text(event.get("content", ""), max_bytes)

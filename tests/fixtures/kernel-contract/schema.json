@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://deepstrike.dev/schemas/kernel-contract-fixture.json",
   "title": "Canonical Kernel ABI version-neutral semantic fixture",
-  "description": "Phase 0 Task 2 冻结的语义 fixture。一文件一场景，文件名 <domain>_<slug>.json（slug = id 的下划线形式）。given/when/then/title/semantics 只允许版本中立的语义词汇；v1/v2 wire 名、file:line 与测试名只能出现在 evidence.sources 内。",
+  "description": "Phase 0 Task 2 冻结的语义 fixture。一文件一场景，文件名 <domain>_<slug>.json（slug = id 的下划线形式）。given/when/then/title/semantics 只允许版本中立的语义词汇；已删除字段名、file:line 与测试名只能出现在 evidence.sources 内。",
   "type": "object",
   "additionalProperties": false,
   "required": [

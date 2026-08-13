@@ -51,8 +51,7 @@
       "plan_tool_enabled": true,
       "stable_core_tool_ids": [
         "search"
-      ],
-      "tool_dispatch_gate": "exposed"
+      ]
     },
     "governance_policy": {
       "constraints": [
@@ -211,7 +210,6 @@
   },
   "note": "frozen §7.3 ResolvedOperationConfig: the genesis record's defaults-free normal form",
   "resolved": {
-    "abi_version": 3,
     "budget_grant": {
       "reservation_id": "res-1",
       "rounds": 3,
@@ -263,8 +261,7 @@
       "plan_tool_enabled": true,
       "stable_core_tool_ids": [
         "search"
-      ],
-      "tool_dispatch_gate": "exposed"
+      ]
     },
     "governance_policy": {
       "constraints": [

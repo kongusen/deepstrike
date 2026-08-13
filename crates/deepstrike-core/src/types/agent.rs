@@ -203,9 +203,8 @@ pub struct AgentRunSpec {
     /// the narrow→wide progressive-disclosure shape becomes expressible (a tool can be reachable
     /// after `skill(x)` without being advertised beforehand).
     ///
-    /// `None` (default) ⇒ exactly the pre-baseline behavior (ceiling filter + errs-open skill
-    /// narrowing). `Some([])` is legitimate and distinct: the minimal surface (meta-tools +
-    /// stable-core only). See the exposure formula in `emit_call_llm`. Additive ABI.
+    /// Missing and empty baselines both select the minimal surface (kernel meta-tools plus stable
+    /// core tools). See the exposure formula in `emit_call_llm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure_baseline: Option<Vec<CompactString>>,
     /// spc_004 debt closure — see [`IsolationManifest::requested_capabilities`].

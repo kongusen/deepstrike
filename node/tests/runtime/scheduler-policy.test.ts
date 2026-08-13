@@ -4,7 +4,6 @@ import { startWorkflowTool, submitWorkflowNodesTool, workflowNodeSpecToKernel } 
 describe("scheduler policy ABI", () => {
   it("lowers every deterministic ordering weight", () => {
     expect(schedulerPolicyToKernel({
-      version: 1,
       criticalPathWeight: 1_000_000,
       fanoutWeight: 10_000,
       ageWeight: 1_000,
@@ -14,7 +13,6 @@ describe("scheduler policy ABI", () => {
       resourcePressureWeight: 5,
       budgetPressureWeight: 4,
     })).toEqual({
-      version: 1,
       critical_path_weight: 1_000_000,
       fanout_weight: 10_000,
       age_weight: 1_000,
@@ -28,7 +26,6 @@ describe("scheduler policy ABI", () => {
 
   it("rejects the retired wall-budget field", () => {
     expect(() => schedulerPolicyToKernel({
-      version: 1,
       criticalPathWeight: 1,
       fanoutWeight: 1,
       ageWeight: 1,
@@ -41,15 +38,13 @@ describe("scheduler policy ABI", () => {
     } as any)).toThrow(/unknown scheduler policy field.*maxWallMs/)
   })
 
-  it("keeps the new weights absent when a legacy policy does not opt in", () => {
+  it("keeps optional weights absent when a policy does not opt in", () => {
     expect(schedulerPolicyToKernel({
-      version: 1,
       criticalPathWeight: 1,
       fanoutWeight: 1,
       ageWeight: 1,
       tokenCostWeight: 1,
     })).toEqual({
-      version: 1,
       critical_path_weight: 1,
       fanout_weight: 1,
       age_weight: 1,

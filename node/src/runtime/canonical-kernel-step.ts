@@ -425,7 +425,6 @@ export class CanonicalKernelHost {
     options: CanonicalTransitionOptions = {},
   ): Promise<CanonicalTransition> {
     const inputJson = JSON.stringify({
-      abi_version: getKernel().kernelAbiVersion(),
       operation_id: this.operationId,
       input_id: options.inputId ?? `node-input-${randomUUID()}`,
       observed_at_ms: options.observedAtMs ?? String(Date.now()),
@@ -831,8 +830,7 @@ function providerStopReason(value: unknown): string | undefined {
 
 /**
  * Canonical operation runtime used by the Node host.
- * Every durable transition below is one of the canonical ABI's five input classes; no legacy
- * envelope or synthesized host transaction reaches core or storage.
+ * Every durable transition below is one of the canonical contract's five input classes.
  */
 export class CanonicalRunnerRuntime {
   private readonly host: CanonicalKernelHost
@@ -1040,7 +1038,6 @@ export class CanonicalRunnerRuntime {
         const message = String(event.message ?? "")
         const hasStructuredKind = typeof event.error_kind === "string"
         const contextOverflow = event.error_kind === "context_overflow"
-          || (!hasStructuredKind && /context|token.*limit|too long/i.test(message))
         input = contextOverflow
           ? {
               kind: "resolve_effect",
@@ -1638,9 +1635,6 @@ export class CanonicalRunnerRuntime {
       }
       delete asObject(execution.entropy_watch).threshold
       delete asObject(execution.entropy_watch).hysteresis
-    }
-    if (config.tool_dispatch_gate !== undefined) {
-      this.featurePolicy().tool_dispatch_gate = config.tool_dispatch_gate
     }
     if (config.knowledge_budget_ratio !== undefined) {
       const context = asObject(this.config.context_policy)

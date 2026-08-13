@@ -117,7 +117,7 @@ def _class_name(error: Any) -> str | None:
 
 
 def _classify_kind(error: Any, status: int | None, code: str | None) -> ProviderErrorKind:
-    if code and code.lower() in CONTEXT_OVERFLOW_CODES:
+    if status == 413 or (code and code.lower() in CONTEXT_OVERFLOW_CODES):
         return "context_overflow"
 
     name = _class_name(error)

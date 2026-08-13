@@ -156,18 +156,13 @@ export class AnthropicProvider implements LLMProvider {
 
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
     const blocks = this.nativeAssistantBlocks.get(assistantReplayKey(message))
-    return blocks?.length ? { native_blocks: blocks } : undefined
+    return blocks?.length ? { protocol: "anthropic-messages", native_blocks: blocks } : undefined
   }
 
   seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
-    if (replay.native_blocks?.length) {
+    if (replay.protocol === "anthropic-messages" && replay.native_blocks?.length) {
       this.nativeAssistantBlocks.set(assistantReplayKey(message), replay.native_blocks)
-      return
     }
-    // Legacy log without persisted native blocks: reconstruct neutral
-    // text + tool_use blocks so a tool-use turn can be replayed.
-    const blocks = reconstructAnthropicBlocks(message)
-    if (blocks.length) this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
 
   async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
@@ -229,7 +224,9 @@ export class AnthropicProvider implements LLMProvider {
       body: JSON.stringify(body),
       ...(signal ? { signal } : {}), // #2-B-ii: a preempt aborts the in-flight request at the socket.
     })
-    if (!resp.ok) throw new Error(`Anthropic ${resp.status}: ${await resp.text()}`)
+    if (!resp.ok) {
+      throw Object.assign(new Error(`Anthropic ${resp.status}: ${await resp.text()}`), { status: resp.status })
+    }
 
     const toolBlocks: Record<number, { id: string; name: string; argsBuf: string }> = {}
     const nativeBlocks: Record<number, Record<string, unknown>> = {}
@@ -333,23 +330,4 @@ export class AnthropicProvider implements LLMProvider {
     if (!message.toolCalls?.length && !blocks.some(b => b.type === "thinking")) return
     this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
-}
-
-/**
- * Reconstruct Anthropic assistant content blocks from a neutral transcript when
- * no provider replay was persisted. Only meaningful for tool-use turns.
- */
-function reconstructAnthropicBlocks(
-  message: Pick<Message, "content" | "toolCalls">,
-): Array<Record<string, unknown>> {
-  const toolCalls = message.toolCalls ?? []
-  if (!toolCalls.length) return []
-  const blocks: Array<Record<string, unknown>> = []
-  if (message.content) blocks.push({ type: "text", text: message.content })
-  for (const tc of toolCalls) {
-    let input: Record<string, unknown> = {}
-    try { input = JSON.parse(tc.arguments || "{}") as Record<string, unknown> } catch { input = {} }
-    blocks.push({ type: "tool_use", id: tc.id, name: tc.name, input })
-  }
-  return blocks
 }

@@ -52,8 +52,7 @@ impl LoopStateMachine {
     /// `may_issue_request` is the caller's statement about whether a **new** provider request may
     /// be published this step. A canonical operation holds at most one pending request per kind
     /// (DEC-3), so a critical signal that arrives while one is in flight cannot re-ask now; it is
-    /// admitted to the attention partition and read at the next turn boundary instead. The legacy
-    /// runtime, which lets the host abandon an in-flight request, passes `true`.
+    /// admitted to the attention partition and read at the next turn boundary instead.
     pub fn signal_event(
         &mut self,
         operation_id: String,

@@ -1,6 +1,5 @@
 import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { OpenAIChatProvider } from "../src/providers/openai.js"
-import { QwenProvider } from "../src/providers/qwen.js"
 import { GeminiProvider } from "../src/providers/gemini.js"
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses.js"
 import type { RenderedContext } from "../src/types.js"
@@ -15,7 +14,7 @@ const mockContext: RenderedContext = {
 describe("Token Count Optimization", () => {
   describe("AnthropicProvider", () => {
     it("reports assistant message tokenCount using only output tokens in complete()", async () => {
-      const provider = new AnthropicProvider("test-key")
+      const provider = new AnthropicProvider({ apiKey: "test-key" })
       ;(provider as any).client = {
         messages: {
           create: async () => ({
@@ -29,7 +28,7 @@ describe("Token Count Optimization", () => {
     })
 
     it("yields detailed usage events in stream()", async () => {
-      const provider = new AnthropicProvider("test-key")
+      const provider = new AnthropicProvider({ apiKey: "test-key" })
       ;(provider as any).client = {
         messages: {
           stream: () => ({
@@ -58,7 +57,7 @@ describe("Token Count Optimization", () => {
     })
 
     it("reports full prompt size (input + cache) and surfaces the cache breakdown", async () => {
-      const provider = new AnthropicProvider("test-key")
+      const provider = new AnthropicProvider({ apiKey: "test-key" })
       ;(provider as any).client = {
         messages: {
           stream: () => ({
@@ -102,7 +101,7 @@ describe("Token Count Optimization", () => {
 
   describe("OpenAIProvider", () => {
     it("reports assistant message tokenCount using completion_tokens in complete()", async () => {
-      const provider = new OpenAIChatProvider("test-key")
+      const provider = new OpenAIChatProvider({ apiKey: "test-key" })
       ;(provider as any).client = {
         chat: {
           completions: {
@@ -118,7 +117,7 @@ describe("Token Count Optimization", () => {
     })
 
     it("yields detailed usage events in stream()", async () => {
-      const provider = new OpenAIChatProvider("test-key")
+      const provider = new OpenAIChatProvider({ apiKey: "test-key" })
       ;(provider as any).client = {
         chat: {
           completions: {
@@ -142,52 +141,6 @@ describe("Token Count Optimization", () => {
         inputTokens: 50,
         outputTokens: 15,
         providerUsage: { inputTokens: 50, outputTokens: 15 },
-      })
-    })
-  })
-
-  describe("QwenProvider", () => {
-    it("reports assistant message tokenCount using completion_tokens in complete()", async () => {
-      const provider = new QwenProvider("test-key")
-      ;(provider as any).client = {
-        chat: {
-          completions: {
-            create: async () => ({
-              choices: [{ message: { content: "hello" } }],
-              usage: { prompt_tokens: 60, completion_tokens: 18, total_tokens: 78 },
-            }),
-          },
-        },
-      }
-      const message = await provider.complete(mockContext, [])
-      expect(message.tokenCount).toBe(18)
-    })
-
-    it("yields detailed usage events in stream()", async () => {
-      const provider = new QwenProvider("test-key")
-      ;(provider as any).client = {
-        chat: {
-          completions: {
-            create: async () => ({
-              async *[Symbol.asyncIterator]() {
-                yield {
-                  usage: { prompt_tokens: 60, completion_tokens: 18, total_tokens: 78 },
-                }
-              },
-            }),
-          },
-        },
-      }
-      const events = []
-      for await (const event of provider.stream(mockContext, [])) {
-        events.push(event)
-      }
-      expect(events).toContainEqual({
-        type: "usage",
-        totalTokens: 78,
-        inputTokens: 60,
-        outputTokens: 18,
-        providerUsage: { inputTokens: 60, outputTokens: 18 },
       })
     })
   })

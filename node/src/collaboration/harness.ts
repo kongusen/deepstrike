@@ -24,7 +24,7 @@ export class CreatorVerifierBody implements AttemptBody {
 
   async *run(context: AttemptBodyContext): AsyncIterable<AttemptBodyEvent> {
     const contractBlock = formatContractForSystemPrompt(this.contract)
-    const result = await this.pool.execute("executor", {
+    const result = await this.pool.execute("implement", {
       sessionId: context.sessionId,
       goal: `${contractBlock}\n\n---\n\n${context.goal}`,
       ...(context.contextInput ? { contextInput: context.contextInput } : {}),

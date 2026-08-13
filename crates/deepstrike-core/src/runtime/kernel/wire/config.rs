@@ -25,6 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::KernelBootstrapLimits;
 use super::command::{
     GovernancePolicy, PolicyAction, RecoveryPolicy, SignalPolicy, TailBoundsPolicy,
 };
@@ -32,7 +33,6 @@ use super::effect::{EffectKindTag, MemoryAccessBinding, ToolSchema};
 use super::envelope::{WireRejection, WireRejectionKind};
 use super::fault::{KernelFault, KernelFaultCode};
 use super::scalar::{Ppm, WireU64};
-use super::{KERNEL_ABI_VERSION, KernelBootstrapLimits};
 
 // ---------------------------------------------------------------------------------------------
 // rejection helpers
@@ -208,9 +208,7 @@ pub struct EntropyWatchPolicy {
 // scheduler policy
 // ---------------------------------------------------------------------------------------------
 
-/// Ready-queue ordering weights. No `version` field: §16.1 leaves exactly two revision markers on
-/// the wire (`abi_version`, `checkpoint_version`), and a per-policy version is the third one
-/// DEC-6 removed.
+/// Ready-queue ordering weights. This is a strict value object with no format discriminator.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchedulerPolicy {
@@ -232,7 +230,7 @@ pub struct SchedulerPolicy {
     pub budget_pressure_weight: Option<u32>,
 }
 
-/// Upper bound of any scheduler weight, matching the legacy validator.
+/// Upper bound of any scheduler weight.
 pub const MAX_SCHEDULER_WEIGHT: u32 = 1_000_000_000;
 
 // ---------------------------------------------------------------------------------------------
@@ -251,8 +249,8 @@ pub struct ResourceQuota {
     pub max_spawn_depth: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_workflow_nodes: Option<u32>,
-    /// Rolling-window memory-write rate limit. A named struct, not the legacy `(u32, u64)` tuple:
-    /// a positional pair has no field names to reject unknowns against.
+    /// Rolling-window memory-write rate limit. Named fields keep the contract self-describing and
+    /// allow strict unknown-field rejection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_writes_per_window: Option<RateWindow>,
 }
@@ -346,11 +344,8 @@ impl PromptBudget {
 
 /// Where the kernel draws the inline/external line for a tool result (§7.10).
 ///
-/// The two knobs are the ones §13.3 keeps from the legacy `spool_threshold_bytes` /
-/// `spool_preview_bytes` pair. They are renamed to §7.10's vocabulary: `SpoolLargeResult` is
-/// deleted, so a canonical field called `spool_*` would be a legacy alias, and Checkpoint B
-/// forbids those. There is deliberately **no** directory/root field — a `PayloadRef` is an opaque
-/// locator, never a path (§7.10 rule 7).
+/// There is deliberately **no** directory/root field: a `PayloadRef` is an opaque locator, never
+/// a host path (§7.10 rule 7).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PayloadPolicy {
@@ -496,9 +491,7 @@ pub struct MilestonePhase {
 // feature policy
 // ---------------------------------------------------------------------------------------------
 
-/// The feature switches §13.3 folds together: `SetMemoryEnabled`, `SetKnowledgeEnabled`,
-/// `SetPlanToolEnabled`, `SetStableCoreTools` and the tool dispatch gate (§13.1's one genuinely
-/// boot-only item in this group).
+/// The feature switches §13.3 folds together.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FeaturePolicy {
@@ -508,21 +501,9 @@ pub struct FeaturePolicy {
     pub knowledge_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_tool_enabled: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_dispatch_gate: Option<ToolDispatchGate>,
     /// Tool ids always exposed under skill gating — the exposure baseline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stable_core_tool_ids: Option<Vec<String>>,
-}
-
-/// Fail-closed dispatch (§13.1). `Exposed` executes only tools this operation actually advertised
-/// to the model; `Registered` is the permissive escape hatch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolDispatchGate {
-    #[default]
-    Exposed,
-    Registered,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -568,9 +549,6 @@ impl HostEffectSupport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedOperationConfig {
-    /// The revision this configuration was resolved under. A resolved config is a durable record,
-    /// so it states which contract produced it rather than relying on the reader's constant.
-    pub abi_version: u32,
     pub execution_policy: ResolvedExecutionPolicy,
     pub governance_policy: ResolvedGovernancePolicy,
     pub scheduler_policy: ResolvedSchedulerPolicy,
@@ -815,7 +793,6 @@ pub struct ResolvedFeaturePolicy {
     pub memory_enabled: bool,
     pub knowledge_enabled: bool,
     pub plan_tool_enabled: bool,
-    pub tool_dispatch_gate: ToolDispatchGate,
     pub stable_core_tool_ids: Vec<String>,
 }
 
@@ -840,7 +817,6 @@ impl ConfigDefaults {
         Self {
             bootstrap_limits,
             baseline: ResolvedOperationConfig {
-                abi_version: KERNEL_ABI_VERSION,
                 execution_policy: ResolvedExecutionPolicy {
                     max_context_tokens: 128_000,
                     max_turns: 25,
@@ -942,7 +918,6 @@ impl ConfigDefaults {
                     memory_enabled: false,
                     knowledge_enabled: false,
                     plan_tool_enabled: false,
-                    tool_dispatch_gate: ToolDispatchGate::Exposed,
                     stable_core_tool_ids: Vec::new(),
                 },
                 host_effect_support: HostEffectSupport::default(),
@@ -1044,7 +1019,6 @@ pub fn resolve_operation_config(
     }
 
     Ok(ResolvedOperationConfig {
-        abi_version: KERNEL_ABI_VERSION,
         execution_policy,
         governance_policy,
         scheduler_policy,
@@ -1788,7 +1762,7 @@ fn apply_tail_bounds(policy: &TailBoundsPolicy, base: TailBounds) -> TailBounds 
     }
 }
 
-/// Ceiling shared by both semantic recovery ladders, matching the legacy validator.
+/// Ceiling shared by both semantic recovery ladders.
 pub const MAX_RECOVERY_ATTEMPTS: u8 = 16;
 
 pub(super) fn validate_recovery(policy: &ResolvedRecoveryPolicy) -> Result<(), WireRejection> {
@@ -1899,9 +1873,6 @@ fn resolve_features(
         }
         if let Some(value) = policy.plan_tool_enabled {
             resolved.plan_tool_enabled = value;
-        }
-        if let Some(value) = policy.tool_dispatch_gate {
-            resolved.tool_dispatch_gate = value;
         }
         if let Some(ids) = &policy.stable_core_tool_ids {
             resolved.stable_core_tool_ids = ids.clone();
@@ -2237,7 +2208,7 @@ mod tests {
                 },
             ],
             verification_contracts: vec![VerificationContract {
-                contract_id: "brief-quality-v1".to_string(),
+                contract_id: "brief-quality-primary".to_string(),
                 phases: vec![
                     MilestonePhase {
                         phase_id: "collect".to_string(),
@@ -2262,7 +2233,6 @@ mod tests {
                 memory_enabled: Some(true),
                 knowledge_enabled: Some(true),
                 plan_tool_enabled: Some(true),
-                tool_dispatch_gate: Some(ToolDispatchGate::Exposed),
                 stable_core_tool_ids: Some(vec!["search".to_string()]),
             }),
             // an all-fields config switches on every capability, so it must declare every
@@ -2318,8 +2288,7 @@ mod tests {
 
     #[test]
     fn no_sub_policy_carries_its_own_version_marker() {
-        // §16.1 / DEC-6: exactly two revision markers exist on the wire, and neither of them is a
-        // per-policy `version`. `abi_version` on the *resolved* record is the ABI marker itself.
+        // The canonical configuration has no version axis.
         let mut keys = BTreeSet::new();
         all_keys(
             &serde_json::to_value(fully_populated_config()).unwrap(),
@@ -2393,7 +2362,6 @@ mod tests {
             "feature_policy",
             "host_effect_support",
             "budget_grant",
-            "tool_dispatch_gate",
             "stable_core_tool_ids",
             "knowledge_budget_ppm",
             "prompt_budget",
@@ -2472,7 +2440,7 @@ mod tests {
         );
         assert!(
             serde_json::from_value::<ExecutionPolicy>(json!({ "max_tokens": 1 })).is_err(),
-            "the renamed context-window axis must not silently accept its legacy name"
+            "the context-window axis must reject its removed field name"
         );
         assert!(serde_json::from_value::<KernelLimits>(json!({ "max_bytes": 1 })).is_err());
         assert!(
@@ -2560,11 +2528,7 @@ mod tests {
         );
         assert_eq!(value["payload_policy"]["preview_bytes"], json!(2_048));
         assert_eq!(value["memory_policy"]["retrieval_top_k"], json!(5));
-        assert_eq!(
-            value["feature_policy"]["tool_dispatch_gate"],
-            json!("exposed")
-        );
-        assert_eq!(value["abi_version"], json!(KERNEL_ABI_VERSION));
+        assert!(value.get("abi_version").is_none());
 
         // The resolved record round-trips, because that is what the genesis record stores.
         let text = serde_json::to_string(&resolved).unwrap();
@@ -3022,12 +2986,12 @@ mod tests {
         // The two facts core owns — the cascade order and what a pass mounts. Criteria, evidence,
         // verifier and the I/O that runs them stay host-side (§5.2).
         let config = contract_host_config(vec![VerificationContract {
-            contract_id: "brief-quality-v1".to_string(),
+            contract_id: "brief-quality-primary".to_string(),
             phases: vec![phase("collect", &["research"]), phase("write", &["search"])],
         }]);
         let resolved = config.resolve(&defaults()).expect("a legal skeleton");
         let contract = resolved
-            .verification_contract("brief-quality-v1")
+            .verification_contract("brief-quality-primary")
             .expect("resolution keeps the catalog addressable by id");
         assert_eq!(
             contract
@@ -3056,11 +3020,11 @@ mod tests {
         // list order, i.e. silently.
         let config = contract_host_config(vec![
             VerificationContract {
-                contract_id: "brief-quality-v1".to_string(),
+                contract_id: "brief-quality-primary".to_string(),
                 phases: vec![phase("collect", &[])],
             },
             VerificationContract {
-                contract_id: "brief-quality-v1".to_string(),
+                contract_id: "brief-quality-primary".to_string(),
                 phases: vec![phase("write", &[])],
             },
         ]);
@@ -3068,7 +3032,8 @@ mod tests {
         let rejection = config.resolve(&defaults()).expect_err("must reject");
         assert_eq!(rejection.kind, WireRejectionKind::PolicyViolation);
         assert!(
-            rejection.message.contains("brief-quality-v1") && rejection.message.contains("twice"),
+            rejection.message.contains("brief-quality-primary")
+                && rejection.message.contains("twice"),
             "{}",
             rejection.message
         );
@@ -3080,7 +3045,7 @@ mod tests {
         // A verdict names its phase by id. Two phases sharing one means a verdict for the second
         // could advance the first.
         let config = contract_host_config(vec![VerificationContract {
-            contract_id: "brief-quality-v1".to_string(),
+            contract_id: "brief-quality-primary".to_string(),
             phases: vec![phase("collect", &[]), phase("collect", &["search"])],
         }]);
         let rejection = config.resolve(&defaults()).expect_err("must reject");
@@ -3098,7 +3063,7 @@ mod tests {
         // anything else is a mount with nothing behind it — the same fail-closure
         // `stable_core_tool_ids` already gets, and for the same reason.
         let config = contract_host_config(vec![VerificationContract {
-            contract_id: "brief-quality-v1".to_string(),
+            contract_id: "brief-quality-primary".to_string(),
             phases: vec![phase("collect", &["deploy_to_prod"])],
         }]);
         let rejection = config.resolve(&defaults()).expect_err("must reject");
@@ -3125,7 +3090,7 @@ mod tests {
         // It can never publish an `EvaluateMilestone`, so a spec pointing at it would be a gate
         // that silently is not there.
         let config = contract_host_config(vec![VerificationContract {
-            contract_id: "brief-quality-v1".to_string(),
+            contract_id: "brief-quality-primary".to_string(),
             phases: Vec::new(),
         }]);
         let rejection = config.resolve(&defaults()).expect_err("must reject");
@@ -3160,7 +3125,7 @@ mod tests {
         // DEC-8's configure-time twin: declaring a contract is an affirmative statement that the
         // operation will ask for a verdict.
         let mut config = contract_host_config(vec![VerificationContract {
-            contract_id: "brief-quality-v1".to_string(),
+            contract_id: "brief-quality-primary".to_string(),
             phases: vec![phase("collect", &[])],
         }]);
         config.host_effect_support = HostEffectSupport::new([

@@ -15,7 +15,7 @@ function estimateTokenCount(text: string): number {
  * Content is sanitized and token_count backfilled, but the stored
  * `provider_replay` envelope is passed through verbatim — this layer is
  * provider-neutral and must never synthesize protocol-specific replay shapes
- * (e.g. Anthropic `native_blocks`). Legacy reconstruction for a given protocol
+ * (e.g. Anthropic `native_blocks`). Canonical replay seeding for a given protocol
  * is the responsibility of that provider's `seedProviderReplay`.
  */
 export function normalizeLlmCompleted(

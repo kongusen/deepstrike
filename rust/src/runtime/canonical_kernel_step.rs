@@ -1,8 +1,8 @@
 //! Durable Rust host for the canonical kernel ABI.
 //!
 //! Core prepares the typed envelope and record; the journal makes that record authoritative; only
-//! then is the planned step committed and exposed to a runner.  This module intentionally has no
-//! legacy `KernelInput` or direct-step escape hatch.
+//! then is the planned step committed and exposed to a runner. This module exposes no alternate
+//! input vocabulary or direct-step escape hatch.
 
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};

@@ -463,7 +463,8 @@ fn agent_run_spec_capability_filter_enforcement() {
         allowed_ids: vec![CompactString::new("read_file")],
     };
     let spec = AgentRunSpec::new(AgentIdentity::new("a1", "s1"), AgentRole::Custom, "goal")
-        .with_capability_filter(filter);
+        .with_capability_filter(filter)
+        .with_exposure_baseline(["read_file"]);
 
     sm.run_spec = Some(spec);
 

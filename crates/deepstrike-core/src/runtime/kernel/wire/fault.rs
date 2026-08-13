@@ -25,7 +25,6 @@ use super::scalar::{SCALAR_ERROR_MARKER, WireScalarError, WireU64};
 #[serde(rename_all = "snake_case")]
 pub enum KernelFaultCode {
     MalformedEnvelope,
-    VersionMismatch,
     OperationMismatch,
     ClockRegression,
     InvalidLifecycle,
@@ -70,9 +69,8 @@ pub enum KernelFaultCode {
 }
 
 impl KernelFaultCode {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 15] = [
         Self::MalformedEnvelope,
-        Self::VersionMismatch,
         Self::OperationMismatch,
         Self::ClockRegression,
         Self::InvalidLifecycle,
@@ -92,7 +90,6 @@ impl KernelFaultCode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::MalformedEnvelope => "malformed_envelope",
-            Self::VersionMismatch => "version_mismatch",
             Self::OperationMismatch => "operation_mismatch",
             Self::ClockRegression => "clock_regression",
             Self::InvalidLifecycle => "invalid_lifecycle",
@@ -348,13 +345,12 @@ mod tests {
     // -----------------------------------------------------------------------------------------
 
     #[test]
-    fn the_fault_taxonomy_is_the_sixteen_declared_codes() {
+    fn the_fault_taxonomy_is_the_fifteen_declared_codes() {
         let labels: BTreeSet<&str> = KernelFaultCode::ALL.iter().map(|c| c.as_str()).collect();
         assert_eq!(
             labels,
             BTreeSet::from([
                 "malformed_envelope",
-                "version_mismatch",
                 "operation_mismatch",
                 "clock_regression",
                 "invalid_lifecycle",
@@ -371,7 +367,7 @@ mod tests {
                 "unsupported_effect",
             ])
         );
-        assert_eq!(KernelFaultCode::ALL.len(), 16);
+        assert_eq!(KernelFaultCode::ALL.len(), 15);
 
         for code in KernelFaultCode::ALL {
             let text = serde_json::to_string(&code).unwrap();

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { createInterface } from "node:readline"
-import type { ToolCall, ToolSchema, StreamEvent, ContentBlock } from "../types.js"
+import type { ToolCall, ToolSchema, StreamEvent, ToolOutputBlock } from "../types.js"
 import type { ToolResultEvent } from "../types.js"
 import type { RegisteredTool } from "../tools/index.js"
 import type { ExecutionPlane, RunContext } from "./execution-plane.js"
@@ -21,7 +21,7 @@ export interface McpContentBlock {
  * spc_012-N-02: pure conversion, unit-testable without spawning a subprocess. Prior behavior
  * silently dropped every non-`"text"` block (INV-012-01 violation — an MCP tool returning a
  * screenshot lost the image with no trace). `output` stays the text projection for backward
- * compatibility with the 24 existing call sites — when non-text blocks exist the projection
+ * available as the text projection — when non-text blocks exist the projection
  * carries an explicit `[modality]` placeholder, so text-only providers (spc_012-N-04) degrade visibly instead
  * of swallowing the block. `contentParts` is populated (and only populated) when the response
  * actually contains a non-text block, so pure-text tool calls see zero behavior change.
@@ -29,7 +29,7 @@ export interface McpContentBlock {
 export function mcpResultToToolOutput(result: {
   content?: McpContentBlock[]
   isError?: boolean
-}): { output: string; isError: boolean; contentParts?: ContentBlock[] } {
+}): { output: string; isError: boolean; contentParts?: ToolOutputBlock[] } {
   const blocks = result.content ?? []
   const hasNonText = blocks.some(c => c.type !== "text")
   if (!hasNonText) {
@@ -42,7 +42,7 @@ export function mcpResultToToolOutput(result: {
   const output = blocks
     .map(c => (c.type === "text" ? c.text ?? "" : `[${c.type}]`))
     .join("\n")
-  const contentParts: ContentBlock[] = blocks.map(c => {
+  const contentParts: ToolOutputBlock[] = blocks.map(c => {
     if (c.type === "text") return { type: "text", text: c.text ?? "" }
     if (c.type === "image") {
       return { type: "image", source: { kind: "base64", data: c.data ?? "" }, mediaType: c.mimeType }
@@ -170,7 +170,7 @@ class McpConnection {
   async execute(
     call: ToolCall,
     signal?: AbortSignal,
-  ): Promise<{ output: string; isError: boolean; contentParts?: ContentBlock[] }> {
+  ): Promise<{ output: string; isError: boolean; contentParts?: ToolOutputBlock[] }> {
     try {
       const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
       const result = await this.request("tools/call", { name: call.name, arguments: args }, signal) as {
@@ -279,7 +279,7 @@ export class McpProxyPlane implements ExecutionPlane {
     const tasks = Array.from(groups.entries()).map(async ([conn, serverCalls]) => {
       const results: Array<{
         call: ToolCall
-        result: { output: string; isError: boolean; contentParts?: ContentBlock[] }
+        result: { output: string; isError: boolean; contentParts?: ToolOutputBlock[] }
       }> = []
       for (const call of serverCalls) {
         const signal = operationAbortSignal(ctx.operation, this.opts.timeoutMs ?? 30_000)

@@ -9,11 +9,11 @@ from deepstrike._kernel import ContentPartObj, Message, TaskUpdate, ToolCall, To
 from deepstrike.providers.base import ContextBudgetOverflow, RenderedContext
 
 
-CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts:v1]]"
+CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts]]"
 
 
 def encode_canonical_content_parts(parts: list[Any]) -> str:
-  """Encode multimodal content parts for ABI-v3 wire (mirrors Node ``encodeCanonicalContentParts``)."""
+  """Encode multimodal content parts for canonical wire (mirrors Node ``encodeCanonicalContentParts``)."""
   payload = base64.urlsafe_b64encode(
     json.dumps(parts, separators=(",", ":")).encode("utf-8"),
   ).decode("ascii").rstrip("=")

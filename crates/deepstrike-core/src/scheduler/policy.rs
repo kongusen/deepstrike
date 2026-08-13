@@ -1,11 +1,8 @@
-pub const SCHEDULER_POLICY_VERSION: u32 = 1;
-
-/// Versioned deterministic DAG scheduling policy. All weights are non-negative; setting every
+/// Deterministic DAG scheduling policy. All weights are non-negative; setting every
 /// weight to zero reduces ordering to FIFO with node-id tie-breaking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SchedulerPolicyConfig {
-    pub version: u32,
     pub critical_path_weight: i64,
     pub fanout_weight: i64,
     pub age_weight: i64,
@@ -21,7 +18,6 @@ pub struct SchedulerPolicyConfig {
 impl Default for SchedulerPolicyConfig {
     fn default() -> Self {
         Self {
-            version: SCHEDULER_POLICY_VERSION,
             critical_path_weight: 1_000_000,
             fanout_weight: 10_000,
             age_weight: 1_000,
@@ -36,11 +32,6 @@ impl Default for SchedulerPolicyConfig {
 
 impl SchedulerPolicyConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != SCHEDULER_POLICY_VERSION {
-            return Err(format!(
-                "scheduler_policy version must be {SCHEDULER_POLICY_VERSION}"
-            ));
-        }
         for (name, weight) in [
             ("critical_path_weight", self.critical_path_weight),
             ("fanout_weight", self.fanout_weight),

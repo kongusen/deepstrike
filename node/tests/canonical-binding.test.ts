@@ -17,7 +17,7 @@ describe("CanonicalKernel native binding", () => {
 
   it("passes through core-owned record bytes and digest", () => {
     const native = getKernel()
-    expect(native.kernelAbiVersion()).toBe(3)
+    expect("kernelAbiVersion" in native).toBe(false)
     const kernel = new native.CanonicalKernel()
 
     const prepared = kernel.prepare(JSON.stringify(fixture.links[0].envelope))

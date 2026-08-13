@@ -25,7 +25,6 @@ class ProviderRequestEndpoint:
 
 @dataclass(frozen=True)
 class ProviderRequestPlan:
-  version: Literal[1]
   provider_id: str
   model_id: str
   endpoint: ProviderRequestEndpoint
@@ -47,7 +46,6 @@ class NormalizedProviderUsage:
 
 @dataclass(frozen=True)
 class PromptMeasurementRecord:
-  version: Literal[1]
   request_fingerprint: str
   input_tokens: int
   source: dict[str, str]
@@ -77,13 +75,13 @@ def create_provider_request_plan(
 ) -> ProviderRequestPlan:
   material = _material_options(options or {})
   value = {
-    "version": 1, "providerId": provider_id, "modelId": model_id,
+    "providerId": provider_id, "modelId": model_id,
     "endpoint": {"id": endpoint.id, "protocol": endpoint.protocol, "baseURL": _safe_endpoint(endpoint.base_url)}, "context": _json_value(context),
     "tools": [_json_value(tool) for tool in tools], "options": material,
   }
   fingerprint = "sha256:" + sha256(_canonical_json(value).encode()).hexdigest()
   return ProviderRequestPlan(
-    version=1, provider_id=provider_id, model_id=model_id,
+    provider_id=provider_id, model_id=model_id,
     endpoint=ProviderRequestEndpoint(endpoint.id, endpoint.protocol, _safe_endpoint(endpoint.base_url)),
     context=_json_value(context), tools=tuple(_json_value(tool) for tool in tools),
     options=material, fingerprint=fingerprint,
@@ -94,7 +92,7 @@ def record_prompt_measurement(
   plan: ProviderRequestPlan, *, input_tokens: int, source: dict[str, str],
   confidence: Literal["exact", "high_confidence", "low_confidence"],
 ) -> PromptMeasurementRecord:
-  return PromptMeasurementRecord(1, plan.fingerprint, _non_negative(input_tokens, "input_tokens"), dict(source), confidence)
+  return PromptMeasurementRecord(plan.fingerprint, _non_negative(input_tokens, "input_tokens"), dict(source), confidence)
 
 
 def measurement_for_plan(
@@ -107,7 +105,6 @@ def measurement_for_plan(
   if isinstance(record, Mapping):
     try:
       record = PromptMeasurementRecord(
-        version=record["version"],
         request_fingerprint=record["request_fingerprint"],
         input_tokens=record["input_tokens"],
         source=dict(record["source"]),
@@ -116,8 +113,7 @@ def measurement_for_plan(
     except (KeyError, TypeError, ValueError):
       return None
   if (
-    record.version != 1
-    or not isinstance(record.request_fingerprint, str)
+    not isinstance(record.request_fingerprint, str)
     or record.request_fingerprint != plan.fingerprint
     or record.confidence not in {"exact", "high_confidence", "low_confidence"}
   ):

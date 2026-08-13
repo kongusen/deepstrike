@@ -599,17 +599,17 @@ mod tests {
     }
 
     #[test]
-    fn legacy_memory_wire_shapes_are_rejected() {
+    fn removed_memory_wire_shapes_are_rejected() {
         assert!(
             serde_json::from_value::<MemoryQuery>(serde_json::json!({
-                "current_context": "legacy",
+                "current_context": "removed",
                 "top_k": 5
             }))
             .is_err()
         );
         assert!(
             serde_json::from_value::<MemoryRecord>(serde_json::json!({
-                "metadata": { "name": "legacy" },
+                "metadata": { "name": "removed" },
                 "content": "old write request"
             }))
             .is_err()

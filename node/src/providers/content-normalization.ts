@@ -35,8 +35,8 @@ export interface CanonicalToolResult {
   readonly callId: string
   readonly blocks: readonly ToolOutputBlock[]
   readonly isError: boolean
-  /** Preserves the caller's explicit block-vs-legacy-text wire intent without duplicating content. */
-  readonly contentForm?: "legacy_text" | "blocks"
+  /** Preserves the caller's explicit text-vs-block wire intent without duplicating content. */
+  readonly contentForm?: "text" | "blocks"
 }
 
 export type CanonicalMessageBlock = ToolOutputBlock | CanonicalToolResult
@@ -45,7 +45,7 @@ export interface CanonicalMessage {
   readonly role: Message["role"]
   readonly blocks: readonly CanonicalMessageBlock[]
   /** `blocks` remains authoritative; this only preserves an observable wire-shape distinction. */
-  readonly contentForm?: "legacy_text" | "blocks"
+  readonly contentForm?: "text" | "blocks"
   readonly toolCalls?: readonly ToolCall[]
   readonly tokenCount?: number
   readonly providerReplay?: ProviderReplay
@@ -131,7 +131,7 @@ export function normalizeToolResultPart(part: ToolResultPart): CanonicalToolResu
       callId: part.callId,
       blocks: [{ type: "text", text: part.output }],
       isError: part.isError,
-      contentForm: "legacy_text",
+      contentForm: "text",
     }
   }
   const projection = projectToolOutputToText(part.contentParts)
@@ -253,7 +253,7 @@ function normalizeMessage(
   return {
     role: message.role,
     blocks,
-    contentForm: message.contentParts === undefined ? "legacy_text" : "blocks",
+    contentForm: message.contentParts === undefined ? "text" : "blocks",
     ...(message.toolCalls ? { toolCalls: message.toolCalls } : {}),
     ...(message.tokenCount !== undefined ? { tokenCount: message.tokenCount } : {}),
     ...(providerReplay ? { providerReplay } : {}),

@@ -7,11 +7,11 @@ function input(extensions: Record<string, unknown> = {}): CanonicalAdapterInput 
     context: {
       systemText: "system rules",
       turns: [
-        { role: "user", blocks: [{ type: "text", text: "Find weather" }], contentForm: "legacy_text" },
+        { role: "user", blocks: [{ type: "text", text: "Find weather" }], contentForm: "text" },
         {
           role: "assistant",
           blocks: [{ type: "text", text: "" }],
-          contentForm: "legacy_text",
+          contentForm: "text",
           toolCalls: [{ id: "call_1", name: "lookup", arguments: '{"city":"Shanghai"}' }],
         },
         {
@@ -21,7 +21,7 @@ function input(extensions: Record<string, unknown> = {}): CanonicalAdapterInput 
             callId: "call_1",
             blocks: [{ type: "text", text: "sunny" }],
             isError: false,
-            contentForm: "legacy_text",
+            contentForm: "text",
           }],
           contentForm: "blocks",
         },

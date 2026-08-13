@@ -1,13 +1,12 @@
-"""P0 exposure baseline + P1 fail-closed dispatch (mirrors node/tests/tool-gating.test.ts).
+"""Exposure baseline and fail-closed dispatch (mirrors node/tests/tool-gating.test.ts).
 
 ``baseline_tool_ids`` is the PRE-ACTIVATION tool surface under the ``allowed_tool_ids`` ceiling, so
 the narrow→wide progressive-disclosure shape becomes expressible::
 
     exposed = meta ∪ ((baseline ∪ stable_core ∪ ⋃ active_skills.allowed_tools) ∩ ceiling)
 
-``tool_dispatch_gate`` is the enforcement half: by default a call to a tool this run never
-advertised never reaches the host — the kernel commits a model-visible ``governance_denied`` result
-instead. ``"registered"`` is the documented escape hatch back to permissive dispatch.
+A call to a tool this run never advertised never reaches the host; the kernel commits a
+model-visible ``governance_denied`` result instead.
 """
 
 import tempfile
@@ -170,7 +169,7 @@ async def test_empty_baseline_is_the_minimal_surface_distinct_from_unset():
 
 
 @pytest.mark.asyncio
-async def test_unset_baseline_keeps_the_legacy_surface():
+async def test_unset_baseline_keeps_the_minimal_surface():
     provider = ToolCapturingProvider()
     runner = RuntimeRunner(RuntimeOptions(
         provider=provider,
@@ -183,8 +182,7 @@ async def test_unset_baseline_keeps_the_legacy_surface():
     ))
     async for _ in runner.run(goal="do it", session_id="baseline-unset"):
         pass
-    for name in ("read", "write", "bash", "grep"):
-        assert name in provider.tools
+    assert provider.tools == ["read", "update_plan"]
 
 
 class UnexposedCallProvider:
@@ -207,7 +205,7 @@ class UnexposedCallProvider:
         yield TextDelta(delta="done")
 
 
-def _gated_runner(ran: dict, gate: str | None):
+def _gated_runner(ran: dict):
     @tool
     def read() -> str:
         """read"""
@@ -221,7 +219,6 @@ def _gated_runner(ran: dict, gate: str | None):
         return "w"
 
     provider = UnexposedCallProvider()
-    extra = {} if gate is None else {"tool_dispatch_gate": gate}
     runner = RuntimeRunner(RuntimeOptions(
         provider=provider,
         session_log=InMemorySessionLog(),
@@ -230,7 +227,7 @@ def _gated_runner(ran: dict, gate: str | None):
         max_turns=4,
         # `write` stays REGISTERED on the plane but outside the exposure ceiling.
         allowed_tool_ids=["read"],
-        **extra,
+        baseline_tool_ids=["read"],
     ))
     return runner, provider
 
@@ -238,7 +235,7 @@ def _gated_runner(ran: dict, gate: str | None):
 @pytest.mark.asyncio
 async def test_fail_closed_dispatch_denies_a_registered_but_unexposed_tool():
     ran = {"read": False, "write": False}
-    runner, provider = _gated_runner(ran, None)
+    runner, provider = _gated_runner(ran)
     async for _ in runner.run(goal="do it", session_id="dispatch-closed"):
         pass
 
@@ -249,15 +246,3 @@ async def test_fail_closed_dispatch_denies_a_registered_but_unexposed_tool():
     # than orphaned (a bare tool_use block is wire-invalid on strict vendors).
     assert "is not part of this run's toolset" in provider.contexts[-1]
     assert "write" in provider.contexts[-1]
-
-
-@pytest.mark.asyncio
-async def test_registered_dispatch_gate_restores_permissive_dispatch():
-    ran = {"read": False, "write": False}
-    runner, provider = _gated_runner(ran, "registered")
-    async for _ in runner.run(goal="do it", session_id="dispatch-open"):
-        pass
-
-    assert ran["write"] is True
-    assert ran["read"] is True
-    assert "is not part of this run's toolset" not in provider.contexts[-1]

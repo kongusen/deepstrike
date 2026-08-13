@@ -1,6 +1,6 @@
 //! Workflow orchestration impl for [`super::LoopStateMachine`].
 
-use super::super::tcb::{TaskLifecycle, TaskSpawnError, WaitReason};
+use super::super::tcb::{TaskLifecycle, TaskSpawnError, WaitCondition, WaitMode, WaitSet};
 use super::{
     KernelObservation, LoopAction, LoopPhase, LoopStateMachine, PendingWorkflowSpawn, SuspendState,
 };
@@ -191,7 +191,7 @@ impl LoopStateMachine {
         if !self.append_workflow_nodes(nodes, submitter_agent_id, syscall, tool_label) {
             return LoopAction::AwaitingResume;
         }
-        // `submitter_agent_id` is a legacy audit/trust label, not caller authority. Canonical
+        // `submitter_agent_id` is an audit/trust label, not caller authority. Canonical
         // callers enter only through `drive_workflow_round` after kernel causation derivation.
         self.drive_workflow(None, None)
     }
@@ -452,7 +452,7 @@ impl LoopStateMachine {
                     // §10.4: mint identity here and stop at `PendingLaunch` — the child is a
                     // committed kernel fact, not yet a running process.
                     // SPC-019-02: canonical callers arrive from execution focus/syscall
-                    // causation. Legacy entrypoints omit one and retain the structural root.
+                    // causation. Calls without one retain the structural root.
                     let parent = caller.cloned().or_else(|| self.tasks.root_id());
                     let Some(parent) = parent else {
                         if let Some(run) = self.workflow.as_mut() {
@@ -553,7 +553,10 @@ impl LoopStateMachine {
             };
             self.set_lifecycle(
                 TaskLifecycle::Suspended,
-                Some(WaitReason::SubAgentJoin(wait_ids)),
+                Some(WaitSet {
+                    mode: WaitMode::All,
+                    conditions: wait_ids.into_iter().map(WaitCondition::Child).collect(),
+                }),
             );
             self.pending_workflow_spawn = Some(PendingWorkflowSpawn {
                 nodes: spawned_infos.clone(),

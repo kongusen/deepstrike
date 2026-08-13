@@ -67,11 +67,20 @@ describe("P0-A tool gating (allowedToolIds)", () => {
     expect(captured.tools).toEqual(expect.arrayContaining(["skill", "update_plan"]))
   })
 
-  it("exposes all tools when no profile is set (no config = old behavior)", async () => {
+  it("uses the minimal exposure surface when no profile is set", async () => {
     const captured = { tools: [] as string[] }
-    const { runner } = createRunner(toolCapturingProvider(captured), baseTools(), {})
+    const tools = baseTools()
+    const plane = new (await import("../src/runtime/execution-plane.js")).LocalExecutionPlane()
+    tools.forEach(tool => plane.register(tool))
+    const runner = new (await import("../src/runtime/runner.js")).RuntimeRunner({
+      provider: toolCapturingProvider(captured),
+      sessionLog: new (await import("../src/runtime/session-log.js")).InMemorySessionLog(),
+      executionPlane: plane,
+      maxTokens: 2048,
+      maxTurns: 3,
+    })
     await collectText(runner.run({ sessionId: "gate-off", goal: "do it" }))
-    expect(captured.tools).toEqual(expect.arrayContaining(["read", "write", "bash"]))
+    expect(captured.tools).not.toEqual(expect.arrayContaining(["read", "write", "bash"]))
   })
 })
 
@@ -144,7 +153,7 @@ describe("P0 exposure baseline (baselineToolIds)", () => {
     expect(after).not.toContain("bash")
   })
 
-  it("baselineToolIds: [] is the minimal surface (meta + stable-core only), distinct from unset", async () => {
+  it("baselineToolIds: [] is the minimal surface (meta + stable-core only)", async () => {
     const captured = { tools: [] as string[] }
     const { runner } = createRunner(toolCapturingProvider(captured), baseTools(), {
       baselineToolIds: [],
@@ -161,24 +170,25 @@ describe("P0 exposure baseline (baselineToolIds)", () => {
     expect(captured.tools).toContain("update_plan")
   })
 
-  it("unset baseline keeps the legacy surface (no config = old behavior)", async () => {
+  it("minimal baseline exposes only stable-core and meta tools", async () => {
     const captured = { tools: [] as string[] }
     const { runner } = createRunner(toolCapturingProvider(captured), baseTools(), {
+      baselineToolIds: [],
       stableCoreToolIds: ["read"],
       enablePlanTool: true,
     })
     await collectText(runner.run({ sessionId: "baseline-unset", goal: "do it" }))
-    expect(captured.tools).toEqual(expect.arrayContaining(["read", "write", "bash"]))
+    expect(captured.tools).toEqual(expect.arrayContaining(["read", "update_plan"]))
+    expect(captured.tools).not.toEqual(expect.arrayContaining(["write", "bash"]))
   })
 })
 
 /**
- * P1 fail-closed dispatch (`toolDispatchGate`): exposure filtering is now ENFORCED, not just
- * advertised. A call to a tool that is registered on the execution plane but was gated out of this
- * turn's schema never reaches the host — the kernel commits a model-visible `governance_denied`
- * result instead. `"registered"` is the documented escape hatch back to permissive dispatch.
+ * Fail-closed dispatch: a call to a tool that is registered on the execution plane but was gated
+ * out of this turn's schema never reaches the host. The kernel commits a model-visible
+ * `governance_denied` result instead.
  */
-describe("P1 fail-closed dispatch (toolDispatchGate)", () => {
+describe("fail-closed dispatch", () => {
   /** Calls the gated-out `write` on turn 1 (plus an exposed sibling), then finishes. */
   function unexposedCallProvider(contexts: string[]): LLMProvider {
     let call = 0
@@ -200,7 +210,7 @@ describe("P1 fail-closed dispatch (toolDispatchGate)", () => {
     }
   }
 
-  function gatedRunner(gate?: "exposed" | "registered") {
+  function gatedRunner() {
     const ran = { read: false, write: false }
     const contexts: string[] = []
     const tools = [
@@ -210,7 +220,7 @@ describe("P1 fail-closed dispatch (toolDispatchGate)", () => {
     const { runner } = createRunner(unexposedCallProvider(contexts), tools, {
       // `write` stays REGISTERED on the plane but outside the exposure ceiling.
       allowedToolIds: ["read"],
-      ...(gate === undefined ? {} : { toolDispatchGate: gate }),
+      baselineToolIds: ["read"],
     })
     return { runner, ran, contexts }
   }
@@ -227,14 +237,5 @@ describe("P1 fail-closed dispatch (toolDispatchGate)", () => {
     const afterDenial = contexts[contexts.length - 1]
     expect(afterDenial).toContain("is not part of this run's toolset")
     expect(afterDenial).toContain("write")
-  })
-
-  it('toolDispatchGate: "registered" restores permissive dispatch (the escape hatch)', async () => {
-    const { runner, ran, contexts } = gatedRunner("registered")
-    await collectText(runner.run({ sessionId: "dispatch-open", goal: "do it" }))
-
-    expect(ran.write).toBe(true)
-    expect(ran.read).toBe(true)
-    expect(contexts[contexts.length - 1]).not.toContain("is not part of this run's toolset")
   })
 })

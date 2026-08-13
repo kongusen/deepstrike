@@ -1,9 +1,9 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
-  node: [RuntimeRunner, LLMProvider, SessionLog, Governance]
+  node: [RuntimeRunner, LLMProvider, SessionLog]
   fields:
-    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, memory_store, memory_policy, pre_query_memory, knowledge_source, memory_provider, memory_summarizer, governance, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
+    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, memory_store, memory_policy, pre_query_memory, knowledge_source, memory_provider, memory_summarizer, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
 ---
 
 # RuntimeOptions Reference
@@ -59,10 +59,9 @@ Configuration hub for Python `RuntimeRunner`. Definition: `python/deepstrike/run
 
 | Field | Description |
 |-------|-------------|
-| `governance` | `Governance` wrapper |
 | `governance_policy` | Declarative policy |
 | `resource_quota` | Subagent / memory write quota |
-| `scheduler_policy` | Versioned deterministic DAG priority weights; wall-clock budget remains independently controlled by `timeout_ms` |
+| `scheduler_policy` | Deterministic DAG priority weights; wall-clock budget remains independently controlled by `timeout_ms` |
 | `run_group` | Cross-run shared governance domain |
 | `signal_policy` | Signal queue, TTL, and deadline-escalation policy |
 | `prompt_budget` | Provider-envelope overhead, output reserve, and safety margin |

@@ -1,14 +1,13 @@
 import {
-  contextPolicyV1,
-  normalizeContextPolicyV1,
+  contextPolicy,
+  normalizeContextPolicy,
   ratioToPpm,
 } from "../../src/runtime/context-policy.js"
 
-describe("ContextPolicyV1", () => {
+describe("ContextPolicy", () => {
   it("normalizes ergonomic ratios to the integer-only canonical wire", () => {
-    const wire = normalizeContextPolicyV1(contextPolicyV1())
+    const wire = normalizeContextPolicy(contextPolicy())
     expect(wire).toEqual({
-      version: 1,
       pressure_thresholds_ppm: {
         snip: 700_000,
         micro: 800_000,
@@ -26,7 +25,7 @@ describe("ContextPolicyV1", () => {
   })
 
   it("merges partial thresholds without exposing algorithm-only knobs", () => {
-    const policy = contextPolicyV1({
+    const policy = contextPolicy({
       pressureThresholds: { snip: 0.72 },
       preserveRecentTurns: 4,
     })
@@ -41,9 +40,9 @@ describe("ContextPolicyV1", () => {
   })
 
   it("rejects the whole policy when thresholds or bounds are invalid", () => {
-    expect(() => contextPolicyV1({ pressureThresholds: { micro: 0.69 } })).toThrow("snip < micro")
-    expect(() => contextPolicyV1({ targetAfterCompress: 0.70 })).toThrow("lower than the snip")
-    expect(() => contextPolicyV1({ renewalCarryover: 1.1 })).toThrow("between 0 and 1")
-    expect(() => contextPolicyV1({ preserveRecentTurns: 0 })).toThrow("safe integer >= 1")
+    expect(() => contextPolicy({ pressureThresholds: { micro: 0.69 } })).toThrow("snip < micro")
+    expect(() => contextPolicy({ targetAfterCompress: 0.70 })).toThrow("lower than the snip")
+    expect(() => contextPolicy({ renewalCarryover: 1.1 })).toThrow("between 0 and 1")
+    expect(() => contextPolicy({ preserveRecentTurns: 0 })).toThrow("safe integer >= 1")
   })
 })

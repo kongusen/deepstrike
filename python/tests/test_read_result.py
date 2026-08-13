@@ -48,9 +48,10 @@ async def test_read_result_loads_an_external_payload(tmp_path):
     session_log=session_log,
     execution_plane=LocalExecutionPlane().register(big_out),
     max_tokens=128_000,
-    max_turns=8,
-    payload_store=payload_store,
-  ))
+        max_turns=8,
+        payload_store=payload_store,
+        baseline_tool_ids=["big_out"],
+      ))
 
   async for _ in runner.run(goal="fetch big output", session_id="read-result-run"):
     pass

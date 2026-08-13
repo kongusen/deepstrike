@@ -94,6 +94,7 @@ describe("nested vehicle group budget (SubAgentOrchestrator child)", () => {
       isolation: "shared",
       goal: "do the work",
       capabilityFilter: { allowedIds: ["noop"] },
+      exposureBaseline: ["noop"],
     }
     const result = await spawnStandalone(runner.hostOptions, "parent", spec)
 

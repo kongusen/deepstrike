@@ -1,4 +1,4 @@
-//! Versioned provider-neutral content used by durable events/checkpoints.
+//! Provider-neutral content used by durable events/checkpoints.
 //! Protocol adapters own vendor serialization; this DTO owns only portable content and payload
 //! locator semantics. Unknown fields and nested tool results fail closed.
 
@@ -7,14 +7,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DurableContent {
-    pub schema_version: u32,
     pub blocks: Vec<DurableContentBlock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DurableToolResult {
-    pub schema_version: u32,
     pub call_id: String,
     pub is_error: bool,
     pub blocks: Vec<DurableContentBlock>,
@@ -84,11 +82,8 @@ pub struct EndpointAffinity {
 }
 
 impl DurableContent {
-    pub const CURRENT_SCHEMA_VERSION: u32 = 1;
-
     pub fn text(text: impl Into<String>) -> Self {
         Self {
-            schema_version: Self::CURRENT_SCHEMA_VERSION,
             blocks: vec![DurableContentBlock::Text { text: text.into() }],
         }
     }
@@ -100,12 +95,6 @@ impl DurableContent {
     }
 
     pub fn validate(&self) -> Result<(), serde_json::Error> {
-        if self.schema_version != Self::CURRENT_SCHEMA_VERSION {
-            return Err(invalid(format!(
-                "unsupported durable content schema_version {}",
-                self.schema_version
-            )));
-        }
         for block in &self.blocks {
             validate_block(block)?;
         }
@@ -114,15 +103,8 @@ impl DurableContent {
 }
 
 impl DurableToolResult {
-    pub const CURRENT_SCHEMA_VERSION: u32 = 1;
-
-    pub fn legacy_text(
-        call_id: impl Into<String>,
-        output: impl Into<String>,
-        is_error: bool,
-    ) -> Self {
+    pub fn text(call_id: impl Into<String>, output: impl Into<String>, is_error: bool) -> Self {
         Self {
-            schema_version: Self::CURRENT_SCHEMA_VERSION,
             call_id: call_id.into(),
             is_error,
             blocks: vec![DurableContentBlock::Text {
@@ -132,34 +114,12 @@ impl DurableToolResult {
     }
 
     pub fn decode(value: serde_json::Value) -> Result<Self, serde_json::Error> {
-        if value.get("schema_version").is_none() && value.get("output").is_some() {
-            #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct Legacy {
-                call_id: String,
-                output: String,
-                #[serde(default)]
-                is_error: bool,
-            }
-            let legacy: Legacy = serde_json::from_value(value)?;
-            return Ok(Self::legacy_text(
-                legacy.call_id,
-                legacy.output,
-                legacy.is_error,
-            ));
-        }
         let result: Self = serde_json::from_value(value)?;
         result.validate()?;
         Ok(result)
     }
 
     pub fn validate(&self) -> Result<(), serde_json::Error> {
-        if self.schema_version != Self::CURRENT_SCHEMA_VERSION {
-            return Err(invalid(format!(
-                "unsupported durable tool result schema_version {}",
-                self.schema_version
-            )));
-        }
         require_non_empty(&self.call_id, "tool result call_id")?;
         for block in &self.blocks {
             validate_block(block)?;
@@ -256,36 +216,42 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn legacy_tool_result_migrates_to_v1_text_block() {
-        let result =
+    fn versioned_and_output_only_tool_results_are_rejected() {
+        assert!(
+            DurableToolResult::decode(
+                json!({"schema_version":1,"call_id":"c1","is_error":false,"blocks":[]})
+            )
+            .is_err()
+        );
+        assert!(
             DurableToolResult::decode(json!({"call_id":"c1","output":"ok","is_error":false}))
-                .unwrap();
-        assert_eq!(result, DurableToolResult::legacy_text("c1", "ok", false));
+                .is_err()
+        );
     }
 
     #[test]
     fn unknown_and_nested_blocks_are_rejected() {
         assert!(
-            DurableContent::decode(
-                json!({"schema_version":1,"blocks":[{"type":"text","text":"x","extra":true}]})
-            )
-            .is_err()
+            DurableContent::decode(json!({"blocks":[{"type":"text","text":"x","extra":true}]}))
+                .is_err()
         );
         assert!(
+            DurableContent::decode(json!({"blocks":[{"type":"tool_result","call_id":"nested"}]}))
+                .is_err()
+        );
+        assert!(DurableContent::decode(json!({"blocks":[{"type":"file","source":{"kind":"object","handle":"h","owner":"host"}}]})).is_err());
+        assert!(DurableContent::decode(json!({"schema_version":1,"blocks":[]})).is_err());
+        assert!(
             DurableContent::decode(
-                json!({"schema_version":1,"blocks":[{"type":"tool_result","call_id":"nested"}]})
+                json!({"blocks":[{"type":"file","source":{"kind":"file_id","id":"f"}}]})
             )
             .is_err()
         );
-        assert!(DurableContent::decode(json!({"schema_version":1,"blocks":[{"type":"file","source":{"kind":"object","handle":"h","owner":"host"}}]})).is_err());
-        assert!(DurableContent::decode(json!({"schema_version":2,"blocks":[]})).is_err());
-        assert!(DurableContent::decode(json!({"schema_version":1,"blocks":[{"type":"file","source":{"kind":"file_id","id":"f"}}]})).is_err());
     }
 
     #[test]
     fn media_affinity_and_payload_ownership_round_trip() {
         let content = DurableContent {
-            schema_version: 1,
             blocks: vec![
                 DurableContentBlock::File {
                     source: DurableSource::FileId {
@@ -314,9 +280,9 @@ mod tests {
     }
 
     #[test]
-    fn shared_v1_tool_result_fixture_round_trips() {
+    fn shared_canonical_tool_result_fixture_round_trips() {
         let fixture =
-            include_str!("../../../../tests/fixtures/durable-content/v1-tool-result.json");
+            include_str!("../../../../tests/fixtures/durable-content/canonical-tool-result.json");
         let value: serde_json::Value = serde_json::from_str(fixture).unwrap();
         let decoded = DurableToolResult::decode(value.clone()).unwrap();
         assert_eq!(serde_json::to_value(decoded).unwrap(), value);

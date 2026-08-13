@@ -1230,7 +1230,7 @@ pub struct ExternalToolResult {
 /// distinction. This one is the Host→Kernel execution-result *wire payload* (`#[serde(deny_unknown_fields)]`,
 /// crosses all 4 SDK bindings) — semantically "the Host is telling the Kernel a tool call
 /// finished, here's the result," not "a content block being rendered into a provider request."
-/// `output` remains the legacy text projection. `durable_content`, when present, carries the
+/// `output` is the text projection. `durable_content`, when present, carries the
 /// versioned provider-neutral blocks that the transcript and checkpoint preserve.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1396,7 +1396,6 @@ mod tests {
 
     fn effect_json(outcome: Value) -> String {
         serde_json::to_string(&json!({
-            "abi_version": KERNEL_ABI_VERSION,
             "operation_id": "op-1",
             "input_id": "in-1",
             "observed_at_ms": "1700000000000",
@@ -1520,7 +1519,7 @@ mod tests {
             }),
             EffectKind::EvaluateMilestone(EvaluateMilestoneEffect {
                 request: MilestoneRequest {
-                    contract_id: "brief-quality-v1".to_string(),
+                    contract_id: "brief-quality-primary".to_string(),
                     phase_id: "phase-2".to_string(),
                 },
             }),
@@ -1900,7 +1899,7 @@ mod tests {
             "stop",               // OpenAI chat completions
             "length",             // OpenAI chat completions
             "tool_calls",         // OpenAI chat completions
-            "function_call",      // OpenAI legacy
+            "function_call",      // OpenAI protocol spelling
             "content_filter",     // OpenAI — same word, different meaning class
             "STOP",               // Gemini (SCREAMING_CASE)
             "MAX_TOKENS",         // Gemini
@@ -2063,7 +2062,7 @@ mod tests {
             assert_eq!(decoded.is_fatal(), value == "fatal");
         }
 
-        // the legacy taxonomy's other four rungs are gone. `user_interrupt` in particular:
+        // the broader taxonomy's other four rungs are gone. `user_interrupt` in particular:
         // cancellation is `HostControl::Cancel` and nothing else (§7.9), so the rollback rung it
         // used to trigger was retired with its protocol path.
         for gone in [
@@ -2152,7 +2151,7 @@ mod tests {
     #[test]
     fn a_milestone_request_is_exactly_the_contract_and_phase_pair() {
         let request = MilestoneRequest {
-            contract_id: "brief-quality-v1".to_string(),
+            contract_id: "brief-quality-primary".to_string(),
             phase_id: "collect".to_string(),
         };
         let value = serde_json::to_value(&request).unwrap();
@@ -2465,7 +2464,7 @@ mod tests {
 
         let milestone = kernel_effect(EffectKind::EvaluateMilestone(EvaluateMilestoneEffect {
             request: MilestoneRequest {
-                contract_id: "brief-quality-v1".to_string(),
+                contract_id: "brief-quality-primary".to_string(),
                 phase_id: "phase-2".to_string(),
             },
         }));

@@ -106,7 +106,7 @@ describe("SPC-013 A-05 Anthropic Messages ProtocolAdapter", () => {
             callId: "call_1",
             blocks: [{ type: "text", text: "ok" }],
             isError: false,
-            contentForm: "legacy_text",
+            contentForm: "text",
           }],
         }],
       },
@@ -229,6 +229,7 @@ describe("SPC-013 A-05 Anthropic Messages ProtocolAdapter", () => {
         }],
       },
       replay: {
+        protocol: "anthropic-messages",
         native_blocks: [
           { type: "thinking", thinking: "plan", signature: "sig" },
           { type: "text", text: "done" },
@@ -306,6 +307,7 @@ describe("SPC-013 A-05 Anthropic Messages ProtocolAdapter", () => {
     expect(adapter.finishStream(state, undefined)).toEqual({
       events: [],
       replay: {
+        protocol: "anthropic-messages",
         native_blocks: [
           { type: "thinking", thinking: "plan", signature: "" },
           { type: "tool_use", id: "call_2", name: "lookup", input: { q: "y" } },

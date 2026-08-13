@@ -22,7 +22,7 @@ const tools: ToolSchema[] = [{
 
 describe("spc_016-01: provider request plans", () => {
   it("uses the shared cross-SDK SHA-256 fingerprint fixture", () => {
-    const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/provider-request-plan/v1.json"), "utf8")) as {
+    const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/provider-request-plan/canonical.json"), "utf8")) as {
       input: { providerId: string; modelId: string; endpoint: { id: string; protocol: string; baseURL: string }; context: RenderedContext; tools: ToolSchema[]; options: Record<string, unknown> }
       fingerprint: string
     }

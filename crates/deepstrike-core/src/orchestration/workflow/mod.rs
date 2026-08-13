@@ -78,7 +78,7 @@ pub enum NodeKind {
     #[default]
     Spawn,
     /// Re-run the node's agent up to `max_iters` times; an iteration reporting
-    /// `loop_continue=Some(false)` stops early (v2 "until done").
+    /// `loop_continue=Some(false)` stops early ("until done").
     Loop { max_iters: usize },
     /// Run the node's agent once as a classifier; its `classify_branch` result selects one branch
     /// to run and prunes the others. Branch nodes must `depends_on` this classify node.

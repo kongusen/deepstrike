@@ -35,7 +35,6 @@ impl ProviderRequestEndpoint {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderRequestPlan {
-    pub version: u8,
     pub provider_id: String,
     pub model_id: String,
     pub endpoint: ProviderRequestEndpoint,
@@ -58,7 +57,6 @@ impl ProviderRequestPlan {
         let model_id = model_id.into();
         let options = material_options(options)?;
         let hashed = serde_json::json!({
-            "version": 1,
             "providerId": provider_id,
             "modelId": model_id,
             "endpoint": {
@@ -75,7 +73,6 @@ impl ProviderRequestPlan {
             Sha256::digest(canonical_json(&hashed).as_bytes())
         );
         Ok(Self {
-            version: 1,
             provider_id,
             model_id,
             endpoint,
@@ -90,7 +87,6 @@ impl ProviderRequestPlan {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RecordedPromptMeasurement {
-    pub version: u8,
     pub request_fingerprint: String,
     pub input_tokens: u64,
     pub source: MeasurementSource,
@@ -106,7 +102,6 @@ pub fn record_prompt_measurement(
     confidence: MeasurementConfidence,
 ) -> RecordedPromptMeasurement {
     RecordedPromptMeasurement {
-        version: 1,
         request_fingerprint: plan.fingerprint.clone(),
         input_tokens,
         source,
@@ -118,8 +113,7 @@ pub fn measurement_for_plan(
     plan: &ProviderRequestPlan,
     measurement: &RecordedPromptMeasurement,
 ) -> Option<RecordedPromptMeasurement> {
-    (measurement.version == 1 && measurement.request_fingerprint == plan.fingerprint)
-        .then(|| measurement.clone())
+    (measurement.request_fingerprint == plan.fingerprint).then(|| measurement.clone())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -329,13 +323,18 @@ fn transport_only_key(key: &str) -> bool {
         .filter(|character| character.is_ascii_alphanumeric())
         .flat_map(|character| character.to_lowercase())
         .collect();
-    matches!(normalized.as_str(), "retry" | "maxretries" | "basedelay" | "timeout" | "signal")
-        || normalized.contains("authorization")
+    matches!(
+        normalized.as_str(),
+        "retry" | "maxretries" | "basedelay" | "timeout" | "signal"
+    ) || normalized.contains("authorization")
         || normalized.contains("credential")
         || normalized.contains("accesstoken")
         || normalized.contains("refreshtoken")
         || normalized.contains("apikey")
-        || matches!(normalized.as_str(), "bearer" | "token" | "secret" | "xapikey")
+        || matches!(
+            normalized.as_str(),
+            "bearer" | "token" | "secret" | "xapikey"
+        )
 }
 
 fn canonical_json(value: &Value) -> String {
@@ -374,7 +373,7 @@ mod tests {
     #[test]
     fn uses_the_shared_cross_sdk_sha256_fixture() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/provider-request-plan/v1.json"
+            "../../../tests/fixtures/provider-request-plan/canonical.json"
         ))
         .expect("fixture is valid JSON");
         let input = fixture.get("input").expect("fixture input");
@@ -439,7 +438,7 @@ mod tests {
             price_provider_usage(
                 &usage,
                 &PricingSnapshot::new(
-                    "v1",
+                    "pricing-2026-08",
                     "USD",
                     "global",
                     "2026-08-01T00:00:00Z",
@@ -457,7 +456,7 @@ mod tests {
             CostObservation::Snapshot {
                 currency: "USD".into(),
                 amount: 0.000449,
-                pricing_version: "v1".into()
+                pricing_version: "pricing-2026-08".into()
             },
         );
     }
@@ -473,7 +472,10 @@ mod tests {
             serde_json::json!({"headers": {"Authorization": "secret", "x-api-key": "secret"}, "access_token": "secret", "temperature": 0.2}),
         )
         .unwrap();
-        assert_eq!(plan.options, serde_json::json!({"temperature": 0.2, "headers": {}}));
+        assert_eq!(
+            plan.options,
+            serde_json::json!({"temperature": 0.2, "headers": {}})
+        );
         assert!(!serde_json::to_string(&plan).unwrap().contains("secret"));
     }
 }

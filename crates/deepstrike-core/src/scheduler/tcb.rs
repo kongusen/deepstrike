@@ -68,8 +68,7 @@ impl TaskLifecycle {
     ///
     /// A launch the kernel has already decided on occupies a slot even before the host confirms it
     /// — otherwise every in-flight launch would be invisible to the spawn quota and an ack-gated
-    /// run could overshoot `max_concurrent_subagents` by the size of its launch window. Legacy runs
-    /// never construct the two launch states, so this reads exactly as `== Running` for them.
+    /// run could overshoot `max_concurrent_subagents` by the size of its launch window.
     pub fn occupies_slot(self) -> bool {
         matches!(self, Self::PendingLaunch | Self::Starting | Self::Running)
     }
@@ -98,26 +97,6 @@ impl From<ProcessState> for TaskLifecycle {
     }
 }
 
-/// Why a suspended task is not runnable. Only the reasons production actually
-/// constructs exist; new wait states earn a variant when they earn a producer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WaitReason {
-    /// Governance `AskUser` — waiting for SDK to resolve human approval.
-    Approval,
-    /// Parent blocked on child tasks' join results. Tracks pending child IDs.
-    SubAgentJoin(Vec<TaskId>),
-}
-
-impl WaitReason {
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Approval => "approval",
-            Self::SubAgentJoin(_) => "sub_agent_join",
-        }
-    }
-}
-
 /// spc_003 §2: placeholder identity newtypes for wait conditions that have no existing kernel
 /// concept yet. Minimal on purpose — no validation, no dependency beyond `CompactString` — until a
 /// real producer (spc_003-05+ for `Timer`; future cards for the rest) earns a richer type.
@@ -141,8 +120,7 @@ pub struct ResourceKey(pub CompactString);
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SubscriptionId(pub CompactString);
 
-/// spc_003 §2: the generalized wait vocabulary `WaitReason` is expected to grow into. Additive
-/// only in this card — not wired to `Tcb.wait` yet (spc_003-04).
+/// Canonical scheduler wait vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WaitCondition {
     Effect(crate::runtime::kernel::wire::EffectId),
@@ -162,7 +140,7 @@ pub enum WaitMode {
     All,
 }
 
-/// spc_003 §2. Additive only in this card — not wired to `Tcb.wait` yet (spc_003-04).
+/// One or more conditions that wake a suspended task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitSet {
     pub mode: WaitMode,
@@ -196,37 +174,6 @@ impl From<WaitSet> for DurableWaitSet {
             conditions,
             satisfied: BTreeSet::new(),
         }
-    }
-}
-
-/// spc_003-02: semantic-equivalence mapping for the two existing `WaitReason` variants. `Approval`
-/// carries no id anywhere in the kernel today (verified by grep — the AskUser path constructs a
-/// bare `WaitReason::Approval`), so this mints a fixed placeholder id until governance's AskUser
-/// path earns a real one.
-impl From<WaitReason> for (WaitCondition, WaitMode) {
-    fn from(reason: WaitReason) -> Self {
-        match reason {
-            WaitReason::Approval => (
-                WaitCondition::Approval(ApprovalId(CompactString::from("pending"))),
-                WaitMode::Any,
-            ),
-            WaitReason::SubAgentJoin(ids) => (WaitCondition::Children(ids), WaitMode::All),
-        }
-    }
-}
-
-fn durable_wait_from_reason(reason: &WaitReason) -> WaitSet {
-    match reason {
-        WaitReason::Approval => WaitSet {
-            mode: WaitMode::Any,
-            conditions: vec![WaitCondition::Approval(ApprovalId(CompactString::from(
-                "pending",
-            )))],
-        },
-        WaitReason::SubAgentJoin(ids) => WaitSet {
-            mode: WaitMode::All,
-            conditions: ids.iter().cloned().map(WaitCondition::Child).collect(),
-        },
     }
 }
 
@@ -334,9 +281,7 @@ pub struct Tcb {
     /// Why a Ready child entered the unified local runnable set.
     pub runnable_cause: RunnableCause,
     pub budget: BudgetLedger,
-    pub wait: Option<WaitReason>,
-    /// Canonical recoverable wait state. `wait` remains the compatibility projection for the two
-    /// legacy reasons; new heterogeneous waits use this field as their source of truth.
+    /// Canonical recoverable wait state.
     pub wait_set: Option<DurableWaitSet>,
     /// Capability ids permitted to this task (mirrors `AgentProcess.permitted_capability_ids`).
     pub caps: Vec<CompactString>,
@@ -380,7 +325,6 @@ impl Tcb {
             state: TaskLifecycle::Ready,
             runnable_cause: RunnableCause::NestedTask,
             budget: BudgetLedger::new(budget),
-            wait: None,
             wait_set: None,
             caps: Vec::new(),
             capabilities: Vec::new(),
@@ -407,9 +351,9 @@ impl Tcb {
 
     /// The same child, seeded in an explicit lifecycle state under an explicit `parent`.
     ///
-    /// §10.4's spawn arc is `PendingLaunch → Starting → Running(ack)`; the legacy path collapses it
-    /// to `Running` at insert time, which is why [`Self::spawned`] exists unchanged and this is the
-    /// entry point the ack-gated canonical path uses.
+    /// The acknowledged spawn arc is `PendingLaunch → Starting → Running(ack)`. Callers that have
+    /// already observed the host launch use [`Self::spawned`]; callers that are publishing a launch
+    /// use this constructor with its explicit lifecycle state.
     ///
     /// spc_002-02: `parent` is no longer hardcoded to `root` — callers must supply the real caller.
     /// This card does not derive that caller from syscall causation (spc_002-04); every call site
@@ -427,7 +371,6 @@ impl Tcb {
             state,
             runnable_cause: RunnableCause::NestedTask,
             budget: BudgetLedger::new(budget),
-            wait: None,
             wait_set: None,
             caps: manifest.permitted_capability_ids.clone(),
             capabilities: manifest.requested_capabilities.clone(),
@@ -452,8 +395,7 @@ impl Tcb {
 #[derive(Debug, Clone, Default)]
 pub struct TaskTable {
     tasks: Vec<Tcb>,
-    /// spc_003-04: kept in sync with every task's `wait` field exclusively through
-    /// [`Self::set_wait`] — that method is the only sanctioned way to mutate `Tcb.wait`.
+    /// Reverse index rebuilt from each task's durable `wait_set`.
     wait_index: super::wait_index::WaitIndex,
     channels: BTreeMap<ChannelId, super::mailbox::Channel>,
     objects: BTreeMap<crate::mm::handle::ObjectId, crate::mm::handle::ObjectDescriptor>,
@@ -589,37 +531,7 @@ impl TaskTable {
         &self.wait_index
     }
 
-    /// spc_003-04: the only sanctioned path for mutating `Tcb.wait` — keeps `WaitIndex` in sync
-    /// with the field it mirrors. `None` clears any existing wait; `Some` replaces it (the prior
-    /// wait, if any, is removed from the index first). A `task_id` not present in the table is a
-    /// no-op.
-    pub fn set_wait(&mut self, task_id: &str, wait: Option<WaitReason>) {
-        let Some(id) = self.get(task_id).map(|t| t.id.clone()) else {
-            return;
-        };
-        if let Some(old) = self.get_mut(task_id).and_then(|t| t.wait.take()) {
-            let (condition, _mode) = <(WaitCondition, WaitMode)>::from(old);
-            self.wait_index.remove(&id, &condition);
-        }
-        self.clear_durable_wait(&id);
-        if let Some(task) = self.get_mut(task_id) {
-            task.wait = wait.clone();
-        }
-        if let Some(new_wait) = wait {
-            let wait_set = durable_wait_from_reason(&new_wait);
-            if !wait_set.conditions.is_empty() {
-                self.wait_index
-                    .register_wait_set(id.clone(), wait_set.clone());
-                if let Some(task) = self.get_mut(task_id) {
-                    task.wait_set = Some(wait_set.into());
-                }
-            }
-        }
-    }
-
-    /// spc_003-05: register `task_id` as waiting on a deadline. `Timer` has no `WaitReason`
-    /// counterpart (spc_003-01 does not touch `WaitReason`), so — unlike `set_wait` — this only
-    /// updates the `WaitIndex`, not `Tcb.wait`.
+    /// Register `task_id` as waiting on a deadline.
     pub fn wait_for_timer(&mut self, task_id: &str, deadline: LogicalDeadline) {
         self.register_wait_set(
             task_id,
@@ -639,9 +551,7 @@ impl TaskTable {
             .collect()
     }
 
-    /// spc_003-06: register `task_id` as waiting on an arbitrary `WaitCondition`, index-only
-    /// (mirrors [`Self::wait_for_timer`] — no `Tcb.wait` mutation, since most `WaitCondition`
-    /// variants have no `WaitReason` counterpart to store there).
+    /// Register `task_id` as waiting on an arbitrary `WaitCondition`.
     pub fn wait_for_condition(&mut self, task_id: &str, condition: &WaitCondition) {
         self.register_wait_set(
             task_id,
@@ -676,9 +586,16 @@ impl TaskTable {
             .register_wait_set(id.clone(), wait_set.clone());
         if let Some(task) = self.get_mut(task_id) {
             task.state = TaskLifecycle::Suspended;
-            task.wait = None;
             task.wait_set = Some(wait_set.into());
         }
+    }
+
+    /// Clear every durable wait condition for a task without changing its lifecycle.
+    pub fn clear_wait(&mut self, task_id: &str) {
+        let Some(id) = self.get(task_id).map(|task| task.id.clone()) else {
+            return;
+        };
+        self.clear_durable_wait(&id);
     }
 
     /// spc_003 debt closure: notify every task registered under `key` via
@@ -697,9 +614,6 @@ impl TaskTable {
                 .is_none_or(|task| task.state.is_terminal());
             if terminal {
                 self.clear_durable_wait(&task_id);
-                if let Some(task) = self.get_mut(task_id.as_str()) {
-                    task.wait = None;
-                }
                 continue;
             }
 
@@ -732,7 +646,6 @@ impl TaskTable {
                 {
                     task.state = TaskLifecycle::Ready;
                     task.runnable_cause = cause;
-                    task.wait = None;
                     woken.push(task_id);
                 }
             }
@@ -811,7 +724,7 @@ impl TaskTable {
         task_id: &str,
         strategy: ChildFailurePolicy,
     ) {
-        self.set_wait(task_id, None);
+        self.clear_wait(task_id);
         if let Some(task) = self.get_mut(task_id) {
             task.state = TaskLifecycle::PendingLaunch;
             if let Some(proc) = task.proc.as_mut() {
@@ -1068,24 +981,9 @@ impl TaskTable {
         }
     }
 
-    /// spc_002-09: reinsert every task's already-restored `Tcb.wait` into `WaitIndex`. A checkpoint
-    /// restore sets `Tcb.wait` directly (it does not call [`Self::set_wait`], the index's only
-    /// other sanctioned mutation path — restore reconstructs the whole table row at once, not one
-    /// field at a time), so without this the index silently forgets every task that was waiting at
-    /// checkpoint time. `insert` is idempotent per task id, so calling this more than once is safe.
-    /// Durable WaitSets are reinserted from their unsatisfied conditions; the reverse index owns
-    /// no lifecycle/progress state of its own.
+    /// Reinsert each task's unsatisfied durable wait conditions after checkpoint restore.
     pub fn rebuild_wait_index(&mut self) {
         self.wait_index = super::wait_index::WaitIndex::new();
-        let waiting: Vec<(TaskId, WaitReason)> = self
-            .tasks
-            .iter()
-            .filter_map(|t| t.wait.clone().map(|wait| (t.id.clone(), wait)))
-            .collect();
-        for (id, wait) in waiting {
-            let (condition, _mode) = <(WaitCondition, WaitMode)>::from(wait);
-            self.wait_index.insert(id, &condition);
-        }
         let durable: Vec<(TaskId, WaitSet)> = self
             .tasks
             .iter()
@@ -1338,8 +1236,13 @@ mod tests {
     fn waiting_task_not_runnable() {
         let mut table = TaskTable::new();
         table.insert(Tcb::root("root", SchedulerBudget::default()));
-        table.set_wait("root", Some(WaitReason::Approval));
-        table.get_mut("root").unwrap().state = TaskLifecycle::Suspended;
+        table.register_wait_set(
+            "root",
+            WaitSet {
+                mode: WaitMode::Any,
+                conditions: vec![WaitCondition::Approval(ApprovalId("pending".into()))],
+            },
+        );
 
         assert!(
             !table.get("root").unwrap().state.occupies_slot(),
@@ -1544,12 +1447,18 @@ mod tests {
     }
 
     #[test]
-    fn terminal_legacy_waiter_loses_all_wait_state_without_resuming() {
+    fn terminal_waiter_loses_all_wait_state_without_resuming() {
         use crate::scheduler::wait_index::WaitKey;
 
         let mut table = TaskTable::new();
         table.insert(Tcb::root("root", SchedulerBudget::default()));
-        table.set_wait("root", Some(WaitReason::Approval));
+        table.register_wait_set(
+            "root",
+            WaitSet {
+                mode: WaitMode::Any,
+                conditions: vec![WaitCondition::Approval(ApprovalId("pending".into()))],
+            },
+        );
         table.get_mut("root").unwrap().state = TaskLifecycle::Done(TerminationReason::UserAbort);
 
         let key = WaitKey::Approval(ApprovalId(CompactString::from("pending")));
@@ -1559,16 +1468,12 @@ mod tests {
             task.state,
             TaskLifecycle::Done(TerminationReason::UserAbort)
         );
-        assert!(task.wait.is_none());
         assert!(task.wait_set.is_none());
         assert!(table.wait_index().lookup(&key).is_empty());
     }
 
     #[test]
     fn timer_wakes_exactly_at_deadline_not_before() {
-        // `WaitReason`/`Tcb.wait` stays legacy-only (spc_003-01's explicit boundary: not
-        // modified). `Timer` has no `WaitReason` counterpart, so the `WaitIndex` alone is the
-        // source of truth for whether a task is still waiting on one.
         let mut table = TaskTable::new();
         table.insert(Tcb::root("root", SchedulerBudget::default()));
         table.wait_for_timer("root", LogicalDeadline(1_000));
@@ -1585,38 +1490,25 @@ mod tests {
     }
 
     #[test]
-    fn set_wait_syncs_the_wait_index() {
+    fn wait_set_syncs_the_wait_index() {
         let mut table = TaskTable::new();
         table.insert(Tcb::root("root", SchedulerBudget::default()));
 
-        table.set_wait("root", Some(WaitReason::Approval));
-        assert_eq!(table.get("root").unwrap().wait, Some(WaitReason::Approval));
-        let (condition, _mode) = <(WaitCondition, WaitMode)>::from(WaitReason::Approval);
-        let key = crate::scheduler::wait_index::WaitKey::Approval(match condition {
-            WaitCondition::Approval(id) => id,
-            _ => unreachable!(),
-        });
+        let approval = ApprovalId("pending".into());
+        table.register_wait_set(
+            "root",
+            WaitSet {
+                mode: WaitMode::Any,
+                conditions: vec![WaitCondition::Approval(approval.clone())],
+            },
+        );
+        assert!(table.get("root").unwrap().wait_set.is_some());
+        let key = crate::scheduler::wait_index::WaitKey::Approval(approval);
         assert_eq!(table.wait_index().lookup(&key), &[TaskId::from("root")]);
 
-        table.set_wait("root", None);
-        assert_eq!(table.get("root").unwrap().wait, None);
+        table.clear_wait("root");
+        assert!(table.get("root").unwrap().wait_set.is_none());
         assert!(table.wait_index().lookup(&key).is_empty());
-    }
-
-    #[test]
-    fn wait_reason_approval_converts_to_single_approval_condition() {
-        let (condition, mode) = <(WaitCondition, WaitMode)>::from(WaitReason::Approval);
-        assert!(matches!(condition, WaitCondition::Approval(_)));
-        assert_eq!(mode, WaitMode::Any);
-    }
-
-    #[test]
-    fn wait_reason_sub_agent_join_converts_to_children_wait_all() {
-        let ids = vec![TaskId::from("child-1"), TaskId::from("child-2")];
-        let (condition, mode) =
-            <(WaitCondition, WaitMode)>::from(WaitReason::SubAgentJoin(ids.clone()));
-        assert_eq!(condition, WaitCondition::Children(ids));
-        assert_eq!(mode, WaitMode::All);
     }
 
     #[test]
@@ -1688,22 +1580,19 @@ mod tests {
 
     #[test]
     fn rebuild_wait_index_recovers_a_restored_waits_index_entry() {
-        // Mirrors what checkpoint restore actually does: build the Tcb with `.wait` already set
-        // (as `restore_task_wait` + direct field assignment does in `driver.rs`), never through
-        // `TaskTable::set_wait`. Before the fix, the WaitIndex has no record of this task at all.
         let mut table = TaskTable::new();
         let mut root = Tcb::root("root", SchedulerBudget::default());
-        root.wait = Some(WaitReason::Approval);
+        root.wait_set = Some(DurableWaitSet {
+            mode: WaitMode::Any,
+            conditions: vec![WaitCondition::Approval(ApprovalId("pending".into()))],
+            satisfied: BTreeSet::new(),
+        });
         table.insert(root);
 
-        let (condition, _mode) = <(WaitCondition, WaitMode)>::from(WaitReason::Approval);
-        let key = crate::scheduler::wait_index::WaitKey::Approval(match condition {
-            WaitCondition::Approval(id) => id,
-            _ => unreachable!(),
-        });
+        let key = crate::scheduler::wait_index::WaitKey::Approval(ApprovalId("pending".into()));
         assert!(
             table.wait_index().lookup(&key).is_empty(),
-            "sanity: inserting a Tcb with .wait already set must NOT auto-sync WaitIndex"
+            "inserting a Tcb does not mutate the derived WaitIndex"
         );
 
         table.rebuild_wait_index();
@@ -1715,17 +1604,17 @@ mod tests {
     fn rebuild_wait_index_is_idempotent() {
         let mut table = TaskTable::new();
         let mut root = Tcb::root("root", SchedulerBudget::default());
-        root.wait = Some(WaitReason::Approval);
+        root.wait_set = Some(DurableWaitSet {
+            mode: WaitMode::Any,
+            conditions: vec![WaitCondition::Approval(ApprovalId("pending".into()))],
+            satisfied: BTreeSet::new(),
+        });
         table.insert(root);
 
         table.rebuild_wait_index();
         table.rebuild_wait_index();
 
-        let (condition, _mode) = <(WaitCondition, WaitMode)>::from(WaitReason::Approval);
-        let key = crate::scheduler::wait_index::WaitKey::Approval(match condition {
-            WaitCondition::Approval(id) => id,
-            _ => unreachable!(),
-        });
+        let key = crate::scheduler::wait_index::WaitKey::Approval(ApprovalId("pending".into()));
         assert_eq!(
             table.wait_index().lookup(&key),
             &[TaskId::from("root")],

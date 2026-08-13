@@ -90,7 +90,7 @@ describe("spc_015-06 document/video content policy", () => {
   })
 
   it("matches the shared cross-SDK content policy fixture", () => {
-    const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/provider-content-policy/v1.json"), "utf8")) as {
+    const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/provider-content-policy/canonical.json"), "utf8")) as {
       cases: Array<{ protocol: string; modality: "text" | "image" | "audio" | "video" | "file"; placement: "message" | "tool_result"; disposition: string }>
     }
     for (const testCase of fixture.cases) {

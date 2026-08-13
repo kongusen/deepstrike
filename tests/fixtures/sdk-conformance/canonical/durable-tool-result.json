@@ -1,0 +1,14 @@
+{
+  "id": "durable-tool-result",
+  "domain": "durable_tool_result",
+  "input": {
+    "fixture": "durable-content/canonical-tool-result.json"
+  },
+  "expected": {
+    "canonical": {
+      "call_id": "call-weather",
+      "is_error": false,
+      "blockTypes": ["text", "image", "file", "video"]
+    }
+  }
+}

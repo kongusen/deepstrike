@@ -117,13 +117,13 @@ export const registryEvidence: readonly RegistryRuleEvidence[] = [
   {
     ruleId: "provider-prefix-routing",
     classification: "routing",
-    source: "node/tests/characterization/__golden__/model-facts-baseline.json",
+    source: "node/tests/model-registry.test.ts",
     verifiedAt: "2026-08-12",
   },
   {
     ruleId: "runtime-policy-resolution",
     classification: "policy",
-    source: "node/tests/characterization/__golden__/model-facts-baseline.json",
+    source: "node/tests/model-registry.test.ts",
     verifiedAt: "2026-08-12",
   },
   {

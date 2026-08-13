@@ -7,14 +7,14 @@ from deepstrike import Agent, lower_agent, normalize_agent
 
 
 FIXTURE = json.loads(
-    (Path(__file__).parents[2] / "tests/fixtures/agent-ir/v1-agent.json").read_text(encoding="utf-8")
+    (Path(__file__).parents[2] / "tests/fixtures/agent-ir/canonical-agent.json").read_text(encoding="utf-8")
 )
 
 
 def test_agent_ir_lowers_the_shared_v1_fixture_without_dropping_extensions():
     spec = lower_agent(normalize_agent(FIXTURE))
 
-    assert spec["version"] == 1
+    assert "version" not in spec
     assert spec["name"] == "researcher"
     assert spec["description"] == "Finds and verifies source material."
     assert spec["instructions"] == "Cite primary sources and state uncertainty."

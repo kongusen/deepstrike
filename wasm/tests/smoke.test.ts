@@ -3,10 +3,9 @@ import { WorkingMemory } from "../src/memory/index.js"
 import { ScheduledPrompt } from "../src/signals/index.js"
 import { PermissionManager, PermissionMode } from "../src/safety/index.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
-import { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from "../src/providers/openai.js"
+import { OpenAIProvider, qwen, deepseek, minimax } from "../src/providers/openai.js"
 import { RuntimeRunner, collectText, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import { workflowNodeSpecToKernel } from "../src/runtime/types/agent.js"
-import { Governance } from "../src/governance.js"
 import type { LLMProvider, Message, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import { kernelEvents, SignalRouter } from "@deepstrike/wasm-kernel"
 
@@ -119,16 +118,16 @@ describe("Provider instantiation", () => {
     expect(() => new AnthropicProvider("sk-test")).not.toThrow()
   })
   it("OpenAIProvider constructs", () => {
-    expect(() => new OpenAIProvider("sk-test")).not.toThrow()
+    expect(() => new OpenAIProvider({ apiKey: "sk-test" })).not.toThrow()
   })
-  it("QwenProvider constructs", () => {
-    expect(() => new QwenProvider("sk-test")).not.toThrow()
+  it("qwen factory constructs", () => {
+    expect(() => qwen({ apiKey: "sk-test" })).not.toThrow()
   })
-  it("DeepSeekProvider constructs", () => {
-    expect(() => new DeepSeekProvider("sk-test")).not.toThrow()
+  it("deepseek factory constructs", () => {
+    expect(() => deepseek({ apiKey: "sk-test" })).not.toThrow()
   })
-  it("MiniMaxProvider constructs", () => {
-    expect(() => new MiniMaxProvider("sk-test")).not.toThrow()
+  it("minimax factory constructs", () => {
+    expect(() => minimax({ apiKey: "sk-test" })).not.toThrow()
   })
 })
 
@@ -206,7 +205,7 @@ describe("RuntimeRunner", () => {
     expect(text).toBe("hi")
   })
 
-  it("emits configure_run with resourceQuota + versioned schedulerPolicy bundled", async () => {
+  it("emits configure_run with resourceQuota + canonical schedulerPolicy bundled", async () => {
     kernelEvents.length = 0
     const provider: LLMProvider = {
       async *stream() {
@@ -222,7 +221,6 @@ describe("RuntimeRunner", () => {
       executionPlane: new LocalExecutionPlane(),
       maxTokens: 2048,
       schedulerPolicy: {
-        version: 1,
         criticalPathWeight: 1_000_000,
         fanoutWeight: 10_000,
         ageWeight: 1_000,
@@ -278,7 +276,6 @@ describe("RuntimeRunner", () => {
     })
     expect(configure!.config.prompt_budget).toBeUndefined()
     expect(configure!.config.context_policy).toEqual(expect.objectContaining({
-      version: 1,
       pressure_thresholds_ppm: {
         snip: 720_000,
         micro: 800_000,
@@ -412,25 +409,5 @@ describe("RuntimeRunner", () => {
       toolName: "needs_approval",
       reason: "user declined",
     }))
-  })
-})
-
-describe("Governance", () => {
-  it("allows by default before kernel attach", () => {
-    const gov = new Governance()
-    const verdict = gov.evaluate("read_file", "{}")
-    expect(verdict.kind).toBe("allow")
-  })
-
-  it("blockTool queues before attach, applies after", async () => {
-    const gov = new Governance()
-    gov.blockTool("dangerous")
-    // simulate kernel attach
-    const kernel = await import("@deepstrike/wasm-kernel")
-    gov._attach(kernel)
-    // after attach, blocked tools are applied to kernel Governance
-    const verdict = gov.evaluate("dangerous", "{}")
-    // mock kernel.Governance.evaluate always returns allow, but blockTool was called
-    expect(verdict.kind).toBe("allow") // mock doesn't implement veto logic
   })
 })

@@ -2,7 +2,6 @@
   "expect": "unknown_variant",
   "note": "§7.10 rule 6 · SpoolLargeResult is deleted; a host cannot declare support for it",
   "envelope": {
-    "abi_version": 3,
     "operation_id": "op-2026-07-29-0001",
     "input_id": "cfg-reject-5",
     "observed_at_ms": "1753747200000",

@@ -15,7 +15,6 @@ Every input carries correlated operation, input, and observation-time identities
 
 ```json
 {
-  "abi_version": 3,
   "operation_id": "op-42",
   "input_id": "input-7",
   "observed_at_ms": "1785542400000",
@@ -34,7 +33,7 @@ Every input carries correlated operation, input, and observation-time identities
 }
 ```
 
-The kernel accepts only the current revision. It does not negotiate, downgrade, or restore an old operation through an adapter.
+The kernel accepts this envelope shape only. It does not negotiate, downgrade, or restore an old operation through an adapter.
 
 ## Five Inputs
 
@@ -89,4 +88,4 @@ Model tool calls derive their caller from the pending provider effect. Canonical
 
 - [Execution model](./execution-model)
 - [Session and restore](./session-replay)
-- [Canonical Kernel ABI ADR](/en/decisions/005-canonical-kernel-abi)
+- [One Canonical Mechanism ADR](/en/decisions/006-one-canonical-mechanism)

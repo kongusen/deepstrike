@@ -35,8 +35,7 @@ class CreatorVerifierMode:
     """
     The simplest multi-agent collaboration pattern.
 
-    By default uses the kernel spawn path (``AgentPool.ensure_coordinator``).
-    Pass ``use_legacy_runners=True`` to fall back to independent ``runner.run()`` sessions.
+    Uses the kernel spawn path through an explicitly configured coordinator.
     """
 
     def __init__(
@@ -44,17 +43,15 @@ class CreatorVerifierMode:
         pool: "AgentPool",
         *,
         max_attempts: int = 3,
-        coordinator_session_id: str | None = None,
     ) -> None:
         self._pool = pool
         self._max_attempts = max_attempts
-        self._coordinator_session_id = coordinator_session_id
         self._total = 0
         self._failed = 0
 
     async def run(self, contract: VerificationContract) -> ContractOutcome:
         self._total += 1
-        self._pool.ensure_coordinator(self._coordinator_session_id)
+        self._pool.ensure_coordinator()
         loop = AttemptLoop(
             body=CreatorVerifierBody(self._pool, contract),
             judge=StructuredContractJudge(self._pool, contract),
@@ -134,17 +131,15 @@ class OrchestrationMode:
         pool: "AgentPool",
         *,
         max_attempts: int = 3,
-        coordinator_session_id: str | None = None,
     ) -> None:
         self._pool = pool
         self._inner = CreatorVerifierMode(
             pool,
             max_attempts=max_attempts,
-            coordinator_session_id=coordinator_session_id,
         )
 
     async def run(self, goal: str) -> tuple[ContractOutcome, VerificationContract]:
-        self._pool.ensure_coordinator(self._inner._coordinator_session_id)
+        self._pool.ensure_coordinator()
         contract_json = await self._pool.run_orchestrator(goal)
         contract = self._parse_contract(contract_json, goal)
         outcome = await self._inner.run(contract)

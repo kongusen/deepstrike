@@ -23,7 +23,6 @@
 //! decisions converge on [`Disposition`]; signals feed the P2 scheduler instead.
 
 use crate::mm::memory::MemoryRecord;
-use crate::scheduler::tcb::WaitReason;
 use crate::types::agent::IsolationManifest;
 use crate::types::message::ToolCall;
 use crate::types::policy::GovernanceVerdict;
@@ -62,7 +61,7 @@ pub enum Disposition {
     Deny { stage: &'static str, reason: String },
     /// Suspend the calling task until an external party resolves it (e.g. human approval).
     /// `reason` carries the human-readable justification (e.g. the governance `AskUser` reason).
-    Gate { wait: WaitReason, reason: String },
+    Gate { reason: String },
     /// Accept but queue for later scheduling (backpressure).
     Defer { slot: u32 },
     /// Rejected by a rate limiter; retry permitted after the delay.
@@ -86,10 +85,7 @@ impl From<GovernanceVerdict> for Disposition {
             GovernanceVerdict::RateLimited { retry_after_ms } => {
                 Disposition::RateLimited { retry_after_ms }
             }
-            GovernanceVerdict::AskUser { reason } => Disposition::Gate {
-                wait: WaitReason::Approval,
-                reason,
-            },
+            GovernanceVerdict::AskUser { reason } => Disposition::Gate { reason },
         }
     }
 }
@@ -135,7 +131,7 @@ mod tests {
         .into();
         assert!(matches!(
             &d,
-            Disposition::Gate { wait: WaitReason::Approval, reason } if reason == "confirm"
+            Disposition::Gate { reason } if reason == "confirm"
         ));
         assert!(!d.is_allowed());
     }

@@ -6,9 +6,8 @@ import { collectText } from "../src/runtime/runner.js"
 import type { LLMProvider, Message, StreamEvent, ToolSchema } from "../src/types.js"
 
 /**
- * P1-B B3 end-to-end: loading a skill that declares `allowed_tools` narrows the toolset the kernel
- * exposes on the NEXT turn to `meta ∪ stable-core ∪ allowed_tools`. The skill's own load turn is
- * still unnarrowed (it only takes effect once active). Meta-tools stay so more skills can load.
+ * P1-B B3 end-to-end: loading a skill widens the canonical baseline on the next turn by exactly
+ * its declared `allowed_tools`. Meta-tools remain reachable so more skills can load.
  */
 function toolsPerTurnProvider(captured: string[][]): LLMProvider {
   let call = 0
@@ -38,7 +37,7 @@ const baseTools = () => [
 ]
 
 describe("P1-B B3: skill-activated tool gating (end-to-end)", () => {
-  it("narrows the exposed toolset after a skill with allowed_tools loads", async () => {
+  it("widens the exposed toolset after a skill with allowed_tools loads", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ds-gate-skill-"))
     await writeFile(
       join(dir, "debug.md"),
@@ -48,6 +47,7 @@ describe("P1-B B3: skill-activated tool gating (end-to-end)", () => {
     const perTurn: string[][] = []
     const { runner } = createRunner(toolsPerTurnProvider(perTurn), baseTools(), {
       skillDir: dir,
+      baselineToolIds: ["read"],
       stableCoreToolIds: ["bash"], // always exposed under gating
     })
     await collectText(runner.run({ sessionId: "gate-skill", goal: "debug it" }))
@@ -56,27 +56,34 @@ describe("P1-B B3: skill-activated tool gating (end-to-end)", () => {
     const loadTurn = perTurn[0]
     const afterTurn = perTurn[perTurn.length - 1]
 
-    // Turn 1 (the load turn): not yet narrowed — every base tool visible, plus the skill meta-tool.
-    expect(loadTurn).toEqual(expect.arrayContaining(["read", "write", "bash", "grep", "skill"]))
+    // Turn 1: canonical baseline + stable-core + meta.
+    expect(loadTurn).toEqual(expect.arrayContaining(["read", "bash", "skill"]))
+    expect(loadTurn).not.toContain("write")
+    expect(loadTurn).not.toContain("grep")
 
-    // Turn 2 (skill active): narrowed to declared (read, grep) ∪ stable-core (bash) ∪ meta (skill).
+    // Turn 2: the active skill adds grep; unrelated write remains hidden.
     expect(afterTurn).toEqual(expect.arrayContaining(["read", "grep", "bash", "skill"]))
     expect(afterTurn).not.toContain("write")
   })
 
-  it("does not narrow when the skill load fails (errs-open)", async () => {
+  it("keeps the minimal baseline when the skill load fails", async () => {
     // The provider loads "debug", but this dir has no such skill ⇒ the load errors ⇒ no activation
-    // ⇒ no narrowing. Failed/missing skills must never gate tools.
+    // ⇒ no widening. Failed/missing skills cannot expand exposure.
     const dir = await mkdtemp(join(tmpdir(), "ds-gate-miss-"))
     await writeFile(join(dir, "other.md"), "---\nname: other\ndescription: x\nallowed_tools: read\n---\nbody")
 
     const perTurn: string[][] = []
     const { runner } = createRunner(toolsPerTurnProvider(perTurn), baseTools(), {
       skillDir: dir,
+      baselineToolIds: ["read"],
       stableCoreToolIds: ["bash"],
     })
     await collectText(runner.run({ sessionId: "gate-miss", goal: "go" }))
-    for (const t of perTurn) expect(t).toEqual(expect.arrayContaining(["read", "write", "bash", "grep"]))
+    for (const t of perTurn) {
+      expect(t).toEqual(expect.arrayContaining(["read", "bash"]))
+      expect(t).not.toContain("write")
+      expect(t).not.toContain("grep")
+    }
   })
 })
 

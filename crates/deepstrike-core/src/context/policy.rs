@@ -1,14 +1,12 @@
 use super::config::ContextConfig;
 
-pub const CONTEXT_POLICY_VERSION: u32 = 1;
 pub const PPM_SCALE: u32 = 1_000_000;
 
 /// Stable public context policy. Algorithm-only compactor knobs intentionally stay in
 /// `ContextConfig` and are not part of this replay contract.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ContextPolicyV1 {
-    pub version: u32,
+pub struct ContextPolicy {
     pub pressure_thresholds_ppm: PressureThresholdsPpm,
     pub target_after_compress_ppm: u32,
     pub preserve_recent_turns: u32,
@@ -27,14 +25,8 @@ pub struct PressureThresholdsPpm {
     pub renewal: u32,
 }
 
-impl ContextPolicyV1 {
+impl ContextPolicy {
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != CONTEXT_POLICY_VERSION {
-            return Err(format!(
-                "unsupported context policy version {}; expected {}",
-                self.version, CONTEXT_POLICY_VERSION
-            ));
-        }
         let p = &self.pressure_thresholds_ppm;
         if [p.snip, p.micro, p.collapse, p.auto, p.renewal]
             .into_iter()
@@ -84,9 +76,8 @@ fn ppm_ratio(value: u32) -> f64 {
 mod tests {
     use super::*;
 
-    fn policy() -> ContextPolicyV1 {
-        ContextPolicyV1 {
-            version: 1,
+    fn policy() -> ContextPolicy {
+        ContextPolicy {
             pressure_thresholds_ppm: PressureThresholdsPpm {
                 snip: 700_000,
                 micro: 800_000,
@@ -120,5 +111,12 @@ mod tests {
         let mut invalid = policy();
         invalid.target_after_compress_ppm = 700_000;
         assert!(invalid.validate().unwrap_err().contains("lower than"));
+    }
+
+    #[test]
+    fn rejects_the_removed_version_field() {
+        let mut value = serde_json::to_value(policy()).unwrap();
+        value["version"] = serde_json::json!(1);
+        assert!(serde_json::from_value::<ContextPolicy>(value).is_err());
     }
 }

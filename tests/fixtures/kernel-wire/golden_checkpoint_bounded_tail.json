@@ -1,13 +1,11 @@
 {
-  "base_state_digest": "sha256:417333774232eadd8d6f03e648662b1a5bbb65deea449618ec1e76fc7711ab94",
+  "base_state_digest": "sha256:c912d63147775d157ee98077d7cb53c40276c8991b5662a9544d6f6f6aa618ef",
   "checkpoint": {
-    "abi_version": 3,
-    "base_record_digest": "sha256:c08a9b89170a4f5240a9e98c81ffe04c20ae0736e07802b18e8bc7aa4035a099",
+    "base_record_digest": "sha256:059e76ca5c16f1159ff5b45eef3485e58d709605849fbdc26614d3e46d379baa",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:256eced35822f6ea1da7f0a61b87c850a904e3e394d2a7577c029fab1f2650de",
-    "checkpoint_version": 2,
-    "covered_transaction_head_digest": "sha256:04f2fae3701e69e83a670a6ca99f5f8df745a7ae93d7669bd975a5a39b1cf53f",
-    "genesis_digest": "sha256:5fb35043fe336d8a1fffe0147b0f96fc00d27eab52ad4374cf70dada23c5c285",
+    "checkpoint_digest": "sha256:c5ba5a653b958e12a0eb75c617becf285bab555dc76baedca63824ac794f808f",
+    "covered_transaction_head_digest": "sha256:dc3dc404530c3cdb5f2c902da3b9effcae52a572c76337f22da4d23d1911b2cc",
+    "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
@@ -55,6 +53,20 @@
         }
       },
       "scheduler": {
+        "advertised_tool_ids": [
+          "memory",
+          "publish_channel",
+          "read_object",
+          "read_result",
+          "receive_channel",
+          "receive_mailbox",
+          "search",
+          "send_message",
+          "skill",
+          "start_workflow",
+          "submit_workflow_nodes",
+          "update_plan"
+        ],
         "attempts": [],
         "entropy": {
           "disarmed": false,
@@ -65,6 +77,23 @@
         "milestone": null,
         "queued_signals": [],
         "rounds_completed": 0,
+        "run_spec": {
+          "exposure_baseline": [
+            "start_workflow",
+            "submit_workflow_nodes",
+            "skill",
+            "update_plan",
+            "memory",
+            "read_result",
+            "send_message",
+            "publish_channel",
+            "receive_mailbox",
+            "receive_channel",
+            "read_object",
+            "search"
+          ],
+          "goal": "write the research brief"
+        },
         "signal_dedupe_keys": [],
         "started_at_ms": "1700000001000",
         "subagents_spawned": 0,
@@ -78,9 +107,7 @@
             "task_id": "root",
             "termination": null,
             "tokens_used": "0",
-            "turns_used": 0,
-            "wait": null,
-            "waiting_on": []
+            "turns_used": 0
           }
         ],
         "total_tokens": "0",
@@ -93,7 +120,6 @@
         "authored_memory_writes": [],
         "consumed_call_ids": [],
         "live_config": {
-          "abi_version": 3,
           "budget_grant": null,
           "context_policy": {
             "collapse_old_assistant_narration": true,
@@ -138,8 +164,7 @@
             "knowledge_enabled": false,
             "memory_enabled": false,
             "plan_tool_enabled": false,
-            "stable_core_tool_ids": [],
-            "tool_dispatch_gate": "exposed"
+            "stable_core_tool_ids": []
           },
           "governance_policy": {
             "constraints": [],
@@ -293,12 +318,12 @@
         "accepted_inputs": [
           {
             "input_id": "in-configure",
-            "record_digest": "sha256:5fb35043fe336d8a1fffe0147b0f96fc00d27eab52ad4374cf70dada23c5c285",
+            "record_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
             "step_seq": "0"
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:c08a9b89170a4f5240a9e98c81ffe04c20ae0736e07802b18e8bc7aa4035a099",
+            "record_digest": "sha256:059e76ca5c16f1159ff5b45eef3485e58d709605849fbdc26614d3e46d379baa",
             "step_seq": "1"
           }
         ],
@@ -386,7 +411,6 @@
           }
         ],
         "resolved_config": {
-          "abi_version": 3,
           "budget_grant": null,
           "context_policy": {
             "collapse_old_assistant_narration": true,
@@ -431,8 +455,7 @@
             "knowledge_enabled": false,
             "memory_enabled": false,
             "plan_tool_enabled": false,
-            "stable_core_tool_ids": [],
-            "tool_dispatch_gate": "exposed"
+            "stable_core_tool_ids": []
           },
           "governance_policy": {
             "constraints": [],
@@ -564,12 +587,11 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:417333774232eadd8d6f03e648662b1a5bbb65deea449618ec1e76fc7711ab94",
-    "tail_digest": "sha256:d68542c0829e448b5f90d2271140f9d4210f66270af479e6ba4fba9568b6e72f",
+    "state_digest": "sha256:c912d63147775d157ee98077d7cb53c40276c8991b5662a9544d6f6f6aa618ef",
+    "tail_digest": "sha256:9913061ea49e368f8382a9ba026dbb3eaaeb71750a6ebe838f774e8adcb9b6ce",
     "tail_inputs": [
       {
         "input": {
-          "abi_version": 3,
           "input": {
             "effect_id": "op-driver-1:step:1:effect:0",
             "kind": "resolve_effect",
@@ -600,12 +622,11 @@
           "observed_at_ms": "1700000002000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:203600b823e8065ea17e5e1e6ee46e8908906c1fac9d20981a43d4c943e87dab",
+        "record_digest": "sha256:017af268ff84605ce1b18fefee4c99011b5e19f9d91133a0957f61ddcf010000",
         "step_seq": "2"
       },
       {
         "input": {
-          "abi_version": 3,
           "input": {
             "effect_id": "op-driver-1:step:2:effect:0",
             "kind": "resolve_effect",
@@ -630,12 +651,11 @@
           "observed_at_ms": "1700000003000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:a0060546afe8545cd74f6efb671db4eb4dc645fa7898e2cf2be6e86a4b325d5c",
+        "record_digest": "sha256:8d5e430634889f6d6c2e5414c69cdf122e2d567135a1a6b018510e2d698b16a6",
         "step_seq": "3"
       },
       {
         "input": {
-          "abi_version": 3,
           "input": {
             "effect_id": "op-driver-1:step:3:effect:0",
             "kind": "resolve_effect",
@@ -658,7 +678,7 @@
           "observed_at_ms": "1700000004000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:04f2fae3701e69e83a670a6ca99f5f8df745a7ae93d7669bd975a5a39b1cf53f",
+        "record_digest": "sha256:dc3dc404530c3cdb5f2c902da3b9effcae52a572c76337f22da4d23d1911b2cc",
         "step_seq": "4"
       }
     ],

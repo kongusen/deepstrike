@@ -59,20 +59,6 @@ export function judgeGoal(criterion: string, leftOutput: string, rightOutput: st
   )
 }
 
-/** Extract a loop stop signal from a loop iteration's output. Returns the `loopContinue` value, or
- *  `undefined` when the agent gave no clear signal (⇒ the kernel runs the loop to `max_iters`).
- *  Accepts `{loop_continue: bool}` or, leniently, `{done: bool}` (continue = !done). */
-export function extractLoopContinue(text: string): boolean | undefined {
-  const v = extractJsonValue(text)
-  if (v && typeof v === "object" && !Array.isArray(v)) {
-    const o = v as Record<string, unknown>
-    if (typeof o.loop_continue === "boolean") return o.loop_continue
-    if (typeof o.loopContinue === "boolean") return o.loopContinue
-    if (typeof o.done === "boolean") return !o.done
-  }
-  return undefined
-}
-
 /** Extract the chosen branch label from a classifier's output. Prefers `{branch: "..."}`; falls back
  *  to a bare label string that exactly matches one of the valid labels. Returns `undefined` when no
  *  recognizable choice was made (the kernel then prunes every branch — a safe "none matched"). */

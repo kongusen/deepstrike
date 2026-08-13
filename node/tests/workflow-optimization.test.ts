@@ -141,7 +141,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
 })
 
 describe("W-N5: ReactiveSession.resume rebuilds peers, not vehicles", () => {
-  it("filters vehicle members and keeps legacy untagged memberships whole", async () => {
+  it("restores only explicitly tagged peer memberships", async () => {
     const store = new InMemoryGroupBudgetStore()
     store.join("g1", { sessionId: "alice", role: "reviewer", kind: "peer" })
     store.join("g1", { sessionId: "wf-abc123", role: "loop", kind: "vehicle" })
@@ -153,14 +153,13 @@ describe("W-N5: ReactiveSession.resume rebuilds peers, not vehicles", () => {
     })
     expect(session.peers().sort()).toEqual(["alice", "bob"])
 
-    // Legacy: nothing tagged → every member resumes as a peer (old behavior preserved).
-    const legacy = new InMemoryGroupBudgetStore()
-    legacy.join("g2", { sessionId: "solo" })
-    const legacySession = await ReactiveSession.resume({
-      runGroup: { id: "g2", budgetStore: legacy },
+    const untagged = new InMemoryGroupBudgetStore()
+    untagged.join("g2", { sessionId: "solo" })
+    const strictSession = await ReactiveSession.resume({
+      runGroup: { id: "g2", budgetStore: untagged },
       turnPolicy: async () => [],
       makeRunner: () => { throw new Error("not driven in this test") },
     })
-    expect(legacySession.peers()).toEqual(["solo"])
+    expect(strictSession.peers()).toEqual([])
   })
 })

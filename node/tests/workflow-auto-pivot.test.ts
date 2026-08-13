@@ -1,5 +1,5 @@
 /**
- * M5 v2.1: top-level auto-pivot. When a TOP-LEVEL agent (not a workflow node) calls the
+ * M5 top-level auto-pivot. When a TOP-LEVEL agent (not a workflow node) calls the
  * `start_workflow` tool mid-conversation, the runner records the authored spec, drives it in its own
  * kernel at the safe point (after the tool turn resolves → kernel back in Reason, not suspended), then
  * injects the workflow outcome into context and resumes the reason loop. Pure SDK — no kernel change.
@@ -37,7 +37,7 @@ class AuthoringProvider implements LLMProvider {
   }
 }
 
-describe("M5 v2.1 top-level start_workflow auto-pivot", () => {
+describe("M5 top-level start_workflow auto-pivot", () => {
   it("drives the authored sub-workflow in-kernel and resumes the agent with the outcome", async () => {
     const ran: string[] = []
     // Mock workflow driver: each authored node returns a canned completion (no real LLM).
@@ -68,6 +68,7 @@ describe("M5 v2.1 top-level start_workflow auto-pivot", () => {
       executionPlane: plane,
       maxTokens: 8000,
       maxTurns: 5,
+      baselineToolIds: ["start_workflow"],
       subAgentOrchestrator: orchestrator as never,
     } as never)
 
@@ -103,6 +104,7 @@ describe("M5 v2.1 top-level start_workflow auto-pivot", () => {
       executionPlane: plane,
       maxTokens: 8000,
       maxTurns: 5,
+      baselineToolIds: ["start_workflow"],
       resourceQuota: { maxWorkflowNodes: 1 },
     } as never)
 

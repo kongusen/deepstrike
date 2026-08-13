@@ -1,6 +1,6 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
-  <title id="title">DeepStrike Self-Harness v2</title>
+  <title id="title">DeepStrike Self-Harness</title>
   <desc id="desc">Verifier-anchored failure evidence is isolated by scope, clustered, mined, patched only through whitelisted surfaces, screened by promotion tier, validated on held-in and held-out tasks, human-vetoed, and persisted as content-addressed lineage.</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">

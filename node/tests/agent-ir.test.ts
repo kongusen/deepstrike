@@ -25,10 +25,10 @@ describe("spc_001-03: AgentSpec IR + lowerAgent()", () => {
     expect(spec.capabilities).toEqual([])
   })
 
-  it("carries providerOptions through unchanged", () => {
+  it("carries provider options through canonical extensions", () => {
     const agent = new Agent({ name: "vendorish", providerOptions: { openai: { reasoningEffort: "high" } } })
     const spec = lowerAgent(agent)
-    expect(spec.providerOptions).toEqual({ openai: { reasoningEffort: "high" } })
+    expect(spec.extensions).toEqual({ openai: { reasoningEffort: "high" } })
   })
 
   it("is a pure function: calling it twice on the same Agent yields deep-equal, independently-mutable results", () => {

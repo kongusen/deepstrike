@@ -94,7 +94,6 @@ describe("FileSessionLog", () => {
       kind: "prompt_measured",
       turn: 1,
       measurement: {
-        version: 1,
         requestFingerprint: "sha256:measurement",
         inputTokens: 42,
         source: { kind: "heuristic" },
@@ -106,7 +105,6 @@ describe("FileSessionLog", () => {
       kind: "prompt_measured",
       turn: 1,
       measurement: {
-        version: 1,
         requestFingerprint: "sha256:measurement",
         inputTokens: 42,
         source: { kind: "heuristic" },

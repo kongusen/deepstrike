@@ -4,7 +4,7 @@
  * Five layers (cost / latency / quality / contextHealth / mechanism) cover every mechanism in the
  * §7 matrix. Each metric carries its own `mode` so a `replay` cost can sit next to a `live` quality
  * value in the same MetricSet, and the diff renderer can mark live values as `n±σ`. This is BM0a:
- * just the schema — producers (BM0b runner, adapters/dwell-report) fill in what they have.
+ * just the schema — producers fill in the metrics they have.
  *
  * @typedef {"replay" | "live" | "mixed"} MetricMode
  *

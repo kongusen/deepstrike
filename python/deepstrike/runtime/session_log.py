@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol, TypedDict
 
 from deepstrike._kernel import ToolCall, ToolResult
+from deepstrike.runtime.durable_content import decode_durable_content
 from deepstrike.runtime.kernel_event_log import (
     primitive_for_kind,
 )
@@ -159,7 +160,6 @@ class EntropySampleEvent(TypedDict, total=False):
     kind: Literal["entropy_sample"]
     turn: int
     score: float
-    score_version: int
     rho: float
     repeat_pressure: float
     failure_rate: float
@@ -511,17 +511,39 @@ class FileSessionLog:
                 os.close(directory_fd)
 
     def _read_records(self, session_id: str) -> list[dict]:
-        """Persisted lines. The two ``record_type`` variants (``kernel_genesis`` /
-        ``kernel_transaction``) are **read-compat only**: kernel records used to share this file
-        (and its sequence space) with business events; they now live in the separate
-        :class:`FileKernelJournal` under ``<dir>/kernel-journal``. Keeping them parseable means an
-        older file still loads instead of throwing — it does not migrate those records.
-        """
+        """Read only the canonical ``{seq, event}`` session-record shape."""
         path = self._path(session_id)
         if not path.exists():
             return []
         with path.open(encoding="utf-8") as file:
-            return [json.loads(line) for line in file if line.strip()]
+            return [_decode_persisted_session_record(json.loads(line)) for line in file if line.strip()]
+
+
+def _decode_persisted_session_record(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("session record must be an object")
+    if set(value) != {"seq", "event"}:
+        raise ValueError("session record must contain only seq and event")
+    seq = value["seq"]
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+        raise ValueError("session record seq must be a non-negative integer")
+    event = value["event"]
+    if not isinstance(event, dict):
+        raise ValueError("session record event must be an object")
+    if event.get("kind") == "llm_completed" and "provider_replay" in event:
+        from deepstrike.runtime.provider_replay import is_replay_compatible_with_provider
+        is_replay_compatible_with_provider(event["provider_replay"], None)
+    if event.get("kind") == "tool_completed":
+        results = event.get("results")
+        if not isinstance(results, list):
+            raise ValueError("tool_completed results must be an array")
+        for result in results:
+            if not isinstance(result, dict):
+                raise ValueError("tool_completed result must be an object")
+            if "blocks" in result:
+                raise ValueError("tool_completed result has removed blocks field")
+            decode_durable_content(result.get("content"))
+    return value
 
 
 def _event_to_json(event: SessionEvent) -> dict:
@@ -540,6 +562,9 @@ def _event_to_json(event: SessionEvent) -> dict:
       "calls": [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in event["calls"]],
     }
   if kind == "tool_completed":
+    for result in event["results"]:
+      if not isinstance(result, dict) or not isinstance(result.get("content"), dict):
+        raise ValueError("tool_completed results require canonical content blocks")
     return {
       **event,
       "results": [
@@ -550,8 +575,7 @@ def _event_to_json(event: SessionEvent) -> dict:
           "is_fatal": r.get("is_fatal", False) if isinstance(r, dict) else getattr(r, "is_fatal", False),
           "error_kind": r.get("error_kind") if isinstance(r, dict) else getattr(r, "error_kind", None),
           "token_count": r.get("token_count") if isinstance(r, dict) else getattr(r, "token_count", None),
-          **({"content": r["content"]} if isinstance(r, dict) and r.get("content") else {}),
-          **({"blocks": r["blocks"]} if isinstance(r, dict) and r.get("blocks") else {}),
+          "content": r["content"],
         }
         for r in event["results"]
       ],
@@ -582,31 +606,13 @@ def _event_from_json(raw: dict) -> SessionEvent:
   if kind == "tool_completed":
     results = []
     for r in raw["results"]:
-      if r.get("content"):
-        results.append({
-          "call_id": r["call_id"], "output": r.get("output", ""),
-          "is_error": r.get("is_error", False), "token_count": r.get("token_count"),
-          "content": r["content"],
-        })
-        continue
-      if r.get("blocks"):
-        results.append({
-          "call_id": r["call_id"], "output": r.get("output", ""),
-          "is_error": r.get("is_error", False), "token_count": r.get("token_count"),
-          "blocks": r["blocks"],
-        })
-        continue
-      result = ToolResult(
-        call_id=r["call_id"],
-        output=r["output"],
-        is_error=r.get("is_error", False),
-        token_count=r.get("token_count"),
-      )
-      if hasattr(result, "is_fatal"):
-        result.is_fatal = r.get("is_fatal", False)
-      if hasattr(result, "error_kind"):
-        result.error_kind = r.get("error_kind")
-      results.append(result)
+      if not isinstance(r.get("content"), dict):
+        raise ValueError("tool_completed results require canonical content blocks")
+      results.append({
+        "call_id": r["call_id"], "output": r.get("output", ""),
+        "is_error": r.get("is_error", False), "token_count": r.get("token_count"),
+        "content": r["content"],
+      })
     return {
       "kind": "tool_completed",
       "turn": raw["turn"],

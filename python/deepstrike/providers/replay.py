@@ -42,7 +42,7 @@ def assistant_replay_key(content: str, tool_calls: list[ToolCall]) -> str:
 
 def openai_chat_wire_replay_fields(replay: dict[str, Any] | None) -> dict[str, Any]:
     """Only wire-safe reasoning fields may be merged into an OpenAI-compatible
-    request message. Envelope metadata (schema_version / provider / protocol /
+    request message. Envelope metadata (provider / protocol /
     model / native_message / tool_calls) is recovery bookkeeping and must never
     be sent to the provider."""
     if not replay:
@@ -65,7 +65,10 @@ class ReasoningReplayMixin:
         self._replay_fields = {}
 
     def remember_replay_fields(self, message: Message, fields: dict[str, Any]) -> None:
-        self._replay_fields[assistant_replay_key(message.content, message.tool_calls or [])] = fields
+        self._replay_fields[assistant_replay_key(message.content, message.tool_calls or [])] = {
+            "protocol": "openai-chat",
+            **fields,
+        }
 
     def peek_provider_replay(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
         fields = self._replay_fields.get(assistant_replay_key(content, tool_calls))
@@ -74,7 +77,9 @@ class ReasoningReplayMixin:
         return None
 
     def seed_provider_replay(self, content: str, tool_calls: list[ToolCall], replay: dict) -> None:
-        if "reasoning_content" in replay or "reasoning_details" in replay:
+        if replay.get("protocol") == "openai-chat" and (
+            "reasoning_content" in replay or "reasoning_details" in replay
+        ):
             self.remember_replay_fields(
                 Message(role="assistant", content=content, tool_calls=tool_calls or None),
                 dict(replay),
@@ -131,5 +136,5 @@ class ReasoningReplayMixin:
         if tool_calls or reasoning_content:
             self.remember_replay_fields(
                 Message(role="assistant", content=content, tool_calls=tool_calls),
-                {"reasoning_content": reasoning_content},
+                {"protocol": "openai-chat", "reasoning_content": reasoning_content},
             )

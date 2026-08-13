@@ -27,13 +27,11 @@ export function createRunner(
     onPermissionRequest?: (event: PermissionRequestEvent) => Promise<PermissionResponse | boolean> | PermissionResponse | boolean
     governancePolicy?: GovernancePolicy
     signalPolicy?: import("../../src/runtime/os-profile.js").SignalPolicy
-    promptBudget?: import("../../src/runtime/runner.js").PromptBudget
     asyncSummarizer?: AsyncSummarizer
     memorySummarizer?: MemorySummarizer
     memoryProvider?: LLMProvider
     allowedToolIds?: string[]
     baselineToolIds?: string[]
-    toolDispatchGate?: "exposed" | "registered"
     enablePlanTool?: boolean
     onTurnMetrics?: (m: import("../../src/runtime/runner.js").TurnMetrics) => void
     skillDir?: string
@@ -76,8 +74,11 @@ export function createRunner(
     memorySummarizer: opts.memorySummarizer,
     memoryProvider: opts.memoryProvider,
     allowedToolIds: opts.allowedToolIds,
-    baselineToolIds: opts.baselineToolIds,
-    toolDispatchGate: opts.toolDispatchGate,
+    // Tests that exercise tools declare them as the explicit baseline. Individual exposure tests
+    // construct RuntimeRunner directly when they need to verify the omitted-baseline contract.
+    baselineToolIds: Object.hasOwn(opts, "baselineToolIds")
+      ? opts.baselineToolIds
+      : tools.map(tool => tool.schema.name),
     enablePlanTool: opts.enablePlanTool,
     onTurnMetrics: opts.onTurnMetrics,
     skillDir: opts.skillDir,
@@ -94,7 +95,6 @@ export function createRunner(
     systemPrompt: opts.systemPrompt,
     instructions: opts.instructions,
     nudges: opts.nudges,
-    promptBudget: opts.promptBudget,
   })
   return { runner, sessionLog, plane }
 }

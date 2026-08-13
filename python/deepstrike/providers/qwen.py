@@ -7,32 +7,14 @@ from deepstrike._kernel import Message, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, to_openai_message_params, UnsupportedModalityError
 from .replay import ReasoningReplayMixin
-from .anthropic_compatible import AnthropicCompatibleProvider
-from .vendor_profiles import QWEN_POLICIES as _QWEN_POLICIES, ANTHROPIC_VENDOR_PROFILES
+from .vendor_profiles import QWEN_POLICIES as _QWEN_POLICIES
 from .stop_reason import canonicalize_stop_reason
 from .usage import normalize_usage
 
 logger = logging.getLogger(__name__)
 
 
-class QwenAnthropicProvider(AnthropicCompatibleProvider):
-    """Qwen over its Anthropic-compatible endpoint.
-
-    Deprecated: prefer ``qwen(protocol="anthropic")``. Data-driven via
-    ``ANTHROPIC_VENDOR_PROFILES["qwen"]``; thin shim for backward compat / isinstance.
-    """
-
-    def __init__(
-        self,
-        api_key: str,
-        model: str | None = None,
-        retry_config: RetryConfig | None = None,
-        base_url: str | None = None,
-    ):
-        super().__init__(ANTHROPIC_VENDOR_PROFILES["qwen"], api_key, model, retry_config, base_url)
-
-
-class QwenProvider(ReasoningReplayMixin):
+class _QwenProvider(ReasoningReplayMixin):
     def __init__(
         self,
         api_key: str,

@@ -8,7 +8,7 @@
 
 ### 完整运行机制
 
-真实 I/O 归宿主，纯 Rust 内核拥有控制面；Self-Harness v2 只能改进下一次运行的有界 profile。
+真实 I/O 归宿主，纯 Rust 内核拥有控制面；Self-Harness 只能改进下一次运行的有界 profile。
 
 ![DeepStrike 运行机制](/readme_agent_os_map_zh.svg)
 
@@ -134,8 +134,8 @@ Replay Window、Snapshot 上限、有界重试、Fuse、取消、Entropy 与预�
 
 ![Harness 与 Eval](/harness_eval_mechanisms.svg)
 
-### Self-Harness v2
+### Self-Harness
 
 Scope 隔离证据、编辑白名单、能力上限、注入筛查、Held-out 验证与分级晋升共同演化下一次运行的 Profile。
 
-![Self-Harness v2](/self_harness_mechanisms.svg)
+![Self-Harness](/self_harness_mechanisms.svg)

@@ -22,7 +22,7 @@ export type { EndpointProfileId } from "./endpoints.js"
 
 export interface CreateProviderOptions {
   model: string
-  /** Explicit credential is kept source-compatible; resolver-backed construction can omit it. */
+  /** Explicit credential; resolver-backed construction can omit it. */
   apiKey?: string
   bearerToken?: string
   credentialResolver?: CredentialOptions["credentialResolver"]

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
 import uuid
 from dataclasses import dataclass, replace
@@ -17,7 +16,6 @@ from typing import Any
 
 from deepstrike._kernel import Message, ToolCall, ToolSchema
 from deepstrike.kernel.canonical import (
-    KERNEL_ABI_VERSION,
     CanonicalCheckpoint,
     CanonicalKernel,
     CanonicalRejected,
@@ -134,7 +132,6 @@ class CanonicalKernelHost:
     observed_at_ms: str | None = None,
   ) -> CanonicalTransition:
     envelope = json.dumps({
-      "abi_version": KERNEL_ABI_VERSION,
       "operation_id": self.operation_id,
       "input_id": input_id or f"python-input-{uuid.uuid4()}",
       "observed_at_ms": observed_at_ms or str(int(time.time() * 1000)),
@@ -553,10 +550,7 @@ class CanonicalRunnerRuntime:
       message = str(event.get("message") or "")
       error_kind = event.get("error_kind")
       has_structured_kind = isinstance(error_kind, str)
-      context_overflow = error_kind == "context_overflow" or (
-        error_kind in (None, "unknown") and re.search(r"context|token.*limit|too long", message, re.I)
-      )
-      if context_overflow:
+      if error_kind == "context_overflow":
         return await self._resolve(event, {"kind": "provider", "outcome": {"kind": "context_overflow"}})
       retryable = event.get("retryable")
       failure_kind = canonical_provider_failure_kind(error_kind) if has_structured_kind else "transport_exhausted"
@@ -1107,8 +1101,6 @@ class CanonicalRunnerRuntime:
       if isinstance(entropy.get("hysteresis"), (int, float)) and not isinstance(entropy.get("hysteresis"), bool):
         entropy["hysteresis_ppm"] = round(float(entropy.pop("hysteresis")) * 1_000_000)
       execution["entropy_watch"] = entropy
-    if config.get("tool_dispatch_gate") is not None:
-      self._feature_policy()["tool_dispatch_gate"] = config["tool_dispatch_gate"]
     reliability = _object(config.get("reliability"))
     if reliability:
       recovery: dict[str, Any] = {}

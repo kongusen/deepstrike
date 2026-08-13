@@ -80,9 +80,10 @@ async def test_native_profile_ask_user_emits_syscall_sched_events():
         governance_policy=GovernancePolicy(
             rules=[GovernancePolicyRule(pattern="needs_approval", action="ask_user")],
         ),
-        on_permission_request=lambda _req: {"approved": True, "responder": "test"},
-        max_turns=6,
-    ))
+            on_permission_request=lambda _req: {"approved": True, "responder": "test"},
+            max_turns=6,
+            baseline_tool_ids=["needs_approval"],
+        ))
     await collect_text(runner.run(session_id="native-gov", goal="go"))
     events = [e.event for e in await runner._opts.session_log.read("native-gov")]
     # Classification is derived from `kind` (single taxonomy), no longer embedded per event.

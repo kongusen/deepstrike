@@ -49,7 +49,7 @@ impl Default for Partition {
 /// plus lifecycle flags driving the boundary sweep (K1/K2 of the dynamic-control spec).
 #[derive(Debug, Clone)]
 pub struct KnowledgeEntry {
-    /// `None` ⇒ legacy unkeyed append (initialMemory, old snapshots). Keyed entries upsert.
+    /// `None` appends an unkeyed entry. Keyed entries upsert.
     pub key: Option<compact_str::CompactString>,
     pub message: Message,
     pub tokens: u32,
@@ -432,11 +432,11 @@ mod tests {
     #[test]
     fn keyed_upsert_defers_to_boundary() {
         let mut p = KnowledgePartition::new();
-        p.push_entry(Some("ref".into()), Message::system("v1"), 10, false);
-        p.push_entry(Some("ref".into()), Message::system("v2"), 12, false);
+        p.push_entry(Some("ref".into()), Message::system("original"), 10, false);
+        p.push_entry(Some("ref".into()), Message::system("updated"), 12, false);
         // Mid-generation: still ONE entry rendering the ORIGINAL bytes (system[1] untouched).
         assert_eq!(p.len(), 1);
-        assert_eq!(text_of(&p), vec!["v1"]);
+        assert_eq!(text_of(&p), vec!["original"]);
         assert_eq!(p.token_count, 10);
 
         let sweep = p.sweep_at_boundary();
@@ -445,7 +445,7 @@ mod tests {
             sweep.removed_keys.is_empty(),
             "upsert-only sweep removes nothing"
         );
-        assert_eq!(text_of(&p), vec!["v2"]);
+        assert_eq!(text_of(&p), vec!["updated"]);
         assert_eq!(p.token_count, 12);
     }
 
@@ -478,23 +478,23 @@ mod tests {
     #[test]
     fn same_key_push_after_remove_revives_entry() {
         let mut p = KnowledgePartition::new();
-        p.push_entry(Some("ref".into()), Message::system("v1"), 5, false);
+        p.push_entry(Some("ref".into()), Message::system("older"), 5, false);
         p.remove("ref");
         // Re-pushing the key means the entry is wanted again — the eviction mark clears and the
         // fresh content lands as a deferred upsert.
-        p.push_entry(Some("ref".into()), Message::system("v2"), 6, false);
+        p.push_entry(Some("ref".into()), Message::system("newer"), 6, false);
         let sweep = p.sweep_at_boundary();
         assert!(sweep.removed_keys.is_empty());
-        assert_eq!(text_of(&p), vec!["v2"]);
+        assert_eq!(text_of(&p), vec!["newer"]);
     }
 
     #[test]
     fn fresh_keys_and_unkeyed_append_immediately() {
         let mut p = KnowledgePartition::new();
-        p.push(Message::system("legacy"), 3);
+        p.push(Message::system("existing"), 3);
         p.push_entry(Some("a".into()), Message::system("fresh"), 4, true);
         // Appends are visible right away (cache-cheap direction: prefix only extends).
-        assert_eq!(text_of(&p), vec!["legacy", "fresh"]);
+        assert_eq!(text_of(&p), vec!["existing", "fresh"]);
         assert_eq!(p.token_count, 7);
         assert!(p.entries[1].pinned);
     }

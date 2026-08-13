@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use deepstrike_core::context::renderer::RenderedContext;
 use deepstrike_core::runtime::session::ProviderReplay;
-use deepstrike_core::types::message::{Content, ContentPart, Message, Role, ToolCall, ToolSchema};
+use deepstrike_core::types::message::{Content, ContentPart, Role, ToolCall, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::{Value, json};
@@ -408,9 +408,14 @@ impl LLMProvider for AnthropicProvider {
             None
         } else {
             Some(ProviderReplay {
+                protocol: "anthropic-messages".into(),
+                provider: Some("anthropic".into()),
+                model: Some(self.model.clone()),
                 native_blocks: Some(blocks),
                 reasoning_content: None,
-                extra: serde_json::Map::new(),
+                reasoning_details: None,
+                native_message: None,
+                tool_calls: None,
             })
         }
     }
@@ -488,12 +493,14 @@ impl LLMProvider for AnthropicProvider {
             .body(body.to_string())
             .send()
             .await
-            .map_err(|e| Error::Provider(e.to_string()))?;
+            .map_err(|e| {
+                Error::from(super::ProviderError::transport("anthropic", e.to_string()))
+            })?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
+            let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Provider(format!("Anthropic {status}: {text}")));
+            return Err(super::ProviderError::from_http("anthropic", status, text).into());
         }
 
         let byte_stream = resp.bytes_stream();
@@ -678,7 +685,7 @@ fn parse_anthropic_sse(
                     }
                     Some(Err(e)) => {
                         return Some((
-                            Err(Error::Provider(e.to_string())),
+                            Err(super::ProviderError::transport("anthropic", e.to_string()).into()),
                             (stream, buf, tool_blocks, native_blocks, acc),
                         ));
                     }

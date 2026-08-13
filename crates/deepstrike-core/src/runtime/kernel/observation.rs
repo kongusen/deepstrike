@@ -125,12 +125,11 @@ pub enum KernelObservation {
     },
     /// Session-entropy sample at a completed turn boundary (the heartbeat watch source).
     /// One per completed turn, unconditional — like `CheckpointTaken`. The component
-    /// vector is the contract; `score` is a versioned default fold (`score_version`).
+    /// vector is the contract; `score` is the canonical default fold.
     /// See `scheduler::entropy`. Additive ABI.
     EntropySample {
         turn: u32,
         score: f64,
-        score_version: u32,
         rho: f64,
         repeat_pressure: f64,
         failure_rate: f64,

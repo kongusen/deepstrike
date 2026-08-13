@@ -1,7 +1,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike runtime mechanism</title>
-  <desc id="desc">The current DeepStrike runtime boundary: host-owned I/O, RuntimeRunner driving the Canonical Kernel ABI, a Rust kernel governing control flow, and an isolated Self-Harness v2 outer loop improving the next run.</desc>
+  <desc id="desc">The current DeepStrike runtime boundary: host-owned I/O, RuntimeRunner driving the Canonical Kernel ABI, a Rust kernel governing control flow, and an isolated Self-Harness outer loop improving the next run.</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
@@ -155,7 +155,7 @@
         <path d="M869 509H1114" class="rule"/>
         <text x="869" y="536" class="micro" text-anchor="start">APPEND-ONLY EVIDENCE</text>
 
-  <text x="48" y="620" class="section-title" text-anchor="start">Self-Harness v2 outer loop</text>
+  <text x="48" y="620" class="section-title" text-anchor="start">Self-Harness outer loop</text>
   <text x="1152" y="620" class="section-note" text-anchor="end">IMPROVES THE NEXT RUN · NEVER BYPASSES GOVERNANCE</text>
 
   <g>

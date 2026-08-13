@@ -337,15 +337,27 @@ impl CanonicalRunnerRuntime {
             }
             "provider_error" => {
                 let message = string_value(&event, "message");
-                if regex_context_overflow(&message) {
+                let error_kind = event
+                    .get("error_kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                if error_kind == "context_overflow" {
                     self.resolve(
                         &event,
                         json!({ "kind": "provider", "outcome": { "kind": "context_overflow" } }),
                     )
                     .await
                 } else {
-                    self.failed(&event, "transport_exhausted", &message, true)
-                        .await
+                    let failure_kind = match error_kind {
+                        "transport" | "rate_limit" | "model_unavailable" => "transport_exhausted",
+                        "auth" | "invalid_request" | "modality" | "protocol" => "protocol_error",
+                        _ => "unknown",
+                    };
+                    let retryable = event
+                        .get("retryable")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    self.failed(&event, failure_kind, &message, retryable).await
                 }
             }
             "tool_results" => {
@@ -1459,10 +1471,6 @@ impl CanonicalRunnerRuntime {
             self.execution_policy()
                 .insert("entropy_watch".into(), Value::Object(entropy));
         }
-        if let Some(gate) = config.get("tool_dispatch_gate") {
-            self.feature_policy()
-                .insert("tool_dispatch_gate".into(), gate.clone());
-        }
         if let Some(reliability) = config.get("reliability") {
             let reliability = object(Some(reliability));
             let mut recovery = Map::new();
@@ -2132,13 +2140,6 @@ fn provider_stop_reason(value: Option<&Value>) -> Option<String> {
         "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "content_filter" => reason,
         _ => "other".into(),
     })
-}
-
-fn regex_context_overflow(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    lower.contains("context")
-        || lower.contains("token") && lower.contains("limit")
-        || lower.contains("too long")
 }
 
 fn object(value: Option<&Value>) -> Map<String, Value> {

@@ -154,14 +154,14 @@ describe("SPC-013 A-08 structured provider failures", () => {
     expect(JSON.stringify(events)).not.toContain("token")
   })
 
-  it("keeps legacy message fallback for unwrapped third-party providers", async () => {
+  it("does not infer failure kind from unstructured provider prose", async () => {
     const events = await runFailure(new Error("HTTP 413: prompt is too long"))
-    expect(events.find(event => event.type === "done")).toMatchObject({ status: "context_overflow" })
+    expect(events.find(event => event.type === "done")).toMatchObject({ status: "error" })
   })
 
   it("wraps retry exhaustion while retaining the SDK cause", async () => {
     const cause = Object.assign(new Error("slow down"), { status: 429, code: "rate_limit" })
-    const provider = new OpenAIChatProvider("k", "fixture", { maxRetries: 2, baseDelay: 0 })
+    const provider = new OpenAIChatProvider({ apiKey: "k", model: "fixture", retry: { maxRetries: 2, baseDelay: 0 } })
     const create = jest.fn().mockRejectedValue(cause)
     ;(provider as any).client = { chat: { completions: { create } } }
 
@@ -178,7 +178,7 @@ describe("SPC-013 A-08 structured provider failures", () => {
 
   it("wraps stream creation and iterator-pull failures", async () => {
     const creationCause = Object.assign(new Error("offline"), { code: "ECONNRESET" })
-    const creation = new OpenAIChatProvider("k", "fixture", { maxRetries: 1, baseDelay: 0 })
+    const creation = new OpenAIChatProvider({ apiKey: "k", model: "fixture", retry: { maxRetries: 1, baseDelay: 0 } })
     ;(creation as any).client = {
       chat: { completions: { create: jest.fn().mockRejectedValue(creationCause) } },
     }
@@ -190,7 +190,7 @@ describe("SPC-013 A-08 structured provider failures", () => {
     })
 
     const pullCause = Object.assign(new Error("stream reset"), { code: "ECONNRESET" })
-    const pull = new OpenAIChatProvider("k", "fixture", { maxRetries: 1, baseDelay: 0 })
+    const pull = new OpenAIChatProvider({ apiKey: "k", model: "fixture", retry: { maxRetries: 1, baseDelay: 0 } })
     ;(pull as any).client = {
       chat: { completions: { create: async () => ({
         [Symbol.asyncIterator]() {
@@ -214,14 +214,14 @@ describe("SPC-013 A-08 structured provider failures", () => {
       await expect(ollama.complete({ systemText: "", turns: [] }, [])).rejects.toMatchObject({
         name: "ProviderError",
         provider: "ollama",
-        kind: "unknown",
+        kind: "context_overflow",
         httpStatus: 413,
       })
     } finally {
       globalThis.fetch = originalFetch
     }
 
-    const openai = new OpenAIChatProvider("k", "fixture", { maxRetries: 1, baseDelay: 0 })
+    const openai = new OpenAIChatProvider({ apiKey: "k", model: "fixture", retry: { maxRetries: 1, baseDelay: 0 } })
     ;(openai as any).circuit = { isOpen: () => true }
     await expect(openai.complete({ systemText: "", turns: [] }, [])).rejects.toMatchObject({
       name: "ProviderError",

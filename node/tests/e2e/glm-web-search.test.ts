@@ -5,7 +5,7 @@
  * Run with:  set -a; source .env; set +a; npx jest e2e/glm-web-search --testTimeout 120000
  * Needs GLM_API_KEY. Uses the z.ai OpenAI-compatible endpoint (the key here is a z.ai key).
  */
-import { GLMProvider } from "../../src/providers/glm.js"
+import { glm } from "../../src/providers/factories.js"
 import type { RenderedContext } from "../../src/types.js"
 
 const key = process.env.GLM_API_KEY
@@ -13,7 +13,12 @@ const maybe = key ? describe : describe.skip
 
 maybe("real-model GLM web_search", () => {
   it("accepts the web_search server tool and answers a current-info question", async () => {
-    const provider = new GLMProvider(key!, "glm-5.2", { maxRetries: 2, baseDelay: 800 }, "https://api.z.ai/api/paas/v4")
+    const provider = glm({
+      apiKey: key!,
+      model: "glm-5.2",
+      retry: { maxRetries: 2, baseDelay: 800 },
+      baseURL: "https://api.z.ai/api/paas/v4",
+    })
     const ctx: RenderedContext = {
       systemText: "You answer concisely using up-to-date web information.",
       turns: [{ role: "user", content: "Using web search, what is the latest stable Node.js LTS major version? Reply with just the number." }],

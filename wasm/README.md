@@ -88,7 +88,7 @@ The kernel (`@deepstrike/wasm-kernel`, Rust/wasm-bindgen) owns:
 - the Canonical Kernel ABI durable `prepare → append → commit` transition contract
 - typed effects, a single effect-resolution input, observations, and terminal disposition
 - `ContextEngine` — 4-slot context with tiered history compression
-- `Governance` — tool veto authority
+- `GovernancePolicy` — declarative tool admission policy
 - `SignalRouter` — external interrupt queue
 
 ### WASM constraints vs Node SDK
@@ -110,13 +110,14 @@ The WASM SDK ships **no `readFile` built-in**. Tools must be pure JS / serializa
 
 All providers use `fetch` — no Node.js `http` module.
 
-| Class | Backend |
+| Entry point | Backend |
 |-------|---------|
 | `AnthropicProvider` | Anthropic API (SSE) |
 | `OpenAIProvider` | OpenAI API (SSE) |
-| `QwenProvider` | DashScope |
-| `DeepSeekProvider` | DeepSeek API |
-| `MiniMaxProvider` | MiniMax API |
+| `qwen(...)` | DashScope |
+| `deepseek(...)` | DeepSeek API |
+| `minimax(...)` | MiniMax API |
+| `kimi(...)` | Moonshot Kimi API |
 
 ```typescript
 import { AnthropicProvider } from "@deepstrike/wasm"
@@ -184,17 +185,17 @@ See [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-
 ## Governance
 
 ```typescript
-import { RuntimeRunner, AnthropicProvider, Governance } from "@deepstrike/wasm"
-
-const gov = new Governance()
-gov.blockTool("dangerous_tool")
+import { RuntimeRunner, AnthropicProvider } from "@deepstrike/wasm"
 
 const runner = new RuntimeRunner({
   provider: new AnthropicProvider(apiKey),
   sessionLog: new InMemorySessionLog(),
   executionPlane: new LocalExecutionPlane(),
   maxTokens: 32_000,
-  governance: gov,
+  governancePolicy: {
+    defaultAction: "allow",
+    rules: [{ pattern: "dangerous_tool", action: "deny" }],
+  },
 })
 ```
 

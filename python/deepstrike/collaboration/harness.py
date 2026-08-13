@@ -44,7 +44,7 @@ class CreatorVerifierBody:
     async def run(self, context: AttemptBodyContext):
         contract_block = format_contract_for_system_prompt(self._contract)
         result = await self._pool.execute(
-            "executor",
+            "implement",
             session_id=context.session_id,
             goal=f"{contract_block}\n\n---\n\n{context.goal}",
             context_input=context.context_input,

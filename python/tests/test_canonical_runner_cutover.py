@@ -131,7 +131,10 @@ async def test_restores_pending_agent_tool_effect_from_journal_exactly_once():
         "kind": "set_tools",
         "tools": [{"name": "ping", "description": "ping", "parameters": {"type": "object"}}],
     })
-    first = await before_crash.start_agent({"goal": "ping then finish", "criteria": []})
+    first = await before_crash.start_agent(
+        {"goal": "ping then finish", "criteria": []},
+        {"goal": "ping then finish", "exposure_baseline": ["ping"]},
+    )
     assert first is not None and first.kind == "call_provider"
     pending = await before_crash.apply_host_event({
         "kind": "provider_result",

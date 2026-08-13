@@ -90,6 +90,7 @@ def _make_runner(provider, skill_dir: str, **extra) -> RuntimeRunner:
         max_tokens=480,
         max_turns=30,
         skill_dir=skill_dir,
+        baseline_tool_ids=["bulk"],
         repeat_fuse=False,
         **extra,
     ))

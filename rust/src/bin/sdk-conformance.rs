@@ -19,20 +19,13 @@ use deepstrike_core::types::durable_content::{
 use deepstrike_core::types::message::{Content, ToolResult};
 use deepstrike_sdk::{ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Debug, Deserialize)]
 struct Fixture {
     id: String,
     domain: String,
     input: Value,
-    expected: Expected,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Expected {
-    contract_version: u32,
 }
 
 #[derive(Debug)]
@@ -81,14 +74,12 @@ fn main() {
             "ok": true,
             "sdk": "rust",
             "fixture": fixture.id,
-            "contractVersion": fixture.expected.contract_version,
             "canonical": canonical,
         }),
         Err(error) => json!({
             "ok": false,
             "sdk": "rust",
             "fixture": fixture.id,
-            "contractVersion": fixture.expected.contract_version,
             "error": {
                 "code": error.code,
                 "path": error.path,
@@ -173,7 +164,6 @@ fn project_agent_ir(input: &Value) -> Result<Value, AdapterError> {
     }
 
     Ok(json!({
-        "version": 1,
         "name": name,
         "capabilityFilter": {
             "allowedKinds": filter.allowed_kinds.iter().copied().map(capability_kind_name).collect::<Vec<_>>(),
@@ -317,7 +307,6 @@ fn project_durable_tool_result(input: &Value) -> Result<Value, AdapterError> {
         message: error.to_string(),
     })?;
     Ok(json!({
-        "schema_version": result.schema_version,
         "call_id": result.call_id,
         "is_error": result.is_error,
         "blockTypes": result.blocks.iter().map(block_type).collect::<Vec<_>>(),
@@ -422,10 +411,9 @@ fn read_referenced_fixture(reference: &str) -> Result<Value, AdapterError> {
             "fixture reference must be a relative path under tests/fixtures",
         ));
     }
-    let fixtures_root = fs::canonicalize(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures"),
-    )
-    .map_err(|error| AdapterError::failure(error.to_string()))?;
+    let fixtures_root =
+        fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures"))
+            .map_err(|error| AdapterError::failure(error.to_string()))?;
     let path = fs::canonicalize(fixtures_root.join(relative)).map_err(|_| {
         invalid_fixture_reference("fixture reference must resolve under tests/fixtures")
     })?;
@@ -435,7 +423,9 @@ fn read_referenced_fixture(reference: &str) -> Result<Value, AdapterError> {
         ));
     }
     if !path.is_file() {
-        return Err(invalid_fixture_reference("fixture reference must be a file"));
+        return Err(invalid_fixture_reference(
+            "fixture reference must be a file",
+        ));
     }
     let raw = fs::read_to_string(path).map_err(|error| AdapterError::failure(error.to_string()))?;
     serde_json::from_str(&raw).map_err(|error| AdapterError::failure(error.to_string()))
@@ -523,7 +513,7 @@ mod tests {
     fn fixture(name: &str) -> Fixture {
         let raw = fs::read_to_string(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../tests/fixtures/sdk-conformance/v1")
+                .join("../tests/fixtures/sdk-conformance/canonical")
                 .join(format!("{name}.json")),
         )
         .expect("fixture reads");
@@ -532,19 +522,19 @@ mod tests {
 
     #[test]
     fn projects_rust_representable_contracts() {
-        let plan = project(&fixture("provider-request-plan-v1")).expect("request plan projects");
+        let plan = project(&fixture("provider-request-plan")).expect("request plan projects");
         assert_eq!(
             plan["fingerprint"],
             "sha256:d91b9737b9a80295599b8f3804a0168c11de2f4ae1de608bfcac824cdf31b8d2"
         );
 
-        let durable = project(&fixture("durable-tool-result-v1")).expect("durable result projects");
+        let durable = project(&fixture("durable-tool-result")).expect("durable result projects");
         assert_eq!(
             durable["blockTypes"],
             json!(["text", "image", "file", "video"])
         );
 
-        let measurement = project(&fixture("prompt-measurement-v1")).expect("measurement projects");
+        let measurement = project(&fixture("prompt-measurement")).expect("measurement projects");
         assert_eq!(measurement["inputTokens"], 12);
 
         let event =
@@ -591,7 +581,12 @@ mod tests {
 
     #[test]
     fn fixture_reference_must_resolve_under_the_fixture_root() {
-        for reference in ["", ".", "agent-ir/../agent-ir/v1-agent.json", "/tmp/agent.json"] {
+        for reference in [
+            "",
+            ".",
+            "agent-ir/../agent-ir/canonical-agent.json",
+            "/tmp/agent.json",
+        ] {
             let error = read_referenced_fixture(reference).expect_err("reference must reject");
             assert_eq!(error.code, "invalid_fixture_reference");
             assert_eq!(error.path, "/input/fixture");
@@ -609,7 +604,10 @@ mod tests {
         ));
         let link = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures")
-            .join(format!(".sdk-conformance-escape-{}.json", std::process::id()));
+            .join(format!(
+                ".sdk-conformance-escape-{}.json",
+                std::process::id()
+            ));
         fs::write(&outside, "{}\n").expect("outside fixture writes");
         symlink(&outside, &link).expect("symlink creates");
         let result = read_referenced_fixture(link.file_name().unwrap().to_str().unwrap());

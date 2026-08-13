@@ -30,7 +30,7 @@ def test_request_fingerprint_covers_material_input_but_never_secret_or_retry_sta
 
 
 def test_request_plan_uses_shared_cross_sdk_sha256_fixture():
-  fixture = json.loads((Path(__file__).parents[2] / "tests/fixtures/provider-request-plan/v1.json").read_text(encoding="utf-8"))
+  fixture = json.loads((Path(__file__).parents[2] / "tests/fixtures/provider-request-plan/canonical.json").read_text(encoding="utf-8"))
   source = fixture["input"]
   plan = create_provider_request_plan(
     provider_id=source["providerId"], model_id=source["modelId"],
@@ -47,7 +47,6 @@ def test_measurement_replay_usage_and_pricing_contracts_are_explicit():
   assert measurement_for_plan(plan, record) == record
   assert measurement_for_plan(_plan(model_id="gpt-5"), record) is None
   durable = {
-    "version": record.version,
     "request_fingerprint": record.request_fingerprint,
     "input_tokens": record.input_tokens,
     "source": record.source,

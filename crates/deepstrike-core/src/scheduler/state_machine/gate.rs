@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use super::super::tcb::{TaskLifecycle, WaitReason};
+use super::super::tcb::{ApprovalId, TaskLifecycle, WaitCondition, WaitMode, WaitSet};
 use super::{
     ApprovalRequest, ExposureGateOutcome, GateToolOutcome, KernelObservation, LoopAction,
     LoopEvent, LoopPhase, LoopStateMachine, SuspendState,
@@ -56,10 +56,8 @@ impl LoopStateMachine {
                         };
                     }
                 }
-                // § Task 11 · the caller handed to governance is logical identity. The session slot
-                // `AgentIdentity` still declares is filled with nothing here, and no gate reads it
-                // (§22.6) — a fabricated session literal in a decision path is exactly the
-                // dependency this task removes.
+                // Governance evaluates the logical caller identity. Session identity is host
+                // storage metadata and is deliberately empty in this kernel decision path.
                 let caller = self
                     .run_spec
                     .as_ref()
@@ -256,9 +254,9 @@ impl LoopStateMachine {
                 };
             }
         }
-        // SPC-019-06: capability authority belongs to the actual kernel-derived caller. The
-        // structural root is only the compatibility caller for legacy entrypoints that cannot
-        // carry causation yet. This invariant does not depend on an optional governance policy:
+        // Capability authority belongs to the actual kernel-derived caller. When causation is
+        // absent, the operation's structural root is the caller. This invariant does not depend
+        // on an optional governance policy:
         // a child may never receive a capability the caller cannot delegate.
         if !manifest.requested_capabilities.is_empty() {
             let caller_id = caller.map(Into::into).or_else(|| self.tasks.root_id());
@@ -465,10 +463,7 @@ impl LoopStateMachine {
 
     /// P1 fail-closed dispatch: a call the model was never shown never reaches `ExecuteTools`.
     ///
-    /// Exposure filtering used to be advertising only — `capability_filter` / skill narrowing shaped
-    /// the tools schema, but a model naming a gated-out tool still got it executed, so
-    /// `allowedToolIds` looked like a boundary without being one. This is the enforcement half:
-    /// the kernel remembers the toolset it advertised (`exposed_tool_names`) and partitions the
+    /// The kernel remembers the toolset it advertised (`exposed_tool_names`) and partitions the
     /// model's calls against it.
     ///
     /// Returns the calls that may proceed, or `Blocked` when the whole batch was denied. Denials
@@ -477,25 +472,18 @@ impl LoopStateMachine {
     /// still gets a tool result (v0.2.42: the model-facing surface stays a training-set convention)
     /// and the denial text says what to do next. Allowed siblings in the same batch still execute.
     ///
-    /// Two deliberate pass-throughs:
+    /// One deliberate pass-through:
     /// - `pace` and the `EXPOSURE_EXEMPT_META_TOOLS` family are kernel-owned surfaces whose handlers
     ///   already fail gracefully when genuinely unavailable (`read_result` with nothing evicted, a
     ///   `pace` call outside a loop round). Denying them here would contradict ①'s exemption.
-    /// - `exposed_tool_names == None` ⇒ **unarmed, pass everything**. The gate arms only once this
-    ///   process has actually advertised a toolset; a rebuilt/resumed kernel replaying a pending
-    ///   tool call has advertised nothing, and denying that call would break resume. (The wake path
-    ///   itself — `resume_after_preload` — emits `ExecuteTools` directly and never reaches this
-    ///   adjudication point, so replayed history is untouched either way.)
+    /// A missing advertised set is an empty task-tool surface. Resume keeps the exact last set in
+    /// the checkpoint; the wake path (`resume_after_preload`) emits `ExecuteTools` directly and
+    /// does not need a permissive exception here.
     pub(super) fn gate_exposed_tool_calls(&mut self, calls: Vec<ToolCall>) -> ExposureGateOutcome {
-        if !self.dispatch_gate_exposed {
-            return ExposureGateOutcome::Proceed(calls);
-        }
-        let Some(exposed) = self.exposed_tool_names.as_ref() else {
-            return ExposureGateOutcome::Proceed(calls);
-        };
+        let exposed = self.exposed_tool_names.as_ref();
         let (allowed, denied): (Vec<ToolCall>, Vec<ToolCall>) =
             calls.into_iter().partition(|call| {
-                exposed.contains(&call.name)
+                exposed.is_some_and(|names| names.contains(&call.name))
                     || call.name.as_str() == "pace"
                     || crate::context::manager::is_exposure_exempt_meta_tool(call.name.as_str())
             });
@@ -616,7 +604,13 @@ impl LoopStateMachine {
             calls: remaining,
             gated_reasons,
         });
-        self.set_lifecycle(TaskLifecycle::Suspended, Some(WaitReason::Approval));
+        self.set_lifecycle(
+            TaskLifecycle::Suspended,
+            Some(WaitSet {
+                mode: WaitMode::Any,
+                conditions: vec![WaitCondition::Approval(ApprovalId("pending".into()))],
+            }),
+        );
         self.observations.push(KernelObservation::Suspended {
             turn: self.turn,
             reason: "ask_user".to_string(),

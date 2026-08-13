@@ -21,7 +21,7 @@ export interface SubAgentRunContext {
     evalProvider: import("../types.js").LLMProvider
     maxAttempts?: number
   }
-  /** M5 v2.1: set when this child is a workflow node (spawned by the workflow driver). Propagated to
+  /** workflow-node: set when this child is a workflow node (spawned by the workflow driver). Propagated to
    *  the child runner so a nested `start_workflow` FLATTENS to the parent kernel rather than
    *  auto-pivoting into its own bootstrap (which would fragment the one-kernel/one-quota governance). */
   isWorkflowNode?: boolean
@@ -181,13 +181,9 @@ export class SubAgentOrchestrator {
       // must NOT re-reserve budget axes the parent already holds (that double-reserve squeezed the
       // child's grant to 0 and the kernel stripped its first-turn tools).
       nestedGroupVehicle: true,
-      // The child runs under ITS OWN spec, never the parent's: the spread above would otherwise
-      // leak the parent's `runSpec` (identity, capability filter — and a LoopDriver's armed
-      // `loopRound`, giving every child a phantom pace tool). A loop-node iteration carries its
-      // own minimal spec to arm the pacing trap (DW-3); everything else runs spec-less as before.
-      runSpec: ctx.spec.loopRound
-        ? { identity: ctx.spec.identity, role: ctx.spec.role, goal: ctx.spec.goal, loopRound: ctx.spec.loopRound }
-        : undefined,
+      // The child always runs under its own canonical spec, never the parent's. This preserves its
+      // capability ceiling, exposure baseline, identity, and optional loop pacing in one shape.
+      runSpec: ctx.spec,
     })
     // #2-B-ii: when the parent preempts this node (kernel `AgentPreempted`), interrupt the child —
     // cancelling its in-flight LLM call. Handle an already-aborted signal too (creation race).
@@ -310,7 +306,7 @@ export async function spawnStandalone(
 ): Promise<SubAgentResult> {
   if (spec.tokenBudget !== undefined || spec.maxTurns !== undefined || spec.maxWallMs !== undefined) {
     throw new Error(
-      "spawnStandalone cannot represent per-node resource caps under canonical ABI v3",
+      "spawnStandalone cannot represent per-node resource caps under the canonical ABI",
     )
   }
 
@@ -326,6 +322,7 @@ export async function spawnStandalone(
           ...ctx.manifest,
           agent_id: spec.identity.agentId,
           parent_session_id: parentSessionId,
+          permitted_capability_ids: spec.capabilityFilter?.allowedIds ?? [],
         },
         ...(contextInput ? { contextInput } : {}),
       })

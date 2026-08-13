@@ -3,11 +3,7 @@ import { tool, executeTools, readFile } from "../src/tools/index.js"
 import { WorkingMemory } from "../src/memory/working.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { OpenAIChatProvider, OpenAIProvider } from "../src/providers/openai.js"
-import { QwenProvider } from "../src/providers/qwen.js"
-import { DeepSeekProvider } from "../src/providers/deepseek.js"
-import { KimiProvider } from "../src/providers/kimi.js"
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses.js"
-import { MiniMaxAnthropicProvider } from "../src/providers/minimax.js"
 import { PermissionManager, PermissionMode } from "../src/safety/permissions.js"
 import { ScheduledPrompt } from "../src/signals/scheduled.js"
 
@@ -122,18 +118,18 @@ describe("ScheduledPrompt", () => {
 
 describe("Provider instantiation", () => {
   it("AnthropicProvider constructs", () => {
-    const p = new AnthropicProvider("test-key")
+    const p = new AnthropicProvider({ apiKey: "test-key" })
     expect(p).toBeDefined()
   })
 
   it("OpenAIProvider constructs", () => {
-    const p = new OpenAIProvider("test-key")
+    const p = new OpenAIProvider({ apiKey: "test-key" })
     expect(p).toBeDefined()
   })
 
   it("OpenAIChatProvider and OpenAIResponsesProvider construct as separate native paths", () => {
-    expect(new OpenAIChatProvider("test-key")).toBeInstanceOf(OpenAIChatProvider)
-    expect(new OpenAIProvider("test-key")).toBeInstanceOf(OpenAIChatProvider)
+    expect(new OpenAIChatProvider({ apiKey: "test-key" })).toBeInstanceOf(OpenAIChatProvider)
+    expect(new OpenAIProvider({ apiKey: "test-key" })).toBeInstanceOf(OpenAIChatProvider)
     expect(new OpenAIResponsesProvider("test-key")).toBeInstanceOf(OpenAIResponsesProvider)
   })
 
@@ -147,24 +143,12 @@ describe("Provider instantiation", () => {
     })
 
     try {
-      const providers = [OpenAIProvider, OpenAIChatProvider, QwenProvider, DeepSeekProvider, MiniMaxAnthropicProvider, KimiProvider]
-      for (const Provider of providers) expect(new Provider("test-key")).toBeDefined()
+      const providers = [OpenAIProvider, OpenAIChatProvider]
+      for (const Provider of providers) expect(new Provider({ apiKey: "test-key" })).toBeDefined()
       expect((globalThis as typeof globalThis & { window?: unknown }).window).toEqual({ document: {} })
     } finally {
       if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow)
       else Reflect.deleteProperty(globalThis, "window")
     }
-  })
-
-  it("QwenProvider constructs", () => {
-    expect(new QwenProvider("test-key")).toBeDefined()
-  })
-
-  it("DeepSeekProvider constructs", () => {
-    expect(new DeepSeekProvider("test-key")).toBeDefined()
-  })
-
-  it("MiniMaxAnthropicProvider constructs", () => {
-    expect(new MiniMaxAnthropicProvider("test-key")).toBeDefined()
   })
 })

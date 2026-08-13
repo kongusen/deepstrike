@@ -19,9 +19,8 @@ into a 4-SDK consumer without re-housing later.
   - `core/metrics.mjs` — `MetricSet` schema (5 layers: cost / latency / quality / contextHealth / mechanism), per-metric `mode` + `samples` + `stdev`
   - `core/diff.mjs` — pure baseline-vs-variant Δ with stdev-aware significance
   - `core/render.mjs` — fixed-width table renderer
-  - `adapters/dwell-report.mjs` — legacy `dwell-report.json` → `MetricSet`
   - `pricing/pricing.json` — hand-maintained provider×model price list
-  - `cli/diff.mjs` — read two runs (MetricSet **or** dwell-report) → Δ table
+  - `cli/diff.mjs` — read two `MetricSet` runs → Δ table
 
 - **PR #2 — BM1 + BM0b lite** (variant runner + CLI + first scenario):
   - `core/scenario.mjs` — `BenchScenario` / `BenchVariant` (JSDoc types)
@@ -220,17 +219,12 @@ behavior change in the runner / aggregator / scenario without the noise of a
 live LLM. Replay goldens depend on the fixture run that recorded them, so
 keep the fixture alongside the golden (or commit both).
 
-## Diff already-recorded runs (PR #1 path, still supported)
+## Diff already-recorded runs
 
 ```bash
 # Diff two MetricSet JSONs:
 node cli/diff.mjs runs/off.json runs/on.json
 
-# Or two legacy dwell-report.json files (auto-imported):
-node cli/diff.mjs \
-  ../node/examples/.gating-runs/run-<A>/dwell-report.json \
-  ../node/examples/.gating-runs/run-<B>/dwell-report.json \
-  --baseline-id off --variant-id on --scenario gating-dwell
 ```
 
 Output:
@@ -260,7 +254,7 @@ caller judges by Δ%.
 
 ## Self-harness lab — `selfharness/`
 
-![Self-Harness v2 scope isolation, proposal screening, validation, and promotion](../docs/public/self_harness_mechanisms.svg)
+![Self-Harness scope isolation, proposal screening, validation, and promotion](../docs/public/self_harness_mechanisms.svg)
 
 An offline propose–validate–promote loop after *Self-Harness: Harnesses That Improve Themselves*
 (arXiv:2606.09498): a fixed model mines its own verifier-anchored failure clusters, proposes bounded
@@ -314,8 +308,6 @@ benchmark/
 ├── scenarios/
 │   ├── gating-dwell.mjs    first scenario (gating off vs on)
 │   └── index.mjs           scenario registry
-├── adapters/
-│   └── dwell-report.mjs    legacy dwell-report.json → MetricSet
 ├── pricing/
 │   └── pricing.json        provider:model → $/M tokens (hand-maintained)
 ├── selfharness/

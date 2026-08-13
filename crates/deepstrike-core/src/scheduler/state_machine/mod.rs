@@ -5,7 +5,7 @@ use compact_str::CompactString;
 use super::entropy::{EntropyTracker, EntropyWatchConfig};
 use super::milestone::MilestoneTracker;
 use super::policy::SchedulerBudget;
-use super::tcb::{TaskLifecycle, TaskTable, Tcb, WaitReason};
+use super::tcb::{DurableWaitSet, TaskLifecycle, TaskTable, Tcb, WaitSet};
 use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
 use crate::context::renderer::RenderedContext;
@@ -253,8 +253,8 @@ pub enum IdleContinuation {
 /// What the canonical driver adjudicated *before* the provider turn it is about to feed (§7.6).
 ///
 /// Staged rather than passed as an argument so `feed(LLMResponse)` stays the single place that
-/// decides what a provider turn means. Legacy callers never stage one and see the historical
-/// behaviour byte for byte.
+/// decides what a provider turn means. An absent value means there were no pre-turn answers and
+/// the provider is the idle continuation.
 #[derive(Debug, Clone, Default)]
 pub struct AdjudicatedTurn {
     pub answered_calls: Vec<AnsweredCall>,
@@ -346,14 +346,9 @@ pub struct LoopStateMachine {
     /// P1 fail-closed dispatch: the toolset advertised to the model on the most recent `CallLLM`.
     /// Refreshed at every emission (`call_llm_action`), consumed by `gate_exposed_tool_calls`.
     ///
-    /// `None` = **unarmed**: this process has not advertised a toolset yet, so there is nothing to
-    /// enforce against. Deliberately NOT snapshotted — a rebuilt/resumed kernel starts unarmed and
-    /// arms itself on its first provider call.
+    /// `None` means this process has not advertised a toolset yet. It remains fail-closed for task
+    /// tools, and canonical checkpoints preserve the distinction from an advertised empty set.
     pub(super) exposed_tool_names: Option<HashSet<CompactString>>,
-    /// P1 escape hatch (`ConfigureRun.tool_dispatch_gate`): `true` (default) = only the tools this
-    /// run exposed may be dispatched; `false` (`"registered"`) = the pre-gate permissive behavior,
-    /// any tool the model names reaches the host.
-    pub(super) dispatch_gate_exposed: bool,
     /// Optional resource quota evaluated at the syscall trap (M2). `None` (default) leaves spawn /
     /// memory syscalls unconditionally allowed, preserving pre-M2 behavior.
     pub(super) resource_quota: Option<crate::governance::quota::ResourceQuota>,
@@ -475,7 +470,6 @@ impl LoopStateMachine {
             tasks,
             governance: None,
             exposed_tool_names: None,
-            dispatch_gate_exposed: true,
             resource_quota: None,
             memory_write_times: Vec::new(),
             signal_router: SignalRouter::new(64),
@@ -570,12 +564,6 @@ impl LoopStateMachine {
         self.workflow
             .as_mut()
             .is_some_and(|run| run.quarantine_agent(task_id))
-    }
-
-    /// P1: select the dispatch gate. `true` (kernel default) = fail-closed against the toolset this
-    /// run actually exposed; `false` = the permissive `"registered"` escape hatch.
-    pub fn set_dispatch_gate_exposed(&mut self, exposed: bool) {
-        self.dispatch_gate_exposed = exposed;
     }
 
     pub(crate) fn set_scheduler_policy(
@@ -738,9 +726,11 @@ impl LoopStateMachine {
             .unwrap_or(TaskLifecycle::Ready)
     }
 
-    /// The wait reason while suspended/blocked, if any.
-    pub fn wait_reason(&self) -> Option<WaitReason> {
-        self.tasks.get("root").and_then(|t| t.wait.clone())
+    /// The canonical durable wait set while suspended, if any.
+    pub fn wait_set(&self) -> Option<DurableWaitSet> {
+        self.tasks
+            .get("root")
+            .and_then(|task| task.wait_set.clone())
     }
 
     /// Whether the loop has terminated.
@@ -763,16 +753,19 @@ impl LoopStateMachine {
         self.set_lifecycle(TaskLifecycle::Done(TerminationReason::Error), None);
     }
 
-    /// Set the root task's lifecycle (and wait reason). Single mutation point for schedulability.
-    fn set_lifecycle(&mut self, state: TaskLifecycle, wait: Option<WaitReason>) {
+    /// Set the root task's lifecycle and canonical wait state.
+    fn set_lifecycle(&mut self, state: TaskLifecycle, wait: Option<WaitSet>) {
         if self.tasks.get("root").is_none() {
             self.tasks.insert(Tcb::root("root", self.policy.clone()));
         }
         if let Some(root) = self.tasks.get_mut("root") {
             root.state = state;
         }
-        // spc_003-04: `set_wait` keeps `WaitIndex` in sync — it is the only sanctioned mutator.
-        self.tasks.set_wait("root", wait);
+        if let Some(wait) = wait {
+            self.tasks.register_wait_set("root", wait);
+        } else {
+            self.tasks.clear_wait("root");
+        }
     }
 
     /// spc_009-05: convert the RunGroup admission grant (`tokens`/`subagents`/`rounds`, a coarse
@@ -792,8 +785,7 @@ impl LoopStateMachine {
     }
 
     /// Build a transient root [`Tcb`] mirroring the current scheduling facts (budget counters,
-    /// wall-clock anchors, lifecycle). M1b uses this to run the pure `schedule()` spine in
-    /// parallel with the legacy budget path; later milestones promote it to the live task row.
+    /// wall-clock anchors, lifecycle) so the pure scheduler applies the same budget verdict.
     fn root_tcb(&self) -> Tcb {
         let mut tcb = Tcb::root("root", self.policy.clone());
         tcb.budget.turns = self.turn;
@@ -1487,7 +1479,6 @@ impl LoopStateMachine {
                 self.observations.push(KernelObservation::EntropySample {
                     turn: sample.turn,
                     score: sample.score,
-                    score_version: super::entropy::ENTROPY_SCORE_VERSION,
                     rho: sample.rho,
                     repeat_pressure: sample.repeat_pressure,
                     failure_rate: sample.failure_rate,
@@ -1953,16 +1944,7 @@ impl LoopStateMachine {
 
         // ─── Filter B: which of the ceiling-admitted tools are exposed *this* epoch ───
         //
-        // Two modes, selected by `run_spec.exposure_baseline`:
-        //
-        // **No baseline (`None`, the default)** — the legacy P1-B epoch skill gating, unchanged
-        // (铁律: no config ⇒ old behavior). Applied *after* the run-level filter ③, so A is the
-        // outer bound and B narrows within it (D6). When skills are active and declare tools,
-        // expose only `meta-tools ∪ stable-core ∪ ⋃(active skills' allowed_tools)`. `None` from
-        // `active_skill_tool_filter` ⇒ no active/declared skill ⇒ no narrowing (errs-open).
-        //
-        // **Baseline set (`Some(baseline)`)** — one unified strict retain replaces the legacy
-        // narrowing. The baseline is the *pre-activation exposure policy under the ceiling*:
+        // The baseline is the pre-activation exposure policy under the ceiling:
         //
         // ```text
         // exposed = META ∪ ((baseline ∪ stableCore ∪ ⋃ activeSkills.allowed_tools) ∩ ceiling)
@@ -1972,45 +1954,29 @@ impl LoopStateMachine {
         //   `∩ ceiling` term needs no code here: a baseline entry outside the ceiling was simply
         //   never in `tools` to begin with (D3 — silent intersection, no start_run error, the same
         //   fold every id-list surface uses).
-        // - `activeSkills.allowed_tools` covers only *declared* lists. An active skill that
-        //   declares nothing contributes ∅ and the surface stays at the baseline — D2: strict, the
-        //   legacy errs-open widening is deliberately NOT inherited, because a baseline is an
-        //   opt-in statement that the pre-activation surface is narrow on purpose.
-        // - `None` vs `Some([])` carries "unset vs minimal": an empty baseline is legitimate and
-        //   means meta-tools (+stable-core) only, so the `allowedToolIds` empty-array trap
-        //   ("[] = no gating") does not recur here.
+        // - `activeSkills.allowed_tools` covers only declared lists. An active skill that declares
+        //   nothing contributes ∅ and the surface stays at the baseline.
+        // - Missing and empty baselines both mean meta-tools (+stable-core) only.
         //
-        // Both modes exempt kernel-owned meta surfaces (D5) so the model can still load a skill —
+        // Kernel-owned meta surfaces remain exempt so the model can still load a skill —
         // and still re-read an evicted result, which the truncation marker explicitly instructs it
         // to do. Byte-stable within an epoch either way: the set changes only at an
         // activation/deactivation boundary.
-        match self
+        let baseline = self
             .run_spec
             .as_ref()
             .and_then(|s| s.exposure_baseline.as_ref())
-        {
-            Some(baseline) => {
-                let baseline: std::collections::HashSet<&CompactString> = baseline.iter().collect();
-                let declared = self.ctx.active_skill_tool_filter().unwrap_or_default();
-                let stable = &self.ctx.stable_core_tools;
-                tools.retain(|tool| {
-                    crate::context::manager::is_exposure_exempt_meta_tool(&tool.name)
-                        || baseline.contains(&tool.name)
-                        || stable.contains(&tool.name)
-                        || declared.contains(&tool.name)
-                });
-            }
-            None => {
-                if let Some(allowed) = self.ctx.active_skill_tool_filter() {
-                    let stable = &self.ctx.stable_core_tools;
-                    tools.retain(|tool| {
-                        crate::context::manager::is_exposure_exempt_meta_tool(&tool.name)
-                            || stable.contains(&tool.name)
-                            || allowed.contains(&tool.name)
-                    });
-                }
-            }
-        }
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let baseline: std::collections::HashSet<&CompactString> = baseline.iter().collect();
+        let declared = self.ctx.active_skill_tool_filter().unwrap_or_default();
+        let stable = &self.ctx.stable_core_tools;
+        tools.retain(|tool| {
+            crate::context::manager::is_exposure_exempt_meta_tool(&tool.name)
+                || baseline.contains(&tool.name)
+                || stable.contains(&tool.name)
+                || declared.contains(&tool.name)
+        });
 
         // ③ pace meta-tool: exposed ONLY when this run is a round of a paced loop
         // (run_spec.loop_round present) — the same conditional-exposure pattern as
@@ -2037,6 +2003,20 @@ impl LoopStateMachine {
     ) -> LoopAction {
         self.exposed_tool_names = Some(tools.iter().map(|tool| tool.name.clone()).collect());
         LoopAction::CallLLM { context, tools }
+    }
+
+    /// Canonical checkpoint projection of the most recently advertised tool surface.
+    pub(crate) fn advertised_tool_ids(&self) -> Option<Vec<String>> {
+        self.exposed_tool_names.as_ref().map(|names| {
+            let mut names: Vec<String> = names.iter().map(ToString::to_string).collect();
+            names.sort();
+            names
+        })
+    }
+
+    /// Restore the exact provider-advertised surface captured by a canonical checkpoint.
+    pub(crate) fn restore_advertised_tool_ids(&mut self, names: Option<Vec<String>>) {
+        self.exposed_tool_names = names.map(|names| names.into_iter().map(Into::into).collect());
     }
 
     pub fn rollback(&mut self, reason: RollbackReason) {

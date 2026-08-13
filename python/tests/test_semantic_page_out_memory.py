@@ -62,9 +62,10 @@ async def test_semantic_page_out_commits_memory_summary():
     max_turns=20,
     agent_id="agent-semantic-py",
     memory_scope=MemoryScope("agent-semantic-py", "semantic-page-out"),
-    memory_store=RecordingMemoryStore(),
-    memory_summarizer=memory_summarizer,
-  ))
+        memory_store=RecordingMemoryStore(),
+        memory_summarizer=memory_summarizer,
+        baseline_tool_ids=["fill"],
+      ))
 
   await collect_text(runner.run(session_id="semantic-page-out-py", goal="fill until compact"))
 

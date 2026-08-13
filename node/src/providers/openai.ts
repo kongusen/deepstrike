@@ -30,26 +30,18 @@ import {
 } from "./openai-chat-dialects.js"
 import { circuitOpenError, classifyProviderError } from "./provider-error.js"
 
-/** Options-object form for `OpenAIProvider`. */
+/** Canonical constructor contract for OpenAI-chat providers. */
 export interface OpenAIProviderOptions {
   apiKey: string
   model?: string
   retry?: { maxRetries: number; baseDelay: number }
   baseURL?: string
+  runtimePolicy?: RuntimePolicy
+  dialect?: OpenAIChatWireDialect
+  authMode?: "api_key" | "bearer"
 }
 
 export type { OpenAIChatTurnReasoning } from "./openai-chat-dialects.js"
-
-/** Compatibility helper retained for callers that rebuild native streamed tool blocks. */
-export function nativeToolCallsFromBuffers(
-  toolCallBuffers: Record<number, { id: string; name: string; argsBuf: string }>,
-): Array<Record<string, unknown>> {
-  return Object.values(toolCallBuffers).map(call => ({
-    id: call.id,
-    type: "function",
-    function: { name: call.name, arguments: call.argsBuf || "{}" },
-  }))
-}
 
 type ResolvedOpenAIChatRuntime = CanonicalAdapterInput["resolved"]
 
@@ -65,34 +57,27 @@ export class OpenAIChatProvider implements LLMProvider {
   private readonly resolvedRuntimePolicy: RuntimePolicy
   private resolvedRuntime?: ResolvedOpenAIChatRuntime
 
-  constructor(
-    apiKeyOrOptions: string | OpenAIProviderOptions,
-    model = "gpt-4o",
-    retry = { maxRetries: 3, baseDelay: 1000 },
-    baseURL: string = endpointProfiles["openai.chat"].baseURL,
-    runtimePolicy: RuntimePolicy = {},
-    dialect: OpenAIChatWireDialect = openAIChatDialects.openai,
-    authMode: "api_key" | "bearer" = "api_key",
-  ) {
-    const options: Required<OpenAIProviderOptions> = typeof apiKeyOrOptions === "string"
-      ? { apiKey: apiKeyOrOptions, model, retry, baseURL }
-      : {
-          model: "gpt-4o",
-          retry: { maxRetries: 3, baseDelay: 1000 },
-          baseURL: endpointProfiles["openai.chat"].baseURL,
-          ...apiKeyOrOptions,
-        }
-    this.model = options.model
-    this.client = withServerRuntimeGuard(() => new OpenAI({
+  constructor(options: OpenAIProviderOptions) {
+    const resolved = {
       apiKey: options.apiKey,
-      baseURL: options.baseURL,
-      ...(authMode === "bearer" ? { defaultHeaders: { Authorization: `Bearer ${options.apiKey}` } } : {}),
+      model: options.model ?? "gpt-4o",
+      retry: options.retry ?? { maxRetries: 3, baseDelay: 1000 },
+      baseURL: options.baseURL ?? endpointProfiles["openai.chat"].baseURL,
+      runtimePolicy: options.runtimePolicy ?? {},
+      dialect: options.dialect ?? openAIChatDialects.openai,
+      authMode: options.authMode ?? "api_key" as const,
+    }
+    this.model = resolved.model
+    this.client = withServerRuntimeGuard(() => new OpenAI({
+      apiKey: resolved.apiKey,
+      baseURL: resolved.baseURL,
+      ...(resolved.authMode === "bearer" ? { defaultHeaders: { Authorization: `Bearer ${resolved.apiKey}` } } : {}),
     }))
     this.circuit = new CircuitBreaker()
-    this.maxRetries = options.retry.maxRetries
-    this.baseDelay = options.retry.baseDelay
-    this.resolvedRuntimePolicy = runtimePolicy
-    this.dialect = dialect
+    this.maxRetries = resolved.retry.maxRetries
+    this.baseDelay = resolved.retry.baseDelay
+    this.resolvedRuntimePolicy = resolved.runtimePolicy
+    this.dialect = resolved.dialect
   }
 
   runtimePolicy(): RuntimePolicy {
@@ -142,15 +127,16 @@ export class OpenAIChatProvider implements LLMProvider {
     const replay = this.replayStore.get(assistantReplayKey(message))
     if (!replay || !("reasoning_content" in replay || "reasoning_details" in replay)) return undefined
     if (this.dialect.id === "qwen" && replay.reasoning_content !== undefined) {
-      return { reasoning_content: String(replay.reasoning_content ?? "") }
+      return { protocol: "openai-chat", reasoning_content: String(replay.reasoning_content ?? "") }
     }
     return replay
   }
 
   seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
-    if (replay.reasoning_content === undefined && replay.reasoning_details === undefined) return
+    if (replay.protocol !== "openai-chat"
+      || (replay.reasoning_content === undefined && replay.reasoning_details === undefined)) return
     this.replayStore.set(assistantReplayKey(message), this.dialect.id === "qwen"
-      ? { reasoning_content: replay.reasoning_content }
+      ? { protocol: "openai-chat", reasoning_content: replay.reasoning_content }
       : replay)
   }
 
@@ -279,7 +265,7 @@ export class OpenAIChatProvider implements LLMProvider {
     }
   }
 
-  // Compatibility-only white-box seams. Runtime request shaping uses the dialect through adapter.
+  // White-box test seams. Runtime request shaping uses the dialect through the adapter.
   protected prepareExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
     return this.dialect.prepareExtensions(extensions ?? {})
   }

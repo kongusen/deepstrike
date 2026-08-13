@@ -58,19 +58,6 @@ pub use syscall::*;
 pub use terminal::*;
 pub use transaction::*;
 
-/// The single supported wire revision (§16.2). There is no negotiation, no adapter and no
-/// inference from missing fields: anything else is a structured rejection.
-///
-/// Single source of truth — the bindings export this constant instead of each host hard-coding
-/// its own copy.
-pub const KERNEL_ABI_VERSION: u32 = 3;
-
-/// Revision of the logical checkpoint format, carried on the wire as `checkpoint_version`.
-///
-/// This remains a separate revision axis so retired recovery-format values cannot collide with the
-/// logical checkpoint boundary check.
-pub const KERNEL_CHECKPOINT_VERSION: u32 = 2;
-
 /// Absolute structural boundary applied **before** any JSON is parsed (§7.3).
 ///
 /// These are build/construction-time safety limits, not operation configuration:
@@ -87,7 +74,7 @@ pub struct KernelBootstrapLimits {
 
 impl KernelBootstrapLimits {
     /// 16 MiB matches the historical kernel input ceiling; depth and per-container entry bounds
-    /// are new — the legacy decode path had neither.
+    /// are explicit and required by the canonical decode path.
     pub const DEFAULT: Self = Self {
         absolute_max_input_bytes: 16 * 1024 * 1024,
         absolute_max_json_depth: 64,

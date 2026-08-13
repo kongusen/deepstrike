@@ -10,6 +10,7 @@ import { primitiveForKind } from "./kernel-event-log.js"
 import { KeyedSerialExecutor } from "./reliability.js"
 import type { KernelJournal } from "./kernel-journal.js"
 import { FileKernelJournal, InMemoryKernelJournal } from "./kernel-journal.js"
+import { decodeDurableContent } from "./durable-content.js"
 
 export type RollbackReason =
   | { kind: "fatal_tool_error"; tool_name: string; error: string }
@@ -24,7 +25,7 @@ export type SessionEvent =
   | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay }
   | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement }
   | { kind: "tool_requested"; turn: number; calls: ToolCall[] }
-  | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; is_fatal?: boolean; error_kind?: ToolErrorKind; token_count?: number; content?: { schema_version: 1; blocks: Record<string, unknown>[] }; blocks?: Record<string, unknown>[] }> }
+  | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; is_fatal?: boolean; error_kind?: ToolErrorKind; token_count?: number; content: { blocks: Record<string, unknown>[] } }> }
   | { kind: "tool_argument_repaired"; turn: number; tool: string; original_arguments: string; repaired_arguments: string }
   | { kind: "tool_denied"; turn: number; call_id: string; tool_name: string; reason: string }
   | { kind: "permission_requested"; turn: number; tool: string; arguments: string; reason?: string }
@@ -88,7 +89,6 @@ export type SessionEvent =
       kind: "entropy_sample"
       turn: number
       score: number
-      score_version: number
       rho: number
       repeat_pressure: number
       failure_rate: number
@@ -236,15 +236,7 @@ export class InMemorySessionLog implements SessionLog {
 
 }
 
-/**
- * A persisted line. The two `kernel_*` variants are **read-compat only**: kernel records used to
- * share this file (and its sequence space) with business events; they now live in the separate
- * `FileKernelJournal` under `<dir>/kernel-journal`. Keeping the variants means an older file still
- * parses instead of throwing — it does not migrate those records into the journal.
- */
-type PersistedSessionRecord =
-  | { seq: number; event: SessionEvent }
-  | { seq: number; record_type: string; genesis?: unknown; transaction?: unknown }
+type PersistedSessionRecord = { seq: number; event: SessionEvent }
 
 /**
  * File-backed `SessionLog`. Business appends are single-writer per session: safe within one
@@ -293,7 +285,7 @@ export class FileSessionLog implements SessionLog {
   async read(sessionId: string, fromSeq = 0, primitiveFilter?: KernelPrimitive): Promise<Array<{ seq: number; event: SessionEvent }>> {
     const results: Array<{ seq: number; event: SessionEvent }> = []
     for (const record of await this.readRecords(sessionId)) {
-      if (!("event" in record) || record.seq < fromSeq) continue
+      if (record.seq < fromSeq) continue
       if (primitiveFilter && primitiveForKind(record.event.kind) !== primitiveFilter) continue
       results.push({ seq: record.seq, event: record.event })
     }
@@ -339,11 +331,42 @@ export class FileSessionLog implements SessionLog {
         crlfDelay: Infinity,
       })
       for await (const line of rl) {
-        if (line.trim()) records.push(JSON.parse(line) as PersistedSessionRecord)
+        if (line.trim()) records.push(decodePersistedSessionRecord(JSON.parse(line)))
       }
     } catch (err: unknown) {
       if ((err as { code?: string }).code !== "ENOENT") throw err
     }
     return records
   }
+}
+
+function decodePersistedSessionRecord(value: unknown): PersistedSessionRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("session record must be an object")
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).some(key => key !== "seq" && key !== "event")) throw new Error("session record has unknown fields")
+  if (!Number.isInteger(record.seq) || (record.seq as number) < 0) throw new Error("session record seq must be a non-negative integer")
+  if (!record.event || typeof record.event !== "object" || Array.isArray(record.event)) throw new Error("session record event must be an object")
+  const event = record.event as Record<string, unknown>
+  if (event.kind === "llm_completed" && event.provider_replay !== undefined) {
+    assertCanonicalProviderReplay(event.provider_replay)
+  }
+  if (event.kind === "tool_completed") {
+    if (!Array.isArray(event.results)) throw new Error("tool_completed results must be an array")
+    for (const result of event.results) {
+      if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("tool_completed result must be an object")
+      const wire = result as Record<string, unknown>
+      if ("blocks" in wire) throw new Error("tool_completed result has removed blocks field")
+      decodeDurableContent(wire.content)
+    }
+  }
+  return { seq: record.seq as number, event: event as SessionEvent }
+}
+
+const REPLAY_KEYS = new Set(["protocol", "provider", "model", "native_blocks", "reasoning_content", "reasoning_details", "native_message", "tool_calls"])
+
+function assertCanonicalProviderReplay(value: unknown): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("provider replay must be an object")
+  const replay = value as Record<string, unknown>
+  for (const key of Object.keys(replay)) if (!REPLAY_KEYS.has(key)) throw new Error(`provider replay has unknown field ${key}`)
+  if (typeof replay.protocol !== "string" || replay.protocol.length === 0) throw new Error("provider replay protocol is required")
 }

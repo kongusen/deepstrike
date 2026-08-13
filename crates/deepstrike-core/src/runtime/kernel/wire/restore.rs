@@ -24,10 +24,8 @@
 //!    checkpoint — [`KernelTransaction::rebuild_from_records`] — and nothing else.
 //! 2. **The restore verifies itself.** After the logical state is installed and before a single
 //!    tail input is replayed, the restored runtime is re-projected and the projection is digested.
-//!    It must equal the checkpoint's `state_digest`. So a hydration that forgets a field does not
-//!    produce a runtime that is quietly one field short of the one that crashed — it produces a
-//!    refusal. The legacy snapshot compared *metadata* after a full replay, which could only ever
-//!    catch the things replay already reproduced.
+//!    It must equal the checkpoint's `state_digest`. A hydration that forgets a field therefore
+//!    produces a refusal instead of a subtly incomplete runtime.
 //! 3. **The cost is the tail, not the run.** [`RestoreCost`] counts what was read, and the count is
 //!    bounded by the tail bounds plus whatever the journal holds above `through_step_seq` — never
 //!    by how long the operation has been running. That is the property §12 exists for, and

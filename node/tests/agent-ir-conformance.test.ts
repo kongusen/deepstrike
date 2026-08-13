@@ -6,7 +6,7 @@ import { fromOpenAiAgent, type OpenAiAgentJson } from "../src/compat/openai/agen
 import { fromAnthropicMcpConfig } from "../src/compat/anthropic/mcp.js"
 
 async function fixture(): Promise<AgentDefinition> {
-  return JSON.parse(await readFile(join(process.cwd(), "..", "tests", "fixtures", "agent-ir", "v1-agent.json"), "utf8")) as AgentDefinition
+  return JSON.parse(await readFile(join(process.cwd(), "..", "tests", "fixtures", "agent-ir", "canonical-agent.json"), "utf8")) as AgentDefinition
 }
 
 describe("spc_015-09: Canonical Agent IR", () => {
@@ -14,7 +14,7 @@ describe("spc_015-09: Canonical Agent IR", () => {
     const agent = normalizeAgent(await fixture())
     const spec = lowerAgent(agent)
 
-    expect(spec.version).toBe(1)
+    expect("version" in spec).toBe(false)
     expect(spec.name).toBe("researcher")
     expect(spec.description).toBe("Finds and verifies source material.")
     expect(spec.instructions).toBe("Cite primary sources and state uncertainty.")
@@ -50,7 +50,6 @@ describe("spc_015-09: Canonical Agent IR", () => {
       openai: { reasoningEffort: "high" },
       "example.future_provider": { opaque: { preserve: true } },
     })
-    expect(spec.providerOptions).toEqual(spec.extensions)
 
     expect(spec.inputs.context.knowledge).toEqual(spec.knowledge)
     expect(spec.inputs.capabilities.tools).toEqual(spec.tools)

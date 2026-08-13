@@ -463,7 +463,7 @@ mod tests {
                 causation_input_id: InputId::new("in-1").unwrap(),
                 effect: EffectKind::EvaluateMilestone(EvaluateMilestoneEffect {
                     request: MilestoneRequest {
-                        contract_id: "brief-quality-v1".to_string(),
+                        contract_id: "brief-quality-primary".to_string(),
                         phase_id: "phase-1".to_string(),
                     },
                 }),

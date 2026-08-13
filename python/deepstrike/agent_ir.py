@@ -176,7 +176,6 @@ def lower_agent(agent: Agent) -> dict[str, Any]:
     effective = [capability for capability in capabilities if _capability_allowed(capability, capability_filter)]
     extensions = deepcopy(agent.provider_options or {})
     spec: dict[str, Any] = {
-        "version": 1,
         "name": agent.name,
         **({"description": agent.description} if agent.description else {}),
         **({"instructions": agent.instructions} if agent.instructions else {}),

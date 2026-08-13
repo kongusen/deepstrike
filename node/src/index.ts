@@ -26,18 +26,17 @@ export type { PayloadStoreConfig } from "./runtime/payload-store.js"
 export type { InstructionProfile, NudgeRule, NudgeTrigger } from "./harness/public.js"
 export type { SignalPolicy } from "./runtime/os-profile.js"
 export {
-  CONTEXT_POLICY_VERSION,
-  DEFAULT_CONTEXT_POLICY_V1,
+  DEFAULT_CONTEXT_POLICY,
   PPM_SCALE,
-  contextPolicyV1,
-  normalizeContextPolicyV1,
+  contextPolicy,
+  normalizeContextPolicy,
   ratioToPpm,
 } from "./runtime/context-policy.js"
 export type {
-  ContextPolicyOverridesV1,
-  ContextPolicyV1,
-  ContextPolicyWireV1,
-  ContextPressureThresholdsV1,
+  ContextPolicyOverrides,
+  ContextPolicy,
+  ContextPolicyWire,
+  ContextPressureThresholds,
 } from "./runtime/context-policy.js"
 
 // ── Execution plane + session log (the defaults) ────────────────────────────
@@ -106,9 +105,7 @@ export type { CreateProviderOptions, EndpointProfileId } from "./providers/catal
 export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./providers/request-plan.js"
 export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement } from "./providers/request-plan.js"
 
-// ── Governance ──────────────────────────────────────────────────────────────
-export { Governance } from "./governance.js"
-export type { GovernanceVerdict, GovernancePolicy, GovernanceConstraint } from "./governance.js"
+export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 
 // ── Multi-agent primitive ───────────────────────────────────────────────────
 // Parallel fan-out / sub-agent delegation. The full orchestration layer is in `@deepstrike/sdk/workflow`.
@@ -137,7 +134,7 @@ export type {
 export type {
   Message, ToolCall, ToolResult, ToolSchema,
   ContentPart, TextPart, ImagePart, AudioPart,
-  ContentBlock, MediaSource, ContentBlockText, ContentBlockImage, ContentBlockAudio,
+  MediaSource, ContentBlockText, ContentBlockImage, ContentBlockAudio,
   ContentBlockVideo, ContentBlockFile,
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolChunk, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, ToolAuditFailedEvent, DoneEvent, ErrorEvent,
@@ -151,7 +148,6 @@ export {
   decodeDurableToolResult,
   encodeDurableContent,
   encodeDurableToolResult,
-  migrateLegacyContent,
   toolOutputBlocksToDurable,
   durableBlocksToToolOutput,
 } from "./runtime/durable-content.js"

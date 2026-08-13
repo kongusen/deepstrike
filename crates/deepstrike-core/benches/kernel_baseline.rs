@@ -91,7 +91,6 @@ fn envelope(
     input: Value,
 ) -> Value {
     json!({
-        "abi_version": deepstrike_core::KERNEL_ABI_VERSION,
         "operation_id": operation_id,
         "input_id": input_id.into(),
         "observed_at_ms": observed_at_ms.to_string(),

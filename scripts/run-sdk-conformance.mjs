@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const fixturesRoot = join(root, "tests", "fixtures", "sdk-conformance")
-const fixtureDir = join(fixturesRoot, "v1")
+const fixtureDir = join(fixturesRoot, "canonical")
 const schema = json(join(fixturesRoot, "schema.json"))
 const args = parseArgs(process.argv.slice(2))
 const python = process.env.DEEPSTRIKE_CONFORMANCE_PYTHON
@@ -91,9 +91,6 @@ function validateFixture({ path, value }) {
   if (!isObject(value)) fail(`${label}: / must be an object`)
   requireOnlyKeys(value, schema.properties, label, "/")
   requireKeys(value, schema.required, label, "/")
-  if (value.schemaVersion !== schema.properties.schemaVersion.const) {
-    fail(`${label}: /schemaVersion must equal ${schema.properties.schemaVersion.const}`)
-  }
   if (typeof value.id !== "string" || !new RegExp(schema.properties.id.pattern).test(value.id)) {
     fail(`${label}: invalid /id`)
   }
@@ -108,9 +105,6 @@ function validateExpected(expected, label) {
   if (!isObject(expected)) fail(`${label}: /expected must be an object`)
   requireOnlyKeys(expected, expectedSchema.properties, label, "/expected")
   requireKeys(expected, expectedSchema.required, label, "/expected")
-  if (!Number.isInteger(expected.contractVersion) || expected.contractVersion < 1) {
-    fail(`${label}: /expected.contractVersion must be a positive integer`)
-  }
   const hasCanonical = Object.hasOwn(expected, "canonical")
   const hasError = Object.hasOwn(expected, "error")
   if (hasCanonical === hasError) fail(`${label}: /expected must contain exactly one of canonical or error`)
@@ -128,7 +122,7 @@ function validateExpected(expected, label) {
 }
 
 function requireKeys(value, keys, label, path) {
-  for (const key of keys) {
+  for (const key of keys ?? []) {
     if (!Object.hasOwn(value, key)) fail(`${label}: missing required field ${pointer(path, key)}`)
   }
 }
@@ -204,9 +198,6 @@ function compareEnvelope(fixture, actual, sdk) {
   if (!isObject(actual)) return diff("", "adapter output is not an object")
   if (actual.sdk !== sdk) return diff("/sdk", `expected ${sdk}, got ${String(actual.sdk)}`)
   if (actual.fixture !== fixture.id) return diff("/fixture", `expected ${fixture.id}, got ${String(actual.fixture)}`)
-  if (actual.contractVersion !== fixture.expected.contractVersion) {
-    return diff("/contractVersion", `expected ${fixture.expected.contractVersion}, got ${String(actual.contractVersion)}`)
-  }
   if (fixture.expected.error) {
     if (actual.ok !== false || !isObject(actual.error)) return diff("/ok", "expected a structured error envelope")
     if (actual.error.code !== fixture.expected.error.code) return diff("/error/code", `expected ${fixture.expected.error.code}, got ${String(actual.error.code)}`)
@@ -243,7 +234,7 @@ function firstDifference(expected, actual, path = "") {
 }
 
 function adapterFailure(sdk, message) {
-  return { ok: false, sdk, fixture: "", contractVersion: 0, error: { code: "adapter_failure", path: "", message } }
+  return { ok: false, sdk, fixture: "", error: { code: "adapter_failure", path: "", message } }
 }
 
 function parseArgs(argv) {

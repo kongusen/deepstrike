@@ -17,10 +17,6 @@
  * therefore structurally inexpressible, and the whole security audit stays O(1): read the whitelist,
  * check the one invariant. (`enablePlanTool` is exempt — it toggles a kernel-owned meta-tool,
  * attention-shaping not capability-granting, so it folds by plain assignment.)
- *
- * `toolDispatchGate` is deliberately ABSENT from the whitelist and must stay so: it selects whether
- * the kernel enforces the exposure surface at dispatch. A proposer that could set it to `"registered"`
- * would disable the enforcement half of the ceiling it is otherwise structurally unable to widen.
  */
 import { createHash } from "node:crypto"
 import type { MemoryPolicy } from "../kernel.js"

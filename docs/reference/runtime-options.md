@@ -1,9 +1,9 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
-  node: [RuntimeRunner, LLMProvider, SessionLog, Governance]
+  node: [RuntimeRunner, LLMProvider, SessionLog]
   fields:
-    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, memory_store, memory_policy, pre_query_memory, knowledge_source, memory_provider, memory_summarizer, governance, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
+    "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, memory_store, memory_policy, pre_query_memory, knowledge_source, memory_provider, memory_summarizer, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
 ---
 
 # RuntimeOptions 参考
@@ -59,10 +59,9 @@ Python `RuntimeRunner` 的配置中心。定义：`python/deepstrike/runtime/run
 
 | 字段 | 说明 |
 |------|------|
-| `governance` | `Governance` wrapper |
 | `governance_policy` | 声明式策略 |
 | `resource_quota` | subagent / memory write 配额 |
-| `scheduler_policy` | 版本化、确定性的 DAG 优先级权重；墙钟预算仍由 `timeout_ms` 独立控制 |
+| `scheduler_policy` | 确定性的 DAG 优先级权重；墙钟预算仍由 `timeout_ms` 独立控制 |
 | `run_group` | 跨 run 共享治理域 |
 | `signal_policy` | 信号队列、TTL 与截止时间升级策略 |
 | `prompt_budget` | provider 包装开销、输出预留与安全余量 |

@@ -484,14 +484,6 @@ export class CanonicalKernel {
   }
 }
 
-export class Governance {
-  blockTool(_name: string): void {}
-  setTime(_nowMs: number): void {}
-  evaluate(_toolName: string, _argsJson: string) {
-    return { kind: "allow" as const }
-  }
-}
-
 export class SignalRouter {
   constructor(_maxQueueSize: number) {}
   ingest(signal: unknown, lifecycle: "ready" | "running" | "suspended" | "done"): string {

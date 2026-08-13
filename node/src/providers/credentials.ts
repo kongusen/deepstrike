@@ -188,7 +188,7 @@ export async function resolveCredential(
 }
 
 /**
- * The legacy synchronous factory remains synchronous. A resolver which performs I/O must use
+ * The synchronous factory remains synchronous. A resolver which performs I/O must use
  * `resolveProviderRuntimeAsync` / `createProviderAsync` instead of risking an implicit request.
  */
 export function resolveCredentialSync(

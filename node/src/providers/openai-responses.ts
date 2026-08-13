@@ -175,7 +175,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
     }
   }
 
-  // Compatibility-only test seams. Protocol request shaping belongs to the adapter.
+  // White-box test seams. Protocol request shaping belongs to the adapter.
   private builtinTools(extensions?: Record<string, unknown>): Record<string, unknown>[] {
     return this.responses.builtinTools(extensions)
   }

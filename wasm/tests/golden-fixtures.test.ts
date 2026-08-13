@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { CanonicalKernel, kernelAbiVersion } from "@deepstrike/wasm-kernel"
+import { CanonicalKernel } from "@deepstrike/wasm-kernel"
 
 type CanonicalFixture = {
   links: Array<{
@@ -23,7 +23,7 @@ describe("WASM canonical ABI fixtures", () => {
     const kernel = new CanonicalKernel()
 
     for (const [index, link] of fixture.links.entries()) {
-      expect(link.envelope.abi_version).toBe(kernelAbiVersion())
+      expect(link.envelope).not.toHaveProperty("abi_version")
       const prepared = kernel.prepare(JSON.stringify(link.envelope))
       expect(prepared.status).toBe("prepared")
       if (prepared.status !== "prepared") throw new Error("expected prepared transition")

@@ -35,7 +35,7 @@ impl LoopStateMachine {
             // whatever the grant already held (zero) — the full reservation returns to the parent.
             self.tasks.return_child_budget(child_id.as_str());
             // spc_003-04: `set_wait` keeps `WaitIndex` in sync — it is the only sanctioned mutator.
-            self.tasks.set_wait(child_id.as_str(), None);
+            self.tasks.clear_wait(child_id.as_str());
         }
 
         self.suspend_state = None;

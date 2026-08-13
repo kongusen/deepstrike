@@ -531,7 +531,10 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
   }
 
   rememberReplayFields(message: Pick<Message, "content" | "toolCalls">, fields: Record<string, unknown>): void {
-    compatibilityReplayStore(this).set(assistantReplayKey(message), fields as ProviderReplay)
+    compatibilityReplayStore(this).set(assistantReplayKey(message), {
+      protocol: "openai-chat",
+      ...fields,
+    } as ProviderReplay)
   }
 
   peekReplayFields(message: Pick<Message, "content" | "toolCalls">): Record<string, unknown> | undefined {

@@ -358,12 +358,12 @@ impl LLMProvider for OpenAIProvider {
             .body(body.to_string())
             .send()
             .await
-            .map_err(|e| Error::Provider(e.to_string()))?;
+            .map_err(|e| Error::from(super::ProviderError::transport("openai", e.to_string())))?;
 
         if !resp.status().is_success() {
-            let status = resp.status();
+            let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Provider(format!("OpenAI {status}: {text}")));
+            return Err(super::ProviderError::from_http("openai", status, text).into());
         }
 
         let byte_stream = resp.bytes_stream();
@@ -494,7 +494,7 @@ fn parse_openai_sse(
                     Some(Ok(chunk)) => buf.push_str(&String::from_utf8_lossy(&chunk)),
                     Some(Err(e)) => {
                         return Some((
-                            Err(Error::Provider(e.to_string())),
+                            Err(super::ProviderError::transport("openai", e.to_string()).into()),
                             (stream, buf, tool_accum, flushed, finish_reason),
                         ));
                     }

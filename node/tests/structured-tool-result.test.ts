@@ -207,6 +207,7 @@ describe("structured tool result end-to-end (spc_012)", () => {
       executionPlane: new MultimodalToolPlane(),
       maxTokens: 4000,
       maxTurns: 4,
+      baselineToolIds: ["screenshot"],
     } as never)
 
     for await (const _evt of runner.run({ sessionId: "spc012-e2e", goal: "Take a screenshot."})) {}
@@ -218,8 +219,7 @@ describe("structured tool result end-to-end (spc_012)", () => {
     expect(toolMsg).toBeDefined()
     const part = toolMsg!.contentParts?.find(p => p.type === "tool_result" && p.callId === "call_1")
     expect(part).toBeDefined()
-    // The kernel wire carried only the text projection; the runner's side channel re-attached
-    // the structured blocks by callId.
+    // Canonical durable blocks survive the kernel round trip.
     expect(part!.contentParts).toEqual([
       { type: "text", text: "screenshot taken" },
       { type: "image", source: { kind: "base64", data: "aGVsbG8=" }, mediaType: "image/png" },

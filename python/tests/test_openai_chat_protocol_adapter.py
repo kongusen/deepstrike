@@ -72,7 +72,7 @@ def test_adapter_decodes_minimax_complete_replay_and_rejects_malformed_usage() -
     assert decoded.message.content == "answer"
     assert decoded.message.token_count == 4
     assert decoded.replay == {
-        "schema_version": 2, "provider": "minimax", "protocol": "openai-chat", "model": "MiniMax-M3",
+        "provider": "minimax", "protocol": "openai-chat", "model": "MiniMax-M3",
         "reasoning_content": "plan", "reasoning_details": {"trace": "x"},
         "tool_calls": [{"id": "call_1", "function": {"name": "lookup", "arguments": '{"q":"x"}'}}],
     }

@@ -94,10 +94,8 @@ export type {
 export { workflowSpecToKernel, workflowNodeSpecToKernel, submitWorkflowNodesTool, startWorkflowTool, fanoutSynthesize, generateAndFilter, genEval, verifyRules } from "./runtime/types/agent.js"
 export {
   loopInstruction, classifyInstruction, judgeGoal,
-  extractLoopContinue, extractClassifyBranch, extractJudgeWinner,
+  extractClassifyBranch, extractJudgeWinner,
 } from "./runtime/workflow-control-flow.js"
-export { Governance } from "./governance.js"
-export type { GovernanceVerdict } from "./governance.js"
 export { Agent } from "./agent.js"
 export type {
   AgentMemory, AgentOptions, AgentToolDefinition, AgentRef, Guardrail, Handoff, Knowledge,
@@ -108,7 +106,11 @@ export type {
   AgentCapabilityIR, AgentDefinition, AgentLoweringInputs, AgentMemoryIR, AgentSpec, AgentToolIR,
 } from "./agent-ir.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
-export { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider, KimiProvider } from "./providers/openai.js"
+export { OpenAIProvider, qwen, deepseek, minimax, kimi } from "./providers/openai.js"
+export type { OpenAIProviderOptions, BackendProviderOptions } from "./providers/openai.js"
+export { ProviderError, classifyProviderError } from "./providers/provider-error.js"
+export type { ProviderErrorKind, ProviderErrorOptions } from "./providers/provider-error.js"
+export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 export { tool, executeTools } from "./tools/index.js"
 export type { RegisteredTool, ToolExecContext } from "./tools/index.js"
 export { safeTool, ok, fail, ToolError, formatToolError } from "./tools/errors.js"
@@ -156,5 +158,5 @@ export type {
   LLMProvider,
   CacheBreakpointStrategy,
 } from "./types.js"
-export { DurableContentError, decodeDurableContent, decodeDurableToolResult, encodeDurableContent, encodeDurableToolResult, migrateLegacyContent, toolOutputBlocksToDurable, durableBlocksToToolOutput } from "./runtime/durable-content.js"
+export { DurableContentError, decodeDurableContent, decodeDurableToolResult, encodeDurableContent, encodeDurableToolResult, toolOutputBlocksToDurable, durableBlocksToToolOutput } from "./runtime/durable-content.js"
 export type { DurableContent, DurableContentBlock, DurableSource, DurableToolResult } from "./runtime/durable-content.js"

@@ -61,7 +61,7 @@ pub enum ContentPart {
         output: String,
         is_error: bool,
         /// The versioned portable blocks for this result. `output` remains the text projection
-        /// consumed by legacy renderers and bindings.
+        /// consumed by text renderers and bindings.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         durable_content: Option<DurableContent>,
     },

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepstrike.providers.qwen import QwenProvider
+from deepstrike.providers.factories import qwen
 from deepstrike.providers.base import RenderedContext
 from deepstrike._kernel import Message, ContentPartObj
 from deepstrike.providers.stream import TextDelta, UsageEvent
@@ -43,18 +43,18 @@ class _FakeMM:
 
 
 def _provider(mode):
-    p = QwenProvider("k")
+    p = qwen(api_key="k")
     p._mm_generation = _FakeMM(mode)
     return p
 
 
 def test_has_image_input_detection():
-    assert QwenProvider("k")._has_image_input(_img_ctx()) is True
-    assert QwenProvider("k")._has_image_input(RenderedContext(turns=[Message(role="user", content="hi")])) is False
+    assert qwen(api_key="k")._has_image_input(_img_ctx()) is True
+    assert qwen(api_key="k")._has_image_input(RenderedContext(turns=[Message(role="user", content="hi")])) is False
 
 
 def test_build_mm_messages_format():
-    user = QwenProvider("k")._build_mm_messages(_img_ctx())[-1]
+    user = qwen(api_key="k")._build_mm_messages(_img_ctx())[-1]
     assert user["role"] == "user"
     assert {"text": "what is this?"} in user["content"]
     assert {"image": "data:image/png;base64,BASE64"} in user["content"]

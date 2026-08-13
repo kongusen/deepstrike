@@ -90,6 +90,7 @@ def _tooled_runner(pings: dict) -> RuntimeRunner:
         session_log=InMemorySessionLog(),
         execution_plane=plane,
         max_tokens=16_000,
+        baseline_tool_ids=["ping"],
     ))
 
 
@@ -199,7 +200,7 @@ async def test_iteration_that_never_paces_also_fails_closed_on_loop_kind():
 
 
 @pytest.mark.asyncio
-async def test_resume_filters_vehicle_members_and_keeps_legacy_memberships_whole():
+async def test_resume_restores_only_explicitly_tagged_peers():
     store = InMemoryGroupBudgetStore()
     await store.join("g1", GroupMember("alice", "reviewer", kind="peer"))
     await store.join("g1", GroupMember("wf-abc123", "loop", kind="vehicle"))
@@ -215,12 +216,11 @@ async def test_resume_filters_vehicle_members_and_keeps_legacy_memberships_whole
     )
     assert sorted(session.peers()) == ["alice", "bob"]
 
-    # Legacy: nothing tagged → every member resumes as a peer (old behavior preserved).
-    legacy = InMemoryGroupBudgetStore()
-    await legacy.join("g2", GroupMember("solo"))
-    legacy_session = await ReactiveSession.resume(
-        run_group=RunGroup(id="g2", budget_store=legacy),
+    untagged = InMemoryGroupBudgetStore()
+    await untagged.join("g2", GroupMember("solo"))
+    strict_session = await ReactiveSession.resume(
+        run_group=RunGroup(id="g2", budget_store=untagged),
         turn_policy=lambda event, peers, state: [],
         make_runner=_no_runner,
     )
-    assert legacy_session.peers() == ["solo"]
+    assert strict_session.peers() == []

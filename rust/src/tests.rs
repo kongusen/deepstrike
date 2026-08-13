@@ -590,7 +590,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -701,8 +700,7 @@ mod tests {
             milestone_contract: None,
             run_spec: None,
             allowed_tool_ids: None,
-            baseline_tool_ids: None,
-            tool_dispatch_gate: None,
+            baseline_tool_ids: Some(vec!["read".into(), "write".into()]),
             on_turn_metrics: Some(Arc::new(move |m| sink.lock().unwrap().push(m))),
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -829,7 +827,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: Some(Arc::new(move |m: TurnMetrics| {
                 sink.lock().unwrap().push(m.tools_exposed)
             })),
@@ -843,9 +840,9 @@ mod tests {
 
         let e = exposures.lock().unwrap();
         assert!(e.len() >= 2, "expected ≥2 turns, got {e:?}");
-        // Turn 1: 4 base tools + the `skill` meta-tool = 5 (not yet narrowed).
-        assert_eq!(e[0], 5, "turn-1 exposure {e:?}");
-        // Turn 2: narrowed to read+grep (declared) ∪ bash (stable-core) ∪ skill (meta) = 4.
+        // Turn 1: the minimal surface exposes bash (stable-core) and skill (meta).
+        assert_eq!(e[0], 2, "turn-1 exposure {e:?}");
+        // Turn 2: read+grep (declared) widen the surface alongside bash and skill.
         assert_eq!(*e.last().unwrap(), 4, "post-load exposure {e:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -874,7 +871,13 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                 + 1;
             if n == 1 {
-                return Err(crate::Error::Provider("413 prompt too long".to_string()));
+                return Err(crate::providers::ProviderError::new(
+                    "test",
+                    crate::providers::ProviderErrorKind::ContextOverflow,
+                    false,
+                    "request exceeded the context window",
+                )
+                .into());
             }
             Ok(Box::new(futures::stream::iter(vec![Ok(
                 crate::providers::StreamEvent::TextDelta {
@@ -930,7 +933,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -1133,8 +1135,7 @@ mod tests {
             milestone_contract: None,
             run_spec: None,
             allowed_tool_ids: None,
-            baseline_tool_ids: None,
-            tool_dispatch_gate: None,
+            baseline_tool_ids: Some(vec!["fail_tool".into()]),
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -1244,7 +1245,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -1335,7 +1335,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -1443,7 +1442,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -1633,7 +1631,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -1784,7 +1781,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -1904,7 +1900,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -1944,7 +1939,6 @@ mod tests {
         );
 
         let scheduler_policy = SchedulerPolicyConfig {
-            version: 1,
             critical_path_weight: 1_000_000,
             fanout_weight: 10_000,
             age_weight: 1_000,
@@ -2073,7 +2067,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -2186,7 +2179,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -2266,7 +2258,7 @@ mod tests {
     // ---------------------------------------------------------------------------------------
 
     /// R-B29 / Task 21b: a canonical transition rejection must reach the runner as `Result::Err`,
-    /// never as a panic or a silently dropped legacy `KernelStep::faults` entry.
+    /// never as a panic or a silently dropped fault projection.
     #[tokio::test]
     async fn kernel_apply_surfaces_canonical_rejection() {
         use crate::runtime::runner::kernel_apply;
@@ -2400,7 +2392,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -2506,7 +2497,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
@@ -2628,7 +2618,6 @@ mod tests {
             run_spec: None,
             allowed_tool_ids: None,
             baseline_tool_ids: None,
-            tool_dispatch_gate: None,
             on_turn_metrics: None,
             stable_core_tool_ids: vec![],
             pre_query_memory: None,

@@ -1,7 +1,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike 运行机制</title>
-  <desc id="desc">DeepStrike 当前运行边界：宿主拥有真实 I/O，RuntimeRunner 驱动 Canonical Kernel ABI，Rust 内核治理控制流，Self-Harness v2 在隔离外环中改进下一次运行。</desc>
+  <desc id="desc">DeepStrike 当前运行边界：宿主拥有真实 I/O，RuntimeRunner 驱动 Canonical Kernel ABI，Rust 内核治理控制流，Self-Harness 在隔离外环中改进下一次运行。</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
@@ -155,7 +155,7 @@
         <path d="M869 509H1114" class="rule"/>
         <text x="869" y="536" class="micro" text-anchor="start">APPEND-ONLY EVIDENCE</text>
 
-  <text x="48" y="620" class="section-title" text-anchor="start">Self-Harness v2 外环</text>
+  <text x="48" y="620" class="section-title" text-anchor="start">Self-Harness 外环</text>
   <text x="1152" y="620" class="section-note" text-anchor="end">只改下一次运行 · 不绕过治理</text>
 
   <g>

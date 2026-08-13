@@ -165,19 +165,14 @@ pub struct RuntimeOptions {
     /// the id axis; the KIND axis still applies. Lowers to the same `capability_filter` sub-agents
     /// use; byte-stable across the run, so it never busts the prompt-cache prefix. Augments
     /// `run_spec`'s filter when both are set; synthesizes a minimal top-level spec otherwise.
-    /// `None`/empty ⇒ no ceiling (no config = old); use `baseline_tool_ids` for a minimal surface.
+    /// `None`/empty means no ceiling. Exposure still starts from the minimal baseline.
     pub allowed_tool_ids: Option<Vec<String>>,
     /// The PRE-ACTIVATION exposure surface, selected from under the `allowed_tool_ids` ceiling
     /// (`AgentRunSpec::exposure_baseline`). Makes narrow→wide progressive disclosure expressible:
     /// `exposed = meta ∪ ((baseline ∪ stable_core ∪ ⋃ active skills' allowed_tools) ∩ ceiling)`.
-    /// `None` ⇒ legacy behavior; `Some(vec![])` is DISTINCT and legitimate — the minimal surface
-    /// (meta-tools + stable-core only). Entries outside the ceiling silently intersect away.
+    /// `None` and `Some(vec![])` both select the minimal surface (meta-tools + stable-core only).
+    /// Entries outside the ceiling silently intersect away.
     pub baseline_tool_ids: Option<Vec<String>>,
-    /// P1 dispatch enforcement (`OperationConfig.feature_policy.tool_dispatch_gate`). `None` ⇒ the kernel default
-    /// `"exposed"`: fail-closed, a call to a tool this run never advertised commits a model-visible
-    /// `governance_denied` result instead of executing. `Some("registered")` is the escape hatch
-    /// restoring the pre-gate permissive dispatch.
-    pub tool_dispatch_gate: Option<String>,
     /// P0-C: optional per-turn metrics sink for tool-gating telemetry (see [`TurnMetrics`]). Pure
     /// observation; invoked once per LLM turn. Panics are not caught — keep the sink trivial.
     pub on_turn_metrics: Option<OnTurnMetricsHandler>,
@@ -189,12 +184,8 @@ pub struct RuntimeOptions {
 
 /// P0-A: compute the effective top-level run spec from an optional explicit `run_spec`, an optional
 /// `allowed_tool_ids` ceiling, and an optional `baseline_tool_ids` pre-activation surface. Each
-/// augments an explicit spec, or synthesizes a minimal `custom`-role spec when none is given.
-/// Returns `None` when all are unset ⇒ no gating (no config = old behavior).
-///
-/// The two id-lists use DIFFERENT presence idioms on purpose: an empty `allowed_tool_ids` means
-/// "unset" (the runner-wide "empty = no gating" convention), while an empty `baseline_tool_ids` is
-/// the legitimate minimal surface and must reach the kernel as `Some(vec![])`.
+/// augments an explicit spec, or synthesizes a minimal `custom`-role spec when none is given. Every
+/// run carries the canonical exposure baseline; omitted and empty both mean the minimal surface.
 fn build_run_spec(
     explicit: Option<deepstrike_core::types::agent::AgentRunSpec>,
     allowed_tool_ids: Option<&[String]>,
@@ -221,23 +212,18 @@ fn build_run_spec(
             spec.capability_filter.allowed_ids = ids.iter().map(|s| s.as_str().into()).collect();
             Some(spec)
         }
-        (None, None) => baseline_tool_ids.map(|_| {
-            AgentRunSpec::new(
-                AgentIdentity::new(agent_id.unwrap_or("root"), session_id),
-                AgentRole::Custom,
-                goal.to_string(),
-            )
-        }),
-    };
-    if spec.is_none() && verification_contract_id.is_some() {
-        spec = Some(AgentRunSpec::new(
+        (None, None) => Some(AgentRunSpec::new(
             AgentIdentity::new(agent_id.unwrap_or("root"), session_id),
             AgentRole::Custom,
             goal.to_string(),
-        ));
-    }
-    if let (Some(spec), Some(baseline)) = (spec.as_mut(), baseline_tool_ids) {
-        spec.exposure_baseline = Some(baseline.iter().map(|s| s.as_str().into()).collect());
+        )),
+    };
+    if let Some(spec) = spec.as_mut() {
+        if let Some(baseline) = baseline_tool_ids {
+            spec.exposure_baseline = Some(baseline.iter().map(|s| s.as_str().into()).collect());
+        } else if spec.exposure_baseline.is_none() {
+            spec.exposure_baseline = Some(Vec::new());
+        }
     }
     if let (Some(spec), Some(contract_id)) = (spec.as_mut(), verification_contract_id)
         && spec.verification_contract_id.is_none()
@@ -880,7 +866,6 @@ impl RuntimeRunner {
             if !resume_mid_run {
                 if self.opts.kernel_reliability.is_some()
                     || self.opts.scheduler_policy.is_some()
-                    || self.opts.tool_dispatch_gate.is_some()
                 {
                     let mut config = serde_json::Map::new();
                     if let Some(reliability) = self.opts.kernel_reliability.as_ref() {
@@ -898,9 +883,6 @@ impl RuntimeRunner {
                             Error::Other(format!("scheduler policy is not serializable: {error}"))
                         })?;
                         config.insert("scheduler_policy".into(), policy);
-                    }
-                    if let Some(gate) = self.opts.tool_dispatch_gate.as_ref() {
-                        config.insert("tool_dispatch_gate".into(), gate.clone().into());
                     }
                     kernel_apply(
                         &kernel,
@@ -1399,15 +1381,11 @@ impl RuntimeRunner {
                                 // terminate with an honest ContextOverflow. The classify + compact +
                                 // retry + give-up policy lives in the kernel (one place), not
                                 // duplicated across the four SDK runners.
-                                let msg = e.to_string();
+                                let msg = provider_error_message(&e);
                                 action = kernel_action(
                                     &kernel,
                                     &mut pending_observations,
-                                    serde_json::json!({
-                                        "kind": "provider_error",
-                                        "effect_id": provider_effect_id,
-                                        "message": msg,
-                                    }),
+                                    provider_error_event(&provider_effect_id, &e),
                                 ).await?;
                                 // Withholding (query.ts parity): surface the raw provider error only
                                 // when the kernel could NOT recover (it returned a terminal). On a
@@ -1427,7 +1405,7 @@ impl RuntimeRunner {
                         // forever (nothing ever resolves it) and skips the kernel's reactive
                         // recovery ladder. Capture it here and feed `provider_error` below, exactly
                         // like the stream-open error path and like node/python.
-                        let mut stream_error: Option<String> = None;
+                        let mut stream_error: Option<crate::Error> = None;
                         while let Some(evt) = provider_stream.next().await {
                             if self.interrupted.load(Ordering::Relaxed) {
                                 break;
@@ -1435,7 +1413,7 @@ impl RuntimeRunner {
                             let evt = match evt {
                                 Ok(evt) => evt,
                                 Err(e) => {
-                                    stream_error = Some(e.to_string());
+                                    stream_error = Some(e);
                                     break;
                                 }
                             };
@@ -1492,7 +1470,8 @@ impl RuntimeRunner {
                             break;
                         }
 
-                        if let Some(msg) = stream_error {
+                        if let Some(error) = stream_error {
+                            let msg = provider_error_message(&error);
                             // Same contract as the stream-open failure above: hand the raw provider
                             // error to the kernel, which resolves the pending provider effect and
                             // decides recover-and-retry (`CallProvider`) vs honest terminal (`Done`).
@@ -1501,11 +1480,7 @@ impl RuntimeRunner {
                             action = kernel_action(
                                 &kernel,
                                 &mut pending_observations,
-                                serde_json::json!({
-                                    "kind": "provider_error",
-                                    "effect_id": provider_effect_id,
-                                    "message": msg,
-                                }),
+                                provider_error_event(&provider_effect_id, &error),
                             ).await?;
                             if matches!(&action.effect, HostEffect::Done { .. }) {
                                 yield RunEvent::Error(msg);
@@ -2436,7 +2411,6 @@ impl RuntimeRunner {
                 KernelObservation::EntropySample {
                     turn,
                     score,
-                    score_version,
                     rho,
                     repeat_pressure,
                     failure_rate,
@@ -2448,7 +2422,6 @@ impl RuntimeRunner {
                         SessionEvent::EntropySample {
                             turn,
                             score,
-                            score_version,
                             rho,
                             repeat_pressure,
                             failure_rate,
@@ -2874,6 +2847,35 @@ fn cancellation_reason_code(reason: CancellationReason) -> u8 {
         CancellationReason::LeaseLost => 2,
         CancellationReason::HostShutdown => 3,
     }
+}
+
+fn provider_error_message(error: &crate::Error) -> String {
+    match error {
+        crate::Error::ProviderFailure(error) => error.message.clone(),
+        _ => error.to_string(),
+    }
+}
+
+fn provider_error_event(effect_id: &str, error: &crate::Error) -> serde_json::Value {
+    let mut event = serde_json::json!({
+        "kind": "provider_error",
+        "effect_id": effect_id,
+        "message": provider_error_message(error),
+    });
+    if let crate::Error::ProviderFailure(error) = error {
+        let object = event
+            .as_object_mut()
+            .expect("provider error event is an object");
+        object.insert("error_kind".into(), error.kind.as_str().into());
+        object.insert("retryable".into(), error.retryable.into());
+        if let Some(status) = error.http_status {
+            object.insert("http_status".into(), status.into());
+        }
+        if let Some(code) = error.provider_code.as_ref() {
+            object.insert("provider_code".into(), code.clone().into());
+        }
+    }
+    event
 }
 
 fn cancellation_reason_from_code(code: u8) -> CancellationReason {

@@ -171,28 +171,28 @@ const OLLAMA_TOOL_STREAM = [
 
 describe("spc_013-A-00 characterization: stream chunk → event sequences", () => {
   it("anthropic-messages: tool-call stream", async () => {
-    const provider = new AnthropicProvider("sk-char", "claude-opus-4-1")
+    const provider = new AnthropicProvider({ apiKey: "sk-char", model: "claude-opus-4-1" })
     const captured: { req?: unknown } = {}
     stubAnthropicStream(provider, captured, ANTHROPIC_TOOL_STREAM)
     expectGolden("stream-anthropic-tool", { request: captured.req ?? null, events: await collectStream(provider) })
   })
 
   it("anthropic-messages: canonical stopReason with raw diagnostics", async () => {
-    const provider = new AnthropicProvider("sk-char", "claude-opus-4-1")
+    const provider = new AnthropicProvider({ apiKey: "sk-char", model: "claude-opus-4-1" })
     const captured: { req?: unknown } = {}
     stubAnthropicStream(provider, captured, ANTHROPIC_CAP_STREAM)
     expectGolden("stream-anthropic-stopreason-before", { events: await collectStream(provider) })
   })
 
   it("openai-chat: tool-call stream", async () => {
-    const provider = new OpenAIChatProvider("sk-char", "gpt-4o")
+    const provider = new OpenAIChatProvider({ apiKey: "sk-char", model: "gpt-4o" })
     const captured: { req?: unknown } = {}
     stubOpenAiChatStream(provider, captured, OPENAI_CHAT_TOOL_STREAM)
     expectGolden("stream-openai-chat-tool", { request: captured.req ?? null, events: await collectStream(provider) })
   })
 
   it("openai-chat: canonical stopReason with raw diagnostics", async () => {
-    const provider = new OpenAIChatProvider("sk-char", "gpt-4o")
+    const provider = new OpenAIChatProvider({ apiKey: "sk-char", model: "gpt-4o" })
     const captured: { req?: unknown } = {}
     stubOpenAiChatStream(provider, captured, OPENAI_CHAT_CAP_STREAM)
     expectGolden("stream-openai-chat-stopreason-before", { events: await collectStream(provider) })

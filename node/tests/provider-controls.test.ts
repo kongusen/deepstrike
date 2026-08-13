@@ -4,8 +4,6 @@ import { GeminiProvider } from "../src/providers/gemini.js"
 import { OllamaProvider } from "../src/providers/ollama.js"
 import { OpenAIChatProvider } from "../src/providers/openai.js"
 import { OpenAIResponsesProvider } from "../src/providers/openai-responses.js"
-import { QwenProvider } from "../src/providers/qwen.js"
-import { DeepSeekProvider } from "../src/providers/deepseek.js"
 import type { RenderedContext, ToolSchema } from "../src/types.js"
 
 const context: RenderedContext = {
@@ -15,8 +13,14 @@ const context: RenderedContext = {
 const tools: ToolSchema[] = [{ name: "lookup", description: "lookup", parameters: '{"type":"object"}' }]
 
 describe("provider control-plane forwarding", () => {
+  it("rejects the removed positional Anthropic constructor", () => {
+    expect(() => new AnthropicProvider("test-key" as never)).toThrow(
+      "AnthropicProvider requires a configuration object",
+    )
+  })
+
   it("forwards Anthropic extensions in stream and complete without allowing structural overrides", async () => {
-    const provider = new AnthropicProvider("test-key")
+    const provider = new AnthropicProvider({ apiKey: "test-key" })
     const requests: Array<Record<string, unknown>> = []
     ;(provider as unknown as { client: { messages: { create(req: Record<string, unknown>): Promise<Record<string, unknown>>; stream(req: Record<string, unknown>): AsyncIterable<Record<string, unknown>> } } }).client = {
       messages: {
@@ -64,7 +68,7 @@ describe("provider control-plane forwarding", () => {
   })
 
   it("uses Anthropic beta messages when betas are requested", async () => {
-    const provider = new AnthropicProvider("test-key")
+    const provider = new AnthropicProvider({ apiKey: "test-key" })
     const requests: Array<Record<string, unknown>> = []
     ;(provider as unknown as {
       client: {
@@ -100,7 +104,7 @@ describe("provider control-plane forwarding", () => {
   })
 
   it("forwards OpenAI Chat extensions in stream and complete while preserving SDK-owned fields", async () => {
-    const provider = new OpenAIChatProvider("test-key")
+    const provider = new OpenAIChatProvider({ apiKey: "test-key" })
     const requests: Array<Record<string, unknown>> = []
     ;(provider as unknown as { client: { chat: { completions: { create(req: Record<string, unknown>): Promise<unknown> } } } }).client = {
       chat: {
@@ -127,7 +131,7 @@ describe("provider control-plane forwarding", () => {
   })
 
   it("lets a caller-supplied prompt_cache_key override the default", async () => {
-    const provider = new OpenAIChatProvider("test-key")
+    const provider = new OpenAIChatProvider({ apiKey: "test-key" })
     const requests: Array<Record<string, unknown>> = []
     ;(provider as unknown as { client: { chat: { completions: { create(req: Record<string, unknown>): Promise<unknown> } } } }).client = {
       chat: { completions: { async create(req) { requests.push(req); return { choices: [{ message: { content: "ok" } }], usage: { total_tokens: 1 } } } } },
@@ -216,74 +220,4 @@ describe("provider control-plane forwarding", () => {
     expect(requests[1].tools).toBeDefined()
   })
 
-  it("applies DeepSeek native thinking controls in complete as well as stream", async () => {
-    const provider = new DeepSeekProvider("test-key")
-    let request: Record<string, unknown> | undefined
-    ;(provider as unknown as { client: { chat: { completions: { create(req: Record<string, unknown>): Promise<unknown> } } } }).client = {
-      chat: {
-        completions: {
-          async create(req) {
-            request = req
-            return { choices: [{ message: { content: "done" } }], usage: { total_tokens: 1 } }
-          },
-        },
-      },
-    }
-
-    await provider.complete(context, tools, { thinking: false, reasoningEffort: "max", temperature: 0.3 })
-
-    expect(request).toMatchObject({
-      temperature: 0.3,
-      reasoning_effort: "max",
-      extra_body: { thinking: { type: "disabled" } },
-    })
-  })
-
-  it("keeps Qwen native thinking controls while forwarding unrelated extensions", async () => {
-    const provider = new QwenProvider("test-key")
-    let request: Record<string, unknown> | undefined
-    ;(provider as unknown as { client: { chat: { completions: { create(req: Record<string, unknown>): Promise<unknown> } } } }).client = {
-      chat: {
-        completions: {
-          async create(req) {
-            request = req
-            return { async *[Symbol.asyncIterator]() {} }
-          },
-        },
-      },
-    }
-
-    for await (const _event of provider.stream(context, tools, {
-      enableThinking: true,
-      thinkingBudget: 2048,
-      temperature: 0.3,
-    })) {}
-
-    expect(request).toMatchObject({
-      temperature: 0.3,
-      extra_body: { enable_thinking: true, thinking_budget: 2048 },
-    })
-  })
-
-  it("applies Qwen native thinking controls in complete as well as stream", async () => {
-    const provider = new QwenProvider("test-key")
-    let request: Record<string, unknown> | undefined
-    ;(provider as unknown as { client: { chat: { completions: { create(req: Record<string, unknown>): Promise<unknown> } } } }).client = {
-      chat: {
-        completions: {
-          async create(req) {
-            request = req
-            return { choices: [{ message: { content: "done" } }], usage: { total_tokens: 1 } }
-          },
-        },
-      },
-    }
-
-    await provider.complete(context, tools, { enableThinking: true, thinkingBudget: 1024, temperature: 0.2 })
-
-    expect(request).toMatchObject({
-      temperature: 0.2,
-      extra_body: { enable_thinking: true, thinking_budget: 1024 },
-    })
-  })
 })

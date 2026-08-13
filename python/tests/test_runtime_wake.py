@@ -2,6 +2,7 @@ import pytest
 
 from deepstrike._kernel import ToolCall, ToolResult
 from deepstrike.providers.base import RenderedContext
+from deepstrike.providers.provider_error import ProviderError
 from deepstrike.providers.stream import TextDelta, ToolCallEvent, UsageEvent
 from deepstrike.runtime import (
   InMemorySessionLog,
@@ -154,7 +155,12 @@ async def test_run_reactive_compacts_and_retries_prompt_too_long():
     async def stream(self, context, tools, extensions=None, state=None):
       self.stream_calls += 1
       if self.stream_calls == 1:
-        raise RuntimeError("413 prompt too long")
+        raise ProviderError(
+          provider="fixture",
+          kind="context_overflow",
+          retryable=False,
+          message="413 prompt too long",
+        )
       yield TextDelta(delta="recovered")
 
   provider = TooLongThenOkProvider()
@@ -231,6 +237,7 @@ async def test_recoverable_tool_failure_preserves_replay_context():
     execution_plane=plane,
     max_turns=4,
     max_tokens=1000,
+    baseline_tool_ids=["fail_tool"],
   ))
 
   session_id = "test-rollback"

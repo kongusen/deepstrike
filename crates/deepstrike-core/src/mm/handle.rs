@@ -474,9 +474,9 @@ impl EvictionPlan {
             .any(|op| matches!(op, EvictionOp::TimeDecayMicro))
     }
 
-    /// Map legacy `PressureAction` → the new specific op (for behavior-preserving migration).
+    /// Map a pressure recommendation to one specific eviction operation.
     /// The old `recommend()` returns one of 5 actions; we map them 1:1 onto the new ops.
-    pub fn from_legacy_action(
+    pub fn from_pressure_action(
         action: PressureAction,
         target_tokens: u32,
         preserve_turns: usize,
@@ -521,7 +521,7 @@ pub fn plan_eviction(
     // Map the pressure recommendation to a specific op; `None` yields an empty plan (no op appended).
     if recommended != PressureAction::None {
         ops.extend(
-            EvictionPlan::from_legacy_action(recommended, target_tokens, preserve_turns).ops,
+            EvictionPlan::from_pressure_action(recommended, target_tokens, preserve_turns).ops,
         );
     }
     EvictionPlan { ops }
@@ -642,7 +642,7 @@ mod tests {
     #[test]
     fn plan_eviction_orders_time_decay_before_pressure() {
         // Idle + rho both fire: time-decay micro runs first, then the specific op — matching
-        // the legacy checkpoint order exactly.
+        // the canonical checkpoint order exactly.
         let plan = plan_eviction(PressureAction::ContextCollapse, true, 50_000, 2);
         assert_eq!(plan.ops.len(), 2);
         assert!(matches!(plan.ops[0], EvictionOp::TimeDecayMicro));

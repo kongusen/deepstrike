@@ -219,11 +219,10 @@ class ReactiveSession:
         )
         # W-N5: vehicle members (workflow envelopes, ``wf-node*`` children, loop iterations) share
         # the governance domain but are NOT personas — resuming them as peers would resurrect
-        # phantoms. A legacy membership with no kind tags falls back to resuming every member.
+        # phantoms. Only explicitly tagged peer memberships are resumable.
         members = await run_group.budget_store.members(run_group.id)
-        any_tagged = any(getattr(m, "kind", None) is not None for m in members)
         for member in members:
-            if any_tagged and getattr(member, "kind", None) != "peer":
+            if getattr(member, "kind", None) != "peer":
                 continue
             spec = (peer_specs or {}).get(member.session_id) or ReactivePeerSpec(role=member.role)
             session._peer_specs[member.session_id] = spec

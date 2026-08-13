@@ -93,9 +93,7 @@ export function formatToolError(err: unknown): string {
  * - body throws any other `Error` → `{success:false, code: error.code ?? "internal", error: error.message}`
  * - body throws a non-Error → `{success:false, code:"internal", error: formatToolError(...)}`
  *
- * The classic `tool()` factory is unchanged. `safeTool` is opt-in: import and switch one tool at
- * a time. Designed for the consumer-side pattern users had to hand-roll to escape the legacy
- * `String(err)` foot-gun.
+ * `safeTool` is opt-in and returns a structured error envelope instead of `String(err)`.
  */
 export function safeTool<T = unknown>(
   name: string,

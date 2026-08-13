@@ -6,6 +6,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.60] - 2026-08-13
+
+### Breaking — one canonical mechanism
+
+- Removed first-party ABI, checkpoint, durable-content, context-policy, and replay schema version
+  axes. Canonical inputs now use one strict, unnumbered shape and reject removed version fields.
+- Removed checkpoint migration and legacy durable/replay reconstruction. Checkpoints, durable content,
+  and replay data written by 0.2.53 or earlier are intentionally unreadable.
+- Removed version-suffixed public contract names and native ABI-version exports. Hosts no longer add
+  `abi_version` to envelopes, records, or checkpoints.
+
 ## [0.2.53] - 2026-08-13
 
 ### Added — Agent-facing contracts and provider runtime services

@@ -1,0 +1,20 @@
+{
+  "id": "prompt-measurement",
+  "domain": "prompt_measurement",
+  "input": {
+    "value": {
+      "requestFingerprint": "sha256:fixture",
+      "inputTokens": 12,
+      "source": { "kind": "heuristic" },
+      "confidence": "low_confidence"
+    }
+  },
+  "expected": {
+    "canonical": {
+      "requestFingerprint": "sha256:fixture",
+      "inputTokens": 12,
+      "source": { "kind": "heuristic" },
+      "confidence": "low_confidence"
+    }
+  }
+}

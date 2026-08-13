@@ -27,7 +27,6 @@ from deepstrike.tools.registry import RegisteredTool, normalize_tool_chunk, tool
 from deepstrike.skills.loader import read_skill_file
 
 if TYPE_CHECKING:
-  from deepstrike.governance import Governance
   from deepstrike.knowledge.source import KnowledgeSource
   from deepstrike.memory.protocols import MemoryStore, MemoryScope
   from deepstrike.runtime.reliability import OperationContext

@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike._kernel import ContentPartObj, Message, ToolCall, ToolResult
+from deepstrike._kernel import ContentPartObj, Message, ToolCall
 from deepstrike.providers.anthropic import AnthropicProvider
 from deepstrike.providers.base import RenderedContext, to_anthropic_messages
 from deepstrike.providers.openai import OpenAIProvider
@@ -37,6 +37,7 @@ async def test_wake_restores_thinking_blocks_from_provider_replay(tmp_path):
     "content": "checking",
     "tool_calls": [ToolCall(id="call_ping", name="ping", arguments="{}")],
     "provider_replay": {
+      "protocol": "anthropic-messages",
       "native_blocks": [
         {"type": "thinking", "thinking": "plan", "signature": "sig"},
         {"type": "text", "text": "checking"},
@@ -47,7 +48,12 @@ async def test_wake_restores_thinking_blocks_from_provider_replay(tmp_path):
   await FileSessionLog(tmp_path).append(session_id, {
     "kind": "tool_completed",
     "turn": 0,
-    "results": [ToolResult(call_id="call_ping", output="pong", is_error=False)],
+    "results": [{
+      "call_id": "call_ping",
+      "output": "pong",
+      "is_error": False,
+      "content": {"blocks": [{"type": "text", "text": "pong"}]},
+    }],
   })
 
   @tool
@@ -72,6 +78,7 @@ async def test_wake_restores_thinking_blocks_from_provider_replay(tmp_path):
 def test_anthropic_native_replay_hook():
   provider = AnthropicProvider("test-key")
   provider.seed_provider_replay("checking", [ToolCall("call_1", "lookup", '{"q":"x"}')], {
+    "protocol": "anthropic-messages",
     "native_blocks": [
       {"type": "thinking", "thinking": "plan", "signature": "sig"},
       {"type": "tool_use", "id": "call_1", "name": "lookup", "input": {"q": "x"}},
@@ -91,6 +98,7 @@ def test_anthropic_native_replay_hook():
 def test_openai_reasoning_replay_roundtrip():
   provider = OpenAIProvider("test-key")
   provider.seed_provider_replay("done", [ToolCall("call_1", "lookup", "{}")], {
+    "protocol": "openai-chat",
     "reasoning_content": "thought",
   })
   context = RenderedContext(
@@ -104,6 +112,7 @@ def test_openai_reasoning_replay_roundtrip():
   msgs = provider._build_messages(context)
   assert msgs[0]["reasoning_content"] == "thought"
   assert provider.peek_provider_replay("done", [ToolCall("call_1", "lookup", "{}")]) == {
+    "protocol": "openai-chat",
     "reasoning_content": "thought",
   }
 
@@ -116,10 +125,10 @@ async def test_file_session_log_provider_replay_roundtrip(tmp_path):
     "turn": 0,
     "content": "hi",
     "tool_calls": [],
-    "provider_replay": {"reasoning_content": "trace"},
+    "provider_replay": {"protocol": "openai-chat", "reasoning_content": "trace"},
   })
   events = await session_log.read("s1")
-  assert events[0].event["provider_replay"] == {"reasoning_content": "trace"}
+  assert events[0].event["provider_replay"] == {"protocol": "openai-chat", "reasoning_content": "trace"}
 
 
 def test_assistant_replay_key_normalization():
@@ -149,10 +158,12 @@ def test_assistant_replay_key_normalization():
 def test_openai_reasoning_replay_empty_string():
   provider = OpenAIProvider("test-key")
   provider.seed_provider_replay("done", [ToolCall("call_1", "lookup", "{}")], {
+    "protocol": "openai-chat",
     "reasoning_content": "",
   })
   # Should not be discarded even if it is empty string
   assert provider.peek_provider_replay("done", [ToolCall("call_1", "lookup", "{}")]) == {
+    "protocol": "openai-chat",
     "reasoning_content": "",
   }
 

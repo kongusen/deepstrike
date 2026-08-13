@@ -1,10 +1,8 @@
 {
   "checkpoint": {
-    "abi_version": 3,
     "base_record_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:d2e25cdb12e35c689551c02c231092050c0d4548871a8ef4e8a32bcd5470590d",
-    "checkpoint_version": 1,
+    "checkpoint_digest": "sha256:59c1809e7e17a8aacf61824f480ad552698d1e4335f4763516ef48ef64843b6d",
     "covered_transaction_head_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
@@ -41,6 +39,7 @@
         }
       },
       "scheduler": {
+        "advertised_tool_ids": null,
         "attempts": [],
         "entropy": {
           "disarmed": false,
@@ -51,6 +50,7 @@
         "milestone": null,
         "queued_signals": [],
         "rounds_completed": 0,
+        "run_spec": null,
         "signal_dedupe_keys": [],
         "started_at_ms": null,
         "subagents_spawned": 0,
@@ -84,7 +84,6 @@
         "lifecycle": "running",
         "pending_effects": [],
         "resolved_config": {
-          "abi_version": 3,
           "budget_grant": null,
           "context_policy": {
             "collapse_old_assistant_narration": true,
@@ -129,8 +128,7 @@
             "knowledge_enabled": false,
             "memory_enabled": false,
             "plan_tool_enabled": false,
-            "stable_core_tool_ids": [],
-            "tool_dispatch_gate": "exposed"
+            "stable_core_tool_ids": []
           },
           "governance_policy": {
             "constraints": [],

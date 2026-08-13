@@ -187,18 +187,18 @@ class OpenAIChatAdapter:
         native_tool_calls: list[dict],
     ) -> dict | None:
         if dialect.replay_strategy == "generic_stream":
-            return {"reasoning_content": reasoning_content} if phase == "stream" and (tool_calls or reasoning_content) else None
+            return {"protocol": "openai-chat", "reasoning_content": reasoning_content} if phase == "stream" and (tool_calls or reasoning_content) else None
         if dialect.replay_strategy == "deepseek":
             if not reasoning_content.strip():
                 return None
             result: dict[str, Any] = {
-                "schema_version": 2, "provider": dialect.provider_id, "protocol": "openai-chat",
+                "provider": dialect.provider_id, "protocol": "openai-chat",
                 "model": model, "reasoning_content": reasoning_content,
             }
         elif dialect.replay_strategy == "minimax":
             if not reasoning_content.strip() and reasoning_details is None:
                 return None
-            result = {"schema_version": 2, "provider": dialect.provider_id, "protocol": "openai-chat", "model": model}
+            result = {"provider": dialect.provider_id, "protocol": "openai-chat", "model": model}
             if reasoning_content.strip():
                 result["reasoning_content"] = reasoning_content
             if reasoning_details is not None:

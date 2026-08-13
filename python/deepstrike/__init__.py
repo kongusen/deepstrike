@@ -32,7 +32,6 @@ from deepstrike.runtime import (
     classify_instruction,
     dependency_outputs_note,
     judge_goal,
-    extract_loop_continue,
     extract_classify_branch,
     extract_judge_winner,
     LoopDriver,
@@ -125,11 +124,9 @@ from deepstrike.runtime import (
     parse_verdict,
     verdict_output_schema,
 )
-from deepstrike.governance import Governance, GovernanceVerdict
 from deepstrike.providers import (
     LLMProvider, ContextBudgetOverflow, RenderedContext, ProviderRunState, RuntimePolicy,
     AnthropicProvider, OpenAIProvider, OpenAIResponsesProvider,
-    QwenProvider, DeepSeekProvider, MiniMaxAnthropicProvider, MiniMaxOpenAIProvider, OllamaProvider, KimiProvider,
     StreamEvent, TextDelta, ThinkingDelta,
     ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
     PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse, ToolArgumentRepairedEvent,
@@ -150,6 +147,7 @@ from deepstrike.memory import (
     extract_session_memories, parse_extracted_memories,
 )
 from deepstrike.safety import PermissionManager, PermissionMode, Permission, PermissionDecision
+from deepstrike.governance import GovernancePolicy, GovernancePolicyRule, GovernanceRateLimit
 from deepstrike.harness import (
     AttemptBody, AttemptBodyContext, AttemptBodyEvent, AttemptBodyTerminal,
     AttemptJudge, AttemptLoop, AttemptLoopEvent, AttemptOutcome,
@@ -184,7 +182,6 @@ from deepstrike.runtime.durable_content import (
     decode_durable_tool_result,
     encode_durable_content,
     encode_durable_tool_result,
-    migrate_legacy_content,
 )
 from deepstrike.collaboration import (
     AcceptanceCriterion, VerificationContract, ContractCheckResult,
@@ -210,7 +207,6 @@ __all__ = [
     "classify_instruction",
     "dependency_outputs_note",
     "judge_goal",
-    "extract_loop_continue",
     "extract_classify_branch",
     "extract_judge_winner",
     # ③ dynamic loop agents: self-pacing rounds over the kernel pacing trap.
@@ -221,6 +217,9 @@ __all__ = [
     "run_loop",
     "signal_aware_sleeper",
     "ResourceQuota",
+    "GovernancePolicy",
+    "GovernancePolicyRule",
+    "GovernanceRateLimit",
     "MemoryPolicy",
     "KernelReliability",
     "OperationCancellationReason",
@@ -299,7 +298,6 @@ __all__ = [
     "ProviderReplay",
     "LLMProvider", "ContextBudgetOverflow", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
     "OpenAIResponsesProvider",
-    "QwenProvider", "DeepSeekProvider", "MiniMaxAnthropicProvider", "MiniMaxOpenAIProvider", "OllamaProvider", "KimiProvider",
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
     "PermissionRequestEvent", "PermissionResolvedEvent", "PermissionResponse", "ToolArgumentRepairedEvent",
@@ -325,7 +323,6 @@ __all__ = [
     "SignalSource", "ScheduledPrompt", "SignalGateway",
     "Message", "ToolCall", "ToolResult", "ToolSchema",
     "SkillMetadata",
-    "Governance", "GovernanceVerdict",
     # Sub-agent isolation
     "AgentIdentity", "AgentCapabilityFilter", "AgentRunSpec",
     "Agent", "AgentDefinition", "AgentMemory", "MemoryReference", "ModelRef", "lower_agent", "normalize_agent",

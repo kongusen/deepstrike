@@ -88,7 +88,6 @@ def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
     source = json.loads(fixture_path_for(input_value.get("fixture")).read_text(encoding="utf-8"))
     lowered = lower_agent(normalize_agent(source))
     return {
-      "version": lowered["version"],
       "name": lowered["name"],
       **({"capabilityFilter": lowered["capabilityFilter"]} if "capabilityFilter" in lowered else {}),
       "effectiveCapabilities": lowered["effectiveCapabilities"],
@@ -114,7 +113,6 @@ def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
       value = json.loads(fixture_path_for(input_value.get("fixture")).read_text(encoding="utf-8"))
     result = decode_durable_tool_result(value)
     canonical = {
-      "schema_version": result["schema_version"],
       "call_id": result["call_id"],
       "is_error": result["is_error"],
       "blockTypes": [block["type"] for block in result["blocks"]],
@@ -131,7 +129,6 @@ def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
       confidence=value.get("confidence"),
     )
     canonical = {
-      "version": record.version,
       "requestFingerprint": record.request_fingerprint,
       "inputTokens": record.input_tokens,
       "source": record.source,
@@ -171,7 +168,6 @@ def main() -> None:
   base = {
     "sdk": "python",
     "fixture": fixture.get("id"),
-    "contractVersion": fixture.get("expected", {}).get("contractVersion"),
   }
   try:
     print(json.dumps({"ok": True, **base, "canonical": canonical_for(fixture)}, separators=(",", ":")))

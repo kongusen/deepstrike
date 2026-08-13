@@ -26,7 +26,6 @@ async def test_file_session_log_round_trips_prompt_measurement(tmp_path):
         "kind": "prompt_measured",
         "turn": 1,
         "measurement": {
-            "version": 1,
             "request_fingerprint": "sha256:measurement",
             "input_tokens": 42,
             "source": {"kind": "heuristic"},
@@ -36,3 +35,13 @@ async def test_file_session_log_round_trips_prompt_measurement(tmp_path):
 
     entries = await FileSessionLog(tmp_path).read("measurement")
     assert entries[0].event["measurement"]["request_fingerprint"] == "sha256:measurement"
+
+
+@pytest.mark.asyncio
+async def test_file_session_log_rejects_removed_record_shape(tmp_path):
+    (tmp_path / "removed.jsonl").write_text(
+        '{"record_type":"kernel_transaction","seq":0,"event":{"kind":"run_started"}}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="only seq and event"):
+        await FileSessionLog(tmp_path).read("removed")

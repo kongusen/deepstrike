@@ -70,7 +70,6 @@ describe.each([
   it("stages an outbound envelope until clear, surviving FileKernelJournal remount", async () => {
     expect(await journal.readOutboundEnvelope(OP)).toBeUndefined()
     const envelope = JSON.stringify({
-      abi_version: 3,
       operation_id: OP,
       input_id: "input-stage-1",
       observed_at_ms: "1753747200099",
@@ -79,8 +78,8 @@ describe.each([
     await journal.stageOutboundEnvelope(OP, envelope)
     expect(await journal.readOutboundEnvelope(OP)).toBe(envelope)
 
-    await journal.stageOutboundEnvelope(OP, `${envelope}+v2`)
-    expect(await journal.readOutboundEnvelope(OP)).toBe(`${envelope}+v2`)
+    await journal.stageOutboundEnvelope(OP, `${envelope}+mutated`)
+    expect(await journal.readOutboundEnvelope(OP)).toBe(`${envelope}+mutated`)
 
     await journal.clearOutboundEnvelope(OP)
     expect(await journal.readOutboundEnvelope(OP)).toBeUndefined()
@@ -465,7 +464,6 @@ describe("FileKernelJournal — outbound envelope remount", () => {
     const dir = await mkdtemp(join(tmpdir(), "ds-outbound-"))
     try {
       const envelope = JSON.stringify({
-        abi_version: 3,
         operation_id: OP,
         input_id: "input-remount",
         observed_at_ms: "1753747200888",

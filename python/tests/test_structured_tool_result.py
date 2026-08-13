@@ -149,6 +149,7 @@ def _make_runner(provider, plane):
         execution_plane=plane,
         max_tokens=4000,
         max_turns=4,
+        baseline_tool_ids=[schema.name for schema in plane.schemas()],
     ))
 
 
@@ -174,8 +175,7 @@ class TestStructuredToolResultEndToEnd:
             None,
         )
         assert part is not None
-        # The kernel wire carried only the text projection; the runner's side channel
-        # re-attached the structured blocks by call_id.
+        # Canonical durable blocks survive the kernel round trip.
         assert part.content_parts == [
             {"type": "text", "text": "screenshot taken"},
             {"type": "image", "source": {"kind": "base64", "data": "aGVsbG8="}, "media_type": "image/png"},

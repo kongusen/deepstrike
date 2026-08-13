@@ -49,7 +49,6 @@ export interface AgentLoweringInputs {
 
 /** Provider-neutral host descriptor. This is neither an execution plan nor a Kernel wire DTO. */
 export interface AgentSpec {
-  version: 1
   name: string
   description?: string
   instructions?: string
@@ -67,8 +66,6 @@ export interface AgentSpec {
   capabilityFilter?: AgentCapabilityFilter
   effectiveCapabilities: AgentCapabilityIR[]
   extensions: Record<string, unknown>
-  /** @deprecated Read `extensions`; retained as an additive compatibility alias. */
-  providerOptions?: Record<string, unknown>
   inputs: AgentLoweringInputs
 }
 
@@ -151,7 +148,6 @@ export function lowerAgent(agent: Agent): AgentSpec {
   const capabilityFilter = agent.capabilityFilter ? clone(agent.capabilityFilter) : undefined
   const effectiveCapabilities = capabilities.filter(capability => capabilityAllowed(capability, capabilityFilter))
   return {
-    version: 1,
     name: agent.name,
     ...(agent.description ? { description: agent.description } : {}),
     ...(agent.instructions ? { instructions: agent.instructions } : {}),
@@ -169,7 +165,6 @@ export function lowerAgent(agent: Agent): AgentSpec {
     ...(capabilityFilter ? { capabilityFilter } : {}),
     effectiveCapabilities,
     extensions,
-    providerOptions: clone(extensions),
     inputs: {
       run: { name: agent.name, ...(agent.model ? { model: clone(agent.model) } : {}) },
       context: {

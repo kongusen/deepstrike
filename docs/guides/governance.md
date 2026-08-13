@@ -112,7 +112,7 @@ Workflow 增长走内核 syscall：
 
 `on_tool_call` 是执行前决策边界。hook 抛错时默认 fail-closed，tool call 会以
 `governance_denied` 返回；只有纯 advisory hook 才应显式设置
-`on_tool_call_failure="open"`。`on_tool_result` 发生在工具副作用之后，仍按 observer/enrichment
+`on_tool_call` 异常时始终拒绝执行。`on_tool_result` 发生在工具副作用之后，仍按 observer/enrichment
 语义隔离失败，不能反向声称工具未执行。
 
 ---
