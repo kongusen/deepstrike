@@ -283,6 +283,31 @@ pub struct ObjectDescriptor {
 }
 
 impl ObjectDescriptor {
+    /// Project an existing handle into the unified object registry without copying its body.
+    pub fn from_handle(
+        owner: crate::scheduler::tcb::TaskId,
+        handle: &Handle,
+        version: u64,
+    ) -> Self {
+        let digest = handle.residency.digest().unwrap_or_default().to_string();
+        let payload_ref = handle.residency.payload_ref().map(str::to_string);
+        let size = match &handle.residency {
+            Residency::External { original_size, .. } => *original_size,
+            _ => handle.tokens as u64,
+        };
+        Self {
+            id: handle.id,
+            kind: handle.kind.into(),
+            owner,
+            digest,
+            size,
+            residency: handle.residency.clone(),
+            payload_ref,
+            version,
+            preview: None,
+        }
+    }
+
     /// spc_006-06: build the descriptor a cross-task reader (Agent B) receives for an object
     /// whose full body lives outside working context (Agent A's large Artifact/ToolResult/etc.).
     /// By construction — `ObjectDescriptor` has no `payload`/`content` field at all — a caller
@@ -336,21 +361,28 @@ pub type ObjectId = HandleId;
 /// rather than inventing a second matching algorithm. Neither `ObjectDescriptor` nor `Capability`
 /// is changed to make this work — the bridge is one pure function, not a structural merge.
 ///
-/// **No production caller yet.** `ObjectDescriptor` itself currently has no syscall that hands one
-/// to a cross-task reader (grep confirms its only non-test references are its own definition and
-/// the `mm` module's re-export) — the "cross-task read" path spc_006-06's own doc comment
-/// describes is unbuilt, not merely unwired. Building that syscall is a materially larger change
-/// than this card's "wire an existing input to a check that already runs" pattern (spc_008's), and
-/// is out of scope here. This function makes the invariant itself provable and correct in
-/// isolation; wiring it to a real caller is future work once that syscall exists.
 pub fn object_access_allowed(
     capabilities: &[crate::types::capability::Capability],
     action: &str,
     descriptor: &ObjectDescriptor,
 ) -> bool {
+    object_access_allowed_at(capabilities, action, descriptor, 0)
+}
+
+/// Runtime form of [`object_access_allowed`] that also rejects expired capability leases.
+pub fn object_access_allowed_at(
+    capabilities: &[crate::types::capability::Capability],
+    action: &str,
+    descriptor: &ObjectDescriptor,
+    now_turn: u32,
+) -> bool {
     let resource = format!("object:{}/{}", descriptor.owner, descriptor.id);
     capabilities.iter().any(|capability| {
         capability.actions.0.contains(action)
+            && capability
+                .lease
+                .as_ref()
+                .is_none_or(|lease| !lease.is_expired(now_turn))
             && resource.starts_with(crate::types::capability::resource_prefix(
                 &capability.resource,
             ))

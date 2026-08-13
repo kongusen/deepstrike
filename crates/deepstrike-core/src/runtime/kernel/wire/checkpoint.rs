@@ -466,6 +466,9 @@ pub struct SchedulerStateV1 {
     /// Durable local fan-out channels, including per-consumer cursors and dedupe memory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<LocalChannelState>,
+    /// Handle-only local object registry; bodies remain in context/payload storage.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<crate::mm::handle::ObjectDescriptor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

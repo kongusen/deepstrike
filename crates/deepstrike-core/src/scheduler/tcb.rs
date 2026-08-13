@@ -417,6 +417,7 @@ pub struct TaskTable {
     /// [`Self::set_wait`] — that method is the only sanctioned way to mutate `Tcb.wait`.
     wait_index: super::wait_index::WaitIndex,
     channels: BTreeMap<ChannelId, super::mailbox::Channel>,
+    objects: BTreeMap<crate::mm::handle::ObjectId, crate::mm::handle::ObjectDescriptor>,
 }
 
 /// Rejections from the kernel-owned child creation entrypoint.
@@ -436,6 +437,7 @@ pub(crate) enum LocalIpcError {
     NotSubscriber,
     Full,
     Expired,
+    ObjectConflict,
 }
 
 impl TaskTable {
@@ -910,6 +912,51 @@ impl TaskTable {
         channels: BTreeMap<ChannelId, super::mailbox::Channel>,
     ) {
         self.channels = channels;
+    }
+
+    pub(crate) fn register_object(
+        &mut self,
+        caller: &str,
+        descriptor: crate::mm::handle::ObjectDescriptor,
+    ) -> Result<bool, LocalIpcError> {
+        let caller_task = self.get(caller).ok_or(LocalIpcError::UnknownCaller)?;
+        if caller_task.state.is_terminal() {
+            return Err(LocalIpcError::CallerTerminal);
+        }
+        if descriptor.owner.as_str() != caller {
+            return Err(LocalIpcError::UnknownCaller);
+        }
+        if let Some(existing) = self.objects.get(&descriptor.id) {
+            return if existing == &descriptor {
+                Ok(false)
+            } else {
+                Err(LocalIpcError::ObjectConflict)
+            };
+        }
+        let resource = ResourceKey(format!("object:{}/{}", descriptor.owner, descriptor.id).into());
+        self.objects.insert(descriptor.id, descriptor);
+        self.notify(&super::wait_index::WaitKey::Resource(resource));
+        Ok(true)
+    }
+
+    pub(crate) fn object(
+        &self,
+        object_id: crate::mm::handle::ObjectId,
+    ) -> Option<&crate::mm::handle::ObjectDescriptor> {
+        self.objects.get(&object_id)
+    }
+
+    pub(crate) fn objects(
+        &self,
+    ) -> &BTreeMap<crate::mm::handle::ObjectId, crate::mm::handle::ObjectDescriptor> {
+        &self.objects
+    }
+
+    pub(crate) fn restore_objects(
+        &mut self,
+        objects: BTreeMap<crate::mm::handle::ObjectId, crate::mm::handle::ObjectDescriptor>,
+    ) {
+        self.objects = objects;
     }
 
     /// spc_002-09: recompute every task's `children` set from the authoritative `parent` field.
@@ -1981,5 +2028,49 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn spc_019_09_object_registration_wakes_resource_wait_and_receiver_capability_gates_read() {
+        use crate::mm::handle::{Handle, HandleKind, ObjectDescriptor, object_access_allowed};
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+            ResourceSelector,
+        };
+
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("a", SchedulerBudget::default()));
+        table.insert(Tcb::root("b", SchedulerBudget::default()));
+        let resource = ResourceKey("object:a/7".into());
+        table.wait_for_condition("b", &WaitCondition::Resource(resource));
+        let descriptor = ObjectDescriptor::from_handle(
+            "a".into(),
+            &Handle::resident(7, HandleKind::ToolResult, 10),
+            1,
+        );
+        assert_eq!(table.register_object("a", descriptor.clone()), Ok(true));
+        assert_eq!(table.get("b").unwrap().state, TaskLifecycle::Ready);
+        assert!(!object_access_allowed(
+            &table.get("b").unwrap().capabilities,
+            "read",
+            &descriptor
+        ));
+
+        table.get_mut("b").unwrap().capabilities = vec![Capability {
+            id: CapabilityId("read-a-7".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("object:a/7".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: false,
+            issuer: Principal("a".into()),
+        }];
+        assert!(object_access_allowed(
+            &table.get("b").unwrap().capabilities,
+            "read",
+            &descriptor
+        ));
+        assert_eq!(table.register_object("a", descriptor), Ok(false));
     }
 }

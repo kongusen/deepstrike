@@ -30,6 +30,7 @@ pub enum SyscallRequest {
     PublishChannel(PublishChannelRequest),
     ReceiveMailbox(ReceiveMailboxRequest),
     ReceiveChannel(ReceiveChannelRequest),
+    ReadObject(ReadObjectRequest),
     /// P3 handle page-in. Opposite in meaning to the host's `SeedKnowledge` command (DEC-9).
     PageIn(PageInRequest),
 }
@@ -153,6 +154,12 @@ pub struct ReceiveChannelRequest {
 
 fn default_receive_limit() -> u32 {
     16
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadObjectRequest {
+    pub object_id: u32,
 }
 
 /// How the kernel derived the caller of a syscall. Never host-supplied.

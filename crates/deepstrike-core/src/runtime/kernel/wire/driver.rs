@@ -1103,6 +1103,22 @@ fn restore_scheduler(
         }
     }
     table.restore_channels(restored_channels);
+    let mut restored_objects = BTreeMap::new();
+    for object in &state.objects {
+        if table.get(object.owner.as_str()).is_none() {
+            return Err(KernelFault::new(
+                KernelFaultCode::CheckpointIncompatible,
+                format!("object {} names unknown owner {}", object.id, object.owner),
+            ));
+        }
+        if restored_objects.insert(object.id, object.clone()).is_some() {
+            return Err(KernelFault::new(
+                KernelFaultCode::CheckpointIncompatible,
+                format!("duplicate local object {}", object.id),
+            ));
+        }
+    }
+    table.restore_objects(restored_objects);
     // spc_002-09: `children` is not on the wire (derivable from `parent`); `insert` above only
     // registers a child when its parent row already exists, which the wire's task order does not
     // guarantee. Recompute from the now-complete `parent` links rather than trust insertion order.
@@ -2066,6 +2082,7 @@ impl CanonicalOperationDriver {
                     channel: channel.clone(),
                 })
                 .collect(),
+            objects: engine.task_table().objects().values().cloned().collect(),
         }
     }
 
@@ -3036,7 +3053,7 @@ impl CanonicalOperationDriver {
                 self.plan_memory_query(context, causation, &query.query, effect_index)
             }
             SyscallRequest::PageIn(page_in) => {
-                self.plan_page_in(context, &page_in.handle_id, effect_index)
+                self.plan_page_in(context, &caller, &page_in.handle_id, effect_index)
             }
             SyscallRequest::SendMessage(send) => self.plan_send_message(&caller, send),
             SyscallRequest::PublishChannel(publish) => self.plan_publish_channel(&caller, publish),
@@ -3046,6 +3063,7 @@ impl CanonicalOperationDriver {
             SyscallRequest::ReceiveChannel(receive) => {
                 self.plan_receive_channel(&caller, &receive.channel_id)
             }
+            SyscallRequest::ReadObject(read) => self.plan_read_object(&caller, read.object_id),
         }
     }
 
@@ -3057,13 +3075,24 @@ impl CanonicalOperationDriver {
         validate_ipc_labels(&request.message_id, &request.message_kind)?;
         let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
         let handle = resolve_ipc_handle(engine, &request.payload_handle)?;
+        let descriptor =
+            crate::mm::handle::ObjectDescriptor::from_handle(caller.as_str().into(), &handle, 1);
+        if engine
+            .task_table()
+            .object(descriptor.id)
+            .is_some_and(|existing| existing != &descriptor)
+        {
+            return Err(local_ipc_refusal(
+                crate::scheduler::tcb::LocalIpcError::ObjectConflict,
+            ));
+        }
         let now = crate::scheduler::mailbox::LogicalTime(engine.turn);
         let message = crate::scheduler::mailbox::MailboxMessage {
             id: request.message_id.as_str().into(),
             from: caller.as_str().into(),
             to: request.to.as_str().into(),
             kind: request.message_kind.as_str().into(),
-            payload_handle: handle,
+            payload_handle: handle.id,
             priority: crate::types::signal::Urgency::Normal,
             timestamp: now,
             expires_at: request
@@ -3073,6 +3102,10 @@ impl CanonicalOperationDriver {
         let accepted = engine
             .task_table_mut()
             .send_message_from(caller.as_str(), message, now)
+            .map_err(local_ipc_refusal)?;
+        engine
+            .task_table_mut()
+            .register_object(caller.as_str(), descriptor)
             .map_err(local_ipc_refusal)?;
         Ok(local_ipc_outcome(accepted))
     }
@@ -3104,13 +3137,24 @@ impl CanonicalOperationDriver {
         }
         let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
         let handle = resolve_ipc_handle(engine, &request.payload_handle)?;
+        let descriptor =
+            crate::mm::handle::ObjectDescriptor::from_handle(caller.as_str().into(), &handle, 1);
+        if engine
+            .task_table()
+            .object(descriptor.id)
+            .is_some_and(|existing| existing != &descriptor)
+        {
+            return Err(local_ipc_refusal(
+                crate::scheduler::tcb::LocalIpcError::ObjectConflict,
+            ));
+        }
         let now = crate::scheduler::mailbox::LogicalTime(engine.turn);
         let message = crate::scheduler::mailbox::MailboxMessage {
             id: request.message_id.as_str().into(),
             from: caller.as_str().into(),
             to: request.channel_id.as_str().into(),
             kind: request.message_kind.as_str().into(),
-            payload_handle: handle,
+            payload_handle: handle.id,
             priority: crate::types::signal::Urgency::Normal,
             timestamp: now,
             expires_at: request
@@ -3126,6 +3170,10 @@ impl CanonicalOperationDriver {
                 message,
                 now,
             )
+            .map_err(local_ipc_refusal)?;
+        engine
+            .task_table_mut()
+            .register_object(caller.as_str(), descriptor)
             .map_err(local_ipc_refusal)?;
         Ok(local_ipc_outcome(accepted))
     }
@@ -3162,6 +3210,44 @@ impl CanonicalOperationDriver {
             .receive_channel(caller.as_str(), &ChannelId(channel_id.into()), now)
             .map_err(local_ipc_refusal)?;
         Ok(ipc_messages_outcome(&messages))
+    }
+
+    fn plan_read_object(
+        &mut self,
+        caller: &TaskId,
+        object_id: crate::mm::handle::ObjectId,
+    ) -> Result<SyscallOutcome, SyscallRefusal> {
+        let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        let descriptor = engine
+            .task_table()
+            .object(object_id)
+            .cloned()
+            .ok_or_else(|| {
+                SyscallRefusal::Rejected(SyscallRejection::new(
+                    "read_object",
+                    format!("object {object_id} is not registered"),
+                ))
+            })?;
+        if descriptor.owner.as_str() != caller.as_str()
+            && !crate::mm::handle::object_access_allowed_at(
+                engine.task_capabilities(caller.as_str()),
+                "read",
+                &descriptor,
+                engine.turn,
+            )
+        {
+            return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                "read_object",
+                format!("caller {caller} has no read capability for object {object_id}"),
+            )));
+        }
+        Ok(SyscallOutcome {
+            ack: Some(
+                serde_json::to_string(&descriptor)
+                    .expect("canonical object descriptors are serializable"),
+            ),
+            ..SyscallOutcome::default()
+        })
     }
 
     /// §10.3 · gate + trust-aware append, with the spawn round deferred to the caller.
@@ -3352,10 +3438,31 @@ impl CanonicalOperationDriver {
     fn plan_page_in(
         &mut self,
         context: &PlanContext<'_>,
+        caller: &TaskId,
         handle_id: &super::scalar::HandleId,
         effect_index: &mut u32,
     ) -> Result<SyscallOutcome, SyscallRefusal> {
         let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        if let Some(handle) = engine.ctx.handles.all().iter().find(|handle| {
+            handle.source.as_deref() == Some(handle_id.as_str())
+                || handle.id.to_string() == handle_id.as_str()
+        }) && let Some(descriptor) = engine.task_table().object(handle.id)
+            && descriptor.owner.as_str() != caller.as_str()
+            && !crate::mm::handle::object_access_allowed_at(
+                engine.task_capabilities(caller.as_str()),
+                "read",
+                descriptor,
+                engine.turn,
+            )
+        {
+            return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                READ_RESULT_TOOL_NAME,
+                format!(
+                    "caller {caller} has no read capability for shared object {}",
+                    descriptor.id
+                ),
+            )));
+        }
         let Some(residency) = engine.ctx.payload_residency(handle_id.as_str()).cloned() else {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
                 READ_RESULT_TOOL_NAME,
@@ -5444,6 +5551,11 @@ pub const SYSCALL_TOOL_NAMES: &[&str] = &[
     "update_plan",
     crate::context::manager::MEMORY_TOOL_NAME,
     crate::context::manager::READ_RESULT_TOOL_NAME,
+    "send_message",
+    "publish_channel",
+    "receive_mailbox",
+    "receive_channel",
+    "read_object",
 ];
 
 fn is_syscall_tool(name: &str) -> bool {
@@ -5540,6 +5652,11 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
                 handle_id,
             }))
         }
+        "send_message" => Ok(SyscallRequest::SendMessage(decode(name, arguments)?)),
+        "publish_channel" => Ok(SyscallRequest::PublishChannel(decode(name, arguments)?)),
+        "receive_mailbox" => Ok(SyscallRequest::ReceiveMailbox(decode(name, arguments)?)),
+        "receive_channel" => Ok(SyscallRequest::ReceiveChannel(decode(name, arguments)?)),
+        "read_object" => Ok(SyscallRequest::ReadObject(decode(name, arguments)?)),
         other => unreachable!("unrecognised syscall tool {other}"),
     }
 }
@@ -5574,7 +5691,8 @@ fn privileged_family(request: &SyscallRequest) -> Option<&'static str> {
         SyscallRequest::UpdateTask(_)
         | SyscallRequest::PageIn(_)
         | SyscallRequest::ReceiveMailbox(_)
-        | SyscallRequest::ReceiveChannel(_) => None,
+        | SyscallRequest::ReceiveChannel(_)
+        | SyscallRequest::ReadObject(_) => None,
     }
 }
 
@@ -6179,6 +6297,8 @@ fn syscall_ack(name: &str) -> &'static str {
              next turn"
         }
         crate::context::manager::READ_RESULT_TOOL_NAME => "page-in requested",
+        "send_message" | "publish_channel" => "local handle routed",
+        "receive_mailbox" | "receive_channel" | "read_object" => "local state returned",
         _ => "accepted",
     }
 }
@@ -6196,7 +6316,7 @@ fn validate_ipc_labels(message_id: &str, kind: &str) -> Result<(), SyscallRefusa
 fn resolve_ipc_handle(
     engine: &LoopStateMachine,
     handle_id: &super::scalar::HandleId,
-) -> Result<crate::mm::handle::HandleId, SyscallRefusal> {
+) -> Result<crate::mm::handle::Handle, SyscallRefusal> {
     engine
         .ctx
         .handles
@@ -6206,7 +6326,7 @@ fn resolve_ipc_handle(
             handle.source.as_deref() == Some(handle_id.as_str())
                 || handle.id.to_string() == handle_id.as_str()
         })
-        .map(|handle| handle.id)
+        .cloned()
         .ok_or_else(|| {
             SyscallRefusal::Rejected(SyscallRejection::new(
                 "local_ipc",
@@ -6226,6 +6346,9 @@ fn local_ipc_refusal(error: crate::scheduler::tcb::LocalIpcError) -> SyscallRefu
         crate::scheduler::tcb::LocalIpcError::NotSubscriber => "caller is not a channel subscriber",
         crate::scheduler::tcb::LocalIpcError::Full => "IPC capacity is full",
         crate::scheduler::tcb::LocalIpcError::Expired => "message TTL already expired",
+        crate::scheduler::tcb::LocalIpcError::ObjectConflict => {
+            "object id already names a different descriptor"
+        }
     };
     SyscallRefusal::Rejected(SyscallRejection::new("local_ipc", reason))
 }
@@ -15011,6 +15134,109 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .settled
+        );
+    }
+
+    #[test]
+    fn spc_019_09_cross_task_object_read_requires_capability_and_registry_restores() {
+        use crate::mm::handle::{Handle, HandleKind, ObjectDescriptor};
+        use crate::scheduler::tcb::TaskLifecycle;
+        use crate::types::agent::{
+            AgentIsolation, AgentRole, ContextInheritance, IsolationManifest,
+        };
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Principal,
+            ResourceSelector,
+        };
+
+        fn start_with_object(capabilities: Vec<Capability>) -> (Runtime, EffectId) {
+            let mut runtime = Runtime::new();
+            runtime.submit(&syscall_config());
+            let started = runtime.submit(&agent_start_with_capabilities(
+                "in-start",
+                1_700_000_001_000,
+                capabilities,
+            ));
+            let provider = sole_effect(&started).effect_id.clone();
+            let handle = Handle::resident_for(77, HandleKind::ToolResult, 1, "shared-77");
+            let descriptor = ObjectDescriptor::from_handle("owner-a".into(), &handle, 1);
+            let engine = runtime.driver.engine.as_mut().unwrap();
+            engine.ctx.handles.insert(handle);
+            engine
+                .task_table_mut()
+                .spawn_child(
+                    "root",
+                    &IsolationManifest {
+                        agent_id: "owner-a".into(),
+                        role: AgentRole::Implement,
+                        isolation: AgentIsolation::Shared,
+                        context_inheritance: ContextInheritance::Full,
+                        permitted_capability_ids: Vec::new(),
+                        requested_capabilities: Vec::new(),
+                        requested_budget: None,
+                    },
+                    SchedulerBudget::default(),
+                    TaskLifecycle::Running,
+                )
+                .unwrap();
+            engine
+                .task_table_mut()
+                .register_object("owner-a", descriptor)
+                .unwrap();
+            (runtime, provider)
+        }
+
+        let (mut denied, denied_provider) = start_with_object(Vec::new());
+        denied.submit(&provider_result(
+            "in-read-denied",
+            1_700_000_002_000,
+            &denied_provider,
+            vec![tool_call(
+                "call-read",
+                "read_object",
+                json!({"object_id": 77}),
+            )],
+        ));
+        assert_eq!(rejections(&denied)[0].0, "read_object");
+
+        let capability = Capability {
+            id: CapabilityId("read-owner-a-77".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("object:owner-a/77".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: None,
+            delegatable: false,
+            issuer: Principal("owner-a".into()),
+        };
+        let (mut allowed, allowed_provider) = start_with_object(vec![capability]);
+        allowed.submit(&provider_result(
+            "in-read-allowed",
+            1_700_000_002_000,
+            &allowed_provider,
+            vec![tool_call(
+                "call-read",
+                "read_object",
+                json!({"object_id": 77}),
+            )],
+        ));
+        assert!(rejections(&allowed).is_empty());
+
+        let checkpoint = allowed.checkpoint().decode().expect("verifies");
+        let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+        assert_eq!(surface(&restored), surface(&allowed));
+        assert_eq!(
+            restored
+                .driver
+                .engine
+                .as_ref()
+                .unwrap()
+                .task_table()
+                .object(77)
+                .unwrap()
+                .owner
+                .as_str(),
+            "owner-a"
         );
     }
 
