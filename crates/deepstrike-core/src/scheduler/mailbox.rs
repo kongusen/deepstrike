@@ -21,6 +21,8 @@ use crate::types::signal::Urgency;
 /// than a validated newtype (no producer needs anything richer yet).
 pub type MessageId = CompactString;
 
+const IPC_DEDUPE_WINDOW: usize = 256;
+
 /// spc_006: no existing "logical time" counter type exists to reuse (`LoopStateMachine::turn` is
 /// a private `u32` field, not a public type) — a minimal placeholder newtype, following the same
 /// convention [`super::tcb::LogicalDeadline`] established in spc_003-02 for concepts with no
@@ -61,6 +63,8 @@ pub struct Mailbox {
     queue: VecDeque<MailboxMessage>,
     #[serde(default)]
     seen: BTreeSet<MessageId>,
+    #[serde(default)]
+    seen_order: VecDeque<MessageId>,
     capacity: usize,
 }
 
@@ -69,6 +73,7 @@ impl Default for Mailbox {
         Self {
             queue: VecDeque::new(),
             seen: BTreeSet::new(),
+            seen_order: VecDeque::new(),
             capacity: 64,
         }
     }
@@ -84,6 +89,7 @@ impl Mailbox {
     }
 
     pub fn try_send(&mut self, msg: MailboxMessage, now: LogicalTime) -> IpcEnqueueOutcome {
+        normalize_seen_order(&mut self.seen, &mut self.seen_order);
         self.drop_expired(now);
         if msg.expires_at.is_some_and(|deadline| now >= deadline) {
             return IpcEnqueueOutcome::Expired;
@@ -95,6 +101,7 @@ impl Mailbox {
             return IpcEnqueueOutcome::Full;
         }
         self.seen.insert(msg.id.clone());
+        remember_seen(&mut self.seen, &mut self.seen_order, msg.id.clone());
         self.queue.push_back(msg);
         IpcEnqueueOutcome::Accepted
     }
@@ -114,7 +121,7 @@ impl Mailbox {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.queue.is_empty() && self.seen.is_empty()
+        self.queue.is_empty() && self.seen.is_empty() && self.seen_order.is_empty()
     }
 
     fn drop_expired(&mut self, now: LogicalTime) {
@@ -137,6 +144,8 @@ pub struct Channel {
     cursors: BTreeMap<TaskId, usize>,
     #[serde(default)]
     seen: BTreeSet<MessageId>,
+    #[serde(default)]
+    seen_order: VecDeque<MessageId>,
     capacity: usize,
 }
 
@@ -147,6 +156,7 @@ impl Default for Channel {
             buffer: VecDeque::new(),
             cursors: BTreeMap::new(),
             seen: BTreeSet::new(),
+            seen_order: VecDeque::new(),
             capacity: 64,
         }
     }
@@ -159,6 +169,7 @@ impl Channel {
             buffer: VecDeque::new(),
             cursors: BTreeMap::new(),
             seen: BTreeSet::new(),
+            seen_order: VecDeque::new(),
             capacity: 64,
         }
     }
@@ -168,6 +179,7 @@ impl Channel {
     }
 
     pub fn publish_at(&mut self, msg: MailboxMessage, now: LogicalTime) -> IpcEnqueueOutcome {
+        normalize_seen_order(&mut self.seen, &mut self.seen_order);
         self.drop_expired(now);
         if msg.expires_at.is_some_and(|deadline| now >= deadline) {
             return IpcEnqueueOutcome::Expired;
@@ -179,6 +191,7 @@ impl Channel {
             return IpcEnqueueOutcome::Full;
         }
         self.seen.insert(msg.id.clone());
+        remember_seen(&mut self.seen, &mut self.seen_order, msg.id.clone());
         self.buffer.push_back(msg);
         IpcEnqueueOutcome::Accepted
     }
@@ -240,6 +253,30 @@ impl Channel {
     }
 }
 
+fn normalize_seen_order(seen: &mut BTreeSet<MessageId>, order: &mut VecDeque<MessageId>) {
+    if order.len() < seen.len() {
+        for id in seen.iter() {
+            if !order.contains(id) {
+                order.push_back(id.clone());
+            }
+        }
+    }
+    while order.len() > IPC_DEDUPE_WINDOW {
+        if let Some(expired) = order.pop_front() {
+            seen.remove(&expired);
+        }
+    }
+}
+
+fn remember_seen(seen: &mut BTreeSet<MessageId>, order: &mut VecDeque<MessageId>, id: MessageId) {
+    order.push_back(id);
+    while order.len() > IPC_DEDUPE_WINDOW {
+        if let Some(expired) = order.pop_front() {
+            seen.remove(&expired);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +335,24 @@ mod tests {
         assert_eq!(
             mailbox.receive().map(|m| m.id),
             Some(MessageId::from("second"))
+        );
+    }
+
+    #[test]
+    fn mailbox_dedupe_history_is_bounded() {
+        let mut mailbox = Mailbox::new();
+        for index in 0..=IPC_DEDUPE_WINDOW {
+            assert_eq!(
+                mailbox.try_send(msg(&format!("message-{index}")), LogicalTime(0)),
+                IpcEnqueueOutcome::Accepted
+            );
+            mailbox.receive();
+        }
+        assert_eq!(mailbox.seen.len(), IPC_DEDUPE_WINDOW);
+        assert_eq!(mailbox.seen_order.len(), IPC_DEDUPE_WINDOW);
+        assert_eq!(
+            mailbox.try_send(msg("message-0"), LogicalTime(0)),
+            IpcEnqueueOutcome::Accepted
         );
     }
 
