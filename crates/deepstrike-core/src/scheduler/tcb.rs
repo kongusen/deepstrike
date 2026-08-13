@@ -379,6 +379,14 @@ pub struct TaskTable {
     wait_index: super::wait_index::WaitIndex,
 }
 
+/// Rejections from the kernel-owned child creation entrypoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskSpawnError {
+    UnknownCaller,
+    CallerTerminal,
+    DuplicateTask,
+}
+
 impl TaskTable {
     pub fn new() -> Self {
         Self::default()
@@ -399,6 +407,32 @@ impl TaskTable {
         } else {
             self.tasks.push(tcb);
         }
+    }
+
+    /// Create a child under a caller already present in this table.
+    ///
+    /// This is the only sanctioned construction path for runtime children. The caller supplies
+    /// the parent identity, while the manifest cannot smuggle one in; canonical driver code is
+    /// responsible for deriving that caller from kernel-owned causation before calling here.
+    pub(crate) fn spawn_child(
+        &mut self,
+        caller: &str,
+        manifest: &IsolationManifest,
+        budget: SchedulerBudget,
+        state: TaskLifecycle,
+    ) -> Result<TaskId, TaskSpawnError> {
+        let parent = self.get(caller).ok_or(TaskSpawnError::UnknownCaller)?;
+        if parent.state.is_terminal() {
+            return Err(TaskSpawnError::CallerTerminal);
+        }
+        if self.get(manifest.agent_id.as_str()).is_some() {
+            return Err(TaskSpawnError::DuplicateTask);
+        }
+
+        let child_id = manifest.agent_id.clone();
+        let child = Tcb::spawned_in(manifest, budget, state, Some(caller.into()));
+        self.insert(child);
+        Ok(child_id)
     }
 
     pub fn get(&self, id: &str) -> Option<&Tcb> {
@@ -674,6 +708,109 @@ mod tests {
             Some(TaskId::from("agent-7")),
         );
         assert_eq!(tcb.parent, Some(TaskId::from("agent-7")));
+    }
+
+    #[test]
+    fn spawn_child_derives_recursive_lineage_and_registers_each_edge_once() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+
+        let child_manifest = manifest_for("child");
+        let child_id = table
+            .spawn_child(
+                "root",
+                &child_manifest,
+                SchedulerBudget::default(),
+                TaskLifecycle::Running,
+            )
+            .expect("root can spawn a child");
+
+        let grandchild_manifest = manifest_for("grandchild");
+        let grandchild_id = table
+            .spawn_child(
+                child_id.as_str(),
+                &grandchild_manifest,
+                SchedulerBudget::default(),
+                TaskLifecycle::Running,
+            )
+            .expect("a live child can spawn its own child");
+
+        assert_eq!(
+            table
+                .get(child_id.as_str())
+                .and_then(|task| task.parent.clone()),
+            Some(TaskId::from("root"))
+        );
+        assert_eq!(
+            table
+                .get(grandchild_id.as_str())
+                .and_then(|task| task.parent.clone()),
+            Some(child_id.clone())
+        );
+        assert_eq!(
+            table
+                .children_of("root")
+                .iter()
+                .map(|task| task.id.clone())
+                .collect::<Vec<_>>(),
+            vec![child_id.clone()]
+        );
+        assert_eq!(
+            table
+                .children_of(child_id.as_str())
+                .iter()
+                .map(|task| task.id.clone())
+                .collect::<Vec<_>>(),
+            vec![grandchild_id]
+        );
+        assert!(!table.has_cycle());
+    }
+
+    #[test]
+    fn spawn_child_rejects_unknown_terminal_and_duplicate_callers() {
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("root", SchedulerBudget::default()));
+        let manifest = manifest_for("child");
+
+        assert_eq!(
+            table.spawn_child(
+                "missing",
+                &manifest,
+                SchedulerBudget::default(),
+                TaskLifecycle::Running,
+            ),
+            Err(TaskSpawnError::UnknownCaller)
+        );
+
+        table
+            .spawn_child(
+                "root",
+                &manifest,
+                SchedulerBudget::default(),
+                TaskLifecycle::Running,
+            )
+            .expect("first child creation succeeds");
+        assert_eq!(
+            table.spawn_child(
+                "root",
+                &manifest,
+                SchedulerBudget::default(),
+                TaskLifecycle::Running,
+            ),
+            Err(TaskSpawnError::DuplicateTask)
+        );
+
+        table.get_mut("root").unwrap().state = TaskLifecycle::Done(TerminationReason::Completed);
+        let terminal_manifest = manifest_for("terminal-child");
+        assert_eq!(
+            table.spawn_child(
+                "root",
+                &terminal_manifest,
+                SchedulerBudget::default(),
+                TaskLifecycle::Running,
+            ),
+            Err(TaskSpawnError::CallerTerminal)
+        );
     }
 
     #[test]
