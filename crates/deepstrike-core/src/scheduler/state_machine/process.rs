@@ -62,16 +62,27 @@ impl LoopStateMachine {
     }
 
     pub(super) fn handle_sub_agent_completed(&mut self, result: SubAgentResult) -> LoopAction {
+        let workflow_owned = self
+            .workflow
+            .as_ref()
+            .is_some_and(|w| w.owns_agent(result.agent_id.as_str()));
         // M1 収口: record the join on the child task itself (the source of truth) — both the
         // terminal lifecycle and the result payload — then rebuild the `AgentProcess` view row.
         // The terminal `TaskLifecycle` preserves the legacy `ProcessState`→`TaskLifecycle` mapping
         // (`Completed`→`Done(Completed)`, anything else→`Done(Error)`).
-        let process = if let Some(task) = self.tasks.get_mut(result.agent_id.as_str()) {
-            let process_state = match result.result.termination {
-                TerminationReason::Completed => crate::proc::ProcessState::Joined,
-                _ => crate::proc::ProcessState::Failed,
+        let terminal_state = match result.result.termination {
+            TerminationReason::Completed => TaskLifecycle::Done(TerminationReason::Completed),
+            _ => TaskLifecycle::Done(TerminationReason::Error),
+        };
+        if let Some(task) = self.tasks.get_mut(result.agent_id.as_str()) {
+            // A workflow completion releases its concurrency slot before it drives the next
+            // batch, but stays non-terminal until that atomic transition derives child lineage.
+            // `spawn_child` can therefore keep rejecting callers terminal before the transition.
+            task.state = if workflow_owned {
+                TaskLifecycle::Suspended
+            } else {
+                terminal_state
             };
-            task.state = TaskLifecycle::from(process_state);
             if let Some(info) = task.proc.as_mut() {
                 info.result = Some(result.clone());
             }
@@ -82,13 +93,6 @@ impl LoopStateMachine {
                 grant.consumed.tokens = Some(result.result.total_tokens_used);
                 grant.consumed.turns = Some(result.result.turns_used);
             }
-            AgentProcess::from_tcb(task)
-        } else {
-            None
-        };
-        self.tasks.return_child_budget(result.agent_id.as_str());
-        if let Some(process) = process {
-            self.push_agent_process_changed(process);
         }
         let summary = result
             .result
@@ -114,12 +118,26 @@ impl LoopStateMachine {
 
         // W0: if a workflow owns this agent, advance its DAG (feed completion, drain the batch,
         // spawn the next gated batch or finish) instead of the single-spawn barrier below.
-        if self
-            .workflow
-            .as_ref()
-            .is_some_and(|w| w.owns_agent(result.agent_id.as_str()))
+        if workflow_owned {
+            let agent_id = result.agent_id.to_string();
+            let action = self.advance_workflow(result);
+            if let Some(task) = self.tasks.get_mut(&agent_id) {
+                task.state = terminal_state;
+            }
+            self.tasks.return_child_budget(&agent_id);
+            if let Some(process) = self.tasks.get(&agent_id).and_then(AgentProcess::from_tcb) {
+                self.push_agent_process_changed(process);
+            }
+            return action;
+        }
+
+        self.tasks.return_child_budget(result.agent_id.as_str());
+        if let Some(process) = self
+            .tasks
+            .get(result.agent_id.as_str())
+            .and_then(AgentProcess::from_tcb)
         {
-            return self.advance_workflow(result);
+            self.push_agent_process_changed(process);
         }
 
         let agent_id = result.agent_id.to_string();

@@ -1,6 +1,6 @@
 //! Workflow orchestration impl for [`super::LoopStateMachine`].
 
-use super::super::tcb::{TaskLifecycle, Tcb, WaitReason};
+use super::super::tcb::{TaskLifecycle, TaskSpawnError, WaitReason};
 use super::{
     KernelObservation, LoopAction, LoopPhase, LoopStateMachine, PendingWorkflowSpawn, SuspendState,
 };
@@ -81,10 +81,29 @@ impl LoopStateMachine {
         &mut self,
         spec: crate::orchestration::workflow::WorkflowSpec,
     ) -> LoopAction {
+        self.load_workflow_from(spec, None)
+    }
+
+    /// Canonical-driver entrypoint: the first launch is parented by the caller the kernel derived
+    /// from execution focus/syscall causation, never by a host-supplied identity.
+    pub(crate) fn load_workflow_as(
+        &mut self,
+        spec: crate::orchestration::workflow::WorkflowSpec,
+        caller: &str,
+    ) -> LoopAction {
+        self.load_workflow_from(spec, Some(caller.into()))
+    }
+
+    fn load_workflow_from(
+        &mut self,
+        spec: crate::orchestration::workflow::WorkflowSpec,
+        caller: Option<crate::scheduler::tcb::TaskId>,
+    ) -> LoopAction {
         self.install_workflow(
             crate::orchestration::workflow::WorkflowRun::new(&spec),
             "load_workflow",
             None,
+            caller,
         )
     }
 
@@ -124,7 +143,9 @@ impl LoopStateMachine {
         if !self.append_workflow_nodes(nodes, submitter_agent_id, syscall, tool_label) {
             return LoopAction::AwaitingResume;
         }
-        self.drive_workflow(None)
+        // `submitter_agent_id` is a legacy audit/trust label, not caller authority. Canonical
+        // callers enter only through `drive_workflow_round` after kernel causation derivation.
+        self.drive_workflow(None, None)
     }
 
     /// §10.3 · the gate + trust-aware append, **without** the drive.
@@ -210,8 +231,8 @@ impl LoopStateMachine {
     /// [`Self::drive_workflow`], for the canonical driver's syscall reductions — an append that was
     /// admitted still needs its next ready batch, and the driver decides when that happens relative
     /// to the completion it is also folding.
-    pub fn drive_workflow_round(&mut self) -> LoopAction {
-        self.drive_workflow(None)
+    pub(crate) fn drive_workflow_round(&mut self, caller: &str) -> LoopAction {
+        self.drive_workflow(None, Some(caller.into()))
     }
 
     /// M5/G1: an agent authors a whole `WorkflowSpec` (the article's "model writes its own harness").
@@ -282,7 +303,12 @@ impl LoopStateMachine {
                             submitter: submitter_agent_id.map(str::to_string),
                         });
                 }
-                self.install_workflow(built, "start_workflow", submitter_agent_id)
+                self.install_workflow(
+                    built,
+                    "start_workflow",
+                    submitter_agent_id,
+                    None,
+                )
             }
         }
     }
@@ -292,12 +318,13 @@ impl LoopStateMachine {
         built: crate::types::error::Result<crate::orchestration::workflow::WorkflowRun>,
         operation: &str,
         subject: Option<&str>,
+        caller: Option<crate::scheduler::tcb::TaskId>,
     ) -> LoopAction {
         match built {
             Ok(mut run) => {
                 run.set_scheduler_policy(self.scheduler_policy);
                 self.workflow = Some(run);
-                self.drive_workflow(None)
+                self.drive_workflow(None, caller)
             }
             Err(err) => {
                 let note = super::super::rollback::build_control_rejection_note(
@@ -328,6 +355,7 @@ impl LoopStateMachine {
     /// their `WorkflowSpawnInfo` (for the `WorkflowBatchSpawned` observation).
     fn spawn_ready_workflow_nodes(
         &mut self,
+        caller: Option<&crate::scheduler::tcb::TaskId>,
     ) -> (
         Vec<String>,
         Vec<crate::orchestration::workflow::WorkflowSpawnInfo>,
@@ -379,14 +407,38 @@ impl LoopStateMachine {
                     let agent_id = manifest.agent_id.to_string();
                     // §10.4: mint identity here and stop at `PendingLaunch` — the child is a
                     // committed kernel fact, not yet a running process.
-                    // spc_002-04: parent derives from this table's own structural root, not a literal.
-                    let child = Tcb::spawned_in(
+                    // SPC-019-02: canonical callers arrive from execution focus/syscall
+                    // causation. Legacy entrypoints omit one and retain the structural root.
+                    let parent = caller.cloned().or_else(|| self.tasks.root_id());
+                    let Some(parent) = parent else {
+                        if let Some(run) = self.workflow.as_mut() {
+                            run.mark_denied(node);
+                        }
+                        continue;
+                    };
+                    if let Err(error) = self.tasks.spawn_child(
+                        parent.as_str(),
                         &manifest,
                         self.policy.clone(),
                         TaskLifecycle::PendingLaunch,
-                        self.tasks.root_id(),
-                    );
-                    self.tasks.insert(child);
+                    ) {
+                        if let Some(run) = self.workflow.as_mut() {
+                            run.mark_denied(node);
+                        }
+                        let reason = match error {
+                            TaskSpawnError::UnknownCaller => "unknown caller",
+                            TaskSpawnError::CallerTerminal => "terminal caller",
+                            TaskSpawnError::DuplicateTask => "duplicate task identity",
+                        };
+                        self.observations
+                            .push(KernelObservation::ControlRequestRejected {
+                                turn: self.turn,
+                                operation: "spawn_workflow_node".to_string(),
+                                subject: Some(agent_id),
+                                reason: format!("kernel-owned child creation rejected {reason}"),
+                            });
+                        continue;
+                    }
                     if let Some(run) = self.workflow.as_mut() {
                         run.mark_spawned(node, &agent_id);
                     }
@@ -418,7 +470,11 @@ impl LoopStateMachine {
     /// for the slowest sibling in its dependency layer. For DAGs with no intra-layer skew
     /// (fanout/linear) the spawn sequence is identical to the old batch path. `just_completed` is the
     /// node whose completion triggered this round (`None` on the initial install).
-    fn drive_workflow(&mut self, just_completed: Option<String>) -> LoopAction {
+    fn drive_workflow(
+        &mut self,
+        just_completed: Option<String>,
+        caller: Option<crate::scheduler::tcb::TaskId>,
+    ) -> LoopAction {
         // Drop the just-completed node from the running set (its TCB is already terminal).
         if let Some(id) = just_completed.as_deref() {
             if let Some(SuspendState::SubAgentAwait { agent_ids }) = self.suspend_state.as_mut() {
@@ -427,7 +483,7 @@ impl LoopStateMachine {
         }
 
         // Spawn everything ready that fits under the concurrency cap right now.
-        let (spawned_ids, spawned_infos) = self.spawn_ready_workflow_nodes();
+        let (spawned_ids, spawned_infos) = self.spawn_ready_workflow_nodes(caller.as_ref());
         if !spawned_ids.is_empty() {
             // G4: snapshot remaining budget *after* this batch's spawns are reflected in the running
             // set, so a coordinator node reads accurate headroom for its next submission.
@@ -526,7 +582,7 @@ impl LoopStateMachine {
         if let Some(run) = self.workflow.as_mut() {
             run.record_completion(&agent_id, result.result.clone());
         }
-        self.drive_workflow(Some(agent_id))
+        self.drive_workflow(Some(agent_id.clone()), Some(agent_id.into()))
     }
 
     /// Commit a host workflow-spawn result. Only agents acknowledged as started
@@ -607,7 +663,7 @@ impl LoopStateMachine {
             LoopAction::AwaitingResume
         } else {
             self.suspend_state = None;
-            self.drive_workflow(None)
+            self.drive_workflow(None, None)
         }
     }
 

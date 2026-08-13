@@ -2503,7 +2503,7 @@ impl CanonicalOperationDriver {
 
         // ----- past this line the semantic engine advances -----
         engine.set_root_workflow(false);
-        let action = engine.load_workflow(core_spec);
+        let action = engine.load_workflow_as(core_spec, parent_task_id.as_str());
         self.node_ids = node_ids;
         self.workflow_nodes = spec.nodes.clone();
         self.workflow_id = Some(workflow_id.clone());
@@ -2640,7 +2640,7 @@ impl CanonicalOperationDriver {
         let mut effects = Vec::new();
         let mut syscall_focus: Option<ExecutionFocus> = None;
         let mut answered: Vec<AnsweredCall> = Vec::with_capacity(derived.len());
-        let mut needs_round = false;
+        let mut round_caller: Option<TaskId> = None;
         for (causation, call) in &derived {
             let outcome = match decode_syscall(call) {
                 Ok(request) => self.apply_syscall(context, causation, &request, &mut index),
@@ -2657,7 +2657,9 @@ impl CanonicalOperationDriver {
                     if let Some(next) = outcome.focus {
                         syscall_focus = Some(next);
                     }
-                    needs_round |= outcome.needs_workflow_round;
+                    if outcome.needs_workflow_round {
+                        round_caller = Some(causation_task(causation));
+                    }
                 }
                 Err(SyscallRefusal::Fault(fault)) => return Err(fault),
                 Err(SyscallRefusal::Rejected(rejection)) => {
@@ -2673,9 +2675,9 @@ impl CanonicalOperationDriver {
         // §10.3 · a batch that grew the DAG owes it a spawn round, and the author waits for the
         // work it just authored rather than taking another turn.
         let mut awaits_kernel_work = !effects.is_empty();
-        if needs_round {
+        if let Some(caller) = round_caller {
             awaits_kernel_work = true;
-            let action = self.engine_mut()?.drive_workflow_round();
+            let action = self.engine_mut()?.drive_workflow_round(caller.as_str());
             self.extend_with_action(context, action, root_kind, &mut index, &mut effects)?;
         }
 
@@ -3278,7 +3280,7 @@ impl CanonicalOperationDriver {
                 // §6.1.7 — this DAG *is* the root, so its completion is the operation's terminal
                 // rather than one more turn of a parent agent loop.
                 engine.set_root_workflow(true);
-                let action = engine.load_workflow(core_spec);
+                let action = engine.load_workflow_as(core_spec, ROOT_TASK_ID);
                 self.node_ids = node_ids;
                 self.workflow_nodes = workflow.spec.nodes.clone();
                 self.workflow_id = Some(workflow_id.clone());
@@ -7677,6 +7679,23 @@ mod tests {
         // the request became a real transition: a DAG was bootstrapped and its first node launched
         let effect = sole_effect(&entered);
         assert_eq!(effect.tag(), EffectKindTag::SpawnTasks);
+        let EffectKind::SpawnTasks(spawn) = &effect.effect else {
+            panic!("expected a task spawn");
+        };
+        for task in &spawn.tasks {
+            assert_eq!(
+                runtime
+                    .driver
+                    .engine()
+                    .unwrap()
+                    .task_table()
+                    .get(task.task_id.as_str())
+                    .and_then(|tcb| tcb.parent.as_ref())
+                    .map(|parent| parent.as_str()),
+                Some(ROOT_TASK_ID),
+                "the provider-tool causation projects the suspended agent turn as caller"
+            );
+        }
         assert_eq!(
             runtime.driver.root_kind(),
             Some(RootKind::Agent),
@@ -7958,6 +7977,25 @@ mod tests {
             "the refused append produced no derived action"
         );
 
+        // The next runnable batch was released by `wf-node0`'s committed child attempt. Its
+        // caller is therefore that attempt, not the workflow table's structural root.
+        for task in &spawn.tasks {
+            let parent = runtime
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .get(task.task_id.as_str())
+                .and_then(|tcb| tcb.parent.as_ref())
+                .map(|parent| parent.as_str());
+            assert_eq!(
+                parent,
+                Some("wf-node0"),
+                "{} must retain the child-attempt caller that caused its launch",
+                task.task_id
+            );
+        }
+
         // exactly one structured rejection, and the third request was unaffected by the second
         let rejected = rejections(&runtime);
         assert_eq!(rejected.len(), 1, "each request is adjudicated on its own");
@@ -7979,6 +8017,33 @@ mod tests {
                 .contains("sources collected"),
             "a sibling's refusal does not stop the requests after it"
         );
+
+        let replay = Runtime::restore_with(None, &runtime.journal);
+        for task in &spawn.tasks {
+            let live_parent = runtime
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .get(task.task_id.as_str())
+                .and_then(|tcb| tcb.parent.clone());
+            let replay_parent = replay
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .get(task.task_id.as_str())
+                .and_then(|tcb| tcb.parent.clone());
+            assert_eq!(
+                replay_parent, live_parent,
+                "replay preserves caller lineage"
+            );
+            assert_eq!(
+                replay.driver.attempt_id(task.task_id.as_str()),
+                runtime.driver.attempt_id(task.task_id.as_str()),
+                "replay preserves the kernel-minted child attempt"
+            );
+        }
     }
 
     #[test]
