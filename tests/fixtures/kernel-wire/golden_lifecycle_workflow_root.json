@@ -1,7 +1,7 @@
 {
   "description": "Configure → atomic workflow root start → spawn ack → child completions → workflow terminal (spec 10.1). No LoadWorkflow, no placeholder agent run, and no host CompleteRun: the last committed step's disposition is the terminal itself.",
   "genesis_digest": "sha256:008a152232dc0f7188ea652e01ff37a8c19cfa35ee8466eb3c14f8e772f7955b",
-  "head_digest": "sha256:aa72a39ded9f32548c44c78a2db15b3bebc4884330bb7e7259d60bd3a1f79b65",
+  "head_digest": "sha256:1cd15ef8615066acf3e320028304c4a3715377c22e6d14fb53792b62986f6cfb",
   "links": [
     {
       "envelope": {
@@ -332,8 +332,8 @@
         "input_id": "in-ack-2",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:2fa336b0fa4a238ee033baf237ab64546fba44a4cb8c7223fc42d10922c3260b",
-        "record_digest": "sha256:d1e27160da1ebb5d2b457f086c2a6badcc4293b4ac3dd6307b4f0158294f4b64",
-        "step_digest": "sha256:74f4c80debfca6e7a6c4444836edc604dab9edfc4813ce2272a62865a0db86b6",
+        "record_digest": "sha256:7173bc0f8aa973d875f2a5487abe9454dde6c66fb58564f77641ade6fc12619e",
+        "step_digest": "sha256:44de1f59b3aa01b8ec7ccdee706814f11c2445e8d91d806d4debf9ffe7c0e58f",
         "step_seq": "4"
       },
       "step": {
@@ -350,7 +350,7 @@
             "context_inheritance": "none",
             "isolation": "shared",
             "kind": "agent_process_changed",
-            "parent_task_id": "root",
+            "parent_task_id": "wf-node0",
             "role": "custom",
             "state": "running",
             "turn": 0
@@ -412,9 +412,9 @@
         "input_digest": "sha256:797357d7fe5f585d506b5c4caee4bc328ba9338abd1e23a6e55db5ba476d9bcb",
         "input_id": "in-done-2",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:d1e27160da1ebb5d2b457f086c2a6badcc4293b4ac3dd6307b4f0158294f4b64",
-        "record_digest": "sha256:aa72a39ded9f32548c44c78a2db15b3bebc4884330bb7e7259d60bd3a1f79b65",
-        "step_digest": "sha256:e39527c6759b69b3698af731c17bed60dcb6bc0933a431282817694cbb96c4c5",
+        "previous_record_digest": "sha256:7173bc0f8aa973d875f2a5487abe9454dde6c66fb58564f77641ade6fc12619e",
+        "record_digest": "sha256:1cd15ef8615066acf3e320028304c4a3715377c22e6d14fb53792b62986f6cfb",
+        "step_digest": "sha256:bfe8966be0d9ba7b6642714dedf9e5d9793194e0faab4b6983f3e77c50e18624",
         "step_seq": "5"
       },
       "step": {
@@ -442,17 +442,6 @@
           "workflow_id": "op-driver-1:workflow:1"
         },
         "observations": [
-          {
-            "agent_id": "wf-node1",
-            "context_inheritance": "none",
-            "isolation": "shared",
-            "kind": "agent_process_changed",
-            "parent_task_id": "root",
-            "result_termination": "completed",
-            "role": "custom",
-            "state": "joined",
-            "turn": 0
-          },
           {
             "approved": [
               "wf-node1"
@@ -482,6 +471,17 @@
                 "termination": "completed"
               }
             ],
+            "turn": 0
+          },
+          {
+            "agent_id": "wf-node1",
+            "context_inheritance": "none",
+            "isolation": "shared",
+            "kind": "agent_process_changed",
+            "parent_task_id": "wf-node0",
+            "result_termination": "completed",
+            "role": "custom",
+            "state": "joined",
             "turn": 0
           }
         ],
