@@ -145,6 +145,15 @@ impl WaitIndex {
             .flat_map(|ms| self.wake(&WaitKey::Timer(LogicalDeadline(ms))))
             .collect()
     }
+
+    /// Timer keys due under the journal-owned logical clock. Satisfaction/lifecycle mutation is
+    /// deliberately left to `TaskTable::notify`; this index only answers which keys are due.
+    pub(crate) fn due_timer_keys(&self, now_ms: u64) -> Vec<WaitKey> {
+        self.timers
+            .range(..=now_ms)
+            .map(|(ms, _)| WaitKey::Timer(LogicalDeadline(*ms)))
+            .collect()
+    }
 }
 
 #[cfg(test)]

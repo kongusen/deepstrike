@@ -119,6 +119,7 @@ use crate::scheduler::tcb::{
     ApprovalId, BudgetLedger, ChannelId, DurableWaitSet, LogicalDeadline, ProcInfo, ResourceKey,
     SignalFilter, SubscriptionId, TaskLifecycle, Tcb, WaitCondition, WaitMode, WaitReason,
 };
+use crate::scheduler::wait_index::WaitKey;
 use crate::signals::queue::QueuedSignalRuntimeState;
 use crate::signals::router::SignalRouterRuntimeState;
 use crate::syscall::{Disposition, Syscall as CoreSyscall};
@@ -1021,12 +1022,6 @@ fn restore_scheduler(
             .as_ref()
             .map(|wait_set| restore_wait_set(&task.task_id, wait_set))
             .transpose()?;
-        if tcb.wait.is_some() && tcb.wait_set.is_some() {
-            return Err(incompatible(format!(
-                "task {} carries both a legacy wait and a durable WaitSet",
-                task.task_id
-            )));
-        }
         tcb.caps = task.capability_ids.iter().map(|cap| cap.into()).collect();
         // spc_009-06: restore this task's own checkpointed pool verbatim — never re-derive it from
         // `state.budget_grant` (the `set_budget_grant` call above only restores the whole-operation
@@ -3317,6 +3312,9 @@ impl CanonicalOperationDriver {
             // (signal TTL and deadline escalation, rate-limit windows, the wall-time budget axis)
             // therefore reads a fact the journal already holds, so a replay decides identically.
             engine.observe_accepted_time(context.input.observed_at_ms.get());
+            engine
+                .task_table_mut()
+                .wake_expired_timers(context.input.observed_at_ms.get());
         }
         match &context.input.input {
             NormalizedPayload::ConfigureOperation(configure) => {
@@ -3455,14 +3453,20 @@ impl CanonicalOperationDriver {
         context: &PlanContext<'_>,
         resolve: &ResolveEffect,
     ) -> Result<PlannedStep, KernelFault> {
-        match &resolve.outcome {
+        let planned = match &resolve.outcome {
             EffectOutcome::Succeeded(success) => {
                 self.plan_effect_success(context, &resolve.effect_id, &success.result)
             }
             EffectOutcome::Failed(failed) => {
                 self.plan_effect_failure(context, &resolve.effect_id, &failed.failure)
             }
+        };
+        if planned.is_ok() {
+            self.engine_mut()?
+                .task_table_mut()
+                .notify(&WaitKey::Effect(resolve.effect_id.clone()));
         }
+        planned
     }
 
     /// The success half: each variant reduces onto the mechanism that already owns that fact.
@@ -3520,6 +3524,9 @@ impl CanonicalOperationDriver {
                     .map(|id| id.as_str().to_string())
                     .collect();
                 let action = self.engine_mut()?.resolve_approval(approved, denied);
+                self.engine_mut()?
+                    .task_table_mut()
+                    .notify(&WaitKey::Approval(ApprovalId("pending".into())));
                 self.continue_after(context, action, root_kind)
             }
             EffectSuccess::TasksSpawned(spawned) => {
@@ -4303,6 +4310,11 @@ impl CanonicalOperationDriver {
             signal,
             may_issue_request,
         );
+        engine
+            .task_table_mut()
+            .notify(&WaitKey::Signal(SignalFilter(
+                delivery.signal.signal_id.as_str().into(),
+            )));
         match action {
             Some(action) => self.continue_after(context, action, root_kind),
             // Queued / observed / ignored / dropped: the disposition observation is the whole of
@@ -4335,6 +4347,9 @@ impl CanonicalOperationDriver {
         }
 
         // ----- past this line the semantic engine advances -----
+        self.engine_mut()?
+            .task_table_mut()
+            .notify(&WaitKey::Child(completed.task_id.as_str().into()));
         // §10.4 · the attempt is spent. A second completion naming it — and any `parent_requests`
         // riding on that second completion — is a stale causation, refused by the check above.
         self.attempts.remove(completed.task_id.as_str());
@@ -7861,6 +7876,44 @@ mod tests {
     }
 
     #[test]
+    fn a_successful_effect_resolution_notifies_the_durable_effect_wait() {
+        use crate::scheduler::tcb::{WaitCondition, WaitMode, WaitSet};
+
+        let (mut runtime, provider) = agent_awaiting_provider();
+        runtime
+            .driver
+            .engine_mut()
+            .unwrap()
+            .task_table_mut()
+            .register_wait_set(
+                ROOT_TASK_ID,
+                WaitSet {
+                    mode: WaitMode::Any,
+                    conditions: vec![WaitCondition::Effect(provider.clone())],
+                },
+            );
+
+        runtime.submit(&provider_answer(
+            "in-effect-wake",
+            1_700_000_002_000,
+            &provider,
+            "done",
+        ));
+        assert!(
+            runtime
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .get(ROOT_TASK_ID)
+                .unwrap()
+                .wait_set
+                .is_none(),
+            "the ResolveEffect transition is the sole effect-wait producer"
+        );
+    }
+
+    #[test]
     fn a_tool_the_turn_never_exposed_has_no_caller_to_derive() {
         let (mut runtime, provider) = agent_awaiting_provider();
 
@@ -8066,6 +8119,21 @@ mod tests {
     #[test]
     fn parent_requests_are_adjudicated_independently_and_never_undo_the_completion() {
         let mut runtime = workflow_root_awaiting_first_child();
+        assert_eq!(
+            runtime
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .get(ROOT_TASK_ID)
+                .unwrap()
+                .wait_set
+                .as_ref()
+                .unwrap()
+                .conditions,
+            vec![WaitCondition::Child("wf-node0".into())],
+            "workflow join is a durable child wait before the completion arrives"
+        );
 
         let good = SyscallRequest::AppendWorkflowNodes(
             super::super::syscall::AppendWorkflowNodesRequest {
@@ -8104,6 +8172,17 @@ mod tests {
         let EffectKind::SpawnTasks(spawn) = &effect.effect else {
             panic!("expected a task spawn");
         };
+        assert!(
+            !runtime
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .wait_index()
+                .lookup(&WaitKey::Child("wf-node0".into()))
+                .contains(&crate::scheduler::tcb::TaskId::from(ROOT_TASK_ID)),
+            "ChildCompleted consumed the completed child's wait before installing the next join"
+        );
         let launched: Vec<&str> = spawn
             .tasks
             .iter()
@@ -11116,6 +11195,21 @@ mod tests {
         ));
         assert_eq!(kinds(&requested), vec![EffectKindTag::RequestApproval]);
         let approval = effect_id(requested.step_seq);
+        assert!(matches!(
+            runtime
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .get(ROOT_TASK_ID)
+                .unwrap()
+                .wait_set
+                .as_ref()
+                .unwrap()
+                .conditions
+                .as_slice(),
+            [WaitCondition::Approval(_)]
+        ));
 
         let resumed = runtime.submit(&resolved(
             "in-approved",
@@ -11138,6 +11232,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["call-1"],
             "only the approved call reaches a host"
+        );
+        assert!(
+            runtime
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .get(ROOT_TASK_ID)
+                .unwrap()
+                .wait_set
+                .is_none(),
+            "approval success consumes the durable approval wait"
         );
     }
 
@@ -12063,6 +12169,121 @@ mod tests {
                 deadline_escalation: None,
             });
         })
+    }
+
+    #[test]
+    fn signal_and_timer_waits_wake_only_through_the_canonical_envelope_clock_and_event() {
+        use crate::scheduler::tcb::{
+            LogicalDeadline, SignalFilter, WaitCondition, WaitMode, WaitSet,
+        };
+
+        let mut signal_runtime = workflow_root_awaiting_first_child();
+        signal_runtime
+            .driver
+            .engine_mut()
+            .unwrap()
+            .task_table_mut()
+            .register_wait_set(
+                "wf-node0",
+                WaitSet {
+                    mode: WaitMode::Any,
+                    conditions: vec![WaitCondition::Signal(SignalFilter("sig-wake".into()))],
+                },
+            );
+        let mut wake_signal = logical_signal("sig-wake", SignalUrgency::Normal);
+        wake_signal.target = SignalTarget::Task(super::super::event::TaskTarget {
+            task_id: TaskId::new("wf-node0").unwrap(),
+        });
+        signal_runtime.submit(&signal_delivery(
+            "in-signal-wake",
+            1_700_000_002_000,
+            "delivery-signal-wake",
+            1,
+            wake_signal,
+        ));
+        assert!(
+            signal_runtime
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .get("wf-node0")
+                .unwrap()
+                .wait_set
+                .is_none()
+        );
+
+        let (mut timer_runtime, _) = agent_awaiting_provider();
+        timer_runtime
+            .driver
+            .engine_mut()
+            .unwrap()
+            .task_table_mut()
+            .register_wait_set(
+                ROOT_TASK_ID,
+                WaitSet {
+                    mode: WaitMode::Any,
+                    conditions: vec![WaitCondition::Timer(LogicalDeadline(1_700_000_003_000))],
+                },
+            );
+        timer_runtime.submit(&control(
+            "in-before-deadline",
+            1_700_000_002_000,
+            HostCommand::UpdateTask(UpdateTaskCommand {
+                update: WireTaskUpdate::default(),
+            }),
+        ));
+        assert!(
+            timer_runtime
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .get(ROOT_TASK_ID)
+                .unwrap()
+                .wait_set
+                .is_some(),
+            "an earlier accepted envelope cannot wake the timer"
+        );
+        timer_runtime.submit(&control(
+            "in-at-deadline",
+            1_700_000_003_000,
+            HostCommand::UpdateTask(UpdateTaskCommand {
+                update: WireTaskUpdate::default(),
+            }),
+        ));
+        assert!(
+            timer_runtime
+                .driver
+                .engine()
+                .unwrap()
+                .task_table()
+                .get(ROOT_TASK_ID)
+                .unwrap()
+                .wait_set
+                .is_none(),
+            "the journal-owned observed_at_ms is the timer producer"
+        );
+    }
+
+    #[test]
+    fn unsupported_channel_and_resource_external_events_fail_closed_at_decode() {
+        let base = serde_json::to_value(signal_delivery(
+            "in-unsupported",
+            1_700_000_002_000,
+            "delivery-unsupported",
+            1,
+            logical_signal("sig", SignalUrgency::Normal),
+        ))
+        .unwrap();
+        for kind in ["channel_ready", "resource_released"] {
+            let mut forged = base.clone();
+            forged["input"]["event"] = json!({"kind": kind});
+            assert!(
+                serde_json::from_value::<WireEnvelope>(forged).is_err(),
+                "unsupported ExternalEvent {kind:?} must not decode as a no-op"
+            );
+        }
     }
 
     // fixture: cancel-flows-only-through-host-control

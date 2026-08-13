@@ -194,6 +194,21 @@ impl From<WaitReason> for (WaitCondition, WaitMode) {
     }
 }
 
+fn durable_wait_from_reason(reason: &WaitReason) -> WaitSet {
+    match reason {
+        WaitReason::Approval => WaitSet {
+            mode: WaitMode::Any,
+            conditions: vec![WaitCondition::Approval(ApprovalId(CompactString::from(
+                "pending",
+            )))],
+        },
+        WaitReason::SubAgentJoin(ids) => WaitSet {
+            mode: WaitMode::All,
+            conditions: ids.iter().cloned().map(WaitCondition::Child).collect(),
+        },
+    }
+}
+
 /// Running budget counters + limits for a task. Wraps the existing [`SchedulerBudget`]
 /// limits so budget evaluation lives here without changing the axes.
 #[derive(Debug, Clone)]
@@ -499,8 +514,14 @@ impl TaskTable {
             task.wait = wait.clone();
         }
         if let Some(new_wait) = wait {
-            let (condition, _mode) = <(WaitCondition, WaitMode)>::from(new_wait);
-            self.wait_index.insert(id, &condition);
+            let wait_set = durable_wait_from_reason(&new_wait);
+            if !wait_set.conditions.is_empty() {
+                self.wait_index
+                    .register_wait_set(id.clone(), wait_set.clone());
+                if let Some(task) = self.get_mut(task_id) {
+                    task.wait_set = Some(wait_set.into());
+                }
+            }
         }
     }
 
@@ -508,31 +529,41 @@ impl TaskTable {
     /// counterpart (spc_003-01 does not touch `WaitReason`), so — unlike `set_wait` — this only
     /// updates the `WaitIndex`, not `Tcb.wait`.
     pub fn wait_for_timer(&mut self, task_id: &str, deadline: LogicalDeadline) {
-        let Some(id) = self.get(task_id).map(|t| t.id.clone()) else {
-            return;
-        };
-        self.wait_index.insert(id, &WaitCondition::Timer(deadline));
+        self.register_wait_set(
+            task_id,
+            WaitSet {
+                mode: WaitMode::Any,
+                conditions: vec![WaitCondition::Timer(deadline)],
+            },
+        );
     }
 
     /// spc_003-05: wake every task whose `Timer` deadline is `<= now_ms`. Returns the woken ids.
     pub fn wake_expired_timers(&mut self, now_ms: u64) -> Vec<TaskId> {
-        self.wait_index.expire_timers(now_ms)
+        self.wait_index
+            .due_timer_keys(now_ms)
+            .into_iter()
+            .flat_map(|key| self.notify(&key))
+            .collect()
     }
 
     /// spc_003-06: register `task_id` as waiting on an arbitrary `WaitCondition`, index-only
     /// (mirrors [`Self::wait_for_timer`] — no `Tcb.wait` mutation, since most `WaitCondition`
     /// variants have no `WaitReason` counterpart to store there).
     pub fn wait_for_condition(&mut self, task_id: &str, condition: &WaitCondition) {
-        let Some(id) = self.get(task_id).map(|t| t.id.clone()) else {
-            return;
-        };
-        self.wait_index.insert(id, condition);
+        self.register_wait_set(
+            task_id,
+            WaitSet {
+                mode: WaitMode::Any,
+                conditions: vec![condition.clone()],
+            },
+        );
     }
 
     /// spc_003-06: wake every task waiting on exactly `key`. Idempotent — see
     /// [`super::wait_index::WaitIndex::wake`].
     pub fn wake(&mut self, key: &super::wait_index::WaitKey) -> Vec<TaskId> {
-        self.wait_index.wake(key)
+        self.notify(key)
     }
 
     /// spc_003 debt closure: register `task_id` against a full `WaitSet` (`Any`/`All` over
