@@ -176,6 +176,7 @@ impl LoopStateMachine {
     fn evaluate_spawn_quota_inner(
         &mut self,
         concurrency_transient: bool,
+        caller: Option<&str>,
         manifest: &crate::types::agent::IsolationManifest,
     ) -> Disposition {
         let quota = self.resource_quota.as_ref();
@@ -250,25 +251,45 @@ impl LoopStateMachine {
                 };
             }
         }
-        // spc_004 debt closure: attenuation check for spawn-time capability delegation, additive
-        // to (never replacing) the quota checks above. Skipped entirely when the spawn requests no
-        // fine-grained capability grants (the default — see `IsolationManifest::requested_capabilities`)
-        // or when no governance pipeline is configured, matching `Syscall::Invoke`'s own
-        // no-governance-configured convention.
-        if !manifest.requested_capabilities.is_empty()
-            && let Some(governance) = self.governance.as_ref()
-        {
-            let parent_caps = self
-                .tasks
-                .root_id()
+        // SPC-019-06: capability authority belongs to the actual kernel-derived caller. The
+        // structural root is only the compatibility caller for legacy entrypoints that cannot
+        // carry causation yet. This invariant does not depend on an optional governance policy:
+        // a child may never receive a capability the caller cannot delegate.
+        if !manifest.requested_capabilities.is_empty() {
+            let caller_id = caller.map(Into::into).or_else(|| self.tasks.root_id());
+            let parent_caps: Vec<_> = caller_id
+                .as_ref()
                 .and_then(|id| self.tasks.get(id.as_str()))
-                .map(|task| task.capabilities.as_slice())
-                .unwrap_or(&[]);
-            if let Some(verdict) = governance
-                .permission
-                .check_delegation(&manifest.requested_capabilities, parent_caps)
-            {
-                return verdict.into();
+                .map(|task| {
+                    task.capabilities
+                        .iter()
+                        .filter(|capability| {
+                            capability.delegatable
+                                && capability
+                                    .lease
+                                    .as_ref()
+                                    .is_none_or(|lease| !lease.is_expired(self.turn))
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default();
+            if let Err(violations) = crate::types::capability::caps_subset(
+                &manifest.requested_capabilities,
+                &parent_caps,
+            ) {
+                return Disposition::Deny {
+                    stage: "capability_delegation",
+                    reason: format!(
+                        "capability delegation would widen authority beyond caller {}: {}",
+                        caller_id.as_deref().unwrap_or("<unknown>"),
+                        violations
+                            .iter()
+                            .map(|capability| capability.id.0.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                };
             }
         }
         // spc_005-04: hierarchical budget check, additive to (never replacing) the quota checks
@@ -314,15 +335,16 @@ impl LoopStateMachine {
         &mut self,
         manifest: &crate::types::agent::IsolationManifest,
     ) -> Disposition {
-        self.evaluate_spawn_quota_inner(false, manifest)
+        self.evaluate_spawn_quota_inner(false, None, manifest)
     }
 
     /// W2-1 workflow run-queue path: the transient concurrency axis defers instead of denying.
     pub(super) fn evaluate_spawn_quota_deferrable(
         &mut self,
+        caller: Option<&str>,
         manifest: &crate::types::agent::IsolationManifest,
     ) -> Disposition {
-        self.evaluate_spawn_quota_inner(true, manifest)
+        self.evaluate_spawn_quota_inner(true, caller, manifest)
     }
 
     /// Memory-write quota: a rolling-window rate limit. Prunes timestamps older than the window,

@@ -145,8 +145,8 @@ pub struct WorkflowNode {
     /// Indices into [`WorkflowSpec::nodes`] this node depends on.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<usize>,
-    /// spc_008-01: fine-grained capabilities this node's spawn requests, checked for attenuation
-    /// against the operation root's own `Tcb.capabilities` by `gate.rs::evaluate_spawn_quota_inner`.
+    /// Fine-grained capabilities this node's spawn requests, checked for attenuation against the
+    /// kernel-derived caller's own `Tcb.capabilities` by `gate.rs::evaluate_spawn_quota_inner`.
     /// Empty (the default) skips the check entirely — existing specs are unaffected.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requested_capabilities: Vec<Capability>,
@@ -195,8 +195,8 @@ impl WorkflowNode {
         }
     }
 
-    /// spc_008-01: request fine-grained capabilities for this node's spawn, checked for
-    /// attenuation against the operation root's own capabilities.
+    /// Request fine-grained capabilities for this node's spawn, checked for attenuation against
+    /// the kernel-derived caller's own capabilities.
     pub fn with_requested_capabilities(mut self, capabilities: Vec<Capability>) -> Self {
         self.requested_capabilities = capabilities;
         self

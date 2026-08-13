@@ -4086,6 +4086,160 @@ fn spc_009_04_a_legitimate_narrowing_of_the_roots_capability_is_allowed_to_spawn
 }
 
 #[test]
+fn spc_019_06_nested_workflow_delegation_uses_the_actual_callers_capability_ceiling() {
+    use crate::governance::permission::PermissionAction;
+    use crate::governance::pipeline::GovernancePipeline;
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::scheduler::tcb::TaskLifecycle;
+    use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
+
+    let mut sm = sm();
+    sm.set_governance(GovernancePipeline::new(PermissionAction::Allow));
+    sm.start(RuntimeTask::new("root operation"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().capabilities =
+        vec![cap_for_debt_test("/repo/**", &["read", "write"])];
+
+    let caller_manifest = IsolationManifest {
+        agent_id: "agent-a".into(),
+        role: AgentRole::Implement,
+        isolation: AgentIsolation::Shared,
+        context_inheritance: ContextInheritance::Full,
+        permitted_capability_ids: Vec::new(),
+        requested_capabilities: vec![cap_for_debt_test("/repo/src/**", &["read"])],
+        requested_budget: None,
+    };
+    sm.tasks
+        .spawn_child(
+            "root",
+            &caller_manifest,
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+        )
+        .unwrap();
+
+    let requested_from_a = cap_for_debt_test("/repo/**", &["read"]);
+    let spec = WorkflowSpec::new(vec![
+        WorkflowNode::new(
+            RuntimeTask::new("attempt a wider delegation"),
+            AgentRole::Implement,
+        )
+        .with_requested_capabilities(vec![requested_from_a]),
+    ]);
+    let action = sm.load_workflow_as(spec, "agent-a");
+
+    assert!(matches!(action, LoopAction::CallLLM { .. }));
+    assert!(
+        sm.agent_process("wf-node0").is_none(),
+        "A may not delegate root's wider scope to B when A itself only holds /repo/src/**"
+    );
+    assert!(sm.tasks.children_of("agent-a").is_empty());
+}
+
+#[test]
+fn spc_019_06_nested_receiver_gets_only_the_callers_attenuated_grant() {
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::scheduler::tcb::TaskLifecycle;
+    use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
+
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("root operation"));
+    sm.take_observations();
+    sm.tasks.get_mut("root").unwrap().capabilities =
+        vec![cap_for_debt_test("/repo/**", &["read", "write"])];
+    let caller_manifest = IsolationManifest {
+        agent_id: "agent-a".into(),
+        role: AgentRole::Implement,
+        isolation: AgentIsolation::Shared,
+        context_inheritance: ContextInheritance::Full,
+        permitted_capability_ids: Vec::new(),
+        requested_capabilities: vec![cap_for_debt_test("/repo/src/**", &["read"])],
+        requested_budget: None,
+    };
+    sm.tasks
+        .spawn_child(
+            "root",
+            &caller_manifest,
+            SchedulerBudget::default(),
+            TaskLifecycle::Running,
+        )
+        .unwrap();
+
+    let receiver_capability = cap_for_debt_test("/repo/src/util.rs", &["read"]);
+    let spec = WorkflowSpec::new(vec![
+        WorkflowNode::new(
+            RuntimeTask::new("receive a narrow grant"),
+            AgentRole::Implement,
+        )
+        .with_requested_capabilities(vec![receiver_capability.clone()]),
+    ]);
+    let action = sm.load_workflow_as(spec, "agent-a");
+
+    assert!(matches!(action, LoopAction::SpawnWorkflow { .. }));
+    let receiver = sm.tasks.get("wf-node0").unwrap();
+    assert_eq!(receiver.parent.as_deref(), Some("agent-a"));
+    assert_eq!(receiver.capabilities, vec![receiver_capability]);
+}
+
+#[test]
+fn spc_019_06_revoked_expired_or_non_delegatable_caller_capability_cannot_be_delegated() {
+    use crate::orchestration::workflow::{WorkflowNode, WorkflowSpec};
+    use crate::scheduler::tcb::TaskLifecycle;
+    use crate::types::agent::{AgentIsolation, AgentRole, ContextInheritance, IsolationManifest};
+    use crate::types::capability::Lease;
+
+    for blocked_by in ["revoked", "expired", "non_delegatable"] {
+        let mut sm = sm();
+        sm.start(RuntimeTask::new("root operation"));
+        sm.take_observations();
+        sm.tasks.get_mut("root").unwrap().capabilities =
+            vec![cap_for_debt_test("/repo/**", &["read"])];
+        let mut caller_capability = cap_for_debt_test("/repo/src/**", &["read"]);
+        caller_capability.lease = Some(Lease {
+            expires_at_turn: Some(1),
+        });
+        let caller_manifest = IsolationManifest {
+            agent_id: "agent-a".into(),
+            role: AgentRole::Implement,
+            isolation: AgentIsolation::Shared,
+            context_inheritance: ContextInheritance::Full,
+            permitted_capability_ids: Vec::new(),
+            requested_capabilities: vec![caller_capability],
+            requested_budget: None,
+        };
+        sm.tasks
+            .spawn_child(
+                "root",
+                &caller_manifest,
+                SchedulerBudget::default(),
+                TaskLifecycle::Running,
+            )
+            .unwrap();
+        match blocked_by {
+            "revoked" => sm.tasks.get_mut("agent-a").unwrap().capabilities.clear(),
+            "expired" => sm.turn = 1,
+            "non_delegatable" => {
+                sm.tasks.get_mut("agent-a").unwrap().capabilities[0].delegatable = false;
+            }
+            _ => unreachable!(),
+        }
+
+        let requested = cap_for_debt_test("/repo/src/util.rs", &["read"]);
+        let spec = WorkflowSpec::new(vec![
+            WorkflowNode::new(
+                RuntimeTask::new("delegate stale authority"),
+                AgentRole::Implement,
+            )
+            .with_requested_capabilities(vec![requested]),
+        ]);
+        let action = sm.load_workflow_as(spec, "agent-a");
+
+        assert!(matches!(action, LoopAction::CallLLM { .. }));
+        assert!(sm.tasks.children_of("agent-a").is_empty());
+    }
+}
+
+#[test]
 fn spc_009_05_root_child_budget_remaining_is_seeded_from_the_rungroup_admission_grant() {
     // Plan §8 / spc_009-05: closes the gap spc_008-02 documented — production had no path to give
     // root a non-`None` `child_budget_remaining`, so only *denial* was provable, never a legitimate

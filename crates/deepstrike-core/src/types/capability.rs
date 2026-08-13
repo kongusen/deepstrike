@@ -224,7 +224,17 @@ pub(crate) fn resource_prefix(selector: &ResourceSelector) -> &str {
 /// (a superset — attenuation only ever adds limits), and the capability kind must match (a Tool
 /// capability cannot "attenuate" into a Skill capability). Pure: no I/O, no mutation.
 pub fn is_attenuation_of(child: &Capability, parent: &Capability) -> bool {
-    child.kind == parent.kind
+    let lease_is_narrower = match (&child.lease, &parent.lease) {
+        (_, None) => true,
+        (Some(child), Some(parent)) => match (child.expires_at_turn, parent.expires_at_turn) {
+            (_, None) => true,
+            (Some(child), Some(parent)) => child <= parent,
+            (None, Some(_)) => false,
+        },
+        (None, Some(_)) => false,
+    };
+    lease_is_narrower
+        && child.kind == parent.kind
         && resource_prefix(&child.resource).starts_with(resource_prefix(&parent.resource))
         && child.actions.0.is_subset(&parent.actions.0)
         && child.constraints.0.is_superset(&parent.constraints.0)
@@ -477,6 +487,25 @@ mod tests {
     fn is_attenuation_of_accepts_an_identical_capability() {
         let parent = cap("/repo/src/**", &["read"]);
         let child = cap("/repo/src/**", &["read"]);
+        assert!(is_attenuation_of(&child, &parent));
+    }
+
+    #[test]
+    fn is_attenuation_of_requires_a_narrower_lease() {
+        let mut parent = cap("/repo/src/**", &["read"]);
+        let mut child = cap("/repo/src/file.rs", &["read"]);
+        parent.lease = Some(Lease {
+            expires_at_turn: Some(10),
+        });
+        child.lease = None;
+        assert!(!is_attenuation_of(&child, &parent));
+        child.lease = Some(Lease {
+            expires_at_turn: Some(11),
+        });
+        assert!(!is_attenuation_of(&child, &parent));
+        child.lease = Some(Lease {
+            expires_at_turn: Some(9),
+        });
         assert!(is_attenuation_of(&child, &parent));
     }
 

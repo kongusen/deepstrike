@@ -1023,6 +1023,7 @@ fn restore_scheduler(
             .map(|wait_set| restore_wait_set(&task.task_id, wait_set))
             .transpose()?;
         tcb.caps = task.capability_ids.iter().map(|cap| cap.into()).collect();
+        tcb.capabilities = task.capabilities.clone();
         // spc_009-06: restore this task's own checkpointed pool verbatim — never re-derive it from
         // `state.budget_grant` (the `set_budget_grant` call above only restores the whole-operation
         // admission grant for reporting; re-seeding from it here would silently undo every debit a
@@ -1961,6 +1962,7 @@ impl CanonicalOperationDriver {
                     },
                     wait_set: tcb.wait_set.as_ref().map(project_wait_set),
                     capability_ids: tcb.caps.iter().map(|cap| cap.to_string()).collect(),
+                    capabilities: tcb.capabilities.clone(),
                     process: tcb.proc.as_ref().map(|process| ChildProcessState {
                         role: agent_role_label(process.role).to_string(),
                         isolation: agent_isolation_label(process.isolation).to_string(),
@@ -14583,6 +14585,48 @@ mod tests {
             "the queued payload produces the same follow-up provider request",
         );
         assert_eq!(surface(&restored), surface(&uninterrupted));
+    }
+
+    #[test]
+    fn caller_capability_ceiling_survives_checkpoint_restore() {
+        use crate::types::capability::{
+            ActionSet, Capability, CapabilityId, CapabilityKind, ConstraintSet, Lease, Principal,
+            ResourceSelector,
+        };
+
+        let capability = Capability {
+            id: CapabilityId("root-read".into()),
+            kind: CapabilityKind::Tool,
+            resource: ResourceSelector("/repo/src/**".into()),
+            actions: ActionSet(["read".into()].into_iter().collect()),
+            constraints: ConstraintSet::default(),
+            lease: Some(Lease {
+                expires_at_turn: Some(10),
+            }),
+            delegatable: true,
+            issuer: Principal("root".into()),
+        };
+        let mut runtime = Runtime::new();
+        runtime.submit(&configure());
+        runtime.submit(&agent_start_with_capabilities(
+            "in-start",
+            1_700_000_001_000,
+            vec![capability.clone()],
+        ));
+
+        let checkpoint = runtime.checkpoint().decode().expect("verifies");
+        let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+
+        assert_eq!(
+            restored
+                .driver
+                .engine
+                .as_ref()
+                .unwrap()
+                .task_capabilities("root"),
+            &[capability],
+            "authority state must not disappear when the reverse runtime is rebuilt"
+        );
     }
 
     /// Task 16b · a completed child remains the same process fact after restore: its role,

@@ -303,12 +303,7 @@ impl LoopStateMachine {
                             submitter: submitter_agent_id.map(str::to_string),
                         });
                 }
-                self.install_workflow(
-                    built,
-                    "start_workflow",
-                    submitter_agent_id,
-                    None,
-                )
+                self.install_workflow(built, "start_workflow", submitter_agent_id, None)
             }
         }
     }
@@ -402,7 +397,7 @@ impl LoopStateMachine {
                 Some(w) => w.manifest_for(node),
                 None => continue,
             };
-            match self.evaluate_spawn_quota_deferrable(&manifest) {
+            match self.evaluate_spawn_quota_deferrable(caller.map(|id| id.as_str()), &manifest) {
                 Disposition::Allow => {
                     let agent_id = manifest.agent_id.to_string();
                     // §10.4: mint identity here and stop at `PendingLaunch` — the child is a

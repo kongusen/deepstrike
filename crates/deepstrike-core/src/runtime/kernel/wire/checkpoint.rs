@@ -518,6 +518,10 @@ pub struct TaskControlState {
     pub wait_set: Option<TaskWaitSetState>,
     #[serde(default)]
     pub capability_ids: Vec<String>,
+    /// Fine-grained, resource/action-scoped grants held by this task. These are authority state,
+    /// not a derivable cache: a restored nested caller must receive the same delegation ceiling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<crate::types::capability::Capability>,
     /// Sub-agent process identity and join state. `None` only for the root task.
     #[serde(default)]
     pub process: Option<ChildProcessState>,
