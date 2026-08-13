@@ -26,6 +26,13 @@ struct Fixture {
     id: String,
     domain: String,
     input: Value,
+    expected: Expected,
+}
+
+#[derive(Debug, Deserialize)]
+struct Expected {
+    #[serde(default)]
+    canonical: Option<Value>,
 }
 
 #[derive(Debug)]
@@ -522,10 +529,14 @@ mod tests {
 
     #[test]
     fn projects_rust_representable_contracts() {
-        let plan = project(&fixture("provider-request-plan")).expect("request plan projects");
+        let request_plan_fixture = fixture("provider-request-plan");
+        let plan = project(&request_plan_fixture).expect("request plan projects");
         assert_eq!(
-            plan["fingerprint"],
-            "sha256:d91b9737b9a80295599b8f3804a0168c11de2f4ae1de608bfcac824cdf31b8d2"
+            plan,
+            request_plan_fixture
+                .expected
+                .canonical
+                .expect("request plan fixture has canonical expectation")
         );
 
         let durable = project(&fixture("durable-tool-result")).expect("durable result projects");

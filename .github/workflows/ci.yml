@@ -51,6 +51,8 @@ jobs:
           cp ../crates/deepstrike-node/artifacts/*.node     ../crates/deepstrike-node/
           npm install --no-save --package-lock=false --ignore-scripts --omit=optional ../crates/deepstrike-node
         working-directory: node
+      - run: npm run build
+        working-directory: node
       - run: npm test
         working-directory: node
 
@@ -166,9 +168,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2
-      - name: Install Node SDK dependencies
-        run: npm ci
-        working-directory: node
       - name: Install WASM SDK dependencies
         run: npm ci
         working-directory: wasm
@@ -186,6 +185,9 @@ jobs:
           cp ../crates/deepstrike-node/artifacts/index.d.ts ../crates/deepstrike-node/
           cp ../crates/deepstrike-node/artifacts/*.node     ../crates/deepstrike-node/
           npm install --no-save --package-lock=false --ignore-scripts --omit=optional ../crates/deepstrike-node
+        working-directory: node
+      - name: Build Node SDK
+        run: npm run build
         working-directory: node
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh

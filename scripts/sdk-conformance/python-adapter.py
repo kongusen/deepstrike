@@ -15,21 +15,36 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES_ROOT = (ROOT / "tests" / "fixtures").resolve()
-if str(ROOT / "python") not in sys.path:
-  sys.path.insert(0, str(ROOT / "python"))
 
-from deepstrike import (
-  InMemorySessionLog,
-  decode_durable_content,
-  decode_durable_tool_result,
-  lower_agent,
-  normalize_agent,
-)
-from deepstrike.providers import (
-  ProviderRequestEndpoint,
-  create_provider_request_plan,
-  record_prompt_measurement,
-)
+try:
+  from deepstrike import (
+    InMemorySessionLog,
+    decode_durable_content,
+    decode_durable_tool_result,
+    lower_agent,
+    normalize_agent,
+  )
+  from deepstrike.providers import (
+    ProviderRequestEndpoint,
+    create_provider_request_plan,
+    record_prompt_measurement,
+  )
+except ModuleNotFoundError as error:
+  if error.name != "deepstrike":
+    raise
+  sys.path.insert(0, str(ROOT / "python"))
+  from deepstrike import (
+    InMemorySessionLog,
+    decode_durable_content,
+    decode_durable_tool_result,
+    lower_agent,
+    normalize_agent,
+  )
+  from deepstrike.providers import (
+    ProviderRequestEndpoint,
+    create_provider_request_plan,
+    record_prompt_measurement,
+  )
 
 
 STOP_REASONS = {"end_turn", "tool_use", "max_tokens", "stop_sequence", "content_filter", "other"}
