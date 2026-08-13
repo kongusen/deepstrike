@@ -52,9 +52,10 @@ function sidebar(prefix: '' | '/en'): SidebarGroup[] {
       ],
     },
     {
-      text: prefix ? 'How Agents Run' : 'Agent 如何运行',
+      text: 'Agent Process Runtime',
       items: [
         { text: prefix ? 'Overview' : '总览', link: `${p}/architecture/` },
+        { text: 'Agent Process Runtime', link: `${p}/architecture/agent-process-runtime` },
         { text: prefix ? 'Agent Capabilities Map' : 'Agent 能力图谱', link: `${p}/architecture/diagram-atlas` },
         { text: prefix ? 'Execution Lifecycle' : '执行生命周期', link: `${p}/architecture/execution-model` },
         { text: prefix ? 'Sessions & Recovery' : 'Session 与恢复', link: `${p}/architecture/session-replay` },
@@ -96,7 +97,7 @@ export const zhNav = [
   { text: 'Agent 能力', link: '/guides/' },
   { text: '快速开始', link: '/getting-started/hello-agent' },
   { text: '教程课程', link: 'https://github.com/kongusen/deepstrike/tree/main/example' },
-  { text: '如何运行', link: '/architecture/' },
+  { text: 'Agent Runtime', link: '/architecture/agent-process-runtime' },
   { text: '参考', link: '/reference/' },
   { text: 'Wiki', link: 'https://github.com/kongusen/deepstrike/wiki' },
 ]
@@ -106,7 +107,7 @@ export const enNav = [
   { text: 'Agent Capabilities', link: '/en/guides/' },
   { text: 'Quick Start', link: '/en/getting-started/hello-agent' },
   { text: 'Tutorials', link: 'https://github.com/kongusen/deepstrike/tree/main/example' },
-  { text: 'How Agents Run', link: '/en/architecture/' },
+  { text: 'Agent Runtime', link: '/en/architecture/agent-process-runtime' },
   { text: 'Reference', link: '/en/reference/' },
   { text: 'Wiki', link: 'https://github.com/kongusen/deepstrike/wiki' },
 ]
