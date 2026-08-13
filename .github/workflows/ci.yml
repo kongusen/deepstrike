@@ -168,9 +168,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: wasm32-unknown-unknown }
       - uses: Swatinem/rust-cache@v2
-      - name: Install WASM SDK dependencies
-        run: npm ci
-        working-directory: wasm
       - name: Create Python conformance environment
         run: |
           python -m venv python/.venv
