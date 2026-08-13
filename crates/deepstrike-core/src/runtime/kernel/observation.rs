@@ -164,6 +164,16 @@ pub enum KernelObservation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         result_termination: Option<String>,
     },
+    /// One child attempt failed and the parent's local supervision policy adjudicated it.
+    ChildSupervised {
+        turn: u32,
+        task_id: String,
+        attempt: u32,
+        strategy: String,
+        reason: String,
+        terminal: bool,
+        relaunched: bool,
+    },
     /// W0-ABI: a workflow batch was spawned — each node's spawn descriptor (agent id + goal +
     /// role/isolation/inheritance) so the SDK can run the kernel-generated nodes.
     WorkflowBatchSpawned {

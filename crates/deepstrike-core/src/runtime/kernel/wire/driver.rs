@@ -1024,6 +1024,8 @@ fn restore_scheduler(
             .transpose()?;
         tcb.caps = task.capability_ids.iter().map(|cap| cap.into()).collect();
         tcb.capabilities = task.capabilities.clone();
+        tcb.supervision = task.supervision.clone();
+        tcb.supervision_events = task.supervision_events.clone();
         // spc_009-06: restore this task's own checkpointed pool verbatim — never re-derive it from
         // `state.budget_grant` (the `set_budget_grant` call above only restores the whole-operation
         // admission grant for reporting; re-seeding from it here would silently undo every debit a
@@ -2022,6 +2024,8 @@ impl CanonicalOperationDriver {
                             .expect("a child join result is bounded")
                         }),
                     }),
+                    supervision: tcb.supervision.clone(),
+                    supervision_events: tcb.supervision_events.clone(),
                     tokens_used: WireU64::new(tcb.budget.total_tokens),
                     turns_used: tcb.budget.turns,
                     child_budget_remaining: tcb.child_budget_remaining,
@@ -4627,6 +4631,164 @@ impl CanonicalOperationDriver {
             }
         }
 
+        let mut effective_completion = completed.clone();
+        if completed.result.status == ChildStatus::Failed {
+            let attempt = attempt_ordinal(&completed.attempt_id).ok_or_else(|| {
+                KernelFault::new(
+                    KernelFaultCode::InvalidAuthority,
+                    format!("attempt {} has no canonical ordinal", completed.attempt_id),
+                )
+            })?;
+            let reason = completed
+                .result
+                .error
+                .clone()
+                .unwrap_or_else(|| "child attempt failed".to_string());
+            let (strategy, max_restarts, relaunches) = {
+                let engine = self.engine_mut()?;
+                let task = engine
+                    .task_table()
+                    .get(completed.task_id.as_str())
+                    .ok_or_else(|| {
+                        KernelFault::new(
+                            KernelFaultCode::InvalidAuthority,
+                            format!("unknown completed task {}", completed.task_id),
+                        )
+                    })?;
+                let parent = task.parent.as_ref().and_then(|id| {
+                    engine.task_table().get(id.as_str()).map(|parent| {
+                        (
+                            parent.supervision.child_failure,
+                            parent.supervision.max_restarts,
+                        )
+                    })
+                });
+                let (strategy, max_restarts) = parent.unwrap_or_default();
+                let relaunches = task
+                    .supervision_events
+                    .iter()
+                    .filter(|event| event.relaunched)
+                    .count() as u32;
+                (strategy, max_restarts, relaunches)
+            };
+            // Relaunch is opt-in *and bounded*: a restart/retry policy without an explicit maximum
+            // records the failure but cannot generate an unbounded host-effect loop.
+            let relaunch = matches!(
+                strategy,
+                crate::scheduler::tcb::ChildFailurePolicy::Restart
+                    | crate::scheduler::tcb::ChildFailurePolicy::Retry
+            ) && max_restarts.is_some_and(|max| relaunches < max);
+
+            if relaunch {
+                self.require_effect_support(context.config, EffectKindTag::SpawnTasks)?;
+                let info = self
+                    .engine
+                    .as_ref()
+                    .and_then(|engine| {
+                        engine.workflow_spawn_info_for_agent(completed.task_id.as_str())
+                    })
+                    .ok_or_else(|| {
+                        KernelFault::new(
+                            KernelFaultCode::InvalidLifecycle,
+                            format!(
+                                "task {} has no active workflow launch descriptor to relaunch",
+                                completed.task_id
+                            ),
+                        )
+                    })?;
+                let next_attempt = attempt.checked_add(1).ok_or_else(|| {
+                    KernelFault::new(
+                        KernelFaultCode::InvalidLifecycle,
+                        "child attempt ordinal overflow".to_string(),
+                    )
+                })?;
+                let launch = self.task_launch_attempt(
+                    &context.input.operation_id,
+                    context.step_seq,
+                    &info,
+                    next_attempt,
+                )?;
+                let event = crate::scheduler::tcb::SupervisionEvent {
+                    attempt,
+                    strategy,
+                    reason: reason.clone().into(),
+                    terminal: true,
+                    relaunched: true,
+                };
+                let engine = self.engine_mut()?;
+                engine
+                    .task_table_mut()
+                    .get_mut(completed.task_id.as_str())
+                    .expect("validated task exists")
+                    .supervision_events
+                    .push(event);
+                engine
+                    .task_table_mut()
+                    .prepare_supervised_relaunch(completed.task_id.as_str(), strategy);
+                engine.mark_tasks_starting(&[completed.task_id.as_str().to_string()]);
+                engine
+                    .observations
+                    .push(KernelObservation::ChildSupervised {
+                        turn: engine.turn,
+                        task_id: completed.task_id.as_str().to_string(),
+                        attempt,
+                        strategy: supervision_label(strategy).to_string(),
+                        reason,
+                        terminal: true,
+                        relaunched: true,
+                    });
+                return Ok(PlannedStep {
+                    root_kind: self.root_kind,
+                    focus: self.focus.clone(),
+                    observations: Vec::new(),
+                    disposition: StepDisposition::Effects(EffectsDisposition {
+                        effects: vec![KernelEffect {
+                            effect_id: mint_effect_id(
+                                &context.input.operation_id,
+                                context.step_seq,
+                                0,
+                            ),
+                            causation_input_id: context.input.input_id.clone(),
+                            effect: EffectKind::SpawnTasks(SpawnTasksEffect {
+                                tasks: vec![launch],
+                                budget: None,
+                            }),
+                        }],
+                    }),
+                });
+            }
+
+            let event = crate::scheduler::tcb::SupervisionEvent {
+                attempt,
+                strategy,
+                reason: reason.clone().into(),
+                terminal: true,
+                relaunched: false,
+            };
+            let engine = self.engine_mut()?;
+            engine
+                .task_table_mut()
+                .get_mut(completed.task_id.as_str())
+                .expect("validated task exists")
+                .supervision_events
+                .push(event);
+            engine
+                .observations
+                .push(KernelObservation::ChildSupervised {
+                    turn: engine.turn,
+                    task_id: completed.task_id.as_str().to_string(),
+                    attempt,
+                    strategy: supervision_label(strategy).to_string(),
+                    reason,
+                    terminal: true,
+                    relaunched: false,
+                });
+            if strategy == crate::scheduler::tcb::ChildFailurePolicy::Ignore {
+                effective_completion.result.status = ChildStatus::Completed;
+                effective_completion.result.error = None;
+            }
+        }
+
         // ----- past this line the semantic engine advances -----
         self.engine_mut()?
             .task_table_mut()
@@ -4677,7 +4839,7 @@ impl CanonicalOperationDriver {
             .into_iter()
             .collect::<Vec<_>>();
 
-        let result = sub_agent_result(completed);
+        let result = sub_agent_result(&effective_completion);
         let engine = self.engine_mut()?;
         let action = engine.feed(LoopEvent::SubAgentCompleted { result });
         let mut step = self.continue_after_at(context, action, root_kind, &mut index)?;
@@ -5315,13 +5477,27 @@ impl CanonicalOperationDriver {
         step_seq: WireU64,
         info: &crate::orchestration::workflow::WorkflowSpawnInfo,
     ) -> Result<TaskLaunch, KernelFault> {
+        self.task_launch_attempt(operation_id, step_seq, info, 1)
+    }
+
+    fn task_launch_attempt(
+        &mut self,
+        operation_id: &OperationId,
+        step_seq: WireU64,
+        info: &crate::orchestration::workflow::WorkflowSpawnInfo,
+        attempt: u32,
+    ) -> Result<TaskLaunch, KernelFault> {
         let task_id = TaskId::new(&info.agent_id).map_err(malformed)?;
         let attempt_id =
-            AttemptId::new(format!("{}:attempt:1", info.agent_id)).map_err(malformed)?;
-        let launch_token = LaunchToken::new(format!(
-            "{operation_id}:step:{step_seq}:launch:{}",
-            info.agent_id
-        ))
+            AttemptId::new(format!("{}:attempt:{attempt}", info.agent_id)).map_err(malformed)?;
+        let launch_token = LaunchToken::new(if attempt == 1 {
+            format!("{operation_id}:step:{step_seq}:launch:{}", info.agent_id)
+        } else {
+            format!(
+                "{operation_id}:step:{step_seq}:launch:{}:attempt:{attempt}",
+                info.agent_id
+            )
+        })
         .map_err(malformed)?;
         self.attempts
             .insert(info.agent_id.clone(), attempt_id.clone());
@@ -6192,6 +6368,20 @@ fn sub_agent_result(completed: &ChildCompleted) -> SubAgentResult {
             pace_decision: None,
             tournament_winner: None,
         },
+    }
+}
+
+fn attempt_ordinal(attempt_id: &AttemptId) -> Option<u32> {
+    attempt_id.as_str().rsplit(':').next()?.parse().ok()
+}
+
+fn supervision_label(policy: crate::scheduler::tcb::ChildFailurePolicy) -> &'static str {
+    match policy {
+        crate::scheduler::tcb::ChildFailurePolicy::Propagate => "propagate",
+        crate::scheduler::tcb::ChildFailurePolicy::Isolate => "isolate",
+        crate::scheduler::tcb::ChildFailurePolicy::Restart => "restart",
+        crate::scheduler::tcb::ChildFailurePolicy::Retry => "retry",
+        crate::scheduler::tcb::ChildFailurePolicy::Ignore => "ignore",
     }
 }
 
@@ -7287,6 +7477,32 @@ mod tests {
         )
     }
 
+    fn spawned_attempt(
+        id: &str,
+        observed_at_ms: u64,
+        effect_id: &EffectId,
+        task: &str,
+        attempt: u32,
+    ) -> WireEnvelope {
+        envelope(
+            id,
+            observed_at_ms,
+            KernelInput::ResolveEffect(ResolveEffect {
+                effect_id: effect_id.clone(),
+                outcome: EffectOutcome::Succeeded(EffectSucceeded {
+                    result: EffectSuccess::TasksSpawned(TasksSpawnedSuccess {
+                        attempts: vec![TaskLaunchOutcome {
+                            task_id: TaskId::new(task).unwrap(),
+                            attempt_id: WireAttemptId::new(format!("{task}:attempt:{attempt}"))
+                                .unwrap(),
+                            outcome: TaskLaunchStatus::Started(TaskLaunchStarted {}),
+                        }],
+                    }),
+                }),
+            }),
+        )
+    }
+
     fn child_done(id: &str, observed_at_ms: u64, task: &str, output: &str) -> WireEnvelope {
         envelope(
             id,
@@ -7481,6 +7697,31 @@ mod tests {
                         ..ChildResult::default()
                     },
                     parent_requests: requests,
+                }),
+            }),
+        )
+    }
+
+    fn child_failed(
+        id: &str,
+        observed_at_ms: u64,
+        task: &str,
+        attempt: u32,
+        reason: &str,
+    ) -> WireEnvelope {
+        envelope(
+            id,
+            observed_at_ms,
+            KernelInput::DeliverExternalEvent(DeliverExternalEvent {
+                event: ExternalEvent::ChildCompleted(ChildCompleted {
+                    task_id: TaskId::new(task).unwrap(),
+                    attempt_id: WireAttemptId::new(format!("{task}:attempt:{attempt}")).unwrap(),
+                    result: ChildResult {
+                        status: ChildStatus::Failed,
+                        error: Some(reason.to_string()),
+                        ..ChildResult::default()
+                    },
+                    parent_requests: Vec::new(),
                 }),
             }),
         )
@@ -7865,6 +8106,293 @@ mod tests {
             Vec::<EffectKindTag>::new(),
             "a root workflow issues no provider call after it completes"
         );
+    }
+
+    #[test]
+    fn spc_019_10_restart_publishes_a_distinct_bounded_attempt() {
+        use crate::scheduler::tcb::ChildFailurePolicy;
+
+        let mut runtime = Runtime::new();
+        runtime.submit(&syscall_config());
+        let started = runtime.submit(&workflow_start(
+            "in-start",
+            1_700_000_001_000,
+            two_node_spec(),
+        ));
+        runtime.submit(&spawned(
+            "in-ack-1",
+            1_700_000_002_000,
+            &effect_id(started.step_seq),
+            &["wf-node0"],
+        ));
+        let root = runtime
+            .driver
+            .engine
+            .as_mut()
+            .unwrap()
+            .task_table_mut()
+            .get_mut("root")
+            .unwrap();
+        root.supervision.child_failure = ChildFailurePolicy::Restart;
+        root.supervision.max_restarts = Some(1);
+        let child = runtime
+            .driver
+            .engine
+            .as_mut()
+            .unwrap()
+            .task_table_mut()
+            .get_mut("wf-node0")
+            .unwrap();
+        child.budget.turns = 4;
+        child.budget.total_tokens = 80;
+
+        let failed = envelope(
+            "in-failed-1",
+            1_700_000_003_000,
+            KernelInput::DeliverExternalEvent(DeliverExternalEvent {
+                event: ExternalEvent::ChildCompleted(ChildCompleted {
+                    task_id: TaskId::new("wf-node0").unwrap(),
+                    attempt_id: WireAttemptId::new("wf-node0:attempt:1").unwrap(),
+                    result: ChildResult {
+                        status: ChildStatus::Failed,
+                        error: Some("worker crashed".to_string()),
+                        ..ChildResult::default()
+                    },
+                    parent_requests: Vec::new(),
+                }),
+            }),
+        );
+        let restarted = runtime.submit(&failed);
+        let EffectKind::SpawnTasks(spawn) = &sole_effect(&restarted).effect else {
+            panic!("restart must publish an explicit spawn effect");
+        };
+        assert_eq!(spawn.tasks[0].attempt_id.as_str(), "wf-node0:attempt:2");
+        let restart_effect = sole_effect(&restarted).effect_id.clone();
+        let child = runtime
+            .driver
+            .engine
+            .as_ref()
+            .unwrap()
+            .task_table()
+            .get("wf-node0")
+            .unwrap();
+        assert_eq!((child.budget.turns, child.budget.total_tokens), (0, 0));
+        assert_eq!(
+            child.supervision_events[0].reason.as_str(),
+            "worker crashed"
+        );
+        assert!(child.supervision_events[0].terminal);
+        assert!(child.supervision_events[0].relaunched);
+        assert_eq!(
+            runtime
+                .driver
+                .engine
+                .as_ref()
+                .unwrap()
+                .task_lifecycle("wf-node0"),
+            Some(crate::scheduler::tcb::TaskLifecycle::Starting)
+        );
+
+        let checkpoint = runtime.checkpoint().decode().expect("verifies");
+        let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+        assert_eq!(surface(&restored), surface(&runtime));
+
+        runtime.submit(&spawned_attempt(
+            "in-ack-2",
+            1_700_000_004_000,
+            &restart_effect,
+            "wf-node0",
+            2,
+        ));
+        let failed_again = envelope(
+            "in-failed-2",
+            1_700_000_005_000,
+            KernelInput::DeliverExternalEvent(DeliverExternalEvent {
+                event: ExternalEvent::ChildCompleted(ChildCompleted {
+                    task_id: TaskId::new("wf-node0").unwrap(),
+                    attempt_id: WireAttemptId::new("wf-node0:attempt:2").unwrap(),
+                    result: ChildResult {
+                        status: ChildStatus::Failed,
+                        error: Some("crashed again".to_string()),
+                        ..ChildResult::default()
+                    },
+                    parent_requests: Vec::new(),
+                }),
+            }),
+        );
+        let terminal = runtime.submit(&failed_again);
+        assert!(matches!(
+            terminal.step.disposition,
+            StepDisposition::Terminal(_)
+        ));
+        let events = &runtime
+            .driver
+            .engine
+            .as_ref()
+            .unwrap()
+            .task_table()
+            .get("wf-node0")
+            .unwrap()
+            .supervision_events;
+        assert_eq!(events.len(), 2);
+        assert!(!events[1].relaunched, "the explicit limit stops attempt 3");
+    }
+
+    #[test]
+    fn spc_019_10_retry_preserves_usage_while_ignore_accepts_the_terminal_attempt() {
+        use crate::scheduler::tcb::ChildFailurePolicy;
+
+        let mut retry = Runtime::new();
+        retry.submit(&syscall_config());
+        let started = retry.submit(&workflow_start(
+            "retry-start",
+            1_700_000_001_000,
+            two_node_spec(),
+        ));
+        retry.submit(&spawned(
+            "retry-ack",
+            1_700_000_002_000,
+            &effect_id(started.step_seq),
+            &["wf-node0"],
+        ));
+        {
+            let table = retry.driver.engine.as_mut().unwrap().task_table_mut();
+            table.get_mut("root").unwrap().supervision = crate::scheduler::tcb::SupervisionPolicy {
+                child_failure: ChildFailurePolicy::Retry,
+                max_restarts: Some(1),
+                cancel_children_on_exit: true,
+            };
+            table.get_mut("wf-node0").unwrap().budget.turns = 3;
+            table.get_mut("wf-node0").unwrap().budget.total_tokens = 55;
+        }
+        let retried = retry.submit(&child_failed(
+            "retry-failed",
+            1_700_000_003_000,
+            "wf-node0",
+            1,
+            "transient",
+        ));
+        let EffectKind::SpawnTasks(spawn) = &sole_effect(&retried).effect else {
+            panic!("retry must be an explicit spawn");
+        };
+        assert_eq!(spawn.tasks[0].attempt_id.as_str(), "wf-node0:attempt:2");
+        let retry_child = retry
+            .driver
+            .engine
+            .as_ref()
+            .unwrap()
+            .task_table()
+            .get("wf-node0")
+            .unwrap();
+        assert_eq!(
+            (retry_child.budget.turns, retry_child.budget.total_tokens),
+            (3, 55),
+            "retry preserves logical-task usage"
+        );
+
+        let mut ignore = Runtime::new();
+        ignore.submit(&syscall_config());
+        let started = ignore.submit(&workflow_start(
+            "ignore-start",
+            1_700_000_001_000,
+            two_node_spec(),
+        ));
+        ignore.submit(&spawned(
+            "ignore-ack",
+            1_700_000_002_000,
+            &effect_id(started.step_seq),
+            &["wf-node0"],
+        ));
+        ignore
+            .driver
+            .engine
+            .as_mut()
+            .unwrap()
+            .task_table_mut()
+            .get_mut("root")
+            .unwrap()
+            .supervision
+            .child_failure = ChildFailurePolicy::Ignore;
+        let advanced = ignore.submit(&child_failed(
+            "ignore-failed",
+            1_700_000_003_000,
+            "wf-node0",
+            1,
+            "non-critical",
+        ));
+        let EffectKind::SpawnTasks(spawn) = &sole_effect(&advanced).effect else {
+            panic!("ignored failure should advance the dependent node");
+        };
+        assert_eq!(spawn.tasks[0].task_id.as_str(), "wf-node1");
+        let event = &ignore
+            .driver
+            .engine
+            .as_ref()
+            .unwrap()
+            .task_table()
+            .get("wf-node0")
+            .unwrap()
+            .supervision_events[0];
+        assert_eq!(event.strategy, ChildFailurePolicy::Ignore);
+        assert!(event.terminal);
+        assert!(!event.relaunched);
+    }
+
+    #[test]
+    fn spc_019_10_propagate_and_isolate_keep_distinct_terminal_audit_strategies() {
+        use crate::scheduler::tcb::ChildFailurePolicy;
+
+        for (index, strategy) in [ChildFailurePolicy::Propagate, ChildFailurePolicy::Isolate]
+            .into_iter()
+            .enumerate()
+        {
+            let mut runtime = Runtime::new();
+            runtime.submit(&syscall_config());
+            let started = runtime.submit(&workflow_start(
+                &format!("terminal-start-{index}"),
+                1_700_000_001_000,
+                two_node_spec(),
+            ));
+            runtime.submit(&spawned(
+                &format!("terminal-ack-{index}"),
+                1_700_000_002_000,
+                &effect_id(started.step_seq),
+                &["wf-node0"],
+            ));
+            runtime
+                .driver
+                .engine
+                .as_mut()
+                .unwrap()
+                .task_table_mut()
+                .get_mut("root")
+                .unwrap()
+                .supervision
+                .child_failure = strategy;
+            let terminal = runtime.submit(&child_failed(
+                &format!("terminal-failed-{index}"),
+                1_700_000_003_000,
+                "wf-node0",
+                1,
+                "terminal failure",
+            ));
+            assert!(matches!(
+                terminal.step.disposition,
+                StepDisposition::Terminal(_)
+            ));
+            let event = &runtime
+                .driver
+                .engine
+                .as_ref()
+                .unwrap()
+                .task_table()
+                .get("wf-node0")
+                .unwrap()
+                .supervision_events[0];
+            assert_eq!(event.strategy, strategy);
+            assert!(event.terminal);
+            assert!(!event.relaunched);
+        }
     }
 
     #[test]

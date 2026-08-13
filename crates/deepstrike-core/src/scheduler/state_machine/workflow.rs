@@ -68,6 +68,15 @@ impl LoopStateMachine {
         self.workflow.is_some()
     }
 
+    pub(crate) fn workflow_spawn_info_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Option<crate::orchestration::workflow::WorkflowSpawnInfo> {
+        self.workflow
+            .as_ref()
+            .and_then(|run| run.spawn_info_for_agent(agent_id))
+    }
+
     /// How many nodes the in-flight DAG holds. `0` when none is loaded. The quantity
     /// `Syscall::SubmitNodes` is metered against, and what a host projection reports.
     pub fn workflow_node_count(&self) -> usize {

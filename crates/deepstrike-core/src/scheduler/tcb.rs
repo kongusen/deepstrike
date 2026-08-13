@@ -281,6 +281,16 @@ pub struct SupervisionPolicy {
     pub cancel_children_on_exit: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisionEvent {
+    pub attempt: u32,
+    pub strategy: ChildFailurePolicy,
+    pub reason: CompactString,
+    /// Every event closes one attempt; `relaunched` says whether the logical task continued.
+    pub terminal: bool,
+    pub relaunched: bool,
+}
+
 impl Default for SupervisionPolicy {
     fn default() -> Self {
         Self {
@@ -317,6 +327,8 @@ pub struct Tcb {
     /// spc_002-07: read by `terminate()` (spc_008-04) when this task's own terminal transition
     /// commits, to decide what happens to any still-running children.
     pub supervision: SupervisionPolicy,
+    /// Durable attempt-level failure history. Logical-task state may continue after a relaunch.
+    pub supervision_events: Vec<SupervisionEvent>,
     /// spc_008-05: when `true`, this task is exempt from `cancel_subtree`/`cancel_children` —
     /// it (and its own descendants) are never cancelled as a side effect of an ancestor's
     /// cancellation or termination. `false` by default (existing behavior unchanged).
@@ -350,6 +362,7 @@ impl Tcb {
             capabilities: Vec::new(),
             proc: None,
             supervision: SupervisionPolicy::default(),
+            supervision_events: Vec::new(),
             detached: false,
             child_budget_remaining: None,
             budget_grant: None,
@@ -400,6 +413,7 @@ impl Tcb {
                 result: None,
             }),
             supervision: SupervisionPolicy::default(),
+            supervision_events: Vec::new(),
             detached: false,
             child_budget_remaining: None,
             budget_grant: None,
@@ -732,6 +746,24 @@ impl TaskTable {
                 .is_some_and(|t| !t.state.is_terminal() && !t.detached)
             {
                 self.cancel_subtree(child_id.as_str());
+            }
+        }
+    }
+
+    pub(crate) fn prepare_supervised_relaunch(
+        &mut self,
+        task_id: &str,
+        strategy: ChildFailurePolicy,
+    ) {
+        self.set_wait(task_id, None);
+        if let Some(task) = self.get_mut(task_id) {
+            task.state = TaskLifecycle::PendingLaunch;
+            if let Some(proc) = task.proc.as_mut() {
+                proc.result = None;
+            }
+            if strategy == ChildFailurePolicy::Restart {
+                task.budget.turns = 0;
+                task.budget.total_tokens = 0;
             }
         }
     }

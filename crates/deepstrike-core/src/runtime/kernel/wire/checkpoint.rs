@@ -538,6 +538,10 @@ pub struct TaskControlState {
     /// Sub-agent process identity and join state. `None` only for the root task.
     #[serde(default)]
     pub process: Option<ChildProcessState>,
+    #[serde(default, skip_serializing_if = "is_default_supervision")]
+    pub supervision: crate::scheduler::tcb::SupervisionPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supervision_events: Vec<crate::scheduler::tcb::SupervisionEvent>,
     pub tokens_used: WireU64,
     pub turns_used: u32,
     /// spc_009-06 · this task's own grantable pool (`Tcb.child_budget_remaining`) — `None` for
@@ -556,6 +560,10 @@ pub struct TaskControlState {
         skip_serializing_if = "crate::scheduler::mailbox::Mailbox::is_empty"
     )]
     pub mailbox: crate::scheduler::mailbox::Mailbox,
+}
+
+fn is_default_supervision(value: &crate::scheduler::tcb::SupervisionPolicy) -> bool {
+    value == &crate::scheduler::tcb::SupervisionPolicy::default()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -955,6 +955,14 @@ impl WorkflowRun {
         self.node_of_agent.contains_key(agent_id)
     }
 
+    /// Rebuild the launch descriptor for a still-running logical node after an attempt failure.
+    pub(crate) fn spawn_info_for_agent(&self, agent_id: &str) -> Option<WorkflowSpawnInfo> {
+        self.node_of_agent
+            .get(agent_id)
+            .copied()
+            .map(|node| self.spawn_info(node))
+    }
+
     /// R3-3: whether the node behind `agent_id` is `Quarantined` (it read untrusted content). The
     /// kernel uses this to label that node's output as untrusted-origin when it crosses into the
     /// trusted parent context — the provenance half of the cross-boundary contract (shaping the
