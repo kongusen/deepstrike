@@ -1,23 +1,23 @@
 # Context 工程
 
-Context 工程是 Agent OS 的 **Context VM 运行面**。它不只是把 message 拼起来，而是把 identity、knowledge、history、ephemeral state 拆成可渲染、可压缩、可缓存、可分页的工作集。
+Context 工程决定 Agent 工作时哪些信息应该保留。它把身份、Knowledge、对话历史、召回 Memory 和临时任务状态分开，让长任务持续可用。
 
 **代码**：`crates/deepstrike-core/src/context/`（`ContextManager`、`renderer`、`compression`）
 
 ---
 
-## 在 Agent OS 中的位置
+## Agent Context 中有什么
 
-| 职责 | 说明 |
-|------|------|
-| 对 kernel | 提供每轮 `CallLLM` 前的确定性 render 结果 |
-| 对 provider | 保持 stable prefix，提升 prompt cache 命中 |
-| 对 memory / skill / signals | 把长期知识、按需能力和外部事件放入不同槽位 |
-| 对工具结果 | 通过 inline/external handle 控制大结果驻留方式，避免上下文被工具输出撑爆 |
+| Context 区域 | 内容 |
+| --- | --- |
+| 稳定指令 | Agent 身份、系统规则和长期任务框架 |
+| Knowledge | 已加载 Skill、固定参考和 initial memory |
+| History | 对话 turn、工具结果和检索事实 |
+| 当前状态 | 计划、阻塞原因、Signal 和下一步动作 |
 
-这意味着 Context VM 是 agent 的“虚拟内存管理器”：它决定哪些信息 inline、哪些信息归档、哪些信息只作为下一轮状态注入。
+DeepStrike 会压缩旧 turn、保持稳定前缀适合缓存，并分页处理大工具结果，避免每轮 prompt 被结果撑满。
 
-![Context VM & Compaction Mechanisms](/context_vm_mechanisms.svg)
+![Context 管理与压缩机制](/context_vm_mechanisms.svg)
 
 ## 概念
 
@@ -132,7 +132,7 @@ runner.deactivate_skill("debug")                                    # K3：显�
 
 ---
 
-## 内核行为摘要
+## 运行时行为摘要
 
 1. **压缩**：`SnipCompactor` 截断 oversized message → `DropCompactor` 丢弃旧 turn → `SummarizeCompactor` LLM 摘要（SDK 侧 summarizer）
 2. **Renewal**：超长期 run 可 handoff（`HandoffArtifact`）

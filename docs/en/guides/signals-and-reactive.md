@@ -1,24 +1,24 @@
 # Signals & Reactive Session
 
-Signals are the Agent OS **Attention / Signal Plane**. Cron jobs, webhooks, user interrupts, and peer events do not rewrite history directly; they enter `state_turn`, and the runner presents them to the right agent on the next turn.
+Signals let an Agent respond to the world outside its current prompt. Webhooks, schedules, user interrupts, and peer events can wake a run or change what it should do next.
 
 **Source code:**
 - `python/deepstrike/signals/gateway.py`
 - `python/deepstrike/runtime/reactive_session.py`
-- Kernel: `crates/deepstrike-core/src/signals/`
+- Runtime: `crates/deepstrike-core/src/signals/`
 
 ---
 
-## Agent OS Positioning
+## Signal and peer building blocks
 
-| Component | OS semantics |
+| Component | Agent behavior |
 |-----------|--------------|
-| `SignalGateway` | External event queue for schedule / ingest / recipient filtering |
-| `state_turn` | Current-turn attention input, separated from long-lived history |
-| `ReactiveSession` | Shared blackboard, SignalGateway, and RunGroup budget for multiple agents |
-| `TurnPolicy` | Decides which agent responds to which event |
+| `SignalGateway` | Receives scheduled prompts and webhook events |
+| `state_turn` | Shows a new event without rewriting the full conversation |
+| `ReactiveSession` | Lets multiple peer Agents share a blackboard and react to events |
+| `TurnPolicy` | Chooses which Agent should respond |
 
-The signal plane answers "how does the outside world interrupt or wake an agent?" ReactiveSession answers "how do multiple agents coordinate inside one governance domain?"
+Signals answer “how does the outside world wake an Agent?” ReactiveSession answers “which peer should respond, and what can it read?”
 
 ![Signals & Reactive Mechanisms](/signals_mechanisms.svg)
 
@@ -165,7 +165,7 @@ resumed = await ReactiveSession.resume(
 
 ---
 
-## Kernel behavior
+## Runtime behavior
 
 - Signals are rendered in `state_turn` each turn (not cached with history)
 - `TurnPolicy` decides which peer runs on each blackboard event

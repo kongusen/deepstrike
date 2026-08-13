@@ -83,6 +83,7 @@ export type {
   TerminationReason,
   WorkflowSpec,
   WorkflowNodeSpec,
+  SchedulingFactors,
   WorkflowDependencyPolicy,
   WorkflowNodeStatus,
   WorkflowNodeOutcome,
@@ -138,8 +139,12 @@ export type {
 export { ScheduledPrompt } from "./signals/index.js"
 export type { RuntimeSignal, SignalSource } from "./signals/index.js"
 export { PermissionManager, PermissionMode } from "./safety/index.js"
-export { createProviderRequestPlan, measurementForPlan, recordPromptMeasurement } from "./providers/request-plan.js"
-export type { ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement } from "./providers/request-plan.js"
+export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./providers/request-plan.js"
+export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, ProviderUsage, RecordedPromptMeasurement } from "./providers/request-plan.js"
+export { decodeCanonicalStopReason, normalizeProviderStopReason } from "./providers/stop-reason.js"
+export type { CanonicalStopReason } from "./providers/stop-reason.js"
+export { ContentPolicyError, contentDispositionFor, requireContentDisposition } from "./providers/content-policy.js"
+export type { ContentDisposition, ContentPlacement, InputModality } from "./providers/content-policy.js"
 export type { PermissionDecision } from "./safety/index.js"
 export type {
   Message, ToolCall, ToolResult, ToolSchema,
@@ -151,3 +156,5 @@ export type {
   LLMProvider,
   CacheBreakpointStrategy,
 } from "./types.js"
+export { DurableContentError, decodeDurableContent, decodeDurableToolResult, encodeDurableContent, encodeDurableToolResult, migrateLegacyContent, toolOutputBlocksToDurable, durableBlocksToToolOutput } from "./runtime/durable-content.js"
+export type { DurableContent, DurableContentBlock, DurableSource, DurableToolResult } from "./runtime/durable-content.js"

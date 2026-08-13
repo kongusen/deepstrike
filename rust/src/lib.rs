@@ -13,6 +13,7 @@ pub mod tools;
 #[cfg(test)]
 mod tests;
 
+pub use deepstrike_core::context::measurement::{MeasurementConfidence, MeasurementSource};
 pub use deepstrike_core::context::renderer::RenderedContext;
 pub use deepstrike_core::governance::permission::PermissionAction;
 pub use deepstrike_core::governance::quota::ResourceQuota;
@@ -46,10 +47,18 @@ pub use harness_loop::{
     VerdictFnJudge,
 };
 pub use knowledge::KnowledgeSource;
-pub use memory::{DurableMemory, InMemoryMemoryStore, MemorySearchOptions, MemoryStore, WorkingMemory};
+pub use memory::{
+    DurableMemory, InMemoryMemoryStore, MemorySearchOptions, MemoryStore, WorkingMemory,
+};
 pub use providers::RuntimePolicy;
 pub use providers::anthropic::AnthropicProvider;
 pub use providers::openai::{OpenAIProvider, deepseek, kimi, minimax, ollama, qwen};
+pub use providers::request_plan::{
+    CostObservation, NormalizedProviderUsage, PricingRates, PricingSnapshot,
+    ProviderRequestEndpoint, ProviderRequestPlan, ProviderUsage, RecordedPromptMeasurement,
+    RequestPlanError, UnpricedReason, measurement_for_plan, normalize_provider_usage,
+    price_provider_usage, record_prompt_measurement,
+};
 pub use providers::{LLMProvider, ProviderRunState, ProviderToolSpec, StreamEvent, TokenUsage};
 pub use run_event::RunEvent;
 pub use runtime::eval::{Criterion as EvalCriterion, Verdict as EvalVerdict};

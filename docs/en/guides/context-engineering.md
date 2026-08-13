@@ -1,23 +1,24 @@
 # Context Engineering
 
-Context engineering is the Agent OS **Context VM plane**. It does not simply concatenate messages; it turns identity, knowledge, history, and ephemeral state into a renderable, compressible, cache-aware, pageable working set.
+Context engineering is how an Agent keeps the right information available while it works. It separates identity, knowledge, conversation history, retrieved memory, and temporary task state so long runs remain useful.
 
 **Source code:** `crates/deepstrike-core/src/context/` (`ContextManager`, `renderer`, `compression`)
 
 ---
 
-## Agent OS Positioning
+## What stays in an Agent's context
 
-| Responsibility | Description |
-|----------------|-------------|
-| To the kernel | Provides deterministic rendered context before each `CallLLM` |
-| To providers | Keeps stable prefixes for better prompt-cache reuse |
-| To memory / skills / signals | Places durable knowledge, loaded capabilities, and external events into separate slots |
-| To tool results | Uses inline/external handles so large outputs do not flood context |
+| Context area | What it contains |
+| --- | --- |
+| --- | --- |
+| Stable instructions | Agent identity, system rules, and durable task framing |
+| Knowledge | Loaded skills, pinned references, and initial memory |
+| History | Conversation turns, tool results, and retrieved facts |
+| Current state | Plan, blockers, signals, and the next useful action |
 
-In OS terms, the Context VM is the agent's virtual memory manager: it decides what stays inline, what is archived, and what is injected only as next-turn state.
+DeepStrike can compress older turns, keep stable prefixes cache-friendly, and page large tool results so the Agent can keep working without flooding every prompt.
 
-![Context VM & Compaction Mechanisms](/context_vm_mechanisms.svg)
+![Context management and compaction](/context_vm_mechanisms.svg)
 
 ## Concept
 
@@ -156,7 +157,7 @@ runner.deactivate_skill("debug")                                        # K3: ex
 
 ---
 
-## Kernel behavior summary
+## Runtime behavior summary
 
 1. **Compression:** `SnipCompactor` truncates oversized messages → `DropCompactor` drops old turns → `SummarizeCompactor` LLM summary (SDK-side summarizer)
 2. **Renewal:** Very long runs can hand off via `HandoffArtifact`

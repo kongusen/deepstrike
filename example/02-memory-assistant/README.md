@@ -1,50 +1,29 @@
-# L2 · Assistant with memory
+# L2 · Memory Assistant
 
-L1's agent, now given a `MemoryStore`. Memory is **keyed per agent, not per session**, so a fact
-learned in one session is available in the next.
+The L1 Agent now learns across sessions. It stores useful research facts and recalls them before the next question.
 
-```
-session A  ──research──▶ answer ──┐
-                                  ▼
-                    runner.writeMemory(MemoryRecord)          ← the ONE governed write gate
-                                  │  (validation · write quota · advisory score · jaccard dedup)
-                                  ▼
-                          [ MemoryStore ]  (keyed by agentId)
-                                  │
-session B  ──run starts──▶ preQueryMemory recall ──▶ fact injected into history before turn 1
-```
+## What you learn
 
-## What you learn here
-
-| Mechanism | Where it shows up |
-|---|---|
-| **Write gate** | `runner.writeMemory(...)` is the single path memories are written through — validation, a rolling-window write quota, an advisory relevance score, and jaccard dedup all live here. The host decides what's worth keeping (here, a research takeaway). |
-| **Run-start recall** | `preQueryMemory` (default-on, needs `memoryStore` + `agentId` + `memoryScope`) searches memory at the start of every run and injects hits into the decaying history, so the model sees prior knowledge on turn one. |
-| **On-demand recall** | the `memory` meta-tool appears automatically (store present) so the agent can also query memory mid-run. |
-
-The new config is `memoryStore` + `agentId` + `memoryScope` on `RuntimeOptions`. The scope
-(`tenant_id` + `namespace`) isolates recall and is required for run-start prefetch, extraction, and
-semantic page-out. Everything else is L1.
+| Capability | What to observe |
+| --- | --- |
+| Durable memory | A fact written in one session is available in the next. |
+| Recall | Run-start recall gives the Agent relevant context before its first turn. |
+| Memory quality | Validation, quotas, relevance checks, and deduplication keep the store useful. |
 
 ## Run
 
-```sh
-npx tsx 02-memory-assistant/main.ts            # runs session A (learn) then session B (recall)
-npx tsx 02-memory-assistant/main.ts --dry-run  # wiring only
-../../python/.venv/bin/python 02-memory-assistant/main.py   # the Python mirror
+```bash
+npx tsx 02-memory-assistant/main.ts
+npx tsx 02-memory-assistant/main.ts --dry-run
+python 02-memory-assistant/main.py
 ```
 
-Watch session A search + answer + get written to memory, then session B answer the follow-up
-**without searching** — the fact surfaces from run-start recall.
+Watch session A learn a source fact and session B answer a follow-up without searching again.
 
-## A note on grounding
+## Design note
 
-The goals say *"using ONLY the studio index, cite the source id."* That phrasing forces the agent to
-use its tools instead of answering from the model's own knowledge — a small but load-bearing habit
-for every level: a sourced assistant must ground its claims, and grounded goals make the mechanism
-being demonstrated actually fire.
+Memory is for durable facts and preferences. The session transcript remains the record of what happened in a particular run; memory is the smaller set of information worth carrying forward.
 
-## What's next
+## Next
 
-**L3 · Skills** narrows the toolset: a "citation-style" skill loads on demand through the `skill`
-meta-tool, gating which tools are exposed while it's active — the capability plane in action.
+[L3 adds skills and knowledge](../03-skills-handbook/), so the Agent can load specialized instructions only when a task needs them.

@@ -1949,6 +1949,10 @@ mod tests {
             fanout_weight: 10_000,
             age_weight: 1_000,
             token_cost_weight: 1,
+            deadline_weight: 0,
+            process_priority_weight: 0,
+            resource_pressure_weight: 0,
+            budget_pressure_weight: 0,
         };
 
         let json = serde_json::to_value(scheduler_policy).unwrap();

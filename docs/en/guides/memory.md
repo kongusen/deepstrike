@@ -1,23 +1,22 @@
 # Memory
 
-Memory is the Agent OS **Memory Plane**. It separates short-lived reasoning state, session evidence, and durable knowledge; writes pass through kernel syscall validation, and reads return to the Context VM knowledge slot.
+Memory lets an Agent carry useful facts beyond one conversation. DeepStrike separates scratch memory, session history, and durable records so the Agent can recall what matters without replaying every old message.
 
 **Source code:**
-- Kernel: `crates/deepstrike-core/src/memory/`
+- Runtime: `crates/deepstrike-core/src/memory/`
 - SDK: `python/deepstrike/memory/`, `RuntimeRunner.write_memory` / `query_memory`
 
 ---
 
-## Agent OS Positioning
+## Three kinds of memory
 
-| Layer | OS semantics |
+| Layer | Use |
 |-------|--------------|
-| Working | Scratch pad for the current run; no cross-session durability guarantee |
-| Session | Part of the evidence chain; auditable and recoverable |
-| Durable | MemoryStore is host-authoritative: it owns the full cross-session record set, computes retention host-side, and decides eviction and pinning |
-| Syscall | `write_memory` / `query_memory` are validated by the kernel before SDK execution |
+| Working | Scratch pad for the current run |
+| Session | What happened during one run, including tool and Agent activity |
+| Durable | Facts, preferences, and project knowledge available in future runs |
 
-Memory is not "automatically append old messages." It is a policy-constrained knowledge device: what gets written, when it is written, and how it is retrieved must remain auditable and replayable.
+Memory is not an automatic transcript archive. Your application chooses what is worth keeping, how it is validated, and how it is retrieved.
 
 ![Memory Mechanisms](/memory_mechanisms.svg)
 
@@ -29,7 +28,7 @@ Memory is not "automatically append old messages." It is a policy-constrained kn
 | Session | Per-run session data |
 | Durable | `MemoryStore` persistence + session extraction |
 
-Meta-tool / syscall: `memory` tool plus `write_memory` / `query_memory` kernel events.
+Agents can write and query memory directly through the runner APIs or the built-in `memory` tool.
 
 ---
 
@@ -105,7 +104,7 @@ RuntimeOptions(
 )
 ```
 
-On validation failure the kernel emits an observation and **does not commit** to the store.
+On validation failure the runtime emits an observation and **does not commit** to the store.
 
 ---
 
@@ -136,7 +135,7 @@ accept `phase` (`lambda goal: [...]`) keep working unchanged.
 
 ## Level 4: Session extraction
 
-At session completion, the runner saves the transcript and extracts candidate records through the provider or `memory_summarizer`. Each record still returns through the kernel `write_memory` gate before it reaches `MemoryStore`.
+At session completion, the runner saves the transcript and extracts candidate records through the provider or `memory_summarizer`. Each record still returns through the runtime `write_memory` gate before it reaches `MemoryStore`.
 
 SDK configuration:
 
@@ -153,11 +152,11 @@ RuntimeOptions(
 
 ## Level 5: Recall journaling & retention
 
-Recall is a scored query with feedback, and forgetting is retention-based eviction — both host-authoritative.
+Recall is a scored query with feedback, and forgetting is retention-based eviction. The application's `MemoryStore` owns both.
 
-- **Recall journaling.** When `query_memory` routes a hit, the kernel derives the record's next `recall_count` from that hit and emits a `memory_recalled` observation. The host `MemoryStore.recordRecall` folds it back, so a record that keeps getting recalled accrues usage without the kernel holding the durable ledger.
-- **Promotion on threshold.** Crossing `MemoryPolicy.promotion_recall_threshold` emits a `promotion_suggested` observation (edge-triggered — once, on the crossing), surfaced to the host via the `onPromotionSuggested` callback so a frequently-recalled record can be pinned into durable knowledge.
-- **Retention & eviction.** `memory_retention_score` ranks records by usage, kind, confidence, recency, and size (pinned records sort to the top). The host `MemoryStore` uses it to evict cold records to capacity — forgetting is a deterministic ranking, not FIFO.
+- **Recall journaling.** When `query_memory` routes a hit, the runtime derives the record's next `recall_count` from that hit and emits a `memory_recalled` observation. The application `MemoryStore.recordRecall` folds it back, so a record that keeps getting recalled accrues usage without the runtime holding the durable ledger.
+- **Promotion on threshold.** Crossing `MemoryPolicy.promotion_recall_threshold` emits a `promotion_suggested` observation once, at the crossing. The `onPromotionSuggested` callback lets the application pin a frequently recalled record into durable knowledge.
+- **Retention & eviction.** `memory_retention_score` ranks records by usage, kind, confidence, recency, and size (pinned records sort to the top). The application `MemoryStore` uses it to evict cold records to capacity. Forgetting is deterministic ranking, not FIFO.
 
 ```python
 RuntimeOptions(
@@ -185,11 +184,11 @@ RuntimeOptions(
 
 ---
 
-## Kernel behavior
+## Runtime behavior
 
 - `write_memory` validates metadata and content against `MemoryPolicy` before `commit`
-- `query_memory` runs search, ranks hits, and surfaces them as kernel observations
-- Session extraction runs after completion; SDK synthesis returns through kernel-governed writes
+- `query_memory` runs search, ranks hits, and surfaces them as runtime observations
+- Session extraction runs after completion; SDK synthesis returns through runtime-governed writes
 
 ---
 

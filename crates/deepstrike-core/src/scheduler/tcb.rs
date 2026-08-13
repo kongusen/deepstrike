@@ -388,7 +388,8 @@ impl TaskTable {
         // spc_002-05: a fresh child registers itself in its parent's `children` set. Re-inserting
         // an existing id (state update, not a new spawn) must not touch any `children` set.
         let is_new = !self.tasks.iter().any(|t| t.id == tcb.id);
-        if is_new && let Some(parent_id) = tcb.parent.clone()
+        if is_new
+            && let Some(parent_id) = tcb.parent.clone()
             && let Some(parent) = self.tasks.iter_mut().find(|t| t.id == parent_id)
         {
             parent.children.insert(tcb.id.clone());
@@ -451,8 +452,7 @@ impl TaskTable {
         let Some(id) = self.get(task_id).map(|t| t.id.clone()) else {
             return;
         };
-        self.wait_index
-            .insert(id, &WaitCondition::Timer(deadline));
+        self.wait_index.insert(id, &WaitCondition::Timer(deadline));
     }
 
     /// spc_003-05: wake every task whose `Timer` deadline is `<= now_ms`. Returns the woken ids.
@@ -766,7 +766,10 @@ mod tests {
 
         // Simulated redelivery of the same completion event.
         let second = table.wake(&key);
-        assert!(second.is_empty(), "a second wake for the same key must be a no-op");
+        assert!(
+            second.is_empty(),
+            "a second wake for the same key must be a no-op"
+        );
     }
 
     #[test]
@@ -780,7 +783,9 @@ mod tests {
         let woken = table.wake(&crate::scheduler::wait_index::WaitKey::Effect(e2));
         assert!(woken.is_empty());
         assert_eq!(
-            table.wait_index().lookup(&crate::scheduler::wait_index::WaitKey::Effect(e1)),
+            table
+                .wait_index()
+                .lookup(&crate::scheduler::wait_index::WaitKey::Effect(e1)),
             &[TaskId::from("root")],
             "task must still be registered as waiting on e1"
         );
@@ -796,10 +801,7 @@ mod tests {
             "root",
             WaitSet {
                 mode: WaitMode::Any,
-                conditions: vec![
-                    WaitCondition::Effect(e1.clone()),
-                    WaitCondition::Effect(e2),
-                ],
+                conditions: vec![WaitCondition::Effect(e1.clone()), WaitCondition::Effect(e2)],
             },
         );
 
@@ -839,10 +841,7 @@ mod tests {
             WaitCondition::Approval(id) => id,
             _ => unreachable!(),
         });
-        assert_eq!(
-            table.wait_index().lookup(&key),
-            &[TaskId::from("root")]
-        );
+        assert_eq!(table.wait_index().lookup(&key), &[TaskId::from("root")]);
 
         table.set_wait("root", None);
         assert_eq!(table.get("root").unwrap().wait, None);
@@ -913,13 +912,23 @@ mod tests {
         table.insert(Tcb::root("root", SchedulerBudget::default()));
 
         assert!(
-            !table.get("root").unwrap().children.contains(&TaskId::from("child")),
+            !table
+                .get("root")
+                .unwrap()
+                .children
+                .contains(&TaskId::from("child")),
             "sanity: out-of-order insert must NOT have already fixed itself"
         );
 
         table.rebuild_children();
 
-        assert!(table.get("root").unwrap().children.contains(&TaskId::from("child")));
+        assert!(
+            table
+                .get("root")
+                .unwrap()
+                .children
+                .contains(&TaskId::from("child"))
+        );
     }
 
     #[test]
@@ -1014,7 +1023,10 @@ mod tests {
     #[test]
     fn supervision_policy_defaults_match_spec_section_4() {
         let root = Tcb::root("root", SchedulerBudget::default());
-        assert_eq!(root.supervision.child_failure, ChildFailurePolicy::Propagate);
+        assert_eq!(
+            root.supervision.child_failure,
+            ChildFailurePolicy::Propagate
+        );
         assert_eq!(root.supervision.max_restarts, None);
         assert!(root.supervision.cancel_children_on_exit);
 

@@ -421,6 +421,7 @@ mod tests {
             call_id: "call-keep".into(),
             output: "artifact".into(),
             is_error: false,
+            durable_content: None,
         }]);
         result.token_count = Some(20);
         let messages = vec![call, result];

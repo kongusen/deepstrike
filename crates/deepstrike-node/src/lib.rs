@@ -376,6 +376,7 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             call_id,
             output,
             is_error,
+            ..
         } => ContentPartObj {
             r#type: "tool_result".into(),
             text: None,

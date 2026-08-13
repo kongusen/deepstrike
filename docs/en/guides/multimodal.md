@@ -1,6 +1,6 @@
 # Multimodal Input
 
-DeepStrike accepts **image and audio** input alongside text. The kernel's content model is a typed union of content parts, so a user turn can mix text with images and audio; the host serializes each part into the shape the target vendor expects. Images are supported on every provider; audio is supported where the vendor's API accepts it and rejected (never silently dropped) everywhere else.
+DeepStrike lets an Agent work with **text, images, and audio** in the same run. Provider adapters serialize each part for the target vendor. Images are supported across providers; unsupported audio is rejected clearly instead of being silently dropped.
 
 **Code entry points**:
 
@@ -9,14 +9,14 @@ DeepStrike accepts **image and audio** input alongside text. The kernel's conten
 - `node/src/runtime/kernel-step.ts` — content-part ↔ kernel serde
 - `python/deepstrike/providers/base.py`, `python/deepstrike/runtime/kernel_step.py` — Python mirrors
 
-## Agent OS Positioning
+## What multimodal input gives an Agent
 
-| Responsibility | Description |
-|----------------|-------------|
-| To the kernel | The kernel carries typed content parts and counts their token weight; it never touches the vendor wire format |
-| To the host | Providers serialize each part into vendor-native blocks (Anthropic image blocks, OpenAI `image_url` / `input_audio`, Gemini `inlineData`) |
-| To pressure | Images and audio contribute real token weight to ρ, so compaction sees their cost instead of treating them as free |
-| To replay | Attachments persist in the session log and are restored on resume, so a crashed multimodal run recovers the image |
+| Capability | Agent behavior |
+| --- | --- |
+| Vision | Inspect screenshots, diagrams, documents, and photos. |
+| Audio | Pass supported audio input to a model that can understand it. |
+| Mixed turns | Combine text instructions with attachments. |
+| Recovery | Keep attachments with the Session so a resumed run can see them again. |
 
 ![Multimodal input across context pressure, provider serialization, and replay](/multimodal_mechanisms.svg)
 
@@ -93,9 +93,9 @@ Attachments are persisted in the `run_started` event. On a crash-and-resume the 
 - **Input only.** Providers serialize multimodal *requests*; parsing multimodal *output* (an image the model returns) is not wired — assistant turns are text + tool calls.
 - **Unsupported ⇒ error, not drop.** Sending audio to a vendor that cannot take it raises `UnsupportedModalityError` so the failure is visible, never a silent `[audio: …]` placeholder.
 
-## Kernel / Host Boundary
+## Runtime and SDK Responsibilities
 
-| Kernel (`deepstrike-core`) | Host SDK |
+| Runtime (`deepstrike-core`) | SDK |
 |----------------------------|----------|
 | Typed `Content::Parts`; token weighting; attachment persistence + reconstruction | Vendor serialization; `run({ attachments })` ingress; base64 encoding |
 

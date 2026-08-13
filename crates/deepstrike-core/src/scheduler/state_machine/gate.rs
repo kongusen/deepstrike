@@ -36,12 +36,9 @@ impl LoopStateMachine {
                     let turn = self.turn;
                     if let Some(expired) = root.capabilities.iter().find(|capability| {
                         capability.kind == crate::types::capability::CapabilityKind::Tool
-                            && call
-                                .name
-                                .as_str()
-                                .starts_with(crate::types::capability::resource_prefix(
-                                    &capability.resource,
-                                ))
+                            && call.name.as_str().starts_with(
+                                crate::types::capability::resource_prefix(&capability.resource),
+                            )
                             && capability
                                 .lease
                                 .as_ref()
@@ -487,6 +484,7 @@ impl LoopStateMachine {
                      your tools schema.",
                     call.name
                 )),
+                durable_content: None,
                 is_error: true,
                 is_fatal: false,
                 error_kind: Some(ToolErrorKind::GovernanceDenied),
@@ -537,6 +535,7 @@ impl LoopStateMachine {
             self.pending_denied_results.push(ToolResult {
                 call_id,
                 output: Content::Text(format!("permission denied: {reason}")),
+                durable_content: None,
                 is_error: true,
                 is_fatal: false,
                 error_kind: Some(ToolErrorKind::GovernanceDenied),
@@ -655,6 +654,7 @@ impl LoopStateMachine {
                     synthetic_results.push(ToolResult {
                         call_id: call.id.clone(),
                         output: Content::Text(format!("permission denied: {reason}")),
+                        durable_content: None,
                         is_error: true,
                         is_fatal: false,
                         error_kind: Some(ToolErrorKind::GovernanceDenied),
@@ -732,6 +732,7 @@ fn fuse_denied_results(calls: &[ToolCall], count: u32) -> Vec<ToolResult> {
                  {count}x consecutively with no new outcome — do something DIFFERENT: change \
                  the arguments, use another tool, or report the task state as it stands"
             )),
+            durable_content: None,
             is_error: true,
             is_fatal: false,
             error_kind: None,

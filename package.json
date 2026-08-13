@@ -4,6 +4,8 @@
   "private": true,
   "description": "Agent OS microkernel for cross-language agent runtimes - workspace toolchain",
   "scripts": {
+    "test:conformance": "node scripts/run-sdk-conformance.mjs",
+    "test:conformance:runner": "node --test scripts/run-sdk-conformance.test.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",

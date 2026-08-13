@@ -1,98 +1,42 @@
-# Session 与重放
+# Session 与恢复
 
-Agent OS 的 **可重放性** 来自：内核把控制流投影为可持久化的 logical checkpoint，宿主把 canonical transaction record 写入 KernelJournal，并把运行证据写入 SessionLog。这不是「保存 chat history」那么简单。
+Agent Session 是由 `sessionId` 标识的一条持久工作线程。它包含目标、对话 turn、工具活动、审批、Signal、Memory 活动、工作流进度，以及在中断后继续执行所需的恢复状态。
 
-## 为什么 Session 是 OS 级能力
+## Session 能解决什么
 
-脚本 harness 的编排状态往往在：
+| 需求 | Session 行为 |
+| --- | --- |
+| 继续对话 | 复用同一个 `sessionId`，Agent 可以看到此前仍然有用的 Context。 |
+| 恢复中断运行 | 再次启动同一个 Session，恢复未完成工作和最近的持久边界。 |
+| 等待人或事件 | 在审批、子 Agent 完成或外部 Signal 处暂停，之后继续。 |
+| 调试决策 | 查看模型输出、工具调用、策略决策和结果等结构化事件。 |
+| 不接 Provider 测试 | 回放固定 Provider 响应，稳定验证 Agent 决策。 |
 
-- 闭包变量
-- 临时 JSON 文件
-- orchestrator 进程的内存
+## Session 实现
 
-DeepStrike 把 **可恢复边界** 定义为：
+| 类型 | 用途 |
+| --- | --- |
+| `InMemorySessionLog` | 本地实验和测试。 |
+| `FileSessionLog` | 需要跨进程重启保持连续性的本地应用。 |
+| 自定义 `SessionLog` | 将 Session 存入数据库或服务的应用。 |
 
-```text
-SessionLog (append-only evidence)
-    +
-opaque logical checkpoint + bounded KernelJournal tail
-    +
-宿主侧 store (MemoryStore, ArchiveStore, FileSessionLog)
+## 恢复 Session
+
+```ts
+await collectText(runner.run({
+  sessionId: "research-42",
+  goal: "继续来源审查并完成 brief。",
+}))
 ```
 
-内核 **不** 持久化到磁盘——SDK 拥有 I/O——但内核产出 checkpoint candidate、canonical record 和 observation。SessionLog 是审计与离线诊断证据，不是恢复 workflow graph 的生产事实源。
+进程重启后继续使用相同的 `sessionId`。应用不需要手动重建对话，也不需要编造特殊的“resume” prompt。
 
-## SessionLog
+## 持久 Memory 与 Session 的区别
 
-| 实现 | 用途 |
-|------|------|
-| `InMemorySessionLog` | 开发 / 单测 |
-| `FileSessionLog` | 生产持久化 |
-
-每条 entry 对应一次或一批 `KernelObservation`，外加宿主事件（如 `llm_completed`）。
-
-典型 event kind：
-
-| kind | 含义 |
-|------|------|
-| `run_started` / `run_terminal` | run 边界 |
-| `tool_invoked` / `tool_denied` | syscall 审计 |
-| `agent_process_changed` | TCB / sub-agent 生命周期 |
-| `workflow_node_completed` | DAG 推进 |
-| `memory_written` | durable memory 写入前校验记录 |
-| `pressure_compact` | Context VM 压缩 |
-
-## Wake / Resume
-
-挂起态（`TaskState::Suspended`）常见原因：
-
-- Governance `Gate(AskUser)`
-- 等待 sub-agent join
-- Workflow barrier 未齐
-
-恢复路径由宿主加载最近一次已安装 checkpoint 及其后的 journal records，再调用 canonical restore。checkpoint 携带完整 workflow DAG、节点状态和 pending effect identity；恢复成本只取决于 bounded tail，不取决于运行总长度。
-
-```python
-# 同一 session_id 继续；SDK 从 checkpoint + KernelJournal 恢复 canonical kernel
-async for event in runner.run(goal, session_id=existing_id):
-    ...
-```
-
-测试参考：`python/tests/test_runtime_wake.py`
-
-**Workflow 特有能力**：运行时 `SubmitNodes` append 的节点属于 checkpoint 的 workflow graph state，恢复后的 DAG 包含动态扩展部分。SessionLog 可记录相应 observation，但 production resume 不接收或合成 `resumed_*` workflow 输入。
-
-## Replay 与确定性测试
-
-| 机制 | 用途 |
-|------|------|
-| `ReplayProvider` | 固定 LLM 输出，跑内核/integration 测试 |
-| `rebuild_os_snapshot_from_events` | 从 log 重建 OS 级计数器/快照 |
-| `ProviderReplay` | 录制真实 provider 响应后重放 |
-
-Replay 构建 LLM message 时会 **剥离 audit event**，避免污染 provider 视图。
-
-## 与 Context 压缩的交叉
-
-压缩产生 `archived` messages 时：
-
-- 可选写入 `ArchiveStore`（`compression_store`）
-- `frozen_prefix_len` 更新 → 影响下一轮 prompt cache
-
-SessionLog 记录 `pressure_compact` 与 `prefix_invalidated_at`，replay 时压缩决策可重建。
-
-## RunGroup 与多 peer
-
-`RunGroup` 把 **多个 session** 绑在同一治理域（累计 spawn / token）：
-
-- 每个 persona 独立 SessionLog
-- 共享 `GroupLedger`
-- ReactiveSession 从 membership 恢复 peer 集
-
-见 [RunGroup 预算](../concepts/run-group-budget)。
+Session 历史回答“这次运行发生了什么”。持久 Memory 回答“未来运行时 Agent 应该记住什么”。使用 [MemoryStore](../guides/memory) 保存值得跨运行携带的事实和偏好，把临时工具输出留在 Session 中。
 
 ## 延伸阅读
 
-- [执行模型](./execution-model)
-- [Kernel ABI](./kernel-abi)
-- [Context 工程](../guides/context-engineering)
+- [长时间运行 Session 指南](../guides/session-replay-and-recovery)
+- [Context 与多模态输入](../guides/context-engineering)
+- [评估与 Replay](../guides/harness-and-eval)

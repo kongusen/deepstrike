@@ -57,7 +57,7 @@ export type CostObservation =
 
 const TRANSPORT_ONLY_KEYS = new Set([
   "apiKey", "api_key", "bearerToken", "bearer_token", "authorization", "credential",
-  "credentials", "retry", "maxRetries", "baseDelay", "timeout", "signal",
+  "credentials", "retry", "maxRetries", "baseDelay", "timeout", "signal", "access_token", "refresh_token", "token", "secret", "x-api-key",
 ])
 
 export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "version" | "fingerprint" | "options"> & {
@@ -68,12 +68,47 @@ export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "vers
     version: 1 as const,
     providerId: input.providerId,
     modelId: input.modelId,
-    endpoint: clone(input.endpoint),
+    endpoint: sanitizeEndpoint(input.endpoint),
     context: clone(input.context),
     tools: clone(input.tools),
     options,
   }
   return { ...plan, fingerprint: sha256(stableJson(plan)) }
+}
+
+/** Build the plan from a resolved provider when the runner only has the public provider object. */
+export function createProviderRequestPlanForProvider(
+  provider: {
+    descriptor?(): { provider: string; protocol: string; model: string }
+    requestPlanIdentity?(): {
+      providerId?: string
+      modelId?: string
+      endpoint?: { id?: string; protocol?: string; baseURL?: string }
+    }
+  },
+  context: RenderedContext,
+  tools: ToolSchema[],
+  options?: Record<string, unknown>,
+): ProviderRequestPlan {
+  const descriptor = provider.descriptor?.() ?? { provider: "unknown", protocol: "unknown", model: "unknown" }
+  const identity = provider.requestPlanIdentity?.()
+  return createProviderRequestPlan({
+    providerId: identity?.providerId ?? descriptor.provider,
+    modelId: identity?.modelId ?? descriptor.model,
+    endpoint: {
+      id: identity?.endpoint?.id ?? `${descriptor.provider}.${descriptor.protocol}`,
+      protocol: identity?.endpoint?.protocol ?? descriptor.protocol,
+      baseURL: identity?.endpoint?.baseURL ?? "",
+    },
+    context,
+    tools,
+    options,
+  })
+}
+
+export function estimateProviderPromptTokens(context: RenderedContext, tools: ToolSchema[]): number {
+  const bytes = new TextEncoder().encode(stableJson({ context, tools })).byteLength
+  return Math.max(1, Math.ceil(bytes / 4))
 }
 
 /** Bind a preflight count to its exact provider-visible request. Replay only reuses matching facts. */
@@ -94,7 +129,15 @@ export function measurementForPlan(
   plan: Pick<ProviderRequestPlan, "fingerprint">,
   recorded: RecordedPromptMeasurement | undefined,
 ): RecordedPromptMeasurement | undefined {
-  return recorded?.version === 1 && recorded.requestFingerprint === plan.fingerprint ? clone(recorded) : undefined
+  if (!recorded || recorded.version !== 1 || recorded.requestFingerprint !== plan.fingerprint) return undefined
+  if (!Number.isSafeInteger(recorded.inputTokens) || recorded.inputTokens < 0) return undefined
+  if (recorded.confidence !== "exact" && recorded.confidence !== "high_confidence" && recorded.confidence !== "low_confidence") return undefined
+  const source = recorded.source
+  if (!source || typeof source !== "object") return undefined
+  if (source.kind === "native" && typeof source["provider"] === "string" && source["provider"].length > 0) return clone(recorded)
+  if (source.kind === "local_exact" && typeof source.tokenizer === "string" && source.tokenizer.length > 0) return clone(recorded)
+  if (source.kind === "heuristic") return clone(recorded)
+  return undefined
 }
 
 /** Normalize postflight provider facts without turning estimates into actual usage. */
@@ -128,22 +171,23 @@ export function priceProviderUsage(
   const at = typeof observedAt === "string" ? new Date(observedAt) : observedAt
   const from = new Date(snapshot.effectiveFrom)
   const expires = snapshot.expiresAt ? new Date(snapshot.expiresAt) : undefined
-  if (!snapshot.version || !snapshot.currency || Number.isNaN(at.valueOf()) || Number.isNaN(from.valueOf())) {
+  const rates = snapshot.ratesPerMillion
+  const requiredRates = [rates.input, rates.output]
+  if (!snapshot.version || !snapshot.currency || Number.isNaN(at.valueOf()) || Number.isNaN(from.valueOf())
+    || requiredRates.some(rate => typeof rate !== "number" || !Number.isFinite(rate) || rate < 0)
+    || Object.values(rates).some(rate => typeof rate !== "number" || !Number.isFinite(rate) || rate < 0)) {
     return { source: "unpriced", reason: "invalid_pricing_snapshot" }
   }
   if (at < from) return { source: "unpriced", reason: "pricing_snapshot_not_effective" }
   if (expires && (Number.isNaN(expires.valueOf()) || at >= expires)) {
     return { source: "unpriced", reason: "pricing_snapshot_expired" }
   }
-  const rates = snapshot.ratesPerMillion
-  if (Object.values(rates).some(rate => typeof rate !== "number" || !Number.isFinite(rate) || rate < 0)) {
-    return { source: "unpriced", reason: "invalid_pricing_snapshot" }
-  }
   const amount = (
     usage.uncachedInputTokens * rates.input
     + usage.outputTokens * rates.output
     + (usage.cacheReadInputTokens ?? 0) * (rates.cacheRead ?? rates.input)
     + (usage.cacheCreationInputTokens ?? 0) * (rates.cacheCreation ?? rates.input)
+    + (usage.reasoningTokens ?? 0) * (rates.reasoning ?? 0)
   ) / 1_000_000
   return { source: "snapshot", currency: snapshot.currency, amount, pricingVersion: snapshot.version }
 }
@@ -152,17 +196,38 @@ function materialOptions(options: Record<string, unknown>): Record<string, unkno
   return sanitizeMaterialValue(options) as Record<string, unknown>
 }
 
+function sanitizeEndpoint(endpoint: ProviderRequestEndpoint): ProviderRequestEndpoint {
+  try {
+    const url = new URL(endpoint.baseURL)
+    url.username = ""
+    url.password = ""
+    url.search = ""
+    url.hash = ""
+    return { ...clone(endpoint), baseURL: url.toString().replace(/\/$/, "") }
+  } catch {
+    return { ...clone(endpoint), baseURL: "" }
+  }
+}
+
 function sanitizeMaterialValue(value: unknown): unknown {
   if (value === undefined || typeof value === "function") return undefined
   if (Array.isArray(value)) return value.map(sanitizeMaterialValue).filter(item => item !== undefined)
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().flatMap(key => {
-      if (TRANSPORT_ONLY_KEYS.has(key)) return []
+      if (TRANSPORT_ONLY_KEYS.has(key) || isTransportOnlyKey(key)) return []
       const sanitized = sanitizeMaterialValue((value as Record<string, unknown>)[key])
       return sanitized === undefined ? [] : [[key, sanitized]]
     }))
   }
   return value
+}
+
+function isTransportOnlyKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "")
+  return normalized.includes("authorization") || normalized.includes("credential")
+    || normalized.includes("accesstoken") || normalized.includes("refreshtoken")
+    || normalized.includes("apikey") || normalized === "bearer" || normalized === "token"
+    || normalized === "secret" || normalized === "xapikey"
 }
 
 function stableJson(value: unknown): string {

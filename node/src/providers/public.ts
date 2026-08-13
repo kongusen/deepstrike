@@ -41,10 +41,18 @@ export { ContentPolicyError, contentDispositionFor } from "./content-policy.js"
 export type { ContentDisposition, ContentPlacement } from "./content-policy.js"
 export { CapabilityRouter } from "./capability-router.js"
 export type { CapabilityRequirement, CapabilityRouteResult } from "./capability-router.js"
-export { createProviderRequestPlan, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./request-plan.js"
+export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./request-plan.js"
 export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement } from "./request-plan.js"
-export { CredentialResolutionError, redactCredential, resolveCredential } from "./credentials.js"
-export type { CredentialOptions, CredentialRequest, CredentialResolver, ProviderCredential } from "./credentials.js"
+export { CredentialResolutionError, OAuthCredentialResolver, redactCredential, resolveCredential } from "./credentials.js"
+export type {
+  CredentialOptions,
+  CredentialRequest,
+  CredentialResolver,
+  OAuthAccessToken,
+  OAuthCredentialResolverOptions,
+  OAuthRefreshRequest,
+  ProviderCredential,
+} from "./credentials.js"
 export { DynamicModelCatalog, StaticModelCatalog } from "./model-catalog.js"
 export type { ModelCatalog, ModelCatalogRefreshResult, ModelCatalogSource } from "./model-catalog.js"
 export { modelRegistry, resolveEffectiveCapability } from "./model-registry.js"

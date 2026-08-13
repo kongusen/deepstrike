@@ -1886,6 +1886,7 @@ impl RuntimeRunner {
                             tool_results.push(deepstrike_core::types::message::ToolResult {
                                 call_id: call.id.clone(),
                                 output: deepstrike_core::types::message::Content::Text("success".to_string()),
+                                durable_content: None,
                                 is_error: false,
                                 is_fatal: false,
                                 error_kind: None,
@@ -1915,6 +1916,7 @@ impl RuntimeRunner {
                                         tool_results.push(deepstrike_core::types::message::ToolResult {
                                             call_id: compact_str::CompactString::new(&call_id),
                                             output: deepstrike_core::types::message::Content::Text(content),
+                                            durable_content: None,
                                             is_error,
                                             is_fatal,
                                             error_kind,

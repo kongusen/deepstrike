@@ -40,7 +40,7 @@
   </defs>
   <rect width="1200" height="760" fill="#111318"/>
   <path d="M0 94H1200M0 724H1200" class="rule"/>
-  <text x="48" y="33" class="eyebrow" text-anchor="start">MULTIMODAL INPUT / v0.2.48</text>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">MULTIMODAL INPUT / CURRENT DOCUMENTATION</text>
   <text x="48" y="68" class="title" text-anchor="start">Attachments survive pressure accounting, replay, and checkpoint restore.</text>
   <text x="1152" y="39" class="subtitle" text-anchor="end">TYPED PARTS · TOKEN WEIGHT · VENDOR SERIALIZATION</text>
   <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>

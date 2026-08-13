@@ -3,7 +3,7 @@ import { enNav, enSidebar, zhNav, zhSidebar } from './shared'
 
 export default defineConfig({
   title: 'DeepStrike',
-  description: 'Cross-language agent runtime kernel',
+  description: 'A framework for Agents with tools, memory, collaboration, and durable sessions',
   cleanUrls: true,
   ignoreDeadLinks: [/^https?:\/\/localhost/],
 
@@ -25,7 +25,7 @@ export default defineConfig({
       label: '简体中文',
       lang: 'zh-CN',
       title: 'DeepStrike',
-      description: '跨语言 Agent 运行时内核 — 可重放状态、受治理工具、动态工作流',
+      description: '为 Agent 提供工具、记忆、协作、治理与可恢复 Session 的框架',
       themeConfig: {
         nav: zhNav,
         sidebar: zhSidebar,
@@ -42,7 +42,7 @@ export default defineConfig({
       lang: 'en-US',
       link: '/en/',
       title: 'DeepStrike',
-      description: 'Cross-language agent runtime — replayable state, governed tools, dynamic workflows',
+      description: 'A framework for Agents with tools, memory, collaboration, and durable sessions',
       themeConfig: {
         nav: enNav,
         sidebar: enSidebar,

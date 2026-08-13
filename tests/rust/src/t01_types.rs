@@ -35,6 +35,7 @@ fn tool_message_with_result_parts() {
         call_id: CompactString::new("c1"),
         output: "42".to_string(),
         is_error: false,
+        durable_content: None,
     }];
     let msg = Message::tool(parts);
     assert_eq!(msg.role, Role::Tool);
@@ -136,6 +137,7 @@ fn tool_result_fields() {
     let tr = ToolResult {
         call_id: CompactString::new("call-1"),
         output: Content::Text("3".into()),
+        durable_content: None,
         is_error: false,
         is_fatal: false,
         error_kind: None,

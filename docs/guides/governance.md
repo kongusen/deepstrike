@@ -1,24 +1,24 @@
 # Governance
 
-Governance 是 Agent OS 的 **Syscall Governance Plane**。它在工具执行、memory 写入、workflow 增长和 sub-agent spawn 之前裁决权限、配额与参数约束；被拒绝的工具调用不会执行，而是作为可见的 error tool result 写回 context，让模型能够调整行为。
+治理为 Agent 设定清晰边界。你可以允许、拒绝或暂停工具调用，约束参数，限制委托和 Memory 写入，并把审批变成运行过程的一部分。
 
 **代码**：`crates/deepstrike-core/src/governance/`、`python/deepstrike/governance.py`
 
 ---
 
-## 在 Agent OS 中的位置
+## 应用可以做出的决定
 
-| 裁决点 | 说明 |
-|--------|------|
-| Tool syscall | 工具 schema 暴露和实际调用前都可被过滤或拒绝 |
-| Workflow syscall | `AppendWorkflowNodes` 受节点数、深度和资源配额限制 |
-| Memory syscall | 写入频率、内容大小和 metadata 由 policy 控制 |
-| Process spawn | sub-agent 并发、总数、隔离模式可被拦截 |
-| Context feedback | deny / ask_user 决策作为可见的 error tool result 进入下一轮上下文 |
+| 决定 | 示例 |
+| --- | --- |
+| 允许或拒绝 | 只让 Agent 起草内容，不让它看到 `publish_public`。 |
+| 请求审批 | `email_editor` 在真人批准前暂停。 |
+| 约束参数 | 要求 path、enum 或数值范围。 |
+| 限制资源 | 限制 turn、token、子 Agent、workflow node 或 Memory 写入。 |
+| 安全取消 | 应用不再需要时停止 run 或子 Agent。 |
 
-治理面的目标是让 agent 的每个外部动作都像 OS syscall 一样可解释、可拒绝、可追踪，而不是把风险留给工具函数自己处理。
+治理决策会呈现给 Agent 并记录在 Session 中，模型可以调整行为，应用也可以解释发生了什么。
 
-![Syscall Governance Funnel](/governance_pipeline.svg)
+![Agent 治理决策流程](/governance_pipeline.svg)
 
 ## 概念
 

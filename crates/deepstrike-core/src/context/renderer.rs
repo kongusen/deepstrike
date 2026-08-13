@@ -327,6 +327,7 @@ fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
                 call_id,
                 output,
                 is_error,
+                durable_content,
             } if matches!(
                 handles.residency_for_source(call_id),
                 Some(Residency::Collapsed | Residency::PagedOut { .. })
@@ -337,6 +338,7 @@ fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
                     call_id: call_id.clone(),
                     output: collapse_preview(output, call_id.as_str()),
                     is_error: *is_error,
+                    durable_content: durable_content.clone(),
                 }
             }
             other => other.clone(),
@@ -655,6 +657,7 @@ mod tests {
                 call_id: "c1".into(),
                 output: long.clone(),
                 is_error: false,
+                durable_content: None,
             }]),
             250,
         );
@@ -703,6 +706,7 @@ mod tests {
                 call_id: "c-paged".into(),
                 output: long,
                 is_error: false,
+                durable_content: None,
             }]),
             300,
         );
@@ -738,6 +742,7 @@ mod tests {
                 call_id: "c2".into(),
                 output: body.clone(),
                 is_error: false,
+                durable_content: None,
             }]),
             60,
         );
@@ -997,6 +1002,7 @@ mod tests {
                 call_id: "c1".into(),
                 output: long,
                 is_error: false,
+                durable_content: None,
             }]),
             250,
         );
@@ -1044,6 +1050,7 @@ mod tests {
                 call_id: "c1".into(),
                 output: "located".into(),
                 is_error: false,
+                durable_content: None,
             }]),
             2,
         );
@@ -1105,6 +1112,7 @@ mod tests {
                 call_id: "c1".into(),
                 output: "located".into(),
                 is_error: false,
+                durable_content: None,
             }]),
             2,
         );
@@ -1154,6 +1162,7 @@ mod tests {
                 call_id: "c1".into(),
                 output: "located".into(),
                 is_error: false,
+                durable_content: None,
             }]),
             2,
         );
@@ -1207,6 +1216,7 @@ mod tests {
                 call_id: "call-1".into(),
                 output: "ok".into(),
                 is_error: false,
+                durable_content: None,
             }]),
             10,
         );

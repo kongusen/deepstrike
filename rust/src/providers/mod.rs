@@ -7,6 +7,14 @@ use futures::{Stream, StreamExt};
 
 pub mod anthropic;
 pub mod openai;
+pub mod request_plan;
+
+pub use request_plan::{
+    CostObservation, NormalizedProviderUsage, PricingRates, PricingSnapshot,
+    ProviderRequestEndpoint, ProviderRequestPlan, ProviderUsage, RecordedPromptMeasurement,
+    RequestPlanError, UnpricedReason, measurement_for_plan, normalize_provider_usage,
+    price_provider_usage, record_prompt_measurement,
+};
 
 /// Opaque per-run state owned by the provider (e.g. OpenAI Responses continuation).
 pub type ProviderRunState = serde_json::Value;

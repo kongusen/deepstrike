@@ -7,9 +7,11 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import math
 from hashlib import sha256
 import json
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 from .usage import ProviderUsage
 
@@ -62,6 +64,13 @@ class PricingSnapshot:
   expires_at: str | None = None
 
 
+def estimate_provider_prompt_tokens(context: Any, tools: list[Any] | tuple[Any, ...]) -> int:
+  """Conservative host-only fallback for providers without a native meter."""
+  payload = {"context": _json_value(context), "tools": [_json_value(tool) for tool in tools]}
+  size = len(_canonical_json(payload).encode("utf-8"))
+  return max(1, (size + 3) // 4)
+
+
 def create_provider_request_plan(
   *, provider_id: str, model_id: str, endpoint: ProviderRequestEndpoint,
   context: Any, tools: list[Any] | tuple[Any, ...], options: dict[str, Any] | None = None,
@@ -69,12 +78,13 @@ def create_provider_request_plan(
   material = _material_options(options or {})
   value = {
     "version": 1, "providerId": provider_id, "modelId": model_id,
-    "endpoint": {"id": endpoint.id, "protocol": endpoint.protocol, "baseURL": endpoint.base_url}, "context": _json_value(context),
+    "endpoint": {"id": endpoint.id, "protocol": endpoint.protocol, "baseURL": _safe_endpoint(endpoint.base_url)}, "context": _json_value(context),
     "tools": [_json_value(tool) for tool in tools], "options": material,
   }
   fingerprint = "sha256:" + sha256(_canonical_json(value).encode()).hexdigest()
   return ProviderRequestPlan(
-    version=1, provider_id=provider_id, model_id=model_id, endpoint=endpoint,
+    version=1, provider_id=provider_id, model_id=model_id,
+    endpoint=ProviderRequestEndpoint(endpoint.id, endpoint.protocol, _safe_endpoint(endpoint.base_url)),
     context=_json_value(context), tools=tuple(_json_value(tool) for tool in tools),
     options=material, fingerprint=fingerprint,
   )
@@ -87,8 +97,43 @@ def record_prompt_measurement(
   return PromptMeasurementRecord(1, plan.fingerprint, _non_negative(input_tokens, "input_tokens"), dict(source), confidence)
 
 
-def measurement_for_plan(plan: ProviderRequestPlan, record: PromptMeasurementRecord | None) -> PromptMeasurementRecord | None:
-  return record if record is not None and record.version == 1 and record.request_fingerprint == plan.fingerprint else None
+def measurement_for_plan(
+  plan: ProviderRequestPlan,
+  record: PromptMeasurementRecord | Mapping[str, Any] | None,
+) -> PromptMeasurementRecord | None:
+  """Return a validated durable fact only when it belongs to this exact request plan."""
+  if record is None:
+    return None
+  if isinstance(record, Mapping):
+    try:
+      record = PromptMeasurementRecord(
+        version=record["version"],
+        request_fingerprint=record["request_fingerprint"],
+        input_tokens=record["input_tokens"],
+        source=dict(record["source"]),
+        confidence=record["confidence"],
+      )
+    except (KeyError, TypeError, ValueError):
+      return None
+  if (
+    record.version != 1
+    or not isinstance(record.request_fingerprint, str)
+    or record.request_fingerprint != plan.fingerprint
+    or record.confidence not in {"exact", "high_confidence", "low_confidence"}
+  ):
+    return None
+  try:
+    _non_negative(record.input_tokens, "input_tokens")
+  except ValueError:
+    return None
+  source = record.source
+  if not isinstance(source, dict) or source.get("kind") not in {"native", "local_exact", "heuristic"}:
+    return None
+  if source["kind"] == "native" and not isinstance(source.get("provider"), str):
+    return None
+  if source["kind"] == "local_exact" and not isinstance(source.get("tokenizer"), str):
+    return None
+  return record
 
 
 def normalize_provider_usage(usage: ProviderUsage) -> NormalizedProviderUsage:
@@ -110,7 +155,9 @@ def price_provider_usage(usage: NormalizedProviderUsage, snapshot: PricingSnapsh
     start = _parse_time(snapshot.effective_from)
     end = _parse_time(snapshot.expires_at) if snapshot.expires_at else None
     rates = snapshot.rates_per_million
-    if not snapshot.version or not snapshot.currency or any(not isinstance(value, (int, float)) or value < 0 for value in rates.values()):
+    required = ("input", "output")
+    if (not snapshot.version or not snapshot.currency or any(name not in rates for name in required)
+        or any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0 for value in rates.values())):
       raise ValueError
   except (TypeError, ValueError):
     return {"source": "unpriced", "reason": "invalid_pricing_snapshot"}
@@ -127,7 +174,7 @@ def price_provider_usage(usage: NormalizedProviderUsage, snapshot: PricingSnapsh
   return {"source": "snapshot", "currency": snapshot.currency, "amount": amount, "pricing_version": snapshot.version}
 
 
-_TRANSPORT_ONLY = frozenset({"apiKey", "api_key", "bearerToken", "bearer_token", "authorization", "credential", "credentials", "retry", "maxRetries", "baseDelay", "timeout", "signal"})
+_TRANSPORT_ONLY = frozenset({"apikey", "api_key", "bearertoken", "bearer_token", "authorization", "credential", "credentials", "retry", "maxretries", "basedelay", "timeout", "signal", "access_token", "refresh_token", "token", "secret", "x-api-key"})
 
 
 def _material_options(options: dict[str, Any]) -> dict[str, Any]:
@@ -144,7 +191,7 @@ def _sanitize_material_value(value: Any) -> Any:
   if isinstance(value, dict):
     return {
       str(key): sanitized for key, item in sorted(value.items())
-      if key not in _TRANSPORT_ONLY
+      if not _transport_only_key(str(key))
       for sanitized in (_sanitize_material_value(item),)
       if sanitized is not _OMIT
     }
@@ -156,9 +203,50 @@ def _sanitize_material_value(value: Any) -> Any:
 _OMIT = object()
 
 
+def _safe_endpoint(value: str) -> str:
+  try:
+    parsed = urlsplit(value)
+  except ValueError:
+    return ""
+  if not parsed.scheme or not parsed.hostname:
+    return ""
+  return urlunsplit((parsed.scheme, parsed.hostname, parsed.path.rstrip("/"), "", ""))
+
+
+def _transport_only_key(key: str) -> bool:
+  normalized = "".join(character for character in key.lower() if character.isalnum())
+  return (key.lower() in _TRANSPORT_ONLY or "authorization" in normalized or "credential" in normalized
+          or "accesstoken" in normalized or "refreshtoken" in normalized or "apikey" in normalized
+          or normalized in {"bearer", "token", "secret", "xapikey"})
+
+
 def _json_value(value: Any) -> Any:
+  # pyo3 Kernel DTOs deliberately expose attributes without a Python ``__dict__``.
+  # Read their public wire fields explicitly instead of asking dataclasses.asdict to deepcopy them.
+  if type(value).__module__ == "builtins" and type(value).__name__ == "Message":
+    return {
+      "role": value.role,
+      "content": _json_value(value.content),
+      "tool_calls": _json_value(value.tool_calls),
+      "token_count": value.token_count,
+      "content_parts": _json_value(value.content_parts),
+    }
+  if type(value).__module__ == "builtins" and type(value).__name__ == "ToolSchema":
+    return {"name": value.name, "description": value.description, "parameters": _json_value(value.parameters)}
+  if type(value).__module__ == "builtins" and type(value).__name__ == "ToolCall":
+    return {"id": value.id, "name": value.name, "arguments": _json_value(value.arguments)}
+  if type(value).__module__ == "builtins" and type(value).__name__ == "ContentPartObj":
+    result = {"type": value.type}
+    for key in (
+      "text", "url", "data", "media_type", "detail", "call_id", "output", "is_error",
+      "file_id", "provider_id", "endpoint_id",
+    ):
+      item = getattr(value, key)
+      if item is not None:
+        result[key] = _json_value(item)
+    return result
   if hasattr(value, "__dataclass_fields__"):
-    return {key: _json_value(item) for key, item in asdict(value).items()}
+    return {key: _json_value(item) for key, item in vars(value).items()}
   if isinstance(value, dict):
     return {str(key): _json_value(item) for key, item in value.items()}
   if isinstance(value, (list, tuple)):

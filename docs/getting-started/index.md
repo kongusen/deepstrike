@@ -1,20 +1,23 @@
 # 入门
 
-欢迎使用 DeepStrike — 面向生产环境的 Agent 运行时框架。
+DeepStrike 帮你构建能够使用工具、记住事实、协作委托，并跨 Session 持续工作的 Agent。
 
-## 推荐阅读顺序
+## 推荐路径
 
-1. [安装](./installation) — Python / Node / Rust
-2. [Hello Agent](./hello-agent) — 第一个可运行 agent
-3. [API 选型](./run-agent-vs-runner) — `run_agent` vs `RuntimeRunner` vs `run_fanout`
-4. [Provider](./providers) — 接入 LLM
+1. 为 Python、Node.js、Rust 或 WASM [安装 SDK](./installation)。
+2. 使用一个工具运行 [Hello Agent](./hello-agent)。
+3. 在 [API 选型](./run-agent-vs-runner) 中选择 `run_agent`、`run_fanout` 或 `RuntimeRunner`。
+4. 接入一个 [Provider](./providers)。
+5. 从 [Agent 能力指南](/guides/) 中添加 Agent 需要的能力。
 
-## 三种 API 层级
+## 选择入口
 
-| API | 场景 |
-|-----|------|
-| `run_agent()` | 单 prompt → 返回文本（90% 场景） |
-| `run_fanout()` | 并行 N 任务 + 合成 |
-| `RuntimeRunner` | 流式事件、信号、记忆、治理、工作流 |
+| API | 适合场景 |
+| --- | --- |
+| `run_agent()` | 一个目标，可选工具和最终文本。 |
+| `run_fanout()` | 多个专注任务并行执行后统一综合。 |
+| `RuntimeRunner` | 流式事件、Session、Memory、Signals、治理、工作流和自定义执行。 |
 
-源码：`python/deepstrike/runtime/facade.py`
+## 边做边学
+
+[Research Brief Studio 示例](https://github.com/kongusen/deepstrike/tree/main/example) 提供八级路径，从带来源的问答 Agent 逐步扩展到 Reactive 编辑团队。

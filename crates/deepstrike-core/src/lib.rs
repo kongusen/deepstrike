@@ -56,6 +56,11 @@ pub use runtime::{
     Primitive, category_for_kind, primitive_for_kind, rebuild_os_snapshot_from_events,
     reconstruct_messages_with_fallback,
 };
+pub use scheduler::cross_operation::{
+    CrossOperationMessage, CrossOperationRouter, CrossOperationRouterSnapshot, DeliveryFailure,
+    DeliverySettlement, DeliveryState, OperationAddress, OperationRegistration,
+    PayloadAvailability, PayloadLocator, RouteOutcome,
+};
 pub use scheduler::entropy::{EntropySample, EntropyTracker, EntropyWatchConfig};
 pub use scheduler::tcb::{BudgetLedger, TaskId, TaskLifecycle, TaskTable, Tcb, WaitReason};
 pub use syscall::{Disposition, Syscall};

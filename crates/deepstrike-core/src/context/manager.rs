@@ -1331,6 +1331,7 @@ mod tests {
                 call_id: format!("c{i}").into(),
                 output: "x".repeat(40),
                 is_error: false,
+                durable_content: None,
             }]);
             mgr.push_history(m, 40);
         }
@@ -1469,6 +1470,7 @@ mod tests {
             call_id: "call_1".into(),
             output: "the tool output".to_string(),
             is_error: false,
+            durable_content: None,
         }]);
         mgr.push_history(msg, 20);
         // A handle was indexed, anchored to the call_id, resident by default.
@@ -1489,6 +1491,7 @@ mod tests {
             call_id: call_id.into(),
             output: output.to_string(),
             is_error: false,
+            durable_content: None,
         }])
     }
 

@@ -53,7 +53,7 @@ export type MediaSource =
        * and are then valid only for the already-resolved current endpoint. */
       affinity?: { providerId: string; endpointId: string }
     }
-  | { kind: "object"; handle: string }
+  | { kind: "object"; handle: string; owner?: string; payloadRef?: string }
 
 export interface ContentBlockText { type: "text"; text: string }
 export interface ContentBlockImage { type: "image"; source: MediaSource; mediaType?: string; providerOptions?: Record<string, unknown> }

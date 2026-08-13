@@ -197,6 +197,63 @@ version = "0.0.1"
   assert.match(readText(repoRoot, "Cargo.toml"), /version = "0\.0\.1"/)
 })
 
+test("syncReleaseVersion supports an Agent-first README without a pinned Rust dependency example", () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), "deepstrike-version-agent-readme-"))
+  writeReleaseFixture(repoRoot, "1.2.3", "# DeepStrike\n\nBuild capable Agents.\n")
+
+  const result = syncReleaseVersion({ repoRoot })
+
+  assert.equal(result.version, "1.2.3")
+  assert.deepEqual(result.changedFiles, [])
+  assert.equal(readText(repoRoot, "README.md"), "# DeepStrike\n\nBuild capable Agents.\n")
+})
+
+function writeReleaseFixture(repoRoot, version, readme) {
+  writeFixture(repoRoot, "VERSION", `${version}\n`)
+  writeFixture(repoRoot, "Cargo.toml", `
+[workspace.package]
+version = "${version}"
+
+[workspace.dependencies]
+deepstrike-core = { path = "crates/deepstrike-core", version = "${version}" }
+deepstrike-tokenizer = { path = "crates/deepstrike-tokenizer", version = "${version}" }
+`)
+  writeFixture(repoRoot, "Cargo.lock", cargoLockFor(version))
+  writeFixture(repoRoot, "README.md", readme)
+  writeFixture(repoRoot, "python/pyproject.toml", `[project]\nversion = "${version}"\n`)
+  writeJson(repoRoot, "crates/deepstrike-node/package.json", {
+    name: "@deepstrike/core",
+    version,
+    optionalDependencies: {},
+  })
+  writeJson(repoRoot, "node/package.json", {
+    name: "@deepstrike/sdk",
+    version,
+    dependencies: { "@deepstrike/core": version },
+  })
+  writeJson(repoRoot, "node/package-lock.json", {
+    name: "@deepstrike/sdk",
+    version,
+    packages: { "": { version, dependencies: { "@deepstrike/core": version } } },
+  })
+  writeJson(repoRoot, "wasm/package.json", {
+    name: "@deepstrike/wasm",
+    version,
+    dependencies: { "@deepstrike/wasm-kernel": version },
+  })
+  writeJson(repoRoot, "wasm/package-lock.json", {
+    name: "@deepstrike/wasm",
+    version,
+    packages: { "": { version, dependencies: { "@deepstrike/wasm-kernel": version } } },
+  })
+}
+
+function cargoLockFor(version) {
+  return ["deepstrike-core", "deepstrike-node", "deepstrike-py", "deepstrike-sdk", "deepstrike-tokenizer", "deepstrike-wasm"]
+    .map(name => `[[package]]\nname = "${name}"\nversion = "${version}"`)
+    .join("\n\n")
+}
+
 function writeFixture(repoRoot, relativePath, content) {
   const path = join(repoRoot, relativePath)
   mkdirSync(dirname(path), { recursive: true })

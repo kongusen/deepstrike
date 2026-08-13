@@ -41,6 +41,12 @@
       },
       "scheduler": {
         "attempts": [],
+        "entropy": {
+          "disarmed": false,
+          "last_alert_turn": null,
+          "rollbacks_pending": 0,
+          "window": []
+        },
         "milestone": null,
         "queued_signals": [],
         "rounds_completed": 0,
@@ -176,8 +182,12 @@
           "resource_quota": {},
           "scheduler_policy": {
             "age_weight": 1000,
+            "budget_pressure_weight": 0,
             "critical_path_weight": 1000000,
+            "deadline_weight": 0,
             "fanout_weight": 10000,
+            "process_priority_weight": 0,
+            "resource_pressure_weight": 0,
             "token_cost_weight": 1
           },
           "signal_policy": {
@@ -195,7 +205,7 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:5646d52ecbb019ff38e91be1aa8e33000183198fdac45449446e942fcec3ee9d",
+    "state_digest": "sha256:20f77f79107771d3fb737c56da801f25e2719cedba0ba243518a26b4e05cf340",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"

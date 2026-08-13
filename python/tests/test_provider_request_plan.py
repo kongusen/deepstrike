@@ -46,8 +46,24 @@ def test_measurement_replay_usage_and_pricing_contracts_are_explicit():
   record = record_prompt_measurement(plan, input_tokens=42, source={"kind": "native", "provider": "openai"}, confidence="exact")
   assert measurement_for_plan(plan, record) == record
   assert measurement_for_plan(_plan(model_id="gpt-5"), record) is None
+  durable = {
+    "version": record.version,
+    "request_fingerprint": record.request_fingerprint,
+    "input_tokens": record.input_tokens,
+    "source": record.source,
+    "confidence": record.confidence,
+  }
+  assert measurement_for_plan(plan, durable) == record
   usage = normalize_provider_usage(ProviderUsage(120, 30, 20, 10, 6))
   assert usage.uncached_input_tokens == 90
   snapshot = PricingSnapshot("v1", "USD", "global", "2026-08-01T00:00:00Z", {"input": 2, "output": 8, "cache_read": 0.2, "cache_creation": 2.5}, "2026-09-01T00:00:00Z")
   assert price_provider_usage(usage, snapshot, "2026-08-13T00:00:00Z") == {"source": "snapshot", "currency": "USD", "amount": 0.000449, "pricing_version": "v1"}
   assert price_provider_usage(usage, snapshot, "2026-10-01T00:00:00Z") == {"source": "unpriced", "reason": "pricing_snapshot_expired"}
+
+
+def test_invalid_pricing_and_secret_shapes_fail_closed():
+  usage = normalize_provider_usage(ProviderUsage(1, 1))
+  invalid = PricingSnapshot("bad", "USD", "global", "2026-01-01T00:00:00Z", {"input": float("nan"), "output": 1})
+  assert price_provider_usage(usage, invalid, "2026-01-02T00:00:00Z")["source"] == "unpriced"
+  plan = _plan(options={"headers": {"Authorization": "Bearer secret"}, "accessToken": "secret", "temperature": 0.2})
+  assert "secret" not in str(plan)

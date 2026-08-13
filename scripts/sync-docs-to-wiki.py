@@ -136,14 +136,7 @@ SIDEBAR_ZH = """**[Home](Home)** · [English (En-Home)](En-Home)
 - [Getting-Started-Run-Agent-Vs-Runner](Getting-Started-Run-Agent-Vs-Runner)
 - [Getting-Started-Providers](Getting-Started-Providers)
 
-### 架构
-- [Architecture-Agent-Os](Architecture-Agent-Os)
-- [Architecture-Overview](Architecture-Overview)
-- [Architecture-Execution-Model](Architecture-Execution-Model)
-- [Architecture-Kernel-Abi](Architecture-Kernel-Abi)
-- [Architecture-Session-Replay](Architecture-Session-Replay)
-
-### 功能指南
+### Agent 能力
 - [Guides-Execution-Plane-And-Tools](Guides-Execution-Plane-And-Tools)
 - [Guides-Context-Engineering](Guides-Context-Engineering)
 - [Guides-Skills](Guides-Skills)
@@ -159,6 +152,13 @@ SIDEBAR_ZH = """**[Home](Home)** · [English (En-Home)](En-Home)
 - [Guides-Harness-And-Eval](Guides-Harness-And-Eval)
 - [Guides-Milestones](Guides-Milestones)
 
+### 教程课程
+- [Research Brief Studio](https://github.com/kongusen/deepstrike/tree/main/example)
+
+### Agent 如何运行
+- [Architecture-Execution-Model](Architecture-Execution-Model)
+- [Architecture-Session-Replay](Architecture-Session-Replay)
+
 ### 概念
 - [Concepts](Concepts)
 - [Concepts-Roles-And-Isolation](Concepts-Roles-And-Isolation)
@@ -169,6 +169,10 @@ SIDEBAR_ZH = """**[Home](Home)** · [English (En-Home)](En-Home)
 - [Reference-Runtime-Options](Reference-Runtime-Options)
 - [Reference-Workflow-Node-Spec](Reference-Workflow-Node-Spec)
 - [Reference-Python-Api](Reference-Python-Api)
+
+### 实现细节
+- [Architecture-Overview](Architecture-Overview)
+- [Architecture-Kernel-Abi](Architecture-Kernel-Abi)
 """
 
 SIDEBAR_EN = """
@@ -182,14 +186,7 @@ SIDEBAR_EN = """
 - [En-Getting-Started-Run-Agent-Vs-Runner](En-Getting-Started-Run-Agent-Vs-Runner)
 - [En-Getting-Started-Providers](En-Getting-Started-Providers)
 
-### Architecture
-- [En-Architecture-Agent-Os](En-Architecture-Agent-Os)
-- [En-Architecture-Overview](En-Architecture-Overview)
-- [En-Architecture-Execution-Model](En-Architecture-Execution-Model)
-- [En-Architecture-Kernel-Abi](En-Architecture-Kernel-Abi)
-- [En-Architecture-Session-Replay](En-Architecture-Session-Replay)
-
-### Guides
+### Agent Capabilities
 - [En-Guides-Execution-Plane-And-Tools](En-Guides-Execution-Plane-And-Tools)
 - [En-Guides-Context-Engineering](En-Guides-Context-Engineering)
 - [En-Guides-Skills](En-Guides-Skills)
@@ -205,6 +202,13 @@ SIDEBAR_EN = """
 - [En-Guides-Harness-And-Eval](En-Guides-Harness-And-Eval)
 - [En-Guides-Milestones](En-Guides-Milestones)
 
+### Tutorial Curriculum
+- [Research Brief Studio](https://github.com/kongusen/deepstrike/tree/main/example)
+
+### How Agents Run
+- [En-Architecture-Execution-Model](En-Architecture-Execution-Model)
+- [En-Architecture-Session-Replay](En-Architecture-Session-Replay)
+
 ### Concepts
 - [En-Concepts](En-Concepts)
 - [En-Concepts-Roles-And-Isolation](En-Concepts-Roles-And-Isolation)
@@ -215,6 +219,10 @@ SIDEBAR_EN = """
 - [En-Reference-Runtime-Options](En-Reference-Runtime-Options)
 - [En-Reference-Workflow-Node-Spec](En-Reference-Workflow-Node-Spec)
 - [En-Reference-Python-Api](En-Reference-Python-Api)
+
+### Implementation Details
+- [En-Architecture-Overview](En-Architecture-Overview)
+- [En-Architecture-Kernel-Abi](En-Architecture-Kernel-Abi)
 """
 
 

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "cases": [
+    { "protocol": "anthropic-messages", "modality": "image", "placement": "tool_result", "disposition": "native" },
+    { "protocol": "openai-responses", "modality": "file", "placement": "message", "disposition": "native" },
+    { "protocol": "openai-chat", "modality": "file", "placement": "tool_result", "disposition": "bridge" },
+    { "protocol": "gemini", "modality": "audio", "placement": "tool_result", "disposition": "bridge" },
+    { "protocol": "anthropic-messages", "modality": "video", "placement": "message", "disposition": "unsupported" },
+    { "protocol": "ollama-chat", "modality": "file", "placement": "message", "disposition": "unsupported" }
+  ]
+}

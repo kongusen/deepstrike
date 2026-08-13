@@ -47,6 +47,10 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
       fanout_weight=10_000,
       age_weight=1_000,
       token_cost_weight=1,
+      deadline_weight=7,
+      process_priority_weight=6,
+      resource_pressure_weight=5,
+      budget_pressure_weight=4,
     ),
     signal_policy=SignalPolicy(queue_max=8, ttl_ms=500, deadline_escalation=False),
     prompt_budget=PromptBudget(
@@ -86,6 +90,10 @@ async def test_runtime_options_resource_quota_emits_set_resource_quota(monkeypat
     "fanout_weight": 10_000,
     "age_weight": 1_000,
     "token_cost_weight": 1,
+    "deadline_weight": 7,
+    "process_priority_weight": 6,
+    "resource_pressure_weight": 5,
+    "budget_pressure_weight": 4,
   }
   assert "scheduler_max_wall_ms" not in signal_event["config"]
   assert not any(e["kind"] == "set_scheduler_budget" for e in captured)
@@ -124,6 +132,10 @@ def test_scheduler_policy_dict_rejects_camel_case_aliases():
       "fanoutWeight": 10_000,
       "ageWeight": 1_000,
       "tokenCostWeight": 1,
+      "deadline_weight": 0,
+      "process_priority_weight": 0,
+      "resource_pressure_weight": 0,
+      "budget_pressure_weight": 0,
     })
 
 
@@ -135,5 +147,9 @@ def test_scheduler_policy_dict_rejects_retired_wall_budget():
       "fanout_weight": 1,
       "age_weight": 1,
       "token_cost_weight": 1,
+      "deadline_weight": 0,
+      "process_priority_weight": 0,
+      "resource_pressure_weight": 0,
+      "budget_pressure_weight": 0,
       "max_wall_ms": 1234,
     })

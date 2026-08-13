@@ -199,6 +199,13 @@ function validateSourceAffinity(
   if (key && capabilities.mediaForms[key].state === "unsupported") {
     throw new ContentValidationError(`Unsupported media source ${source.kind} for ${modality} on ${resolved.identity.providerId}`)
   }
+  validateFileAffinity(source, resolved)
+}
+
+function validateFileAffinity(
+  source: MediaSource,
+  resolved: ResolvedProviderRuntime<unknown>,
+): void {
   if (source.kind === "fileId" && source.affinity) {
     if (
       source.affinity.providerId !== resolved.identity.providerId
@@ -280,7 +287,15 @@ function validateCanonicalMessage(
       if (block.type === "text") continue
       // Protocol policy is the stable user-visible reason for document/video refusal; a model
       // capability cannot make a protocol-level unsupported shape serializable.
-      requireContentDisposition(resolved.identity.protocol, block.type, placement)
+      const disposition = requireContentDisposition(resolved.identity.protocol, block.type, placement)
+      // Current bridge implementations exist only for document/video tool output: their
+      // serializers send the deterministic visible text projection instead of the source.
+      // Audio and message content retain their source-form checks because their wires have
+      // different native constraints and no generic text bridge carrier.
+      if (disposition === "bridge" && placement === "tool_result" && (block.type === "file" || block.type === "video")) {
+        validateFileAffinity(block.source, resolved)
+        continue
+      }
       assertSupported(block.type, resolved.effectiveCapabilities, resolved.identity.providerId)
       validateSourceAffinity(block.type, block.source, resolved.effectiveCapabilities, resolved)
     }

@@ -3,7 +3,7 @@
     "abi_version": 4,
     "base_record_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:a1cc7103d19159011a7dac73cb5714942d11349014bd96aa8d45cacd906a82c4",
+    "checkpoint_digest": "sha256:d2e25cdb12e35c689551c02c231092050c0d4548871a8ef4e8a32bcd5470590d",
     "checkpoint_version": 1,
     "covered_transaction_head_digest": "sha256:22dc2e6404475362e139e594e3486a24676dfe64609fca46511d4149ea9e7488",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
@@ -42,6 +42,12 @@
       },
       "scheduler": {
         "attempts": [],
+        "entropy": {
+          "disarmed": false,
+          "last_alert_turn": null,
+          "rollbacks_pending": 0,
+          "window": []
+        },
         "milestone": null,
         "queued_signals": [],
         "rounds_completed": 0,
@@ -177,8 +183,12 @@
           "resource_quota": {},
           "scheduler_policy": {
             "age_weight": 1000,
+            "budget_pressure_weight": 0,
             "critical_path_weight": 1000000,
+            "deadline_weight": 0,
             "fanout_weight": 10000,
+            "process_priority_weight": 0,
+            "resource_pressure_weight": 0,
             "token_cost_weight": 1
           },
           "signal_policy": {
@@ -196,7 +206,7 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:5646d52ecbb019ff38e91be1aa8e33000183198fdac45449446e942fcec3ee9d",
+    "state_digest": "sha256:20f77f79107771d3fb737c56da801f25e2719cedba0ba243518a26b4e05cf340",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"

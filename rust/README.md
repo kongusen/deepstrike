@@ -6,17 +6,18 @@
 
 # DeepStrike Rust SDK
 
-Runtime framework built on `deepstrike-core`. The kernel handles loop control, context compression, skill routing, governance, signal prioritization — the SDK handles all I/O.
+Build Rust Agents with providers, typed tools, durable sessions, Memory, Skills, Knowledge, governance, and bounded evaluation loops.
 
-> **Runtime API:** Use `RuntimeRunner` + `SessionLog` + `LocalExecutionPlane` (same model as Node/Python/WASM).
+Use `RuntimeRunner` when an Agent needs streaming events, durable session recovery, tool control, or host-provided integrations.
 
 ## Add to your project
 
 ```toml
 [dependencies]
-deepstrike-sdk = "0.1"
+deepstrike-sdk = "0.2"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+serde_json = "1"
 ```
 
 ---
@@ -26,14 +27,14 @@ futures = "0.3"
 ```rust
 use std::sync::Arc;
 use deepstrike_sdk::{
-    InMemorySessionLog, LocalExecutionPlane, OpenAIProvider,
-    RegisteredTool, ResourceQuota, RuntimeOptions, RuntimeRunner,
+    InMemorySessionLog, LocalExecutionPlane, MilestonePolicy,
+    OpenAIProvider, RegisteredTool, ResourceQuota, RuntimeOptions, RuntimeRunner,
 };
 
 #[tokio::main]
 async fn main() {
     let provider = OpenAIProvider::with_base_url("sk-...", "gpt-5-mini", "https://api.openai.com/v1");
-    let plane = LocalExecutionPlane::new();
+    let mut plane = LocalExecutionPlane::new();
     plane.register(RegisteredTool::text(
         "add", "Add two numbers.",
         serde_json::json!({"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"]}),
@@ -46,12 +47,17 @@ async fn main() {
         provider: Box::new(provider),
         execution_plane: Some(Box::new(plane)),
         session_log: Some(Arc::new(InMemorySessionLog::new())),
+        compression_store: None,
+        payload_store: None,
+        kernel_reliability: None,
         session_id: None,
         max_tokens: 32_000,
         max_turns: Some(10),
         timeout_ms: None,
         extensions: None,
         agent_id: None,
+        memory_scope: None,
+        pre_query_memory: None,
         system_prompt: None,
         initial_memory: vec![],
         skill_dir: None,
@@ -59,12 +65,31 @@ async fn main() {
         knowledge_source: None,
         signal_source: None,
         governance: None,
+        os_profile: None,
+        governance_policy: None,
+        signal_policy: None,
+        scheduler_policy: None,
         resource_quota: Some(ResourceQuota {
             max_concurrent_subagents: Some(4),
+            max_total_subagents: None,
             max_spawn_depth: Some(2),
             memory_writes_per_window: Some((20, 60_000)),
+            max_workflow_nodes: None,
         }),
+        memory_policy: None,
+        tokenizer: None,
+        enable_plan_tool: None,
         on_tool_suspend: None,
+        on_permission_request: None,
+        milestone_policy: MilestonePolicy::RequireVerifier,
+        milestone_contract: None,
+        run_spec: None,
+        allowed_tool_ids: None,
+        baseline_tool_ids: None,
+        tool_dispatch_gate: None,
+        on_turn_metrics: None,
+        stable_core_tool_ids: vec![],
+        on_milestone_evaluate: None,
     });
 
     // Same session_id → prior turns are replayed from SessionLog
@@ -121,13 +146,7 @@ Custom providers: implement the `LLMProvider` trait.
 | `turns[0]` | `task_state` + signals | Goal, plan, compression log, runtime signals |
 | `turns[1..N]` | history | Conversation — **sole compression target** |
 
-```rust
-RuntimeOptions {
-    system_prompt: Some("You are helpful.".into()),           // Slot 1
-    initial_memory: vec!["User prefers chartreuse.".into()], // Slot 2
-    // ...
-}
-```
+Set `system_prompt` for stable instructions and `initial_memory` for durable preloaded context in the complete `RuntimeOptions` value above.
 
 See [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-compression.md).
 
@@ -135,31 +154,10 @@ See [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-
 
 ## RuntimeOptions
 
-```rust
-RuntimeOptions {
-    provider: Box::new(provider),
-    execution_plane: Some(Box::new(plane)),
-    session_log: Some(Arc::new(InMemorySessionLog::new())),
-    max_tokens: 4096,
-    max_turns: Some(25),
-    timeout_ms: Some(60_000),
-    extensions: Some(json!({"temperature": 0.1})),
-    skill_dir: Some("./skills".into()),
-    knowledge_source: Some(Box::new(my_ks)),
-    signal_source: Some(Box::new(rx)),
-    memory_store: Some(Box::new(my_store)),
-    agent_id: Some("my-agent".into()),
-    initial_memory: vec![],     // preloaded blocks → Slot 2
-    governance: None,
-    resource_quota: Some(ResourceQuota {
-        max_concurrent_subagents: Some(4),
-        max_spawn_depth: Some(2),
-        memory_writes_per_window: Some((20, 60_000)),
-    }),
-    on_tool_suspend: None,
-    // ...
-}
-```
+The most frequently configured fields are `provider`, `execution_plane`, `session_log`,
+`max_tokens`, `max_turns`, `skill_dir`, `knowledge_source`, `memory_store`, `agent_id`,
+`resource_quota`, `memory_policy`, `governance`, and `signal_source`. Construct the complete
+`RuntimeOptions` value as in the quick start, then set the fields that fit your Agent.
 
 ---
 
@@ -183,13 +181,7 @@ gov.block_tool("bash");
 
 Set `skill_dir` — the kernel auto-injects a `skill` meta-tool, and the LLM loads skills by name on demand.
 
-```rust
-let runner = RuntimeRunner::new(RuntimeOptions {
-    skill_dir: Some("./skills".into()),
-    max_tokens: 4096,
-    /* provider, execution_plane, session_log, ... */
-});
-```
+Set `skill_dir: Some("./skills".into())` in the complete `RuntimeOptions` value. The Agent can then load Skills by name on demand.
 
 ---
 
@@ -206,6 +198,10 @@ struct VectorSearch;
 impl KnowledgeSource for VectorSearch {
     async fn retrieve(&self, query: &str, top_k: usize) -> deepstrike_sdk::Result<Vec<String>> {
         Ok(vector_db.search(query, top_k).await)
+    }
+
+    async fn init(&self) -> deepstrike_sdk::Result<()> {
+        Ok(())
     }
 }
 ```
@@ -276,24 +272,8 @@ pipeline.rate_limiter.set_limit("api", RateLimit { max_calls: 10, window_ms: 60_
 
 ## Signals
 
-```rust
-use deepstrike_sdk::{SignalGateway, ScheduledPrompt, RuntimeSignal};
-
-let gw = SignalGateway::new();
-let rx = gw.subscribe();
-
-gw.schedule(ScheduledPrompt::new("standup", target_ms));
-gw.ingest(RuntimeSignal { kind: "interrupt".into(), payload: json!({}), priority: 10 });
-
-let runner = RuntimeRunner::new(RuntimeOptions {
-    signal_source: Some(Box::new(rx)),
-    max_tokens: 4096,
-    /* ... */
-});
-
-runner.interrupt(); // direct interrupt
-gw.destroy();
-```
+Provide a `SignalSource` through `signal_source` in the complete `RuntimeOptions` value. Call
+`runner.interrupt()` when the application needs to stop the active run immediately.
 
 ---
 

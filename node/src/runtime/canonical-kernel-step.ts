@@ -723,7 +723,10 @@ function logicalRunSpec(raw: Record<string, unknown> | undefined, goal: string):
   }
 }
 
-function canonicalWorkflowSpec(raw: Record<string, unknown>): Record<string, unknown> {
+function canonicalWorkflowSpec(
+  raw: Record<string, unknown>,
+  allowHostSchedulingFactors = false,
+): Record<string, unknown> {
   const nodes = Array.isArray(raw.nodes) ? raw.nodes.map(asObject) : []
   const nodeIds = nodes.map((_node, index) => `wf-node${index}`)
   return {
@@ -742,6 +745,8 @@ function canonicalWorkflowSpec(raw: Record<string, unknown>): Record<string, unk
       if (node.token_budget !== undefined || node.tokenBudget !== undefined) unsupported.push("token_budget")
       if (node.max_turns !== undefined || node.maxTurns !== undefined) unsupported.push("max_turns")
       if (node.max_wall_ms !== undefined || node.maxWallMs !== undefined) unsupported.push("max_wall_ms")
+      const schedulingFactors = node.scheduling_factors ?? node.schedulingFactors
+      if (schedulingFactors !== undefined && !allowHostSchedulingFactors) unsupported.push("scheduling_factors")
       const inheritance = node.context_inheritance ?? node.contextInheritance
       if (unsupported.length > 0) {
         throw new CanonicalKernelRejectedError(JSON.stringify({
@@ -762,16 +767,20 @@ function canonicalWorkflowSpec(raw: Record<string, unknown>): Record<string, unk
         : []
       const modelHint = node.model_hint ?? node.modelHint
       const outputSchema = node.output_schema ?? node.outputSchema
+      const canonicalSchedulingFactors = schedulingFactors === undefined
+        ? undefined
+        : canonicalSchedulingFactorsForHost(schedulingFactors)
       const runSpec = logicalRunSpec({
         goal,
         ...(node.role ? { role: node.role } : {}),
         ...(node.isolation ? { isolation: node.isolation } : {}),
         ...(inheritance ? { context_inheritance: inheritance } : {}),
-        ...((modelHint !== undefined || outputSchema !== undefined)
+        ...((modelHint !== undefined || outputSchema !== undefined || canonicalSchedulingFactors !== undefined)
           ? {
               metadata: {
                 ...(modelHint !== undefined ? { model_hint: modelHint } : {}),
                 ...(outputSchema !== undefined ? { output_schema: outputSchema } : {}),
+                ...(canonicalSchedulingFactors !== undefined ? { scheduling_factors: canonicalSchedulingFactors } : {}),
               },
             }
           : {}),
@@ -788,6 +797,23 @@ function canonicalWorkflowSpec(raw: Record<string, unknown>): Record<string, unk
       }
     }),
   }
+}
+
+function canonicalSchedulingFactorsForHost(value: unknown): Record<string, number> {
+  const raw = asObject(value)
+  const allowed = new Set(["deadline_urgency", "process_priority", "resource_pressure", "budget_pressure"])
+  const unknown = Object.keys(raw).filter(key => !allowed.has(key))
+  if (unknown.length > 0) throw new TypeError(`unknown scheduling factor(s): ${unknown.join(", ")}`)
+  const factors: Record<string, number> = {}
+  for (const key of allowed) {
+    const factor = raw[key]
+    if (factor === undefined) continue
+    if (!Number.isSafeInteger(factor) || (factor as number) < 0) {
+      throw new RangeError(`scheduling_factors.${key} must be a non-negative safe integer`)
+    }
+    factors[key] = factor as number
+  }
+  return factors
 }
 
 function sha256(value: string): string {
@@ -957,7 +983,7 @@ export class CanonicalRunnerRuntime {
       kind: "start_operation",
       entry: {
         kind: "workflow",
-        spec: canonicalWorkflowSpec(specValue),
+        spec: canonicalWorkflowSpec(specValue, true),
       },
       initial_context: this.initialContext,
     })

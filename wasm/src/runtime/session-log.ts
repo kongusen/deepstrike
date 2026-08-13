@@ -4,6 +4,7 @@ import type { KernelPrimitive } from "./kernel-event-log.js"
 import { primitiveForKind } from "./kernel-event-log.js"
 import type { KernelJournal } from "./kernel-journal.js"
 import { InMemoryKernelJournal } from "./kernel-journal.js"
+import type { RecordedPromptMeasurement } from "../providers/request-plan.js"
 
 export type RollbackReason =
   | { kind: "fatal_tool_error"; tool_name: string; error: string }
@@ -16,8 +17,9 @@ export type RollbackReason =
 export type SessionEvent =
   | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: import("../types.js").ContentPart[] }
   | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay }
+  | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement }
   | { kind: "tool_requested"; turn: number; calls: ToolCall[] }
-  | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; is_fatal?: boolean; error_kind?: ToolErrorKind; token_count?: number }> }
+  | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; is_fatal?: boolean; error_kind?: ToolErrorKind; token_count?: number; content?: { schema_version: 1; blocks: Record<string, unknown>[] }; blocks?: Record<string, unknown>[] }> }
   | { kind: "tool_argument_repaired"; turn: number; tool: string; original_arguments: string; repaired_arguments: string }
   | { kind: "tool_denied"; turn: number; call_id: string; tool_name: string; reason: string }
   | { kind: "permission_requested"; turn: number; tool: string; arguments: string; reason?: string }

@@ -104,9 +104,9 @@ fn all_keys(value: &Value, out: &mut BTreeSet<String>) {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn kernel_abi_revision_is_three_and_checkpoint_revision_is_one() {
+fn kernel_abi_revision_is_three_and_checkpoint_revision_is_two() {
     assert_eq!(KERNEL_ABI_VERSION, 3);
-    assert_eq!(KERNEL_CHECKPOINT_VERSION, 1);
+    assert_eq!(KERNEL_CHECKPOINT_VERSION, 2);
 }
 
 #[test]

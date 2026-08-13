@@ -1,15 +1,15 @@
 # Sub-Agents & Collaboration
 
-Sub-agents and collaboration are the Agent OS **Process Isolation Plane**. They split one agent's work into multiple role-bound subprocesses with isolation boundaries and context inheritance policies, then use contracts / handoff to manage outputs.
+Sub-Agents let one Agent delegate a focused responsibility to another Agent. Roles, context inheritance, tool access, isolation, contracts, and handoffs make collaboration predictable instead of spawning anonymous model calls.
 
 **Source code:**
 - `python/deepstrike/types/agent.py` — `AgentRunSpec`
 - `python/deepstrike/collaboration/` — `AgentPool`, `ContractDrivenHarness`
-- Kernel: `crates/deepstrike-core/src/proc/`, `scheduler/state_machine/process.rs`
+- Runtime: `crates/deepstrike-core/src/proc/`, `scheduler/state_machine/process.rs`
 
 ---
 
-## Agent OS Positioning
+## What you can control for a child Agent
 
 | Responsibility | Description |
 |----------------|-------------|
@@ -19,7 +19,7 @@ Sub-agents and collaboration are the Agent OS **Process Isolation Plane**. They 
 | Capability boundary | `capability_filter` composes with Skills / Governance to control tool visibility |
 | Handoff boundary | Contracts and `HandoffArtifact` turn subprocess output into parent-consumable evidence |
 
-This layer makes "multi-agent" more than multiple LLM calls: it becomes a traceable, governable, recoverable process tree.
+This makes multi-Agent work traceable, bounded, and easy to compose with workflows and evaluations.
 
 ![Process Isolation & Sub-Agents Mechanisms](/collaboration_mechanisms.svg)
 
@@ -143,7 +143,7 @@ worktree_manager: Any = None  # isolation: "worktree" sub-agents run inside a gi
 
 ---
 
-## Kernel behavior
+## Runtime behavior
 
 - Sub-agent spawn is a kernel syscall gated by `ResourceQuota` and sandbox profile
 - Role defaults set isolation and context inheritance per spawn

@@ -1,24 +1,26 @@
 # 动态工作流
 
-动态工作流是 Agent OS 的 **Process Scheduler**。它把一个目标拆成可调度的 sub-agent 进程图，并让每次 spawn、append、branch、reduce 都经过 kernel 状态机和治理配额。
+动态工作流让 Agent 把大目标拆成一组专注任务。任务可以并行执行，把数据传给下游，根据分类选择分支，循环直到完成，最后交给 verifier 检查。
 
 **代码**：
-- Kernel：`crates/deepstrike-core/src/orchestration/`、`scheduler/state_machine/workflow.rs`
+- Runtime：`crates/deepstrike-core/src/orchestration/`、`scheduler/state_machine/workflow.rs`
 - SDK：`python/deepstrike/types/agent.py`、`runtime/workflow_control_flow.py`
 
 ---
 
-## 在 Agent OS 中的位置
+## 工作流能给 Agent 什么
 
-| 职责 | 说明 |
-|------|------|
-| 进程调度 | 每个 `WorkflowNodeSpec` 对应一个可隔离的 sub-agent run |
-| 依赖管理 | DAG 边决定 ready queue，未满足依赖的节点不会运行 |
-| 动态扩展 | `submit_workflow_nodes` / `start_workflow` 通过 syscall append 新节点 |
-| 控制流 | Loop / Classify / Tournament 改变活跃子图，而不是靠 prompt 约定 |
-| 治理 | `max_workflow_nodes`、spawn depth、role / isolation 都可被 kernel 拦截 |
+| 需求 | 工作流能力 |
+| --- | --- |
+| 并行研究 | 独立节点同时运行。 |
+| 有序交接 | `dependsOn` 把上游输出交给下游 Agent。 |
+| 条件分支 | `classify` 选择一个分支。 |
+| 迭代工作 | `loop` 在 `maxIters` 内重复任务。 |
+| 方案竞争 | `tournament` 生成并评判多个方案。 |
+| 可靠数据 | `outputSchema` 校验节点结果。 |
+| 无模型合并 | Reducer 不再调用模型，直接合并输出。 |
 
-所以 workflow 不是 SDK helper，而是 Agent OS 的进程编排层：host 提供 provider 与工具，kernel 保证图的可控增长和事件可恢复。
+工作流是一份可复用的 Agent 团队计划。应用提供 Provider 和工具，runtime 负责让依赖、限制和恢复过程保持明确。
 
 ![Dynamic Workflow Mechanisms](/workflow_mechanisms.svg)
 
@@ -146,7 +148,7 @@ Agent 可在 run 中调用 meta-tools：
 
 受 canonical `AppendWorkflowNodes` syscall 治理，`max_workflow_nodes` 配额防 runaway。
 
-Top-level agent 通过 `start_workflow` **auto-pivot**：bootstrap 新 kernel 驱动 workflow，完成后 resume 原 reason loop。
+Top-level agent 通过 `start_workflow` 自动切换到新 workflow，完成后恢复原有推理循环。
 
 ---
 

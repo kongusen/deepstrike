@@ -55,8 +55,15 @@ from .factories import deepseek, kimi, qwen, glm, minimax, gemini, ollama
 from .request_plan import (
     PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, PromptMeasurementRecord,
     create_provider_request_plan, measurement_for_plan, normalize_provider_usage,
-    price_provider_usage, record_prompt_measurement,
+    price_provider_usage, record_prompt_measurement, estimate_provider_prompt_tokens,
 )
+from .credentials import (
+    CredentialRequest, CredentialResolutionError, CredentialResolver, OAuthAccessToken,
+    OAuthCredentialResolver, ProviderCredential, redact_credential, resolve_credential,
+)
+from .model_catalog import DynamicModelCatalog, ModelCatalog, ModelCatalogSource, StaticModelCatalog
+from .capability_router import CapabilityRequirement, CapabilityRouteResult, CapabilityRouter, ProviderCandidate
+from .runtime_registry import create_provider_async
 
 __all__ = [
     "LLMProvider", "ContextBudgetOverflow", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
@@ -74,8 +81,13 @@ __all__ = [
     "StreamEvent", "TextDelta", "ThinkingDelta",
     "PricingSnapshot", "ProviderRequestEndpoint", "ProviderRequestPlan", "PromptMeasurementRecord",
     "create_provider_request_plan", "measurement_for_plan", "normalize_provider_usage",
-    "price_provider_usage", "record_prompt_measurement",
+    "price_provider_usage", "record_prompt_measurement", "estimate_provider_prompt_tokens",
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
     "PermissionRequestEvent", "PermissionResolvedEvent", "PermissionResponse",
     "ToolArgumentRepairedEvent",
+    "CredentialRequest", "CredentialResolutionError", "CredentialResolver", "OAuthAccessToken",
+    "OAuthCredentialResolver", "ProviderCredential", "redact_credential", "resolve_credential",
+    "DynamicModelCatalog", "ModelCatalog", "ModelCatalogSource", "StaticModelCatalog",
+    "CapabilityRequirement", "CapabilityRouteResult", "CapabilityRouter", "ProviderCandidate",
+    "create_provider_async",
 ]

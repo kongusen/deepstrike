@@ -40,7 +40,9 @@ pub struct BudgetGrant {
 /// Card spc_005-02 failure: which of the nine axes the request exceeded, and by how much.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum BudgetError {
-    #[error("budget dimension '{dimension}' insufficient: requested {requested}, remaining {remaining}")]
+    #[error(
+        "budget dimension '{dimension}' insufficient: requested {requested}, remaining {remaining}"
+    )]
     Insufficient {
         dimension: &'static str,
         requested: u64,
@@ -219,8 +221,13 @@ mod tests {
             turns: Some(3),
             ..ResourceBudget::default()
         };
-        let grant = reserve(TaskId::from("root"), TaskId::from("child"), &remaining, &requested)
-            .expect("request within headroom must be granted");
+        let grant = reserve(
+            TaskId::from("root"),
+            TaskId::from("child"),
+            &remaining,
+            &requested,
+        )
+        .expect("request within headroom must be granted");
         assert_eq!(grant.reserved, requested);
         assert_eq!(grant.consumed, ResourceBudget::default());
     }
@@ -235,8 +242,13 @@ mod tests {
             tokens: Some(1_000),
             ..ResourceBudget::default()
         };
-        let grant = reserve(TaskId::from("root"), TaskId::from("child"), &remaining, &requested)
-            .expect("a request exactly equal to remaining is allowed, not rejected");
+        let grant = reserve(
+            TaskId::from("root"),
+            TaskId::from("child"),
+            &remaining,
+            &requested,
+        )
+        .expect("a request exactly equal to remaining is allowed, not rejected");
         assert_eq!(grant.reserved.tokens, Some(1_000));
     }
 
@@ -252,8 +264,13 @@ mod tests {
             turns: Some(50), // exceeds remaining turns=10
             ..ResourceBudget::default()
         };
-        let err = reserve(TaskId::from("root"), TaskId::from("child"), &remaining, &requested)
-            .expect_err("a request exceeding one dimension must be denied");
+        let err = reserve(
+            TaskId::from("root"),
+            TaskId::from("child"),
+            &remaining,
+            &requested,
+        )
+        .expect_err("a request exceeding one dimension must be denied");
         assert_eq!(
             err,
             BudgetError::Insufficient {
@@ -271,8 +288,13 @@ mod tests {
             tokens: Some(1_000_000),
             ..ResourceBudget::default()
         };
-        let grant = reserve(TaskId::from("root"), TaskId::from("child"), &remaining, &requested)
-            .expect("an unset parent dimension must not block the request");
+        let grant = reserve(
+            TaskId::from("root"),
+            TaskId::from("child"),
+            &remaining,
+            &requested,
+        )
+        .expect("an unset parent dimension must not block the request");
         assert_eq!(grant.reserved.tokens, Some(1_000_000));
     }
 
@@ -325,9 +347,9 @@ mod tests {
             ..ResourceBudget::default()
         };
         let consumed = ResourceBudget {
-            tokens: Some(500),   // half used
-            turns: Some(10),     // fully used
-            wall_ms: Some(0),    // unused
+            tokens: Some(500), // half used
+            turns: Some(10),   // fully used
+            wall_ms: Some(0),  // unused
             ..ResourceBudget::default()
         };
         let grant = grant_with(reserved, consumed);

@@ -408,6 +408,7 @@ fn tool_result(
     deepstrike_core::types::message::ToolResult {
         call_id,
         output: deepstrike_core::types::message::Content::Text(output),
+        durable_content: None,
         is_error,
         is_fatal: false,
         error_kind: None,

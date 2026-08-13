@@ -1,58 +1,39 @@
-# L1 · Sourced Q&A assistant
+# L1 · Sourced Q&A Agent
 
-The smallest real agent — and the base every later level builds on.
+The smallest useful Agent: it searches a local source index, reads relevant material, and answers with citations.
 
-```
-question ──▶ [ RuntimeRunner ] ──search──▶ [ Execution Plane ] ──▶ studio tools
-                   │  ▲                          (kernel approves each call)
-                   │  └── tool results
-                   ▼
-              answer with citations          every turn appended to the Session Log
-```
+## What you learn
 
-## What you learn here
-
-| Mechanism | Where it shows up |
-|---|---|
-| **Tools + Execution Plane** | `search` / `read_source` registered on a `LocalExecutionPlane`; the kernel approves each call before the plane runs it — the agent's only way to touch the world. |
-| **Provider** | a real LLM drives the loop (`resolveProvider()` from env). |
-| **Session log / replay & recovery** | a `FileSessionLog` persists every turn; re-running the same `--session` id **resumes** the transcript instead of starting over. |
+| Capability | What to observe |
+| --- | --- |
+| Tools | The Agent chooses `search` and `read_source` instead of inventing facts. |
+| Provider | A real model drives the conversation and tool calls. |
+| Session | A named session keeps evidence so an interrupted answer can continue. |
 
 ## Run
 
-```sh
-# once: build the SDK the examples import, then link it + install tsx
+```bash
 npm run build --prefix ../node
 npm install
-
-# validate wiring without a key or a call
 npx tsx 01-sourced-qa/main.ts --dry-run
-
-# live (needs a provider key)
 ANTHROPIC_API_KEY=sk-ant-... npx tsx 01-sourced-qa/main.ts "How does prompt caching work? Cite sources."
 ```
 
 Python mirror:
 
-```sh
-cd ../python && pip install -e .
-ANTHROPIC_API_KEY=sk-ant-... python ../example/01-sourced-qa/main.py "How does prompt caching work?"
-python ../example/01-sourced-qa/main.py --dry-run
+```bash
+pip install -e ../python
+python 01-sourced-qa/main.py --dry-run
 ```
 
-## Try the recovery mechanism
+## Try resume
 
-```sh
-# start a named session, Ctrl-C partway through the answer
+```bash
 npx tsx 01-sourced-qa/main.ts --session demo "Explain agent memory with sources."
-# re-run the SAME command — it prints "↻ resuming …" and continues from the transcript
+# interrupt it, then run the same command again
 npx tsx 01-sourced-qa/main.ts --session demo "Explain agent memory with sources."
 ```
 
-The kernel detects a mid-run transcript and replays it — no special resume API, the session log **is** the recovery mechanism. (Sessions are written under `.sessions/`, git-ignored.)
+## Next
 
-## What's next
-
-**L2 · Memory** gives this same assistant a `MemoryStore`: it remembers sources and user
-preferences across sessions, deduped through the one governed write gate, and recalls them at
-run-start so the second question on a topic starts from what it already knew.
+[L2 adds durable memory](../02-memory-assistant/), so the Agent can recall useful facts in a later session.

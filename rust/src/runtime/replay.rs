@@ -172,6 +172,7 @@ mod tests {
                 results: vec![ToolResult {
                     call_id: call_id.clone(),
                     output: Content::Text("ok".into()),
+                    durable_content: None,
                     is_error: false,
                     is_fatal: false,
                     error_kind: None,

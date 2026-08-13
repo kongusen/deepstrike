@@ -172,23 +172,34 @@ def _preflight_tool_blocks(
       continue
     source = block.get("source") or {}
     if resolved is not None:
-      require_content_disposition(resolved.protocol, block["type"], "tool_result")
+      disposition = require_content_disposition(resolved.protocol, block["type"], "tool_result")
+      # Current bridge implementations project document/video tool output into visible text.
+      # Audio and message content retain source validation because they have no generic text
+      # bridge carrier across every protocol serializer.
+      if disposition == "bridge" and block["type"] in {"file", "video"}:
+        _validate_source_affinity(source, resolved)
+        continue
     _reject_unsupported_capability(resolved, block["type"], source.get("kind"))
-    affinity = source.get("affinity") if source.get("kind") == "fileId" else None
-    if affinity is not None:
-      if not isinstance(affinity, dict):
-        raise ContentValidationError("fileId affinity must be an object")
-      provider_id = affinity.get("providerId")
-      endpoint_id = affinity.get("endpointId")
-      if not isinstance(provider_id, str) or not isinstance(endpoint_id, str):
-        raise ContentValidationError("fileId affinity requires providerId and endpointId")
-      if resolved is not None and (
-        provider_id != resolved.provider_id or endpoint_id != resolved.endpoint_id
-      ):
-        raise ContentValidationError(
-          f"Provider file {source.get('id')} belongs to {provider_id}/{endpoint_id}, "
-          f"not {resolved.provider_id}/{resolved.endpoint_id}"
-        )
+    _validate_source_affinity(source, resolved)
+
+
+def _validate_source_affinity(source: dict, resolved: "ResolvedProviderRuntime | None") -> None:
+  affinity = source.get("affinity") if source.get("kind") == "fileId" else None
+  if affinity is None:
+    return
+  if not isinstance(affinity, dict):
+    raise ContentValidationError("fileId affinity must be an object")
+  provider_id = affinity.get("providerId")
+  endpoint_id = affinity.get("endpointId")
+  if not isinstance(provider_id, str) or not isinstance(endpoint_id, str):
+    raise ContentValidationError("fileId affinity requires providerId and endpointId")
+  if resolved is not None and (
+    provider_id != resolved.provider_id or endpoint_id != resolved.endpoint_id
+  ):
+    raise ContentValidationError(
+      f"Provider file {source.get('id')} belongs to {provider_id}/{endpoint_id}, "
+      f"not {resolved.provider_id}/{resolved.endpoint_id}"
+    )
 
 
 def validate_rendered_message(

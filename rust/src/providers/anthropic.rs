@@ -94,6 +94,7 @@ fn content_part_to_anthropic(part: &ContentPart) -> Result<Value> {
             call_id,
             output,
             is_error,
+            ..
         } => Ok(
             json!({ "type": "tool_result", "tool_use_id": call_id.as_str(), "content": output, "is_error": is_error }),
         ),
@@ -129,6 +130,7 @@ fn context_to_anthropic(
                             call_id,
                             output,
                             is_error,
+                            ..
                         } = part
                         {
                             Some(json!({
@@ -737,6 +739,7 @@ mod tests {
                     call_id: CompactString::new("call_1"),
                     output: "sunny".into(),
                     is_error: false,
+                    durable_content: None,
                 }]),
             ],
             state_turn: None,

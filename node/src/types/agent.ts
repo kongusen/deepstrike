@@ -322,6 +322,15 @@ export type NodeTrust = "trusted" | "quarantined"
 export type WorkflowDependencyPolicy = "all_success" | "accept_partial" | "all_terminal" | "optional"
 export type WorkflowNodeStatus = "completed" | "completed_partial" | "failed" | "skipped_upstream_failed"
 
+/** Host-observed, deterministic scheduling inputs for one workflow node. They never originate
+ * from model-authored workflow tools. */
+export interface SchedulingFactors {
+  deadlineUrgency?: number
+  processPriority?: number
+  resourcePressure?: number
+  budgetPressure?: number
+}
+
 export function workflowNodeStatusFromTermination(termination: TerminationReason | string): WorkflowNodeStatus {
   if (termination === "completed") return "completed"
   if (termination === "error" || termination === "user_abort") return "failed"
@@ -358,6 +367,8 @@ export interface WorkflowNodeSpec {
   maxTurns?: number
   /** O3: cap this node's child run at `maxWallMs` wall-clock milliseconds. */
   maxWallMs?: number
+  /** Host-only scheduling facts used with the configured deterministic scheduler policy. */
+  schedulingFactors?: SchedulingFactors
   /** Indices of nodes this node depends on. */
   dependsOn?: number[]
   /** How dependency terminal states gate this node. Defaults to `all_success`. */
@@ -546,6 +557,7 @@ function nodeKindToKernel(n: WorkflowNodeSpec): Record<string, unknown> | undefi
  *  whole spec) and `submit_workflow_nodes` (R3-1 runtime append) so the two encodings never drift. */
 export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, unknown> {
   const kind = nodeKindToKernel(n)
+  const schedulingFactors = schedulingFactorsToKernel(n.schedulingFactors)
   return {
     task: workflowTaskToKernel(n.task),
     role: n.role,
@@ -562,9 +574,33 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, un
     // O3: per-node turn / wall-clock caps (additive; omitted when unset).
     ...(n.maxTurns != null ? { max_turns: n.maxTurns } : {}),
     ...(n.maxWallMs != null ? { max_wall_ms: n.maxWallMs } : {}),
+    ...(schedulingFactors ? { scheduling_factors: schedulingFactors } : {}),
     ...(n.dependsOn && n.dependsOn.length ? { depends_on: n.dependsOn } : {}),
     dep_policy: n.depPolicy ?? "all_success",
   }
+}
+
+function schedulingFactorsToKernel(factors: SchedulingFactors | undefined): Record<string, number> | undefined {
+  if (factors === undefined) return undefined
+  const allowed = new Set(["deadlineUrgency", "processPriority", "resourcePressure", "budgetPressure"])
+  const unknown = Object.keys(factors).filter(key => !allowed.has(key))
+  if (unknown.length > 0) throw new TypeError(`unknown scheduling factor(s): ${unknown.join(", ")}`)
+  const out: Record<string, number> = {}
+  for (const [host, kernel] of Object.entries({
+    deadlineUrgency: "deadline_urgency",
+    processPriority: "process_priority",
+    resourcePressure: "resource_pressure",
+    budgetPressure: "budget_pressure",
+  })) {
+    const value = factors[host as keyof SchedulingFactors]
+    if (value !== undefined) {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new RangeError(`schedulingFactors.${host} must be a non-negative safe integer`)
+      }
+      out[kernel] = value
+    }
+  }
+  return out
 }
 
 /** Map a host `WorkflowSpec` to the canonical workflow-root JSON. */

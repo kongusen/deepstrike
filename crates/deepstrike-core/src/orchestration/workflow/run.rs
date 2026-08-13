@@ -339,11 +339,8 @@ impl WorkflowRun {
             .iter()
             .map(|node| node.scheduling_factors)
             .collect();
-        self.graph.configure_scheduling_with_factors(
-            self.scheduler_policy,
-            &token_costs,
-            &factors,
-        );
+        self.graph
+            .configure_scheduling_with_factors(self.scheduler_policy, &token_costs, &factors);
     }
 
     /// The agent id for a node's *current* spawn. For a `Spawn` node this is the stable

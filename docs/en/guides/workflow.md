@@ -1,24 +1,26 @@
 # Dynamic Workflows
 
-Dynamic workflows are the Agent OS **Process Scheduler**. They decompose a goal into schedulable sub-agent process graphs, and every spawn, append, branch, and reduce step passes through kernel state machines and governance quotas.
+Dynamic workflows let an Agent turn a large goal into a plan of focused Agent tasks. Tasks can run in parallel, pass data to dependents, branch on a classification, repeat until done, and finish with a verifier.
 
 **Source code:**
-- Kernel: `crates/deepstrike-core/src/orchestration/`, `scheduler/state_machine/workflow.rs`
+- Runtime: `crates/deepstrike-core/src/orchestration/`, `scheduler/state_machine/workflow.rs`
 - SDK: `python/deepstrike/types/agent.py`, `runtime/workflow_control_flow.py`
 
 ---
 
-## Agent OS Positioning
+## What a workflow gives your Agents
 
-| Responsibility | Description |
-|----------------|-------------|
-| Process scheduling | Each `WorkflowNodeSpec` maps to an isolatable sub-agent run |
-| Dependency management | DAG edges define the ready queue; blocked nodes do not run |
-| Dynamic growth | `submit_workflow_nodes` / `start_workflow` append nodes through syscalls |
-| Control flow | Loop / Classify / Tournament mutate the active subgraph instead of relying on prompt convention |
-| Governance | `max_workflow_nodes`, spawn depth, role, and isolation can be trapped by the kernel |
+| Need | Workflow feature |
+| --- | --- |
+| Parallel research | Independent nodes run at the same time. |
+| Ordered handoff | `dependsOn` passes upstream output to a later Agent. |
+| Conditional work | `classify` selects a branch. |
+| Iterative work | `loop` repeats a task up to `maxIters`. |
+| Competition | `tournament` generates and judges alternatives. |
+| Reliable data | `outputSchema` validates node results. |
+| Model-free merging | Reducers combine outputs without another model call. |
 
-A workflow is not just an SDK helper. It is the Agent OS orchestration layer: the host supplies providers and tools, while the kernel keeps graph growth controlled and recoverable.
+A workflow is a reusable plan for a team of Agents. The application supplies providers and tools, while the runtime keeps dependencies, limits, and recovery explicit.
 
 ![Dynamic Workflow Mechanisms](/workflow_mechanisms.svg)
 
@@ -154,7 +156,7 @@ Agents can call meta-tools during a run:
 
 Governed by the canonical `AppendWorkflowNodes` syscall; `max_workflow_nodes` quota prevents runaway growth.
 
-Top-level agents **auto-pivot** via `start_workflow`: bootstrap a new kernel-driven workflow, then resume the original reason loop when done.
+Top-level agents can use `start_workflow` to switch into a new workflow, then resume the original reasoning loop when it finishes.
 
 ### Reduce node (no LLM)
 
@@ -170,11 +172,11 @@ Register custom reducers: `RuntimeOptions(reducers={**builtin_reducers(), "my_me
 
 ---
 
-## Kernel behavior
+## Runtime behavior
 
 - Workflow driver spawns isolated sub-agents per node with role/isolation defaults
 - DAG edges gate readiness; control-flow nodes mutate the active subgraph
-- Syscall traps enforce node count and spawn depth quotas
+- Runtime checks enforce node-count and spawn-depth quotas
 
 ---
 

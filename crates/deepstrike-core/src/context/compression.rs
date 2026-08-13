@@ -322,6 +322,8 @@ impl Compressor for MicroCompactor {
                         call_id,
                         output,
                         is_error: _,
+                        durable_content,
+                        ..
                     } = part
                     {
                         if preserved_refs
@@ -356,6 +358,10 @@ impl Compressor for MicroCompactor {
                         };
 
                         *output = new_output;
+                        // The compact text is a new projection, not the original durable body.
+                        // Dropping the envelope prevents a checkpoint from claiming the complete
+                        // structured result survived an in-place compression.
+                        *durable_content = None;
                     }
                 }
                 let new_tokens = engine.count_message(msg);
@@ -687,6 +693,7 @@ mod tests {
             call_id: CompactString::new("c1"),
             output: "a".repeat(1200),
             is_error: false,
+            durable_content: None,
         }];
         let msg = Message {
             role: Role::Tool,
@@ -734,11 +741,13 @@ mod tests {
                     call_id: "c1".into(),
                     output: "a".repeat(1200),
                     is_error: false,
+                    durable_content: None,
                 },
                 ContentPart::ToolResult {
                     call_id: "c2".into(),
                     output: "b".repeat(1000),
                     is_error: false,
+                    durable_content: None,
                 },
             ]),
             tool_calls: vec![],
@@ -885,6 +894,7 @@ mod tests {
             call_id: CompactString::new("keep_me"),
             output: "a".repeat(1200),
             is_error: false,
+            durable_content: None,
         }];
         let msg = Message {
             role: Role::Tool,
@@ -965,6 +975,7 @@ mod tests {
                 call_id: "call-1".into(),
                 output: "ok".into(),
                 is_error: false,
+                durable_content: None,
             }]),
             Message::assistant("answer"),
             Message::user("next"),
@@ -999,6 +1010,7 @@ mod tests {
                 call_id: "call-1".into(),
                 output: "ok".into(),
                 is_error: false,
+                durable_content: None,
             }]),
             10,
         );
@@ -1087,6 +1099,7 @@ mod tests {
                 output: serde_json::json!({"rows": 42, "ok": true, "name": "alpha"}).to_string()
                     + &"-pad".repeat(400),
                 is_error: false,
+                durable_content: None,
             }]),
             tool_calls: vec![],
             token_count: Some(400),
@@ -1100,6 +1113,7 @@ mod tests {
                 call_id: CompactString::new("call_2"),
                 output: "y".repeat(1600),
                 is_error: false,
+                durable_content: None,
             }]),
             tool_calls: vec![],
             token_count: Some(400),
@@ -1300,6 +1314,7 @@ mod tests {
                                 call_id: id.clone().into(),
                                 output: "ok ".repeat(20),
                                 is_error: false,
+                                durable_content: None,
                             }]),
                             weight(rng),
                         ));
@@ -1311,6 +1326,7 @@ mod tests {
                             call_id: id.clone().into(),
                             output: "ok ".repeat(20),
                             is_error: false,
+                            durable_content: None,
                         })
                         .collect();
                     out.push((Message::tool(parts), weight(rng)));

@@ -1,6 +1,6 @@
-# Milestones
+# Phased Acceptance
 
-Milestones are the Agent OS **Acceptance State Machine**. They split long work into unlockable phases; each phase must produce evidence and pass a verifier before later phases or capabilities continue.
+Milestones let an Agent split long work into phases with acceptance evidence. Each phase produces a result and passes a verifier before later phases continue. They fit implementation, migration, and release work that cannot safely depend on one model call.
 
 **Source code:**
 - `crates/deepstrike-core/src/types/milestone.rs`
@@ -9,7 +9,7 @@ Milestones are the Agent OS **Acceptance State Machine**. They split long work i
 
 ---
 
-## Agent OS Positioning
+## How an Agent passes phased acceptance
 
 | Responsibility | Description |
 |----------------|-------------|
@@ -19,7 +19,7 @@ Milestones are the Agent OS **Acceptance State Machine**. They split long work i
 | Failure handling | Policy can require a verifier, terminate the run, or auto-pass in development |
 | Process collaboration | Often composes with sub-agents, contracts, and harnesses for phased delivery |
 
-A milestone is not checklist prose. It is a kernel-trackable acceptance state machine for long implementations, migrations, and releases that cannot complete in one step.
+A milestone is not checklist prose. It is runtime-tracked acceptance state for long implementations, migrations, and releases.
 
 ![Milestones Mechanisms](/milestones_mechanisms.svg)
 
@@ -91,7 +91,7 @@ milestone_check_pass("design")
 milestone_check_fail("impl", reason="Missing error handling")
 ```
 
-The kernel receives a `milestone_result` event and applies the phase retry policy. At `max_attempts`,
+The runtime receives a `milestone_result` event and applies the phase retry policy. At `max_attempts`,
 `terminate` ends immediately; `rollback` restores the phase transaction once and then ends with
 `milestone_exceeded`, rather than re-entering an already exhausted retry loop.
 
@@ -123,7 +123,7 @@ milestone_contract: MilestoneContract | None = None
 
 ---
 
-## Kernel behavior
+## Runtime behavior
 
 - `MilestoneTracker` tracks phase state per sub-agent run
 - Unlock dependencies form a DAG inside the agent; failed checks block downstream phases

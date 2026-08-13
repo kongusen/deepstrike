@@ -1,6 +1,6 @@
-# Provider 路由
+# 模型选择与 Provider 路由
 
-DeepStrike 支持多 provider、多协议、多模型的宿主侧路由。kernel 不知道 API key、endpoint 或模型对象；它只把 workflow node 的 `model_hint` 放进 spawn descriptor，SDK 用 `RuntimeOptions.provider_for` 解析到具体 provider。
+同一个 Agent 在不同任务阶段可能需要不同模型。DeepStrike 让应用按任务、角色或 `model_hint` 选择 Provider，同时保持 Agent 的工具、指令和 Session 不变。应用保管凭据、endpoint 与重试策略，Agent 只关心当前可用的模型能力。
 
 **代码入口**：
 
@@ -10,16 +10,16 @@ DeepStrike 支持多 provider、多协议、多模型的宿主侧路由。kernel
 - `python/deepstrike/runtime/sub_agent_orchestrator.py`
 - `python/deepstrike/runtime/provider_replay.py`
 
-## 在 Agent OS 中的位置
+## 它如何影响 Agent 的行为
 
 | 职责 | 说明 |
 |------|------|
-| 对 kernel | kernel 只携带 `model_hint`，不保存 API key、endpoint 或 provider object |
-| 对 host | `provider_for` 把 hint 解析成实际模型供应商和协议 |
-| 对 workflow | 不同 role / node 可以路由到不同模型能力或成本层 |
-| 对 replay | provider replay 记录协议相关输出，保证复现时不依赖真实网络 |
+| 模型选择 | `provider_for` 把 `model_hint` 解析成实际模型与协议 |
+| 工作流 | 不同 role 或 node 可以选择不同能力、时延或成本层 |
+| 迁移 | Agent 代码不需要因供应商切换而重写 |
+| 测试 | provider replay 可以重放协议相关输出，不依赖真实网络 |
 
-Provider 路由是 OS 的“驱动选择器”：调度层只表达需要什么能力，宿主决定用哪个厂商、协议和区域来满足。
+路由把模型选择留给应用，让 Agent 的职责随着 Provider 切换保持稳定。
 
 ![Provider Routing Mechanisms](/provider_routing_mechanisms.svg)
 
@@ -163,15 +163,15 @@ def provider_for(hint: str):
     return None
 ```
 
-## Kernel / Host 边界
+## 运行时与应用的职责
 
 | 行为 | 所属 |
 |------|------|
-| `model_hint` 字段携带 | kernel workflow descriptor |
+| `model_hint` 字段携带 | workflow descriptor |
 | hint 到 provider 的解析 | SDK `provider_for` |
 | API key / base_url / retry | provider instance |
 | provider replay compatibility | SDK provider descriptor |
-| token / turn budget | kernel scheduler + provider policy |
+| token / turn budget | runtime scheduler 与 provider policy |
 
 ## 验证入口
 

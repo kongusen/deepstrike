@@ -1,6 +1,6 @@
 # Provider 与流式事件
 
-SDK 通过 `LLMProvider` 抽象各厂商 API。Python 实现在 `python/deepstrike/providers/`。
+DeepStrike 让 Agent 可以切换不同模型 Provider，而不必改动工具、Memory 或工作流代码。Python 实现位于 `python/deepstrike/providers/`。
 
 ## 支持的 Provider
 
@@ -40,9 +40,9 @@ provider = AnthropicProvider(api_key=os.environ["ANTHROPIC_API_KEY"])
 | `DoneEvent` | run 完成 |
 | `ErrorEvent` | 错误 |
 
-## RenderedContext 与 Provider
+## Provider 如何影响 Agent
 
-Kernel 渲染四槽位上下文（`RenderedContext`），Provider 负责映射到各 API 格式：
+同一个 Agent Context 会被映射成不同 Provider 的原生请求格式：
 
 - **Anthropic**：`system_stable` + `system_knowledge` 双 block + cache breakpoint
 - **OpenAI**：合并为单一 `system_text`

@@ -1,6 +1,6 @@
 # 多模态输入
 
-DeepStrike 在文本之外还接受**图像和音频**输入。kernel 的内容模型是一个类型化的 content part 联合体，因此一个 user turn 可以把文本和图像、音频混合在一起；宿主再把每个 part 序列化成目标厂商所期望的形态。图像在每个 provider 上都受支持；音频只在厂商 API 接受它的地方受支持，其他地方会被拒绝（绝不会被静默丢弃）。
+DeepStrike 让 Agent 在同一次运行中处理**文本、图像和音频**。你把任务说明和附件一起传入，Provider 适配器会按目标模型要求编码内容。图像在每个 Provider 上都受支持。音频只有在目标 API 支持时才会发送，不支持时会明确报错，绝不会静默丢弃。
 
 **代码入口**：
 
@@ -9,14 +9,14 @@ DeepStrike 在文本之外还接受**图像和音频**输入。kernel 的内容�
 - `node/src/runtime/kernel-step.ts` — content-part ↔ kernel serde
 - `python/deepstrike/providers/base.py`、`python/deepstrike/runtime/kernel_step.py` — Python 对应实现
 
-## 在 Agent OS 中的位置
+## Agent 如何使用附件
 
 | 职责 | 说明 |
 |------|------|
-| 对 kernel | kernel 携带类型化的 content part 并计入它们的 token 权重；它绝不接触厂商的 wire format |
-| 对 host | provider 把每个 part 序列化成 vendor-native 块（Anthropic image block、OpenAI `image_url` / `input_audio`、Gemini `inlineData`） |
-| 对 pressure | 图像和音频会为 ρ 贡献真实的 token 权重，因此压缩看到的是它们的成本，而不是把它们当作免费 |
-| 对 replay | attachment 会持久化进 session log，并在恢复时还原，因此崩溃的多模态 run 能把图像找回来 |
+| 输入 | 一个 user turn 可以混合任务说明、图像与音频 |
+| 模型适配 | Provider 把每个 part 序列化成模型要求的内容块 |
+| Context 成本 | 图像与音频计入 token 权重，压缩能看见实际成本 |
+| 连续性 | attachment 会写入 Session 记录，恢复后的 Agent 仍能看到它 |
 
 ![贯穿 Context 压力、Provider 序列化与 Replay 的多模态输入机制](/multimodal_mechanisms.svg)
 
@@ -93,9 +93,9 @@ attachment 会持久化进 `run_started` 事件。在崩溃并恢复时，实时
 - **仅输入。** provider 序列化的是多模态*请求*；解析多模态*输出*（模型返回的图像）并未接入——assistant turn 是文本 + tool call。
 - **不支持 ⇒ 报错，不丢弃。** 把音频发给无法接受它的厂商会抛出 `UnsupportedModalityError`，让失败可见，而不是变成静默的 `[audio: …]` 占位符。
 
-## Kernel / Host 边界
+## 运行时与 SDK 的职责
 
-| Kernel (`deepstrike-core`) | Host SDK |
+| Runtime (`deepstrike-core`) | SDK |
 |----------------------------|----------|
 | 类型化 `Content::Parts`；token 加权；attachment 持久化 + 重建 | 厂商序列化；`run({ attachments })` 入口；base64 编码 |
 

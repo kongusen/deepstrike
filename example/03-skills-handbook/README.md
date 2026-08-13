@@ -1,51 +1,27 @@
-# L3 · Skills handbook + Knowledge
+# L3 · Skill-based Assistant
 
-L1's agent plus the **capability plane**: capabilities become addressable OS resources that load on
-demand and narrow the tool surface, and durable facts get pinned at the front of context.
+The Agent now has a small handbook of reusable skills. It loads the citation skill on demand, receives the relevant knowledge, and works with a task-specific tool set.
 
-```
-              ┌─ skill catalog (metadata only) ──▶ `skill` meta-tool in every turn
- skillDir ────┤
-              └─ skill("citation-style") ─▶ body loads as a tool result
-                                          └▶ toolset ← stableCore ∪ allowed_tools   (list_index hidden)
+## What you learn
 
- knowledgeSource ─run start─▶ retrieve(goal) ─▶ pinned into the knowledge slot (front of context)
-```
+| Capability | What to observe |
+| --- | --- |
+| Skill catalog | The Agent sees available skill summaries without loading every skill body. |
+| On-demand knowledge | `citation-style` is loaded only when the task calls for it. |
+| Focused tools | An active skill can narrow the tools exposed during its phase. |
 
-## What you learn here
-
-| Mechanism | Where it shows up |
-|---|---|
-| **Skill catalog** | `skillDir` scans `skills/*.md`; only each skill's frontmatter (name/description/`allowed_tools`) enters context. The body is **not** loaded until the model calls `skill(name)`. |
-| **Tool gating** | While `citation-style` is active the exposed toolset is `stableCore ∪ allowed_tools`. `stableCoreToolIds: ["search","read_source"]` always survive; `list_index` (neither core nor allowed) **disappears** — the model can't wander off-task mid-write. |
-| **Gating telemetry** | `onTurnMetrics` reports `toolsExposed` / `activeSkill` per turn. Watch `exposed` drop `6 → 5` the turn `skill=citation-style` appears. |
-| **Knowledge partition** | `knowledgeSource.retrieve()` runs once at run start; hits pin into the durable knowledge slot at the front of context — distinct from a skill body (model-loaded, gated, lease-swept) and from memory (recalled, decaying). |
-
-## The three knowledge lifetimes, side by side
-
-This level is where the distinction becomes concrete — all three carry "facts," but they live and die
-differently:
-
-| | loaded by | lives in | ends when |
-|---|---|---|---|
-| **Skill body** | the model (`skill(name)`) | knowledge slot, keyed `skill:<name>` | lease expires / `deactivateSkill` |
-| **Knowledge** | the host (`knowledgeSource`) | knowledge slot, pinned | run ends (re-retrieved next run) |
-| **Memory** (L2) | run-start recall | decaying history | evicted under pressure |
+The example skill lives in [`skills/citation-style.md`](./skills/citation-style.md).
 
 ## Run
 
-```sh
-npx tsx 03-skills-handbook/main.ts            # loads the skill, writes a cited brief
-npx tsx 03-skills-handbook/main.ts --dry-run  # wiring only
-../../python/.venv/bin/python 03-skills-handbook/main.py   # the Python mirror
+```bash
+npx tsx 03-skills-handbook/main.ts
+npx tsx 03-skills-handbook/main.ts --dry-run
+python 03-skills-handbook/main.py
 ```
 
-In the live run the agent loads `citation-style`, searches + reads the cache source, cites every
-claim through `format_citation`, and closes with a `Sources:` line — while `exposed` shows the
-surface narrowed to exactly the tools the task needs.
+The live run produces a cited brief and reports which tools were exposed before and after the skill loaded.
 
-## What's next
+## Next
 
-**L4 · Signals + Reactive** opens the agent to the outside world: a `SignalGateway` ingests external
-events (a webhook, a cron tick), and the host can `injectNote` mid-run — each drains at a turn
-boundary through the kernel's attention policy (queue / soft-interrupt / preempt).
+[L4 adds external signals](../04-reactive-desk/), allowing a running Agent to respond to a webhook, schedule, or host note.

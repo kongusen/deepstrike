@@ -6,7 +6,7 @@
 
 # DeepStrike WASM SDK
 
-Runtime framework built on a Rust kernel compiled to WebAssembly. Runs in browsers, Cloudflare Workers, Deno Deploy, and Vercel Edge — anywhere that supports `fetch` and WASM.
+Build browser and edge Agents with providers, typed tools, memory interfaces, Skills, governance, and durable session evidence. The WASM SDK runs wherever `fetch` and WebAssembly are available, including browsers, Cloudflare Workers, Deno Deploy, and Vercel Edge.
 
 ## Install
 

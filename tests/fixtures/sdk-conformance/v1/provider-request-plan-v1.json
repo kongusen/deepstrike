@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "provider-request-plan-v1",
+  "domain": "provider_request_plan",
+  "input": {
+    "fixture": "provider-request-plan/v1.json"
+  },
+  "expected": {
+    "contractVersion": 1,
+    "canonical": {
+      "fingerprint": "sha256:d91b9737b9a80295599b8f3804a0168c11de2f4ae1de608bfcac824cdf31b8d2"
+    }
+  }
+}

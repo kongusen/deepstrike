@@ -3,7 +3,7 @@ import type {
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
-  MemorySummarizer,
+  MemorySummarizer, RenderedContext,
 } from "../types.js"
 import type { ToolSuspendEvent } from "./execution-plane.js"
 import type { MemoryStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope, SessionData } from "../memory/index.js"
@@ -27,6 +27,7 @@ import {
 import type { KernelJournal } from "./kernel-journal.js"
 import { peekProviderReplay, seedProviderReplayFromEvents } from "./provider-replay.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
+import { decodeDurableContent, decodeDurableToolResult, durableBlocksToToolOutput, toolOutputBlocksToDurable } from "./durable-content.js"
 import { formatToolError } from "../tools/errors.js"
 import {
   buildLlmCompletedEvent,
@@ -79,6 +80,13 @@ import {
   normalizeContextPolicyV1,
   type ContextPolicyOverridesV1,
 } from "./context-policy.js"
+import {
+  createProviderRequestPlanForProvider,
+  estimateProviderPromptTokens,
+  measurementForPlan,
+  recordPromptMeasurement,
+  type RecordedPromptMeasurement,
+} from "../providers/request-plan.js"
 
 export interface MemoryWriteRateLimit {
   maxWrites: number
@@ -102,11 +110,16 @@ export interface SchedulerPolicy {
   fanoutWeight: number
   ageWeight: number
   tokenCostWeight: number
+  deadlineWeight?: number
+  processPriorityWeight?: number
+  resourcePressureWeight?: number
+  budgetPressureWeight?: number
 }
 
 export function schedulerPolicyToKernel(policy: SchedulerPolicy): Record<string, number> {
   const allowed = new Set([
     "version", "criticalPathWeight", "fanoutWeight", "ageWeight", "tokenCostWeight",
+    "deadlineWeight", "processPriorityWeight", "resourcePressureWeight", "budgetPressureWeight",
   ])
   const unknown = Object.keys(policy).filter(key => !allowed.has(key))
   if (unknown.length > 0) throw new TypeError(`unknown scheduler policy field(s): ${unknown.join(", ")}`)
@@ -116,6 +129,10 @@ export function schedulerPolicyToKernel(policy: SchedulerPolicy): Record<string,
     fanout_weight: policy.fanoutWeight,
     age_weight: policy.ageWeight,
     token_cost_weight: policy.tokenCostWeight,
+    ...(policy.deadlineWeight !== undefined ? { deadline_weight: policy.deadlineWeight } : {}),
+    ...(policy.processPriorityWeight !== undefined ? { process_priority_weight: policy.processPriorityWeight } : {}),
+    ...(policy.resourcePressureWeight !== undefined ? { resource_pressure_weight: policy.resourcePressureWeight } : {}),
+    ...(policy.budgetPressureWeight !== undefined ? { budget_pressure_weight: policy.budgetPressureWeight } : {}),
   }
 }
 
@@ -808,6 +825,12 @@ export class RuntimeRunner {
     const ext = { ...this.opts.extensions, ...(extensions ?? {}) }
     const providerState = this.opts.provider.createRunState?.()
     let nextCompressedArchiveStart = nextArchivedSeqStart(priorEvents)
+    const recordedMeasurements = new Map<string, RecordedPromptMeasurement>()
+    for (const entry of priorEvents ?? []) {
+      if (entry.event.kind === "prompt_measured") {
+        recordedMeasurements.set(entry.event.measurement.requestFingerprint, entry.event.measurement)
+      }
+    }
 
     const providerPolicy = (this.opts.provider as { runtimePolicy?: () => { maxTurns?: number; timeoutMs?: number } }).runtimePolicy?.() ?? {}
     const effectiveMaxTurns = this.opts.maxTurns ?? providerPolicy.maxTurns ?? 25
@@ -1035,6 +1058,43 @@ export class RuntimeRunner {
         let turnCacheCreationTokens = 0
         let turnCacheReadBySlot: { system?: number; tools?: number; messages?: number } | undefined
         let turnStopReason: string | undefined
+
+        const providerPlan = createProviderRequestPlanForProvider(this.opts.provider, context, tools, ext)
+        let promptMeasurement = measurementForPlan(providerPlan, recordedMeasurements.get(providerPlan.fingerprint))
+        if (!promptMeasurement && !context.budgetOverflow) {
+          try {
+            const counted = this.opts.provider.countTokens
+              ? await withTimeout(this.opts.provider.countTokens(context, tools, Object.keys(ext).length ? ext : undefined), 5_000)
+              : undefined
+            promptMeasurement = recordPromptMeasurement(providerPlan, counted ?? {
+              inputTokens: estimateProviderPromptTokens(context, tools),
+              source: { kind: "heuristic" },
+              confidence: "low_confidence",
+            })
+          } catch {
+            promptMeasurement = recordPromptMeasurement(providerPlan, {
+              inputTokens: estimateProviderPromptTokens(context, tools),
+              source: { kind: "heuristic" },
+              confidence: "low_confidence",
+            })
+          }
+          recordedMeasurements.set(providerPlan.fingerprint, promptMeasurement)
+          await this.opts.sessionLog.append(sessionId, { kind: "prompt_measured", turn: runtime.turn(), measurement: promptMeasurement })
+        }
+        const reservedPromptTokens = (this.opts.promptBudget?.promptOverheadTokens ?? 0)
+          + (this.opts.promptBudget?.outputReserveTokens ?? 0)
+          + (this.opts.promptBudget?.safetyMarginTokens ?? 0)
+        const measuredOverflow = promptMeasurement
+          && promptMeasurement.source.kind !== "heuristic"
+          && promptMeasurement.inputTokens + reservedPromptTokens > this.opts.maxTokens
+        if (context.budgetOverflow || measuredOverflow) {
+          action = await this.commitKernelAction(runtime, this.pendingObservations, {
+            kind: "provider_error", effect_id: providerEffectId,
+            message: "provider-visible prompt exceeds the configured context budget",
+            error_kind: "context_overflow", retryable: false,
+          })
+          continue
+        }
 
         const abortSignal = this.abortController?.signal
         try {
@@ -1392,6 +1452,7 @@ export class RuntimeRunner {
             output: r.output,
             is_error: r.isError,
             token_count: r.tokenCount,
+            ...(r.contentParts?.length ? { content: { schema_version: 1 as const, blocks: toolOutputBlocksToDurable(r.contentParts) as Record<string, unknown>[] } } : {}),
           })),
         })
         // Canonical provider-result reduction activates a successfully resolved `skill` call. The
@@ -2248,7 +2309,7 @@ function compressionAction(action?: string): Extract<SessionEvent, { kind: "comp
   return undefined
 }
 
-async function replayMessages(
+export async function replayMessages(
   events: Array<{ seq: number; event: SessionEvent }>,
   maxBytes?: number,
   archiveStore?: ArchiveStore,
@@ -2318,10 +2379,16 @@ async function replayMessages(
       })
     } else if (e.kind === "tool_completed") {
       for (const r of e.results) {
+        const durable = r.content !== undefined
+          ? decodeDurableToolResult({ schema_version: 1, call_id: r.call_id, is_error: r.is_error ?? false, blocks: decodeDurableContent(r.content).blocks })
+          : r.blocks !== undefined
+            ? decodeDurableToolResult({ schema_version: 1, call_id: r.call_id, is_error: r.is_error ?? false, blocks: decodeDurableContent({ schema_version: 1, blocks: r.blocks }).blocks })
+            : decodeDurableToolResult({ call_id: r.call_id, output: r.output, is_error: r.is_error ?? false })
         messages.push({
           role: "tool",
-          content: sanitizeReplayText(r.output, maxBytes),
+          content: "",
           toolCalls: [],
+          contentParts: [{ type: "tool_result", callId: durable.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: durable.is_error, ...(durable.blocks.length ? { contentParts: durableBlocksToToolOutput(durable.blocks) } : {}) }],
           tokenCount: r.token_count,
         })
       }
@@ -2350,6 +2417,18 @@ export async function collectText(stream: AsyncIterable<StreamEvent>): Promise<s
     if (evt.type === "text_delta") text += (evt as TextDelta).delta
   }
   return text
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error("provider token measurement timed out")), timeoutMs) }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
 /** Parse `update_plan` meta-tool args into a task update (snake_case aliases accepted, mirroring

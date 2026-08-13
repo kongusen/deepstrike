@@ -1288,6 +1288,7 @@ fn unexposed_tool_call_is_denied_while_exposed_sibling_executes() {
         results: vec![ToolResult {
             call_id: compact_str::CompactString::new("c1"),
             output: Content::Text("file contents".into()),
+            durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,
@@ -1335,6 +1336,7 @@ fn dispatch_denial_survives_a_sibling_approval_suspend() {
         results: vec![ToolResult {
             call_id: compact_str::CompactString::new("c2"),
             output: Content::Text("secret".into()),
+            durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,
@@ -1406,6 +1408,7 @@ fn dispatch_denial_is_not_resurrected_by_the_memory_continuation() {
         results: vec![ToolResult {
             call_id: compact_str::CompactString::new("c2"),
             output: Content::Text("recalled".into()),
+            durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,
@@ -1453,6 +1456,7 @@ fn governance_denial_is_not_resurrected_by_the_memory_continuation() {
         results: vec![ToolResult {
             call_id: compact_str::CompactString::new("c2"),
             output: Content::Text("recalled".into()),
+            durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,
@@ -2029,6 +2033,7 @@ fn tool_result_content_parts_preserved_as_json() {
         results: vec![ToolResult {
             call_id: CompactString::new("c1"),
             output: structured,
+            durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,
@@ -2397,7 +2402,7 @@ fn governance_deny_commits_error_result_without_rollback() {
         Content::Parts(parts) => parts.iter().any(|p| {
             matches!(
                 p,
-                ContentPart::ToolResult { call_id, output, is_error: true }
+                ContentPart::ToolResult { call_id, output, is_error: true, .. }
                     if call_id == "call_w" && output.contains("permission denied")
             )
         }),
@@ -2429,6 +2434,7 @@ fn governance_deny_executes_allowed_siblings() {
         results: vec![ToolResult {
             call_id: compact_str::CompactString::new("call_r"),
             output: Content::Text("file contents".into()),
+            durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,
@@ -2721,6 +2727,7 @@ fn budget_exceeded_observation_on_token_budget() {
         results: vec![ToolResult {
             call_id: compact_str::CompactString::new("c"),
             output: Content::Text("x".into()),
+            durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,
@@ -3000,6 +3007,7 @@ fn large_tool_result_continues_inline_without_a_host_persistence_effect() {
         results: vec![ToolResult {
             call_id: compact_str::CompactString::new("big"),
             output: Content::Text(huge.clone()),
+            durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,
@@ -3940,8 +3948,11 @@ fn spc_008_01_a_workflow_node_requesting_a_capability_the_root_does_not_hold_is_
         issuer: Principal("root".into()),
     };
     let spec = WorkflowSpec::new(vec![
-        WorkflowNode::new(RuntimeTask::new("do the privileged part"), AgentRole::Implement)
-            .with_requested_capabilities(vec![capability]),
+        WorkflowNode::new(
+            RuntimeTask::new("do the privileged part"),
+            AgentRole::Implement,
+        )
+        .with_requested_capabilities(vec![capability]),
         WorkflowNode::new(RuntimeTask::new("act on it"), AgentRole::Implement)
             .with_depends_on(vec![0]),
     ]);
@@ -3985,11 +3996,14 @@ fn spc_008_02_a_workflow_node_requesting_budget_beyond_the_roots_pool_is_denied(
     });
 
     let spec = WorkflowSpec::new(vec![
-        WorkflowNode::new(RuntimeTask::new("do the expensive part"), AgentRole::Implement)
-            .with_requested_budget(ResourceBudget {
-                tokens: Some(2_000),
-                ..ResourceBudget::default()
-            }),
+        WorkflowNode::new(
+            RuntimeTask::new("do the expensive part"),
+            AgentRole::Implement,
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(2_000),
+            ..ResourceBudget::default()
+        }),
         WorkflowNode::new(RuntimeTask::new("act on it"), AgentRole::Implement)
             .with_depends_on(vec![0]),
     ]);
@@ -4056,11 +4070,13 @@ fn spc_009_04_a_legitimate_narrowing_of_the_roots_capability_is_allowed_to_spawn
         delegatable: true,
         issuer: Principal("root".into()),
     };
-    let spec = WorkflowSpec::new(vec![WorkflowNode::new(
-        RuntimeTask::new("do the narrowed part"),
-        AgentRole::Implement,
-    )
-    .with_requested_capabilities(vec![narrowed_capability])]);
+    let spec = WorkflowSpec::new(vec![
+        WorkflowNode::new(
+            RuntimeTask::new("do the narrowed part"),
+            AgentRole::Implement,
+        )
+        .with_requested_capabilities(vec![narrowed_capability]),
+    ]);
     load_workflow_started(&mut sm, spec);
 
     assert!(
@@ -4096,14 +4112,16 @@ fn spc_009_05_root_child_budget_remaining_is_seeded_from_the_rungroup_admission_
     sm.start(RuntimeTask::new("do the budgeted task"));
     sm.take_observations();
 
-    let spec = WorkflowSpec::new(vec![WorkflowNode::new(
-        RuntimeTask::new("do the affordable part"),
-        AgentRole::Implement,
-    )
-    .with_requested_budget(ResourceBudget {
-        tokens: Some(400),
-        ..ResourceBudget::default()
-    })]);
+    let spec = WorkflowSpec::new(vec![
+        WorkflowNode::new(
+            RuntimeTask::new("do the affordable part"),
+            AgentRole::Implement,
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(400),
+            ..ResourceBudget::default()
+        }),
+    ]);
     load_workflow_started(&mut sm, spec);
 
     assert!(
@@ -4765,6 +4783,7 @@ fn fatal_tool_error_commits_as_visible_error_result() {
         results: vec![ToolResult {
             call_id: compact_str::CompactString::new("c1"),
             output: Content::Text("disk corrupt".into()),
+            durable_content: None,
             is_error: true,
             is_fatal: true,
             error_kind: Some(ToolErrorKind::Fatal),
@@ -4810,7 +4829,7 @@ fn tool_batch_timeout_commits_timeout_error_results() {
     let timeout_visible = sm.ctx.partitions.history.messages.iter().any(|m| {
         matches!(&m.content, Content::Parts(parts) if parts.iter().any(|p| matches!(
             p,
-            ContentPart::ToolResult { call_id, output, is_error: true }
+            ContentPart::ToolResult { call_id, output, is_error: true, .. }
                 if call_id == "c1" && output.contains("timed out")
         )))
     });
@@ -4910,6 +4929,7 @@ fn fuse_tool_result() -> ToolResult {
     ToolResult {
         call_id: compact_str::CompactString::new("c1"),
         output: Content::Text("unchanged".into()),
+        durable_content: None,
         is_error: false,
         is_fatal: false,
         error_kind: None,
@@ -5773,8 +5793,8 @@ fn cap_for_debt_test(resource: &str, actions: &[&str]) -> crate::types::capabili
 
 #[test]
 fn spc_004_debt_spawn_denies_capability_delegation_that_widens_scope() {
-    use crate::governance::pipeline::GovernancePipeline;
     use crate::governance::permission::PermissionAction;
+    use crate::governance::pipeline::GovernancePipeline;
     use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
 
     let mut sm = sm();
@@ -5810,8 +5830,8 @@ fn spc_004_debt_spawn_denies_capability_delegation_that_widens_scope() {
 
 #[test]
 fn spc_004_debt_spawn_allows_a_legal_capability_narrowing() {
-    use crate::governance::pipeline::GovernancePipeline;
     use crate::governance::permission::PermissionAction;
+    use crate::governance::pipeline::GovernancePipeline;
     use crate::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
 
     let mut sm = sm();
@@ -6223,19 +6243,31 @@ fn spc_005_06_three_layer_grant_invariant_operation_to_a_to_a1_a2() {
     let mut sm_operation = sm();
     sm_operation.start(RuntimeTask::new("operation"));
     sm_operation.take_observations();
-    sm_operation.tasks.get_mut("root").unwrap().child_budget_remaining = Some(ResourceBudget {
+    sm_operation
+        .tasks
+        .get_mut("root")
+        .unwrap()
+        .child_budget_remaining = Some(ResourceBudget {
         tokens: Some(100),
         ..ResourceBudget::default()
     });
     sm_operation.spawn_sub_agent(
-        AgentRunSpec::new(AgentIdentity::sub_agent("a", "a-sess"), AgentRole::Implement, "a")
-            .with_requested_budget(ResourceBudget {
-                tokens: Some(60),
-                ..ResourceBudget::default()
-            }),
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("a", "a-sess"),
+            AgentRole::Implement,
+            "a",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(60),
+            ..ResourceBudget::default()
+        }),
     );
     assert_eq!(
-        sm_operation.tasks.get("root").unwrap().child_budget_remaining,
+        sm_operation
+            .tasks
+            .get("root")
+            .unwrap()
+            .child_budget_remaining,
         Some(ResourceBudget {
             tokens: Some(40),
             ..ResourceBudget::default()
@@ -6262,18 +6294,26 @@ fn spc_005_06_three_layer_grant_invariant_operation_to_a_to_a1_a2() {
     });
 
     sm_a.spawn_sub_agent(
-        AgentRunSpec::new(AgentIdentity::sub_agent("a1", "a1-sess"), AgentRole::Implement, "a1")
-            .with_requested_budget(ResourceBudget {
-                tokens: Some(30),
-                ..ResourceBudget::default()
-            }),
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("a1", "a1-sess"),
+            AgentRole::Implement,
+            "a1",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(30),
+            ..ResourceBudget::default()
+        }),
     );
     sm_a.spawn_sub_agent(
-        AgentRunSpec::new(AgentIdentity::sub_agent("a2", "a2-sess"), AgentRole::Implement, "a2")
-            .with_requested_budget(ResourceBudget {
-                tokens: Some(30),
-                ..ResourceBudget::default()
-            }),
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("a2", "a2-sess"),
+            AgentRole::Implement,
+            "a2",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(30),
+            ..ResourceBudget::default()
+        }),
     );
     assert_eq!(
         sm_a.tasks.get("root").unwrap().child_budget_remaining,
@@ -6289,11 +6329,15 @@ fn spc_005_06_three_layer_grant_invariant_operation_to_a_to_a1_a2() {
     // more than the $60 it itself held — enforced above by construction (both spawns succeeded
     // and drove A's pool to exactly 0, never negative); a third grant now must be denied.
     let over_budget = sm_a.spawn_sub_agent(
-        AgentRunSpec::new(AgentIdentity::sub_agent("a3", "a3-sess"), AgentRole::Implement, "a3")
-            .with_requested_budget(ResourceBudget {
-                tokens: Some(1),
-                ..ResourceBudget::default()
-            }),
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("a3", "a3-sess"),
+            AgentRole::Implement,
+            "a3",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(1),
+            ..ResourceBudget::default()
+        }),
     );
     assert!(matches!(over_budget, LoopAction::AwaitingResume));
     assert_eq!(
@@ -6327,11 +6371,15 @@ fn spc_005_06_three_layer_grant_invariant_operation_to_a_to_a1_a2() {
 
     // And A can now grant that returned $10 onward, still never exceeding what it once held.
     let now_allowed = sm_a.spawn_sub_agent(
-        AgentRunSpec::new(AgentIdentity::sub_agent("a3", "a3-sess"), AgentRole::Implement, "a3")
-            .with_requested_budget(ResourceBudget {
-                tokens: Some(10),
-                ..ResourceBudget::default()
-            }),
+        AgentRunSpec::new(
+            AgentIdentity::sub_agent("a3", "a3-sess"),
+            AgentRole::Implement,
+            "a3",
+        )
+        .with_requested_budget(ResourceBudget {
+            tokens: Some(10),
+            ..ResourceBudget::default()
+        }),
     );
     assert!(matches!(now_allowed, LoopAction::AwaitingResume));
     assert_eq!(sm_a.task_table().children_of("root").len(), 3);

@@ -96,6 +96,13 @@ import {
   extractLoopContinue, extractClassifyBranch, extractJudgeWinner,
 } from "./workflow-control-flow.js"
 import { governancePolicyToKernelEvent, governanceFilterSchema, type GovernancePolicy } from "../governance.js"
+import {
+  createProviderRequestPlanForProvider,
+  estimateProviderPromptTokens,
+  measurementForPlan,
+  recordPromptMeasurement,
+  type RecordedPromptMeasurement,
+} from "../providers/request-plan.js"
 import { kernelObservationToSessionEvent } from "./kernel-event-log.js"
 import { assertNativeProfile, type NativeOsProfile, type OsProfileId, type SignalPolicy } from "./os-profile.js"
 import { PayloadStore } from "./payload-store.js"
@@ -109,6 +116,7 @@ import {
 } from "./context-policy.js"
 import { composeSystemPrompt, type InstructionProfile } from "../harness/manifest.js"
 import { attachToolOutputOverlay, normalizeToolResultContent } from "../providers/content-normalization.js"
+import { decodeDurableContent, decodeDurableToolResult, durableBlocksToToolOutput, toolOutputBlocksToDurable } from "./durable-content.js"
 import { providerErrorEventFields, providerErrorMessage } from "../providers/provider-error.js"
 import { NudgeEngine, type NudgeRule } from "../harness/nudge.js"
 
@@ -118,11 +126,16 @@ export interface SchedulerPolicy {
   fanoutWeight: number
   ageWeight: number
   tokenCostWeight: number
+  deadlineWeight?: number
+  processPriorityWeight?: number
+  resourcePressureWeight?: number
+  budgetPressureWeight?: number
 }
 
 export function schedulerPolicyToKernel(policy: SchedulerPolicy): Record<string, number> {
   const allowed = new Set([
     "version", "criticalPathWeight", "fanoutWeight", "ageWeight", "tokenCostWeight",
+    "deadlineWeight", "processPriorityWeight", "resourcePressureWeight", "budgetPressureWeight",
   ])
   const unknown = Object.keys(policy).filter(key => !allowed.has(key))
   if (unknown.length > 0) throw new TypeError(`unknown scheduler policy field(s): ${unknown.join(", ")}`)
@@ -132,6 +145,10 @@ export function schedulerPolicyToKernel(policy: SchedulerPolicy): Record<string,
     fanout_weight: policy.fanoutWeight,
     age_weight: policy.ageWeight,
     token_cost_weight: policy.tokenCostWeight,
+    ...(policy.deadlineWeight !== undefined ? { deadline_weight: policy.deadlineWeight } : {}),
+    ...(policy.processPriorityWeight !== undefined ? { process_priority_weight: policy.processPriorityWeight } : {}),
+    ...(policy.resourcePressureWeight !== undefined ? { resource_pressure_weight: policy.resourcePressureWeight } : {}),
+    ...(policy.budgetPressureWeight !== undefined ? { budget_pressure_weight: policy.budgetPressureWeight } : {}),
   }
 }
 
@@ -1954,6 +1971,12 @@ export class RuntimeRunner {
     // text projection; a wake (same or new Runner) therefore has identical semantics.
     const toolOutputOverlay = new Map<string, readonly ToolOutputBlock[]>()
     let nextCompressedArchiveStart = nextArchivedSeqStart(priorEvents)
+    const recordedMeasurements = new Map<string, RecordedPromptMeasurement>()
+    for (const entry of priorEvents ?? []) {
+      if (entry.event.kind === "prompt_measured") {
+        recordedMeasurements.set(entry.event.measurement.requestFingerprint, entry.event.measurement)
+      }
+    }
 
     const providerPolicy = this.opts.provider.runtimePolicy?.() ?? {}
     const effectiveMaxTurns = this.opts.maxTurns ?? providerPolicy.maxTurns ?? 25
@@ -2234,6 +2257,53 @@ export class RuntimeRunner {
         let turnCacheCreationTokens = 0
         let turnCacheReadBySlot: { system?: number; tools?: number; messages?: number } | undefined
         let turnStopReason: string | undefined
+
+        const providerPlan = createProviderRequestPlanForProvider(this.opts.provider, context, tools, ext)
+        const recorded = measurementForPlan(providerPlan, recordedMeasurements.get(providerPlan.fingerprint))
+        let promptMeasurement = recorded
+        if (!promptMeasurement && !context.budgetOverflow) {
+          try {
+            const count = this.opts.provider.countTokens
+              ? await withTimeout(this.opts.provider.countTokens(context, tools, Object.keys(ext).length ? ext : undefined), 5_000)
+              : undefined
+            promptMeasurement = recordPromptMeasurement(providerPlan, count ?? {
+              inputTokens: estimateProviderPromptTokens(context, tools),
+              source: { kind: "heuristic" },
+              confidence: "low_confidence",
+            })
+          } catch {
+            promptMeasurement = recordPromptMeasurement(providerPlan, {
+              inputTokens: estimateProviderPromptTokens(context, tools),
+              source: { kind: "heuristic" },
+              confidence: "low_confidence",
+            })
+          }
+          recordedMeasurements.set(providerPlan.fingerprint, promptMeasurement)
+          await this.opts.sessionLog.append(sessionId, {
+            kind: "prompt_measured",
+            turn: runtime.turn(),
+            measurement: promptMeasurement,
+          })
+        }
+        const reservedPromptTokens = (this.opts.promptBudget?.promptOverheadTokens ?? 0)
+          + (this.opts.promptBudget?.outputReserveTokens ?? 0)
+          + (this.opts.promptBudget?.safetyMarginTokens ?? 0)
+        // Heuristic and non-native counts are advisory: their purpose is to choose a better
+        // compaction path, not to turn a coarse byte estimate into a false context-overflow
+        // terminal. A trustworthy native/local-exact measurement can block the provider call.
+        const measuredOverflow = promptMeasurement
+          && promptMeasurement.source.kind !== "heuristic"
+          && promptMeasurement.inputTokens + reservedPromptTokens > this.opts.maxTokens
+        if (context.budgetOverflow || measuredOverflow) {
+          action = await this.commitKernelAction(runtime, this.pendingObservations, {
+            kind: "provider_error",
+            effect_id: providerEffectId,
+            message: "provider-visible prompt exceeds the configured context budget",
+            error_kind: "context_overflow",
+            retryable: false,
+          })
+          continue
+        }
 
         const abortSignal = this.abortController?.signal
         try {
@@ -2736,6 +2806,7 @@ export class RuntimeRunner {
             output: r.output,
             is_error: r.isError,
             token_count: r.tokenCount,
+            ...(r.contentParts?.length ? { content: { schema_version: 1 as const, blocks: toolOutputBlocksToDurable(r.contentParts) as Record<string, unknown>[] } } : {}),
           })),
         })
         // The canonical provider resolution already activates a successfully resolved `skill` call.
@@ -3397,11 +3468,16 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
       })
     } else if (e.kind === "tool_completed") {
       for (const r of e.results) {
+        const durable = r.content !== undefined
+          ? decodeDurableToolResult({ schema_version: 1, call_id: r.call_id, is_error: r.is_error ?? false, blocks: decodeDurableContent(r.content).blocks })
+          : r.blocks !== undefined
+            ? decodeDurableToolResult({ schema_version: 1, call_id: r.call_id, is_error: r.is_error ?? false, blocks: decodeDurableContent({ schema_version: 1, blocks: r.blocks }).blocks })
+            : decodeDurableToolResult({ call_id: r.call_id, output: r.output, is_error: r.is_error ?? false })
         messages.push({
           role: "tool",
           content: "",
           toolCalls: [],
-          contentParts: [{ type: "tool_result", callId: r.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: r.is_error ?? false }],
+          contentParts: [{ type: "tool_result", callId: durable.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: durable.is_error, ...(durable.blocks.length ? { contentParts: durableBlocksToToolOutput(durable.blocks) } : {}) }],
           tokenCount: r.token_count,
         })
       }
@@ -3496,11 +3572,16 @@ export async function replayMessagesAsync(
       })
     } else if (e.kind === "tool_completed") {
       for (const r of e.results) {
+        const durable = r.content !== undefined
+          ? decodeDurableToolResult({ schema_version: 1, call_id: r.call_id, is_error: r.is_error ?? false, blocks: decodeDurableContent(r.content).blocks })
+          : r.blocks !== undefined
+            ? decodeDurableToolResult({ schema_version: 1, call_id: r.call_id, is_error: r.is_error ?? false, blocks: decodeDurableContent({ schema_version: 1, blocks: r.blocks }).blocks })
+            : decodeDurableToolResult({ call_id: r.call_id, output: r.output, is_error: r.is_error ?? false })
         messages.push({
           role: "tool",
           content: "",
           toolCalls: [],
-          contentParts: [{ type: "tool_result", callId: r.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: r.is_error ?? false }],
+          contentParts: [{ type: "tool_result", callId: durable.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: durable.is_error, ...(durable.blocks.length ? { contentParts: durableBlocksToToolOutput(durable.blocks) } : {}) }],
           tokenCount: r.token_count,
         })
       }
@@ -3520,6 +3601,20 @@ function nextArchivedSeqStart(events?: Array<{ seq: number; event: SessionEvent 
     if (event.kind === "compressed") next = Math.max(next, event.archived_seq_range[1] + 1)
   }
   return next
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("provider token measurement timed out")), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
 }
 
 /** Collect all text_delta events from a run into a single string. */

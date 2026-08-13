@@ -1,6 +1,6 @@
-# Provider Routing
+# Model Choice & Provider Routing
 
-DeepStrike supports host-side routing across providers, protocols, and models. The kernel does not know API keys, endpoints, or provider objects. It only carries a workflow node's `model_hint` in the spawn descriptor; the SDK resolves it with `RuntimeOptions.provider_for`.
+DeepStrike lets each Agent or workflow node use the model that fits its job. Route by provider, protocol, capability, latency, or cost without changing the Agent's tools or instructions.
 
 **Code entry points**:
 
@@ -10,16 +10,16 @@ DeepStrike supports host-side routing across providers, protocols, and models. T
 - `python/deepstrike/runtime/sub_agent_orchestrator.py`
 - `python/deepstrike/runtime/provider_replay.py`
 
-## Agent OS Positioning
+## What routing can do for an Agent
 
-| Responsibility | Description |
-|----------------|-------------|
-| To the kernel | The kernel carries only `model_hint`; it does not store API keys, endpoints, or provider objects |
-| To the host | `provider_for` resolves hints into concrete model providers and protocols |
-| To workflows | Different roles / nodes can route to different capability or cost tiers |
-| To replay | Provider replay records protocol-shaped output so reproduction does not require live network calls |
+| Need | Routing behavior |
+| --- | --- |
+| Different model tiers | Send fast exploratory work to one model and verification to another. |
+| Vendor portability | Keep Agent code stable while changing provider adapters. |
+| Per-node choice | Route workflow roles or nodes independently. |
+| Testable runs | Replay recorded provider responses without live network calls. |
 
-Provider routing is the OS driver selector: the scheduler expresses the capability it needs, while the host decides which vendor, protocol, and region satisfies it.
+Provider routing keeps model choice an application decision while the Agent remains focused on its task.
 
 ![Provider Routing Mechanisms](/provider_routing_mechanisms.svg)
 
@@ -163,15 +163,15 @@ def provider_for(hint: str):
     return None
 ```
 
-## Kernel / Host Boundary
+## Runtime and Application Responsibilities
 
 | Behavior | Owner |
 |----------|-------|
-| carrying `model_hint` | kernel workflow descriptor |
+| carrying `model_hint` | workflow descriptor |
 | resolving hint to provider | SDK `provider_for` |
 | API key / base_url / retry | provider instance |
 | provider replay compatibility | SDK provider descriptor |
-| token / turn budget | kernel scheduler + provider policy |
+| token / turn budget | runtime scheduler + provider policy |
 
 ## Verification Entry Points
 

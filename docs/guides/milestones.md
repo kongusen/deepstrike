@@ -1,6 +1,6 @@
-# Milestones
+# 分阶段验收
 
-Milestone 是 Agent OS 的 **Acceptance State Machine**。它把长任务拆成可解锁的 phase，每个 phase 必须产出证据并通过 verifier，才允许后续能力或阶段继续。
+Milestone 让 Agent 把长任务拆成带验收证据的阶段。每个阶段产出结果并通过 verifier 后，后续阶段才会继续。它适合实现、迁移、发布等不能依赖一次模型调用完成的工作。
 
 **代码**：
 - `crates/deepstrike-core/src/types/milestone.rs`
@@ -9,7 +9,7 @@ Milestone 是 Agent OS 的 **Acceptance State Machine**。它把长任务拆成�
 
 ---
 
-## 在 Agent OS 中的位置
+## Agent 如何通过阶段验收
 
 | 职责 | 说明 |
 |------|------|
@@ -17,9 +17,9 @@ Milestone 是 Agent OS 的 **Acceptance State Machine**。它把长任务拆成�
 | 能力解锁 | `unlocks` 描述通过某阶段后开放的下一阶段或能力 |
 | 验收证据 | `required_evidence` 明确 verifier 需要看到什么 |
 | 失败处理 | policy 可要求 verifier、终止 run 或开发模式 auto-pass |
-| 进程协作 | 常与 sub-agent、contract、harness 组合，形成分阶段交付闭环 |
+| 进程协作 | 常与 sub-agent、contract、harness 组合，形成分阶段交付 |
 
-Milestone 不是 checklist 文案，而是 kernel 可跟踪的验收状态机，适合长实现、迁移、发布这类不能一次性完成的任务。
+Milestone 不是 checklist 文案，而是运行时可跟踪的验收状态，适合长实现、迁移和发布。
 
 ![Milestones Mechanisms](/milestones_mechanisms.svg)
 
@@ -91,7 +91,7 @@ milestone_check_pass("design")
 milestone_check_fail("impl", reason="Missing error handling")
 ```
 
-Kernel 收到 `milestone_result` event 后 unlock 或按 retry policy 处理。达到 `max_attempts` 时，
+运行时收到 `milestone_result` event 后 unlock 或按 retry policy 处理。达到 `max_attempts` 时，
 `terminate` 直接结束；`rollback` 回滚一次阶段事务后以 `milestone_exceeded` 结束，不会重新进入
 已经耗尽的重试循环。
 

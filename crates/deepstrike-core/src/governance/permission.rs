@@ -180,7 +180,10 @@ mod tests {
         let parent_caps = vec![cap("/repo/src/**", &["read"])];
         let requested_child_caps = vec![cap("/repo/src/utils/**", &["read"])];
 
-        assert!(pm.check_delegation(&requested_child_caps, &parent_caps).is_none());
+        assert!(
+            pm.check_delegation(&requested_child_caps, &parent_caps)
+                .is_none()
+        );
     }
 
     #[test]

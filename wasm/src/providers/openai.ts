@@ -1,4 +1,4 @@
-import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, Message } from "../types.js"
+import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, Message, ProviderDescriptor } from "../types.js"
 import { collectStreamMessage, toOpenAIMessages } from "./base.js"
 
 const DEEPSEEK_REASONERS = new Set(["deepseek-reasoner", "deepseek-r1"])
@@ -11,6 +11,28 @@ export class OpenAIProvider implements LLMProvider {
     protected readonly model = "gpt-4o",
     protected readonly baseUrl = "https://api.openai.com/v1",
   ) {}
+
+  protected providerId(): string { return "openai" }
+  protected endpointId(): string { return "openai.chat" }
+
+  descriptor(): ProviderDescriptor {
+    const reasoning = DEEPSEEK_REASONERS.has(this.model) || MINIMAX_REASONERS.has(this.model)
+    return {
+      provider: this.providerId(),
+      protocol: "openai-chat",
+      model: this.model,
+      reasoning: { supported: reasoning, preserveAcrossToolTurns: reasoning },
+      toolCalls: { supported: true, requiresStrictPairing: true },
+    }
+  }
+
+  requestPlanIdentity() {
+    return {
+      providerId: this.providerId(),
+      modelId: this.model,
+      endpoint: { id: this.endpointId(), protocol: "openai-chat" as const, baseURL: this.baseUrl },
+    }
+  }
 
   protected buildTools(tools: ToolSchema[]) {
     return tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: JSON.parse(t.parameters) } }))
@@ -101,6 +123,9 @@ export class QwenProvider extends OpenAIProvider {
     super(apiKey, model, "https://dashscope.aliyuncs.com/compatible-mode/v1")
   }
 
+  protected override providerId(): string { return "qwen" }
+  protected override endpointId(): string { return "qwen.dashscope" }
+
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const enableThinking = Boolean(extensions?.enableThinking)
     const thinkingBudget = extensions?.thinkingBudget as number | undefined
@@ -118,6 +143,9 @@ export class DeepSeekProvider extends OpenAIProvider {
     super(apiKey, model, "https://api.deepseek.com/v1")
   }
 
+  protected override providerId(): string { return "deepseek" }
+  protected override endpointId(): string { return "deepseek.openai" }
+
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const exposeReasoning = Boolean(extensions?.exposeReasoning)
     const isReasoner = DEEPSEEK_REASONERS.has(this.model)
@@ -132,6 +160,9 @@ export class MiniMaxProvider extends OpenAIProvider {
     super(apiKey, model, "https://api.minimax.chat/v1")
   }
 
+  protected override providerId(): string { return "minimax" }
+  protected override endpointId(): string { return "minimax.openai" }
+
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const exposeReasoning = Boolean(extensions?.exposeReasoning)
     const isReasoner = MINIMAX_REASONERS.has(this.model)
@@ -145,4 +176,7 @@ export class KimiProvider extends OpenAIProvider {
   constructor(apiKey: string, model = "moonshot-v1-8k") {
     super(apiKey, model, "https://api.moonshot.cn/v1")
   }
+
+  protected override providerId(): string { return "kimi" }
+  protected override endpointId(): string { return "kimi.openai" }
 }

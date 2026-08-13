@@ -1,24 +1,24 @@
 # Signals 与 Reactive Session
 
-Signals 是 Agent OS 的 **Attention / Signal Plane**。cron、webhook、用户 interrupt 和 peer 事件不会直接改写历史，而是进入 `state_turn`，由 runner 在下一轮把它们呈现给合适的 agent。
+Signals 让 Agent 响应当前 prompt 之外的世界。Webhook、调度、用户 interrupt 和 peer 事件都可以唤醒运行，或改变 Agent 下一步该做什么。
 
 **代码**：
 - `python/deepstrike/signals/gateway.py`
 - `python/deepstrike/runtime/reactive_session.py`
-- Kernel：`crates/deepstrike-core/src/signals/`
+- Runtime：`crates/deepstrike-core/src/signals/`
 
 ---
 
-## 在 Agent OS 中的位置
+## Signal 与 peer 组件
 
-| 组件 | OS 语义 |
-|------|---------|
-| `SignalGateway` | 外部事件队列，负责 schedule / ingest / recipient filter |
-| `state_turn` | 当前轮注意力输入，和长期 history 分离 |
-| `ReactiveSession` | 多 agent 共享黑板、SignalGateway 和 RunGroup 预算 |
-| `TurnPolicy` | 决定哪个 agent 对哪个事件响应 |
+| 组件 | Agent 行为 |
+| --- | --- |
+| `SignalGateway` | 接收调度 prompt 和 webhook 事件 |
+| `state_turn` | 展示新事件，不改写完整对话 |
+| `ReactiveSession` | 让多个 peer Agent 共享黑板并对事件作出反应 |
+| `TurnPolicy` | 选择哪个 Agent 响应 |
 
-Signal 面解决的是“外部世界如何打断或唤醒 agent”，ReactiveSession 解决的是“多个 agent 如何在同一个治理域中协作”。
+Signal 回答“外部世界如何唤醒 Agent”，ReactiveSession 回答“哪个 peer 应该响应，以及它能读到什么”。
 
 ![Signals & Reactive Mechanisms](/signals_mechanisms.svg)
 

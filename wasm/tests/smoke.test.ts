@@ -5,6 +5,7 @@ import { PermissionManager, PermissionMode } from "../src/safety/index.js"
 import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { OpenAIProvider, QwenProvider, DeepSeekProvider, MiniMaxProvider } from "../src/providers/openai.js"
 import { RuntimeRunner, collectText, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
+import { workflowNodeSpecToKernel } from "../src/runtime/types/agent.js"
 import { Governance } from "../src/governance.js"
 import type { LLMProvider, Message, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import { kernelEvents, SignalRouter } from "@deepstrike/wasm-kernel"
@@ -17,6 +18,20 @@ describe("SignalRouter lifecycle ABI", () => {
     expect(router.ingest(signal, "ready")).toBe("run")
     expect(router.ingest(signal, "running")).toBe("interrupt_now")
     expect(() => router.ingest(signal, true as never)).toThrow("invalid task lifecycle")
+  })
+})
+
+describe("workflow scheduling factors", () => {
+  it("lowers host-only factors and rejects unsafe values", () => {
+    expect(workflowNodeSpecToKernel({
+      task: "ship", role: "implement",
+      schedulingFactors: { deadlineUrgency: 4, processPriority: 3, resourcePressure: 2, budgetPressure: 1 },
+    })).toMatchObject({
+      scheduling_factors: { deadline_urgency: 4, process_priority: 3, resource_pressure: 2, budget_pressure: 1 },
+    })
+    expect(() => workflowNodeSpecToKernel({
+      task: "ship", role: "implement", schedulingFactors: { processPriority: -1 },
+    })).toThrow(/non-negative safe integer/)
   })
 })
 
@@ -212,6 +227,10 @@ describe("RuntimeRunner", () => {
         fanoutWeight: 10_000,
         ageWeight: 1_000,
         tokenCostWeight: 1,
+        deadlineWeight: 7,
+        processPriorityWeight: 6,
+        resourcePressureWeight: 5,
+        budgetPressureWeight: 4,
       },
       signalPolicy: { queueMax: 8, ttlMs: 500, deadlineEscalation: false },
       promptBudget: {
@@ -246,6 +265,10 @@ describe("RuntimeRunner", () => {
       fanout_weight: 10_000,
       age_weight: 1_000,
       token_cost_weight: 1,
+      deadline_weight: 7,
+      process_priority_weight: 6,
+      resource_pressure_weight: 5,
+      budget_pressure_weight: 4,
     })
     expect(configure!.config).not.toHaveProperty("scheduler_max_wall_ms")
     expect(configure!.config.signal_policy).toEqual({

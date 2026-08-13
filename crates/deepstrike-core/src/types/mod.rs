@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod capability;
 pub mod contract;
+pub mod durable_content;
 pub mod error;
 pub mod message;
 pub mod milestone;

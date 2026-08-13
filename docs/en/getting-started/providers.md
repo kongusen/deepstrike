@@ -1,6 +1,6 @@
 # Providers and Streaming Events
 
-The SDK abstracts vendor APIs through `LLMProvider`. Python implementations live in `python/deepstrike/providers/`.
+DeepStrike lets an Agent use different model providers without changing its tools, memory, or workflow code. Python implementations live in `python/deepstrike/providers/`.
 
 ## Supported Providers
 
@@ -40,9 +40,9 @@ provider = AnthropicProvider(api_key=os.environ["ANTHROPIC_API_KEY"])
 | `DoneEvent` | Run completed |
 | `ErrorEvent` | Error |
 
-## RenderedContext and Providers
+## How providers affect an Agent
 
-The kernel renders four-slot context (`RenderedContext`); each provider maps it to its API format:
+The same Agent context is mapped to each provider's native request format:
 
 - **Anthropic**: dual `system_stable` + `system_knowledge` blocks + cache breakpoint
 - **OpenAI**: merged into a single `system_text`

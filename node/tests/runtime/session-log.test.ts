@@ -88,6 +88,33 @@ describe("FileSessionLog", () => {
     expect((await log.read("s1")).map(entry => entry.seq)).toEqual(seqs)
   })
 
+  it("round-trips a durable prompt measurement through JSON", async () => {
+    const log = new FileSessionLog(dir)
+    await log.append("s1", {
+      kind: "prompt_measured",
+      turn: 1,
+      measurement: {
+        version: 1,
+        requestFingerprint: "sha256:measurement",
+        inputTokens: 42,
+        source: { kind: "heuristic" },
+        confidence: "low_confidence",
+      },
+    })
+
+    expect((await new FileSessionLog(dir).read("s1"))[0].event).toEqual({
+      kind: "prompt_measured",
+      turn: 1,
+      measurement: {
+        version: 1,
+        requestFingerprint: "sha256:measurement",
+        inputTokens: 42,
+        source: { kind: "heuristic" },
+        confidence: "low_confidence",
+      },
+    })
+  })
+
   it("returns an empty projection for a missing session", async () => {
     const log = new FileSessionLog(dir)
     expect(await log.read("missing")).toEqual([])

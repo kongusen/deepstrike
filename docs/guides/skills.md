@@ -1,30 +1,30 @@
 # Skill
 
-Skill 是 Agent OS 的 **Capability Plane**。它把“能力说明”从默认上下文中移出去，只在 agent 明确需要时通过 meta-tool 加载，并在加载后收窄工具暴露面。
+Skill 是可复用的指令、Knowledge 和可选工具集合。Agent 只有在当前任务需要时才加载对应的工作方式。
 
 **代码**：
-- Kernel：`crates/deepstrike-core/src/context/skill_catalog.rs`
+- Runtime：`crates/deepstrike-core/src/context/skill_catalog.rs`
 - SDK：`python/deepstrike/skills/registry.py`
 
 ---
 
-## 在 Agent OS 中的位置
+## Skill 会改变什么
 
-| 职责 | 说明 |
-|------|------|
-| 对 Context VM | 只把 skill metadata 放进 stable context，正文按需进入 knowledge / tool result |
-| 对工具面 | `allowed_tools` 缩小可见工具集合，降低误调用概率 |
-| 对治理面 | Skill gating 发生在 schema 暴露前，可与 Governance 叠加 |
-| 对长任务 | 让不同阶段加载不同能力，而不是一次性塞满 system prompt |
+| 好处 | 行为 |
+| --- | --- |
+| 更小的默认 prompt | 加载前只看到 Skill 摘要。 |
+| 专业指令 | 加载后正文成为当前任务的 Context。 |
+| 专注工具集 | `allowed_tools` 可以收窄这一阶段可见的工具。 |
+| 分阶段工作 | 任务变化时可以加载和释放不同 Skill。 |
 
-Skill 的核心价值不是“多一份 Markdown”，而是让能力成为可寻址、可审计、可门控的 OS 资源。
+Skill 的核心价值不是“多一份 Markdown”，而是让能力成为可复用的工作边界，帮助 Agent 保持专注。
 
 ![Skills Mechanisms](/skills_mechanisms.svg)
 
 ## 概念
 
 1. `SkillRegistry.scan()` 扫描 `*.md`，解析 YAML frontmatter → `SkillMetadata`
-2. Kernel 注入 `skill` meta-tool，description 嵌入 `<available_skills>` XML
+2. Agent 看到可用 Skill 摘要，可以按名称请求 Skill
 3. Agent 调用 `skill(name="...")` → SDK 读文件正文 → 作为 tool result 返回
 4. 加载后进入 `active_skills`，按 `allowed_tools` **收窄** 暴露的工具集
 
@@ -74,7 +74,7 @@ RuntimeOptions(
 )
 ```
 
-对应内核 `ContextManager.stable_core_tools`。
+对应 runtime `ContextManager.stable_core_tools`。
 
 ---
 
@@ -121,11 +121,11 @@ runner.deactivate_skill("code-review")     # 或宿主显式卸载
 
 ---
 
-## 内核行为
+## 运行时行为
 
 - Catalog **不存正文** — 仅 `build_tool_schema()` 生成 meta-tool
 - `active_skills` 是 `BTreeMap<name, Option<expires_at_turn>>`（多 skill 并存时 union tools；K3 起支持卸载/租约，见 Level 4）
-- Skill 正文加载成功后额外钉入 knowledge 分区（键 `skill:<name>`，内核 upsert 跨 wake 去重）
+- Skill 正文加载成功后额外钉入 knowledge 分区（键 `skill:<name>`，runtime upsert 跨 wake 去重）
 - Skill 是 meta-tool，不计入 `recent_actions` progress log
 
 ---
@@ -133,4 +133,4 @@ runner.deactivate_skill("code-review")     # 或宿主显式卸载
 ## 延伸阅读
 
 - [Context 工程](./context-engineering)
-- Cursor Agent Skills 类似模式；DeepStrike 在内核层门控工具
+- Cursor Agent Skills 类似模式；DeepStrike 在运行时门控工具

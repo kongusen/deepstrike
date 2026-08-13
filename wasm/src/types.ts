@@ -18,6 +18,15 @@ export interface ContentPart {
   isError?: boolean
 }
 
+export type MediaSource =
+  | { kind: "url"; url: string }
+  | { kind: "base64"; data: string }
+  | { kind: "fileId"; id: string; affinity?: { providerId: string; endpointId: string } }
+  | { kind: "object"; handle: string; owner?: string; payloadRef?: string }
+export type ToolOutputBlock =
+  | { type: "text"; text: string }
+  | { type: "image" | "audio" | "video" | "file"; source: MediaSource; mediaType?: string; providerOptions?: Record<string, unknown> }
+
 export interface Message {
   role: "system" | "user" | "assistant" | "tool"
   content: string
@@ -49,6 +58,7 @@ export interface ToolResult {
   isFatal?: boolean
   errorKind?: ToolErrorKind
   tokenCount?: number
+  contentParts?: ToolOutputBlock[]
 }
 
 export interface ToolSchema {
@@ -83,7 +93,7 @@ export interface TextDelta extends StreamEvent { type: "text_delta"; delta: stri
 export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number }; /** Provider stop reason — `max_tokens` (Anthropic) / `length` (OpenAI) flag an output-cap truncation driving the kernel's max-output-tokens recovery. */ stopReason?: string }
 export interface ThinkingDelta extends StreamEvent { type: "thinking_delta"; delta: string }
 export interface ToolCallEvent extends StreamEvent { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }
-export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean; isFatal?: boolean; errorKind?: ToolErrorKind }
+export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean; isFatal?: boolean; errorKind?: ToolErrorKind; contentParts?: ToolOutputBlock[] }
 /** R3-1: a workflow node's agent called `submit_workflow_nodes`; the runner surfaces the requested nodes (the workflow lives in the parent kernel) and `runWorkflow` sends them to the parent kernel. */
 export interface WorkflowNodesSubmittedEvent extends StreamEvent { type: "workflow_nodes_submitted"; nodes: WorkflowNodeSpec[] }
 export interface DoneEvent extends StreamEvent { type: "done"; iterations: number; totalTokens: number; status: string; /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */ paceDecision?: import("./runtime/kernel-step.js").PaceDecision }
@@ -193,6 +203,17 @@ export interface ProviderDescriptor {
   }
 }
 
+export type MeasurementSource =
+  | { kind: "native"; provider: string }
+  | { kind: "local_exact"; tokenizer: string }
+  | { kind: "heuristic" }
+export type MeasurementConfidence = "exact" | "high_confidence" | "low_confidence"
+export interface PromptMeasurement {
+  inputTokens: number
+  source: MeasurementSource
+  confidence: MeasurementConfidence
+}
+
 export interface ProviderReplay {
   schema_version?: 1 | 2
   provider?: string
@@ -209,8 +230,14 @@ export interface LLMProvider {
   createRunState?(): ProviderRunState
   runtimePolicy?(): { maxTurns?: number; timeoutMs?: number }
   descriptor?(): ProviderDescriptor
+  requestPlanIdentity?(): {
+    providerId?: string
+    modelId?: string
+    endpoint?: { id?: string; protocol?: string; baseURL?: string }
+  }
   peekProviderReplay?(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined
   seedProviderReplay?(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void
+  countTokens?(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<PromptMeasurement>
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
   stream(
     context: RenderedContext,

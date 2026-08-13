@@ -1,6 +1,17 @@
 # DeepStrike 文档
 
-文档源目录，支持 **简体中文（默认）** 与 **English** 双语。
+文档源目录，支持 **简体中文（默认）** 与 **English** 双语。默认阅读路径从要构建的 Agent 出发，而不是从运行时实现出发。
+
+## 阅读路径
+
+1. **入门**：安装 SDK，运行第一个使用工具的 Agent，并选择合适的 API。
+2. **Agent 能力**：按需添加模型、工具、Memory、Skill、治理、委托、工作流、Signal 和可恢复 Session。
+3. **教程课程**：在 `example/` 的 Research Brief Studio 中，从单 Agent 逐级构建到协作 Agent 团队。
+4. **Agent 如何运行**：理解一次运行、Context、时间、质量和连续性如何配合。
+5. **概念**：阅读角色、隔离、缓存和预算等设计概念。
+6. **参考**：查找 API、字段、选项和事件类型。
+
+`architecture/overview` 与 `architecture/kernel-abi` 是实现细节，保留给需要研究运行时实现或 ABI 的读者，不作为新用户的起点。
 
 ## 目录结构
 
@@ -20,6 +31,8 @@ docs/
     ├── config.mts           # locales: root + en
     └── shared.ts            # 共享 sidebar / nav 定义
 ```
+
+可运行教程位于仓库根目录的 `example/`，不复制到 `docs/`。文档中通过教程课程导航和首页链接把读者带到对应等级。
 
 ## 本地预览
 

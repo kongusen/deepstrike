@@ -1,6 +1,8 @@
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
+use super::durable_content::DurableContent;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -58,6 +60,10 @@ pub enum ContentPart {
         call_id: CompactString,
         output: String,
         is_error: bool,
+        /// The versioned portable blocks for this result. `output` remains the text projection
+        /// consumed by legacy renderers and bindings.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        durable_content: Option<DurableContent>,
     },
 }
 
@@ -83,6 +89,10 @@ pub struct ToolCall {
 pub struct ToolResult {
     pub call_id: CompactString,
     pub output: Content,
+    /// The versioned portable blocks supplied by the canonical wire. The state machine keeps
+    /// them through history/checkpoint rather than encoding structured output as JSON text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durable_content: Option<DurableContent>,
     pub is_error: bool,
     /// When `true` the state machine rolls back the current turn on receipt.
     /// Ordinary tool errors leave `is_fatal = false` so the run continues and

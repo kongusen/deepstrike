@@ -351,6 +351,8 @@ class WorkflowNodeSpec:
   max_turns: int | None = None
   # O3: cap this node's child run at ``max_wall_ms`` wall-clock milliseconds.
   max_wall_ms: int | None = None
+  # Host-observed deterministic scheduling inputs. Model-authored workflow tools cannot set them.
+  scheduling_factors: dict[str, int] | None = None
   depends_on: list[int] = field(default_factory=list)
   dep_policy: WorkflowDependencyPolicy = "all_success"
 
@@ -526,9 +528,24 @@ def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
     node["max_turns"] = n.max_turns
   if getattr(n, "max_wall_ms", None) is not None:
     node["max_wall_ms"] = n.max_wall_ms
+  if getattr(n, "scheduling_factors", None) is not None:
+    node["scheduling_factors"] = _scheduling_factors_to_kernel(n.scheduling_factors)
   if n.depends_on:
     node["depends_on"] = list(n.depends_on)
   return node
+
+
+def _scheduling_factors_to_kernel(factors: dict[str, int]) -> dict[str, int]:
+  allowed = {"deadline_urgency", "process_priority", "resource_pressure", "budget_pressure"}
+  unknown = set(factors) - allowed
+  if unknown:
+    raise ValueError(f"unknown scheduling factor(s): {', '.join(sorted(unknown))}")
+  out: dict[str, int] = {}
+  for name, value in factors.items():
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+      raise ValueError(f"scheduling_factors.{name} must be a non-negative integer")
+    out[name] = value
+  return out
 
 
 def workflow_spec_to_kernel(spec: WorkflowSpec) -> dict[str, Any]:

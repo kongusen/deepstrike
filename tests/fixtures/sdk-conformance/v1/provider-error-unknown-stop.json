@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "provider-error-unknown-stop",
+  "domain": "provider_error",
+  "input": {
+    "stopReason": "vendor_new_reason"
+  },
+  "expected": {
+    "contractVersion": 1,
+    "error": {
+      "code": "unknown_stop_reason",
+      "path": "/stopReason"
+    }
+  }
+}

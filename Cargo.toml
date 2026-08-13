@@ -11,14 +11,14 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.52"
+version = "0.2.53"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/kongusen/deepstrike"
 
 [workspace.dependencies]
-deepstrike-core = { path = "crates/deepstrike-core", version = "0.2.52" }
-deepstrike-tokenizer = { path = "crates/deepstrike-tokenizer", version = "0.2.52" }
+deepstrike-core = { path = "crates/deepstrike-core", version = "0.2.53" }
+deepstrike-tokenizer = { path = "crates/deepstrike-tokenizer", version = "0.2.53" }
 notify = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -32,6 +32,7 @@ futures = "0.3"
 async-stream = "0.3"
 bytes = "1"
 sha2 = "0.10"
+time = { version = "0.3", features = ["parsing", "formatting"] }
 
 [profile.release]
 lto = "fat"

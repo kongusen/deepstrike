@@ -6,6 +6,48 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.53] - 2026-08-13
+
+### Added — Agent-facing contracts and provider runtime services
+
+- Shared Agent contracts now cover execution identity, roles, capability ceilings, and session
+  descriptors across the four SDKs. Node, Python, and WASM also expose declarative Agent definitions
+  and canonical Agent IR lowering for tools, skills, knowledge, handoffs, and guardrails.
+- Node and Python provider runtimes now resolve through explicit model/runtime registries and protocol
+  adapters. Their OpenAI Chat and Responses, Anthropic Messages, Gemini, Ollama, and OpenAI-compatible
+  paths share request planning, content normalization, structured provider errors, stop reasons, and
+  normalized usage reporting.
+- Node and Python applications can supply an OAuth credential chain for provider access without placing
+  credentials into Agent context or Session evidence.
+- Durable content, prompt measurement, tool-result replay, and stop-reason contracts are covered by
+  shared fixtures and SDK conformance adapters. Provider content policy uses a shared fixture with
+  focused SDK tests.
+
+### Changed — durable Agent execution and collaboration
+
+- Memory is a single durable store contract with explicit scope enforcement, recall retention, and
+  governed writes across SDKs.
+- Checkpoint recovery accepts the explicit v1-to-v2 migration path, validates historical state before
+  migration, and fails closed for future revisions, unknown content, or digest mismatches.
+- Local scheduler behavior now has deterministic priorities, budget grants, wait indexing, and a
+  host-injected cross-operation routing contract. This does not introduce a distributed worker or
+  remote Agent runtime.
+- SDK conformance is exercised through shared fixtures for Agent IR, provider planning, durable
+  content, session/replay, and canonical runtime behavior.
+
+### Fixed
+
+- Node and Python provider construction preserves configured options, forwards bearer authentication
+  to OpenAI Responses, and keeps structured provider failures visible to applications.
+- Recovery and replay retain durable structured content and tool results instead of flattening or
+  silently accepting incompatible records.
+
+### Docs
+
+- The README, documentation site, Wiki navigation, and Research Brief Studio curriculum now start
+  from Agent capabilities and learning paths. Runtime implementation and Kernel ABI material remain
+  available as advanced reference rather than the default entry point.
+
 ## [0.2.52] - 2026-08-03
 
 ### Fixed — fail-closed hardening at FFI and host runner seams

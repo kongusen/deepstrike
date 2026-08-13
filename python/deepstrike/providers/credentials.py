@@ -41,6 +41,19 @@ class ProviderCredential:
     value: str
 
 
+class CredentialRequest(TypedDict):
+    provider_id: str
+    model_id: str
+    endpoint_id: str
+    protocol: str
+
+
+CredentialResolver = Callable[
+    [CredentialRequest],
+    ProviderCredential | None | Awaitable[ProviderCredential | None],
+]
+
+
 class OAuthCredentialResolver:
     """Refreshes a provider-owned bearer token once per expiry window.
 
@@ -151,7 +164,7 @@ async def resolve_credential(
     protocol: str,
     api_key: str | None = None,
     bearer_token: str | None = None,
-    credential_resolver: OAuthCredentialResolver | None = None,
+    credential_resolver: CredentialResolver | OAuthCredentialResolver | None = None,
 ) -> ProviderCredential:
     configured = [
         ProviderCredential("api_key", api_key) if api_key is not None else None,
@@ -167,13 +180,49 @@ async def resolve_credential(
         return credential
     if credential_resolver is None:
         raise CredentialResolutionError("credential_unavailable", provider_id)
-    value = await credential_resolver.resolve(
-        provider_id=provider_id,
-        model_id=model_id,
-        endpoint_id=endpoint_id,
-        protocol=protocol,
-    )
-    return ProviderCredential("bearer", value)
+    request: CredentialRequest = {
+        "provider_id": provider_id,
+        "model_id": model_id,
+        "endpoint_id": endpoint_id,
+        "protocol": protocol,
+    }
+    try:
+        if isinstance(credential_resolver, OAuthCredentialResolver):
+            resolved: ProviderCredential | None = ProviderCredential(
+                "bearer",
+                await credential_resolver.resolve(**request),
+            )
+        else:
+            resolved = credential_resolver(request)
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+    except CredentialResolutionError:
+        raise
+    except Exception:
+        raise CredentialResolutionError("credential_resolver_failed", provider_id) from None
+    return _validate_credential(resolved, provider_id)
+
+
+def redact_credential(credential: ProviderCredential) -> dict[str, CredentialKind]:
+    """Return diagnostic-safe credential metadata without retaining its value."""
+    _validate_credential(credential, "unknown")
+    return {"type": credential.type}
+
+
+def _validate_credential(
+    credential: ProviderCredential | None,
+    provider_id: str,
+) -> ProviderCredential:
+    if credential is None:
+        raise CredentialResolutionError("credential_unavailable", provider_id)
+    if (
+        not isinstance(credential, ProviderCredential)
+        or credential.type not in {"api_key", "bearer"}
+        or not isinstance(credential.value, str)
+        or not credential.value.strip()
+    ):
+        raise CredentialResolutionError("credential_invalid", provider_id)
+    return credential
 
 
 def _message(code: str, provider_id: str) -> str:
@@ -181,6 +230,7 @@ def _message(code: str, provider_id: str) -> str:
         "credential_unavailable": "Missing credential",
         "credential_invalid": "Invalid credential",
         "credential_refresh_failed": "Credential refresh failed",
+        "credential_resolver_failed": "Credential resolver failed",
         "credential_oauth_scope_mismatch": "Credential scope does not satisfy",
         "credential_oauth_audience_mismatch": "Credential audience does not match",
         "credential_revoked": "Credential was revoked",

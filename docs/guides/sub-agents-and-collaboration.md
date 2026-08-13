@@ -1,15 +1,15 @@
 # Sub-Agent 与协作
 
-Sub-Agent 与协作是 Agent OS 的 **Process Isolation Plane**。它把一个 agent 的内部推理拆成多个有角色、有隔离边界、有上下文继承策略的子进程，并通过 contract / handoff 管理协作结果。
+Sub-Agent 让一个 Agent 把专注职责委托给另一个 Agent。角色、Context 继承、工具访问、隔离、contract 和 handoff 让协作可预测，而不是匿名地多开几个模型调用。
 
 **代码**：
 - `python/deepstrike/types/agent.py` — `AgentRunSpec`
 - `python/deepstrike/collaboration/` — `AgentPool`、`ContractDrivenHarness`
-- Kernel：`crates/deepstrike-core/src/proc/`、`scheduler/state_machine/process.rs`
+- Runtime：`crates/deepstrike-core/src/proc/`、`scheduler/state_machine/process.rs`
 
 ---
 
-## 在 Agent OS 中的位置
+## 可以控制子 Agent 的什么
 
 | 职责 | 说明 |
 |------|------|
@@ -19,7 +19,7 @@ Sub-Agent 与协作是 Agent OS 的 **Process Isolation Plane**。它把一个 a
 | 能力边界 | `capability_filter` 与 Skill / Governance 一起控制工具可见性 |
 | 交接边界 | Contract 与 HandoffArtifact 把子进程产物变成父进程可消费的证据 |
 
-这层让“多 agent”不只是多开几个 LLM 调用，而是变成可追踪、可治理、可恢复的进程树。
+这样多 Agent 工作就能被追踪、限制，并和工作流、评估自然组合。
 
 ![Process Isolation & Sub-Agents Mechanisms](/collaboration_mechanisms.svg)
 

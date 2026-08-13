@@ -1,5 +1,7 @@
 # Choosing an API: run_agent vs RuntimeRunner vs run_fanout
 
+Choose an entry point based on how much responsibility your Agent needs.
+
 ## Decision Tree
 
 ```
@@ -41,7 +43,7 @@ print(result["synthesis"])
 print(result["outputs"])  # per-node outputs
 ```
 
-Internally builds a `WorkflowSpec` DAG and runs kernel-gated `run_workflow`.
+It creates one focused Agent per task and returns both the synthesis and each worker's output.
 
 ## Level 3: `RuntimeRunner` — Full Capabilities
 
@@ -66,7 +68,7 @@ async for event in runner.run(goal, session_id="my-session"):
 outcome = await runner.run_workflow(spec, session_id="wf-1")
 ```
 
-Only `RuntimeRunner` supports:
+Use `RuntimeRunner` when your Agent needs:
 
 - Skill / Memory / Knowledge
 - Governance / ResourceQuota

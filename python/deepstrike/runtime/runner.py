@@ -23,6 +23,13 @@ from deepstrike._kernel import (
   TaskUpdate,
 )
 from deepstrike.providers.base import LLMProvider, RenderedContext
+from deepstrike.providers.request_plan import (
+  create_provider_request_plan,
+  estimate_provider_prompt_tokens,
+  measurement_for_plan,
+  record_prompt_measurement,
+  ProviderRequestEndpoint,
+)
 from deepstrike.providers.provider_error import (
   classify_provider_error,
   provider_error_event_fields,
@@ -77,6 +84,7 @@ from deepstrike.runtime.session_repair import (
   build_run_terminal_event,
 )
 from deepstrike.runtime.session_log import SessionEntry, SessionEvent, SessionLog
+from deepstrike.runtime.durable_content import decode_durable_content, decode_durable_tool_result, durable_blocks_to_runtime, runtime_blocks_to_durable
 from deepstrike.runtime.archive import ArchiveStore
 from deepstrike.runtime.os_profile import assert_native_profile
 from deepstrike.runtime.run_group import GroupBudgetScope, GroupMember, RunGroup
@@ -161,6 +169,10 @@ class SchedulerPolicy:
   fanout_weight: int
   age_weight: int
   token_cost_weight: int
+  deadline_weight: int = 0
+  process_priority_weight: int = 0
+  resource_pressure_weight: int = 0
+  budget_pressure_weight: int = 0
 
 
 @dataclass
@@ -1811,6 +1823,11 @@ class RuntimeRunner:
     # Operation-local by construction: same-Runner and new-Runner wake paths are equivalent.
     tool_output_overlay: dict[str, tuple[dict, ...]] = {}
     next_compressed_archive_start = _next_archived_seq_start(prior_events)
+    recorded_measurements = {
+      entry.event["measurement"]["request_fingerprint"]: entry.event["measurement"]
+      for entry in (prior_events or [])
+      if entry.event.get("kind") == "prompt_measured"
+    }
     self._next_archive_start = next_compressed_archive_start
 
     # Three-layer policy merge: explicit RuntimeOptions > provider.runtime_policy() > defaults
@@ -2206,6 +2223,65 @@ class RuntimeRunner:
         turn_cache_creation_tokens = 0
         turn_cache_read_by_slot = None
         turn_stop_reason = None
+        descriptor = self._opts.provider.descriptor() if callable(getattr(self._opts.provider, "descriptor", None)) else None
+        identity_fn = getattr(self._opts.provider, "request_plan_identity", None) or getattr(self._opts.provider, "requestPlanIdentity", None)
+        identity = identity_fn() if callable(identity_fn) else {}
+        endpoint_identity = identity.get("endpoint", {}) if isinstance(identity, dict) else {}
+        provider_plan = create_provider_request_plan(
+          provider_id=(identity.get("providerId") or identity.get("provider_id") or getattr(descriptor, "provider", "unknown"))
+            if isinstance(identity, dict) else getattr(descriptor, "provider", "unknown"),
+          model_id=(identity.get("modelId") or identity.get("model_id") or getattr(descriptor, "model", "unknown"))
+            if isinstance(identity, dict) else getattr(descriptor, "model", "unknown"),
+          endpoint=ProviderRequestEndpoint(
+            endpoint_identity.get("id") or f"{getattr(descriptor, 'provider', 'unknown')}.{getattr(descriptor, 'protocol', 'unknown')}",
+            endpoint_identity.get("protocol") or getattr(descriptor, "protocol", "unknown"),
+            endpoint_identity.get("baseURL") or endpoint_identity.get("base_url") or "",
+          ),
+          context=context, tools=turn_tools, options=ext,
+        )
+        prompt_measurement = measurement_for_plan(provider_plan, recorded_measurements.get(provider_plan.fingerprint))
+        if prompt_measurement is None and not context.budget_overflow:
+          try:
+            count_tokens = getattr(self._opts.provider, "count_tokens", None)
+            counted = await asyncio.wait_for(count_tokens(context, turn_tools, extensions=ext or None), 5.0) if callable(count_tokens) else None
+            prompt_measurement = record_prompt_measurement(
+              provider_plan,
+              input_tokens=getattr(counted, "input_tokens", 0) if counted is not None else estimate_provider_prompt_tokens(context, turn_tools),
+              source=getattr(counted, "source", {"kind": "heuristic"}) if counted is not None else {"kind": "heuristic"},
+              confidence=getattr(counted, "confidence", "exact") if counted is not None else "low_confidence",
+            )
+          except Exception:
+            prompt_measurement = record_prompt_measurement(
+              provider_plan,
+              input_tokens=estimate_provider_prompt_tokens(context, turn_tools),
+              source={"kind": "heuristic"}, confidence="low_confidence",
+            )
+          recorded_measurements[provider_plan.fingerprint] = {
+            "version": prompt_measurement.version,
+            "request_fingerprint": prompt_measurement.request_fingerprint,
+            "input_tokens": prompt_measurement.input_tokens,
+            "source": prompt_measurement.source,
+            "confidence": prompt_measurement.confidence,
+          }
+          await self._opts.session_log.append(session_id, {
+            "kind": "prompt_measured", "turn": runtime.turn(),
+            "measurement": recorded_measurements[provider_plan.fingerprint],
+          })
+        reserved = sum((getattr(self._opts.prompt_budget, field, 0) for field in ("prompt_overhead_tokens", "output_reserve_tokens", "safety_margin_tokens")), 0) if self._opts.prompt_budget else 0
+        # Heuristic counts guide compaction but cannot authoritatively reject a request. Only a
+        # native/local-exact measurement may block the provider before execution.
+        measured_overflow = (
+          prompt_measurement is not None
+          and prompt_measurement.source.get("kind") != "heuristic"
+          and prompt_measurement.input_tokens + reserved > self._opts.max_tokens
+        )
+        if context.budget_overflow or measured_overflow:
+          action = await action_host(runtime, self._pending_observations, {
+            "kind": "provider_error", "effect_id": provider_effect_id,
+            "message": "provider-visible prompt exceeds the configured context budget",
+            "error_kind": "context_overflow", "retryable": False,
+          })
+          continue
         try:
           async for evt in self._opts.provider.stream(
             context, turn_tools, extensions=ext if ext else None, state=provider_state,
@@ -2464,6 +2540,7 @@ class RuntimeRunner:
           on_permission_request=self._opts.on_permission_request,
         )
         tool_results: list[ToolResult] = []
+        durable_blocks_by_call: dict[str, list[dict]] = {}
         # Syscall tools are consumed by core from the provider result. If one reaches this host
         # effect projection, the canonical boundary has drifted and must fail closed.
         normal_calls = [
@@ -2540,6 +2617,7 @@ class RuntimeRunner:
                   evt.call_id, evt.content, evt.is_error, evt.content_parts,
                 )
                 tool_output_overlay[evt.call_id] = canonical.blocks
+                durable_blocks_by_call[evt.call_id] = runtime_blocks_to_durable(canonical.blocks)
             elif isinstance(evt, ToolArgumentRepairedEvent):
               await self._opts.session_log.append(session_id, {
                 "kind": "tool_argument_repaired",
@@ -2605,7 +2683,14 @@ class RuntimeRunner:
               self.inject_note(str(decision["note"]))
 
         await self._opts.session_log.append(session_id, {
-          "kind": "tool_completed", "turn": runtime.turn(), "results": tool_results,
+          "kind": "tool_completed", "turn": runtime.turn(),
+          "results": [
+            ({"call_id": r.call_id, "output": r.output, "is_error": r.is_error,
+              "is_fatal": getattr(r, "is_fatal", False), "error_kind": getattr(r, "error_kind", None),
+              "token_count": r.token_count, "content": {"schema_version": 1, "blocks": durable_blocks_by_call[r.call_id]}}
+             if r.call_id in durable_blocks_by_call else r)
+            for r in tool_results
+          ],
         })
         # Canonical provider-result reduction activates a successfully resolved `skill` call. The
         # host only pins its METHOD content — how to do something — for later turns.
@@ -3178,6 +3263,49 @@ def _pair_orphan_tool_calls(messages: list[Message]) -> list[Message]:
   return out
 
 
+def _replay_tool_result_message(result: dict[str, Any], max_bytes: int | None = None) -> Message:
+  """Decode persisted tool-result content before projecting it into provider carriers."""
+  output_raw = result.get("output", "")
+  if not isinstance(output_raw, str):
+    raise DurableContentError("tool result output must be a string")
+  output = sanitize_replay_text(output_raw, max_bytes)
+  content = result.get("content")
+  if content is not None:
+    decoded_content = decode_durable_content(content)
+    durable = decode_durable_tool_result({
+      "schema_version": 1,
+      "call_id": result.get("call_id"),
+      "is_error": result.get("is_error"),
+      "blocks": decoded_content["blocks"],
+    })
+  elif "blocks" in result:
+    decoded_content = decode_durable_content({"schema_version": 1, "blocks": result["blocks"]})
+    durable = decode_durable_tool_result({
+      "schema_version": 1,
+      "call_id": result.get("call_id"),
+      "is_error": result.get("is_error"),
+      "blocks": decoded_content["blocks"],
+    })
+  else:
+    durable = decode_durable_tool_result({
+      "call_id": result.get("call_id"),
+      "output": output_raw,
+      "is_error": result.get("is_error", False),
+    })
+  blocks = durable_blocks_to_runtime(durable["blocks"])
+  if blocks:
+    return RenderedMessage(
+      role="tool", content="", tool_calls=[], content_parts=[StructuredToolResultPart(
+        call_id=durable["call_id"], output=output,
+        is_error=durable["is_error"], content_parts=blocks,
+      )],
+    )
+  return Message(role="tool", content="", tool_calls=[], content_parts=[ContentPartObj(
+    type="tool_result", call_id=durable["call_id"], output=output,
+    is_error=durable["is_error"],
+  )])
+
+
 def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -> list[Message]:
   messages: list[Message] = []
   for entry in events:
@@ -3230,14 +3358,14 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
       ))
     elif kind == "tool_completed":
       for r in e.get("results", []):
-        output = sanitize_replay_text(r.output, max_bytes)
-        part = ContentPartObj(
-          type="tool_result",
-          call_id=r.call_id,
-          output=output,
-          is_error=r.is_error,
-        )
-        messages.append(Message(role="tool", content="", tool_calls=[], content_parts=[part]))
+        if isinstance(r, dict):
+          messages.append(_replay_tool_result_message(r, max_bytes))
+          continue
+        messages.append(_replay_tool_result_message({
+          "call_id": r.call_id,
+          "output": r.output,
+          "is_error": r.is_error,
+        }, max_bytes))
     elif kind == "rollbacked":
       len_val = e.get("checkpoint_history_len", 0)
       if len(messages) > len_val:
@@ -3338,14 +3466,14 @@ async def _replay_messages_async(
       ))
     elif kind == "tool_completed":
       for r in e.get("results", []):
-        output = sanitize_replay_text(r.output, max_bytes)
-        part = ContentPartObj(
-          type="tool_result",
-          call_id=r.call_id,
-          output=output,
-          is_error=r.is_error,
-        )
-        messages.append(Message(role="tool", content="", tool_calls=[], content_parts=[part]))
+        if isinstance(r, dict):
+          messages.append(_replay_tool_result_message(r, max_bytes))
+          continue
+        messages.append(_replay_tool_result_message({
+          "call_id": r.call_id,
+          "output": r.output,
+          "is_error": r.is_error,
+        }, max_bytes))
     elif kind == "rollbacked":
       len_val = e.get("checkpoint_history_len", 0)
       if len(messages) > len_val:
@@ -3435,6 +3563,7 @@ def _scheduler_policy_to_kernel(
   if isinstance(policy, dict):
     allowed = {
       "version", "critical_path_weight", "fanout_weight", "age_weight", "token_cost_weight",
+      "deadline_weight", "process_priority_weight", "resource_pressure_weight", "budget_pressure_weight",
     }
     unknown = set(policy) - allowed
     if unknown:
@@ -3447,6 +3576,10 @@ def _scheduler_policy_to_kernel(
     "age_weight": get("age_weight"),
     "token_cost_weight": get("token_cost_weight"),
   }
+  for field in ("deadline_weight", "process_priority_weight", "resource_pressure_weight", "budget_pressure_weight"):
+    value = get(field)
+    if value is not None:
+      out[field] = value
   return out
 
 

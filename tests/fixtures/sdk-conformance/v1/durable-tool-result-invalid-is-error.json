@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "durable-tool-result-invalid-is-error",
+  "domain": "durable_tool_result",
+  "input": {
+    "value": {
+      "schema_version": 1,
+      "call_id": "call-weather",
+      "is_error": "false",
+      "blocks": []
+    }
+  },
+  "expected": {
+    "contractVersion": 1,
+    "error": {
+      "code": "invalid_durable_tool_result",
+      "path": "/is_error"
+    }
+  }
+}

@@ -14,7 +14,7 @@ import path from "node:path"
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const OUT = path.join(ROOT, "docs", "public")
-const VERSION = "0.2.48"
+const DOCUMENTATION_LABEL = "CURRENT DOCUMENTATION"
 const W = 1200
 const H = 760
 
@@ -97,7 +97,7 @@ const shell = ({ title, desc, eyebrow, headline, subtitle, body, footer = "DEEPS
   </defs>
   <rect width="${W}" height="${H}" fill="#111318"/>
   <path d="M0 94H${W}M0 724H${W}" class="rule"/>
-  ${text(48, 33, `${eyebrow} / v${VERSION}`, "eyebrow")}
+  ${text(48, 33, `${eyebrow} / ${DOCUMENTATION_LABEL}`, "eyebrow")}
   ${text(48, 68, headline, "title")}
   ${text(1152, 39, subtitle, "subtitle", "end")}
   <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>

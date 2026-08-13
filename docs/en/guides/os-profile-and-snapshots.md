@@ -1,6 +1,6 @@
-# OS Profile & Runtime Snapshots
+# Agent Runtime Policy & State Snapshots
 
-OS Profile is a host-selectable set of default governance policies: attention queue, governance policy, and native profile validation. OS Snapshot is a status summary folded from SessionLog events for dashboards, debugging, and operations.
+Runtime policy determines how an Agent handles signals, permissions, and resources by default. State snapshots turn SessionLog events into an observable run summary for dashboards, debugging, and operations. `OsProfile` and `OS Snapshot` are the existing API names for these two capabilities.
 
 **Code entry points**:
 
@@ -10,16 +10,16 @@ OS Profile is a host-selectable set of default governance policies: attention qu
 - `node/src/runtime/os-snapshot.ts`
 - `node/src/runtime/kernel-primitives-dashboard.ts`
 
-## Agent OS Positioning
+## What your application can configure and observe
 
 | Responsibility | Description |
 |----------------|-------------|
-| Profile | Packages attention, governance, and other defaults into host-selectable runtime configuration |
-| Validation | Checks declarative policy before startup so invalid config does not reach the kernel |
+| Profile | Packages attention, governance, and other defaults into application-selectable runtime configuration |
+| Validation | Checks declarative policy before startup so invalid configuration does not reach the runtime |
 | Snapshot | Folds runtime state from SessionLog instead of relying on in-memory transient objects |
-| Dashboard | Converts kernel primitives into health, queue, permission, and process state for the UI |
+| Dashboard | Converts runtime events into health, queue, permission, and process state for the UI |
 
-OS Profile answers "which policy starts the Agent OS?" OS Snapshot answers "what state did the Agent OS reach?" The first sets boundaries; the second supports observability.
+`OsProfile` answers "which default policy starts the Agent?" `OS Snapshot` answers "what state did this run reach?" The first sets boundaries; the second supports observability.
 
 ![OS Profile & Snapshots Mechanisms](/snapshots_mechanisms.svg)
 
@@ -44,7 +44,7 @@ runner = RuntimeRunner(RuntimeOptions(
 | SignalPolicy | `queue_max=64` |
 | GovernancePolicy | `pattern="*" action="allow"` |
 
-This is a basic "kernel primitives enabled" default, not a production safety boundary.
+This is a basic runnable default, not a production safety boundary.
 
 ## Level 2: Validate a Profile
 
@@ -120,9 +120,9 @@ events = [entry.event for entry in await session_log.read("session-1")]
 assert session_log_has_required_categories(events)
 ```
 
-This verifies kernel events carry correct `category` and `primitive`, useful before CI or dashboard ingest.
+This verifies runtime events carry correct `category` and `primitive`, useful before CI or dashboard ingest.
 
-## OS Snapshot vs Kernel Checkpoint
+## OS Snapshot vs Recoverable Checkpoint
 
 | Name | Purpose | Can restore execution? |
 |------|---------|------------------------|
@@ -130,7 +130,7 @@ This verifies kernel events carry correct `category` and `primitive`, useful bef
 | Kernel Checkpoint | opaque logical state, digests, and a bounded journal tail | yes, for exact wake / replay |
 | ContextSnapshot | context partition snapshot | partially, for context restore |
 
-OS Snapshot is for humans and monitoring. The canonical Kernel Checkpoint is for runtime recovery. It neither serializes private state-machine structs nor stores the complete accepted-input history or a derived planned step; it stores logical state by transition/P1/P2/P3 owner and verifies state/tail digests. Hosts manage it through candidate -> persist -> covered-head CAS install -> ack, then restore only the bounded tail and journal records after the checkpoint.
+`OS Snapshot` is for humans and monitoring. `Kernel Checkpoint` is for runtime recovery. It neither serializes private state-machine structs nor stores the complete accepted-input history or a derived planned step; it stores logical state by transition/P1/P2/P3 owner and verifies state/tail digests. Applications manage it through candidate -> persist -> covered-head CAS install -> ack, then restore only the bounded tail and journal records after the checkpoint.
 
 ## Production Practices
 

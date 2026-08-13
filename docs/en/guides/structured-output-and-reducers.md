@@ -1,6 +1,6 @@
 # Structured Output & Reducers
 
-DeepStrike workflow supports two mechanisms that reduce LLM usage and improve control:
+DeepStrike workflows support two mechanisms that make Agent collaboration easier to trust:
 
 - `output_schema`: require an agent node to produce a value matching a JSON Schema subset
 - `Reduce` node: run deterministic host code instead of an LLM to combine dependency outputs
@@ -12,16 +12,16 @@ DeepStrike workflow supports two mechanisms that reduce LLM usage and improve co
 - `crates/deepstrike-core/src/orchestration/workflow/mod.rs`
 - `python/deepstrike/runtime/runner.py`
 
-## Agent OS Positioning
+## What structured results give your Agents
 
-| Responsibility | Description |
-|----------------|-------------|
-| To workflows | Turns node output into validated data, not just natural language |
-| To providers | SDK injects schema instruction and retry; the kernel carries the contract |
-| To the host | Reduce nodes run deterministic reducers without model calls |
-| To dependents | Schema failure blocks dependent nodes; reducer output can continue as stable input |
+| Need | Behavior |
+| --- | --- |
+| Reliable handoffs | `output_schema` validates a specialist's result before another Agent consumes it. |
+| Recovery from mistakes | A schema mismatch can be returned as feedback for a bounded retry. |
+| Cheap merging | Reducers combine upstream results without another model call. |
+| Stable dependencies | Downstream Agents receive predictable structured input. |
 
-This plane turns "ask the LLM for a structure" into an executable OS contract: validate, retry, fail, and merge with deterministic code.
+Together these features turn “ask the Agent for a structure” into a reliable handoff: validate, retry, and merge with ordinary application code.
 
 ![Reducers & Output Validation Mechanisms](/reducers_mechanisms.svg)
 
@@ -150,15 +150,15 @@ spec = gen_eval(
 
 Internally this uses a loop worker + verify node. Verdict structure can pair with `verdict_output_schema()`.
 
-## Kernel / Host Boundary
+## Runtime and SDK Responsibilities
 
 | Behavior | Owner |
 |----------|-------|
-| carrying schema on node descriptor | kernel |
+| carrying schema on node descriptor | runtime |
 | injecting schema instruction | SDK |
 | JSON extraction and validation | SDK |
 | retry prompt | SDK |
-| reducer node scheduling and dependencies | kernel |
+| reducer node scheduling and dependencies | runtime |
 | reducer function execution | SDK |
 
 ## Common Issues

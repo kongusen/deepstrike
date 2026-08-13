@@ -1,90 +1,62 @@
-# Research Brief Studio — a DeepStrike curriculum
+# Research Brief Studio
 
-One product grown across eight levels, from a single sourced-Q&A agent into a multi-agent
-editorial room. Each level is a self-contained, runnable project that **introduces one or two new
-mechanisms while reusing everything before it** — so by the end you have exercised the whole
-framework and, more importantly, seen the mechanisms *compose*.
+Research Brief Studio is a hands-on Agent curriculum. It grows one small research assistant into a coordinated editorial team, adding one practical capability at a time.
 
-The domain stays constant (research → brief), so every level differs only in the framework surface
-it adds. The tools are local mocks (`search` / `read_source` over a canned corpus); the **provider
-is real** — these examples run the live agent loop, not a scripted transcript.
+The domain stays the same across all levels, so the learning progression is easy to see. The tools are local mocks over a small source corpus; the Agent loop can use a real provider. Every level has TypeScript and Python code and supports `--dry-run`.
 
-## The ladder
+## The learning path
 
-| # | Project | New mechanisms | One-line idea |
-|---|---|---|---|
-| **L1** | Sourced Q&A assistant | Tools + Execution Plane · Provider · Session replay/recovery | one agent that answers with citations and resumes after a crash |
-| **L2** | Assistant with memory | Memory (MemoryStore, governed write gate, dedup, run-start recall) | remembers sources & preferences across sessions |
-| **L3** | Assistant with a handbook | Skills (on-demand load + tool gating) · Knowledge | loads a "citation style" skill on demand; narrows the tools it exposes |
-| **L4** | Event-driven assistant | Signals + Reactive (gateway, external triggers, injected notes) | a "new source arrived" webhook wakes it to process the delta |
-| **L5** | Governed assistant | Governance · Resource Quota · OS Profile snapshot | forbids destructive tools, caps tokens/spawns, exports an observability snapshot |
-| **L6** | Self-pacing digest | Loop Agent (`runLoop` / pace verbs / verdict gate / dormant→wake) | builds a running digest one source per round, pacing `continue`→`stop` itself |
-| **L7** | Brief pipeline | Workflow DAG · Structured output + Reducer · Harness/Eval gate · Milestones | two researchers → deterministic reduce → writer → verify gate, every node schema-typed |
-| **L8** | Editorial room | ReactiveSession (shared blackboard + turn policy) · RunGroup · DAG-in-peer | writer / editor / fact-checker peers collaborate under one cumulative budget |
+| Level | Agent you build | New capability |
+| --- | --- | --- |
+| [L1](./01-sourced-qa/) | Sourced Q&A Agent | Tools, citations, provider calls, and resumable sessions |
+| [L2](./02-memory-assistant/) | Memory Assistant | Durable memory, recall, deduplication, and session learning |
+| [L3](./03-skills-handbook/) | Skill-based Assistant | On-demand skills, knowledge, and task-specific tool access |
+| [L4](./04-reactive-desk/) | Reactive Assistant | Webhooks, scheduled signals, host notes, and changing input |
+| [L5](./05-governed-studio/) | Governed Assistant | Tool policies, approvals, quotas, and observable decisions |
+| [L6](./06-daily-digest/) | Long-running Digest Agent | Bounded rounds, self-pacing, sleep, wake, and completion checks |
+| [L7](./07-brief-pipeline/) | Specialist Pipeline | Parallel specialists, structured output, reducers, and verification |
+| [L8](./08-editorial-room/) | Editorial Agent Team | Reactive peers, shared blackboard, shared budget, and nested workflows |
 
-## Mechanism coverage
+## What you will learn
 
-| Mechanism | Level | Mechanism | Level |
-|---|---|---|---|
-| Tools + Execution Plane | L1 | Loop Agent / pace | L6 |
-| Session replay & recovery | L1 | Structured output + Reducer | L7 |
-| Provider routing | L1, L7 | Workflow DAG (5 node kinds) | L7 |
-| Memory | L2 | Sub-agents / isolation / quarantine | L7 |
-| Skills + tool gating | L3 | Harness / Eval quality gate | L7 |
-| Knowledge | L3 | Milestones | L7 |
-| Signals + Reactive | L4 | Context engineering (compaction/cache) | woven L2/L6 |
-| Governance | L5 | RunGroup (cumulative budget + lineage) | L8 |
-| Resource quota | L5 | ReactiveSession (blackboard + turn policy) | L8 |
-| OS Profile / snapshots | L5 | | |
+By the end of the curriculum you will know how to give an Agent:
 
-## Languages
+- tools and external integrations;
+- durable memory and reusable knowledge;
+- skills that load only when a task needs them;
+- permissions, approvals, quotas, and cancellation rules;
+- child Agents with focused roles and handoff artifacts;
+- workflows with parallel work, dependencies, loops, and verification;
+- signals, shared state, and peer-to-peer reactions;
+- durable sessions that can pause, resume, and be replayed in tests.
 
-Every level is **TypeScript** (the fullest SDK surface) **and Python** — each `main.ts` has a
-`main.py` mirror using the snake_case Python SDK, so the whole curriculum runs cross-language. Run
-the Python mirrors under `../python/.venv/bin/python <level>/main.py` (install once with
-`pip install -e ../python`).
+## Run the examples
 
-## Prerequisites
+From this directory:
 
-```sh
-# build the SDK the TS examples import
-npm run build --prefix ../node
-# from this directory: link the local SDK (file:../node) + install tsx
+```bash
 npm install
+npm run build --prefix ../node
+npx tsx 01-sourced-qa/main.ts --dry-run
 ```
 
-Provider config comes from a `.env` file (auto-loaded from `example/.env`, then the repo root) or the
-environment. Any one of:
+For a live run, configure one supported provider in the environment or in `example/.env`:
 
-```sh
-ANTHROPIC_API_KEY=sk-ant-...                              # Anthropic
-# — or an OpenAI-compatible endpoint —
+```bash
+ANTHROPIC_API_KEY=sk-ant-...
+# or
 OPENAI_API_KEY=sk-...
-OPENAI_BASE_URL=https://your-endpoint/v1                  # optional
-OPENAI_MODEL=gpt-5-mini                                   # optional
-# DEEPSTRIKE_MODEL / DEEPSTRIKE_BASE_URL override either of the above.
+OPENAI_BASE_URL=https://your-endpoint/v1
+OPENAI_MODEL=gpt-5-mini
 ```
 
-The Python mirrors (L1, L8) run under `../python/.venv/bin/python` (install the SDK once with
-`pip install -e ../python`). Every level accepts `--dry-run` to validate its wiring with **no key and
-no call** — a fast way to confirm the setup before spending tokens. Start at
-[`01-sourced-qa/`](./01-sourced-qa/).
+Run any level with `npx tsx <level>/main.ts`. Python mirrors use the same level directory and can be run with `python <level>/main.py` after installing the local Python SDK with `pip install -e ../python`.
 
-## Status
+## Suggested checkpoints
 
-**All eight levels are built, typechecked, and live-validated against a real provider** (each with a
-`README.md`). L1 and L8 also ship a Python mirror (`main.py`), likewise live-run. Highlights from the
-live runs:
+1. Finish L1 before adding memory. Make sure you can interrupt and resume a named session.
+2. Finish L3 before L4. Skills and knowledge explain how an Agent can change its working context without changing its identity.
+3. Finish L5 before L7. Policies and quotas should be in place before you fan out work.
+4. Treat L8 as a composition exercise. Its peers combine the workflow and long-running patterns from earlier levels.
 
-- **L3** — `toolsExposed` visibly drops `6 → 5` the turn the `citation-style` skill activates (`list_index` gated away).
-- **L4** — a gateway wire-alert *and* a high-urgency `injectNote` both reach a running loop and reshape the brief.
-- **L5** — `publish_public` never appears (deny → schema pre-filter); the `email_editor` `ask_user` gate is host-adjudicated.
-- **L6** — a 4-round loop paces itself `continue ×3 → stop`; the digest grows one line per round.
-- **L7** — a 5-node DAG completes end to end: two research spawns → `concat` reducer → writer → verify gate, all schema-valid.
-- **L8** — the `scribe`'s reaction is a whole workflow DAG, and the shared `RunGroup` ledger shows its `wf-node*` children billed alongside the reviewers' turns.
-
-> Building **L6** surfaced (and fixed) a real SDK bug: the kernel-consumed `pace` meta-tool left an
-> orphan `tool_call` in the replayed history, which strict OpenAI-compatible providers reject — so a
-> paced loop died on round 2. The fix (`pairOrphanToolCalls` in the Node SDK, with regression tests)
-> re-pairs kernel-consumed orphans while leaving genuinely-pending tail calls for wake/recovery. Full
-> Node suite green (519). See [`06-daily-digest/README.md`](./06-daily-digest/README.md).
+Each level's README contains the exact behavior to observe, the commands to run, and the next step in the path.

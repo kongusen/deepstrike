@@ -1,6 +1,6 @@
 # System Diagram Atlas
 
-This atlas is the visual map of DeepStrike `0.2.48`. Every diagram is generated from one shared design system and describes a specific ownership boundary or runtime mechanism. The source of truth is [`scripts/generate-architecture-svgs.mjs`](https://github.com/kongusen/deepstrike/blob/main/scripts/generate-architecture-svgs.mjs).
+This atlas is the visual map of current DeepStrike. Every diagram is generated from one shared design system and describes a specific ownership boundary or runtime mechanism. The source of truth is [`scripts/generate-architecture-svgs.mjs`](https://github.com/kongusen/deepstrike/blob/main/scripts/generate-architecture-svgs.mjs).
 
 Run `node scripts/generate-architecture-svgs.mjs` from the repository root after changing the diagram specification.
 

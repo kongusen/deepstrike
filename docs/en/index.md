@@ -3,8 +3,8 @@ layout: home
 
 hero:
   name: DeepStrike
-  text: Agent Runtime Kernel
-  tagline: Replayable state, governed tools, cross-language SDKs — production-grade dynamic workflows.
+  text: Build Agents that keep working
+  tagline: Give Agents tools, memory, skills, delegation, workflows, and durable sessions.
   image:
     src: /banner.png
     alt: DeepStrike
@@ -13,37 +13,37 @@ hero:
       text: Quick Start
       link: /en/getting-started/hello-agent
     - theme: alt
-      text: What is Agent OS
-      link: /en/architecture/agent-os
+      text: Agent Capabilities
+      link: /en/guides/
     - theme: alt
-      text: Architecture
-      link: /en/architecture/
+      text: Tutorial Curriculum
+      link: https://github.com/kongusen/deepstrike/tree/main/example
     - theme: alt
       text: GitHub Wiki
       link: https://github.com/kongusen/deepstrike/wiki
 
 features:
   - icon: 🧠
-    title: Kernel + SDK Split
-    details: Pure Rust kernel; Python / Node / WASM SDKs own I/O. SDK feeds events; kernel returns actions.
-  - icon: 🕸️
-    title: Dynamic Workflows
-    details: Declarative DAG + runtime append + Loop / Classify / Tournament control-flow nodes.
-  - icon: 📦
-    title: Context Engineering
-    details: Four-slot rendering, pressure compression, handle paging, prompt-cache aware.
-  - icon: 🛡️
-    title: In-Kernel Governance
-    details: Syscall traps, quotas, rate limits, denied tool results — not post-hoc SDK filtering.
-  - icon: 💾
-    title: Memory Syscalls
-    details: Kernel-validated writeMemory / queryMemory + MemoryStore + session extraction.
+    title: Reason with any provider
+    details: Connect the model provider that fits your application, with streaming, multimodal input, routing, and replayable tests.
+  - icon: 🧰
+    title: Use real tools
+    details: Add typed tools, streaming tools, MCP servers, files, sandboxes, worktrees, and application-owned integrations.
+  - icon: 🧠
+    title: Remember and learn
+    details: Combine working memory, durable memory, skills, and knowledge sources without turning every prompt into a transcript dump.
   - icon: 🤝
-    title: Multi-Agent Collaboration
-    details: Sub-agent isolation, ReactiveSession, contracts, handoff.
+    title: Delegate and collaborate
+    details: Run focused child Agents, hand off artifacts, fan out research, verify results, and build reactive peer teams.
+  - icon: ⏳
+    title: Keep working over time
+    details: Pause for approval or external events, resume sessions after restarts, and pace long-running work with bounded loops.
+  - icon: ✅
+    title: Make behavior predictable
+    details: Apply tool policies, quotas, output schemas, evaluation gates, and structured runtime evidence.
 ---
 
-## Supported SDKs
+## Start With The Agent You Need
 
 ::: code-group
 
@@ -51,7 +51,7 @@ features:
 pip install deepstrike
 ```
 
-```bash [Node.js / TS]
+```bash [Node.js / TypeScript]
 npm install @deepstrike/sdk
 ```
 
@@ -66,18 +66,31 @@ npm install @deepstrike/wasm
 
 :::
 
-## Reading Paths
+| You want to build... | Start here |
+| --- | --- |
+| A single tool-using Agent | [Hello Agent](/en/getting-started/hello-agent) |
+| An Agent with memory or skills | [Agent capabilities](/en/guides/) |
+| A multi-Agent workflow | [Dynamic workflows](/en/guides/workflow) |
+| A recoverable long-running Agent | [Sessions and recovery](/en/guides/session-replay-and-recovery) |
+| A peer-based Agent team | [Sub-Agents and collaboration](/en/guides/sub-agents-and-collaboration) |
+| The complete API surface | [Reference](/en/reference/) |
 
-| You are… | Start here |
-|----------|------------|
-| New user | [Hello Agent](/en/getting-started/hello-agent) |
-| Integrator | [Choosing an API](/en/getting-started/run-agent-vs-runner) → [Guides](/en/guides/) |
-| Architect | [Kernel / SDK Split](/en/architecture/overview) |
-| Wiki reader | [GitHub Wiki](https://github.com/kongusen/deepstrike/wiki) (synced from `docs/`) |
+## Learn By Building
+
+The [Research Brief Studio curriculum](https://github.com/kongusen/deepstrike/tree/main/example) grows one product across eight runnable levels:
+
+1. Ask questions with sources and tools.
+2. Recall durable facts across sessions.
+3. Load skills and task-specific knowledge.
+4. React to signals and changing input.
+5. Apply policies, approvals, and resource limits.
+6. Pace a long-running loop and wake it later.
+7. Fan out to specialists and verify structured results.
+8. Bring peers together around a shared editorial task.
+
+Every level has TypeScript and Python examples, plus a `--dry-run` path for validating wiring without provider credentials.
 
 ## Documentation Channels
 
-- **VitePress** (this site): `npm run docs:dev` locally; GitHub Pages on push to `main`
-- **GitHub Wiki**: synced from `docs/` via CI — see [Wiki sync docs](https://github.com/kongusen/deepstrike/blob/main/docs/wiki/README.md) (`docs/wiki/README.md`)
-
-Switch language via the **简体中文 / English** toggle in the top navigation.
+- **VitePress**: run `npm run docs:dev` locally; switch between Chinese and English from the top navigation.
+- **GitHub Wiki**: generated from `docs/` by CI; see [Wiki sync](https://github.com/kongusen/deepstrike/blob/main/docs/wiki/README.md).

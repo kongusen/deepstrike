@@ -40,7 +40,7 @@
   </defs>
   <rect width="1200" height="760" fill="#111318"/>
   <path d="M0 94H1200M0 724H1200" class="rule"/>
-  <text x="48" y="33" class="eyebrow" text-anchor="start">PROVIDER ROUTING / v0.2.48</text>
+  <text x="48" y="33" class="eyebrow" text-anchor="start">PROVIDER ROUTING / CURRENT DOCUMENTATION</text>
   <text x="48" y="68" class="title" text-anchor="start">The kernel requests capability; the host chooses the vendor.</text>
   <text x="1152" y="39" class="subtitle" text-anchor="end">modelHint · providerFor · PROTOCOL · REPLAY</text>
   <rect x="1135" y="70" width="17" height="3" rx="1.5" class="accent-fill"/>

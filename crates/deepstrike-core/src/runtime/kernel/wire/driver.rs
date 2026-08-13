@@ -68,9 +68,8 @@ use super::effect::{
     ApprovalRequest as WireApprovalRequest, ArchivePageOutEffect, CallProviderEffect,
     CanonicalMemoryQuery, CanonicalMemoryWrite, EffectKind, EffectKindTag, EffectOutcome,
     EffectSuccess, EvaluateMilestoneEffect, ExecuteToolsEffect, HostEffectFailure, KernelEffect,
-    LaunchToken, LoadPayloadEffect, PageOutPayload, PayloadRef,
-    PersistMemoryEffect, PreemptTasksEffect, ProviderCompleted, ProviderMessage, ProviderOutcome,
-    QueryMemoryEffect,
+    LaunchToken, LoadPayloadEffect, PageOutPayload, PayloadRef, PersistMemoryEffect,
+    PreemptTasksEffect, ProviderCompleted, ProviderMessage, ProviderOutcome, QueryMemoryEffect,
     RenderedContext as WireRenderedContext, RequestApprovalEffect, SpawnTasksEffect,
     TaskAttemptRef, TaskLaunch, ToolCall as WireToolCall, ToolResultDisposition,
     ToolResultPayload as WireToolResultPayload, ToolSchema as WireToolSchema,
@@ -124,9 +123,10 @@ use crate::types::agent::{
     AgentCapabilityFilter, AgentIdentity, AgentIsolation, AgentRole, AgentRunSpec,
     ContextInheritance, LoopRoundSpec,
 };
-use crate::types::message::{
-    Content, ContentPart, Message, Role, ToolErrorKind, ToolResult,
+use crate::types::durable_content::{
+    DurableContent, DurableContentBlock, DurableSource, DurableToolResult,
 };
+use crate::types::message::{Content, ContentPart, Message, Role, ToolErrorKind, ToolResult};
 use crate::types::result::{
     LoopResult, PaceAction as CorePaceAction, SubAgentResult, TerminationReason,
 };
@@ -318,6 +318,7 @@ fn message_body_parts(message: &Message) -> Option<(String, Option<String>, bool
                         call_id,
                         output,
                         is_error: failed,
+                        durable_content,
                     } => {
                         if tool_call_id.is_some() {
                             // Two results in one message have two call ids; the pair projection
@@ -325,6 +326,11 @@ fn message_body_parts(message: &Message) -> Option<(String, Option<String>, bool
                             return None;
                         }
                         tool_call_id = Some(call_id.to_string());
+                        if durable_content.is_some() {
+                            // The correlated durable envelope must survive intact, never be
+                            // reduced to its text projection.
+                            return None;
+                        }
                         text.push_str(output);
                         is_error = *failed;
                     }
@@ -346,8 +352,390 @@ fn message_content(text: String, tool_call_id: Option<&str>, is_error: bool) -> 
             call_id: call_id.into(),
             output: text,
             is_error,
+            durable_content: None,
         }]),
         None => Content::Text(text),
+    }
+}
+
+fn content_to_durable(content: &Content) -> Result<DurableContent, String> {
+    let blocks = match content {
+        Content::Text(text) => vec![DurableContentBlock::Text { text: text.clone() }],
+        Content::Parts(parts) => parts
+            .iter()
+            .map(content_part_to_durable)
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    let content = DurableContent {
+        schema_version: DurableContent::CURRENT_SCHEMA_VERSION,
+        blocks,
+    };
+    content.validate().map_err(|error| error.to_string())?;
+    Ok(content)
+}
+
+fn content_part_to_durable(part: &ContentPart) -> Result<DurableContentBlock, String> {
+    match part {
+        ContentPart::Text { text } => Ok(DurableContentBlock::Text { text: text.clone() }),
+        ContentPart::ToolResult { .. } => Err(
+            "a structured message cannot embed a tool result; durable tool results use their separate envelope".into(),
+        ),
+        ContentPart::Image { url, data, media_type, detail } => {
+            let source = match (url, data) {
+                (Some(url), None) => DurableSource::Url { url: url.clone() },
+                (None, Some(data)) => DurableSource::Base64 { data: data.clone() },
+                _ => return Err("image must have exactly one durable url or base64 source".into()),
+            };
+            let provider_options = detail
+                .as_ref()
+                .map(|detail| serde_json::json!({ "detail": detail }));
+            Ok(DurableContentBlock::Image {
+                source,
+                media_type: media_type.clone(),
+                provider_options,
+            })
+        }
+        ContentPart::Audio { data, media_type } => Ok(DurableContentBlock::Audio {
+            source: DurableSource::Base64 { data: data.clone() },
+            media_type: Some(media_type.clone()),
+            provider_options: None,
+        }),
+    }
+}
+
+fn durable_tool_result_from_content(content: &Content) -> Option<DurableToolResult> {
+    let Content::Parts(parts) = content else {
+        return None;
+    };
+    let [
+        ContentPart::ToolResult {
+            call_id,
+            is_error,
+            output,
+            durable_content,
+        },
+    ] = parts.as_slice()
+    else {
+        return None;
+    };
+    // A plain text-only ToolResult remains on the legacy checkpoint carrier. The structured
+    // envelope is opted into only by an explicit durable_content field.
+    durable_content.as_ref()?;
+    Some(durable_tool_result_from_part(
+        call_id,
+        output,
+        *is_error,
+        durable_content.as_ref(),
+    ))
+}
+
+fn durable_tool_results_from_content(content: &Content) -> Option<Vec<DurableToolResult>> {
+    let Content::Parts(parts) = content else {
+        return None;
+    };
+    if parts.len() < 2 {
+        return None;
+    }
+    let has_durable_content = parts.iter().any(|part| {
+        matches!(
+            part,
+            ContentPart::ToolResult {
+                durable_content: Some(_),
+                ..
+            }
+        )
+    });
+    if !has_durable_content {
+        return None;
+    }
+    let results = parts
+        .iter()
+        .map(|part| match part {
+            ContentPart::ToolResult {
+                call_id,
+                output,
+                is_error,
+                durable_content,
+            } => Some(durable_tool_result_from_part(
+                call_id,
+                output,
+                *is_error,
+                durable_content.as_ref(),
+            )),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(results)
+}
+
+fn durable_tool_result_from_part(
+    call_id: &str,
+    output: &str,
+    is_error: bool,
+    durable_content: Option<&DurableContent>,
+) -> DurableToolResult {
+    match durable_content {
+        Some(content) => DurableToolResult {
+            schema_version: content.schema_version,
+            call_id: call_id.to_owned(),
+            is_error,
+            blocks: content.blocks.clone(),
+        },
+        None => DurableToolResult::legacy_text(call_id.to_owned(), output.to_owned(), is_error),
+    }
+}
+
+fn content_from_durable_tool_result(result: &DurableToolResult) -> Result<Content, String> {
+    result.validate().map_err(|error| error.to_string())?;
+    let output = result
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            DurableContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<String>();
+    Ok(Content::Parts(vec![ContentPart::ToolResult {
+        call_id: result.call_id.clone().into(),
+        output,
+        is_error: result.is_error,
+        durable_content: Some(DurableContent {
+            schema_version: result.schema_version,
+            blocks: result.blocks.clone(),
+        }),
+    }]))
+}
+
+fn content_from_durable_tool_results(results: &[DurableToolResult]) -> Result<Content, String> {
+    let mut parts = Vec::with_capacity(results.len());
+    for result in results {
+        let Content::Parts(mut result_parts) = content_from_durable_tool_result(result)? else {
+            return Err("durable tool result did not restore to tool content".into());
+        };
+        parts.append(&mut result_parts);
+    }
+    Ok(Content::Parts(parts))
+}
+
+fn content_from_durable(content: &DurableContent) -> Result<Content, String> {
+    let parts = content
+        .blocks
+        .iter()
+        .map(durable_block_to_content_part)
+        .collect::<Result<Vec<_>, _>>()?;
+    if parts.len() == 1 {
+        if let ContentPart::Text { text } = &parts[0] {
+            return Ok(Content::Text(text.clone()));
+        }
+    }
+    Ok(Content::Parts(parts))
+}
+
+fn durable_block_to_content_part(block: &DurableContentBlock) -> Result<ContentPart, String> {
+    match block {
+        DurableContentBlock::Text { text } => Ok(ContentPart::Text { text: text.clone() }),
+        DurableContentBlock::Image {
+            source,
+            media_type,
+            provider_options,
+        } => match source {
+            DurableSource::Url { url } => Ok(ContentPart::Image {
+                url: Some(url.clone()),
+                data: None,
+                media_type: media_type.clone(),
+                detail: provider_options
+                    .as_ref()
+                    .and_then(|value| value.get("detail"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            }),
+            DurableSource::Base64 { data } => Ok(ContentPart::Image {
+                url: None,
+                data: Some(data.clone()),
+                media_type: media_type.clone(),
+                detail: provider_options
+                    .as_ref()
+                    .and_then(|value| value.get("detail"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+            }),
+            _ => Err("this kernel only restores image url/base64 sources".into()),
+        },
+        DurableContentBlock::Audio {
+            source: DurableSource::Base64 { data },
+            media_type,
+            ..
+        } => Ok(ContentPart::Audio {
+            data: data.clone(),
+            media_type: media_type
+                .clone()
+                .ok_or_else(|| "audio durable block requires media_type".to_string())?,
+        }),
+        DurableContentBlock::Audio { .. }
+        | DurableContentBlock::File { .. }
+        | DurableContentBlock::Video { .. } => {
+            Err("this kernel content vocabulary cannot restore the durable media source".into())
+        }
+    }
+}
+
+#[cfg(test)]
+mod durable_content_checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn structured_checkpoint_body_uses_durable_content_and_restores_media() {
+        let content = Content::Parts(vec![
+            ContentPart::Text {
+                text: "caption".into(),
+            },
+            ContentPart::Image {
+                url: None,
+                data: Some("aW1hZ2U=".into()),
+                media_type: Some("image/png".into()),
+                detail: Some("low".into()),
+            },
+        ]);
+        let durable = content_to_durable(&content).unwrap();
+        let restored = content_from_durable(&durable).unwrap();
+        assert_eq!(
+            serde_json::to_value(restored).unwrap(),
+            serde_json::to_value(content).unwrap()
+        );
+    }
+
+    #[test]
+    fn checkpoint_rejects_unrestorable_durable_file_source() {
+        let content = DurableContent {
+            schema_version: 1,
+            blocks: vec![DurableContentBlock::File {
+                source: DurableSource::FileId {
+                    id: "file-1".into(),
+                    affinity: crate::types::durable_content::EndpointAffinity {
+                        provider_id: "provider".into(),
+                        endpoint_id: "endpoint".into(),
+                    },
+                },
+                media_type: Some("application/pdf".into()),
+                provider_options: None,
+            }],
+        };
+        assert!(content_from_durable(&content).is_err());
+    }
+
+    #[test]
+    fn structured_tool_result_checkpoint_form_keeps_correlation_and_blocks() {
+        let result = DurableToolResult {
+            schema_version: 1,
+            call_id: "call-screenshot".into(),
+            is_error: false,
+            blocks: vec![
+                DurableContentBlock::Text {
+                    text: "captured".into(),
+                },
+                DurableContentBlock::Image {
+                    source: DurableSource::Base64 {
+                        data: "aW1hZ2U=".into(),
+                    },
+                    media_type: Some("image/png".into()),
+                    provider_options: None,
+                },
+                DurableContentBlock::File {
+                    source: DurableSource::FileId {
+                        id: "file-7".into(),
+                        affinity: crate::types::durable_content::EndpointAffinity {
+                            provider_id: "openai".into(),
+                            endpoint_id: "responses".into(),
+                        },
+                    },
+                    media_type: Some("application/pdf".into()),
+                    provider_options: None,
+                },
+            ],
+        };
+        let content = content_from_durable_tool_result(&result).unwrap();
+        let durable = durable_tool_result_from_content(&content).unwrap();
+        assert_eq!(durable, result);
+        let Content::Parts(parts) = content else {
+            panic!("tool result must restore as parts")
+        };
+        let [
+            ContentPart::ToolResult {
+                call_id,
+                output,
+                durable_content,
+                ..
+            },
+        ] = parts.as_slice()
+        else {
+            panic!("tool result must have one correlated part")
+        };
+        assert_eq!(call_id.as_str(), "call-screenshot");
+        assert_eq!(output, "captured");
+        assert_eq!(durable_content.as_ref().unwrap().blocks, result.blocks);
+    }
+
+    #[test]
+    fn legacy_multi_tool_results_keep_the_historical_checkpoint_carrier() {
+        let legacy = Content::Parts(vec![
+            ContentPart::ToolResult {
+                call_id: "call-1".into(),
+                output: "first".into(),
+                is_error: false,
+                durable_content: None,
+            },
+            ContentPart::ToolResult {
+                call_id: "call-2".into(),
+                output: "second".into(),
+                is_error: true,
+                durable_content: None,
+            },
+        ]);
+        assert!(
+            message_body_parts(&Message::tool(match legacy.clone() {
+                Content::Parts(parts) => parts,
+                Content::Text(_) => unreachable!(),
+            }))
+            .is_none()
+        );
+        assert!(durable_tool_results_from_content(&legacy).is_none());
+        assert!(
+            content_to_durable(&legacy).is_err(),
+            "nested tool results remain forbidden"
+        );
+    }
+
+    #[test]
+    fn structured_multi_tool_result_message_has_one_durable_envelope_per_call() {
+        let content = Content::Parts(vec![
+            ContentPart::ToolResult {
+                call_id: "call-1".into(),
+                output: "first".into(),
+                is_error: false,
+                durable_content: Some(DurableContent::text("first")),
+            },
+            ContentPart::ToolResult {
+                call_id: "call-2".into(),
+                output: "second".into(),
+                is_error: true,
+                durable_content: None,
+            },
+        ]);
+        let results = durable_tool_results_from_content(&content).unwrap();
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.call_id.as_str())
+                .collect::<Vec<_>>(),
+            ["call-1", "call-2"]
+        );
+        assert_eq!(
+            durable_tool_results_from_content(
+                &content_from_durable_tool_results(&results).unwrap()
+            )
+            .unwrap(),
+            results,
+        );
     }
 }
 
@@ -916,12 +1304,55 @@ fn restore_message(
             reference.tool_call_id.as_deref(),
             reference.is_error,
         ),
-        StoredMessageBody::Structured(structured) => serde_json::from_str(&structured.content_json)
-            .map_err(|error| {
-                incompatible(format!(
-                    "the checkpoint carries a structured message body that does not decode: {error}"
-                ))
-            })?,
+        StoredMessageBody::Structured(structured) => {
+            if structured.schema_version != DurableContent::CURRENT_SCHEMA_VERSION {
+                return Err(incompatible(format!(
+                    "the checkpoint carries unsupported durable content schema version {}",
+                    structured.schema_version
+                )));
+            }
+            if !structured.durable_tool_results.is_empty() {
+                if structured.durable_tool_result.is_some()
+                    || structured.durable_content.is_some()
+                    || structured.content_json.is_some()
+                {
+                    return Err(incompatible(
+                        "the checkpoint durable tool results must not carry another body form"
+                            .to_string(),
+                    ));
+                }
+                content_from_durable_tool_results(&structured.durable_tool_results).map_err(|error| incompatible(format!(
+                    "the checkpoint carries durable tool results this runtime cannot restore: {error}"
+                )))?
+            } else if let Some(result) = &structured.durable_tool_result {
+                if structured.durable_content.is_some() || structured.content_json.is_some() {
+                    return Err(incompatible(
+                        "the checkpoint durable tool result must not carry another body form"
+                            .to_string(),
+                    ));
+                }
+                content_from_durable_tool_result(result).map_err(|error| incompatible(format!(
+                    "the checkpoint carries durable tool result this runtime cannot restore: {error}"
+                )))?
+            } else if let Some(content) = &structured.durable_content {
+                content.validate().map_err(|error| {
+                    incompatible(format!(
+                        "the checkpoint carries invalid durable content: {error}"
+                    ))
+                })?;
+                content_from_durable(content).map_err(|error| incompatible(format!(
+                    "the checkpoint carries durable content this runtime cannot restore: {error}"
+                )))?
+            } else if let Some(content_json) = &structured.content_json {
+                serde_json::from_str(content_json).map_err(|error| incompatible(format!(
+                    "the checkpoint carries a legacy structured message body that does not decode: {error}"
+                )))?
+            } else {
+                return Err(incompatible(
+                    "the checkpoint structured message body has no content".to_string(),
+                ));
+            }
+        }
     };
     Ok(Message {
         role,
@@ -1589,10 +2020,63 @@ impl CanonicalOperationDriver {
     /// checkpoint carries the reference and the digest that verifies a page-in — putting the bytes
     /// back would re-create exactly the round trip §7.10 exists to delete.
     fn project_body(&self, message: &Message) -> StoredMessageBody {
+        // External/paged-out tool results must retain their reference form. Their legacy text
+        // projection is still represented as a `DurableToolResult`, but choosing that form first
+        // would discard the handle digest and make the body unreachable after restore.
+        let single_tool_result_is_external =
+            match &message.content {
+                Content::Parts(parts) if parts.len() == 1 => match &parts[0] {
+                    ContentPart::ToolResult { call_id, .. } => {
+                        self.engine
+                            .as_ref()
+                            .and_then(|engine| {
+                                engine.ctx.handles.all().iter().find(|handle| {
+                                    handle.source.as_deref() == Some(call_id.as_str())
+                                })
+                            })
+                            .is_some_and(|handle| handle.residency.digest().is_some())
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+        if !single_tool_result_is_external {
+            if let Some(results) = durable_tool_results_from_content(&message.content) {
+                return StoredMessageBody::Structured(StructuredMessageBody {
+                    schema_version: DurableContent::CURRENT_SCHEMA_VERSION,
+                    durable_content: None,
+                    durable_tool_result: None,
+                    durable_tool_results: results,
+                    content_json: None,
+                });
+            }
+            if let Some(result) = durable_tool_result_from_content(&message.content) {
+                return StoredMessageBody::Structured(StructuredMessageBody {
+                    schema_version: result.schema_version,
+                    durable_content: None,
+                    durable_tool_result: Some(result),
+                    durable_tool_results: Vec::new(),
+                    content_json: None,
+                });
+            }
+        }
         let Some((text, tool_call_id, is_error)) = message_body_parts(message) else {
+            let durable_content = content_to_durable(&message.content).ok();
+            let content_json = if durable_content.is_none() {
+                // Keep the legacy carrier only when the new durable form cannot represent the
+                // content. Writing both forms would make the checkpoint ambiguous on restore.
+                serde_json::to_string(&message.content).ok()
+            } else {
+                None
+            };
             return StoredMessageBody::Structured(StructuredMessageBody {
-                content_json: serde_json::to_string(&message.content)
-                    .unwrap_or_else(|_| "null".to_string()),
+                schema_version: DurableContent::CURRENT_SCHEMA_VERSION,
+                durable_content,
+                durable_tool_result: None,
+                durable_tool_results: Vec::new(),
+                // An unsupported future core content variant is retained in the legacy carrier
+                // rather than triggering a checkpoint-time panic.
+                content_json,
             });
         };
         let Some(call_id) = tool_call_id.as_deref() else {
@@ -3066,6 +3550,7 @@ impl CanonicalOperationDriver {
                      followed does not make it pointless."
                         .to_string(),
                 ),
+                durable_content: None,
                 is_error: true,
                 is_fatal: false,
                 error_kind: Some(ToolErrorKind::Fatal),
@@ -3116,6 +3601,7 @@ impl CanonicalOperationDriver {
                              did not take effect — try a different approach or a smaller step.",
                             failure.kind.as_str()
                         )),
+                        durable_content: None,
                         is_error: true,
                         is_fatal: false,
                         error_kind: Some(ToolErrorKind::Fatal),
@@ -5431,6 +5917,7 @@ fn core_tool_result(payload: &WireToolResultPayload) -> ToolResult {
         WireToolResultPayload::Inline(inline) => ToolResult {
             call_id: inline.call_id.as_str().into(),
             output: Content::Text(inline.result.output.clone()),
+            durable_content: inline.result.durable_content.clone(),
             is_error,
             is_fatal: disposition.is_fatal(),
             error_kind,
@@ -5439,6 +5926,7 @@ fn core_tool_result(payload: &WireToolResultPayload) -> ToolResult {
         WireToolResultPayload::External(external) => ToolResult {
             call_id: external.call_id.as_str().into(),
             output: Content::Text(external.preview.clone()),
+            durable_content: None,
             is_error,
             is_fatal: disposition.is_fatal(),
             error_kind,
@@ -5469,7 +5957,33 @@ fn check_payload_policy(
     let threshold = policy.inline_threshold_bytes as u64;
     match payload {
         WireToolResultPayload::Inline(inline) => {
-            let size = inline.result.output.len() as u64;
+            let durable_size = inline
+                .result
+                .durable_content
+                .as_ref()
+                .map(|content| {
+                    content.validate().map_err(|error| {
+                        KernelFault::new(
+                            KernelFaultCode::MalformedEnvelope,
+                            format!(
+                                "inline tool result {} carries invalid durable content: {error}",
+                                inline.call_id
+                            ),
+                        )
+                    })?;
+                    serde_json::to_vec(content).map(|bytes| bytes.len() as u64).map_err(|error| {
+                        KernelFault::new(
+                            KernelFaultCode::MalformedEnvelope,
+                            format!(
+                                "inline tool result {} durable content cannot be encoded: {error}",
+                                inline.call_id
+                            ),
+                        )
+                    })
+                })
+                .transpose()?
+                .unwrap_or(0);
+            let size = (inline.result.output.len() as u64).max(durable_size);
             if size >= threshold {
                 return Err(KernelFault::new(
                     KernelFaultCode::ResourceLimitExceeded,
@@ -5936,7 +6450,7 @@ mod tests {
     use crate::runtime::kernel::wire::event::{ChildResult, DeliverSignal, LogicalSignal};
     use crate::runtime::kernel::wire::fault::PrepareToken;
     use crate::runtime::kernel::wire::record::{
-        KernelRecord, RecordPreparation, verify_record_chain,
+        KernelRecord, RecordPreparation, canonical_bytes, canonical_digest, verify_record_chain,
     };
     use crate::runtime::kernel::wire::restore::{
         RestoreCost, RestoredOperation, restore_operation,
@@ -8325,6 +8839,30 @@ mod tests {
         (runtime, tools.effect_id.clone())
     }
 
+    /// Structured durable content is measured as part of the inline result, so this fixture uses
+    /// a threshold large enough for the mixed text/image/file envelope while keeping the
+    /// external-payload tests on their intentionally small threshold above.
+    fn agent_awaiting_structured_tool_results() -> (Runtime, EffectId) {
+        use crate::runtime::kernel::wire::config::PayloadPolicy;
+        let mut runtime = Runtime::new();
+        runtime.submit(&syscall_config_with(|config| {
+            config.payload_policy = Some(PayloadPolicy {
+                inline_threshold_bytes: Some(1024),
+                preview_bytes: Some(256),
+            });
+        }));
+        let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+        let acted = runtime.submit(&provider_result(
+            "in-acted",
+            1_700_000_002_000,
+            &effect_id(started.step_seq),
+            vec![tool_call("call-1", "search", json!({"q": "sources"}))],
+        ));
+        let tools = sole_effect(&acted);
+        assert_eq!(tools.tag(), EffectKindTag::ExecuteTools);
+        (runtime, tools.effect_id.clone())
+    }
+
     /// The whole point of the contract: the *preview* enters context and the handle says where the
     /// body is. Nothing about the body itself is inside this kernel.
     #[test]
@@ -8513,6 +9051,7 @@ mod tests {
                     call_id: CallId::new("call-1").unwrap(),
                     result: WireToolResult {
                         output: "small and legal".to_string(),
+                        durable_content: None,
                         is_error: false,
                         disposition: ToolResultDisposition::Recoverable,
                         tokens: None,
@@ -9200,6 +9739,7 @@ mod tests {
                             call_id: CallId::new(*call_id).unwrap(),
                             result: WireToolResult {
                                 output: (*output).to_string(),
+                                durable_content: None,
                                 is_error: *is_error,
                                 disposition: ToolResultDisposition::Recoverable,
                                 tokens: None,
@@ -9829,6 +10369,7 @@ mod tests {
                             call_id: CallId::new(*call_id).unwrap(),
                             result: WireToolResult {
                                 output: (*output).to_string(),
+                                durable_content: None,
                                 is_error: *is_error,
                                 disposition: *disposition,
                                 tokens: None,
@@ -9995,6 +10536,7 @@ mod tests {
                         part,
                         crate::types::message::ContentPart::ToolResult {
                             call_id,
+                            durable_content: None,
                             is_error: true,
                             ..
                         } if call_id.as_str() == "call-1"
@@ -13136,7 +13678,10 @@ mod tests {
 
         let expected = golden("golden_checkpoint_agent_turn.json", &produced);
         assert_eq!(produced, expected, "the logical checkpoint drifted");
-        assert_eq!(expected["checkpoint"]["checkpoint_version"], json!(1));
+        assert_eq!(
+            expected["checkpoint"]["checkpoint_version"],
+            json!(super::super::KERNEL_CHECKPOINT_VERSION)
+        );
         assert_eq!(
             expected["checkpoint"]["abi_version"],
             json!(super::super::KERNEL_ABI_VERSION),
@@ -13249,6 +13794,81 @@ mod tests {
             vec!["2", "3", "4"],
             "(1, 4] is exactly steps 2, 3 and 4",
         );
+    }
+
+    #[test]
+    fn bless_checkpoint_v1_migration_fixture() {
+        if std::env::var("BLESS_KERNEL_RECORD_FIXTURES").as_deref() != Ok("1") {
+            return;
+        }
+
+        let mut runtime = Runtime::new();
+        runtime.submit(&syscall_config());
+        let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+        let base = runtime
+            .checkpoint()
+            .decode()
+            .expect("the v1 fixture base checkpoint verifies");
+        let acted = runtime.submit(&provider_result(
+            "in-acted",
+            1_700_000_002_000,
+            &effect_id(started.step_seq),
+            vec![tool_call("call-1", "search", json!({"q": "sources"}))],
+        ));
+        runtime.submit(&tools_resolved(
+            "in-results",
+            1_700_000_003_000,
+            &effect_id(acted.step_seq),
+            &[("call-1", "three sources found", false)],
+        ));
+        let current = runtime
+            .tx
+            .checkpoint_rebase(
+                &CheckpointBoundary {
+                    through_step_seq: base.through_step_seq(),
+                    covered_head: base.covered_transaction_head_digest().clone(),
+                },
+                base.logical_state().clone(),
+            )
+            .expect("the historical bounded-tail shape assembles")
+            .decode()
+            .expect("the current checkpoint verifies");
+        let mut v1: serde_json::Map<String, Value> =
+            serde_json::from_slice(current.checkpoint_bytes().as_slice()).unwrap();
+        v1.insert("checkpoint_version".into(), json!(1));
+        v1["logical_state"]["context_vm"]["messages"][0]["body"] = json!({
+            "form": "structured",
+            "content_json": "\"Proceed with the task described in [TASK STATE].\"",
+        });
+        let state_bytes = canonical_bytes(&v1["logical_state"]).unwrap();
+        v1.insert(
+            "state_digest".into(),
+            Value::String(canonical_digest(state_bytes.as_slice()).to_string()),
+        );
+        let tail_bytes = canonical_bytes(&v1["tail_inputs"]).unwrap();
+        v1.insert(
+            "tail_digest".into(),
+            Value::String(canonical_digest(tail_bytes.as_slice()).to_string()),
+        );
+        let mut body = v1.clone();
+        body.remove("checkpoint_digest");
+        v1.insert(
+            "checkpoint_digest".into(),
+            Value::String(canonical_digest(canonical_bytes(&body).unwrap().as_slice()).to_string()),
+        );
+
+        let fixture = json!({
+            "description": "Frozen v1 bounded-tail checkpoint used to prove explicit v1-to-v2 migration and replay equivalence.",
+            "checkpoint": Value::Object(v1),
+            "expected": {
+                "covered_head": current.covered_transaction_head_digest().as_str(),
+                "tail_inputs_replayed": current.tail_inputs().len(),
+            },
+        });
+        let path = fixture_dir().join("golden_checkpoint_v1_migration.json");
+        let mut text = serde_json::to_string_pretty(&fixture).unwrap();
+        text.push('\n');
+        fs::write(path, text).expect("the historical v1 fixture writes");
     }
 
     /// §12.3 rule 1 · a candidate is a read. Appends continue, and the candidate that was handed
@@ -13732,6 +14352,7 @@ mod tests {
                     call_id: "call-archived".into(),
                     output: archived_body,
                     is_error: false,
+                    durable_content: None,
                 }]),
                 1_200,
             );
@@ -14016,6 +14637,162 @@ mod tests {
             vec![body_digest.to_string()],
             "the handle that addresses the body is restored with its verification digest",
         );
+    }
+
+    #[test]
+    fn a_structured_inline_tool_result_survives_checkpoint_restore() {
+        let (mut runtime, effect) = agent_awaiting_structured_tool_results();
+        let durable = DurableContent {
+            schema_version: 1,
+            blocks: vec![
+                DurableContentBlock::Text {
+                    text: "captured".into(),
+                },
+                DurableContentBlock::Image {
+                    source: DurableSource::Base64 {
+                        data: "aW1hZ2U=".into(),
+                    },
+                    media_type: Some("image/png".into()),
+                    provider_options: None,
+                },
+                DurableContentBlock::File {
+                    source: DurableSource::FileId {
+                        id: "file-7".into(),
+                        affinity: crate::types::durable_content::EndpointAffinity {
+                            provider_id: "openai".into(),
+                            endpoint_id: "responses".into(),
+                        },
+                    },
+                    media_type: Some("application/pdf".into()),
+                    provider_options: None,
+                },
+            ],
+        };
+        runtime.submit(&payloads_resolved(
+            "in-structured-results",
+            1_700_000_003_000,
+            &effect,
+            vec![WireToolResultPayload::Inline(InlineToolResult {
+                call_id: CallId::new("call-1").unwrap(),
+                result: WireToolResult {
+                    output: "captured".into(),
+                    durable_content: Some(durable.clone()),
+                    is_error: false,
+                    disposition: ToolResultDisposition::Recoverable,
+                    tokens: None,
+                },
+            })],
+        ));
+
+        let checkpoint = runtime.checkpoint().decode().expect("checkpoint verifies");
+        let structured = checkpoint
+            .logical_state()
+            .context_vm
+            .messages
+            .iter()
+            .find_map(|message| match &message.body {
+                StoredMessageBody::Structured(body) => body.durable_tool_result.as_ref(),
+                _ => None,
+            })
+            .expect("structured tool result stays in checkpoint");
+        assert_eq!(structured.call_id, "call-1");
+        assert_eq!(structured.blocks, durable.blocks);
+
+        let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+        let restored_result = restored
+            .driver
+            .engine()
+            .expect("engine")
+            .ctx
+            .partitions
+            .history
+            .messages
+            .iter()
+            .find_map(|message| match &message.content {
+                Content::Parts(parts) => parts.iter().find_map(|part| match part {
+                    ContentPart::ToolResult {
+                        call_id,
+                        durable_content,
+                        ..
+                    } if call_id.as_str() == "call-1" => durable_content.as_ref(),
+                    _ => None,
+                }),
+                Content::Text(_) => None,
+            })
+            .expect("restored result keeps durable blocks");
+        assert_eq!(restored_result, &durable);
+    }
+
+    #[test]
+    fn an_inline_tool_result_rejects_invalid_durable_content_before_state_mutation() {
+        let (mut runtime, effect) = agent_awaiting_tool_results();
+        let fault = runtime.reject(&payloads_resolved(
+            "in-invalid-structured-result",
+            1_700_000_003_000,
+            &effect,
+            vec![WireToolResultPayload::Inline(InlineToolResult {
+                call_id: CallId::new("call-1").unwrap(),
+                result: WireToolResult {
+                    output: "bad".into(),
+                    durable_content: Some(DurableContent {
+                        schema_version: 2,
+                        blocks: Vec::new(),
+                    }),
+                    is_error: false,
+                    disposition: ToolResultDisposition::Recoverable,
+                    tokens: None,
+                },
+            })],
+        ));
+        assert_eq!(fault.code, KernelFaultCode::MalformedEnvelope);
+        assert!(fault.message.contains("invalid durable content"));
+        assert_eq!(
+            runtime.pending_effect_kinds(),
+            vec![EffectKindTag::ExecuteTools]
+        );
+    }
+
+    #[test]
+    fn structured_tool_result_is_explicitly_downgraded_when_micro_compacted() {
+        use crate::context::compression::{Compressor, MicroCompactor};
+        use crate::context::partitions::ContextPartitions;
+        use crate::context::token_engine::ContextTokenEngine;
+
+        let durable = DurableContent {
+            schema_version: 1,
+            blocks: vec![DurableContentBlock::Image {
+                source: DurableSource::Base64 {
+                    data: "aW1hZ2U=".into(),
+                },
+                media_type: Some("image/png".into()),
+                provider_options: None,
+            }],
+        };
+        let mut partitions = ContextPartitions::default();
+        let message = Message::tool(vec![ContentPart::ToolResult {
+            call_id: "call-1".into(),
+            output: "x".repeat(12_000),
+            is_error: false,
+            durable_content: Some(durable),
+        }]);
+        partitions.history.push(message, 3_000);
+        let engine = ContextTokenEngine::char_approx();
+        MicroCompactor.compress(&mut partitions, 0, 0, 0, &engine);
+        let Content::Parts(parts) = &partitions.history.messages[0].content else {
+            panic!("tool message remains structured")
+        };
+        let [
+            ContentPart::ToolResult {
+                durable_content,
+                output,
+                ..
+            },
+        ] = parts.as_slice()
+        else {
+            panic!("tool message keeps its result part")
+        };
+        assert!(durable_content.is_none());
+        assert!(output.starts_with("[tool result:"));
     }
 
     /// §12.3 rule 11 · the two candidate forms agree on `state_digest` for the same logical state.

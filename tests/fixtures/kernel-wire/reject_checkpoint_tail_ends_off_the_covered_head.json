@@ -3,7 +3,7 @@
     "abi_version": 3,
     "base_record_digest": "sha256:7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4",
     "base_step_seq": "2",
-    "checkpoint_digest": "sha256:f1bf3ea4b967db62ab3a40a40ab00547201d7514d5fe5542d2ac839831120693",
+    "checkpoint_digest": "sha256:3744cd76e442d0778fb1fd9c0b66bbb4b3902359aee72a3e8bade7c4cb459bb4",
     "checkpoint_version": 1,
     "covered_transaction_head_digest": "sha256:161fcc53e5674fa7b6660f0742c8e4d3eb8996bfd341b49bf57800a06b1d3e56",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
@@ -42,6 +42,12 @@
       },
       "scheduler": {
         "attempts": [],
+        "entropy": {
+          "disarmed": false,
+          "last_alert_turn": null,
+          "rollbacks_pending": 0,
+          "window": []
+        },
         "milestone": null,
         "queued_signals": [],
         "rounds_completed": 0,
@@ -177,8 +183,12 @@
           "resource_quota": {},
           "scheduler_policy": {
             "age_weight": 1000,
+            "budget_pressure_weight": 0,
             "critical_path_weight": 1000000,
+            "deadline_weight": 0,
             "fanout_weight": 10000,
+            "process_priority_weight": 0,
+            "resource_pressure_weight": 0,
             "token_cost_weight": 1
           },
           "signal_policy": {
@@ -196,8 +206,8 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:5646d52ecbb019ff38e91be1aa8e33000183198fdac45449446e942fcec3ee9d",
-    "tail_digest": "sha256:9f2c207af60e663a927dc66800538294dd902a7d0da1ce6ca43c064316cd7fe8",
+    "state_digest": "sha256:20f77f79107771d3fb737c56da801f25e2719cedba0ba243518a26b4e05cf340",
+    "tail_digest": "sha256:455f32684bff42ca05a8519e7a3a9a1314d2438c75a2aeec962a81b08c542fd5",
     "tail_inputs": [
       {
         "input": {
@@ -303,8 +313,12 @@
               "resource_quota": {},
               "scheduler_policy": {
                 "age_weight": 1000,
+                "budget_pressure_weight": 0,
                 "critical_path_weight": 1000000,
+                "deadline_weight": 0,
                 "fanout_weight": 10000,
+                "process_priority_weight": 0,
+                "resource_pressure_weight": 0,
                 "token_cost_weight": 1
               },
               "signal_policy": {
@@ -429,8 +443,12 @@
               "resource_quota": {},
               "scheduler_policy": {
                 "age_weight": 1000,
+                "budget_pressure_weight": 0,
                 "critical_path_weight": 1000000,
+                "deadline_weight": 0,
                 "fanout_weight": 10000,
+                "process_priority_weight": 0,
+                "resource_pressure_weight": 0,
                 "token_cost_weight": 1
               },
               "signal_policy": {

@@ -1,6 +1,6 @@
 # Hello Agent
 
-Run your first agent in five minutes. Full example: `python/examples/hello_agent/main.py`.
+Run your first tool-using Agent in five minutes. This example gives an Agent a model, one file-reading tool, streaming output, and a session.
 
 ## Code
 
@@ -52,13 +52,13 @@ pip install -e .
 ANTHROPIC_API_KEY=sk-... python examples/hello_agent/main.py "Read README.md and summarize"
 ```
 
-## What Happens
+## What the Agent does
 
-1. `RuntimeRunner` creates a canonical operation and atomically starts `StartOperation::Agent`
-2. The kernel returns `CallLLM` with `RenderedContext` and tool schemas
-3. The provider streams tokens; if the model calls a tool, `ExecutionPlane` runs `read_file`
-4. Tool results are fed back into the kernel for the next turn
-5. On completion, the runner emits `DoneEvent`
+1. The Agent receives the goal and the `read_file` capability.
+2. The model decides whether it needs the file and requests the tool.
+3. The application runs the tool and returns its result to the Agent.
+4. The Agent uses the result to write the answer while events stream to the application.
+5. The session ends with a `DoneEvent` that includes the run summary.
 
 ## Simpler Alternative
 

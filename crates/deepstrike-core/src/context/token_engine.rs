@@ -56,7 +56,10 @@ pub struct FallbackEstimator {
 
 impl FallbackEstimator {
     pub fn new(backend: deepstrike_tokenizer::TokenizerBackend, safety_margin: f64) -> Self {
-        Self { tokenizer: deepstrike_tokenizer::Tokenizer::new(backend), safety_margin }
+        Self {
+            tokenizer: deepstrike_tokenizer::Tokenizer::new(backend),
+            safety_margin,
+        }
     }
 }
 
@@ -257,8 +260,9 @@ mod tests {
 低估会导致压缩没有按时触发，继续 append 下去最终造成 Provider context overflow。";
 
         let approx = CharApproxCounter.count(sample);
-        let real = deepstrike_tokenizer::Tokenizer::new(deepstrike_tokenizer::TokenizerBackend::Cl100k)
-            .count(sample);
+        let real =
+            deepstrike_tokenizer::Tokenizer::new(deepstrike_tokenizer::TokenizerBackend::Cl100k)
+                .count(sample);
 
         let underestimate_pct = 1.0 - (approx as f64 / real as f64);
         assert!(
@@ -279,8 +283,9 @@ mod tests {
 
         let e = ContextTokenEngine::fallback_estimator();
         let estimated = e.count(sample);
-        let real = deepstrike_tokenizer::Tokenizer::new(deepstrike_tokenizer::TokenizerBackend::Cl100k)
-            .count(sample);
+        let real =
+            deepstrike_tokenizer::Tokenizer::new(deepstrike_tokenizer::TokenizerBackend::Cl100k)
+                .count(sample);
 
         assert!(
             estimated >= real,

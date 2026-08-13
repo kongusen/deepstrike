@@ -1,6 +1,6 @@
 # Hello Agent
 
-5 分钟跑通第一个 Agent。完整示例：`python/examples/hello_agent/main.py`。
+5 分钟跑通第一个使用工具的 Agent。这个示例为 Agent 配置模型、文件读取工具、流式输出和 Session。
 
 ## 代码
 
@@ -52,13 +52,13 @@ pip install -e .
 ANTHROPIC_API_KEY=sk-... python examples/hello_agent/main.py "Read README.md and summarize"
 ```
 
-## 发生了什么
+## Agent 做了什么
 
-1. `RuntimeRunner` 创建 canonical operation，并以 `StartOperation::Agent` 原子启动 root
-2. Kernel 返回 `CallLLM` + `RenderedContext` + 工具 schema
-3. Provider 流式返回；若有 tool call，`ExecutionPlane` 执行 `read_file`
-4. 工具结果回灌 kernel，进入下一 turn
-5. 完成后 emit `DoneEvent`
+1. Agent 收到目标和 `read_file` 能力。
+2. 模型判断是否需要读取文件，并发起工具请求。
+3. 应用执行工具，把结果返回给 Agent。
+4. Agent 根据结果生成回答，应用同时收到流式事件。
+5. Session 结束时产生包含运行摘要的 `DoneEvent`。
 
 ## 更简单的方式
 

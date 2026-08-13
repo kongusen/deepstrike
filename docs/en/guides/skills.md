@@ -1,37 +1,38 @@
 # Skills
 
-Skills are the Agent OS **Capability Plane**. They move capability instructions out of default context, load them through a meta-tool only when the agent asks, and then narrow the exposed tool surface.
+Skills are reusable packages of instructions, knowledge, and optional tool access. They let an Agent load a specialized way of working only when the current task needs it.
 
 **Source code:**
-- Kernel: `crates/deepstrike-core/src/context/skill_catalog.rs`
+- Runtime: `crates/deepstrike-core/src/context/skill_catalog.rs`
 - SDK: `python/deepstrike/skills/registry.py`
 
 ---
 
-## Agent OS Positioning
+## What a skill changes for an Agent
 
-| Responsibility | Description |
-|----------------|-------------|
-| To the Context VM | Keeps only skill metadata in stable context; bodies enter as needed via knowledge / tool result |
-| To the tool plane | `allowed_tools` narrows visible tools and reduces accidental calls |
-| To governance | Skill gating happens before schema exposure and composes with Governance |
-| To long tasks | Different phases can load different capabilities instead of bloating the system prompt |
+| Benefit | Behavior |
+| --- | --- |
+| --- | --- |
+| Smaller default prompt | Only skill summaries are available until the Agent loads one. |
+| Specialized instructions | The skill body becomes active context for the current task. |
+| Focused tool access | `allowed_tools` can narrow the tools visible during that phase. |
+| Phase-based work | Different skills can be loaded and released as the task changes. |
 
-The value of a skill is not another Markdown file. It turns capability into an addressable, auditable, gateable OS resource.
+The value of a skill is not another Markdown file. It is a reusable capability boundary that keeps an Agent focused.
 
 ![Skills Mechanisms](/skills_mechanisms.svg)
 
 ## Concept
 
 1. `SkillRegistry.scan()` scans `*.md` files, parses YAML frontmatter → `SkillMetadata`
-2. The kernel injects a `skill` meta-tool whose description embeds `<available_skills>` XML
+2. The Agent sees an available-skills summary and can request a skill by name
 3. The agent calls `skill(name="...")` → SDK reads the file body → returns it as a tool result
 4. After loading, the skill enters `active_skills` and **narrows** the exposed tool set via `allowed_tools`
 
 ```python
 # python/deepstrike/skills/registry.py
 class SkillRegistry:
-    """Scans a directory of .md skill files and registers them with the kernel."""
+    """Scans a directory of .md skill files and registers them with the runtime."""
 
     def scan(self) -> list[SkillMetadata]:
         skills = []
@@ -95,7 +96,7 @@ RuntimeOptions(
 )
 ```
 
-Maps to kernel `ContextManager.stable_core_tools`.
+Maps to runtime `ContextManager.stable_core_tools`.
 
 ---
 
@@ -147,11 +148,11 @@ runner.deactivate_skill("code-review")     # or explicit host-driven unload
 
 ---
 
-## Kernel behavior
+## Runtime behavior
 
 - The catalog **does not store body text** — only `build_tool_schema()` generates the meta-tool
 - `active_skills` is a `BTreeMap<name, Option<expires_at_turn>>` (multiple skills union their tools; deactivation/leases since K3 — see Level 4)
-- A successfully loaded skill body is additionally pinned into the knowledge partition (key `skill:<name>`; the kernel upsert dedupes across wakes)
+- A successfully loaded skill body is additionally pinned into the knowledge partition (key `skill:<name>`; runtime upsert dedupes across wakes)
 - Skills are meta-tools and do not count toward `recent_actions` progress log
 
 ---
@@ -159,4 +160,4 @@ runner.deactivate_skill("code-review")     # or explicit host-driven unload
 ## Further reading
 
 - [Context Engineering](./context-engineering)
-- Cursor Agent Skills follow a similar pattern; DeepStrike gates tools at the kernel layer
+- Cursor Agent Skills follow a similar pattern; DeepStrike gates tools in the runtime

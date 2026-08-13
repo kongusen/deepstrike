@@ -58,6 +58,7 @@ fn recoverable_error_preserves_history() {
         results: vec![ToolResult {
             call_id: CompactString::new("c1"),
             output: Content::Text("permission hint".into()),
+            durable_content: None,
             is_error: true,
             is_fatal: false,
             error_kind: Some(ToolErrorKind::Recoverable),
@@ -85,6 +86,7 @@ fn none_error_kind_also_does_not_rollback() {
         results: vec![ToolResult {
             call_id: CompactString::new("c1"),
             output: Content::Text("ok".into()),
+            durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,
@@ -114,6 +116,7 @@ fn fatal_error_kind_commits_as_visible_error_result() {
         results: vec![ToolResult {
             call_id: CompactString::new("c1"),
             output: Content::Text("disk corrupt".into()),
+            durable_content: None,
             is_error: true,
             is_fatal: false,
             error_kind: Some(ToolErrorKind::Fatal),
@@ -145,6 +148,7 @@ fn is_fatal_flag_commits_without_rollback() {
         results: vec![ToolResult {
             call_id: CompactString::new("c1"),
             output: Content::Text("deploy crashed".into()),
+            durable_content: None,
             is_error: true,
             is_fatal: true,
             error_kind: None,
@@ -188,6 +192,7 @@ fn checkpoint_history_len_matches_actual_history() {
         results: vec![ToolResult {
             call_id: CompactString::new("c1"),
             output: Content::Text("data".into()),
+            durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,

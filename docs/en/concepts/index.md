@@ -1,13 +1,13 @@
 # Concept Index
 
-Concepts explain the **design concepts** that directly affect DeepStrike behavior in code. They sit below the architecture pages and above API reference.
+Concepts explain the design choices that affect how Agents behave. They sit between capability guides and the API reference.
 
-If [Architecture](/en/architecture/) explains the overall Agent OS shape, Concepts answer:
+If the [How Agents Run](/en/architecture/) page explains the overall runtime shape, Concepts answer:
 
 - Which fields define a sub-agent's privilege boundary?
 - Why is Context not a chat log?
 - Why does prompt cache need a frozen prefix?
-- Why does RunGroup live in SDK storage instead of kernel persistence?
+- How can several Agent runs share a cumulative budget?
 
 ## Recommended Reading
 
@@ -21,8 +21,8 @@ If [Architecture](/en/architecture/) explains the overall Agent OS shape, Concep
 
 | Layer | Focus |
 |-------|-------|
-| Architecture | Why DeepStrike is an Agent OS microkernel and how kernel / host split responsibilities |
-| Concepts | How one mechanism is represented in code, which fields are sources of truth, and what the host executes |
+| Architecture | How an Agent run, session, and collaboration flow fit together |
+| Concepts | Why a capability behaves a certain way and which fields control it |
 | Guides | How to use the mechanism in real workflows |
 | Reference | Full type, option, and event-field details |
 
@@ -30,7 +30,6 @@ If [Architecture](/en/architecture/) explains the overall Agent OS shape, Concep
 
 Concept pages follow three rules:
 
-1. **Core types are the source of truth**: Rust `deepstrike-core` defines kernel semantics.
-2. **Host responsibilities are explicit**: LLM calls, tools, filesystems, SessionLog, and RunGroup stores are SDK work.
+1. **Agent behavior is the source of truth**: examples and public types describe what developers can rely on.
+2. **Application responsibilities are explicit**: model calls, tools, filesystems, SessionLog, and RunGroup stores stay with the integrating application.
 3. **Defaults are documented**: default roles, default inheritance, default budgets, and default cache behavior affect observable results.
-

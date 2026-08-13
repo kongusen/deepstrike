@@ -520,6 +520,37 @@ class ModelRegistry:
             runtime_policy=registration.recommended_runtime_policy if registration else None,
         )
 
+    def resolve_registered_provider_runtime(
+        self,
+        registration: ModelRegistration,
+        endpoint_id: str | None = None,
+        endpoint_overrides: EndpointRuntimeCapabilities | None = None,
+    ) -> ResolvedProviderRuntime:
+        """Resolve endpoint facts around an externally supplied catalog registration.
+
+        Dynamic catalogs may refine model capabilities, but they do not own endpoint selection or
+        routing policy. This keeps their descriptor authoritative once selected without widening
+        the catalog contract into a router.
+        """
+        endpoint_id = endpoint_id or registration.default_endpoint_id
+        protocol = _ENDPOINT_PROTOCOL.get(endpoint_id)
+        if protocol is None:
+            raise ValueError(f"Unknown endpoint {endpoint_id!r}")
+        descriptor = registration.descriptor
+        return ResolvedProviderRuntime(
+            provider_id=descriptor.provider_id,
+            model_id=normalize_model_id(descriptor.provider_id, descriptor.id),
+            endpoint_id=endpoint_id,
+            protocol=protocol,
+            model=descriptor,
+            effective_capabilities=resolve_effective_capabilities(
+                descriptor,
+                endpoint_id,
+                endpoint_overrides,
+            ),
+            runtime_policy=registration.recommended_runtime_policy,
+        )
+
 
 model_registry = ModelRegistry()
 

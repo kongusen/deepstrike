@@ -1,6 +1,6 @@
 # 结构化输出与 Reducer
 
-DeepStrike 的 workflow 支持两种“少用 LLM、更可控”的机制：
+当 Agent 之间需要稳定交接时，DeepStrike 的 workflow 提供两种可预测的结果处理方式：
 
 - `output_schema`：要求某个 agent node 输出符合 JSON Schema 子集
 - `Reduce` node：不跑 LLM，host 执行确定性 reducer 合并依赖输出
@@ -12,16 +12,16 @@ DeepStrike 的 workflow 支持两种“少用 LLM、更可控”的机制：
 - `crates/deepstrike-core/src/orchestration/workflow/mod.rs`
 - `python/deepstrike/runtime/runner.py`
 
-## 在 Agent OS 中的位置
+## 让 Agent 交接可靠
 
 | 职责 | 说明 |
 |------|------|
-| 对 workflow | 让 node 输出变成可校验数据，而不只是自然语言 |
-| 对 provider | schema instruction 和 retry 由 SDK 注入，kernel 只携带契约 |
-| 对 host | Reduce node 直接运行 deterministic reducer，不消耗模型调用 |
-| 对下游节点 | schema 失败会阻断依赖节点，reducer 输出可作为稳定输入继续传递 |
+| 可校验交接 | 让 node 输出变成可校验数据，而不只是自然语言 |
+| 有界纠错 | schema instruction 和 retry 由 SDK 注入 |
+| 确定性合并 | Reduce node 直接运行 deterministic reducer，不消耗模型调用 |
+| 下游保护 | schema 失败会阻断依赖节点，reducer 输出可作为稳定输入继续传递 |
 
-这个平面把“让 LLM 给我一个结构”转成 OS 可执行契约：能校验、能重试、能失败、能用确定性代码合并。
+这会把“让 Agent 给我一个结构”变成可校验、可重试、可失败、可用确定性代码合并的交接约定。
 
 ![Reducers & Output Validation Mechanisms](/reducers_mechanisms.svg)
 
@@ -151,15 +151,15 @@ spec = gen_eval(
 
 内部会使用 loop worker + verify node；评判结构可配合 `verdict_output_schema()`。
 
-## Kernel / Host 边界
+## 运行时与 SDK 的职责
 
 | 行为 | 所属 |
 |------|------|
-| schema 字段随 node descriptor 传递 | kernel |
+| schema 字段随 node descriptor 传递 | runtime |
 | schema instruction 注入 | SDK |
 | JSON 提取与校验 | SDK |
 | retry prompt | SDK |
-| reducer node 调度与依赖 | kernel |
+| reducer node 调度与依赖 | runtime |
 | reducer 函数执行 | SDK |
 
 ## 常见问题

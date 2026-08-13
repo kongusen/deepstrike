@@ -69,7 +69,7 @@ pub const KERNEL_ABI_VERSION: u32 = 3;
 ///
 /// This remains a separate revision axis so retired recovery-format values cannot collide with the
 /// logical checkpoint boundary check.
-pub const KERNEL_CHECKPOINT_VERSION: u32 = 1;
+pub const KERNEL_CHECKPOINT_VERSION: u32 = 2;
 
 /// Absolute structural boundary applied **before** any JSON is parsed (§7.3).
 ///

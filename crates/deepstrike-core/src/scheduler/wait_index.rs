@@ -186,9 +186,15 @@ mod tests {
     fn insert_then_lookup_hits() {
         let mut index = WaitIndex::new();
         let effect = EffectId::new("e1").unwrap();
-        index.insert(TaskId::from("task-1"), &WaitCondition::Effect(effect.clone()));
+        index.insert(
+            TaskId::from("task-1"),
+            &WaitCondition::Effect(effect.clone()),
+        );
 
-        assert_eq!(index.lookup(&WaitKey::Effect(effect)), &[TaskId::from("task-1")]);
+        assert_eq!(
+            index.lookup(&WaitKey::Effect(effect)),
+            &[TaskId::from("task-1")]
+        );
     }
 
     #[test]
@@ -260,7 +266,10 @@ mod tests {
             "All-mode must not wake until every condition has fired"
         );
         // Still registered under e2, waiting for the second half.
-        assert_eq!(index.lookup(&WaitKey::Effect(e2.clone())), &[TaskId::from("task-1")]);
+        assert_eq!(
+            index.lookup(&WaitKey::Effect(e2.clone())),
+            &[TaskId::from("task-1")]
+        );
 
         let woken_after_e2 = index.notify(&WaitKey::Effect(e2));
         assert_eq!(woken_after_e2, vec![TaskId::from("task-1")]);

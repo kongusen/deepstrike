@@ -140,6 +140,7 @@ mod tests {
             call_id: id.into(),
             output: "ok".into(),
             is_error: false,
+            durable_content: None,
         }])
     }
 

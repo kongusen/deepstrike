@@ -1,12 +1,12 @@
 # Harness & Eval
 
-Harness & Eval are the Agent OS **Quality Gate Plane**. They do not change the kernel reasoning loop; they wrap a run in a generate, judge, feedback, retry controller so subjective quality requirements become executable gates.
+Evaluation lets an application decide whether an Agent's result is good enough. Use criteria, a judge, feedback, and bounded retries to turn a subjective quality bar into a repeatable check.
 
 **Source code:** `python/deepstrike/harness/`, `python/deepstrike/runtime/eval.py`
 
 ---
 
-## Agent OS Positioning
+## What evaluation adds
 
 | Responsibility | Description |
 |----------------|-------------|
@@ -16,7 +16,7 @@ Harness & Eval are the Agent OS **Quality Gate Plane**. They do not change the k
 | To contracts | Criterion / Verdict structure acceptance standards for milestone or handoff use |
 | To sessions | Attempts, feedback, and outcomes can be written as evidence events |
 
-The harness plane answers "is the output good enough?" Governance answers "is this action allowed?" Keep those responsibilities separate.
+Evaluation answers “is the output good enough?” Governance answers “is this action allowed?” Keep those responsibilities separate.
 
 ![Harness & Eval Mechanisms](/harness_eval_mechanisms.svg)
 
@@ -130,7 +130,7 @@ schema = json.loads(verdict_output_schema(extract_skill_on_pass=True))
 
 ---
 
-## Kernel behavior
+## Runtime behavior
 
 - Harness loops are SDK-owned; the kernel sees repeated agent runs as separate turns/sessions
 - Sub-agent harness hooks into workflow node completion before marking a node done

@@ -1,12 +1,12 @@
-# Session, Replay & Recovery
+# Agent Sessions, Replay & Recovery
 
-SessionLog is DeepStrike's evidence chain: each run appends LLM output, tool requests, tool results, compression, permission, process, memory, and workflow events to one session stream. It supports:
+An Agent needs to remember what it is doing and continue after interruption. SessionLog retains model output, tool requests and results, compression, permissions, collaboration, memory, and workflow events for each run as an explainable session record. It supports:
 
 - **Diagnostics**: fold OS Snapshots or inspect historical workflow projections offline
 - **Audit**: filter important events by kernel primitive
 - **Reproduction**: replay model output via provider replay / ReplayProvider
 
-Production recovery is a separate path: hosts persist an opaque logical checkpoint and canonical KernelJournal, then restore by installing the checkpoint and replaying only the bounded tail. SessionLog never reconstructs production control state.
+Production recovery is a separate path: the application persists an opaque logical checkpoint and canonical KernelJournal, then restores by installing the checkpoint and replaying only the bounded tail. SessionLog explains, audits, and tests a run; it never reconstructs production control state.
 
 **Code entry points**:
 
@@ -17,17 +17,17 @@ Production recovery is a separate path: hosts persist an opaque logical checkpoi
 - `python/deepstrike/runtime/replay_fixture.py`
 - `python/deepstrike/runtime/os_snapshot.py`
 
-## Agent OS Positioning
+## Agent continuity
 
 | Responsibility | Description |
 |----------------|-------------|
 | Event log | SessionLog is the append-only evidence stream for a run |
 | Recovery | Canonical checkpoints and KernelJournal records restore complete logical state; SessionLog has no state authority |
-| Audit | Events can be filtered by kernel primitive to see which plane did what |
+| Audit | Events can be filtered by runtime primitive to locate important decisions |
 | Reproduction | provider replay / ReplayProvider makes tests independent of live model calls |
 | Operations | OS Snapshot summarizes session events into dashboard-ready state |
 
-The session plane is the Agent OS evidence stream; KernelJournal is the transaction authority. SessionLog explains, reproduces, and supports operations, while logical checkpoints and the journal own production recovery.
+SessionLog is the Agent's evidence chain. KernelJournal and logical checkpoints own production recovery. The former explains, reproduces, and supports operations; the latter holds the logical state required to continue.
 
 ![Session Replay & Recovery Mechanisms](/session_replay_mechanisms.svg)
 

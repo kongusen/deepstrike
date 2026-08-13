@@ -178,6 +178,14 @@ from deepstrike.types.agent import (
 )
 from deepstrike.agent import Agent, AgentDefinition, AgentMemory, MemoryReference, ModelRef
 from deepstrike.agent_ir import lower_agent, normalize_agent
+from deepstrike.runtime.durable_content import (
+    DurableContentError,
+    decode_durable_content,
+    decode_durable_tool_result,
+    encode_durable_content,
+    encode_durable_tool_result,
+    migrate_legacy_content,
+)
 from deepstrike.collaboration import (
     AcceptanceCriterion, VerificationContract, ContractCheckResult,
     ContractBuilder, format_contract_for_system_prompt, contract_to_criteria_strings,

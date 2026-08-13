@@ -103,7 +103,7 @@ export { OpenAIResponsesProvider } from "./providers/openai-responses.js"
 export { createProvider, createProviderAsync, resolveProviderRuntime, resolveProviderRuntimeAsync } from "./providers/catalog.js"
 export { UnsupportedModalityError } from "./providers/base.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
-export { createProviderRequestPlan, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./providers/request-plan.js"
+export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./providers/request-plan.js"
 export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement } from "./providers/request-plan.js"
 
 // ── Governance ──────────────────────────────────────────────────────────────
@@ -145,9 +145,21 @@ export type {
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
   LLMProvider, RetryConfig, TokenUsage,
 } from "./types.js"
+export {
+  DurableContentError,
+  decodeDurableContent,
+  decodeDurableToolResult,
+  encodeDurableContent,
+  encodeDurableToolResult,
+  migrateLegacyContent,
+  toolOutputBlocksToDurable,
+  durableBlocksToToolOutput,
+} from "./runtime/durable-content.js"
+export type { DurableContent, DurableContentBlock, DurableSource, DurableToolResult } from "./runtime/durable-content.js"
 export type {
   WorkflowSpec,
   WorkflowNodeSpec,
+  SchedulingFactors,
   WorkflowDependencyPolicy,
   WorkflowNodeStatus,
   WorkflowNodeOutcome,

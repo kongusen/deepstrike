@@ -55,6 +55,7 @@ impl RuleSummarizer {
                                 call_id,
                                 output,
                                 is_error,
+                                ..
                             } => {
                                 if *is_error {
                                     push_unique(
@@ -327,6 +328,7 @@ mod tests {
             call_id: "call-1".into(),
             output: "ERROR: write failed; artifact /work/report.json".into(),
             is_error: true,
+            durable_content: None,
         }]);
         let out = RuleSummarizer.summarize(&[call, result], PressureAction::ContextCollapse, 1_000);
         for slot in [

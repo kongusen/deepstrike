@@ -111,6 +111,7 @@ fn tool_results_advance_turn_and_emit_call_llm() {
     let results = vec![ToolResult {
         call_id: CompactString::new("c1"),
         output: Content::Text("3".into()),
+        durable_content: None,
         is_error: false,
         is_fatal: false,
         error_kind: None,
@@ -196,6 +197,7 @@ fn recoverable_tool_error_does_not_rollback() {
         results: vec![ToolResult {
             call_id: CompactString::new("c1"),
             output: Content::Text("permission hint".into()),
+            durable_content: None,
             is_error: true,
             is_fatal: false,
             error_kind: Some(ToolErrorKind::Recoverable),
@@ -243,6 +245,7 @@ fn fatal_tool_error_commits_with_visible_reason() {
         results: vec![ToolResult {
             call_id: CompactString::new("c1"),
             output: Content::Text("disk corrupt".into()),
+            durable_content: None,
             is_error: true,
             is_fatal: false,
             error_kind: Some(ToolErrorKind::Fatal),
@@ -527,6 +530,7 @@ fn full_tool_cycle_then_text_completes() {
     let results = vec![ToolResult {
         call_id: CompactString::new("c1"),
         output: Content::Text("3".into()),
+        durable_content: None,
         is_error: false,
         is_fatal: false,
         error_kind: None,

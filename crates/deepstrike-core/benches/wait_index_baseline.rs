@@ -74,7 +74,13 @@ fn time_wakes(n_unrelated: usize, key: &WaitKey, iterations: usize) -> std::time
     started.elapsed()
 }
 
-fn report(label: &str, small: std::time::Duration, large: std::time::Duration, small_n: usize, large_n: usize) {
+fn report(
+    label: &str,
+    small: std::time::Duration,
+    large: std::time::Duration,
+    small_n: usize,
+    large_n: usize,
+) {
     let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-9);
     println!(
         "{label}: N={small_n} -> {:.3} ms; N={large_n} ({}x larger) -> {:.3} ms; ratio={:.2}x",

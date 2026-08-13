@@ -1,20 +1,23 @@
 # Getting Started
 
-Welcome to DeepStrike — an agent runtime framework built for production.
+DeepStrike helps you build Agents that can use tools, remember facts, collaborate with other Agents, and keep working across sessions.
 
-## Recommended Reading Order
+## Recommended path
 
-1. [Installation](./installation) — Python / Node / Rust
-2. [Hello Agent](./hello-agent) — Your first runnable agent
-3. [Choosing an API](./run-agent-vs-runner) — `run_agent` vs `RuntimeRunner` vs `run_fanout`
-4. [Providers](./providers) — Connecting to LLMs
+1. [Install an SDK](./installation) for Python, Node.js, Rust, or WASM.
+2. Run [Hello Agent](./hello-agent) with one tool.
+3. Choose between [`run_agent`], [`run_fanout`], and `RuntimeRunner` in [Choosing an API](./run-agent-vs-runner).
+4. Connect a [Provider](./providers).
+5. Add the capability your Agent needs from the [Agent capability guides](/en/guides/).
 
-## Three API Levels
+## Choose an entry point
 
-| API | Use case |
-|-----|----------|
-| `run_agent()` | Single prompt → text result (covers ~90% of scenarios) |
-| `run_fanout()` | Parallel N tasks + synthesis |
-| `RuntimeRunner` | Streaming events, signals, memory, governance, workflows |
+| API | Best for |
+| --- | --- |
+| `run_agent()` | One goal, optional tools, and a final text result. |
+| `run_fanout()` | Several focused tasks followed by one synthesis step. |
+| `RuntimeRunner` | Streaming, sessions, memory, signals, governance, workflows, and custom execution. |
 
-Source: `python/deepstrike/runtime/facade.py`
+## Learn by building
+
+The [Research Brief Studio examples](https://github.com/kongusen/deepstrike/tree/main/example) provide an eight-level path from a sourced Q&A Agent to a reactive editorial team.

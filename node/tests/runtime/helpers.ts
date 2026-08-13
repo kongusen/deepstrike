@@ -50,6 +50,7 @@ export function createRunner(
     systemPrompt?: string
     instructions?: import("../../src/runtime/runner.js").RuntimeOptions["instructions"]
     nudges?: import("../../src/runtime/runner.js").RuntimeOptions["nudges"]
+    promptBudget?: import("../../src/runtime/runner.js").PromptBudget
   } = {},
 ): { runner: RuntimeRunner; sessionLog: InMemorySessionLog; plane: LocalExecutionPlane } {
   const sessionLog = opts.sessionLog ?? new InMemorySessionLog()
@@ -93,6 +94,7 @@ export function createRunner(
     systemPrompt: opts.systemPrompt,
     instructions: opts.instructions,
     nudges: opts.nudges,
+    promptBudget: opts.promptBudget,
   })
   return { runner, sessionLog, plane }
 }

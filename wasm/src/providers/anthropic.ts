@@ -146,6 +146,14 @@ export class AnthropicProvider implements LLMProvider {
     }
   }
 
+  requestPlanIdentity() {
+    return {
+      providerId: "anthropic",
+      modelId: this.model,
+      endpoint: { id: "anthropic.messages", protocol: "anthropic-messages" as const, baseURL: "https://api.anthropic.com" },
+    }
+  }
+
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
     const blocks = this.nativeAssistantBlocks.get(assistantReplayKey(message))
     return blocks?.length ? { native_blocks: blocks } : undefined

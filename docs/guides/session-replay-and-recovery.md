@@ -1,12 +1,12 @@
-# Session、Replay 与恢复
+# Agent Session、Replay 与恢复
 
-SessionLog 是 DeepStrike 的证据链：每个 run 的 LLM 输出、工具请求、工具结果、压缩、权限、进程、memory、workflow 事件都会 append 到同一个 session stream。它支撑三件事：
+Agent 需要记住正在做什么，也需要在中断后继续。SessionLog 为每次运行保留模型输出、工具请求和结果、压缩、权限、协作、Memory 与工作流事件，形成可解释的 Session 记录。它支撑三件事：
 
 - **诊断**：从 session events 折叠 OS Snapshot 或离线检查历史 workflow 投影
 - **审计**：按 kernel primitive 过滤关键事件
 - **复现**：用 provider replay / ReplayProvider 重放模型输出
 
-生产恢复是另一条路径：宿主持久化 opaque logical checkpoint 与 canonical KernelJournal，恢复时安装 checkpoint 并只回放 bounded tail。SessionLog 不重建 production control state。
+生产恢复使用独立的 checkpoint 与 journal 路径。应用持久化 opaque logical checkpoint 和 canonical KernelJournal，恢复时安装 checkpoint 并只回放 bounded tail。SessionLog 用于解释、审计和测试，不重建生产运行状态。
 
 **代码入口**：
 
@@ -17,17 +17,17 @@ SessionLog 是 DeepStrike 的证据链：每个 run 的 LLM 输出、工具请�
 - `python/deepstrike/runtime/replay_fixture.py`
 - `python/deepstrike/runtime/os_snapshot.py`
 
-## 在 Agent OS 中的位置
+## Agent 的连续性
 
 | 职责 | 说明 |
 |------|------|
 | 事件日志 | SessionLog 是 run 的 append-only evidence stream |
 | 恢复 | canonical checkpoint + KernelJournal 恢复完整 logical state；SessionLog 不参与 state authority |
-| 审计 | 可按 kernel primitive 过滤关键事件，定位哪个平面发生了什么 |
+| 审计 | 可按运行时 primitive 过滤关键事件，定位关键决策发生的位置 |
 | 复现 | provider replay / ReplayProvider 让测试不依赖真实模型调用 |
 | 运维 | OS Snapshot 从 session events 汇总 dashboard 所需状态 |
 
-Session 面是 Agent OS 的 evidence stream；KernelJournal 是 transaction authority。前者负责解释、复现和运营，后者与 logical checkpoint 负责生产恢复。
+SessionLog 是 Agent 的证据链，KernelJournal 与 logical checkpoint 负责生产恢复。前者用来解释、复现和观测，后者保存可继续运行的逻辑状态。
 
 ![Session Replay & Recovery Mechanisms](/session_replay_mechanisms.svg)
 
@@ -73,7 +73,7 @@ events = await session_log.read("pay-bug-42")
 events = await session_log.read("pay-bug-42")
 latest = await session_log.latest_seq("pay-bug-42")
 
-# 只看某个 kernel primitive
+# 只看某个运行时 primitive
 memory_events = await session_log.read(
     "pay-bug-42",
     primitive_filter="memory",

@@ -1,13 +1,13 @@
 {
-  "ack_token": "op-driver-1:checkpoint:3:sha256:5335f31f75701aaa0976bdc240eae249fc48b399a673f4f136024f7586bf5720",
+  "ack_token": "op-driver-1:checkpoint:3:sha256:669d8575d5f270ae62f97b77fd86f83e2653c1c7fb96c2a06809e5dfc4113634",
   "checkpoint": {
     "abi_version": 3,
-    "base_record_digest": "sha256:c2e2a1bed1684a1cebd6bc89257564310959bdf1bf911e4580fb0837b0479a39",
+    "base_record_digest": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:5335f31f75701aaa0976bdc240eae249fc48b399a673f4f136024f7586bf5720",
-    "checkpoint_version": 1,
-    "covered_transaction_head_digest": "sha256:c2e2a1bed1684a1cebd6bc89257564310959bdf1bf911e4580fb0837b0479a39",
-    "genesis_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
+    "checkpoint_digest": "sha256:669d8575d5f270ae62f97b77fd86f83e2653c1c7fb96c2a06809e5dfc4113634",
+    "checkpoint_version": 2,
+    "covered_transaction_head_digest": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
+    "genesis_digest": "sha256:1664c405bc8de2edd841de7c6ab7652bdf34c75af6a62556bb36bdef43ca32d8",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
@@ -255,8 +255,12 @@
           },
           "scheduler_policy": {
             "age_weight": 1000,
+            "budget_pressure_weight": 0,
             "critical_path_weight": 1000000,
+            "deadline_weight": 0,
             "fanout_weight": 10000,
+            "process_priority_weight": 0,
+            "resource_pressure_weight": 0,
             "token_cost_weight": 1
           },
           "signal_policy": {
@@ -318,22 +322,22 @@
         "accepted_inputs": [
           {
             "input_id": "in-acted",
-            "record_digest": "sha256:4c57a522743b7a6412b6764e7359180929d098b0daf86a9793d09933ba4245ff",
+            "record_digest": "sha256:53cf0d4217b70801cd2592b75a26d19e55147007bd6bdbe583526a757e80a97e",
             "step_seq": "2"
           },
           {
             "input_id": "in-configure",
-            "record_digest": "sha256:eed5b3244dea6cb88ebabffb6536fb1aa5dd80f8d84d62bc3428497d681ac1a7",
+            "record_digest": "sha256:1664c405bc8de2edd841de7c6ab7652bdf34c75af6a62556bb36bdef43ca32d8",
             "step_seq": "0"
           },
           {
             "input_id": "in-results",
-            "record_digest": "sha256:c2e2a1bed1684a1cebd6bc89257564310959bdf1bf911e4580fb0837b0479a39",
+            "record_digest": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
             "step_seq": "3"
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:74b7999e76564efaedc5271fb014b8979b0ee33569bad0e1042e407f0ba1e5f8",
+            "record_digest": "sha256:7ee9dafd821e9ddcac1731cfcc1308f3a87743877943d2ad9a8a5b5f1f082bdd",
             "step_seq": "1"
           }
         ],
@@ -539,8 +543,12 @@
           },
           "scheduler_policy": {
             "age_weight": 1000,
+            "budget_pressure_weight": 0,
             "critical_path_weight": 1000000,
+            "deadline_weight": 0,
             "fanout_weight": 10000,
+            "process_priority_weight": 0,
+            "resource_pressure_weight": 0,
             "token_cost_weight": 1
           },
           "signal_policy": {
@@ -598,13 +606,13 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:3d69c35ecc1971fc9eccba433747e144ba5813e949c9609f6a2b04fa0dde53bd",
+    "state_digest": "sha256:0dec1082974e61e22abffead67e877096312d9e5158e598f403d3b3bb17e5fbd",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"
   },
-  "covered_head": "sha256:c2e2a1bed1684a1cebd6bc89257564310959bdf1bf911e4580fb0837b0479a39",
+  "covered_head": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
   "description": "A full-state logical checkpoint taken mid-turn (spec 12.1, 12.3). base == through == the durable head, so the bounded tail is empty and a restore replays nothing before the post-checkpoint records. The logical state is partitioned four ways and the header repeats none of it: the pending `call_provider` effect, the replay ledger and the terminal slot live in `transition`, the task table in `scheduler`, the handle table in `context_vm`, the live policy and the provider-tool causation in `syscall`.",
-  "state_digest": "sha256:3d69c35ecc1971fc9eccba433747e144ba5813e949c9609f6a2b04fa0dde53bd",
+  "state_digest": "sha256:0dec1082974e61e22abffead67e877096312d9e5158e598f403d3b3bb17e5fbd",
   "through_step_seq": "3"
 }

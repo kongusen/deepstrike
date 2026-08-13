@@ -1,6 +1,6 @@
 # Execution Plane & Tools
 
-ExecutionPlane is DeepStrike's tool execution layer. The kernel adjudicates tool syscalls, records observations, and maintains context; actual function calls, subprocesses, remote HTTP calls, and worktree cwd injection happen in the SDK ExecutionPlane.
+Tools are how an Agent reaches the application and the outside world. DeepStrike lets you register typed functions, stream results, pause for external work, and choose where each tool runs.
 
 **Code entry points**:
 
@@ -11,16 +11,18 @@ ExecutionPlane is DeepStrike's tool execution layer. The kernel adjudicates tool
 - `python/deepstrike/runtime/remote_vpc_plane.py`
 - `python/deepstrike/runtime/payload_store.py`
 
-## Agent OS Positioning
+## Choose a tool setup
 
-| Responsibility | Description |
-|----------------|-------------|
-| To the kernel | Receives approved tool calls and writes results back as observations |
-| To the host | Binds Python functions, subprocesses, worktrees, remote VPCs, or customer environments |
-| To governance | Honors schema filtering, permission, quota, and sandbox decisions |
-| To the Context VM | Projects large results through external payload handles instead of flooding context |
+| You need | Use |
+| --- | --- |
+| --- | --- |
+| Local Python or TypeScript functions | `LocalExecutionPlane` |
+| Streaming output | `streaming_tool` / async iterable chunks |
+| Files in an isolated directory | Worktree or process sandbox |
+| Remote or customer-environment actions | `RemoteVpcPlane` or an application adapter |
+| Large results | `PayloadStore` |
 
-The ExecutionPlane is the OS device-driver layer: the kernel does not directly read or write the outside world; it delegates approved actions to the host through this plane.
+The Agent only sees the tool schema and result. Your application owns credentials, network calls, file access, retries, and idempotency behind each tool.
 
 ![Execution Plane Mechanisms](/execution_plane_mechanisms.svg)
 
@@ -54,7 +56,7 @@ runner = RuntimeRunner(RuntimeOptions(
 ))
 ```
 
-`LocalExecutionPlane.schemas()` gives tool schemas to the kernel. The kernel exposes only schemas that pass governance and capability gating.
+`LocalExecutionPlane.schemas()` gives tool schemas to the runtime. The runtime exposes only schemas that pass governance and capability gating.
 
 ## Level 2: Argument Validation and Repair
 
@@ -138,7 +140,7 @@ runner = RuntimeRunner(RuntimeOptions(
 
 Boundary:
 
-- kernel declares `AgentIsolation::Worktree`
+- runtime declares `AgentIsolation::Worktree`
 - SDK creates / removes the git worktree
 - `WorktreeExecutionPlane` injects worktree path as `RunContext.cwd`
 - tools must honor `ctx.cwd`; file access is not automatically isolated otherwise
@@ -205,15 +207,15 @@ RuntimeOptions(
 
 `read_result` is reduced in core to a reachable-handle `PageIn` request and a correlated `LoadPayload` effect. `LocalExecutionPlane` never interprets the locator as a file path.
 
-## Kernel / Host Boundary
+## Runtime and Application Responsibilities
 
 | Behavior | Owner |
 |----------|-------|
-| whether a tool schema is exposed | kernel + SDK capability gating |
-| whether a tool call is allowed | kernel syscall / governance |
+| whether a tool schema is exposed | runtime + SDK capability gating |
+| whether a tool call is allowed | runtime syscall / governance |
 | Python function invocation | SDK ExecutionPlane |
 | subprocess / HTTP / file writes | SDK / tool |
-| external body persistence | SDK writes before submit; kernel validates descriptor |
+| external body persistence | SDK writes before submit; runtime validates descriptor |
 | worktree lifecycle | SDK |
 
 ## Verification Entry Points

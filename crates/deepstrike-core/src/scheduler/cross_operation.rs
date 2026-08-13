@@ -847,9 +847,11 @@ mod tests {
             ),
             RouteOutcome::Accepted { .. }
         ));
-        assert!(router
-            .dispatch_next(&address("operation-b", "sink"), 6)
-            .is_some());
+        assert!(
+            router
+                .dispatch_next(&address("operation-b", "sink"), 6)
+                .is_some()
+        );
 
         let mut restored =
             CrossOperationRouter::from_snapshot(router.snapshot()).expect("valid snapshot");

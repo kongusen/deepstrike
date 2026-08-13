@@ -154,3 +154,50 @@ jobs:
           pip install dist/*.whl
       - run: pytest
         working-directory: python
+
+  sdk-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 24 }
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.12" }
+      - uses: dtolnay/rust-toolchain@stable
+        with: { targets: wasm32-unknown-unknown }
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Node SDK dependencies
+        run: npm ci
+        working-directory: node
+      - name: Install WASM SDK dependencies
+        run: npm ci
+        working-directory: wasm
+      - name: Create Python conformance environment
+        run: |
+          python -m venv python/.venv
+          python/.venv/bin/python -m pip install --upgrade pip maturin
+      - name: Install napi-rs CLI
+        run: npm install -g @napi-rs/cli@2
+      - name: Build @deepstrike/core native addon
+        run: napi build --release --platform artifacts
+        working-directory: crates/deepstrike-node
+      - name: Install @deepstrike/core from local build
+        run: |
+          cp ../crates/deepstrike-node/artifacts/index.d.ts ../crates/deepstrike-node/
+          cp ../crates/deepstrike-node/artifacts/*.node     ../crates/deepstrike-node/
+          npm install --no-save --package-lock=false --ignore-scripts --omit=optional ../crates/deepstrike-node
+        working-directory: node
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - name: Build wasm-kernel
+        run: wasm-pack build --release --target bundler --out-dir pkg --scope deepstrike
+        working-directory: crates/deepstrike-wasm
+      - name: Normalize wasm-kernel package metadata
+        run: node scripts/normalize-wasm-kernel-package.mjs "$(node -p "require('./wasm/package.json').version")" crates/deepstrike-wasm/pkg
+      - name: Link wasm-kernel for TypeScript build
+        run: npm install --no-save --package-lock=false ../crates/deepstrike-wasm/pkg
+        working-directory: wasm
+      - name: Run full cross-SDK conformance matrix
+        run: npm run test:conformance
+      - name: Verify runner validation and default-matrix regression tests
+        run: npm run test:conformance:runner

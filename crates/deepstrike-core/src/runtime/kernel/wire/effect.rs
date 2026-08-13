@@ -26,6 +26,7 @@ use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::context::measurement::PromptMeasurement;
+use crate::types::durable_content::DurableContent;
 
 use super::root::{LogicalAgentSpec, MessageRole};
 use super::scalar::{
@@ -1229,15 +1230,14 @@ pub struct ExternalToolResult {
 /// distinction. This one is the Host→Kernel execution-result *wire payload* (`#[serde(deny_unknown_fields)]`,
 /// crosses all 4 SDK bindings) — semantically "the Host is telling the Kernel a tool call
 /// finished, here's the result," not "a content block being rendered into a provider request."
-/// `output` stays `String` — upgrading it to carry multimodal tool
-/// results (e.g. an MCP screenshot tool) is real future value but is a breaking wire-format change
-/// across 4 SDKs and needs explicit author sign-off before it's attempted (spc_009-06 precedent),
-/// and has limited payoff until `ContentPart::ToolResult`'s 54 downstream call sites in `context/`
-/// also stop flattening to a string — deferred together, not decided unilaterally here.
+/// `output` remains the legacy text projection. `durable_content`, when present, carries the
+/// versioned provider-neutral blocks that the transcript and checkpoint preserve.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolResult {
     pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durable_content: Option<DurableContent>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_error: bool,
     /// Whether the executor can keep going after this result. **Mandatory** — see
@@ -1342,7 +1342,9 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use crate::context::measurement::{MeasurementConfidence, MeasurementSource, PromptMeasurement};
+    use crate::context::measurement::{
+        MeasurementConfidence, MeasurementSource, PromptMeasurement,
+    };
 
     use super::super::*;
 
@@ -1552,6 +1554,7 @@ mod tests {
                         call_id: call_id("call-1"),
                         result: ToolResult {
                             output: "ok".to_string(),
+                            durable_content: None,
                             is_error: false,
                             disposition: ToolResultDisposition::Recoverable,
                             tokens: Some(2),
@@ -1630,7 +1633,9 @@ mod tests {
             EffectSuccess::PromptMeasured(PromptMeasuredSuccess {
                 measurement: PromptMeasurement {
                     input_tokens: 4200,
-                    source: MeasurementSource::Native { provider: "anthropic".to_string() },
+                    source: MeasurementSource::Native {
+                        provider: "anthropic".to_string(),
+                    },
                     confidence: MeasurementConfidence::Exact,
                 },
             }),
@@ -2086,6 +2091,7 @@ mod tests {
             call_id: call_id("call-1"),
             result: ToolResult {
                 output: "boom".to_string(),
+                durable_content: None,
                 is_error: true,
                 disposition: ToolResultDisposition::Fatal,
                 tokens: None,

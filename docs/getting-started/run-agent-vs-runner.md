@@ -1,5 +1,7 @@
 # API 选型：run_agent vs RuntimeRunner vs run_fanout
 
+根据 Agent 需要承担多少职责来选择入口。
+
 ## 决策树
 
 ```
@@ -41,7 +43,7 @@ print(result["synthesis"])
 print(result["outputs"])  # 各节点输出
 ```
 
-内部构建 `WorkflowSpec` DAG，走 kernel-gated `run_workflow`。
+它会为每个任务创建一个专注的 Agent，并同时返回综合结果和每个 worker 的输出。
 
 ## Level 3：`RuntimeRunner` — 完整能力
 
@@ -66,7 +68,7 @@ async for event in runner.run(goal, session_id="my-session"):
 outcome = await runner.run_workflow(spec, session_id="wf-1")
 ```
 
-`RuntimeRunner` 才能使用：
+当 Agent 需要以下能力时使用 `RuntimeRunner`：
 
 - Skill / Memory / Knowledge
 - Governance / ResourceQuota

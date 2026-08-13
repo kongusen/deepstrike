@@ -1586,7 +1586,10 @@ fn resolve_scheduler(
         ("token_cost_weight", resolved.token_cost_weight),
         ("deadline_weight", resolved.deadline_weight),
         ("process_priority_weight", resolved.process_priority_weight),
-        ("resource_pressure_weight", resolved.resource_pressure_weight),
+        (
+            "resource_pressure_weight",
+            resolved.resource_pressure_weight,
+        ),
         ("budget_pressure_weight", resolved.budget_pressure_weight),
     ] {
         if weight > MAX_SCHEDULER_WEIGHT {

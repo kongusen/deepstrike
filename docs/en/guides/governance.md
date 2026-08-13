@@ -1,24 +1,24 @@
 # Governance
 
-Governance is the Agent OS **Syscall Governance Plane**. It adjudicates permissions, quotas, and argument constraints before tool execution, memory writes, workflow growth, and sub-agent spawn. A denied tool call never executes; it becomes a visible error tool result in context so the model can adapt.
+Governance gives an Agent clear boundaries. You can allow, deny, or pause tool calls; constrain arguments; cap delegation and memory writes; and make approval a normal part of the run.
 
 **Source code:** `crates/deepstrike-core/src/governance/`, `python/deepstrike/governance.py`
 
 ---
 
-## Agent OS Positioning
+## Decisions your application can make
 
-| Trap point | Description |
-|------------|-------------|
-| Tool syscall | Tool schema exposure and actual calls can both be filtered or denied |
-| Workflow syscall | `AppendWorkflowNodes` is bounded by node count, depth, and resource quota |
-| Memory syscall | Write frequency, content size, and metadata are controlled by policy |
-| Process spawn | Sub-agent concurrency, total count, and isolation mode can be trapped |
-| Context feedback | deny / ask_user decisions become visible error tool results in the next turn |
+| Decision | Example |
+| --- | --- |
+| Allow or deny | Hide `publish_public` from an Agent that may only draft content. |
+| Ask for approval | Pause `email_editor` until a person approves it. |
+| Constrain arguments | Require a path, enum, or numeric range. |
+| Limit resources | Cap turns, tokens, child Agents, workflow nodes, or memory writes. |
+| Cancel safely | Stop a run or child Agent when the application no longer needs it. |
 
-The governance plane makes every external agent action behave like an OS syscall: explainable, rejectable, and traceable instead of delegated to individual tool functions.
+Governance decisions are visible to the Agent and recorded with the run, so the model can adapt and the application can explain what happened.
 
-![Syscall Governance Funnel](/governance_pipeline.svg)
+![Agent governance decision flow](/governance_pipeline.svg)
 
 ## Concept
 
@@ -137,7 +137,7 @@ observer/enrichment failure isolation—it cannot retroactively claim that the t
 
 ---
 
-## Kernel behavior
+## Runtime behavior
 
 - Every tool call and workflow syscall is evaluated before execution
 - Tool denials commit error tool results to context so the model sees its attempt and why it failed

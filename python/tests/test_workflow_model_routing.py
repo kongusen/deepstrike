@@ -1,9 +1,13 @@
+import pytest
+
 from deepstrike import InMemorySessionLog
 from deepstrike.runtime.runner import RuntimeOptions
 from deepstrike.runtime.sub_agent_orchestrator import _resolve_provider
 from deepstrike.types.agent import (
     WorkflowNodeSpec,
     WorkflowSpawnInfo,
+    start_workflow_tool,
+    submit_workflow_nodes_tool,
     workflow_node_spec_to_kernel,
     workflow_node_to_spec,
 )
@@ -35,6 +39,28 @@ def test_dependency_policy_maps_with_strict_default():
     assert workflow_node_spec_to_kernel(
         WorkflowNodeSpec(task="x", role="plan")
     )["dep_policy"] == "all_success"
+
+
+def test_scheduling_factors_are_host_validated_and_lowered():
+    node = workflow_node_spec_to_kernel(WorkflowNodeSpec(
+        task="x", role="plan",
+        scheduling_factors={"deadline_urgency": 4, "process_priority": 3, "resource_pressure": 2, "budget_pressure": 1},
+    ))
+    assert node["scheduling_factors"] == {
+        "deadline_urgency": 4, "process_priority": 3, "resource_pressure": 2, "budget_pressure": 1,
+    }
+    with pytest.raises(ValueError, match="non-negative integer"):
+        workflow_node_spec_to_kernel(WorkflowNodeSpec(
+            task="x", role="plan", scheduling_factors={"deadline_urgency": -1},
+        ))
+
+
+def test_scheduling_factors_are_not_model_workflow_tool_inputs():
+    import json
+    start = json.loads(start_workflow_tool["parameters"])["properties"]["spec"]["properties"]["nodes"]["items"]["properties"]
+    submit = json.loads(submit_workflow_nodes_tool["parameters"])["properties"]["nodes"]["items"]["properties"]
+    assert "scheduling_factors" not in start
+    assert "scheduling_factors" not in submit
 
 
 def test_resolve_provider_routes_and_falls_back():

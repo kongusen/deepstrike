@@ -468,7 +468,10 @@ mod ranking_tests {
 
         memory.put(record.clone()).await.unwrap();
         assert_eq!(memory.namespace(), "public-contract");
-        assert_eq!(memory.get(&record.record_id).await.unwrap(), Some(record.clone()));
+        assert_eq!(
+            memory.get(&record.record_id).await.unwrap(),
+            Some(record.clone())
+        );
         assert_eq!(
             memory
                 .search("architecture", MemorySearchOptions::default())
@@ -545,10 +548,12 @@ mod ranking_tests {
         let store: std::sync::Arc<dyn MemoryStore> = std::sync::Arc::new(LeakyStore { foreign });
         let memory = DurableMemory::new(store, "agent-a", scope);
 
-        assert!(memory
-            .search("private note", MemorySearchOptions::default())
-            .await
-            .unwrap()
-            .is_empty());
+        assert!(
+            memory
+                .search("private note", MemorySearchOptions::default())
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

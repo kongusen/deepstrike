@@ -51,8 +51,12 @@ mod tests {
 
     #[test]
     fn constructs_all_three_measurement_source_variants() {
-        let native = MeasurementSource::Native { provider: "anthropic".to_string() };
-        let local_exact = MeasurementSource::LocalExact { tokenizer: "cl100k_base".to_string() };
+        let native = MeasurementSource::Native {
+            provider: "anthropic".to_string(),
+        };
+        let local_exact = MeasurementSource::LocalExact {
+            tokenizer: "cl100k_base".to_string(),
+        };
         let heuristic = MeasurementSource::Heuristic;
 
         assert_ne!(native, local_exact);
@@ -63,7 +67,9 @@ mod tests {
     fn prompt_measurement_round_trips_through_json() {
         let m = PromptMeasurement {
             input_tokens: 1234,
-            source: MeasurementSource::Native { provider: "openai".to_string() },
+            source: MeasurementSource::Native {
+                provider: "openai".to_string(),
+            },
             confidence: MeasurementConfidence::Exact,
         };
         let json = serde_json::to_string(&m).unwrap();
@@ -75,6 +81,9 @@ mod tests {
     fn unknown_field_is_rejected() {
         let raw = r#"{"input_tokens": 10, "source": {"kind": "heuristic"}, "confidence": "exact", "extra": true}"#;
         let result: Result<PromptMeasurement, _> = serde_json::from_str(raw);
-        assert!(result.is_err(), "deny_unknown_fields must reject stray keys");
+        assert!(
+            result.is_err(),
+            "deny_unknown_fields must reject stray keys"
+        );
     }
 }

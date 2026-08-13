@@ -419,8 +419,7 @@ impl TaskGraph {
             - i128::from(policy.age_weight) * i128::from(self.enqueued_round[task_id])
             - i128::from(policy.token_cost_weight) * i128::from(metadata.token_cost);
         let priority = priority
-            + i128::from(policy.deadline_weight)
-                * i128::from(metadata.factors.deadline_urgency)
+            + i128::from(policy.deadline_weight) * i128::from(metadata.factors.deadline_urgency)
             + i128::from(policy.process_priority_weight)
                 * i128::from(metadata.factors.process_priority)
             + i128::from(policy.resource_pressure_weight)

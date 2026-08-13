@@ -388,3 +388,18 @@ describe("unknown canonical effect contract", () => {
       .toEqual(fixture.expected_resolution)
   })
 })
+
+describe("workflow scheduling-factor boundary", () => {
+  it("preserves direct host factors", async () => {
+    const phases: string[] = []
+    const runtime = new CanonicalRunnerRuntime(fakeKernel(phases), new InMemoryKernelJournal(), OPERATION_ID, {
+      maxContextTokens: 8_192,
+    })
+    await runtime.startWorkflow({ nodes: [{
+      task: "ship", role: "implement",
+      scheduling_factors: { deadline_urgency: 4, process_priority: 3 },
+    }] })
+    expect(phases.join("\n")).toContain('"scheduling_factors":{"deadline_urgency":4,"process_priority":3}')
+
+  })
+})

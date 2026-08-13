@@ -140,12 +140,7 @@ function updatePythonProject(text, version) {
 }
 
 function updateReadme(text, version) {
-  let next = replaceRequired(
-    text,
-    /(deepstrike-sdk = ")[^"]+(")/,
-    `$1${version}$2`,
-    "README.md deepstrike-sdk example version",
-  )
+  let next = text.replace(/(deepstrike-sdk = ")[^"]+(")/, `$1${version}$2`)
   next = next.replace(/Version \*\*[^*]+\*\*/, `Version **${version}**`)
   next = next.replace(/npm install @deepstrike\/sdk@[^\s\n]+/, `npm install @deepstrike/sdk@${version}`)
   next = next.replace(/pip install deepstrike==[^\s\n]+/, `pip install deepstrike==${version}`)

@@ -50,6 +50,12 @@ class LlmCompletedEvent(TypedDict, total=False):
     provider_replay: dict
 
 
+class PromptMeasuredEvent(TypedDict, total=False):
+    kind: Literal["prompt_measured"]
+    turn: int
+    measurement: dict[str, Any]
+
+
 class ToolRequestedEvent(TypedDict, total=False):
     kind: Literal["tool_requested"]
     turn: int
@@ -59,7 +65,7 @@ class ToolRequestedEvent(TypedDict, total=False):
 class ToolCompletedEvent(TypedDict, total=False):
     kind: Literal["tool_completed"]
     turn: int
-    results: list[ToolResult]
+    results: list[ToolResult | dict[str, Any]]
 
 
 class ToolArgumentRepairedEvent(TypedDict, total=False):
@@ -327,6 +333,7 @@ class WorkflowCompletedEvent(TypedDict, total=False):
 SessionEvent = (
     RunStartedEvent
     | LlmCompletedEvent
+    | PromptMeasuredEvent
     | ToolRequestedEvent
     | ToolCompletedEvent
     | ToolArgumentRepairedEvent
@@ -537,12 +544,14 @@ def _event_to_json(event: SessionEvent) -> dict:
       **event,
       "results": [
         {
-          "call_id": r.call_id,
-          "output": r.output,
-          "is_error": r.is_error,
-          "is_fatal": getattr(r, "is_fatal", False),
-          "error_kind": getattr(r, "error_kind", None),
-          "token_count": r.token_count,
+          "call_id": r["call_id"] if isinstance(r, dict) else r.call_id,
+          "output": r["output"] if isinstance(r, dict) else r.output,
+          "is_error": r.get("is_error", False) if isinstance(r, dict) else r.is_error,
+          "is_fatal": r.get("is_fatal", False) if isinstance(r, dict) else getattr(r, "is_fatal", False),
+          "error_kind": r.get("error_kind") if isinstance(r, dict) else getattr(r, "error_kind", None),
+          "token_count": r.get("token_count") if isinstance(r, dict) else getattr(r, "token_count", None),
+          **({"content": r["content"]} if isinstance(r, dict) and r.get("content") else {}),
+          **({"blocks": r["blocks"]} if isinstance(r, dict) and r.get("blocks") else {}),
         }
         for r in event["results"]
       ],
@@ -573,6 +582,20 @@ def _event_from_json(raw: dict) -> SessionEvent:
   if kind == "tool_completed":
     results = []
     for r in raw["results"]:
+      if r.get("content"):
+        results.append({
+          "call_id": r["call_id"], "output": r.get("output", ""),
+          "is_error": r.get("is_error", False), "token_count": r.get("token_count"),
+          "content": r["content"],
+        })
+        continue
+      if r.get("blocks"):
+        results.append({
+          "call_id": r["call_id"], "output": r.get("output", ""),
+          "is_error": r.get("is_error", False), "token_count": r.get("token_count"),
+          "blocks": r["blocks"],
+        })
+        continue
       result = ToolResult(
         call_id=r["call_id"],
         output=r["output"],

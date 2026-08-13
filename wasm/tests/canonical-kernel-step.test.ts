@@ -218,3 +218,55 @@ describe("CanonicalRunnerRuntime rebuild recovery", () => {
       .rejects.toThrow(CanonicalKernelRebuildRequiredError)
   })
 })
+
+describe("CanonicalRunnerRuntime provider stop reasons", () => {
+  it("normalizes an unknown non-empty provider stop reason to other before the kernel transition", async () => {
+    const phases: string[] = []
+    const kernel = fakeKernel(phases)
+    const inputs: Record<string, unknown>[] = []
+    const originalPrepare = kernel.prepare.bind(kernel)
+    kernel.prepare = (inputJson: string) => {
+      inputs.push(JSON.parse(inputJson) as Record<string, unknown>)
+      return originalPrepare(inputJson)
+    }
+    const runtime = new CanonicalRunnerRuntime(kernel, new InMemoryKernelJournal(), OPERATION_ID, {
+      maxContextTokens: 8_192,
+    })
+
+    await runtime.startAgent({ goal: "normalize provider termination" })
+    await runtime.applyHostEvent({
+      kind: "provider_result",
+      effect_id: "provider-1",
+      message: { role: "assistant", content: "done" },
+      stop_reason: "vendor_new_reason",
+    })
+
+    const providerResult = inputs.at(-1) as { input?: { outcome?: { result?: { outcome?: Record<string, unknown> } } } }
+    expect(providerResult.input?.outcome?.result?.outcome?.stop_reason).toBe("other")
+  })
+
+  it("omits an empty provider stop reason", async () => {
+    const phases: string[] = []
+    const kernel = fakeKernel(phases)
+    const inputs: Record<string, unknown>[] = []
+    const originalPrepare = kernel.prepare.bind(kernel)
+    kernel.prepare = (inputJson: string) => {
+      inputs.push(JSON.parse(inputJson) as Record<string, unknown>)
+      return originalPrepare(inputJson)
+    }
+    const runtime = new CanonicalRunnerRuntime(kernel, new InMemoryKernelJournal(), OPERATION_ID, {
+      maxContextTokens: 8_192,
+    })
+
+    await runtime.startAgent({ goal: "omit empty provider termination" })
+    await runtime.applyHostEvent({
+      kind: "provider_result",
+      effect_id: "provider-2",
+      message: { role: "assistant", content: "done" },
+      stop_reason: "",
+    })
+
+    const providerResult = inputs.at(-1) as { input?: { outcome?: { result?: { outcome?: Record<string, unknown> } } } }
+    expect(providerResult.input?.outcome?.result?.outcome).not.toHaveProperty("stop_reason")
+  })
+})

@@ -301,7 +301,12 @@ impl ObjectDescriptor {
         residency: Residency,
         preview: impl Into<CompactString>,
     ) -> Self {
-        let Residency::External { payload_ref, digest, original_size } = &residency else {
+        let Residency::External {
+            payload_ref,
+            digest,
+            original_size,
+        } = &residency
+        else {
             panic!("ObjectDescriptor::external requires a Residency::External, got {residency:?}");
         };
         let (payload_ref, digest, size) = (payload_ref.clone(), digest.clone(), *original_size);
@@ -682,7 +687,10 @@ mod tests {
 
         assert_eq!(descriptor.id, 7);
         assert_eq!(descriptor.kind, ObjectKind::Artifact);
-        assert_eq!(descriptor.owner, crate::scheduler::tcb::TaskId::from("agent-1"));
+        assert_eq!(
+            descriptor.owner,
+            crate::scheduler::tcb::TaskId::from("agent-1")
+        );
         assert_eq!(descriptor.size, 1_200_000);
         assert_eq!(descriptor.residency, Residency::Resident);
         assert_eq!(descriptor.payload_ref, Some("payload:x".to_string()));
@@ -692,7 +700,10 @@ mod tests {
 
     #[test]
     fn spc_006_05_object_kind_from_handle_kind_maps_all_four_variants() {
-        assert_eq!(ObjectKind::from(HandleKind::ToolResult), ObjectKind::ToolResult);
+        assert_eq!(
+            ObjectKind::from(HandleKind::ToolResult),
+            ObjectKind::ToolResult
+        );
         assert_eq!(ObjectKind::from(HandleKind::MemoryPage), ObjectKind::Memory);
         assert_eq!(
             ObjectKind::from(HandleKind::KnowledgeEntry),
@@ -723,7 +734,10 @@ mod tests {
         // The descriptor's own type has no `payload`/`content` field — a caller can only ever see
         // the four fields below. `size` still reports the true full-body size (so a reader knows
         // what a page-in would cost), but the descriptor never carries that many bytes itself.
-        assert_eq!(descriptor.payload_ref.as_deref(), Some("payload:research-report"));
+        assert_eq!(
+            descriptor.payload_ref.as_deref(),
+            Some("payload:research-report")
+        );
         assert_eq!(descriptor.digest, "sha256:deadbeef");
         assert_eq!(descriptor.size, 1_200_000);
         assert_eq!(descriptor.preview.as_deref(), Some(&full_report[..200]));

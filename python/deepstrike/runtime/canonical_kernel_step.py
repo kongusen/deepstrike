@@ -522,7 +522,7 @@ class CanonicalRunnerRuntime:
   async def start_workflow(self, spec: dict[str, Any]) -> KernelRunnerAction | None:
     await self._ensure_configured()
     action = await self._commit({"kind": "start_operation", "entry": {
-      "kind": "workflow", "spec": self._workflow_spec(spec),
+      "kind": "workflow", "spec": self._workflow_spec(spec, allow_host_scheduling_factors=True),
     }, "initial_context": self._initial_context})
     self._started = True
     return action
@@ -815,7 +815,7 @@ class CanonicalRunnerRuntime:
       }
     return out
 
-  def _workflow_spec(self, raw: dict[str, Any]) -> dict[str, Any]:
+  def _workflow_spec(self, raw: dict[str, Any], allow_host_scheduling_factors: bool = False) -> dict[str, Any]:
     nodes = raw.get("nodes") if isinstance(raw.get("nodes"), list) else []
     ids = [f"wf-node{index}" for index in range(len(nodes))]
     lowered = []
@@ -834,6 +834,9 @@ class CanonicalRunnerRuntime:
         unsupported.append("max_turns")
       if node.get("max_wall_ms", node.get("maxWallMs")) is not None:
         unsupported.append("max_wall_ms")
+      scheduling_factors = node.get("scheduling_factors", node.get("schedulingFactors"))
+      if scheduling_factors is not None and not allow_host_scheduling_factors:
+        unsupported.append("scheduling_factors")
       inheritance = node.get("context_inheritance", node.get("contextInheritance"))
       if unsupported:
         raise CanonicalKernelRejectedError(
@@ -856,8 +859,11 @@ class CanonicalRunnerRuntime:
              if node.get("model_hint", node.get("modelHint")) is not None else {}),
           **({"output_schema": node.get("output_schema", node.get("outputSchema"))}
              if node.get("output_schema", node.get("outputSchema")) is not None else {}),
+          **({"scheduling_factors": self._scheduling_factors_for_host(scheduling_factors)}
+             if scheduling_factors is not None else {}),
         }} if node.get("model_hint", node.get("modelHint")) is not None
-          or node.get("output_schema", node.get("outputSchema")) is not None else {}),
+          or node.get("output_schema", node.get("outputSchema")) is not None
+          or scheduling_factors is not None else {}),
       }, goal)
       lowered.append({
         "node_id": ids[index], "task": {
@@ -866,6 +872,21 @@ class CanonicalRunnerRuntime:
         }, **({"depends_on": depends_on} if depends_on else {}), "run_spec": run_spec,
       })
     return {"nodes": lowered}
+
+
+  @staticmethod
+  def _scheduling_factors_for_host(value: Any) -> dict[str, int]:
+    raw = _object(value)
+    allowed = {"deadline_urgency", "process_priority", "resource_pressure", "budget_pressure"}
+    unknown = set(raw) - allowed
+    if unknown:
+      raise ValueError(f"unknown scheduling factor(s): {', '.join(sorted(unknown))}")
+    factors: dict[str, int] = {}
+    for name, factor in raw.items():
+      if isinstance(factor, bool) or not isinstance(factor, int) or factor < 0:
+        raise ValueError(f"scheduling_factors.{name} must be a non-negative integer")
+      factors[name] = factor
+    return factors
 
   @staticmethod
   def _signal(event: dict[str, Any]) -> dict[str, Any]:

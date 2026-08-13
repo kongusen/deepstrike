@@ -11,10 +11,9 @@ pub mod wait_index;
 
 pub use budget_grant::{BudgetGrant, ResourceBudget};
 pub use cross_operation::{
-    CrossOperationMessage, CrossOperationRouter, CrossOperationRouterSnapshot,
-    DeliveryFailure, DeliverySettlement, DeliveryState, OperationAddress,
-    OperationRegistration, PayloadAvailability, PayloadLocator, RouteOutcome,
-    CROSS_OPERATION_IPC_ABI_VERSION,
+    CROSS_OPERATION_IPC_ABI_VERSION, CrossOperationMessage, CrossOperationRouter,
+    CrossOperationRouterSnapshot, DeliveryFailure, DeliverySettlement, DeliveryState,
+    OperationAddress, OperationRegistration, PayloadAvailability, PayloadLocator, RouteOutcome,
 };
 pub use entropy::{EntropySample, EntropyTracker, EntropyWatchConfig};
 pub use mailbox::{Channel, LogicalTime, Mailbox, MailboxMessage, MessageId};

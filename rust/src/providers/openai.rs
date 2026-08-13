@@ -534,6 +534,7 @@ mod tests {
                     call_id: CompactString::new("call_1"),
                     output: "sunny".into(),
                     is_error: false,
+                    durable_content: None,
                 }]),
             ],
             state_turn: None,

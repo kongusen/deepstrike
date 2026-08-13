@@ -1,102 +1,64 @@
-# Architecture Overview
+# How Agents Run
 
-DeepStrike architecture is framed around **Agent OS**: elevating dynamic workflow harnesses from volatile scripts into **replayable, governed, cross-language** kernel primitives.
+DeepStrike gives an Agent a durable working environment around the model call. The Agent receives a goal, decides what it needs, uses the capabilities available to it, and leaves behind enough state to continue later.
 
-This is not an attempt to emulate a real operating system. It is a runtime boundary for agents: **the kernel owns control flow; the host owns side effects**. The model may plan, call tools, spawn sub-agents, write memory, and grow a workflow, but those requests first become syscalls that the kernel adjudicates, accounts for, and records before an SDK executes anything.
+## One Agent turn
 
-## Recommended Reading Order
+```mermaid
+sequenceDiagram
+    participant App as Your application
+    participant Agent as Agent runtime
+    participant Model as Model provider
+    participant Tools as Tools and integrations
 
-| # | Doc | You'll learn |
-|---|-----|--------------|
-| 1 | [What is Agent OS?](/en/architecture/agent-os) | Problem, vs scripts, six harness patterns |
-| 2 | [Kernel / Host Split](/en/architecture/overview) | OS analogy, three primitives, module map |
-| 3 | [Execution Model](/en/architecture/execution-model) | One turn from syscall to LLM |
-| 4 | [Kernel ABI](/en/architecture/kernel-abi) | SDK ↔ kernel message contract |
-| 5 | [Session & Replay](/en/architecture/session-replay) | Why runs are recoverable and auditable |
-
-## One-line pitch
-
-> **LLM writes a harness plan → kernel schedules nodes (gated · budgeted · replayable) → host SDK runs I/O.**
-
-```text
-┌─────────────────────────────────────────────────────────────┐
-│  Your app (HTTP handler · CLI · IDE plugin · automation bot) │
-└───────────────────────────┬─────────────────────────────────┘
-                            │ RuntimeRunner / run_agent
-┌───────────────────────────▼─────────────────────────────────┐
-│  Host SDK (Python · Node · Rust · WASM)                        │
-│  Provider · ExecutionPlane · SessionLog · MemoryStore · Signal  │
-└───────────────────────────┬─────────────────────────────────┘
-                            │ KernelInput / KernelAction
-┌───────────────────────────▼─────────────────────────────────┐
-│  deepstrike-core — Agent OS microkernel                        │
-│  Syscall trap · TCB/Scheduler · Context VM · Workflow DAG      │
-└─────────────────────────────────────────────────────────────┘
+    App->>Agent: run(goal, sessionId)
+    Agent->>Model: goal + instructions + available capabilities
+    Model-->>Agent: text or tool request
+    Agent->>Tools: execute approved tool request
+    Tools-->>Agent: result or external event
+    Agent->>Model: result + updated context
+    Agent-->>App: stream events and final answer
 ```
 
-## Architecture Thesis
+The application owns the provider and integrations. DeepStrike keeps the Agent's decisions, context, policies, and session state together so a long task does not depend on one fragile process loop.
 
-Complex agents usually fail because the **control plane** is ad hoc, not because they lack one more wrapper around an LLM API:
+## What stays with the Agent
 
-| Control-plane question | If left in scripts | Agent OS approach |
-|------------------------|-------------------|-------------------|
-| Who may trigger side effects? | Each SDK / example decides locally | Every effect enters one syscall trap |
-| Who may spawn sub-agents? | Harness creates new clients directly | TCB + TaskTable + quota / trust gates |
-| Who owns the context window? | Append messages, then truncate | Context VM partitions, handles, compression, renewal |
-| Who proves what happened? | Logs and orchestration state are scattered | SessionLog evidence + canonical checkpoint/journal recovery |
-| Who keeps languages consistent? | Python / Node each implement a loop | One `deepstrike-core` drives multiple hosts |
+| Agent concern | How it is represented |
+| --- | --- |
+| Identity | Name, instructions, model, tools, skills, memory, knowledge, handoffs, and guardrails |
+| Capabilities | Typed tools, MCP servers, provider features, skills, and application integrations |
+| Working context | Stable instructions, loaded knowledge, conversation turns, retrieved memory, and current task state |
+| Collaboration | Child Agents, roles, isolation, dependencies, contracts, and handoff artifacts |
+| Time | Turns, bounded loops, sleep, wake, approvals, signals, and external events |
+| Quality | Output schemas, reducers, verifier Agents, evaluation hooks, and milestones |
+| Continuity | Session logs, checkpoints, replay fixtures, and recovery after interruption |
 
-So DeepStrike is not primarily about "calling an LLM." It is a **governed control plane** for long-running agent work.
+## How capabilities compose
 
-## What Agent OS fixes
+Start with one Agent and add only what the task needs:
 
-Long-horizon single-context agents hit three failure modes (Anthropic *dynamic workflows*):
+```text
+single Agent
+  + tools and provider
+  + memory and skills
+  + policies and approvals
+  + long-running sessions and signals
+  + specialist workflows
+  + reactive peer team
+```
 
-| Failure | Meaning | Agent OS structural fix |
-|---------|---------|-------------------------|
-| **Agentic laziness** | Stops after partial progress | Per-node TCB + token budget; Loop with hard `max_iters` |
-| **Self-preferential bias** | Favors own output when judging | Verifier/judge in isolated TCB, no author context |
-| **Goal drift** | Constraints lost after compaction | Persistent `task_state` + directives channel |
+The [Research Brief Studio curriculum](https://github.com/kongusen/deepstrike/tree/main/example) follows this exact progression.
 
-A JavaScript harness works — but orchestration state is **not serializable, not uniformly governed, not portable across languages**. Agent OS puts **control flow** in the kernel and **I/O** in the host.
+## Runtime boundaries for application developers
 
-## How to read the OS analogy
+Your application still decides where tools run, where durable memory is stored, how approvals are answered, and how billing is calculated. DeepStrike provides the Agent-facing contracts and runtime events needed to make those decisions explicit.
 
-| OS term | Meaning in DeepStrike |
-|---------|-----------------------|
-| Kernel | Pure state machine; decides next action, performs no network / file / LLM I/O |
-| Syscall | Tool, spawn, memory, workflow-growth, and other side-effect requests |
-| Process / TCB | Scheduling entity for a root run, sub-agent, or workflow node |
-| Scheduler | Advances tasks under budgets, dependencies, and suspension states |
-| Virtual memory | Context partitions, handle table, page-in/out, compression |
-| Security | Governance, permissions, quarantine, rate limits |
+Remote tools, MCP servers, queues, and sandboxes can be connected by the application. They are integrations around the Agent, not a promise that the framework supplies a distributed worker system.
 
-The analogy exists to make the boundary concrete: **agent syscalls must be governed, agent processes must be resumable, and agent memory must be compressible and reconstructable**.
+## Further reading
 
-## Architecture vs guides
-
-| Architecture concept | User-facing feature | Guide |
-|---------------------|---------------------|-------|
-| Context VM | Four-slot render, compression, prompt cache | [Context engineering](/en/guides/context-engineering) |
-| Syscall + governance | Tool policy, quotas, quarantine | [Governance](/en/guides/governance) |
-| Workflow DAG | fan-out, classify, loop, tournament | [Dynamic workflows](/en/guides/workflow) |
-| Memory syscall | writeMemory / queryMemory / durable memory | [Memory](/en/guides/memory) |
-| AgentProcess / TCB | Sub-agents, isolation, handoff | [Sub-agents & collaboration](/en/guides/sub-agents-and-collaboration) |
-
-Architecture explains **why and shape**; guides explain **how with examples**.
-
-## Code entry points
-
-| Component | Path |
-|-----------|------|
-| Kernel | `crates/deepstrike-core/` |
-| Python SDK | `python/deepstrike/` |
-| Node SDK | `crates/deepstrike-node/` |
-| Example | `python/examples/hello_agent/` |
-
-## Design principles
-
-1. **Pure computation** — kernel has zero I/O and zero async
-2. **State machine driven** — host feeds events; kernel returns actions
-3. **One gate for all effects** — tools, spawn, memory, DAG growth share one syscall trap
-4. **Host-owned side effects** — network, disk, LLM APIs live only in the SDK
+- [Agent capability guides](/en/guides/)
+- [Sessions and recovery](/en/guides/session-replay-and-recovery)
+- [Implementation reference](./overview)
+- [Kernel ABI reference](./kernel-abi)

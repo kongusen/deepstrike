@@ -79,6 +79,7 @@ fn make_result(
     ToolResult {
         call_id,
         output: Content::Text(output),
+        durable_content: None,
         is_error,
         is_fatal,
         error_kind,

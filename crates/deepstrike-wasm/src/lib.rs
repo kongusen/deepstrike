@@ -4,8 +4,8 @@ use compact_str::CompactString;
 use js_sys::Uint8Array;
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 
 use deepstrike_core::governance::constraint::{ConstraintRule, ParamConstraint};
 use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
@@ -420,6 +420,7 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             call_id,
             output,
             is_error,
+            ..
         } => ContentPartObj {
             r#type: "tool_result".into(),
             text: None,
@@ -854,9 +855,9 @@ fn canonical_record_bytes_from_js(value: JsValue) -> Result<Vec<Vec<u8>>, JsValu
     let mut records = Vec::with_capacity(array.length() as usize);
     for index in 0..array.length() {
         let entry = array.get(index);
-        let bytes = entry.dyn_into::<Uint8Array>().map_err(|_| {
-            JsValue::from_str("record_bytes entries must be Uint8Array")
-        })?;
+        let bytes = entry
+            .dyn_into::<Uint8Array>()
+            .map_err(|_| JsValue::from_str("record_bytes entries must be Uint8Array"))?;
         records.push(bytes.to_vec());
     }
     Ok(records)

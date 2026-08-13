@@ -1,6 +1,6 @@
 # 执行平面与工具
 
-ExecutionPlane 是 DeepStrike 的工具执行层。kernel 只裁决 tool syscall、记录 observation、维护上下文；真正的函数调用、进程启动、远程 HTTP、worktree cwd 注入都在 SDK 的 ExecutionPlane 中完成。
+工具是 Agent 连接应用和外部世界的方式。DeepStrike 支持注册类型化函数、流式返回、等待外部工作，并选择每个工具在哪里运行。
 
 **代码入口**：
 
@@ -11,16 +11,17 @@ ExecutionPlane 是 DeepStrike 的工具执行层。kernel 只裁决 tool syscall
 - `python/deepstrike/runtime/remote_vpc_plane.py`
 - `python/deepstrike/runtime/payload_store.py`
 
-## 在 Agent OS 中的位置
+## 选择工具运行方式
 
-| 职责 | 说明 |
-|------|------|
-| 对 kernel | 接收已批准的 tool call，并把结果作为 observation 回写 |
-| 对 host | 绑定 Python 函数、进程、worktree、远程 VPC 或客户环境 |
-| 对治理面 | 尊重 schema filtering、permission、quota、sandbox 决策 |
-| 对 Context VM | 大结果通过 external payload handle 投影，避免直接污染上下文 |
+| 需求 | 推荐 |
+| --- | --- |
+| 本地 Python 或 TypeScript 函数 | `LocalExecutionPlane` |
+| 流式输出 | `streaming_tool` / async iterable chunk |
+| 隔离目录中的文件操作 | Worktree 或 process sandbox |
+| 远程或客户环境中的动作 | `RemoteVpcPlane` 或应用适配器 |
+| 很大的结果 | `PayloadStore` |
 
-ExecutionPlane 是 OS 的“设备驱动层”：kernel 不直接读写外部世界，而是通过这个平面把批准后的动作交给宿主执行。
+Agent 只看到工具 schema 和结果。凭据、网络、文件访问、重试和幂等策略由应用负责。
 
 ![Execution Plane Mechanisms](/execution_plane_mechanisms.svg)
 
@@ -54,7 +55,7 @@ runner = RuntimeRunner(RuntimeOptions(
 ))
 ```
 
-`LocalExecutionPlane.schemas()` 会把工具 schema 交给 kernel；kernel 在 `CallLLM` 时只暴露通过治理和能力门控的 schema。
+`LocalExecutionPlane.schemas()` 会把工具 schema 交给 runtime；runtime 在 `CallLLM` 时只暴露通过治理和能力门控的 schema。
 
 ## Level 2：工具参数校验与修复
 
@@ -140,7 +141,7 @@ runner = RuntimeRunner(RuntimeOptions(
 
 关键边界：
 
-- kernel 只声明 `AgentIsolation::Worktree`
+- runtime 只声明 `AgentIsolation::Worktree`
 - SDK 创建 / 清理 git worktree
 - `WorktreeExecutionPlane` 把 worktree path 注入 `RunContext.cwd`
 - 工具必须主动使用 `ctx.cwd`，否则不会自动隔离文件访问
@@ -206,15 +207,15 @@ RuntimeOptions(
 
 `read_result` 在 core 中归约为 reachable-handle `PageIn` 和相关 `LoadPayload` effect；`LocalExecutionPlane` 不会把 locator 解释为文件路径。
 
-## Kernel / Host 边界
+## 运行时与应用的职责
 
 | 行为 | 所属 |
 |------|------|
-| tool schema 是否暴露 | kernel + SDK 能力门控 |
-| tool call 是否允许 | kernel syscall / governance |
+| tool schema 是否暴露 | runtime + SDK 能力门控 |
+| tool call 是否允许 | runtime syscall / governance |
 | Python 函数调用 | SDK ExecutionPlane |
 | subprocess / HTTP / 文件写入 | SDK / 工具 |
-| external 正文持久化 | SDK 提交前写入，kernel 校验 descriptor |
+| external 正文持久化 | SDK 提交前写入，runtime 校验 descriptor |
 | worktree 生命周期 | SDK |
 
 ## 验证入口

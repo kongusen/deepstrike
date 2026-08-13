@@ -180,6 +180,7 @@ where
                             call_id: r.call_id.clone(),
                             output,
                             is_error: r.is_error,
+                            durable_content: r.durable_content.clone(),
                         }]),
                         tool_calls: vec![],
                         token_count: r.token_count,

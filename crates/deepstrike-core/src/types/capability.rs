@@ -233,13 +233,14 @@ pub fn is_attenuation_of(child: &Capability, parent: &Capability) -> bool {
 /// spc_004-03 / core invariant: `Caps(children) ⊆ Caps(parent)`. Every capability in `children`
 /// must be [`is_attenuation_of`] at least one capability in `parents`; violators are collected
 /// (not just the first) so the caller can report exactly what was over-broad.
-pub fn caps_subset(
-    children: &[Capability],
-    parents: &[Capability],
-) -> Result<(), Vec<Capability>> {
+pub fn caps_subset(children: &[Capability], parents: &[Capability]) -> Result<(), Vec<Capability>> {
     let violations: Vec<Capability> = children
         .iter()
-        .filter(|child| !parents.iter().any(|parent| is_attenuation_of(child, parent)))
+        .filter(|child| {
+            !parents
+                .iter()
+                .any(|parent| is_attenuation_of(child, parent))
+        })
         .cloned()
         .collect();
     if violations.is_empty() {
@@ -413,20 +414,26 @@ mod tests {
 
     #[test]
     fn lease_is_expired_before_the_deadline_is_false() {
-        let lease = Lease { expires_at_turn: Some(10) };
+        let lease = Lease {
+            expires_at_turn: Some(10),
+        };
         assert!(!lease.is_expired(9));
     }
 
     #[test]
     fn lease_is_expired_at_or_after_the_deadline_is_true() {
-        let lease = Lease { expires_at_turn: Some(10) };
+        let lease = Lease {
+            expires_at_turn: Some(10),
+        };
         assert!(lease.is_expired(10));
         assert!(lease.is_expired(11));
     }
 
     #[test]
     fn lease_with_no_expiry_never_expires() {
-        let lease = Lease { expires_at_turn: None };
+        let lease = Lease {
+            expires_at_turn: None,
+        };
         assert!(!lease.is_expired(0));
         assert!(!lease.is_expired(u32::MAX));
     }
@@ -481,7 +488,9 @@ mod tests {
             resource: ResourceSelector("/repo/src/**".into()),
             actions: ActionSet(["read".into()].into_iter().collect()),
             constraints: ConstraintSet::default(),
-            lease: Some(Lease { expires_at_turn: Some(10) }),
+            lease: Some(Lease {
+                expires_at_turn: Some(10),
+            }),
             delegatable: true,
             issuer: Principal("agent-7".into()),
         };

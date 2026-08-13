@@ -152,8 +152,14 @@ mod tests {
         mailbox.send(msg("first"));
         mailbox.send(msg("second"));
 
-        assert_eq!(mailbox.receive().map(|m| m.id), Some(MessageId::from("first")));
-        assert_eq!(mailbox.receive().map(|m| m.id), Some(MessageId::from("second")));
+        assert_eq!(
+            mailbox.receive().map(|m| m.id),
+            Some(MessageId::from("first"))
+        );
+        assert_eq!(
+            mailbox.receive().map(|m| m.id),
+            Some(MessageId::from("second"))
+        );
     }
 
     #[test]

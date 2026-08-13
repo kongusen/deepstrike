@@ -6,9 +6,7 @@
 
 # DeepStrike Python SDK
 
-Runtime framework built on a Rust kernel. The kernel owns loop control, context compression, governance, signal routing, and memory paging — the SDK owns all I/O (LLM calls, tool execution, disk, long-term memory).
-
-Python is a first-class SDK for the **Agent OS native profile**: declarative governance and in-kernel signal routing are enabled by default on every run.
+Build Python Agents with providers, typed tools, memory, Skills, delegation, workflows, and durable sessions. The SDK keeps the Agent's long-running work explicit through stream events, SessionLog evidence, tool policies, and host-provided integrations.
 
 ## Install
 
@@ -128,7 +126,7 @@ The runner drives one durable operation loop:
 
 Kernel session events carry an optional `category` tag (`syscall` · `sched` · `mm` · `proc` · `ipc`) for diagnostics and OS snapshot rebuilds.
 
-### What Agent OS gives you
+### What this enables
 
 The mechanisms above are not internal refactors — they change what you can build without custom runner code:
 
@@ -164,7 +162,7 @@ Page-out, signals, processes, budgets, and memory events land in `SessionLog` wi
 
 ## Dynamic workflows
 
-Instead of planning **and** executing a hard task in one long context window, hand the kernel a declarative DAG and let it spawn a fresh-context sub-agent per node. The kernel owns the control flow (gate · budget · suspend-on-join · resume); your SDK runs the agents. See the [top-level overview](../README.md#the-six-harness-patterns-as-first-class-kernel-nodes) for the full pattern catalog.
+For a task that needs more than one Agent, describe a DAG and let the runtime run fresh-context specialists under the same budgets, policies, and session evidence as the parent. See the [workflow guide](../docs/en/guides/workflow.md) for the complete pattern catalog.
 
 ```py
 from deepstrike import WorkflowSpec, WorkflowNodeSpec
@@ -191,7 +189,7 @@ A node's `kind` selects the control-flow shape; the same executor drives them al
 | tournament (`entrants`) | Generate N entrants, then a pairwise-judge bracket to one winner |
 | reduce (`reducer`) | **Tokenless host-compute** — a pure function (`dedupe_lines` / `merge_json_arrays` / `concat` / `count`, or your own via the `reducers` option) over the node's dependency outputs |
 
-### 0.2.11 capabilities
+### Workflow capabilities
 
 - **Runtime fan-out** — give a node the `submit_workflow_nodes_tool` and its agent can append nodes to the live DAG mid-run (true loop-until-done; one verifier per claim it discovers). Submission events remain audit projections; checkpoint state owns recovery. Governance rejection fails the submitting node instead of acknowledging work that was never appended.
 - **Quarantine, no escape** — set `trust="quarantined"` on a node that reads untrusted content; it's denied write-capable isolation in-kernel, and any nodes it submits are coerced to quarantined too (no privilege escalation).
@@ -290,7 +288,7 @@ runner = RuntimeRunner(RuntimeOptions(
     max_turns=25,
     timeout_ms=60_000,
 
-    # Agent OS native profile (defaults shown)
+    # Default governance and signal policy
     governance_policy=DEFAULT_NATIVE_GOVERNANCE_POLICY,
     signal_policy=DEFAULT_NATIVE_SIGNAL_POLICY,  # SignalRouter queue size 64
     prompt_budget=PromptBudget(

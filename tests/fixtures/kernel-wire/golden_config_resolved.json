@@ -148,8 +148,12 @@
     },
     "scheduler_policy": {
       "age_weight": 900,
+      "budget_pressure_weight": 0,
       "critical_path_weight": 900000,
+      "deadline_weight": 0,
       "fanout_weight": 9000,
+      "process_priority_weight": 0,
+      "resource_pressure_weight": 0,
       "token_cost_weight": 2
     },
     "signal_policy": {
@@ -356,8 +360,12 @@
     },
     "scheduler_policy": {
       "age_weight": 900,
+      "budget_pressure_weight": 0,
       "critical_path_weight": 900000,
+      "deadline_weight": 0,
       "fanout_weight": 9000,
+      "process_priority_weight": 0,
+      "resource_pressure_weight": 0,
       "token_cost_weight": 2
     },
     "signal_policy": {

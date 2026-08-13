@@ -1,12 +1,12 @@
 # Harness 与 Eval
 
-Harness 与 Eval 是 Agent OS 的 **Quality Gate Plane**。它不改变 kernel 的推理循环，而是在 run 外包一层生成、评判、反馈、重试的控制环，用来把主观质量要求变成可执行 gate。
+评估让应用判断 Agent 的结果是否足够好。使用 criteria、judge、反馈和有界重试，把主观质量要求变成可重复检查。
 
 **代码**：`python/deepstrike/harness/`、`python/deepstrike/runtime/eval.py`
 
 ---
 
-## 在 Agent OS 中的位置
+## 评估增加什么
 
 | 职责 | 说明 |
 |------|------|
@@ -16,7 +16,7 @@ Harness 与 Eval 是 Agent OS 的 **Quality Gate Plane**。它不改变 kernel �
 | 对 contract | Criterion / Verdict 把验收标准结构化，供后续 milestone 或 handoff 使用 |
 | 对 session | 每次尝试、反馈和结果都可作为证据写入事件流 |
 
-Harness 面适合处理“输出是否足够好”的问题；Governance 面处理“这个动作能不能做”的问题。两者不要混用。
+评估回答“输出是否足够好”，治理回答“这个动作能不能做”。两者不要混用。
 
 ![Harness & Eval Mechanisms](/harness_eval_mechanisms.svg)
 

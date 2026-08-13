@@ -1,52 +1,42 @@
-# Session & Replay
+# Sessions and Recovery
 
-Agent OS **replayability** comes from logical kernel checkpoints, canonical transaction records in the host-owned KernelJournal, and append-only SessionLog evidence, not from saving chat history alone.
+An Agent session is the durable thread of work identified by `sessionId`. It contains the goal, turns, tool activity, approvals, signals, memory activity, workflow progress, and enough recovery state to continue after an interruption.
 
-## Recoverable boundary
+## What a session gives you
 
-```text
-SessionLog (append-only evidence)
-    +
-opaque logical checkpoint + bounded KernelJournal tail
-    +
-Host stores (MemoryStore, ArchiveStore, FileSessionLog)
-```
+| Need | Session behavior |
+| --- | --- |
+| Continue a conversation | Reuse the same `sessionId` and the Agent sees the prior useful context. |
+| Recover an interrupted run | Start the same session again; pending work and the last durable boundary are restored. |
+| Wait for a person or event | Suspend on approval, child completion, or an external signal and resume later. |
+| Debug a decision | Inspect structured events for model output, tool calls, policy decisions, and results. |
+| Test without a provider | Replay fixed provider responses and assert the Agent's decisions deterministically. |
 
-The kernel never writes disk; the SDK owns I/O. The kernel emits checkpoint candidates, canonical records, and observations. SessionLog is audit and offline diagnostic evidence, not the production source of truth for reconstructing workflow graphs.
-
-## SessionLog implementations
+## Session implementations
 
 | Type | Use |
-|------|-----|
-| `InMemorySessionLog` | Dev / tests |
-| `FileSessionLog` | Production |
+| --- | --- |
+| `InMemorySessionLog` | Local experiments and tests. |
+| `FileSessionLog` | Local applications that need continuity across process restarts. |
+| Custom `SessionLog` | Applications that store sessions in a database or service. |
 
-Typical kinds: `run_started`, `tool_invoked`, `agent_process_changed`, `workflow_node_completed`, `memory_written`, `pressure_compact`.
+## Resume a session
 
-## Wake / resume
-
-Suspended when: AskUser, sub-agent join, workflow barrier.
-
-```python
-# The SDK restores the canonical kernel from its checkpoint + KernelJournal.
-async for event in runner.run(goal, session_id=existing_id):
-    ...
+```ts
+await collectText(runner.run({
+  sessionId: "research-42",
+  goal: "Continue the source review and finish the brief.",
+}))
 ```
 
-The host loads the latest installed checkpoint and records after it, then invokes canonical restore. The checkpoint owns the complete workflow DAG, node state, and pending effect identities, so restore cost is bounded by the tail rather than total run length. Runtime `SubmitNodes` extensions are restored from workflow graph state; production resume does not accept or synthesize workflow `resumed_*` inputs.
+Use the same `sessionId` after a process restart. The application does not need to rebuild the conversation by hand or invent a special “resume” prompt.
 
-## Replay & deterministic tests
+## Durable memory is separate
 
-- `ReplayProvider` — fixed LLM output
-- `rebuild_os_snapshot_from_events` — rebuild counters from log
-- Audit events stripped when reconstructing provider messages
-
-## Cross-links
-
-- Compression → `ArchiveStore`, `frozen_prefix_len` — see [Prompt cache design](/en/concepts/prompt-cache-design)
-- Multi-peer → [RunGroup budget](/en/concepts/run-group-budget)
+Session history answers “what happened in this run?” Durable memory answers “what should this Agent remember for future runs?” Use [`MemoryStore`](../guides/memory) for facts and preferences worth carrying forward; keep transient tool output in the session.
 
 ## Further reading
 
-- [Execution model](/en/architecture/execution-model)
-- [Kernel ABI](/en/architecture/kernel-abi)
+- [Long-running sessions guide](../guides/session-replay-and-recovery)
+- [Context and multimodal input](../guides/context-engineering)
+- [Evaluation and replay](../guides/harness-and-eval)

@@ -14,7 +14,8 @@ from .model_registry import (
     ModelRegistry,
     ResolvedProviderRuntime,
 )
-from .credentials import CredentialResolutionError, OAuthCredentialResolver, resolve_credential
+from .credentials import CredentialResolutionError, CredentialResolver, OAuthCredentialResolver, resolve_credential
+from .model_catalog import ModelCatalog
 
 
 @dataclass(frozen=True)
@@ -341,7 +342,8 @@ async def create_provider_async(
     *,
     api_key: str | None = None,
     bearer_token: str | None = None,
-    credential_resolver: OAuthCredentialResolver | None = None,
+    credential_resolver: CredentialResolver | OAuthCredentialResolver | None = None,
+    model_catalog: ModelCatalog | None = None,
     model: str | None = None,
     protocol: str = "openai",
     region: str | None = None,
@@ -363,6 +365,18 @@ async def create_provider_async(
             provider_id, api_key=None, model=model, protocol=protocol, region=region,
             base_url=base_url, retry_config=retry_config,
         )
+    catalog_model_id = (
+        model if model and model.startswith(f"{provider_id}/") else f"{provider_id}/{model}"
+    ) if model else None
+    registration = await model_catalog.get(catalog_model_id) if model_catalog and catalog_model_id else None
+    if registration is not None:
+        if registration.descriptor.provider_id != provider_id:
+            raise ValueError(f"Catalog model {registration.descriptor.id!r} does not belong to {provider_id!r}")
+        runtime = model_registry.resolve_registered_provider_runtime(registration)
+        profile = ENDPOINT_PROFILES.get(runtime.endpoint_id)
+        if profile is None:
+            raise ValueError(f"Unknown endpoint {runtime.endpoint_id!r}")
+        dialect = OPENAI_CHAT_DIALECTS.get(provider_id) if profile.protocol == "openai-chat" else None
     credential = await resolve_credential(
         provider_id=provider_id,
         model_id=runtime.model_id,
@@ -378,7 +392,9 @@ async def create_provider_async(
     cls = _PROVIDER_CLASSES.get(key)
     if cls is None:
         raise ValueError(f"No provider class registered for {key!r}")
-    resolved_model = model or (dialect.default_model if dialect is not None else None)
+    resolved_model = runtime.model_id if registration is not None else (
+        model or (dialect.default_model if dialect is not None else None)
+    )
     provider = _build_provider(
         cls,
         api_key=credential.value,
@@ -389,10 +405,12 @@ async def create_provider_async(
         auth_mode=credential.type,
     )
     provider_model = getattr(provider, "_model", None) or getattr(provider, "_model_name", runtime.model_id)
-    provider._resolved_runtime = model_registry.resolve_provider_runtime(
-        provider_id,
-        provider_model,
-        endpoint_id=runtime.endpoint_id,
+    provider._resolved_runtime = (
+        runtime if registration is not None else model_registry.resolve_provider_runtime(
+            provider_id,
+            provider_model,
+            endpoint_id=runtime.endpoint_id,
+        )
     )
     _attach_request_plan_identity(provider, provider._resolved_runtime, base_url or profile.base_url)
     return provider

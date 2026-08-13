@@ -18,8 +18,7 @@ use crate::types::result::SubAgentResult;
 pub use crate::runtime::kernel::KernelObservation;
 use crate::runtime::session::RollbackReason;
 use crate::types::message::{
-    Content, ContentPart, Message, ToolCall, ToolErrorKind, ToolResult,
-    ToolSchema,
+    Content, ContentPart, Message, ToolCall, ToolErrorKind, ToolResult, ToolSchema,
 };
 use crate::types::milestone::MilestoneCheckResult;
 use crate::types::result::{LoopResult, TerminationReason};
@@ -1394,6 +1393,7 @@ impl LoopStateMachine {
                         call_id: r.call_id.clone(),
                         output,
                         is_error: r.is_error,
+                        durable_content: r.durable_content.clone(),
                     }];
                     let tool_msg = Message::tool(parts);
                     let tokens = r
@@ -1559,6 +1559,7 @@ impl LoopStateMachine {
                                      then retry with a smaller step or a faster approach.",
                                     call.name
                                 )),
+                                durable_content: None,
                                 is_error: true,
                                 is_fatal: false,
                                 error_kind: Some(ToolErrorKind::Timeout),
@@ -1742,6 +1743,7 @@ impl LoopStateMachine {
             call_id: call_id.into(),
             output: output.to_string(),
             is_error,
+            durable_content: None,
         }]);
         let tokens = self.message_tokens(&msg);
         self.ctx.push_history(msg, tokens);
