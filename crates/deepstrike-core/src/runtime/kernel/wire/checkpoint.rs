@@ -463,6 +463,16 @@ pub struct SchedulerStateV1 {
     /// rollback: otherwise the first post-restore sample forgets prior failures and rollbacks.
     #[serde(default)]
     pub entropy: EntropyState,
+    /// Durable local fan-out channels, including per-consumer cursors and dedupe memory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub channels: Vec<LocalChannelState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalChannelState {
+    pub channel_id: String,
+    pub channel: crate::scheduler::mailbox::Channel,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -537,6 +547,12 @@ pub struct TaskControlState {
     /// forgetting a debit or returning the same unused reservation twice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_grant: Option<crate::scheduler::budget_grant::BudgetGrant>,
+    /// Point-to-point queue plus dedupe memory. Empty mailboxes stay absent from canonical JSON.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::scheduler::mailbox::Mailbox::is_empty"
+    )]
+    pub mailbox: crate::scheduler::mailbox::Mailbox,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -8,7 +8,7 @@
 //! every reference in this module's own integration tests to be fully qualified. `MailboxMessage`
 //! avoids the collision while staying unambiguous about what it is.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
@@ -40,14 +40,38 @@ pub struct MailboxMessage {
     pub payload_handle: HandleId,
     pub priority: Urgency,
     pub timestamp: LogicalTime,
+    /// Exclusive logical-turn expiry. `None` means the message does not expire.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<LogicalTime>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IpcEnqueueOutcome {
+    Accepted,
+    Duplicate,
+    Full,
+    Expired,
 }
 
 /// spc_006-02: a task's inbox — point-to-point only (no fan-out; that's [`Channel`]'s job,
 /// spc_006-04). Pure data structure: no `TaskTable`/`Tcb` reference, no send/receive wiring onto
 /// a real task yet (spc_006-03).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mailbox {
     queue: VecDeque<MailboxMessage>,
+    #[serde(default)]
+    seen: BTreeSet<MessageId>,
+    capacity: usize,
+}
+
+impl Default for Mailbox {
+    fn default() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            seen: BTreeSet::new(),
+            capacity: 64,
+        }
+    }
 }
 
 impl Mailbox {
@@ -56,12 +80,46 @@ impl Mailbox {
     }
 
     pub fn send(&mut self, msg: MailboxMessage) {
+        let _ = self.try_send(msg, LogicalTime(0));
+    }
+
+    pub fn try_send(&mut self, msg: MailboxMessage, now: LogicalTime) -> IpcEnqueueOutcome {
+        self.drop_expired(now);
+        if msg.expires_at.is_some_and(|deadline| now >= deadline) {
+            return IpcEnqueueOutcome::Expired;
+        }
+        if self.seen.contains(&msg.id) {
+            return IpcEnqueueOutcome::Duplicate;
+        }
+        if self.queue.len() >= self.capacity {
+            return IpcEnqueueOutcome::Full;
+        }
+        self.seen.insert(msg.id.clone());
         self.queue.push_back(msg);
+        IpcEnqueueOutcome::Accepted
     }
 
     /// FIFO — oldest message first.
     pub fn receive(&mut self) -> Option<MailboxMessage> {
         self.queue.pop_front()
+    }
+
+    pub fn receive_at(&mut self, now: LogicalTime) -> Option<MailboxMessage> {
+        self.drop_expired(now);
+        self.receive()
+    }
+
+    pub fn snapshot(&self) -> Vec<MailboxMessage> {
+        self.queue.iter().cloned().collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty() && self.seen.is_empty()
+    }
+
+    fn drop_expired(&mut self, now: LogicalTime) {
+        self.queue
+            .retain(|message| message.expires_at.is_none_or(|deadline| now < deadline));
     }
 }
 
@@ -71,12 +129,27 @@ impl Mailbox {
 /// field is not shown in spc_006 §3's abbreviated struct sketch but is mechanically required to
 /// realize that description — without it a second consumer draining after a first would see
 /// nothing).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Channel {
     pub subscribers: Vec<TaskId>,
     buffer: VecDeque<MailboxMessage>,
     #[serde(default)]
-    cursors: HashMap<TaskId, usize>,
+    cursors: BTreeMap<TaskId, usize>,
+    #[serde(default)]
+    seen: BTreeSet<MessageId>,
+    capacity: usize,
+}
+
+impl Default for Channel {
+    fn default() -> Self {
+        Self {
+            subscribers: Vec::new(),
+            buffer: VecDeque::new(),
+            cursors: BTreeMap::new(),
+            seen: BTreeSet::new(),
+            capacity: 64,
+        }
+    }
 }
 
 impl Channel {
@@ -84,12 +157,30 @@ impl Channel {
         Self {
             subscribers,
             buffer: VecDeque::new(),
-            cursors: HashMap::new(),
+            cursors: BTreeMap::new(),
+            seen: BTreeSet::new(),
+            capacity: 64,
         }
     }
 
     pub fn publish(&mut self, msg: MailboxMessage) {
+        let _ = self.publish_at(msg, LogicalTime(0));
+    }
+
+    pub fn publish_at(&mut self, msg: MailboxMessage, now: LogicalTime) -> IpcEnqueueOutcome {
+        self.drop_expired(now);
+        if msg.expires_at.is_some_and(|deadline| now >= deadline) {
+            return IpcEnqueueOutcome::Expired;
+        }
+        if self.seen.contains(&msg.id) {
+            return IpcEnqueueOutcome::Duplicate;
+        }
+        if self.buffer.len() >= self.capacity {
+            return IpcEnqueueOutcome::Full;
+        }
+        self.seen.insert(msg.id.clone());
         self.buffer.push_back(msg);
+        IpcEnqueueOutcome::Accepted
     }
 
     /// Every message published since `consumer`'s last `drain_for`, oldest first; advances that
@@ -99,7 +190,53 @@ impl Channel {
         let cursor = self.cursors.entry(consumer).or_insert(0);
         let unread: Vec<MailboxMessage> = self.buffer.iter().skip(*cursor).cloned().collect();
         *cursor = self.buffer.len();
+        self.compact_consumed();
         unread
+    }
+
+    pub fn drain_for_at(&mut self, consumer: TaskId, now: LogicalTime) -> Vec<MailboxMessage> {
+        if !self.subscribers.contains(&consumer) {
+            return Vec::new();
+        }
+        self.drain_for(consumer)
+            .into_iter()
+            .filter(|message| message.expires_at.is_none_or(|deadline| now < deadline))
+            .collect()
+    }
+
+    fn compact_consumed(&mut self) {
+        let consumed = self
+            .subscribers
+            .iter()
+            .map(|subscriber| self.cursors.get(subscriber).copied().unwrap_or(0))
+            .min()
+            .unwrap_or(0);
+        for _ in 0..consumed {
+            self.buffer.pop_front();
+        }
+        if consumed > 0 {
+            for cursor in self.cursors.values_mut() {
+                *cursor = cursor.saturating_sub(consumed);
+            }
+        }
+    }
+
+    fn drop_expired(&mut self, now: LogicalTime) {
+        if self.buffer.is_empty() {
+            return;
+        }
+        let previous: Vec<_> = self.buffer.drain(..).collect();
+        for cursor in self.cursors.values_mut() {
+            *cursor = previous
+                .iter()
+                .take(*cursor)
+                .filter(|message| message.expires_at.is_none_or(|deadline| now < deadline))
+                .count();
+        }
+        self.buffer = previous
+            .into_iter()
+            .filter(|message| message.expires_at.is_none_or(|deadline| now < deadline))
+            .collect();
     }
 }
 
@@ -117,6 +254,7 @@ mod tests {
             payload_handle: 42,
             priority: Urgency::High,
             timestamp: LogicalTime(7),
+            expires_at: None,
         };
 
         assert_eq!(msg.id, MessageId::from("msg-1"));
@@ -137,6 +275,7 @@ mod tests {
             payload_handle: 1,
             priority: Urgency::Normal,
             timestamp: LogicalTime(0),
+            expires_at: None,
         }
     }
 
@@ -179,6 +318,7 @@ mod tests {
             payload_handle: 1,
             priority: Urgency::Normal,
             timestamp: LogicalTime(0),
+            expires_at: None,
         }
     }
 
@@ -230,5 +370,57 @@ mod tests {
         let c2_drained = channel.drain_for(TaskId::from("c2"));
         assert_eq!(c2_drained.len(), 1);
         assert_eq!(c2_drained[0].id, MessageId::from("m1"));
+    }
+
+    #[test]
+    fn spc_019_08_mailbox_dedupes_bounds_and_expires_on_logical_time() {
+        let mut mailbox = Mailbox::new();
+        let mut first = msg("first");
+        first.expires_at = Some(LogicalTime(2));
+        assert_eq!(
+            mailbox.try_send(first.clone(), LogicalTime(0)),
+            IpcEnqueueOutcome::Accepted
+        );
+        assert_eq!(
+            mailbox.try_send(first, LogicalTime(0)),
+            IpcEnqueueOutcome::Duplicate
+        );
+        assert!(mailbox.receive_at(LogicalTime(2)).is_none());
+
+        for index in 0..64 {
+            assert_eq!(
+                mailbox.try_send(msg(&format!("m-{index}")), LogicalTime(2)),
+                IpcEnqueueOutcome::Accepted
+            );
+        }
+        assert_eq!(
+            mailbox.try_send(msg("overflow"), LogicalTime(2)),
+            IpcEnqueueOutcome::Full
+        );
+    }
+
+    #[test]
+    fn spc_019_08_channel_dedupes_and_filters_expired_messages_per_subscriber() {
+        let mut channel = Channel::new(vec![TaskId::from("b")]);
+        let mut expiring = msg_from("m1", "a");
+        expiring.expires_at = Some(LogicalTime(3));
+        assert_eq!(
+            channel.publish_at(expiring.clone(), LogicalTime(1)),
+            IpcEnqueueOutcome::Accepted
+        );
+        assert_eq!(
+            channel.publish_at(expiring, LogicalTime(1)),
+            IpcEnqueueOutcome::Duplicate
+        );
+        assert!(
+            channel
+                .drain_for_at(TaskId::from("not-subscribed"), LogicalTime(1))
+                .is_empty()
+        );
+        assert!(
+            channel
+                .drain_for_at(TaskId::from("b"), LogicalTime(3))
+                .is_empty()
+        );
     }
 }

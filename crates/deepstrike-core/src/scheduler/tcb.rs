@@ -6,7 +6,7 @@
 //! [`budget_verdict`] is the single budget decision point (turn/token/wall axes),
 //! delegating to [`SchedulerBudget::should_terminate`] via [`BudgetLedger`].
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
@@ -416,6 +416,7 @@ pub struct TaskTable {
     /// spc_003-04: kept in sync with every task's `wait` field exclusively through
     /// [`Self::set_wait`] — that method is the only sanctioned way to mutate `Tcb.wait`.
     wait_index: super::wait_index::WaitIndex,
+    channels: BTreeMap<ChannelId, super::mailbox::Channel>,
 }
 
 /// Rejections from the kernel-owned child creation entrypoint.
@@ -424,6 +425,17 @@ pub(crate) enum TaskSpawnError {
     UnknownCaller,
     CallerTerminal,
     DuplicateTask,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalIpcError {
+    UnknownCaller,
+    CallerTerminal,
+    UnknownRecipient,
+    ChannelSubscribersMismatch,
+    NotSubscriber,
+    Full,
+    Expired,
 }
 
 impl TaskTable {
@@ -782,6 +794,122 @@ impl TaskTable {
         if let Some(recipient) = self.get_mut(msg.to.as_str()) {
             recipient.mailbox.send(msg);
         }
+    }
+
+    /// Canonical point-to-point delivery. `from` is overwritten from kernel-derived causation;
+    /// duplicate ids are successful no-ops, while capacity/TTL failures are explicit.
+    pub(crate) fn send_message_from(
+        &mut self,
+        caller: &str,
+        mut msg: super::mailbox::MailboxMessage,
+        now: super::mailbox::LogicalTime,
+    ) -> Result<bool, LocalIpcError> {
+        let caller_task = self.get(caller).ok_or(LocalIpcError::UnknownCaller)?;
+        if caller_task.state.is_terminal() {
+            return Err(LocalIpcError::CallerTerminal);
+        }
+        if self.get(msg.to.as_str()).is_none() {
+            return Err(LocalIpcError::UnknownRecipient);
+        }
+        msg.from = caller.into();
+        let recipient_id = msg.to.clone();
+        let outcome = self
+            .get_mut(recipient_id.as_str())
+            .expect("recipient was validated")
+            .mailbox
+            .try_send(msg, now);
+        match outcome {
+            super::mailbox::IpcEnqueueOutcome::Accepted => {
+                self.notify(&super::wait_index::WaitKey::External(SubscriptionId(
+                    format!("mailbox:{recipient_id}").into(),
+                )));
+                Ok(true)
+            }
+            super::mailbox::IpcEnqueueOutcome::Duplicate => Ok(false),
+            super::mailbox::IpcEnqueueOutcome::Full => Err(LocalIpcError::Full),
+            super::mailbox::IpcEnqueueOutcome::Expired => Err(LocalIpcError::Expired),
+        }
+    }
+
+    pub(crate) fn receive_mailbox(
+        &mut self,
+        caller: &str,
+        now: super::mailbox::LogicalTime,
+        max: usize,
+    ) -> Result<Vec<super::mailbox::MailboxMessage>, LocalIpcError> {
+        let task = self.get_mut(caller).ok_or(LocalIpcError::UnknownCaller)?;
+        let mut messages = Vec::new();
+        for _ in 0..max {
+            let Some(message) = task.mailbox.receive_at(now) else {
+                break;
+            };
+            messages.push(message);
+        }
+        Ok(messages)
+    }
+
+    pub(crate) fn publish_channel(
+        &mut self,
+        caller: &str,
+        channel_id: ChannelId,
+        subscribers: Vec<TaskId>,
+        mut msg: super::mailbox::MailboxMessage,
+        now: super::mailbox::LogicalTime,
+    ) -> Result<bool, LocalIpcError> {
+        let caller_task = self.get(caller).ok_or(LocalIpcError::UnknownCaller)?;
+        if caller_task.state.is_terminal() {
+            return Err(LocalIpcError::CallerTerminal);
+        }
+        if subscribers.iter().any(|id| self.get(id.as_str()).is_none()) {
+            return Err(LocalIpcError::UnknownRecipient);
+        }
+        msg.from = caller.into();
+        let channel = self
+            .channels
+            .entry(channel_id.clone())
+            .or_insert_with(|| super::mailbox::Channel::new(subscribers.clone()));
+        if channel.subscribers != subscribers {
+            return Err(LocalIpcError::ChannelSubscribersMismatch);
+        }
+        match channel.publish_at(msg, now) {
+            super::mailbox::IpcEnqueueOutcome::Accepted => {
+                self.notify(&super::wait_index::WaitKey::Channel(channel_id));
+                Ok(true)
+            }
+            super::mailbox::IpcEnqueueOutcome::Duplicate => Ok(false),
+            super::mailbox::IpcEnqueueOutcome::Full => Err(LocalIpcError::Full),
+            super::mailbox::IpcEnqueueOutcome::Expired => Err(LocalIpcError::Expired),
+        }
+    }
+
+    pub(crate) fn receive_channel(
+        &mut self,
+        caller: &str,
+        channel_id: &ChannelId,
+        now: super::mailbox::LogicalTime,
+    ) -> Result<Vec<super::mailbox::MailboxMessage>, LocalIpcError> {
+        if self.get(caller).is_none() {
+            return Err(LocalIpcError::UnknownCaller);
+        }
+        let channel = self
+            .channels
+            .get_mut(channel_id)
+            .ok_or(LocalIpcError::NotSubscriber)?;
+        if !channel.subscribers.iter().any(|id| id.as_str() == caller) {
+            return Err(LocalIpcError::NotSubscriber);
+        }
+        Ok(channel.drain_for_at(caller.into(), now))
+    }
+
+    pub(crate) fn channels(&self) -> &BTreeMap<ChannelId, super::mailbox::Channel> {
+        &self.channels
+    }
+
+    pub(crate) fn restore_channels(
+        &mut self,
+        channels: BTreeMap<ChannelId, super::mailbox::Channel>,
+    ) {
+        self.channels = channels;
     }
 
     /// spc_002-09: recompute every task's `children` set from the authoritative `parent` field.
@@ -1754,6 +1882,7 @@ mod tests {
             payload_handle: 1,
             priority: Urgency::Normal,
             timestamp: LogicalTime(0),
+            expires_at: None,
         });
 
         let received = table
@@ -1783,7 +1912,74 @@ mod tests {
             payload_handle: 1,
             priority: Urgency::Normal,
             timestamp: LogicalTime(0),
+            expires_at: None,
         });
         // No panic — the only observable behavior is that the message goes nowhere.
+    }
+
+    #[test]
+    fn spc_019_08_local_ipc_derives_sender_and_wakes_mailbox_and_channel_waiters() {
+        use crate::scheduler::mailbox::{LogicalTime, MailboxMessage};
+        use crate::scheduler::wait_index::WaitKey;
+        use crate::types::signal::Urgency;
+
+        let mut table = TaskTable::new();
+        table.insert(Tcb::root("a", SchedulerBudget::default()));
+        table.insert(Tcb::root("b", SchedulerBudget::default()));
+        let mailbox_subscription = SubscriptionId("mailbox:b".into());
+        table.wait_for_condition("b", &WaitCondition::External(mailbox_subscription.clone()));
+        let message = MailboxMessage {
+            id: "m1".into(),
+            from: "forged".into(),
+            to: "b".into(),
+            kind: "result".into(),
+            payload_handle: 7,
+            priority: Urgency::Normal,
+            timestamp: LogicalTime(1),
+            expires_at: None,
+        };
+        assert_eq!(
+            table.send_message_from("a", message.clone(), LogicalTime(1)),
+            Ok(true)
+        );
+        assert_eq!(table.get("b").unwrap().state, TaskLifecycle::Ready);
+        assert!(
+            table
+                .wait_index()
+                .lookup(&WaitKey::External(mailbox_subscription))
+                .is_empty()
+        );
+        let received = table.receive_mailbox("b", LogicalTime(1), 1).unwrap();
+        assert_eq!(received[0].from.as_str(), "a");
+        assert_eq!(
+            table.send_message_from("a", message, LogicalTime(1)),
+            Ok(false),
+            "redelivery is a durable no-op"
+        );
+
+        let channel_id = ChannelId("results".into());
+        table.wait_for_condition("b", &WaitCondition::Channel(channel_id.clone()));
+        assert_eq!(
+            table.publish_channel(
+                "a",
+                channel_id.clone(),
+                vec!["b".into()],
+                MailboxMessage {
+                    id: "cm1".into(),
+                    to: "ignored".into(),
+                    ..received[0].clone()
+                },
+                LogicalTime(1),
+            ),
+            Ok(true)
+        );
+        assert_eq!(table.get("b").unwrap().state, TaskLifecycle::Ready);
+        assert_eq!(
+            table
+                .receive_channel("b", &channel_id, LogicalTime(1))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

@@ -26,6 +26,10 @@ pub enum SyscallRequest {
     UpdateTask(UpdateTaskRequest),
     RequestMemoryWrite(RequestMemoryWriteRequest),
     RequestMemoryQuery(RequestMemoryQueryRequest),
+    SendMessage(SendMessageRequest),
+    PublishChannel(PublishChannelRequest),
+    ReceiveMailbox(ReceiveMailboxRequest),
+    ReceiveChannel(ReceiveChannelRequest),
     /// P3 handle page-in. Opposite in meaning to the host's `SeedKnowledge` command (DEC-9).
     PageIn(PageInRequest),
 }
@@ -109,6 +113,46 @@ pub struct MemoryQueryProposal {
 pub struct PageInRequest {
     /// Must already be reachable in the current P3 handle table.
     pub handle_id: HandleId,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SendMessageRequest {
+    pub message_id: String,
+    pub to: TaskId,
+    pub message_kind: String,
+    pub payload_handle: HandleId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_turns: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishChannelRequest {
+    pub channel_id: String,
+    pub message_id: String,
+    pub subscribers: Vec<TaskId>,
+    pub message_kind: String,
+    pub payload_handle: HandleId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_turns: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiveMailboxRequest {
+    #[serde(default = "default_receive_limit")]
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiveChannelRequest {
+    pub channel_id: String,
+}
+
+fn default_receive_limit() -> u32 {
+    16
 }
 
 /// How the kernel derived the caller of a syscall. Never host-supplied.

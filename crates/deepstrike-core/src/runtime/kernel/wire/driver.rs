@@ -51,11 +51,11 @@ use serde::Serialize;
 use super::checkpoint::{
     AuthoredMemoryQueryState, AuthoredMemoryWriteState, ChildProcessState, ContextVmStateV1,
     EntropyState, EntropyTurnState, HandleState, InlineMessageBody, KnowledgeSlotState,
-    LogicalCompressionEntry, LogicalKernelState, LogicalPlanStep, LogicalStateProjection,
-    LogicalTaskState, LogicalToolCall, MessagePartition, MilestoneState, PartitionTokenState,
-    PendingPayloadLoadState, PendingProviderCallState, QueuedSignalState, ReferencedMessageBody,
-    SchedulerStateV1, SkillLeaseState, StoredMessageBody, StoredMessageState,
-    StructuredMessageBody, SyscallStateV1, TaskAttemptState, TaskControlState,
+    LocalChannelState, LogicalCompressionEntry, LogicalKernelState, LogicalPlanStep,
+    LogicalStateProjection, LogicalTaskState, LogicalToolCall, MessagePartition, MilestoneState,
+    PartitionTokenState, PendingPayloadLoadState, PendingProviderCallState, QueuedSignalState,
+    ReferencedMessageBody, SchedulerStateV1, SkillLeaseState, StoredMessageBody,
+    StoredMessageState, StructuredMessageBody, SyscallStateV1, TaskAttemptState, TaskControlState,
     TaskWaitConditionState, TaskWaitSetState, WorkflowGraphState, WorkflowNodeState,
 };
 use super::command::{
@@ -1030,6 +1030,7 @@ fn restore_scheduler(
         // spawn made before this checkpoint was taken).
         tcb.child_budget_remaining = task.child_budget_remaining;
         tcb.budget_grant = task.budget_grant.clone();
+        tcb.mailbox = task.mailbox.clone();
         if let Some(grant) = tcb.budget_grant.as_ref()
             && (grant.child.as_str() != task.task_id.as_str()
                 || tcb.parent.as_deref() != Some(grant.parent.as_str()))
@@ -1088,6 +1089,20 @@ fn restore_scheduler(
         };
         table.insert(tcb);
     }
+    let mut restored_channels = BTreeMap::new();
+    for channel in &state.channels {
+        let id = ChannelId(channel.channel_id.as_str().into());
+        if restored_channels
+            .insert(id, channel.channel.clone())
+            .is_some()
+        {
+            return Err(KernelFault::new(
+                KernelFaultCode::CheckpointIncompatible,
+                format!("duplicate local channel {:?}", channel.channel_id),
+            ));
+        }
+    }
+    table.restore_channels(restored_channels);
     // spc_002-09: `children` is not on the wire (derivable from `parent`); `insert` above only
     // registers a child when its parent row already exists, which the wire's task order does not
     // guarantee. Recompute from the now-complete `parent` links rather than trust insertion order.
@@ -1701,6 +1716,8 @@ struct SyscallOutcome {
     /// The DAG grew and still owes a spawn round. Honoured on the provider-tool path; on the
     /// child-completion path the completion's own drive produces the batch (§7.7 ordering).
     needs_workflow_round: bool,
+    /// Optional structured response for read-like local syscalls.
+    ack: Option<String>,
 }
 
 /// Reduces the five canonical input classes onto the kernel's existing semantic mechanisms.
@@ -1993,6 +2010,7 @@ impl CanonicalOperationDriver {
                     turns_used: tcb.budget.turns,
                     child_budget_remaining: tcb.child_budget_remaining,
                     budget_grant: tcb.budget_grant.clone(),
+                    mailbox: tcb.mailbox.clone(),
                 })
                 .collect(),
             attempts: self
@@ -2039,6 +2057,15 @@ impl CanonicalOperationDriver {
                 disarmed: entropy_state.disarmed,
                 last_alert_turn: entropy_state.last_alert_turn,
             },
+            channels: engine
+                .task_table()
+                .channels()
+                .iter()
+                .map(|(channel_id, channel)| LocalChannelState {
+                    channel_id: channel_id.0.to_string(),
+                    channel: channel.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -2676,6 +2703,7 @@ impl CanonicalOperationDriver {
                 Some(parent_task_id),
             )),
             needs_workflow_round: false,
+            ack: None,
         })
     }
 
@@ -2803,7 +2831,10 @@ impl CanonicalOperationDriver {
                 Ok(outcome) => {
                     answered.push(AnsweredCall {
                         call_id: call.call_id.as_str().into(),
-                        output: syscall_ack(&call.name).to_string(),
+                        output: outcome
+                            .ack
+                            .clone()
+                            .unwrap_or_else(|| syscall_ack(&call.name).to_string()),
                         is_error: false,
                     });
                     effects.extend(outcome.effects);
@@ -3007,7 +3038,130 @@ impl CanonicalOperationDriver {
             SyscallRequest::PageIn(page_in) => {
                 self.plan_page_in(context, &page_in.handle_id, effect_index)
             }
+            SyscallRequest::SendMessage(send) => self.plan_send_message(&caller, send),
+            SyscallRequest::PublishChannel(publish) => self.plan_publish_channel(&caller, publish),
+            SyscallRequest::ReceiveMailbox(receive) => {
+                self.plan_receive_mailbox(&caller, receive.limit)
+            }
+            SyscallRequest::ReceiveChannel(receive) => {
+                self.plan_receive_channel(&caller, &receive.channel_id)
+            }
         }
+    }
+
+    fn plan_send_message(
+        &mut self,
+        caller: &TaskId,
+        request: &super::syscall::SendMessageRequest,
+    ) -> Result<SyscallOutcome, SyscallRefusal> {
+        validate_ipc_labels(&request.message_id, &request.message_kind)?;
+        let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        let handle = resolve_ipc_handle(engine, &request.payload_handle)?;
+        let now = crate::scheduler::mailbox::LogicalTime(engine.turn);
+        let message = crate::scheduler::mailbox::MailboxMessage {
+            id: request.message_id.as_str().into(),
+            from: caller.as_str().into(),
+            to: request.to.as_str().into(),
+            kind: request.message_kind.as_str().into(),
+            payload_handle: handle,
+            priority: crate::types::signal::Urgency::Normal,
+            timestamp: now,
+            expires_at: request
+                .ttl_turns
+                .map(|ttl| crate::scheduler::mailbox::LogicalTime(engine.turn.saturating_add(ttl))),
+        };
+        let accepted = engine
+            .task_table_mut()
+            .send_message_from(caller.as_str(), message, now)
+            .map_err(local_ipc_refusal)?;
+        Ok(local_ipc_outcome(accepted))
+    }
+
+    fn plan_publish_channel(
+        &mut self,
+        caller: &TaskId,
+        request: &super::syscall::PublishChannelRequest,
+    ) -> Result<SyscallOutcome, SyscallRefusal> {
+        validate_ipc_labels(&request.message_id, &request.message_kind)?;
+        if request.channel_id.is_empty() || request.subscribers.is_empty() {
+            return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                "publish_channel",
+                "channel_id and subscribers must be non-empty",
+            )));
+        }
+        let mut subscribers: Vec<_> = request
+            .subscribers
+            .iter()
+            .map(|id| id.as_str().into())
+            .collect();
+        subscribers.sort_unstable();
+        subscribers.dedup();
+        if subscribers.len() != request.subscribers.len() {
+            return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                "publish_channel",
+                "channel subscribers must be unique",
+            )));
+        }
+        let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        let handle = resolve_ipc_handle(engine, &request.payload_handle)?;
+        let now = crate::scheduler::mailbox::LogicalTime(engine.turn);
+        let message = crate::scheduler::mailbox::MailboxMessage {
+            id: request.message_id.as_str().into(),
+            from: caller.as_str().into(),
+            to: request.channel_id.as_str().into(),
+            kind: request.message_kind.as_str().into(),
+            payload_handle: handle,
+            priority: crate::types::signal::Urgency::Normal,
+            timestamp: now,
+            expires_at: request
+                .ttl_turns
+                .map(|ttl| crate::scheduler::mailbox::LogicalTime(engine.turn.saturating_add(ttl))),
+        };
+        let accepted = engine
+            .task_table_mut()
+            .publish_channel(
+                caller.as_str(),
+                ChannelId(request.channel_id.as_str().into()),
+                subscribers,
+                message,
+                now,
+            )
+            .map_err(local_ipc_refusal)?;
+        Ok(local_ipc_outcome(accepted))
+    }
+
+    fn plan_receive_mailbox(
+        &mut self,
+        caller: &TaskId,
+        limit: u32,
+    ) -> Result<SyscallOutcome, SyscallRefusal> {
+        if limit == 0 || limit > 64 {
+            return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                "receive_mailbox",
+                "limit must be between 1 and 64",
+            )));
+        }
+        let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        let now = crate::scheduler::mailbox::LogicalTime(engine.turn);
+        let messages = engine
+            .task_table_mut()
+            .receive_mailbox(caller.as_str(), now, limit as usize)
+            .map_err(local_ipc_refusal)?;
+        Ok(ipc_messages_outcome(&messages))
+    }
+
+    fn plan_receive_channel(
+        &mut self,
+        caller: &TaskId,
+        channel_id: &str,
+    ) -> Result<SyscallOutcome, SyscallRefusal> {
+        let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        let now = crate::scheduler::mailbox::LogicalTime(engine.turn);
+        let messages = engine
+            .task_table_mut()
+            .receive_channel(caller.as_str(), &ChannelId(channel_id.into()), now)
+            .map_err(local_ipc_refusal)?;
+        Ok(ipc_messages_outcome(&messages))
     }
 
     /// §10.3 · gate + trust-aware append, with the spawn round deferred to the caller.
@@ -3065,6 +3219,7 @@ impl CanonicalOperationDriver {
             effects: Vec::new(),
             focus: None,
             needs_workflow_round: true,
+            ack: None,
         })
     }
 
@@ -3125,6 +3280,7 @@ impl CanonicalOperationDriver {
             effects: vec![published],
             focus: None,
             needs_workflow_round: false,
+            ack: None,
         })
     }
 
@@ -3175,6 +3331,7 @@ impl CanonicalOperationDriver {
             effects: vec![published],
             focus: None,
             needs_workflow_round: false,
+            ack: None,
         })
     }
 
@@ -3250,6 +3407,7 @@ impl CanonicalOperationDriver {
             effects: vec![published],
             focus: None,
             needs_workflow_round: false,
+            ack: None,
         })
     }
 
@@ -5412,7 +5570,11 @@ fn privileged_family(request: &SyscallRequest) -> Option<&'static str> {
             Some("memory")
         }
         SyscallRequest::ActivateSkill(_) => Some("capability"),
-        SyscallRequest::UpdateTask(_) | SyscallRequest::PageIn(_) => None,
+        SyscallRequest::SendMessage(_) | SyscallRequest::PublishChannel(_) => Some("ipc"),
+        SyscallRequest::UpdateTask(_)
+        | SyscallRequest::PageIn(_)
+        | SyscallRequest::ReceiveMailbox(_)
+        | SyscallRequest::ReceiveChannel(_) => None,
     }
 }
 
@@ -6018,6 +6180,75 @@ fn syscall_ack(name: &str) -> &'static str {
         }
         crate::context::manager::READ_RESULT_TOOL_NAME => "page-in requested",
         _ => "accepted",
+    }
+}
+
+fn validate_ipc_labels(message_id: &str, kind: &str) -> Result<(), SyscallRefusal> {
+    if message_id.is_empty() || kind.is_empty() || message_id.len() > 256 || kind.len() > 256 {
+        return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+            "local_ipc",
+            "message_id and message_kind must contain 1..=256 bytes",
+        )));
+    }
+    Ok(())
+}
+
+fn resolve_ipc_handle(
+    engine: &LoopStateMachine,
+    handle_id: &super::scalar::HandleId,
+) -> Result<crate::mm::handle::HandleId, SyscallRefusal> {
+    engine
+        .ctx
+        .handles
+        .all()
+        .iter()
+        .find(|handle| {
+            handle.source.as_deref() == Some(handle_id.as_str())
+                || handle.id.to_string() == handle_id.as_str()
+        })
+        .map(|handle| handle.id)
+        .ok_or_else(|| {
+            SyscallRefusal::Rejected(SyscallRejection::new(
+                "local_ipc",
+                format!("payload handle {handle_id} is not reachable by this operation"),
+            ))
+        })
+}
+
+fn local_ipc_refusal(error: crate::scheduler::tcb::LocalIpcError) -> SyscallRefusal {
+    let reason = match error {
+        crate::scheduler::tcb::LocalIpcError::UnknownCaller => "unknown caller",
+        crate::scheduler::tcb::LocalIpcError::CallerTerminal => "caller is terminal",
+        crate::scheduler::tcb::LocalIpcError::UnknownRecipient => "unknown recipient",
+        crate::scheduler::tcb::LocalIpcError::ChannelSubscribersMismatch => {
+            "channel subscriber set is immutable"
+        }
+        crate::scheduler::tcb::LocalIpcError::NotSubscriber => "caller is not a channel subscriber",
+        crate::scheduler::tcb::LocalIpcError::Full => "IPC capacity is full",
+        crate::scheduler::tcb::LocalIpcError::Expired => "message TTL already expired",
+    };
+    SyscallRefusal::Rejected(SyscallRejection::new("local_ipc", reason))
+}
+
+fn local_ipc_outcome(accepted: bool) -> SyscallOutcome {
+    SyscallOutcome {
+        ack: Some(
+            serde_json::json!({
+                "status": if accepted { "accepted" } else { "duplicate" },
+            })
+            .to_string(),
+        ),
+        ..SyscallOutcome::default()
+    }
+}
+
+fn ipc_messages_outcome(messages: &[crate::scheduler::mailbox::MailboxMessage]) -> SyscallOutcome {
+    SyscallOutcome {
+        ack: Some(
+            serde_json::to_string(messages)
+                .expect("canonical mailbox messages are always serializable"),
+        ),
+        ..SyscallOutcome::default()
     }
 }
 
@@ -8281,6 +8512,71 @@ mod tests {
                 "replay preserves the kernel-minted child attempt"
             );
         }
+    }
+
+    #[test]
+    fn spc_019_08_child_parent_requests_route_handles_through_durable_local_ipc() {
+        use crate::scheduler::tcb::ChannelId;
+
+        let mut runtime = workflow_root_awaiting_first_child();
+        runtime
+            .driver
+            .engine_mut()
+            .unwrap()
+            .ctx
+            .handles
+            .insert(Handle::resident_for(
+                77,
+                HandleKind::ToolResult,
+                1,
+                "ipc-handle",
+            ));
+        let send = SyscallRequest::SendMessage(super::super::syscall::SendMessageRequest {
+            message_id: "message-1".to_string(),
+            to: TaskId::new(ROOT_TASK_ID).unwrap(),
+            message_kind: "child_result".to_string(),
+            payload_handle: HandleId::new("ipc-handle").unwrap(),
+            ttl_turns: Some(4),
+        });
+        let publish =
+            SyscallRequest::PublishChannel(super::super::syscall::PublishChannelRequest {
+                channel_id: "results".to_string(),
+                message_id: "channel-message-1".to_string(),
+                subscribers: vec![TaskId::new(ROOT_TASK_ID).unwrap()],
+                message_kind: "child_result".to_string(),
+                payload_handle: HandleId::new("ipc-handle").unwrap(),
+                ttl_turns: Some(4),
+            });
+        runtime.submit(&child_done_with(
+            "in-done-1",
+            1_700_000_003_000,
+            "wf-node0",
+            "wf-node0:attempt:1",
+            vec![send.clone(), send, publish],
+        ));
+
+        let table = runtime.driver.engine_mut().unwrap().task_table_mut();
+        let messages = table
+            .receive_mailbox(ROOT_TASK_ID, crate::scheduler::mailbox::LogicalTime(0), 8)
+            .unwrap();
+        assert_eq!(messages.len(), 1, "duplicate message id is enqueued once");
+        assert_eq!(messages[0].from.as_str(), "wf-node0");
+        assert_eq!(messages[0].payload_handle, 77);
+        assert_eq!(
+            table
+                .receive_channel(
+                    ROOT_TASK_ID,
+                    &ChannelId("results".into()),
+                    crate::scheduler::mailbox::LogicalTime(0),
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let checkpoint = runtime.checkpoint().decode().expect("verifies");
+        let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+        assert_eq!(surface(&restored), surface(&runtime));
     }
 
     #[test]
