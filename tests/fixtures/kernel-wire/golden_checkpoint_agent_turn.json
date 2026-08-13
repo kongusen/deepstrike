@@ -1,13 +1,13 @@
 {
-  "ack_token": "op-driver-1:checkpoint:3:sha256:669d8575d5f270ae62f97b77fd86f83e2653c1c7fb96c2a06809e5dfc4113634",
+  "ack_token": "op-driver-1:checkpoint:3:sha256:ecb5dbed580b7a32ff6a91b4f1fcb6622ce8ae69ef487765621eb89eb2dd3b27",
   "checkpoint": {
     "abi_version": 3,
-    "base_record_digest": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
+    "base_record_digest": "sha256:a0060546afe8545cd74f6efb671db4eb4dc645fa7898e2cf2be6e86a4b325d5c",
     "base_step_seq": "3",
-    "checkpoint_digest": "sha256:669d8575d5f270ae62f97b77fd86f83e2653c1c7fb96c2a06809e5dfc4113634",
+    "checkpoint_digest": "sha256:ecb5dbed580b7a32ff6a91b4f1fcb6622ce8ae69ef487765621eb89eb2dd3b27",
     "checkpoint_version": 2,
-    "covered_transaction_head_digest": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
-    "genesis_digest": "sha256:1664c405bc8de2edd841de7c6ab7652bdf34c75af6a62556bb36bdef43ca32d8",
+    "covered_transaction_head_digest": "sha256:a0060546afe8545cd74f6efb671db4eb4dc645fa7898e2cf2be6e86a4b325d5c",
+    "genesis_digest": "sha256:5fb35043fe336d8a1fffe0147b0f96fc00d27eab52ad4374cf70dada23c5c285",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
@@ -294,6 +294,21 @@
               "name": "read_result"
             },
             {
+              "name": "send_message"
+            },
+            {
+              "name": "publish_channel"
+            },
+            {
+              "name": "receive_mailbox"
+            },
+            {
+              "name": "receive_channel"
+            },
+            {
+              "name": "read_object"
+            },
+            {
               "name": "search"
             }
           ],
@@ -306,8 +321,13 @@
             "effect_id": "op-driver-1:step:3:effect:0",
             "exposed_tools": [
               "memory",
+              "publish_channel",
+              "read_object",
               "read_result",
+              "receive_channel",
+              "receive_mailbox",
               "search",
+              "send_message",
               "skill",
               "start_workflow",
               "submit_workflow_nodes",
@@ -322,22 +342,22 @@
         "accepted_inputs": [
           {
             "input_id": "in-acted",
-            "record_digest": "sha256:53cf0d4217b70801cd2592b75a26d19e55147007bd6bdbe583526a757e80a97e",
+            "record_digest": "sha256:203600b823e8065ea17e5e1e6ee46e8908906c1fac9d20981a43d4c943e87dab",
             "step_seq": "2"
           },
           {
             "input_id": "in-configure",
-            "record_digest": "sha256:1664c405bc8de2edd841de7c6ab7652bdf34c75af6a62556bb36bdef43ca32d8",
+            "record_digest": "sha256:5fb35043fe336d8a1fffe0147b0f96fc00d27eab52ad4374cf70dada23c5c285",
             "step_seq": "0"
           },
           {
             "input_id": "in-results",
-            "record_digest": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
+            "record_digest": "sha256:a0060546afe8545cd74f6efb671db4eb4dc645fa7898e2cf2be6e86a4b325d5c",
             "step_seq": "3"
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:7ee9dafd821e9ddcac1731cfcc1308f3a87743877943d2ad9a8a5b5f1f082bdd",
+            "record_digest": "sha256:c08a9b89170a4f5240a9e98c81ffe04c20ae0736e07802b18e8bc7aa4035a099",
             "step_seq": "1"
           }
         ],
@@ -404,6 +424,21 @@
                 },
                 {
                   "name": "read_result"
+                },
+                {
+                  "name": "send_message"
+                },
+                {
+                  "name": "publish_channel"
+                },
+                {
+                  "name": "receive_mailbox"
+                },
+                {
+                  "name": "receive_channel"
+                },
+                {
+                  "name": "read_object"
                 },
                 {
                   "name": "search"
@@ -582,6 +617,21 @@
               "name": "read_result"
             },
             {
+              "name": "send_message"
+            },
+            {
+              "name": "publish_channel"
+            },
+            {
+              "name": "receive_mailbox"
+            },
+            {
+              "name": "receive_channel"
+            },
+            {
+              "name": "read_object"
+            },
+            {
               "name": "search"
             }
           ],
@@ -606,13 +656,13 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:0dec1082974e61e22abffead67e877096312d9e5158e598f403d3b3bb17e5fbd",
+    "state_digest": "sha256:1daed71a97f5bbc1b183059370fde0700cb53c19d24d13424551e48311785c22",
     "tail_digest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
     "tail_inputs": [],
     "through_step_seq": "3"
   },
-  "covered_head": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
+  "covered_head": "sha256:a0060546afe8545cd74f6efb671db4eb4dc645fa7898e2cf2be6e86a4b325d5c",
   "description": "A full-state logical checkpoint taken mid-turn (spec 12.1, 12.3). base == through == the durable head, so the bounded tail is empty and a restore replays nothing before the post-checkpoint records. The logical state is partitioned four ways and the header repeats none of it: the pending `call_provider` effect, the replay ledger and the terminal slot live in `transition`, the task table in `scheduler`, the handle table in `context_vm`, the live policy and the provider-tool causation in `syscall`.",
-  "state_digest": "sha256:0dec1082974e61e22abffead67e877096312d9e5158e598f403d3b3bb17e5fbd",
+  "state_digest": "sha256:1daed71a97f5bbc1b183059370fde0700cb53c19d24d13424551e48311785c22",
   "through_step_seq": "3"
 }

@@ -2474,6 +2474,10 @@ impl RuntimeRunner {
                     .await;
                 }
                 KernelObservation::AgentProcessChanged { .. } => {}
+                // Local process supervision and scheduling traces are durable canonical audit
+                // facts. The Rust SDK does not maintain a second session-log projection for them.
+                KernelObservation::ChildSupervised { .. }
+                | KernelObservation::LocalRunnableTrace { .. } => {}
                 // W0-ABI workflow lifecycle. The rust SDK has no workflow drive yet
                 // (node/python only), so these are observed-but-ignored here.
                 KernelObservation::WorkflowBatchSpawned { .. } => {}

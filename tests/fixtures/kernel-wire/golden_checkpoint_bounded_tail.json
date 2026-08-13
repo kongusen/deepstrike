@@ -1,13 +1,13 @@
 {
-  "base_state_digest": "sha256:472d49f11d4c5985029ab56a4d15e2fafc6f3595fd9b6b6e94a3ae825e209a58",
+  "base_state_digest": "sha256:417333774232eadd8d6f03e648662b1a5bbb65deea449618ec1e76fc7711ab94",
   "checkpoint": {
     "abi_version": 3,
-    "base_record_digest": "sha256:7ee9dafd821e9ddcac1731cfcc1308f3a87743877943d2ad9a8a5b5f1f082bdd",
+    "base_record_digest": "sha256:c08a9b89170a4f5240a9e98c81ffe04c20ae0736e07802b18e8bc7aa4035a099",
     "base_step_seq": "1",
-    "checkpoint_digest": "sha256:6d9b85da250ce50ae598e0e3a3f1709a198830806d81abdf83e4046243d9123f",
+    "checkpoint_digest": "sha256:256eced35822f6ea1da7f0a61b87c850a904e3e394d2a7577c029fab1f2650de",
     "checkpoint_version": 2,
-    "covered_transaction_head_digest": "sha256:0dbd3d568fb142c6ebf10a5206fd401db433b508711f851304234821a98bb80f",
-    "genesis_digest": "sha256:1664c405bc8de2edd841de7c6ab7652bdf34c75af6a62556bb36bdef43ca32d8",
+    "covered_transaction_head_digest": "sha256:04f2fae3701e69e83a670a6ca99f5f8df745a7ae93d7669bd975a5a39b1cf53f",
+    "genesis_digest": "sha256:5fb35043fe336d8a1fffe0147b0f96fc00d27eab52ad4374cf70dada23c5c285",
     "logical_state": {
       "context_vm": {
         "active_skills": [],
@@ -245,6 +245,21 @@
               "name": "read_result"
             },
             {
+              "name": "send_message"
+            },
+            {
+              "name": "publish_channel"
+            },
+            {
+              "name": "receive_mailbox"
+            },
+            {
+              "name": "receive_channel"
+            },
+            {
+              "name": "read_object"
+            },
+            {
               "name": "search"
             }
           ],
@@ -257,8 +272,13 @@
             "effect_id": "op-driver-1:step:1:effect:0",
             "exposed_tools": [
               "memory",
+              "publish_channel",
+              "read_object",
               "read_result",
+              "receive_channel",
+              "receive_mailbox",
               "search",
+              "send_message",
               "skill",
               "start_workflow",
               "submit_workflow_nodes",
@@ -273,12 +293,12 @@
         "accepted_inputs": [
           {
             "input_id": "in-configure",
-            "record_digest": "sha256:1664c405bc8de2edd841de7c6ab7652bdf34c75af6a62556bb36bdef43ca32d8",
+            "record_digest": "sha256:5fb35043fe336d8a1fffe0147b0f96fc00d27eab52ad4374cf70dada23c5c285",
             "step_seq": "0"
           },
           {
             "input_id": "in-start",
-            "record_digest": "sha256:7ee9dafd821e9ddcac1731cfcc1308f3a87743877943d2ad9a8a5b5f1f082bdd",
+            "record_digest": "sha256:c08a9b89170a4f5240a9e98c81ffe04c20ae0736e07802b18e8bc7aa4035a099",
             "step_seq": "1"
           }
         ],
@@ -325,6 +345,21 @@
                 },
                 {
                   "name": "read_result"
+                },
+                {
+                  "name": "send_message"
+                },
+                {
+                  "name": "publish_channel"
+                },
+                {
+                  "name": "receive_mailbox"
+                },
+                {
+                  "name": "receive_channel"
+                },
+                {
+                  "name": "read_object"
                 },
                 {
                   "name": "search"
@@ -503,6 +538,21 @@
               "name": "read_result"
             },
             {
+              "name": "send_message"
+            },
+            {
+              "name": "publish_channel"
+            },
+            {
+              "name": "receive_mailbox"
+            },
+            {
+              "name": "receive_channel"
+            },
+            {
+              "name": "read_object"
+            },
+            {
               "name": "search"
             }
           ],
@@ -514,8 +564,8 @@
       }
     },
     "operation_id": "op-driver-1",
-    "state_digest": "sha256:472d49f11d4c5985029ab56a4d15e2fafc6f3595fd9b6b6e94a3ae825e209a58",
-    "tail_digest": "sha256:4dfd6e518ae43d6356f7c82d506c07d107e02c4d45b671fe3ff4eea2a60d5005",
+    "state_digest": "sha256:417333774232eadd8d6f03e648662b1a5bbb65deea449618ec1e76fc7711ab94",
+    "tail_digest": "sha256:d68542c0829e448b5f90d2271140f9d4210f66270af479e6ba4fba9568b6e72f",
     "tail_inputs": [
       {
         "input": {
@@ -550,7 +600,7 @@
           "observed_at_ms": "1700000002000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:53cf0d4217b70801cd2592b75a26d19e55147007bd6bdbe583526a757e80a97e",
+        "record_digest": "sha256:203600b823e8065ea17e5e1e6ee46e8908906c1fac9d20981a43d4c943e87dab",
         "step_seq": "2"
       },
       {
@@ -580,7 +630,7 @@
           "observed_at_ms": "1700000003000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
+        "record_digest": "sha256:a0060546afe8545cd74f6efb671db4eb4dc645fa7898e2cf2be6e86a4b325d5c",
         "step_seq": "3"
       },
       {
@@ -608,7 +658,7 @@
           "observed_at_ms": "1700000004000",
           "operation_id": "op-driver-1"
         },
-        "record_digest": "sha256:0dbd3d568fb142c6ebf10a5206fd401db433b508711f851304234821a98bb80f",
+        "record_digest": "sha256:04f2fae3701e69e83a670a6ca99f5f8df745a7ae93d7669bd975a5a39b1cf53f",
         "step_seq": "4"
       }
     ],

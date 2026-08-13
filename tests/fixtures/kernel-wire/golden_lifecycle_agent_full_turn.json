@@ -1,7 +1,7 @@
 {
   "description": "One whole agent turn cycle on the canonical wire (spec 7.9 · Task 12): configure → atomic agent start → provider result carrying a tool call → tool results → final provider answer → agent terminal. Every step after the start is a single `ResolveEffect` input, and each one publishes exactly the next effect the loop is waiting on — until the last, whose disposition is the terminal itself and which publishes nothing.",
-  "genesis_digest": "sha256:1664c405bc8de2edd841de7c6ab7652bdf34c75af6a62556bb36bdef43ca32d8",
-  "head_digest": "sha256:0dbd3d568fb142c6ebf10a5206fd401db433b508711f851304234821a98bb80f",
+  "genesis_digest": "sha256:5fb35043fe336d8a1fffe0147b0f96fc00d27eab52ad4374cf70dada23c5c285",
+  "head_digest": "sha256:04f2fae3701e69e83a670a6ca99f5f8df745a7ae93d7669bd975a5a39b1cf53f",
   "links": [
     {
       "envelope": {
@@ -61,6 +61,21 @@
                 "name": "read_result"
               },
               {
+                "name": "send_message"
+              },
+              {
+                "name": "publish_channel"
+              },
+              {
+                "name": "receive_mailbox"
+              },
+              {
+                "name": "receive_channel"
+              },
+              {
+                "name": "read_object"
+              },
+              {
                 "name": "search"
               }
             ]
@@ -74,14 +89,14 @@
       "record": {
         "abi_version": 3,
         "canonical_input": {
-          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiY29uZmlnIjp7ImFiaV92ZXJzaW9uIjozLCJidWRnZXRfZ3JhbnQiOm51bGwsImNvbnRleHRfcG9saWN5Ijp7ImNvbGxhcHNlX29sZF9hc3Npc3RhbnRfbmFycmF0aW9uIjp0cnVlLCJpZGxlX21pY3JvX2NvbXBhY3RfbWludXRlcyI6NjAsImtub3dsZWRnZV9idWRnZXRfcHBtIjoyNTAwMDAsInByZXNlcnZlX3JlY2VudF90dXJucyI6MiwicHJlc3N1cmVfdGhyZXNob2xkc19wcG0iOnsiYXV0byI6OTUwMDAwLCJjb2xsYXBzZSI6OTAwMDAwLCJtaWNybyI6ODAwMDAwLCJyZW5ld2FsIjo5ODAwMDAsInNuaXAiOjcwMDAwMH0sInByb21wdF9idWRnZXQiOnsib3V0cHV0X3Jlc2VydmVfdG9rZW5zIjowLCJwcm9tcHRfb3ZlcmhlYWRfdG9rZW5zIjowLCJzYWZldHlfbWFyZ2luX3Rva2VucyI6MH0sInJlbmV3YWxfY2FycnlvdmVyX3BwbSI6NTAwMDAsInRhcmdldF9hZnRlcl9jb21wcmVzc19wcG0iOjY1MDAwMH0sImV4ZWN1dGlvbl9wb2xpY3kiOnsiY3JpdGVyaWFfZ2F0ZV9lbmFibGVkIjp0cnVlLCJlbnRyb3B5X3dhdGNoIjp7ImNvb2xkb3duX3R1cm5zIjo0LCJlbmFibGVkIjpmYWxzZSwiaHlzdGVyZXNpc19wcG0iOjEwMDAwMCwibm90aWZ5X21vZGVsIjpmYWxzZSwidGhyZXNob2xkX3BwbSI6NjUwMDAwfSwibWF4X2NvbnRleHRfdG9rZW5zIjoxMjgwMDAsIm1heF90b3RhbF90b2tlbnMiOiIxMDAwMDAwIiwibWF4X3R1cm5zIjoxMiwibWF4X3dhbGxfbXMiOm51bGwsInJlcGVhdF9mdXNlIjp7ImRlbnlfYWZ0ZXIiOjUsImVuYWJsZWQiOnRydWUsInRlcm1pbmF0ZV9hZnRlciI6OH19LCJmZWF0dXJlX3BvbGljeSI6eyJrbm93bGVkZ2VfZW5hYmxlZCI6ZmFsc2UsIm1lbW9yeV9lbmFibGVkIjpmYWxzZSwicGxhbl90b29sX2VuYWJsZWQiOmZhbHNlLCJzdGFibGVfY29yZV90b29sX2lkcyI6W10sInRvb2xfZGlzcGF0Y2hfZ2F0ZSI6ImV4cG9zZWQifSwiZ292ZXJuYW5jZV9wb2xpY3kiOnsiY29uc3RyYWludHMiOltdLCJkZWZhdWx0X2FjdGlvbiI6ImFsbG93IiwicmF0ZV9saW1pdHMiOltdLCJydWxlcyI6W10sInZldG9lZF90b29scyI6W119LCJob3N0X2VmZmVjdF9zdXBwb3J0Ijp7InN1cHBvcnRlZCI6WyJjYWxsX3Byb3ZpZGVyIiwiZXhlY3V0ZV90b29scyIsImxvYWRfcGF5bG9hZCIsInNwYXduX3Rhc2tzIiwicHJlZW1wdF90YXNrcyIsInBlcnNpc3RfbWVtb3J5IiwicXVlcnlfbWVtb3J5Il19LCJrZXJuZWxfbGltaXRzIjp7ImNvbGxlY3Rpb25fbGltaXRzIjp7ImNhcGFiaWxpdHlfZ3JhbnRzIjo2NTUzNiwiZ292ZXJuYW5jZV9ydWxlcyI6NjU1MzYsImluaXRpYWxfbWVzc2FnZXMiOjY1NTM2LCJrbm93bGVkZ2VfZW50cmllcyI6NjU1MzYsInNraWxsX2NhdGFsb2ciOjY1NTM2LCJ0b29sX2NhdGFsb2ciOjY1NTM2fSwibWF4X2NvbGxlY3Rpb25fZW50cmllcyI6NjU1MzYsIm1heF9pbnB1dF9ieXRlcyI6MTY3NzcyMTYsIm1heF9qc29uX2RlcHRoIjo2NH0sIm1lbW9yeV9hY2Nlc3MiOnsiYmluZGluZ19pZCI6Im1lbS1iaW5kaW5nLTEiLCJjYXBhYmlsaXRpZXMiOnsicmVhZCI6dHJ1ZSwid3JpdGUiOnRydWV9fSwibWVtb3J5X3BvbGljeSI6eyJtYXhfY29udGVudF9ieXRlcyI6MTAwMDAsIm1heF9uYW1lX2xlbmd0aCI6MTAwLCJwcm9tb3Rpb25fcmVjYWxsX3RocmVzaG9sZCI6bnVsbCwicmV0cmlldmFsX3RvcF9rIjo0LCJzdGFsZV93YXJuaW5nX2RheXMiOjIsInZhbGlkYXRpb25fZW5hYmxlZCI6dHJ1ZX0sInBheWxvYWRfcG9saWN5Ijp7ImlubGluZV90aHJlc2hvbGRfYnl0ZXMiOjUxMjAwLCJwcmV2aWV3X2J5dGVzIjoyMDQ4fSwicmVjb3ZlcnlfcG9saWN5Ijp7Im91dHB1dF9yZWNvdmVyeV9hdHRlbXB0cyI6MSwicHJvdmlkZXJfcmVjb3ZlcnlfYXR0ZW1wdHMiOjEsInRhaWxfYm91bmRzIjp7ImhhcmRfYnl0ZXMiOiIxNjc3NzIxNiIsImhhcmRfcmVjb3JkcyI6IjIwNDgiLCJzb2Z0X2J5dGVzIjoiNDE5NDMwNCIsInNvZnRfcmVjb3JkcyI6IjUxMiJ9fSwicmVzb3VyY2VfcXVvdGEiOnsibWF4X3dvcmtmbG93X25vZGVzIjozfSwic2NoZWR1bGVyX3BvbGljeSI6eyJhZ2Vfd2VpZ2h0IjoxMDAwLCJidWRnZXRfcHJlc3N1cmVfd2VpZ2h0IjowLCJjcml0aWNhbF9wYXRoX3dlaWdodCI6MTAwMDAwMCwiZGVhZGxpbmVfd2VpZ2h0IjowLCJmYW5vdXRfd2VpZ2h0IjoxMDAwMCwicHJvY2Vzc19wcmlvcml0eV93ZWlnaHQiOjAsInJlc291cmNlX3ByZXNzdXJlX3dlaWdodCI6MCwidG9rZW5fY29zdF93ZWlnaHQiOjF9LCJzaWduYWxfcG9saWN5Ijp7ImRlYWRsaW5lX2VzY2FsYXRpb24iOmZhbHNlLCJxdWV1ZV9tYXgiOjY0LCJ0dGxfbXMiOm51bGx9LCJza2lsbF9jYXRhbG9nIjpbeyJkZXNjcmlwdGlvbiI6ImRlYnVnIGhlbHBlciIsIm5hbWUiOiJkZWJ1ZyJ9XSwidG9vbF9jYXRhbG9nIjpbeyJuYW1lIjoic3RhcnRfd29ya2Zsb3cifSx7Im5hbWUiOiJzdWJtaXRfd29ya2Zsb3dfbm9kZXMifSx7Im5hbWUiOiJza2lsbCJ9LHsibmFtZSI6InVwZGF0ZV9wbGFuIn0seyJuYW1lIjoibWVtb3J5In0seyJuYW1lIjoicmVhZF9yZXN1bHQifSx7Im5hbWUiOiJzZWFyY2gifV0sInZlcmlmaWNhdGlvbl9jb250cmFjdHMiOltdfSwia2luZCI6ImNvbmZpZ3VyZV9vcGVyYXRpb24ifSwiaW5wdXRfaWQiOiJpbi1jb25maWd1cmUiLCJvYnNlcnZlZF9hdF9tcyI6IjE3MDAwMDAwMDAwMDAiLCJvcGVyYXRpb25faWQiOiJvcC1kcml2ZXItMSJ9",
+          "data": "eyJhYmlfdmVyc2lvbiI6MywiaW5wdXQiOnsiY29uZmlnIjp7ImFiaV92ZXJzaW9uIjozLCJidWRnZXRfZ3JhbnQiOm51bGwsImNvbnRleHRfcG9saWN5Ijp7ImNvbGxhcHNlX29sZF9hc3Npc3RhbnRfbmFycmF0aW9uIjp0cnVlLCJpZGxlX21pY3JvX2NvbXBhY3RfbWludXRlcyI6NjAsImtub3dsZWRnZV9idWRnZXRfcHBtIjoyNTAwMDAsInByZXNlcnZlX3JlY2VudF90dXJucyI6MiwicHJlc3N1cmVfdGhyZXNob2xkc19wcG0iOnsiYXV0byI6OTUwMDAwLCJjb2xsYXBzZSI6OTAwMDAwLCJtaWNybyI6ODAwMDAwLCJyZW5ld2FsIjo5ODAwMDAsInNuaXAiOjcwMDAwMH0sInByb21wdF9idWRnZXQiOnsib3V0cHV0X3Jlc2VydmVfdG9rZW5zIjowLCJwcm9tcHRfb3ZlcmhlYWRfdG9rZW5zIjowLCJzYWZldHlfbWFyZ2luX3Rva2VucyI6MH0sInJlbmV3YWxfY2FycnlvdmVyX3BwbSI6NTAwMDAsInRhcmdldF9hZnRlcl9jb21wcmVzc19wcG0iOjY1MDAwMH0sImV4ZWN1dGlvbl9wb2xpY3kiOnsiY3JpdGVyaWFfZ2F0ZV9lbmFibGVkIjp0cnVlLCJlbnRyb3B5X3dhdGNoIjp7ImNvb2xkb3duX3R1cm5zIjo0LCJlbmFibGVkIjpmYWxzZSwiaHlzdGVyZXNpc19wcG0iOjEwMDAwMCwibm90aWZ5X21vZGVsIjpmYWxzZSwidGhyZXNob2xkX3BwbSI6NjUwMDAwfSwibWF4X2NvbnRleHRfdG9rZW5zIjoxMjgwMDAsIm1heF90b3RhbF90b2tlbnMiOiIxMDAwMDAwIiwibWF4X3R1cm5zIjoxMiwibWF4X3dhbGxfbXMiOm51bGwsInJlcGVhdF9mdXNlIjp7ImRlbnlfYWZ0ZXIiOjUsImVuYWJsZWQiOnRydWUsInRlcm1pbmF0ZV9hZnRlciI6OH19LCJmZWF0dXJlX3BvbGljeSI6eyJrbm93bGVkZ2VfZW5hYmxlZCI6ZmFsc2UsIm1lbW9yeV9lbmFibGVkIjpmYWxzZSwicGxhbl90b29sX2VuYWJsZWQiOmZhbHNlLCJzdGFibGVfY29yZV90b29sX2lkcyI6W10sInRvb2xfZGlzcGF0Y2hfZ2F0ZSI6ImV4cG9zZWQifSwiZ292ZXJuYW5jZV9wb2xpY3kiOnsiY29uc3RyYWludHMiOltdLCJkZWZhdWx0X2FjdGlvbiI6ImFsbG93IiwicmF0ZV9saW1pdHMiOltdLCJydWxlcyI6W10sInZldG9lZF90b29scyI6W119LCJob3N0X2VmZmVjdF9zdXBwb3J0Ijp7InN1cHBvcnRlZCI6WyJjYWxsX3Byb3ZpZGVyIiwiZXhlY3V0ZV90b29scyIsImxvYWRfcGF5bG9hZCIsInNwYXduX3Rhc2tzIiwicHJlZW1wdF90YXNrcyIsInBlcnNpc3RfbWVtb3J5IiwicXVlcnlfbWVtb3J5Il19LCJrZXJuZWxfbGltaXRzIjp7ImNvbGxlY3Rpb25fbGltaXRzIjp7ImNhcGFiaWxpdHlfZ3JhbnRzIjo2NTUzNiwiZ292ZXJuYW5jZV9ydWxlcyI6NjU1MzYsImluaXRpYWxfbWVzc2FnZXMiOjY1NTM2LCJrbm93bGVkZ2VfZW50cmllcyI6NjU1MzYsInNraWxsX2NhdGFsb2ciOjY1NTM2LCJ0b29sX2NhdGFsb2ciOjY1NTM2fSwibWF4X2NvbGxlY3Rpb25fZW50cmllcyI6NjU1MzYsIm1heF9pbnB1dF9ieXRlcyI6MTY3NzcyMTYsIm1heF9qc29uX2RlcHRoIjo2NH0sIm1lbW9yeV9hY2Nlc3MiOnsiYmluZGluZ19pZCI6Im1lbS1iaW5kaW5nLTEiLCJjYXBhYmlsaXRpZXMiOnsicmVhZCI6dHJ1ZSwid3JpdGUiOnRydWV9fSwibWVtb3J5X3BvbGljeSI6eyJtYXhfY29udGVudF9ieXRlcyI6MTAwMDAsIm1heF9uYW1lX2xlbmd0aCI6MTAwLCJwcm9tb3Rpb25fcmVjYWxsX3RocmVzaG9sZCI6bnVsbCwicmV0cmlldmFsX3RvcF9rIjo0LCJzdGFsZV93YXJuaW5nX2RheXMiOjIsInZhbGlkYXRpb25fZW5hYmxlZCI6dHJ1ZX0sInBheWxvYWRfcG9saWN5Ijp7ImlubGluZV90aHJlc2hvbGRfYnl0ZXMiOjUxMjAwLCJwcmV2aWV3X2J5dGVzIjoyMDQ4fSwicmVjb3ZlcnlfcG9saWN5Ijp7Im91dHB1dF9yZWNvdmVyeV9hdHRlbXB0cyI6MSwicHJvdmlkZXJfcmVjb3ZlcnlfYXR0ZW1wdHMiOjEsInRhaWxfYm91bmRzIjp7ImhhcmRfYnl0ZXMiOiIxNjc3NzIxNiIsImhhcmRfcmVjb3JkcyI6IjIwNDgiLCJzb2Z0X2J5dGVzIjoiNDE5NDMwNCIsInNvZnRfcmVjb3JkcyI6IjUxMiJ9fSwicmVzb3VyY2VfcXVvdGEiOnsibWF4X3dvcmtmbG93X25vZGVzIjozfSwic2NoZWR1bGVyX3BvbGljeSI6eyJhZ2Vfd2VpZ2h0IjoxMDAwLCJidWRnZXRfcHJlc3N1cmVfd2VpZ2h0IjowLCJjcml0aWNhbF9wYXRoX3dlaWdodCI6MTAwMDAwMCwiZGVhZGxpbmVfd2VpZ2h0IjowLCJmYW5vdXRfd2VpZ2h0IjoxMDAwMCwicHJvY2Vzc19wcmlvcml0eV93ZWlnaHQiOjAsInJlc291cmNlX3ByZXNzdXJlX3dlaWdodCI6MCwidG9rZW5fY29zdF93ZWlnaHQiOjF9LCJzaWduYWxfcG9saWN5Ijp7ImRlYWRsaW5lX2VzY2FsYXRpb24iOmZhbHNlLCJxdWV1ZV9tYXgiOjY0LCJ0dGxfbXMiOm51bGx9LCJza2lsbF9jYXRhbG9nIjpbeyJkZXNjcmlwdGlvbiI6ImRlYnVnIGhlbHBlciIsIm5hbWUiOiJkZWJ1ZyJ9XSwidG9vbF9jYXRhbG9nIjpbeyJuYW1lIjoic3RhcnRfd29ya2Zsb3cifSx7Im5hbWUiOiJzdWJtaXRfd29ya2Zsb3dfbm9kZXMifSx7Im5hbWUiOiJza2lsbCJ9LHsibmFtZSI6InVwZGF0ZV9wbGFuIn0seyJuYW1lIjoibWVtb3J5In0seyJuYW1lIjoicmVhZF9yZXN1bHQifSx7Im5hbWUiOiJzZW5kX21lc3NhZ2UifSx7Im5hbWUiOiJwdWJsaXNoX2NoYW5uZWwifSx7Im5hbWUiOiJyZWNlaXZlX21haWxib3gifSx7Im5hbWUiOiJyZWNlaXZlX2NoYW5uZWwifSx7Im5hbWUiOiJyZWFkX29iamVjdCJ9LHsibmFtZSI6InNlYXJjaCJ9XSwidmVyaWZpY2F0aW9uX2NvbnRyYWN0cyI6W119LCJraW5kIjoiY29uZmlndXJlX29wZXJhdGlvbiJ9LCJpbnB1dF9pZCI6ImluLWNvbmZpZ3VyZSIsIm9ic2VydmVkX2F0X21zIjoiMTcwMDAwMDAwMDAwMCIsIm9wZXJhdGlvbl9pZCI6Im9wLWRyaXZlci0xIn0=",
           "encoding": "base64"
         },
-        "input_digest": "sha256:61af003af0b73640777e0d79ae2db0d01088bbda013ca7db127c0857dff9e90a",
+        "input_digest": "sha256:573bfb0a4a684be794c03887a3ca653d165b92cb57f5c476ed81991f4a916a63",
         "input_id": "in-configure",
         "operation_id": "op-driver-1",
         "previous_record_digest": null,
-        "record_digest": "sha256:1664c405bc8de2edd841de7c6ab7652bdf34c75af6a62556bb36bdef43ca32d8",
+        "record_digest": "sha256:5fb35043fe336d8a1fffe0147b0f96fc00d27eab52ad4374cf70dada23c5c285",
         "step_digest": "sha256:e35fec9e43d83f26934d990af2aa6be57869acabb43fbc3134b5baf086e5c3d5",
         "step_seq": "0"
       },
@@ -117,9 +132,9 @@
         "input_digest": "sha256:70fbd7d3ab4d77a16e39fef15146af669c9d99b913df13e1eed82938558f6122",
         "input_id": "in-start",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:1664c405bc8de2edd841de7c6ab7652bdf34c75af6a62556bb36bdef43ca32d8",
-        "record_digest": "sha256:7ee9dafd821e9ddcac1731cfcc1308f3a87743877943d2ad9a8a5b5f1f082bdd",
-        "step_digest": "sha256:5d6537ee8ec9902cc403a7f16a7c273ba4b811d3636e55e85f2d8dd5bc3e55ed",
+        "previous_record_digest": "sha256:5fb35043fe336d8a1fffe0147b0f96fc00d27eab52ad4374cf70dada23c5c285",
+        "record_digest": "sha256:c08a9b89170a4f5240a9e98c81ffe04c20ae0736e07802b18e8bc7aa4035a099",
+        "step_digest": "sha256:52f9b93193074b40bf490e13fd42116d4daa460a9ccd617f6f29caa973d03fae",
         "step_seq": "1"
       },
       "step": {
@@ -160,6 +175,21 @@
                   },
                   {
                     "name": "read_result"
+                  },
+                  {
+                    "name": "send_message"
+                  },
+                  {
+                    "name": "publish_channel"
+                  },
+                  {
+                    "name": "receive_mailbox"
+                  },
+                  {
+                    "name": "receive_channel"
+                  },
+                  {
+                    "name": "read_object"
                   },
                   {
                     "name": "search"
@@ -243,8 +273,8 @@
         "input_digest": "sha256:7ec1ff03040cc385a9c9cc3d67f7c1233a3e24cdc85abb8e6f1f0328fb0208e8",
         "input_id": "in-acted",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:7ee9dafd821e9ddcac1731cfcc1308f3a87743877943d2ad9a8a5b5f1f082bdd",
-        "record_digest": "sha256:53cf0d4217b70801cd2592b75a26d19e55147007bd6bdbe583526a757e80a97e",
+        "previous_record_digest": "sha256:c08a9b89170a4f5240a9e98c81ffe04c20ae0736e07802b18e8bc7aa4035a099",
+        "record_digest": "sha256:203600b823e8065ea17e5e1e6ee46e8908906c1fac9d20981a43d4c943e87dab",
         "step_digest": "sha256:fc4df7785f97d163e1d7579cd8a6d63f57eafa0b1ac102da9925500d64614b29",
         "step_seq": "2"
       },
@@ -313,9 +343,9 @@
         "input_digest": "sha256:bbe9558f3883229639c8b988c305adfc5b017dc83df923ee8ae929fef1a88fe1",
         "input_id": "in-results",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:53cf0d4217b70801cd2592b75a26d19e55147007bd6bdbe583526a757e80a97e",
-        "record_digest": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
-        "step_digest": "sha256:2644a47cb81999c2cda8fc643469934f0d842d231a98b6a001d3d66a42814492",
+        "previous_record_digest": "sha256:203600b823e8065ea17e5e1e6ee46e8908906c1fac9d20981a43d4c943e87dab",
+        "record_digest": "sha256:a0060546afe8545cd74f6efb671db4eb4dc645fa7898e2cf2be6e86a4b325d5c",
+        "step_digest": "sha256:b4d542d65f5d9637ea27a90f4a8e5a397fc9ce5007297922f8038cd7f6a2581d",
         "step_seq": "3"
       },
       "step": {
@@ -376,6 +406,21 @@
                   },
                   {
                     "name": "read_result"
+                  },
+                  {
+                    "name": "send_message"
+                  },
+                  {
+                    "name": "publish_channel"
+                  },
+                  {
+                    "name": "receive_mailbox"
+                  },
+                  {
+                    "name": "receive_channel"
+                  },
+                  {
+                    "name": "read_object"
                   },
                   {
                     "name": "search"
@@ -462,8 +507,8 @@
         "input_digest": "sha256:f51c75af72a802c9a83d92ee3dd5928bb1f41c77b9ac3583107aaf00ec4c8d99",
         "input_id": "in-answer",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:90dd80b33dcce5c1d29e11e2dda362cd1778cf3c4821df84dc8318c71344d873",
-        "record_digest": "sha256:0dbd3d568fb142c6ebf10a5206fd401db433b508711f851304234821a98bb80f",
+        "previous_record_digest": "sha256:a0060546afe8545cd74f6efb671db4eb4dc645fa7898e2cf2be6e86a4b325d5c",
+        "record_digest": "sha256:04f2fae3701e69e83a670a6ca99f5f8df745a7ae93d7669bd975a5a39b1cf53f",
         "step_digest": "sha256:94434864beecc9729b1244adbc2226dccdafbc0ad8954b1dd7239449c37750f5",
         "step_seq": "4"
       },
