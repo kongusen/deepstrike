@@ -26,11 +26,29 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Dry-run publish check (core only)
-        # deepstrike-sdk depends on deepstrike-core, which is not on crates.io until the
-        # "Publish deepstrike-core" step below — so `cargo publish -p deepstrike-sdk --dry-run`
-        # always fails here with "no matching package named deepstrike-core". The sdk is fully
-        # verified during its real, post-core publish (cargo publish builds before uploading).
+      - name: Dry-run publish check (tokenizer)
+        run: cargo publish -p deepstrike-tokenizer --dry-run --allow-dirty
+
+      - name: Publish deepstrike-tokenizer
+        run: cargo publish -p deepstrike-tokenizer
+
+      - name: Wait for deepstrike-tokenizer in crates.io index
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(cat VERSION)"
+          for i in $(seq 1 12); do
+            if cargo info "deepstrike-tokenizer@$VERSION" >/dev/null 2>&1; then
+              echo "deepstrike-tokenizer $VERSION is indexed"
+              exit 0
+            fi
+            echo "Waiting for deepstrike-tokenizer index... attempt $i/12"
+            if [ "$i" -lt 12 ]; then sleep 15; fi
+          done
+          echo "::error::deepstrike-tokenizer $VERSION was not indexed in time"
+          exit 1
+
+      - name: Dry-run publish check (core)
         run: cargo publish -p deepstrike-core --dry-run --allow-dirty
 
       - name: Publish deepstrike-core
@@ -39,14 +57,21 @@ jobs:
       - name: Wait for deepstrike-core in crates.io index
         shell: bash
         run: |
+          set -euo pipefail
           VERSION="$(cat VERSION)"
           for i in $(seq 1 12); do
-            if cargo search deepstrike-core 2>/dev/null | grep -q "\"$VERSION\""; then
-              echo "deepstrike-core $VERSION is indexed"; break
+            if cargo info "deepstrike-core@$VERSION" >/dev/null 2>&1; then
+              echo "deepstrike-core $VERSION is indexed"
+              exit 0
             fi
-            echo "Waiting for index... attempt $i/12"
-            sleep 15
+            echo "Waiting for deepstrike-core index... attempt $i/12"
+            if [ "$i" -lt 12 ]; then sleep 15; fi
           done
+          echo "::error::deepstrike-core $VERSION was not indexed in time"
+          exit 1
+
+      - name: Dry-run publish check (sdk)
+        run: cargo publish -p deepstrike-sdk --dry-run --allow-dirty
 
       - name: Publish deepstrike-sdk
         run: cargo publish -p deepstrike-sdk

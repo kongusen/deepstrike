@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use crate::context::pressure::PressureAction;
 use crate::context::token_engine::ContextTokenEngine;
 use crate::types::message::{Content, ContentPart, Message};
@@ -10,8 +12,10 @@ pub struct RuleSummarizer;
 /// bloated ones.
 const SLOT_ITEM_CAP: usize = 6;
 
+static SUMMARY_ENGINE: OnceLock<ContextTokenEngine> = OnceLock::new();
+
 impl RuleSummarizer {
-    /// Produce a structured summary whose char-approx token count never exceeds
+    /// Produce a structured summary whose fallback-estimated token count never exceeds
     /// `max_tokens`. Slot order is the deterministic truncation priority.
     pub fn summarize(
         &self,
@@ -22,13 +26,9 @@ impl RuleSummarizer {
         if max_tokens == 0 {
             return String::new();
         }
-        // spc_011-C-01: production default, not char/4 approximation — see
-        // `ContextTokenEngine::fallback_estimator` doc comment. This call site constructs its
-        // own engine rather than taking the caller's configured one (`compress()` already
-        // threads a caller-supplied `&ContextTokenEngine` through to `Compressor::compress`,
-        // but not here) — a latent inconsistency noted in spc_011 §6.4, out of scope for this
-        // card to fix (would require a signature change, not just a default-value swap).
-        let engine = ContextTokenEngine::fallback_estimator();
+        // Keep the production BPE semantics without rebuilding the cl100k tables for every
+        // compression. ContextTokenEngine is Arc-backed, so one process-wide instance is safe.
+        let engine = SUMMARY_ENGINE.get_or_init(ContextTokenEngine::fallback_estimator);
         let archived_tokens = messages
             .iter()
             .map(|message| {
@@ -82,7 +82,7 @@ impl RuleSummarizer {
             &mut output,
             &format!("[Compressed: {}]", action.label()),
             max_tokens,
-            &engine,
+            engine,
         );
         push_line(
             &mut output,
@@ -91,7 +91,7 @@ impl RuleSummarizer {
                 messages.len()
             ),
             max_tokens,
-            &engine,
+            engine,
         );
         for (name, values) in [
             ("constraints", slots.constraints),
@@ -101,18 +101,18 @@ impl RuleSummarizer {
             ("failures", slots.failures),
             ("next_actions", slots.next_actions),
         ] {
-            if !push_line(&mut output, &format!("{name}:"), max_tokens, &engine) {
+            if !push_line(&mut output, &format!("{name}:"), max_tokens, engine) {
                 break;
             }
             if values.is_empty() {
-                push_line(&mut output, "- none", max_tokens, &engine);
+                push_line(&mut output, "- none", max_tokens, engine);
             } else {
                 for value in values.iter().take(SLOT_ITEM_CAP) {
                     push_line(
                         &mut output,
                         &format!("- {}", compact(value, 240)),
                         max_tokens,
-                        &engine,
+                        engine,
                     );
                 }
                 if values.len() > SLOT_ITEM_CAP {
@@ -120,7 +120,7 @@ impl RuleSummarizer {
                         &mut output,
                         &format!("- (+{} more)", values.len() - SLOT_ITEM_CAP),
                         max_tokens,
-                        &engine,
+                        engine,
                     );
                 }
             }
