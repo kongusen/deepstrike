@@ -32,6 +32,14 @@ class MeasuredProvider implements LLMProvider {
   }
 }
 
+class MeasuredUsageProvider extends MeasuredProvider {
+  override async *stream(): AsyncIterable<StreamEvent> {
+    this.streamCalls += 1
+    yield { type: "usage", totalTokens: 1040, inputTokens: 1000, outputTokens: 40 } as StreamEvent
+    yield { type: "text_delta", delta: "done" }
+  }
+}
+
 describe("spc_015-08 host prompt measurement", () => {
   it("records one native measurement before provider execution", async () => {
     const provider = new MeasuredProvider()
@@ -76,5 +84,42 @@ describe("spc_015-08 host prompt measurement", () => {
       version: 1, requestFingerprint: plan.fingerprint, inputTokens: -1,
       source: { kind: "heuristic" }, confidence: "low_confidence",
     } as never)).toBeUndefined()
+  })
+
+  it("spc_024-06: feeds observed usage back as a durable postflight measurement", async () => {
+    const provider = new MeasuredUsageProvider()
+    const { runner, sessionLog } = createRunner(provider, [], { maxTokens: 2048 })
+
+    await expect(collectText(runner.run({ sessionId: "feedback", goal: "hello" }))).resolves.toBe("done")
+
+    const measured = (await sessionLog.read("feedback"))
+      .map(entry => entry.event)
+      .filter((event): event is { measurement: { requestFingerprint: string; inputTokens: number; source: { kind: string }; confidence: string } } => event.kind === "prompt_measured")
+      .map(event => event.measurement)
+    expect(measured).toHaveLength(2)
+    const [preflight, postflight] = measured
+    expect(preflight.source).toEqual({ kind: "native", provider: "test" })
+    expect(preflight.inputTokens).toBe(12)
+    expect(postflight.source).toEqual({ kind: "postflight" })
+    expect(postflight.inputTokens).toBe(1000)
+    expect(postflight.confidence).toBe("exact")
+    expect(postflight.requestFingerprint).toBe(preflight.requestFingerprint)
+  })
+
+  it("spc_024-06: replays a recorded measurement without recounting the provider", async () => {
+    const source = new MeasuredUsageProvider()
+    const sourceHarness = createRunner(source, [], { maxTokens: 2048 })
+    await collectText(sourceHarness.runner.run({ sessionId: "origin", goal: "hello" }))
+    const fact = (await sourceHarness.sessionLog.read("origin"))
+      .map(entry => entry.event)
+      .filter(event => event.kind === "prompt_measured")
+      .pop()
+
+    const provider = new MeasuredUsageProvider()
+    const replayHarness = createRunner(provider, [], { maxTokens: 2048 })
+    await replayHarness.sessionLog.append("replay", fact)
+    await expect(collectText(replayHarness.runner.run({ sessionId: "replay", goal: "hello" }))).resolves.toBe("done")
+    expect(provider.streamCalls).toBe(1)
+    expect(provider.countCalls).toBe(0)
   })
 })

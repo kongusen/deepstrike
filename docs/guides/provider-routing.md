@@ -94,6 +94,17 @@ p5 = ollama(model="qwen2.5-coder")
 | `openai` | OpenAI Chat-compatible wire |
 | `anthropic` | Anthropic Messages-compatible wire |
 
+未显式指定 `endpoint` / `protocol` 时，0.2.61 的默认值为：
+
+| vendor | 默认协议 |
+|--------|----------|
+| DeepSeek / Kimi / Qwen / GLM | OpenAI Chat-compatible |
+| MiniMax | Anthropic Messages-compatible |
+| Anthropic / OpenAI / Gemini / Ollama | 各自官方协议 |
+
+解析优先级固定为 `显式 endpoint > 显式 protocol > vendor 默认值`。显式的 Anthropic-compatible
+路径仍然保留。
+
 ## Level 4：region 与 endpoint
 
 `kimi` / `glm` / `qwen` 支持 region endpoint 选择：
@@ -135,10 +146,22 @@ seed_provider_replay_from_events(provider, events)
 规则：
 
 - replay protocol 与 provider descriptor 一致 → seed
-- 不一致 → 跳过 replay envelope
+- 不含工具调用的不一致 replay → 跳过 replay envelope
+- 工具调用 replay 协议不一致 → 在请求前抛出 `provider_replay_protocol_mismatch`
 - 没有 descriptor / replay hook → no-op
 
-这避免把 Anthropic native blocks 塞进 OpenAI wire，或把 reasoning details 塞给不支持的 provider。
+诊断只包含 provider 与协议，不包含 thinking、工具名或参数。默认路由变更后恢复旧 Session 时，
+应显式固定旧 endpoint / protocol；SDK 不会猜测性地把 Anthropic native blocks 转成 OpenAI reasoning。
+
+## Anthropic-compatible 文本工具调用安全
+
+当请求暴露了工具时，内建 Anthropic-compatible endpoint 和未知自定义 Anthropic endpoint 默认拒绝
+精确的 DSML tool-call sentinel。候选控制文本不会作为 `text_delta` 或最终正文发出；错误为可重试的
+`protocol / textual_tool_call`，由既有 Kernel recovery policy 决定是否重试。
+
+官方 `anthropic.messages` 默认关闭该检测。调用方可通过 per-call extension
+`textualToolCallPolicy="off" | "reject"` 显式覆盖。该字段只在 SDK 内生效，不会进入 provider wire。
+拒绝路径只检测并丢弃，不解析参数、不生成工具调用，也不执行工具；文本恢复属于后续独立能力。
 
 ## Level 7：按角色路由
 
@@ -163,6 +186,31 @@ def provider_for(hint: str):
     return None
 ```
 
+## Token 计量与能力语义
+
+Token 计量有三类数值，语义不可互换：
+
+| 字段 | 唯一语义 |
+|------|----------|
+| `Message.token_count` / `tokenCount` | 该消息自身进入历史后的 footprint；assistant 消息只取 provider output tokens，绝不写入本轮 input/total |
+| `ProviderUsage.inputTokens` | provider-visible 完整 prompt token 数（计费与观测的权威值） |
+| `PromptMeasurement.inputTokens` | 发送前对同一 wire plan 的测量或估算，只参与发送前预算，不冒充计费事实 |
+
+`native token counting` 能力是 endpoint 证据，不是协议继承。当前可执行原生计数的 endpoint：
+
+| Endpoint | 依赖 | 说明 |
+|----------|------|------|
+| `anthropic.messages` | `@anthropic-ai/sdk ^0.99` / `anthropic>=0.40` | `messages.countTokens` |
+| `gemini.google` | `@google/generative-ai ^0.24` / `google-genai>=1.0` | `models.countTokens` |
+| `openai.responses` | `openai ^7.5.0` / `openai>=2.6` | `responses.inputTokens.count`；Chat Completions 不继承该能力 |
+
+语义要点：
+
+- registry 的 runtime `supported` 意味着对应 provider 实例上确实可调用 count 方法；仅有官方 endpoint 而 adapter 未接通时是 unavailable
+- 自定义 `base_url` 默认不继承官方证据；显式指定 endpoint 视为对该 endpoint 家族的背书（能力保留，运行失败按 heuristic 降级）
+- preflight 复用与 create/stream 相同的 request plan；失败或超时降级为 heuristic 估算，只有 native/local-exact 结果可在发送前硬拒绝
+- postflight observed usage 是权威值：runner 把观测 input tokens 以 `postflight` 来源回灌 measurement 记录并写入 `prompt_measured` journal，重放按 request fingerprint 复用观测事实，不再重复计数
+
 ## 运行时与应用的职责
 
 | 行为 | 所属 |
@@ -178,4 +226,7 @@ def provider_for(hint: str):
 - `python/tests/test_provider_factories.py`
 - `python/tests/test_provider_routing.py`
 - `python/tests/test_provider_replay.py`
-- `node/tests/provider-routing.test.ts`
+- `python/tests/test_anthropic_protocol_adapter.py`
+- `node/tests/model-registry.test.ts`
+- `node/tests/provider-fallback-replay.test.ts`
+- `node/tests/anthropic-textual-tool-call.test.ts`

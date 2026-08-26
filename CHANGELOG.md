@@ -4,7 +4,54 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.2.61] - 2026-08-27
+
+### Changed — provider token measurement and usage authority (SPC-024)
+
+- DeepSeek, Kimi, Qwen, and GLM now resolve to their OpenAI-compatible endpoints by default in both
+  Node and Python; MiniMax continues to default to Anthropic Messages. Explicit endpoint, protocol,
+  region, and base URL selections retain precedence.
+- Prompt-cache support is now endpoint-evidenced instead of inherited from a protocol. Cache metrics
+  distinguish measured zero from unavailable telemetry, normalize DeepSeek hit/miss fields without
+  double-counting input, omit fabricated slot attribution, and include stable-prefix fingerprints.
+- Canonical usage formulas are locked per provider family by cross-SDK fixtures: OpenAI Chat/Responses
+  and Gemini cache counts are prompt subsets and are never re-summed; Anthropic full input is summed
+  exactly once at the normalizer boundary (`input + cache_read + cache_creation`); DeepSeek
+  `hit + miss` must equal the prompt. Non-integer, non-finite, or subset-exceeding counts raise
+  structured protocol errors instead of being silently corrected.
+- Native token counting is an endpoint capability backed by an evidence ledger, not a protocol
+  default: `anthropic.messages`, `gemini.google`, and `openai.responses` are runtime `supported` only
+  when the current SDK adapter exposes a callable count method. Chat Completions does not inherit the
+  Responses capability; custom base URLs stay `unknown` unless the endpoint is selected explicitly.
+- SDK floors: Node `openai ^7.5.0` (from 5.23.2); Python `openai>=2.6` (the release that introduced
+  `responses.input_tokens.count`). Poetry resolution also refreshed `anthropic` to 1.0.0,
+  `google-genai` to 2.20.0, and `dashscope` to 1.27.1 within their floors.
+
+### Added
+
+- `countTokens` / `count_tokens` preflight on the official OpenAI Responses endpoint (both SDKs) via
+  `responses.inputTokens.count`, and on Python Anthropic/Gemini via their official count endpoints.
+  Every count reuses the exact create request plan (stateful Responses continuation included)
+  projected onto the count endpoint's accepted params — no second serialization. Failures, timeouts,
+  or missing SDK methods degrade to a heuristic estimate; only native/local-exact results may
+  hard-reject a send.
+- Postflight measurement feedback: observed input tokens from provider usage are fed back as a
+  durable `postflight`-sourced measurement record (`RecordedPromptMeasurement.source` gains the
+  additive `postflight` variant) journaled under `prompt_measured`. Replay reuses the observed fact
+  by request fingerprint without re-counting; fingerprints cover endpoint, model, full turns and
+  state turn, tools, and material options, so a growing conversation never reuses a stale count.
+
+### Fixed
+
+- The Python runner no longer records provider `total_tokens` as the assistant message
+  `token_count`, which double-counted the turn's input into history and inflated context pressure
+  into premature compression. Assistant history now takes output tokens only, and the full prompt is
+  submitted independently as `observed_input_tokens` / `observed_output_tokens`.
+- Resuming a tool-calling Session with replay from a different wire protocol now fails before dispatch
+  with a safe `provider_replay_protocol_mismatch` endpoint-pinning diagnostic.
+- Anthropic-compatible adapters reject exact textual DSML tool-call output when tools are exposed,
+  including markers split across stream chunks. Candidate text is withheld and classified as retryable
+  `protocol / textual_tool_call`; official Anthropic remains off by default.
 
 ## [0.2.60] - 2026-08-13
 

@@ -1,6 +1,18 @@
 import type { LLMProvider, Message, ProviderDescriptor, ProviderReplay, RenderedContext, ReplayabilityAssessment, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
 
+export class ProviderReplayProtocolMismatchError extends Error {
+  readonly code = "provider_replay_protocol_mismatch" as const
+
+  constructor(provider: string, storedProtocol: string, resolvedProtocol: string) {
+    super(
+      `Stored ${storedProtocol} tool replay is incompatible with resolved ${provider}/${resolvedProtocol}; `
+      + `pin the previous ${storedProtocol} endpoint explicitly to resume this session`,
+    )
+    this.name = "ProviderReplayProtocolMismatchError"
+  }
+}
+
 function sortObjectKeys(val: any): any {
   if (val === null || typeof val !== "object") {
     return val
@@ -68,7 +80,17 @@ export function seedProviderReplayFromEvents(
     if (event.kind !== "llm_completed") continue
     const toolCalls = event.tool_calls ?? []
     const stored = event.provider_replay
-    if (!stored || !isReplayCompatibleWithProvider(stored, descriptor)) continue
+    if (!stored) continue
+    if (!isReplayCompatibleWithProvider(stored, descriptor)) {
+      if (toolCalls.length > 0 && descriptor) {
+        throw new ProviderReplayProtocolMismatchError(
+          descriptor.provider,
+          stored.protocol,
+          descriptor.protocol,
+        )
+      }
+      continue
+    }
     provider.seedProviderReplay({ content: event.content, toolCalls }, stored)
   }
 }

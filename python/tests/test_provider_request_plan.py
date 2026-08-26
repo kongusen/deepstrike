@@ -29,6 +29,50 @@ def test_request_fingerprint_covers_material_input_but_never_secret_or_retry_sta
   assert first.options == {"temperature": 0.2}
 
 
+def test_request_fingerprint_invalidates_on_model_endpoint_option_and_state_turn_drift():
+  """spc_024-06 INV-024-09: only a byte-identical wire plan may reuse a measurement."""
+  base = _plan()
+  same = _plan()
+  assert base.fingerprint == same.fingerprint
+  assert base.fingerprint != _plan(model_id="gpt-4o-mini").fingerprint
+  assert base.fingerprint != _plan(
+    endpoint=ProviderRequestEndpoint("openai.responses", "openai-responses", "https://api.openai.com/v1"),
+  ).fingerprint
+  assert base.fingerprint != _plan(options={"temperature": 0.9, "api_key": "secret"}).fingerprint
+
+  state_context = {
+    "system_text": "Be precise.",
+    "turns": [{"role": "user", "content": "你好"}],
+    "state_turn": {"role": "user", "content": "signals v1"},
+  }
+  with_state = _plan(context=state_context)
+  assert with_state.fingerprint != _plan(context={
+    **state_context, "state_turn": {"role": "user", "content": "signals v2"},
+  }).fingerprint
+
+
+def test_stable_prefix_fingerprint_ignores_append_only_tail_but_detects_drift():
+  context = {
+    "system_text": "Be precise.",
+    "system_stable": "stable",
+    "system_knowledge": "knowledge",
+    "frozen_prefix_len": 1,
+    "turns": [
+      {"role": "user", "content": "frozen"},
+      {"role": "assistant", "content": "volatile tail"},
+    ],
+  }
+  base = _plan(context=context)
+  appended = _plan(context={**context, "turns": [*context["turns"], {"role": "user", "content": "append"}]})
+  changed = _plan(context={**context, "system_knowledge": "changed"})
+  rewritten = _plan(context={**context, "turns": [{"role": "user", "content": "rewritten"}, context["turns"][1]]})
+
+  assert appended.fingerprint != base.fingerprint
+  assert appended.stable_prefix_fingerprint == base.stable_prefix_fingerprint
+  assert changed.stable_prefix_fingerprint != base.stable_prefix_fingerprint
+  assert rewritten.stable_prefix_fingerprint != base.stable_prefix_fingerprint
+
+
 def test_request_plan_uses_shared_cross_sdk_sha256_fixture():
   fixture = json.loads((Path(__file__).parents[2] / "tests/fixtures/provider-request-plan/canonical.json").read_text(encoding="utf-8"))
   source = fixture["input"]

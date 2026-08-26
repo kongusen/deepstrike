@@ -14,10 +14,14 @@
     },
     {
       "cacheReadInputTokens": 8,
+      "cacheTelemetrySource": "gemini_usage",
+      "cacheTelemetryStatus": "measured",
       "inputTokens": 42,
       "outputTokens": 9,
       "providerUsage": {
         "cacheReadInputTokens": 8,
+        "cacheTelemetrySource": "gemini_usage",
+        "cacheTelemetryStatus": "measured",
         "inputTokens": 42,
         "outputTokens": 9
       },

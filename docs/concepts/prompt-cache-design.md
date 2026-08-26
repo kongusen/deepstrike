@@ -160,11 +160,35 @@ RuntimeOptions(
 - `input_tokens`
 - `cache_read_tokens`
 - `cache_creation_tokens`
-- `cache_read_tokens_by_slot`
+- `cache_telemetry_status`：`measured | unavailable`
+- `cache_telemetry_source`
+- `request_fingerprint`
+- `stable_prefix_fingerprint`
 - `tools_exposed`
 - `tools_called`
 
-Anthropic adapter 还会对 slot 做归因；OpenAI-family 自动缓存时不一定有等价 slot 数据。
+只有 `cache_telemetry_status="measured"` 时，`cache_read_tokens=0` 才表示确认零命中；
+`unavailable` 表示 provider 没有返回可解释字段。DeepSeek OpenAI-compatible 的
+`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` 会按完整 prompt token 口径归一化，
+命中 token 不会重复加到 `input_tokens`。
+
+各 provider 家族的 cache 字段包含关系与 canonical `input_tokens` 公式：
+
+| Provider family | Raw input 字段 | Cache 字段关系 | Canonical `input_tokens` |
+|-----------------|----------------|----------------|--------------------------|
+| OpenAI Chat / Responses | `prompt_tokens` / `input_tokens` | cached tokens 是 input 的子集 | raw input，不相加 |
+| DeepSeek OpenAI | `prompt_tokens` | hit + miss = prompt，hit 是子集 | `prompt_tokens`，不相加 |
+| Anthropic Messages | `input_tokens` | raw input 是未缓存部分 | input + cache read + cache creation（仅在 normalizer 边界相加一次） |
+| Gemini | `promptTokenCount` | cached content 是 prompt 的子集 | prompt count，不相加 |
+| Ollama | `prompt_eval_count` | 无 cache split 契约 | raw prompt eval count |
+
+任何 cache count 都是非负整数且 `cache <= input_tokens`；违反时 SDK 抛出结构化 protocol
+error，不静默修正。未核验兼容端点缺失字段时是 `unavailable`，不是零命中。
+
+当前 provider 只返回 aggregate cache usage，因此 `cache_read_tokens_by_slot` 保持 absent / `None`，
+SDK 不再把均摊估算描述成 provider slot attribution。缓存能力也按 endpoint 证据声明：初始仅
+官方 Anthropic 和 DeepSeek OpenAI 标记 supported；兼容与自定义 endpoint 保持 unknown，直到有
+官方文档或受控 live probe。真实命中率仍取决于 provider、模型和请求前缀，本版本不承诺固定提升比例。
 
 ## 实践建议
 

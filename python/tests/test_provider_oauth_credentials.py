@@ -126,6 +126,7 @@ async def test_runtime_factory_receives_only_refreshed_bearer_credential() -> No
             "protocol": "openai-responses",
             "baseURL": "https://api.openai.com/v1",
         },
+        "nativeTokenCounting": True,
     }
     assert secret not in repr(provider.requestPlanIdentity())
     assert resolver.status() == {

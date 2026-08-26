@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import logging
+from types import SimpleNamespace
 from typing import AsyncIterator
 from anthropic import AsyncAnthropic
 from deepstrike._kernel import Message, ToolCall, ToolSchema
@@ -10,6 +11,7 @@ from .anthropic_adapter import AnthropicMessagesAdapter
 from deepstrike.types.content import normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
+_OFFICIAL_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 
 _CLAUDE_POLICIES: dict[str, RuntimePolicy] = {
     "claude-opus-4-1":           RuntimePolicy(max_turns=50),
@@ -41,6 +43,14 @@ class AnthropicProvider:
         self._client = AsyncAnthropic(**client_kwargs)
         self._native_assistant_blocks: dict[str, list[dict]] = {}
         self._adapter = AnthropicMessagesAdapter(model)
+        self._direct_native_token_counting = (
+            base_url is None or base_url.rstrip("/") == _OFFICIAL_ANTHROPIC_BASE_URL
+        )
+        self._default_textual_tool_call_policy = (
+            "off"
+            if base_url is None or base_url.rstrip("/") == _OFFICIAL_ANTHROPIC_BASE_URL
+            else "reject"
+        )
 
     def runtime_policy(self) -> RuntimePolicy:
         return _CLAUDE_POLICIES.get(self._model, RuntimePolicy())
@@ -139,21 +149,52 @@ class AnthropicProvider:
             return
         self._native_assistant_blocks[self._assistant_replay_key_parts(content, tool_calls)] = blocks
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
-        if self._circuit.is_open():
-            raise RuntimeError("Circuit breaker open")
-
+    def _build_request_plan(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None):
         strategy = _resolve_cache_breakpoint_strategy(extensions)
         cc = _resolve_cache_control(extensions)
         msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len, strategy, cc)
         system = self._build_system(context, strategy, cc)
         tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy, cache_control=cc)
         _assert_cache_budget(system, len(tools))
+        adapter_extensions = {
+            "textualToolCallPolicy": self._default_textual_tool_call_policy,
+            **(extensions or {}),
+        }
         canonical = normalize_canonical_adapter_input(
-            context, tools, extensions=extensions,
+            context, tools, extensions=adapter_extensions,
             resolved=getattr(self, "_resolved_runtime", None),
         )
-        plan = self._adapter.build_request(canonical, messages=msgs, system=system, tools=tool_defs)
+        return canonical, self._adapter.build_request(
+            canonical, messages=msgs, system=system, tools=tool_defs
+        )
+
+    async def count_tokens(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None):
+        runtime = getattr(self, "_resolved_runtime", None)
+        enabled = (
+            runtime.effective_capabilities.native_token_counting.state == "supported"
+            if runtime is not None
+            else self._direct_native_token_counting
+        )
+        if not enabled:
+            raise RuntimeError("Native token counting is unavailable on this Anthropic-compatible endpoint")
+        _canonical, plan = self._build_request_plan(context, tools, extensions)
+        params = {
+            key: plan.params[key]
+            for key in ("model", "system", "messages", "tools")
+            if key in plan.params
+        }
+        response = await self._client.messages.count_tokens(**params)
+        return SimpleNamespace(
+            input_tokens=response.input_tokens,
+            source={"kind": "native", "provider": "anthropic"},
+            confidence="exact",
+        )
+
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
+        if self._circuit.is_open():
+            raise RuntimeError("Circuit breaker open")
+
+        canonical, plan = self._build_request_plan(context, tools, extensions)
 
         last_exc = None
         for attempt in range(self._retry.max_retries):
@@ -175,23 +216,15 @@ class AnthropicProvider:
         raise last_exc or RuntimeError("Complete failed")
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
-        strategy = _resolve_cache_breakpoint_strategy(extensions)
-        cc = _resolve_cache_control(extensions)
-        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len, strategy, cc)
-        system = self._build_system(context, strategy, cc)
-        tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy, cache_control=cc)
-        _assert_cache_budget(system, len(tools))
-        canonical = normalize_canonical_adapter_input(
-            context, tools, extensions=extensions,
-            resolved=getattr(self, "_resolved_runtime", None),
-        )
-        plan = self._adapter.build_request(canonical, messages=msgs, system=system, tools=tool_defs)
+        canonical, plan = self._build_request_plan(context, tools, extensions)
         stream_state = self._adapter.create_stream_state(canonical, plan.cache_slots)
         async with self._client.messages.stream(**plan.params) as stream:
             async for event in stream:
                 for output in self._adapter.push_stream_chunk(event, stream_state).events:
                     yield output
         finalized = self._adapter.finish_stream(stream_state)
+        for event in finalized.events:
+            yield event
         if finalized.replay:
             self._remember_native_blocks(stream_state.final_text, stream_state.final_tool_calls, finalized.replay["native_blocks"])
 
@@ -254,23 +287,6 @@ def _count_cache_control_slots(system, tool_defs, msgs) -> dict:
                 msg_bp = True
                 break
     return {"system": sys_bp, "tools": tool_bp, "messages": msg_bp}
-
-
-def _estimate_cache_read_by_slot(cache_read: int, slot_bp: dict) -> "dict | None":
-    """I1: split ``cache_read_input_tokens`` evenly across contributing slots. Remainder lands on the
-    first contributing slot to keep the sum exact. Returns None when no cache read or no slot
-    contributed — consumers see the field absent rather than all zeros. Mirrors Node."""
-    if cache_read <= 0:
-        return None
-    contributors = [s for s in ("system", "tools", "messages") if slot_bp.get(s)]
-    if not contributors:
-        return None
-    share = cache_read // len(contributors)
-    remainder = cache_read - share * len(contributors)
-    out: dict = {}
-    for i, slot in enumerate(contributors):
-        out[slot] = share + (remainder if i == 0 else 0)
-    return out
 
 
 def _apply_message_cache_control(msgs: list[dict], frozen_prefix_len: "int | None" = None, strategy: str = "default", cache_control: dict | None = None) -> None:

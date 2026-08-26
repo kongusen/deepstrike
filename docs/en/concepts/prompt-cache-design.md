@@ -160,11 +160,38 @@ Observable fields include:
 - `input_tokens`
 - `cache_read_tokens`
 - `cache_creation_tokens`
-- `cache_read_tokens_by_slot`
+- `cache_telemetry_status`: `measured | unavailable`
+- `cache_telemetry_source`
+- `request_fingerprint`
+- `stable_prefix_fingerprint`
 - `tools_exposed`
 - `tools_called`
 
-Anthropic adapters can attribute cache reads by slot. OpenAI-family automatic caching may not expose equivalent slot data.
+Only `cache_telemetry_status="measured"` makes `cache_read_tokens=0` a confirmed zero hit. An
+`unavailable` status means the provider did not return interpretable cache fields. DeepSeek
+OpenAI-compatible `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens` are normalized against the
+full prompt-token count, so cache hits are not added to `input_tokens` twice.
+
+Per-provider cache-field inclusion and the canonical `input_tokens` formula:
+
+| Provider family | Raw input field | Cache relation | Canonical `input_tokens` |
+|-----------------|----------------|----------------|--------------------------|
+| OpenAI Chat / Responses | `prompt_tokens` / `input_tokens` | cached tokens are a subset of input | raw input, not summed |
+| DeepSeek OpenAI | `prompt_tokens` | hit + miss = prompt; hit is a subset | `prompt_tokens`, not summed |
+| Anthropic Messages | `input_tokens` | raw input is the uncached portion | input + cache read + cache creation (summed once, at the normalizer boundary only) |
+| Gemini | `promptTokenCount` | cached content is a subset of prompt | prompt count, not summed |
+| Ollama | `prompt_eval_count` | no cache-split contract | raw prompt eval count |
+
+Every cache count must be a non-negative integer with `cache <= input_tokens`; violations raise a
+structured protocol error instead of being silently corrected. A missing field on an unverified
+compatible endpoint is `unavailable`, not a zero hit.
+
+Current providers return aggregate cache usage only, so `cache_read_tokens_by_slot` remains absent /
+`None`; the SDK no longer presents a pro-rata estimate as provider slot attribution. Cache capability
+is also endpoint-evidenced: initially, only official Anthropic and DeepSeek OpenAI are marked supported.
+Compatible and custom endpoints remain unknown until official documentation or a controlled live probe
+provides evidence. Actual hit rate still depends on provider, model, and request prefix; this release
+does not promise a fixed improvement percentage.
 
 ## Practices
 

@@ -1,6 +1,7 @@
 import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { deepseek } from "../src/providers/factories.js"
 import {
+  ProviderReplayProtocolMismatchError,
   isReplayCompatibleWithProvider,
   seedProviderReplayFromEvents,
 } from "../src/runtime/provider-replay.js"
@@ -43,16 +44,34 @@ describe("provider fallback replay", () => {
     })
   })
 
-  it("does not seed a DeepSeek (openai-chat) replay into an Anthropic provider", () => {
-    const anthropic = new AnthropicProvider({ apiKey: "k", model: "claude-sonnet-4-6" })
+  it("fails fast with an endpoint-pinning diagnostic for cross-protocol tool replay", () => {
+    const deepseekProvider = deepseek({ apiKey: "k" })
     const message = { content: "calling", toolCalls: [{ id: "c1", name: "ping", arguments: "{}" }] }
-    seedProviderReplayFromEvents(anthropic, [llmCompleted({
+    expect(() => seedProviderReplayFromEvents(deepseekProvider, [llmCompleted({
       content: message.content,
       tool_calls: message.toolCalls,
-      provider_replay: { provider: "deepseek", protocol: "openai-chat", reasoning_content: "thinking" },
-    })])
-    // The incompatible envelope is dropped without reconstruction.
-    const replay = anthropic.peekProviderReplay?.(message)
+      provider_replay: { protocol: "anthropic-messages", native_blocks: [{ type: "thinking", thinking: "secret-reasoning" }] },
+    })])).toThrow(ProviderReplayProtocolMismatchError)
+    expect(() => seedProviderReplayFromEvents(deepseekProvider, [llmCompleted({
+      content: message.content,
+      tool_calls: message.toolCalls,
+      provider_replay: { protocol: "anthropic-messages", native_blocks: [{ type: "thinking", thinking: "secret-reasoning" }] },
+    })])).toThrow(/pin the previous anthropic-messages endpoint explicitly/)
+
+    try {
+      seedProviderReplayFromEvents(deepseekProvider, [llmCompleted({
+        content: message.content,
+        tool_calls: message.toolCalls,
+        provider_replay: { protocol: "anthropic-messages", native_blocks: [{ type: "thinking", thinking: "secret-reasoning" }] },
+      })])
+    } catch (error) {
+      expect(error).toMatchObject({ code: "provider_replay_protocol_mismatch" })
+      expect(String(error)).not.toContain("secret-reasoning")
+      expect(String(error)).not.toContain("ping")
+    }
+
+    // The incompatible envelope is never seeded before the diagnostic is raised.
+    const replay = deepseekProvider.peekProviderReplay?.(message)
     expect(replay?.native_blocks).toBeUndefined()
     expect((replay as { reasoning_content?: unknown })?.reasoning_content).toBeUndefined()
   })

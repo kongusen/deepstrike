@@ -15,8 +15,16 @@ from deepstrike.providers.usage import ProviderUsage
 from deepstrike.types.content import CanonicalAdapterInput
 
 
+ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER = "<｜｜DSML｜｜tool_calls>"
+TEXTUAL_TOOL_CALL_CAPTURE_LIMIT = 64 * 1024
+
+
 def _get(raw: Any, key: str) -> Any:
     return raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
+
+
+def _has(raw: Any, key: str) -> bool:
+    return key in raw if isinstance(raw, dict) else raw is not None and hasattr(raw, key)
 
 
 def _number(raw: Any, field: str) -> int | None:
@@ -50,8 +58,63 @@ class AnthropicStreamState:
     uncached_input: int = 0
     cache_read: int = 0
     cache_creation: int = 0
+    cache_telemetry_measured: bool = False
     output_tokens: int = 0
     cache_slots: dict[str, bool] = field(default_factory=dict)
+    textual_tool_call_policy: str = "off"
+    textual_tool_call_mode: str = "passthrough"
+    textual_tool_call_tail: str = ""
+    textual_tool_call_captured_length: int = 0
+    saw_native_tool_call: bool = False
+
+
+def _textual_tool_call_policy(input: CanonicalAdapterInput) -> str:
+    if not input.tools:
+        return "off"
+    explicit = input.extensions.get("textualToolCallPolicy")
+    if explicit in {"off", "reject"}:
+        return explicit
+    resolved = input.resolved
+    return "off" if resolved is not None and resolved.endpoint_id == "anthropic.messages" else "reject"
+
+
+def _textual_tool_call_error() -> ProtocolResponseError:
+    return ProtocolResponseError(
+        "anthropic-messages",
+        "Provider emitted a tool call as text instead of a native tool block",
+        provider_code="textual_tool_call",
+        retryable=True,
+    )
+
+
+def _marker_tail_length(text: str) -> int:
+    maximum = min(len(text), len(ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER) - 1)
+    for length in range(maximum, 0, -1):
+        if text.endswith(ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER[:length]):
+            return length
+    return 0
+
+
+def _guard_text_delta(text: str, state: AnthropicStreamState) -> str:
+    if state.textual_tool_call_policy == "off":
+        return text
+    if state.textual_tool_call_mode == "candidate":
+        state.textual_tool_call_captured_length += len(text.encode("utf-8"))
+        if state.textual_tool_call_captured_length > TEXTUAL_TOOL_CALL_CAPTURE_LIMIT:
+            raise _textual_tool_call_error()
+        return ""
+    combined = state.textual_tool_call_tail + text
+    marker_index = combined.find(ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER)
+    if marker_index >= 0:
+        state.textual_tool_call_mode = "candidate"
+        state.textual_tool_call_tail = ""
+        state.textual_tool_call_captured_length = len(combined[marker_index:].encode("utf-8"))
+        if state.textual_tool_call_captured_length > TEXTUAL_TOOL_CALL_CAPTURE_LIMIT:
+            raise _textual_tool_call_error()
+        return combined[:marker_index]
+    tail_length = _marker_tail_length(combined)
+    state.textual_tool_call_tail = combined[-tail_length:] if tail_length else ""
+    return combined[:-tail_length] if tail_length else combined
 
 
 class AnthropicMessagesAdapter:
@@ -86,7 +149,7 @@ class AnthropicMessagesAdapter:
                 system = context.system_text or None
         if tools is None and input.tools:
             tools = [{"name": tool.name, "description": tool.description, "input_schema": json.loads(tool.parameters)} for tool in input.tools]
-        ext = {key: value for key, value in input.extensions.items() if key not in {"model", "messages", "system", "tools", "stream", "max_tokens", "cacheBreakpointStrategy", "cacheTtl"}}
+        ext = {key: value for key, value in input.extensions.items() if key not in {"model", "messages", "system", "tools", "stream", "max_tokens", "cacheBreakpointStrategy", "cacheTtl", "textualToolCallPolicy"}}
         betas = input.extensions.get("betas")
         if isinstance(betas, list) and betas:
             ext["betas"] = betas
@@ -125,13 +188,21 @@ class AnthropicMessagesAdapter:
                 native_blocks.append({"type": "tool_use", "id": _get(block, "id"), "name": _get(block, "name"), "input": _get(block, "input") or {}})
             elif kind == "thinking":
                 native_blocks.append({"type": "thinking", "thinking": _get(block, "thinking"), "signature": _get(block, "signature")})
+        if (
+            _textual_tool_call_policy(input) == "reject"
+            and ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER in content
+        ):
+            raise _textual_tool_call_error()
         usage = self.normalize_usage(_get(raw, "usage"))
         token_count = usage.input_tokens + usage.output_tokens if usage else None
         message = Message(role="assistant", content=content, token_count=token_count, tool_calls=calls or None)
         return message, ({"native_blocks": native_blocks} if native_blocks else None)
 
     def create_stream_state(self, input: CanonicalAdapterInput, cache_slots: dict[str, bool] | None = None) -> AnthropicStreamState:
-        return AnthropicStreamState(cache_slots=dict(cache_slots or {}))
+        return AnthropicStreamState(
+            cache_slots=dict(cache_slots or {}),
+            textual_tool_call_policy=_textual_tool_call_policy(input),
+        )
 
     def push_stream_chunk(self, chunk: Any, state: AnthropicStreamState) -> AdapterOutput:
         events = []
@@ -139,19 +210,36 @@ class AnthropicMessagesAdapter:
         if kind in ("message_start", "message_delta"):
             usage = _get(chunk, "usage") or _get(_get(chunk, "message"), "usage")
             if usage is not None:
+                if _has(usage, "cache_read_input_tokens") or _has(usage, "cache_creation_input_tokens"):
+                    state.cache_telemetry_measured = True
                 state.uncached_input = max(state.uncached_input, _number(usage, "input_tokens") or 0)
                 state.cache_read = max(state.cache_read, _number(usage, "cache_read_input_tokens") or 0)
                 state.cache_creation = max(state.cache_creation, _number(usage, "cache_creation_input_tokens") or 0)
                 state.output_tokens = max(state.output_tokens, _number(usage, "output_tokens") or 0)
                 raw_stop = _get(_get(chunk, "delta"), "stop_reason")
                 total_input = state.uncached_input + state.cache_read + state.cache_creation
-                provider_usage = ProviderUsage(input_tokens=total_input, output_tokens=state.output_tokens, cache_read_input_tokens=state.cache_read, cache_creation_input_tokens=state.cache_creation)
-                contributors = [key for key in ("system", "tools", "messages") if state.cache_slots.get(key)]
-                by_slot = None
-                if state.cache_read and contributors:
-                    share, remainder = divmod(state.cache_read, len(contributors))
-                    by_slot = {key: share + (remainder if index == 0 else 0) for index, key in enumerate(contributors)}
-                events.append(UsageEvent(total_tokens=total_input + state.output_tokens, input_tokens=total_input, output_tokens=state.output_tokens, cache_read_input_tokens=state.cache_read, cache_creation_input_tokens=state.cache_creation, cache_read_input_tokens_by_slot=by_slot, stop_reason=canonicalize_stop_reason(raw_stop), raw_stop_reason=raw_stop, provider_usage=provider_usage))
+                cache_status = "measured" if state.cache_telemetry_measured else "unavailable"
+                cache_source = "anthropic_usage" if state.cache_telemetry_measured else None
+                provider_usage = ProviderUsage(
+                    input_tokens=total_input,
+                    output_tokens=state.output_tokens,
+                    cache_read_input_tokens=state.cache_read,
+                    cache_creation_input_tokens=state.cache_creation,
+                    cache_telemetry_status=cache_status,
+                    cache_telemetry_source=cache_source,
+                )
+                events.append(UsageEvent(
+                    total_tokens=total_input + state.output_tokens,
+                    input_tokens=total_input,
+                    output_tokens=state.output_tokens,
+                    cache_read_input_tokens=state.cache_read,
+                    cache_creation_input_tokens=state.cache_creation,
+                    cache_telemetry_status=cache_status,
+                    cache_telemetry_source=cache_source,
+                    stop_reason=canonicalize_stop_reason(raw_stop),
+                    raw_stop_reason=raw_stop,
+                    provider_usage=provider_usage,
+                ))
         elif kind == "content_block_start":
             idx = int(_get(chunk, "index"))
             block = _get(chunk, "content_block")
@@ -160,8 +248,14 @@ class AnthropicMessagesAdapter:
             if block_type == "thinking":
                 state.native_blocks[idx].update({"thinking": _get(block, "thinking") or "", "signature": _get(block, "signature") or ""})
             elif block_type == "text":
-                state.native_blocks[idx]["text"] = _get(block, "text") or ""
+                initial_text = _get(block, "text") or ""
+                state.native_blocks[idx]["text"] = initial_text
+                visible_text = _guard_text_delta(initial_text, state)
+                state.final_text += visible_text
+                if visible_text:
+                    events.append(TextDelta(delta=visible_text))
             elif block_type == "tool_use":
+                state.saw_native_tool_call = True
                 state.native_blocks[idx].update({"id": _get(block, "id"), "name": _get(block, "name"), "input": _get(block, "input") or {}})
                 state.tool_blocks[idx] = {"id": _get(block, "id"), "name": _get(block, "name"), "args": ""}
         elif kind == "content_block_delta":
@@ -170,9 +264,11 @@ class AnthropicMessagesAdapter:
             delta_type = _get(delta, "type")
             if delta_type == "text_delta":
                 text = _get(delta, "text") or ""
-                state.final_text += text
+                visible_text = _guard_text_delta(text, state)
+                state.final_text += visible_text
                 state.native_blocks.setdefault(idx, {"type": "text"})["text"] = state.native_blocks.get(idx, {}).get("text", "") + text
-                events.append(TextDelta(delta=text))
+                if visible_text:
+                    events.append(TextDelta(delta=visible_text))
             elif delta_type == "thinking_delta":
                 text = _get(delta, "thinking") or ""
                 state.native_blocks.setdefault(idx, {"type": "thinking"})["thinking"] = state.native_blocks.get(idx, {}).get("thinking", "") + text
@@ -197,8 +293,16 @@ class AnthropicMessagesAdapter:
         return AdapterOutput(events=events)
 
     def finish_stream(self, state: AnthropicStreamState, final: Any = None) -> AdapterOutput:
+        if state.textual_tool_call_mode == "candidate":
+            raise _textual_tool_call_error()
+        events = []
+        if state.textual_tool_call_tail:
+            tail = state.textual_tool_call_tail
+            state.textual_tool_call_tail = ""
+            state.final_text += tail
+            events.append(TextDelta(delta=tail))
         blocks = [state.native_blocks[index] for index in sorted(state.native_blocks)]
-        return AdapterOutput(events=[], replay={"native_blocks": blocks} if blocks else None)
+        return AdapterOutput(events=events, replay={"native_blocks": blocks} if blocks else None)
 
     def normalize_usage(self, raw: Any) -> ProviderUsage | None:
         if raw is None:
@@ -211,4 +315,12 @@ class AnthropicMessagesAdapter:
         output = _number(raw, "output_tokens")
         if input_tokens is None and cache_read is None and cache_creation is None and output is None:
             return None
-        return ProviderUsage(input_tokens=(input_tokens or 0) + (cache_read or 0) + (cache_creation or 0), output_tokens=output or 0, cache_read_input_tokens=cache_read or 0, cache_creation_input_tokens=cache_creation or 0)
+        measured = _has(raw, "cache_read_input_tokens") or _has(raw, "cache_creation_input_tokens")
+        return ProviderUsage(
+            input_tokens=(input_tokens or 0) + (cache_read or 0) + (cache_creation or 0),
+            output_tokens=output or 0,
+            cache_read_input_tokens=cache_read or 0,
+            cache_creation_input_tokens=cache_creation or 0,
+            cache_telemetry_status="measured" if measured else "unavailable",
+            cache_telemetry_source="anthropic_usage" if measured else None,
+        )

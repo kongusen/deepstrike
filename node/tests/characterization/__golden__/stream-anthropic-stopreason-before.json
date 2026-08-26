@@ -3,9 +3,13 @@
     {
       "cacheCreationInputTokens": 0,
       "cacheReadInputTokens": 0,
+      "cacheTelemetrySource": "anthropic_usage",
+      "cacheTelemetryStatus": "measured",
       "inputTokens": 42,
       "outputTokens": 1,
       "providerUsage": {
+        "cacheTelemetrySource": "anthropic_usage",
+        "cacheTelemetryStatus": "measured",
         "inputTokens": 42,
         "outputTokens": 1
       },
@@ -19,9 +23,13 @@
     {
       "cacheCreationInputTokens": 0,
       "cacheReadInputTokens": 0,
+      "cacheTelemetrySource": "anthropic_usage",
+      "cacheTelemetryStatus": "measured",
       "inputTokens": 42,
       "outputTokens": 9,
       "providerUsage": {
+        "cacheTelemetrySource": "anthropic_usage",
+        "cacheTelemetryStatus": "measured",
         "inputTokens": 42,
         "outputTokens": 9
       },

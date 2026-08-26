@@ -9,6 +9,7 @@ from deepstrike.providers.replay_validator import (
     ProviderReplayValidationError,
 )
 from deepstrike.runtime.provider_replay import (
+    ProviderReplayProtocolMismatchError,
     assess_provider_replayability,
     is_replay_compatible_with_provider,
     seed_provider_replay_from_events,
@@ -49,15 +50,21 @@ def test_is_replay_compatible_with_provider_gates_by_protocol():
     assert is_replay_compatible_with_provider({"protocol": "openai-chat", "reasoning_content": "t"}, None) is True
 
 
-def test_cross_protocol_replay_not_seeded_into_anthropic():
-    anthropic = AnthropicProvider("k")
+def test_cross_protocol_tool_replay_fails_fast_with_endpoint_pinning_diagnostic():
+    deepseek_provider = deepseek(api_key="k")
     tool_calls = [ToolCall(id="c1", name="ping", arguments="{}")]
-    seed_provider_replay_from_events(anthropic, [_llm_completed(
-        "calling", tool_calls,
-        provider_replay={"provider": "deepseek", "protocol": "openai-chat", "reasoning_content": "x"},
-    )])
-    # incompatible envelope skipped entirely; no native blocks seeded
-    assert anthropic.peek_provider_replay("calling", tool_calls) is None
+    with pytest.raises(ProviderReplayProtocolMismatchError) as captured:
+        seed_provider_replay_from_events(deepseek_provider, [_llm_completed(
+            "calling", tool_calls,
+            provider_replay={"protocol": "anthropic-messages", "native_blocks": [{"type": "thinking", "thinking": "secret-reasoning"}]},
+        )])
+
+    assert captured.value.code == "provider_replay_protocol_mismatch"
+    assert "pin the previous anthropic-messages endpoint explicitly" in str(captured.value)
+    assert "secret-reasoning" not in str(captured.value)
+    assert "ping" not in str(captured.value)
+    # incompatible envelope was never seeded
+    assert deepseek_provider.peek_provider_replay("calling", tool_calls) is None
 
 
 def test_missing_replay_is_not_reconstructed():

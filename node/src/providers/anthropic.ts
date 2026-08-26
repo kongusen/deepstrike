@@ -48,6 +48,7 @@ export class AnthropicProvider implements LLMProvider {
   private readonly nativeAssistantBlocks = new Map<string, Array<Record<string, unknown>>>()
   private readonly resolvedRuntimePolicy: RuntimePolicy
   private readonly directNativeTokenCounting: boolean
+  private readonly defaultTextualToolCallPolicy: "off" | "reject"
   private resolvedRuntime?: ResolvedAnthropicRuntime
 
   constructor(config: AnthropicProviderConfig) {
@@ -73,8 +74,11 @@ export class AnthropicProvider implements LLMProvider {
     this.maxRetries = c.retry?.maxRetries ?? 3
     this.baseDelay = c.retry?.baseDelay ?? 1000
     this.resolvedRuntimePolicy = c.runtimePolicy ?? {}
-    this.directNativeTokenCounting = c.baseURL === undefined
-      || c.baseURL === endpointProfiles["anthropic.messages"].baseURL
+    const configuredBaseURL = c.baseURL?.replace(/\/+$/, "")
+    const officialBaseURL = endpointProfiles["anthropic.messages"].baseURL.replace(/\/+$/, "")
+    this.directNativeTokenCounting = configuredBaseURL === undefined
+      || configuredBaseURL === officialBaseURL
+    this.defaultTextualToolCallPolicy = this.directNativeTokenCounting ? "off" : "reject"
   }
 
   runtimePolicy(): RuntimePolicy {
@@ -155,7 +159,10 @@ export class AnthropicProvider implements LLMProvider {
       context,
       tools,
       resolved,
-      extensions,
+      extensions: {
+        textualToolCallPolicy: this.defaultTextualToolCallPolicy,
+        ...extensions,
+      },
       replayForMessage: message => this.peekProviderReplay(message),
     })
   }

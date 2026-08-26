@@ -161,17 +161,18 @@ describe("SPC-013 A-05 Anthropic Messages ProtocolAdapter", () => {
   })
 
   it.each([
-    ["deepseek/deepseek-chat", "deepseek", "deepseek-chat"],
-    ["kimi/kimi-k2.6", "kimi", "kimi-k2.6"],
-    ["qwen/qwen3.6-plus", "qwen", "qwen3.6-plus"],
-    ["glm/glm-5.2", "glm", "glm-5.2"],
-    ["minimax/MiniMax-M3", "minimax", "MiniMax-M3"],
+    ["deepseek/deepseek-chat", "deepseek.anthropic", "deepseek", "deepseek-chat"],
+    ["kimi/kimi-k2.6", "kimi.anthropic", "kimi", "kimi-k2.6"],
+    ["qwen/qwen3.6-plus", "qwen.anthropic", "qwen", "qwen3.6-plus"],
+    ["glm/glm-5.2", "glm.anthropic", "glm", "glm-5.2"],
+    ["minimax/MiniMax-M3", "minimax.anthropic", "minimax", "MiniMax-M3"],
   ])("binds %s to its CN endpoint without inheriting the official native meter", async (
     model,
+    endpoint,
     providerId,
     wireModel,
   ) => {
-    const resolved = resolveProviderRuntime({ model, apiKey: "k" })
+    const resolved = resolveProviderRuntime({ model, apiKey: "k", endpoint: endpoint as never })
     expect(resolved.identity).toMatchObject({
       providerId,
       modelId: wireModel,
@@ -304,6 +305,7 @@ describe("SPC-013 A-05 Anthropic Messages ProtocolAdapter", () => {
         cacheCreationInputTokens: 2,
       },
     })
+    expect(events.at(-1)).not.toHaveProperty("cacheReadInputTokensBySlot")
     expect(adapter.finishStream(state, undefined)).toEqual({
       events: [],
       replay: {

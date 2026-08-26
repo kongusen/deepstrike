@@ -102,6 +102,7 @@ from deepstrike.runtime.reliability import (
 )
 from deepstrike.runtime.provider_replay import (
   ProviderReplay,
+  ProviderReplayProtocolMismatchError,
   assess_provider_replayability,
   assistant_replay_key,
   is_replay_compatible_with_provider,
@@ -280,6 +281,7 @@ __all__ = [
   "SessionEvent",
   "SessionEntry",
   "ProviderReplay",
+  "ProviderReplayProtocolMismatchError",
   "assistant_replay_key",
   "peek_provider_replay",
   "seed_provider_replay_from_events",

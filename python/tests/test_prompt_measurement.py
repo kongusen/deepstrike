@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from deepstrike.providers.base import RenderedContext
-from deepstrike.providers.stream import TextDelta
+from deepstrike.providers.stream import TextDelta, UsageEvent
 from deepstrike.runtime import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, collect_text
 
 
@@ -86,3 +86,68 @@ async def test_false_context_overflow_still_measures_and_calls_provider(monkeypa
   assert await collect_text(runner.run(session_id="measurement-false-overflow", goal="hello")) == "done"
   assert provider.count_calls == 1
   assert provider.stream_calls == 1
+
+
+class MeasuredUsageProvider(MeasuredProvider):
+  """Counts natively, then reports authoritative observed usage from the stream."""
+
+  async def stream(self, context: RenderedContext, tools, extensions=None, state=None):
+    self.stream_calls += 1
+    yield UsageEvent(total_tokens=1040, input_tokens=1000, output_tokens=40)
+    yield TextDelta(delta="done")
+
+
+@pytest.mark.asyncio
+async def test_observed_usage_feeds_back_durable_postflight_measurement():
+  """spc_024-06: postflight observed input is the authority — it must land in the journal and
+  supersede the preflight count for the same request fingerprint."""
+  provider = MeasuredUsageProvider()
+  log = InMemorySessionLog()
+  runner = RuntimeRunner(RuntimeOptions(
+    provider=provider, session_log=log, execution_plane=LocalExecutionPlane(), max_tokens=2048,
+  ))
+
+  assert await collect_text(runner.run(session_id="feedback", goal="hello")) == "done"
+
+  measured = [
+    entry.event["measurement"]
+    for entry in await log.read("feedback")
+    if entry.event.get("kind") == "prompt_measured"
+  ]
+  assert len(measured) == 2
+  preflight, postflight = measured
+  assert preflight["source"] == {"kind": "native", "provider": "test"}
+  assert preflight["input_tokens"] == 12
+  assert postflight["source"] == {"kind": "postflight"}
+  assert postflight["input_tokens"] == 1000
+  assert postflight["confidence"] == "exact"
+  assert postflight["request_fingerprint"] == preflight["request_fingerprint"]
+
+
+@pytest.mark.asyncio
+async def test_session_replay_reuses_recorded_measurement_without_recount():
+  """spc_024-06: a durable measurement fact is keyed by request fingerprint, not session.
+  Replaying the same plan (here: fresh session, same goal, copied postflight fact) must not
+  call the provider's count endpoint again."""
+  source_log = InMemorySessionLog()
+  source_runner = RuntimeRunner(RuntimeOptions(
+    provider=MeasuredUsageProvider(), session_log=source_log,
+    execution_plane=LocalExecutionPlane(), max_tokens=2048,
+  ))
+  await collect_text(source_runner.run(session_id="origin", goal="hello"))
+  durable_fact = [
+    entry.event for entry in await source_log.read("origin")
+    if entry.event.get("kind") == "prompt_measured"
+  ][-1]
+
+  replay_log = InMemorySessionLog()
+  await replay_log.append("replay", durable_fact)
+  provider = MeasuredUsageProvider()
+  replay_runner = RuntimeRunner(RuntimeOptions(
+    provider=provider, session_log=replay_log,
+    execution_plane=LocalExecutionPlane(), max_tokens=2048,
+  ))
+
+  assert await collect_text(replay_runner.run(session_id="replay", goal="hello")) == "done"
+  assert provider.stream_calls == 1
+  assert provider.count_calls == 0

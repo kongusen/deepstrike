@@ -25,6 +25,20 @@ import {
   ProtocolResponseError,
 } from "./protocol-adapter.js"
 import { ANTHROPIC_PROTOCOL_CAPABILITIES } from "./protocol-capabilities.js"
+import { endpointProfiles } from "./endpoints.js"
+
+export const ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER = "<｜｜DSML｜｜tool_calls>"
+const TEXTUAL_TOOL_CALL_CAPTURE_LIMIT = 64 * 1024
+
+type TextualToolCallPolicy = "off" | "reject"
+
+interface TextualToolCallGuardState {
+  policy: TextualToolCallPolicy
+  mode: "passthrough" | "candidate"
+  tail: string
+  capturedLength: number
+  sawNativeToolCall: boolean
+}
 
 export interface AnthropicRequestPlan {
   transport: "stable" | "beta"
@@ -40,10 +54,12 @@ export interface AnthropicStreamState {
   readonly toolBlocks: Record<number, { id: string; name: string; argsBuffer: string }>
   readonly nativeBlocks: Record<number, Record<string, unknown>>
   readonly finalToolCalls: ToolCall[]
+  readonly textualToolCallGuard: TextualToolCallGuardState
   finalText: string
   uncachedInput: number
   cacheReadTokens: number
   cacheCreationTokens: number
+  cacheTelemetryMeasured: boolean
   outputTokens: number
 }
 
@@ -63,9 +79,66 @@ function extensionsForWire(
 ): Record<string, unknown> {
   const blocked = new Set([
     "model", "messages", "system", "tools", "max_tokens", "stream",
-    "__deepstrikeThinkingEnabled", "degradeMissingReasoningReplay",
+    "__deepstrikeThinkingEnabled", "degradeMissingReasoningReplay", "textualToolCallPolicy",
   ])
   return Object.fromEntries(Object.entries(extensions).filter(([key]) => !blocked.has(key)))
+}
+
+function textualToolCallPolicy(input: CanonicalAdapterInput): TextualToolCallPolicy {
+  if (input.tools.length === 0) return "off"
+  const explicit = input.extensions.textualToolCallPolicy
+  if (explicit === "off" || explicit === "reject") return explicit
+  const official = endpointProfiles["anthropic.messages"]
+  const endpoint = input.resolved.endpoint
+  const isOfficial = input.resolved.identity.endpointId === official.id
+    && (!endpoint || endpoint.baseURL === official.baseURL)
+  return isOfficial ? "off" : "reject"
+}
+
+function textualToolCallError(): ProtocolResponseError {
+  return new ProtocolResponseError(
+    "anthropic-messages",
+    "Provider emitted a tool call as text instead of a native tool block",
+    { providerCode: "textual_tool_call", retryable: true },
+  )
+}
+
+function hasTextualToolCall(text: string, input: CanonicalAdapterInput): boolean {
+  return textualToolCallPolicy(input) === "reject"
+    && text.includes(ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER)
+}
+
+function markerTailLength(text: string): number {
+  const max = Math.min(text.length, ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER.length - 1)
+  for (let length = max; length > 0; length -= 1) {
+    if (text.endsWith(ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER.slice(0, length))) return length
+  }
+  return 0
+}
+
+function utf8Length(text: string): number {
+  return Buffer.byteLength(text, "utf8")
+}
+
+function guardTextDelta(text: string, guard: TextualToolCallGuardState): string {
+  if (guard.policy === "off") return text
+  if (guard.mode === "candidate") {
+    guard.capturedLength += utf8Length(text)
+    if (guard.capturedLength > TEXTUAL_TOOL_CALL_CAPTURE_LIMIT) throw textualToolCallError()
+    return ""
+  }
+  const combined = guard.tail + text
+  const markerIndex = combined.indexOf(ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER)
+  if (markerIndex >= 0) {
+    guard.mode = "candidate"
+    guard.tail = ""
+    guard.capturedLength = utf8Length(combined.slice(markerIndex))
+    if (guard.capturedLength > TEXTUAL_TOOL_CALL_CAPTURE_LIMIT) throw textualToolCallError()
+    return combined.slice(0, markerIndex)
+  }
+  const tailLength = markerTailLength(combined)
+  guard.tail = tailLength > 0 ? combined.slice(-tailLength) : ""
+  return tailLength > 0 ? combined.slice(0, -tailLength) : combined
 }
 
 function systemBlocks(
@@ -266,18 +339,6 @@ function assertCacheBudget(params: Record<string, unknown>): void {
   }
 }
 
-function estimateCacheRead(
-  cacheRead: number,
-  slots: AnthropicRequestPlan["cacheSlots"],
-): { system?: number; tools?: number; messages?: number } | undefined {
-  if (cacheRead <= 0) return undefined
-  const keys = (["system", "tools", "messages"] as const).filter(key => slots[key])
-  if (!keys.length) return undefined
-  const share = Math.floor(cacheRead / keys.length)
-  const remainder = cacheRead - share * keys.length
-  return Object.fromEntries(keys.map((key, index) => [key, share + (index === 0 ? remainder : 0)]))
-}
-
 function numeric(raw: Record<string, unknown>, field: string): number | undefined {
   const value = raw[field]
   if (value === undefined || value === null) return undefined
@@ -333,7 +394,7 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
     }
   }
 
-  decodeComplete(raw: Record<string, any>, _input: AdapterDecodeInput): {
+  decodeComplete(raw: Record<string, any>, decodeInput: AdapterDecodeInput): {
     message: Message
     replay?: ProviderReplay
   } {
@@ -346,6 +407,7 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
         if (call) toolCalls.push(call)
       }
     }
+    if (hasTextualToolCall(content, decodeInput.input)) throw textualToolCallError()
     const usage = this.normalizeUsage(raw.usage)
     const blocks = raw.content as Array<Record<string, unknown>> | undefined
     return {
@@ -367,10 +429,18 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
       toolBlocks: {},
       nativeBlocks: {},
       finalToolCalls: [],
+      textualToolCallGuard: {
+        policy: textualToolCallPolicy(input.input),
+        mode: "passthrough",
+        tail: "",
+        capturedLength: 0,
+        sawNativeToolCall: false,
+      },
       finalText: "",
       uncachedInput: 0,
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
+      cacheTelemetryMeasured: false,
       outputTokens: 0,
     }
   }
@@ -380,20 +450,28 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
     if (chunk.type === "message_start" || chunk.type === "message_delta") {
       const raw = chunk.usage ?? chunk.message?.usage
       if (raw) {
+        if (
+          Object.prototype.hasOwnProperty.call(raw, "cache_read_input_tokens")
+          || Object.prototype.hasOwnProperty.call(raw, "cache_creation_input_tokens")
+        ) {
+          state.cacheTelemetryMeasured = true
+        }
         state.uncachedInput = Math.max(state.uncachedInput, numeric(raw, "input_tokens") ?? 0)
         state.cacheReadTokens = Math.max(state.cacheReadTokens, numeric(raw, "cache_read_input_tokens") ?? 0)
         state.cacheCreationTokens = Math.max(state.cacheCreationTokens, numeric(raw, "cache_creation_input_tokens") ?? 0)
         state.outputTokens = Math.max(state.outputTokens, numeric(raw, "output_tokens") ?? 0)
         const inputTokens = state.uncachedInput + state.cacheReadTokens + state.cacheCreationTokens
+        const cacheTelemetryStatus = state.cacheTelemetryMeasured ? "measured" : "unavailable"
         const providerUsage: ProviderUsage = {
           inputTokens,
           outputTokens: state.outputTokens,
           ...(state.cacheReadTokens ? { cacheReadInputTokens: state.cacheReadTokens } : {}),
           ...(state.cacheCreationTokens ? { cacheCreationInputTokens: state.cacheCreationTokens } : {}),
+          cacheTelemetryStatus,
+          ...(state.cacheTelemetryMeasured ? { cacheTelemetrySource: "anthropic_usage" } : {}),
         }
         const rawStopReason = chunk.delta?.stop_reason as string | undefined
         const stopReason = this.normalizeStopReason(rawStopReason)
-        const bySlot = estimateCacheRead(state.cacheReadTokens, state.cacheSlots)
         events.push({
           type: "usage",
           totalTokens: inputTokens + state.outputTokens,
@@ -401,7 +479,8 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
           outputTokens: state.outputTokens,
           cacheReadInputTokens: state.cacheReadTokens,
           cacheCreationInputTokens: state.cacheCreationTokens,
-          ...(bySlot ? { cacheReadInputTokensBySlot: bySlot } : {}),
+          cacheTelemetryStatus,
+          ...(state.cacheTelemetryMeasured ? { cacheTelemetrySource: "anthropic_usage" } : {}),
           ...(stopReason ? { stopReason } : {}),
           ...(rawStopReason ? { rawStopReason } : {}),
           providerUsage,
@@ -409,7 +488,13 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
       }
     } else if (chunk.type === "content_block_start") {
       state.nativeBlocks[chunk.index] = { ...chunk.content_block }
-      if (chunk.content_block.type === "tool_use") {
+      if (chunk.content_block.type === "text") {
+        const initialText = String(chunk.content_block.text ?? "")
+        const visibleText = guardTextDelta(initialText, state.textualToolCallGuard)
+        state.finalText += visibleText
+        if (visibleText) events.push({ type: "text_delta", delta: visibleText } as StreamEvent)
+      } else if (chunk.content_block.type === "tool_use") {
+        state.textualToolCallGuard.sawNativeToolCall = true
         state.toolBlocks[chunk.index] = {
           id: chunk.content_block.id,
           name: chunk.content_block.name,
@@ -419,12 +504,13 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
     } else if (chunk.type === "content_block_delta") {
       const delta = chunk.delta
       if (delta.type === "text_delta") {
-        state.finalText += delta.text
+        const visibleText = guardTextDelta(delta.text, state.textualToolCallGuard)
+        state.finalText += visibleText
         state.nativeBlocks[chunk.index] = {
           ...state.nativeBlocks[chunk.index],
           text: String(state.nativeBlocks[chunk.index]?.text ?? "") + delta.text,
         }
-        events.push({ type: "text_delta", delta: delta.text } as StreamEvent)
+        if (visibleText) events.push({ type: "text_delta", delta: visibleText } as StreamEvent)
       } else if (delta.type === "thinking_delta") {
         state.nativeBlocks[chunk.index] = {
           ...state.nativeBlocks[chunk.index],
@@ -461,12 +547,20 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
   }
 
   finishStream(state: AnthropicStreamState): AdapterOutput {
+    if (state.textualToolCallGuard.mode === "candidate") throw textualToolCallError()
+    const events: StreamEvent[] = []
+    if (state.textualToolCallGuard.tail) {
+      const tail = state.textualToolCallGuard.tail
+      state.textualToolCallGuard.tail = ""
+      state.finalText += tail
+      events.push({ type: "text_delta", delta: tail } as StreamEvent)
+    }
     const blocks = Object.keys(state.nativeBlocks)
       .map(Number)
       .sort((left, right) => left - right)
       .map(index => state.nativeBlocks[index])
     return {
-      events: [],
+      events,
       ...(blocks.length ? { replay: { protocol: "anthropic-messages" as const, native_blocks: blocks } } : {}),
     }
   }
@@ -490,6 +584,12 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
       outputTokens: output ?? 0,
       ...(cacheRead ? { cacheReadInputTokens: cacheRead } : {}),
       ...(cacheCreation ? { cacheCreationInputTokens: cacheCreation } : {}),
+      ...(
+        Object.prototype.hasOwnProperty.call(record, "cache_read_input_tokens")
+        || Object.prototype.hasOwnProperty.call(record, "cache_creation_input_tokens")
+          ? { cacheTelemetryStatus: "measured" as const, cacheTelemetrySource: "anthropic_usage" as const }
+          : { cacheTelemetryStatus: "unavailable" as const }
+      ),
     }
   }
 

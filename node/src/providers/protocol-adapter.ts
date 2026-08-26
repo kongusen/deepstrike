@@ -67,10 +67,18 @@ export interface ProtocolAdapter<
 
 export class ProtocolResponseError extends Error {
   readonly protocol: GenerationProtocol
+  readonly providerCode?: string
+  readonly retryable?: boolean
 
-  constructor(protocol: GenerationProtocol, message: string) {
-    super(`${protocol} protocol response error: ${message}`)
+  constructor(
+    protocol: GenerationProtocol,
+    message: string,
+    options: { providerCode?: string; retryable?: boolean } = {},
+  ) {
+    super(options.providerCode ? message : `${protocol} protocol response error: ${message}`)
     this.name = "ProtocolResponseError"
     this.protocol = protocol
+    this.providerCode = options.providerCode
+    this.retryable = options.retryable
   }
 }

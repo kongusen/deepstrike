@@ -5,9 +5,11 @@
       "type": "text_delta"
     },
     {
+      "cacheTelemetryStatus": "unavailable",
       "inputTokens": 42,
       "outputTokens": 9,
       "providerUsage": {
+        "cacheTelemetryStatus": "unavailable",
         "inputTokens": 42,
         "outputTokens": 9
       },

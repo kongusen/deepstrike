@@ -38,9 +38,18 @@ class AdapterStreamInput:
 
 
 class ProtocolResponseError(ValueError):
-    def __init__(self, protocol: str, message: str):
+    def __init__(
+        self,
+        protocol: str,
+        message: str,
+        *,
+        provider_code: str | None = None,
+        retryable: bool | None = None,
+    ):
         self.protocol = protocol
-        super().__init__(f"{protocol} protocol response error: {message}")
+        self.provider_code = provider_code
+        self.retryable = retryable
+        super().__init__(message if provider_code else f"{protocol} protocol response error: {message}")
 
 
 class ProtocolAdapter(Protocol, Generic[RequestT, CompleteT, ChunkT, StateT, FinalT]):

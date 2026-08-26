@@ -14,10 +14,14 @@
     },
     {
       "cacheReadInputTokens": 8,
+      "cacheTelemetrySource": "openai_prompt_details",
+      "cacheTelemetryStatus": "measured",
       "inputTokens": 42,
       "outputTokens": 9,
       "providerUsage": {
         "cacheReadInputTokens": 8,
+        "cacheTelemetrySource": "openai_prompt_details",
+        "cacheTelemetryStatus": "measured",
         "inputTokens": 42,
         "outputTokens": 9
       },

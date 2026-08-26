@@ -1,0 +1,7 @@
+{
+  "startMarker": "<｜｜DSML｜｜tool_calls>",
+  "complete": "<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name=\"lookup\">secret</｜｜DSML｜｜invoke>",
+  "ordinaryText": "<invoke name=\"lookup\">hello</invoke>",
+  "providerCode": "textual_tool_call",
+  "message": "Provider emitted a tool call as text instead of a native tool block"
+}

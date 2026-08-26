@@ -143,7 +143,11 @@ describe("spc_013-A-00 characterization: wire request bodies + complete decode",
   })
 
   it("anthropic-messages (CN dialect: deepseek via AnthropicCompatibleProvider)", async () => {
-    const provider = createProvider({ model: "deepseek/deepseek-chat", apiKey: "sk-char" })
+    const provider = createProvider({
+      model: "deepseek/deepseek-chat",
+      apiKey: "sk-char",
+      endpoint: "deepseek.anthropic",
+    })
     expectGolden("wire-anthropic-deepseek", await captureComplete(provider, stubAnthropic))
   })
 

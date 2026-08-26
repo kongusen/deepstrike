@@ -1,0 +1,24 @@
+{
+  "id": "prompt-measurement-postflight",
+  "domain": "prompt_measurement",
+  "input": {
+    "value": {
+      "requestFingerprint": "sha256:fixture-postflight",
+      "inputTokens": 1000,
+      "source": {
+        "kind": "postflight"
+      },
+      "confidence": "exact"
+    }
+  },
+  "expected": {
+    "canonical": {
+      "requestFingerprint": "sha256:fixture-postflight",
+      "inputTokens": 1000,
+      "source": {
+        "kind": "postflight"
+      },
+      "confidence": "exact"
+    }
+  }
+}

@@ -106,5 +106,6 @@ def test_adapter_assembles_stream_events_usage_and_deepseek_replay() -> None:
     assert usage.events == []
     assert finished.events == [UsageEvent(
         total_tokens=12, input_tokens=10, output_tokens=2, cache_read_input_tokens=4,
+        cache_telemetry_status="measured", cache_telemetry_source="openai_prompt_details",
         stop_reason="tool_use", raw_stop_reason="tool_calls", provider_usage=finished.events[0].provider_usage,
     )]

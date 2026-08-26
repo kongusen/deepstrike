@@ -211,8 +211,12 @@ class TurnMetrics:
   input_tokens: int
   cache_read_tokens: int
   cache_creation_tokens: int
+  request_fingerprint: str = ""
+  stable_prefix_fingerprint: str = ""
+  cache_telemetry_status: str = "unavailable"
+  cache_telemetry_source: str | None = None
   active_skill: str | None = None
-  # I1: pro-rata per-slot attribution of cache_read_tokens (Anthropic only). Mirrors Node.
+  # Provider-authoritative per-slot attribution only; never estimated by DeepStrike.
   cache_read_tokens_by_slot: "dict | None" = None
 
 
@@ -2206,6 +2210,8 @@ class RuntimeRunner:
         turn_output_tokens = 0
         turn_cache_read_tokens = 0
         turn_cache_creation_tokens = 0
+        turn_cache_telemetry_status = "unavailable"
+        turn_cache_telemetry_source = None
         turn_cache_read_by_slot = None
         turn_stop_reason = None
         descriptor = self._opts.provider.descriptor() if callable(getattr(self._opts.provider, "descriptor", None)) else None
@@ -2283,8 +2289,44 @@ class RuntimeRunner:
               turn_output_tokens = getattr(evt, "output_tokens", 0) or 0
               turn_cache_read_tokens = getattr(evt, "cache_read_input_tokens", 0) or 0
               turn_cache_creation_tokens = getattr(evt, "cache_creation_input_tokens", 0) or 0
+              provider_usage = getattr(evt, "provider_usage", None)
+              turn_cache_telemetry_status = (
+                getattr(evt, "cache_telemetry_status", None)
+                or getattr(provider_usage, "cache_telemetry_status", None)
+                or (
+                  "measured"
+                  if (getattr(evt, "cache_read_input_tokens", 0) or 0) > 0
+                  or (getattr(evt, "cache_creation_input_tokens", 0) or 0) > 0
+                  else None
+                )
+                or "unavailable"
+              )
+              turn_cache_telemetry_source = (
+                getattr(evt, "cache_telemetry_source", None)
+                or getattr(provider_usage, "cache_telemetry_source", None)
+              )
               # I1: per-slot attribution forwarded to TurnMetrics; None on non-Anthropic providers.
               turn_cache_read_by_slot = getattr(evt, "cache_read_input_tokens_by_slot", None)
+              # spc_024-06: postflight observed input is the authority (INV-024-08). Feed it back
+              # as a durable measurement fact for this exact request fingerprint so replay reuses
+              # the observed truth instead of re-counting (or trusting the preflight estimate).
+              if turn_input_tokens > 0:
+                postflight = record_prompt_measurement(
+                  provider_plan,
+                  input_tokens=turn_input_tokens,
+                  source={"kind": "postflight"},
+                  confidence="exact",
+                )
+                recorded_measurements[provider_plan.fingerprint] = {
+                  "request_fingerprint": postflight.request_fingerprint,
+                  "input_tokens": postflight.input_tokens,
+                  "source": postflight.source,
+                  "confidence": postflight.confidence,
+                }
+                await self._opts.session_log.append(session_id, {
+                  "kind": "prompt_measured", "turn": runtime.turn(),
+                  "measurement": recorded_measurements[provider_plan.fingerprint],
+                })
               # Phase 4: stop_reason drives the kernel's max-output-tokens recovery; keep the last
               # non-empty value seen this turn (the closing usage frame carries it).
               if getattr(evt, "stop_reason", None):
@@ -2424,6 +2466,10 @@ class RuntimeRunner:
               input_tokens=turn_input_tokens,
               cache_read_tokens=turn_cache_read_tokens,
               cache_creation_tokens=turn_cache_creation_tokens,
+              request_fingerprint=provider_plan.fingerprint,
+              stable_prefix_fingerprint=provider_plan.stable_prefix_fingerprint,
+              cache_telemetry_status=turn_cache_telemetry_status,
+              cache_telemetry_source=turn_cache_telemetry_source,
               active_skill=active_skill,
               **_tm_kwargs_by_slot,
             ))

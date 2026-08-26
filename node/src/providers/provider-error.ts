@@ -134,10 +134,14 @@ export function classifyProviderError(provider: string, error: unknown): Provide
   const httpStatus = errorStatus(error)
   const providerCode = errorCode(error)
   const kind = classifyKind(error, httpStatus, providerCode)
+  const explicitProtocolRetryable = kind === "protocol"
+    && typeof object(error)?.retryable === "boolean"
+    ? object(error)!.retryable as boolean
+    : undefined
   return new ProviderError({
     provider,
     kind,
-    retryable: retryable(kind, httpStatus),
+    retryable: explicitProtocolRetryable ?? retryable(kind, httpStatus),
     message: errorMessage(error),
     ...(httpStatus !== undefined ? { httpStatus } : {}),
     ...(providerCode !== undefined ? { providerCode } : {}),

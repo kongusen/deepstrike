@@ -3,15 +3,15 @@
     {
       "cacheCreationInputTokens": 4,
       "cacheReadInputTokens": 8,
-      "cacheReadInputTokensBySlot": {
-        "messages": 4,
-        "system": 4
-      },
+      "cacheTelemetrySource": "anthropic_usage",
+      "cacheTelemetryStatus": "measured",
       "inputTokens": 54,
       "outputTokens": 1,
       "providerUsage": {
         "cacheCreationInputTokens": 4,
         "cacheReadInputTokens": 8,
+        "cacheTelemetrySource": "anthropic_usage",
+        "cacheTelemetryStatus": "measured",
         "inputTokens": 54,
         "outputTokens": 1
       },
@@ -33,15 +33,15 @@
     {
       "cacheCreationInputTokens": 4,
       "cacheReadInputTokens": 8,
-      "cacheReadInputTokensBySlot": {
-        "messages": 4,
-        "system": 4
-      },
+      "cacheTelemetrySource": "anthropic_usage",
+      "cacheTelemetryStatus": "measured",
       "inputTokens": 54,
       "outputTokens": 9,
       "providerUsage": {
         "cacheCreationInputTokens": 4,
         "cacheReadInputTokens": 8,
+        "cacheTelemetrySource": "anthropic_usage",
+        "cacheTelemetryStatus": "measured",
         "inputTokens": 54,
         "outputTokens": 9
       },

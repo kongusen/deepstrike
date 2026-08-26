@@ -12,6 +12,7 @@ import pytest
 from deepstrike.providers.anthropic import AnthropicProvider
 from deepstrike.providers.base import RenderedContext
 from deepstrike._kernel import Message
+from deepstrike.providers.anthropic_adapter import ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER
 
 CTX = RenderedContext(turns=[Message(role="user", content="hi")])
 
@@ -34,6 +35,28 @@ class _FakeMessages:
     def stream(self, **kwargs):
         self._cap["kwargs"] = kwargs
         return _EmptyStreamCtx()
+
+
+class _EventStreamCtx:
+    def __init__(self, events):
+        self._events = events
+
+    async def __aenter__(self):
+        async def gen():
+            for event in self._events:
+                yield event
+        return gen()
+
+    async def __aexit__(self, *a):
+        return False
+
+
+class _EventMessages:
+    def __init__(self, events):
+        self._events = events
+
+    def stream(self, **_kwargs):
+        return _EventStreamCtx(self._events)
 
 
 def _provider():
@@ -70,3 +93,25 @@ async def test_stream_strips_cache_breakpoint_strategy_from_wire():
     p, cap = _provider()
     _ = [e async for e in p.stream(CTX, [], {"cacheBreakpointStrategy": "tools-only"})]
     assert "cacheBreakpointStrategy" not in cap["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_stream_forwards_harmless_textual_marker_prefix_flushed_at_eof():
+    provider = AnthropicProvider(
+        "k",
+        base_url="https://gateway.example.test/anthropic",
+    )
+    partial_marker = ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER[:-1]
+    provider._client = SimpleNamespace(messages=_EventMessages([
+        SimpleNamespace(
+            type="content_block_delta",
+            index=0,
+            delta=SimpleNamespace(type="text_delta", text=f"plain {partial_marker}"),
+        ),
+    ]))
+
+    events = [event async for event in provider.stream(
+        CTX,
+        [SimpleNamespace(name="lookup", description="Lookup", parameters='{"type":"object"}')],
+    )]
+    assert "".join(event.delta for event in events if event.type == "text_delta") == f"plain {partial_marker}"

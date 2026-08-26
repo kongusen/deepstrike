@@ -1,6 +1,7 @@
 import type { LLMProvider } from "../types.js"
 import { PROVIDER_REGISTRY, providerRegistryKey, supportsBearerCredential } from "./registry.js"
 import {
+  defaultEndpointForProvider,
   endpointCapabilitiesFor,
   generationProtocol,
   modelRegistry,
@@ -94,7 +95,9 @@ function resolveRuntimeDraftWithRegistration(
   initialRegistration: ReturnType<typeof modelRegistry.resolve>,
 ): RuntimeDraft {
   const providerHint = options.provider ?? parsedProviderId
-  const endpointId = (options.endpoint ?? initialRegistration?.defaultEndpointId ?? defaultEndpointForProvider(providerHint)) as EndpointProfileId | undefined
+  const endpointId = (options.endpoint
+    ?? initialRegistration?.defaultEndpointId
+    ?? (providerHint ? defaultEndpointForProvider(providerHint) : undefined)) as EndpointProfileId | undefined
 
   if (!endpointId) {
     throw new Error(`Unknown model profile: ${options.model}. Pass provider or endpoint for custom model names.`)
@@ -158,6 +161,7 @@ function constructResolvedRuntime(
       endpointCapabilities: endpointCapabilitiesFor(
         draft.endpointId,
         options.baseURL === undefined || options.endpoint !== undefined,
+        options.baseURL === undefined,
       ),
     }),
     ...(draft.registration.recommendedRuntimePolicy ? { runtimePolicy: draft.registration.recommendedRuntimePolicy } : {}),
@@ -207,21 +211,4 @@ function providerPrefix(model: string): ProviderId | undefined {
 
 function providerIds(): ProviderId[] {
   return Array.from(new Set(Object.values(endpointProfiles).map(endpoint => endpoint.providerId)))
-}
-
-function defaultEndpointForProvider(providerId: ProviderId | undefined): EndpointProfileId | undefined {
-  if (!providerId) return undefined
-  const defaults: Partial<Record<ProviderId, EndpointProfileId>> = {
-    anthropic: "anthropic.messages",
-    openai: "openai.chat",
-    minimax: "minimax.anthropic",
-    deepseek: "deepseek.anthropic",
-    kimi: "kimi.anthropic",
-    qwen: "qwen.anthropic",
-    gemini: "gemini.google",
-    glm: "glm.anthropic",
-    baai: "baai.self-hosted.embeddings",
-    ollama: "ollama.local",
-  }
-  return defaults[providerId]
 }

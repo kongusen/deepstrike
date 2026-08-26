@@ -16,6 +16,7 @@ export interface ProviderRequestPlan {
   tools: ToolSchema[]
   options: Record<string, unknown>
   fingerprint: string
+  stablePrefixFingerprint: string
 }
 
 export interface NormalizedProviderUsage extends ProviderUsage {
@@ -30,6 +31,7 @@ export interface RecordedPromptMeasurement {
   source:
     | { kind: "native"; provider: string }
     | { kind: "local_exact"; tokenizer: string }
+    | { kind: "postflight" }
     | { kind: "heuristic" }
   confidence: "exact" | "high_confidence" | "low_confidence"
 }
@@ -58,7 +60,7 @@ const TRANSPORT_ONLY_KEYS = new Set([
   "credentials", "retry", "maxRetries", "baseDelay", "timeout", "signal", "access_token", "refresh_token", "token", "secret", "x-api-key",
 ])
 
-export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "fingerprint" | "options"> & {
+export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "fingerprint" | "stablePrefixFingerprint" | "options"> & {
   options?: Record<string, unknown>
 }): ProviderRequestPlan {
   const options = materialOptions(input.options ?? {})
@@ -70,7 +72,19 @@ export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "fing
     tools: clone(input.tools),
     options,
   }
-  return { ...plan, fingerprint: sha256(stableJson(plan)) }
+  const stablePrefix = {
+    providerId: plan.providerId,
+    modelId: plan.modelId,
+    endpoint: plan.endpoint,
+    context: stablePrefixContext(plan.context),
+    tools: plan.tools,
+    options: plan.options,
+  }
+  return {
+    ...plan,
+    fingerprint: sha256(stableJson(plan)),
+    stablePrefixFingerprint: sha256(stableJson(stablePrefix)),
+  }
 }
 
 /** Build the plan from a resolved provider when the runner only has the public provider object. */
@@ -132,6 +146,7 @@ export function measurementForPlan(
   if (!source || typeof source !== "object") return undefined
   if (source.kind === "native" && typeof source["provider"] === "string" && source["provider"].length > 0) return clone(recorded)
   if (source.kind === "local_exact" && typeof source.tokenizer === "string" && source.tokenizer.length > 0) return clone(recorded)
+  if (source.kind === "postflight") return clone(recorded)
   if (source.kind === "heuristic") return clone(recorded)
   return undefined
 }
@@ -231,6 +246,17 @@ function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`
   const object = value as Record<string, unknown>
   return `{${Object.keys(object).sort().map(key => `${JSON.stringify(key)}:${stableJson(object[key])}`).join(",")}}`
+}
+
+function stablePrefixContext(context: RenderedContext): Record<string, unknown> {
+  const frozenPrefixLen = context.frozenPrefixLen ?? 0
+  return {
+    systemText: context.systemText,
+    ...(context.systemStable !== undefined ? { systemStable: context.systemStable } : {}),
+    ...(context.systemKnowledge !== undefined ? { systemKnowledge: context.systemKnowledge } : {}),
+    frozenPrefixLen,
+    turns: clone(context.turns.slice(0, frozenPrefixLen)),
+  }
 }
 
 function sha256(value: string): string {

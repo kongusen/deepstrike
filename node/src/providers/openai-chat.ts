@@ -25,6 +25,7 @@ import type {
 } from "./content-normalization.js"
 import { normalizeCanonicalContext, projectToolOutputToText } from "./content-normalization.js"
 import { normalizeToolCall } from "./base.js"
+import { normalizeOpenAIUsage } from "./usage-normalizer.js"
 import {
   DEGRADED_REASONING_PLACEHOLDER,
   assessReasoningReplay,
@@ -441,6 +442,8 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
         ...(stopReason ? { stopReason } : {}),
         ...(state.finishReason ? { rawStopReason: state.finishReason } : {}),
         ...(providerUsage ? { providerUsage } : {}),
+        ...(providerUsage?.cacheTelemetryStatus ? { cacheTelemetryStatus: providerUsage.cacheTelemetryStatus } : {}),
+        ...(providerUsage?.cacheTelemetrySource ? { cacheTelemetrySource: providerUsage.cacheTelemetrySource } : {}),
       } as UsageEvent)
     }
     const replay = streamReplay(state)
@@ -462,12 +465,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
     const reasoningTokens = details && typeof details === "object"
       ? numberField(details as Record<string, unknown>, "reasoning_tokens")
       : undefined
-    return {
-      inputTokens: inputTokens ?? 0,
-      outputTokens: outputTokens ?? 0,
-      ...(cacheReadInputTokens > 0 ? { cacheReadInputTokens } : {}),
-      ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
-    }
+    return normalizeOpenAIUsage(usage)
   }
 
   normalizeStopReason(raw: string | undefined): CanonicalStopReason | undefined {

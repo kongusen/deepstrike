@@ -63,7 +63,27 @@ export interface DynamicModelDescriptorResolver {
 
 export interface EndpointRuntimeCapabilities {
   nativeTokenCounting?: boolean
+  promptCaching?: boolean
   protocolOverrides?: ProtocolRuntimeCapabilityOverrides
+}
+
+export interface CacheCapabilityEvidence {
+  endpointId: EndpointProfileId
+  source: string
+  verifiedAt: "2026-08-26"
+  classification: "documentation" | "live_probe"
+  usageFields: readonly string[]
+}
+
+export interface TokenMeasurementEvidence {
+  endpointId: EndpointProfileId
+  source: string
+  verifiedAt: "2026-08-26"
+  providerApiState: "supported" | "unsupported" | "unknown"
+  adapterState: "available" | "unavailable"
+  method: "provider_preflight" | "official_local_tokenizer" | "postflight" | "heuristic"
+  coverage: readonly string[]
+  sdk: string
 }
 
 export type CapabilityEvidenceLayer = "model" | "protocol" | "endpoint"
@@ -137,6 +157,56 @@ export const registryEvidence: readonly RegistryRuleEvidence[] = [
     classification: "endpoint",
     source: "node/tests/anthropic-count-tokens.test.ts; node/tests/gemini-count-tokens.test.ts",
     verifiedAt: "2026-08-12",
+  },
+]
+
+export const cacheCapabilityEvidence: readonly CacheCapabilityEvidence[] = [
+  {
+    endpointId: "anthropic.messages",
+    source: "https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
+    verifiedAt: "2026-08-26",
+    classification: "documentation",
+    usageFields: ["cache_read_input_tokens", "cache_creation_input_tokens"],
+  },
+  {
+    endpointId: "deepseek.openai",
+    source: "https://api-docs.deepseek.com/guides/kv_cache",
+    verifiedAt: "2026-08-26",
+    classification: "documentation",
+    usageFields: ["prompt_cache_hit_tokens", "prompt_cache_miss_tokens"],
+  },
+]
+
+export const tokenMeasurementEvidence: readonly TokenMeasurementEvidence[] = [
+  {
+    endpointId: "anthropic.messages",
+    source: "https://github.com/anthropics/anthropic-sdk-typescript/blob/main/api.md#count-tokens",
+    verifiedAt: "2026-08-26",
+    providerApiState: "supported",
+    adapterState: "available",
+    method: "provider_preflight",
+    coverage: ["system", "messages", "tools"],
+    sdk: "@anthropic-ai/sdk ^0.99.0",
+  },
+  {
+    endpointId: "gemini.google",
+    source: "https://ai.google.dev/api/tokens#method-models.countTokens",
+    verifiedAt: "2026-08-26",
+    providerApiState: "supported",
+    adapterState: "available",
+    method: "provider_preflight",
+    coverage: ["contents", "system", "tools", "provider_options"],
+    sdk: "@google/generative-ai ^0.24.1",
+  },
+  {
+    endpointId: "openai.responses",
+    source: "https://github.com/openai/openai-node/tree/master/src/resources/responses/input-tokens.ts",
+    verifiedAt: "2026-08-26",
+    providerApiState: "supported",
+    adapterState: "available",
+    method: "provider_preflight",
+    coverage: ["input", "instructions", "tools", "provider_options"],
+    sdk: "openai ^7.5.0",
   },
 ]
 
@@ -224,11 +294,11 @@ const DEFAULT_ENDPOINT: Record<ProviderId, EndpointProfileId> = {
   anthropic: "anthropic.messages",
   openai: "openai.chat",
   minimax: "minimax.anthropic",
-  deepseek: "deepseek.anthropic",
-  kimi: "kimi.anthropic",
-  qwen: "qwen.anthropic",
+  deepseek: "deepseek.openai",
+  kimi: "kimi.openai",
+  qwen: "qwen.dashscope",
   gemini: "gemini.google",
-  glm: "glm.anthropic",
+  glm: "glm.openai",
   baai: "baai.self-hosted.embeddings",
   ollama: "ollama.local",
 }
@@ -248,6 +318,10 @@ const DEFAULT_MODEL: Record<ProviderId, string> = {
 
 export function defaultModelForProvider(providerId: ProviderId): string {
   return DEFAULT_MODEL[providerId]
+}
+
+export function defaultEndpointForProvider(providerId: ProviderId): EndpointProfileId {
+  return DEFAULT_ENDPOINT[providerId]
 }
 
 function endpointFor(providerId: ProviderId, modelId: string): EndpointProfileId {
@@ -345,8 +419,10 @@ export const protocolRuntimeCapabilities: Record<GenerationProtocol, ProtocolRun
 }
 
 export const endpointRuntimeCapabilities: Partial<Record<EndpointProfileId, EndpointRuntimeCapabilities>> = {
-  "anthropic.messages": { nativeTokenCounting: true },
+  "anthropic.messages": { nativeTokenCounting: true, promptCaching: true },
+  "deepseek.openai": { promptCaching: true },
   "gemini.google": { nativeTokenCounting: true },
+  "openai.responses": { nativeTokenCounting: true },
 }
 
 export function resolveEffectiveCapability<T = boolean>(
@@ -423,7 +499,14 @@ export function resolveEffectiveModelCapabilities(input: {
     ]),
     parallelToolCalls: protocolBoolean(protocol.parallelToolCalls, overrides?.parallelToolCalls),
     structuredOutput: protocolBoolean(protocol.structuredOutput, overrides?.structuredOutput),
-    promptCaching: protocolBoolean(protocol.promptCaching, overrides?.promptCaching),
+    promptCaching: resolveEffectiveCapability([
+      { layer: "protocol", state: booleanState(protocol.promptCaching), value: protocol.promptCaching },
+      {
+        layer: "endpoint",
+        state: booleanState(input.endpointCapabilities?.promptCaching),
+        value: input.endpointCapabilities?.promptCaching,
+      },
+    ]),
     nativeTokenCounting: resolveEffectiveCapability([
       { layer: "endpoint", state: booleanState(input.endpointCapabilities?.nativeTokenCounting) },
     ]),
@@ -450,8 +533,12 @@ export function generationProtocol(protocol: EndpointProtocol): GenerationProtoc
 export function endpointCapabilitiesFor(
   endpointId: EndpointProfileId,
   preserveEndpointIdentity: boolean,
+  preserveCacheEvidence = preserveEndpointIdentity,
 ): EndpointRuntimeCapabilities | undefined {
-  return preserveEndpointIdentity ? endpointRuntimeCapabilities[endpointId] : undefined
+  const capabilities = preserveEndpointIdentity ? endpointRuntimeCapabilities[endpointId] : undefined
+  if (!capabilities || preserveCacheEvidence) return capabilities
+  const { promptCaching: _promptCaching, ...withoutCacheEvidence } = capabilities
+  return withoutCacheEvidence
 }
 
 export function isKnownProviderId(value: string): value is ProviderId {

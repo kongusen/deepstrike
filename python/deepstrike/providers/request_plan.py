@@ -32,6 +32,7 @@ class ProviderRequestPlan:
   tools: tuple[Any, ...]
   options: dict[str, Any]
   fingerprint: str
+  stable_prefix_fingerprint: str
 
 
 @dataclass(frozen=True)
@@ -74,17 +75,29 @@ def create_provider_request_plan(
   context: Any, tools: list[Any] | tuple[Any, ...], options: dict[str, Any] | None = None,
 ) -> ProviderRequestPlan:
   material = _material_options(options or {})
+  context_value = _json_value(context)
+  tools_value = [_json_value(tool) for tool in tools]
+  endpoint_value = {"id": endpoint.id, "protocol": endpoint.protocol, "baseURL": _safe_endpoint(endpoint.base_url)}
   value = {
     "providerId": provider_id, "modelId": model_id,
-    "endpoint": {"id": endpoint.id, "protocol": endpoint.protocol, "baseURL": _safe_endpoint(endpoint.base_url)}, "context": _json_value(context),
-    "tools": [_json_value(tool) for tool in tools], "options": material,
+    "endpoint": endpoint_value, "context": context_value,
+    "tools": tools_value, "options": material,
   }
   fingerprint = "sha256:" + sha256(_canonical_json(value).encode()).hexdigest()
+  stable_prefix = {
+    "providerId": provider_id,
+    "modelId": model_id,
+    "endpoint": endpoint_value,
+    "context": _stable_prefix_context(context_value),
+    "tools": tools_value,
+    "options": material,
+  }
+  stable_prefix_fingerprint = "sha256:" + sha256(_canonical_json(stable_prefix).encode()).hexdigest()
   return ProviderRequestPlan(
     provider_id=provider_id, model_id=model_id,
     endpoint=ProviderRequestEndpoint(endpoint.id, endpoint.protocol, _safe_endpoint(endpoint.base_url)),
     context=_json_value(context), tools=tuple(_json_value(tool) for tool in tools),
-    options=material, fingerprint=fingerprint,
+    options=material, fingerprint=fingerprint, stable_prefix_fingerprint=stable_prefix_fingerprint,
   )
 
 
@@ -123,7 +136,7 @@ def measurement_for_plan(
   except ValueError:
     return None
   source = record.source
-  if not isinstance(source, dict) or source.get("kind") not in {"native", "local_exact", "heuristic"}:
+  if not isinstance(source, dict) or source.get("kind") not in {"native", "local_exact", "postflight", "heuristic"}:
     return None
   if source["kind"] == "native" and not isinstance(source.get("provider"), str):
     return None
@@ -197,6 +210,19 @@ def _sanitize_material_value(value: Any) -> Any:
 
 
 _OMIT = object()
+
+
+def _stable_prefix_context(context: Any) -> dict[str, Any]:
+  value = context if isinstance(context, dict) else {}
+  frozen_prefix_len = value.get("frozen_prefix_len", value.get("frozenPrefixLen", 0)) or 0
+  turns = value.get("turns") if isinstance(value.get("turns"), list) else []
+  return {
+    "systemText": value.get("system_text", value.get("systemText", "")),
+    "systemStable": value.get("system_stable", value.get("systemStable", "")),
+    "systemKnowledge": value.get("system_knowledge", value.get("systemKnowledge", "")),
+    "frozenPrefixLen": frozen_prefix_len,
+    "turns": turns[:frozen_prefix_len],
+  }
 
 
 def _safe_endpoint(value: str) -> str:

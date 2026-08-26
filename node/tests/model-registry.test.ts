@@ -2,9 +2,11 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { resolveProviderRuntime } from "../src/providers/catalog.js"
+import { createProvider, resolveProviderRuntime } from "../src/providers/catalog.js"
+import { deepseek, glm, kimi, minimax, qwen } from "../src/providers/factories.js"
 import {
   MODEL_CAPABILITY_STATES,
+  cacheCapabilityEvidence,
   getRuntimePolicy,
   modelRegistry,
   registryEvidence,
@@ -123,5 +125,82 @@ describe("SPC-013 A-01 model registry", () => {
     }
     expect(resolveProviderRuntime({ model: "openai/gpt-5.5", apiKey: "k" }).adapter.runtimePolicy?.())
       .toEqual({ maxTurns: 60 })
+  })
+})
+
+describe("SPC-020 provider default routing", () => {
+  const defaults = [
+    ["deepseek", "deepseek.openai", "openai-chat"],
+    ["kimi", "kimi.openai", "openai-chat"],
+    ["qwen", "qwen.dashscope", "openai-chat"],
+    ["glm", "glm.openai", "openai-chat"],
+    ["minimax", "minimax.anthropic", "anthropic-messages"],
+  ] as const
+
+  it.each(defaults)("routes %s consistently through the model and runtime registries", (provider, endpoint, protocol) => {
+    expect(modelRegistry.resolve(`${provider}/fixture-model`)?.defaultEndpointId).toBe(endpoint)
+    expect(resolveProviderRuntime({ model: `${provider}/fixture-model`, apiKey: "k" }).identity)
+      .toMatchObject({ providerId: provider, endpointId: endpoint, protocol })
+    expect(createProvider({ model: `${provider}/fixture-model`, apiKey: "k" }).descriptor?.()?.protocol)
+      .toBe(protocol)
+  })
+
+  it.each([
+    ["deepseek", deepseek, "openai-chat"],
+    ["kimi", kimi, "openai-chat"],
+    ["qwen", qwen, "openai-chat"],
+    ["glm", glm, "openai-chat"],
+    ["minimax", minimax, "anthropic-messages"],
+  ] as const)("keeps the %s public factory on the same default protocol", (_provider, factory, protocol) => {
+    expect(factory({ apiKey: "k", model: "fixture-model" }).descriptor?.()?.protocol).toBe(protocol)
+  })
+
+  it("keeps explicit compatible endpoints available", () => {
+    expect(resolveProviderRuntime({
+      model: "deepseek/fixture-model",
+      apiKey: "k",
+      endpoint: "deepseek.anthropic",
+    }).identity.protocol).toBe("anthropic-messages")
+    expect(resolveProviderRuntime({
+      model: "minimax/fixture-model",
+      apiKey: "k",
+      endpoint: "minimax.openai",
+    }).identity.protocol).toBe("openai-chat")
+  })
+})
+
+describe("SPC-021 endpoint cache evidence", () => {
+  it("backs every supported cache claim with endpoint evidence", () => {
+    expect(cacheCapabilityEvidence.map(entry => entry.endpointId).sort()).toEqual([
+      "anthropic.messages",
+      "deepseek.openai",
+    ])
+    for (const entry of cacheCapabilityEvidence) {
+      expect(entry.source).toMatch(/^https:\/\//)
+      expect(entry.verifiedAt).toBe("2026-08-26")
+      expect(entry.classification).toBe("documentation")
+      expect(entry.usageFields.length).toBeGreaterThan(0)
+    }
+  })
+
+  it.each([
+    ["anthropic/claude-sonnet-4-6", undefined, "supported"],
+    ["deepseek/deepseek-chat", undefined, "supported"],
+    ["deepseek/deepseek-chat", "deepseek.anthropic", "unknown"],
+    ["kimi/kimi-k2.6", undefined, "unknown"],
+    ["qwen/qwen3.6-plus", undefined, "unknown"],
+    ["glm/glm-5.2", undefined, "unknown"],
+    ["minimax/MiniMax-M3", undefined, "unknown"],
+  ] as const)("resolves cache evidence for %s on %s", (model, endpoint, expected) => {
+    expect(resolveProviderRuntime({ model, apiKey: "k", ...(endpoint ? { endpoint } : {}) })
+      .effectiveCapabilities.promptCaching.state).toBe(expected)
+  })
+
+  it("does not carry built-in cache evidence onto a custom base URL", () => {
+    expect(resolveProviderRuntime({
+      model: "deepseek/deepseek-chat",
+      apiKey: "k",
+      baseURL: "https://proxy.invalid/v1",
+    }).effectiveCapabilities.promptCaching.state).toBe("unknown")
   })
 })

@@ -2,6 +2,7 @@ import OpenAI from "openai"
 import type {
   LLMProvider,
   Message,
+  PromptMeasurement,
   ProviderRunState,
   RenderedContext,
   RuntimePolicy,
@@ -31,6 +32,16 @@ export type {
 
 type ResolvedOpenAIResponsesRuntime = CanonicalAdapterInput["resolved"]
 
+const OFFICIAL_OPENAI_RESPONSES_BASE_URL = "https://api.openai.com/v1"
+
+/** Params the official input-token count endpoint accepts (SDK `InputTokenCountParams`). The
+ * create plan is projected onto this set — remaining keys (max_output_tokens, store, …) cannot
+ * change the input token count — rather than maintaining a second serialization. */
+const INPUT_TOKEN_COUNT_PARAM_KEYS: readonly string[] = [
+  "conversation", "input", "instructions", "model", "parallel_tool_calls",
+  "previous_response_id", "reasoning", "text", "tool_choice", "tools", "truncation",
+]
+
 export class OpenAIResponsesProvider implements LLMProvider {
   protected client: OpenAI
   protected circuit: CircuitBreaker
@@ -38,6 +49,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
   protected baseDelay: number
   protected readonly responses = new OpenAIResponsesAdapter()
   private readonly resolvedRuntimePolicy: RuntimePolicy
+  private readonly directNativeTokenCounting: boolean
   private resolvedRuntime?: ResolvedOpenAIResponsesRuntime
 
   constructor(
@@ -57,6 +69,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
     this.maxRetries = retry.maxRetries
     this.baseDelay = retry.baseDelay
     this.resolvedRuntimePolicy = runtimePolicy
+    this.directNativeTokenCounting = baseURL.replace(/\/+$/, "") === OFFICIAL_OPENAI_RESPONSES_BASE_URL
   }
 
   runtimePolicy(): RuntimePolicy {
@@ -136,6 +149,39 @@ export class OpenAIResponsesProvider implements LLMProvider {
     }
 
     throw classifyProviderError("openai", lastError)
+  }
+
+  /** spc_024-05: native preflight via the official Responses input-token count endpoint. Counts
+   * the exact create request plan (stateful `previous_response_id` continuation included) —
+   * native measurement belongs to the verified official endpoint, not the wire protocol. */
+  async countTokens(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+    state?: ProviderRunState,
+  ): Promise<PromptMeasurement> {
+    const enabled = this.resolvedRuntime
+      ? this.resolvedRuntime.effectiveCapabilities.nativeTokenCounting.state === "supported"
+      : this.directNativeTokenCounting
+    const inputTokens = this.client.responses.inputTokens
+    if (!enabled || typeof inputTokens?.count !== "function") {
+      throw new Error("Native token counting is unavailable on this OpenAI-compatible endpoint")
+    }
+    const input = this.adapterInput(context, tools, extensions)
+    const plan = this.responses.buildRequest(input, this.asRunState(state))
+    const body = Object.fromEntries(
+      INPUT_TOKEN_COUNT_PARAM_KEYS
+        .filter(key => key in plan.params)
+        .map(key => [key, plan.params[key]]),
+    )
+    const response = await inputTokens.count(
+      body as unknown as Parameters<typeof inputTokens.count>[0],
+    )
+    return {
+      inputTokens: response.input_tokens,
+      source: { kind: "native", provider: "openai" },
+      confidence: "exact",
+    }
   }
 
   async *stream(

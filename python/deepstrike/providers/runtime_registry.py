@@ -10,7 +10,10 @@ from typing import Any, Callable
 
 from .base import LLMProvider, RetryConfig
 from .model_registry import (
+    default_endpoint_for_provider,
+    default_protocol_for_provider,
     GenerationProtocol,
+    EndpointRuntimeCapabilities,
     ModelRegistry,
     ResolvedProviderRuntime,
 )
@@ -199,7 +202,7 @@ _PROVIDER_CLASSES: dict[tuple[str, str], type[LLMProvider]] = {
 def resolve_endpoint(
     provider_id: str,
     model_id: str | None,
-    protocol: str,
+    protocol: str | None,
     region: str | None,
     base_url: str | None,
 ) -> tuple[str, str]:
@@ -208,22 +211,25 @@ def resolve_endpoint(
     Region-aware providers get a region-qualified endpoint id. Custom base_url overrides
     the table but keeps the endpoint identity for dialect/capability selection.
     """
-    if region and provider_id in _REGION_PROVIDERS:
-        endpoint_id = f"{provider_id}.{region}.{protocol}"
+    resolved_protocol = protocol or default_protocol_for_provider(provider_id).removesuffix("-chat").removesuffix("-messages")
+    if protocol is None and region is None:
+        endpoint_id = default_endpoint_for_provider(provider_id)
+    elif region and provider_id in _REGION_PROVIDERS:
+        endpoint_id = f"{provider_id}.{region}.{resolved_protocol}"
     else:
         # Preserve existing defaults: CN vendors without region use the mainland endpoint.
         # The model registry is consulted for capabilities/runtime policy; endpoint identity
         # is determined here by (provider, protocol, region).
         if provider_id in _REGION_PROVIDERS:
-            endpoint_id = f"{provider_id}.cn.{protocol}"
+            endpoint_id = f"{provider_id}.cn.{resolved_protocol}"
         elif provider_id == "openai":
-            endpoint_id = "openai.responses" if protocol == "responses" else "openai.chat"
+            endpoint_id = "openai.responses" if resolved_protocol == "responses" else "openai.chat"
         elif provider_id == "gemini":
             endpoint_id = "gemini.google"
         elif provider_id == "ollama":
             endpoint_id = "ollama.local"
         else:
-            endpoint_id = f"{provider_id}.{protocol}"
+            endpoint_id = f"{provider_id}.{resolved_protocol}"
 
     profile = ENDPOINT_PROFILES.get(endpoint_id)
     resolved_base = base_url or (profile.base_url if profile else None)
@@ -236,7 +242,7 @@ def resolve_runtime_profile(
     provider_id: str,
     *,
     model: str | None = None,
-    protocol: str = "openai",
+    protocol: str | None = None,
     region: str | None = None,
     base_url: str | None = None,
 ) -> tuple[ResolvedProviderRuntime, EndpointProfile | None, WireDialect | None]:
@@ -247,7 +253,12 @@ def resolve_runtime_profile(
         raise ValueError(f"Unknown endpoint {endpoint_id!r}")
     dialect = OPENAI_CHAT_DIALECTS.get(provider_id) if profile.protocol == "openai-chat" else None
     model_id = model or (dialect.default_model if dialect is not None else f"{provider_id}/default")
-    runtime = model_registry.resolve_provider_runtime(provider_id, model_id, endpoint_id=endpoint_id)
+    runtime = model_registry.resolve_provider_runtime(
+        provider_id,
+        model_id,
+        endpoint_id=endpoint_id,
+        endpoint_overrides=EndpointRuntimeCapabilities() if base_url is not None else None,
+    )
     # Patch base URL into the resolved runtime if caller overrode it.
     return runtime, profile, dialect
 
@@ -281,7 +292,7 @@ def create_provider(
     *,
     api_key: str | None = None,
     model: str | None = None,
-    protocol: str = "openai",
+    protocol: str | None = None,
     region: str | None = None,
     base_url: str | None = None,
     retry_config: RetryConfig | None = None,
@@ -329,6 +340,7 @@ def create_provider(
         provider_id,
         provider_model,
         endpoint_id=runtime.endpoint_id,
+        endpoint_overrides=EndpointRuntimeCapabilities() if base_url is not None else None,
     )
     provider._resolved_runtime = runtime
     _attach_request_plan_identity(provider, runtime, base_url or profile.base_url)
@@ -349,7 +361,7 @@ async def create_provider_async(
     credential_resolver: CredentialResolver | OAuthCredentialResolver | None = None,
     model_catalog: ModelCatalog | None = None,
     model: str | None = None,
-    protocol: str = "openai",
+    protocol: str | None = None,
     region: str | None = None,
     base_url: str | None = None,
     retry_config: RetryConfig | None = None,

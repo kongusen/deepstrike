@@ -70,6 +70,7 @@ class ProtocolRuntimeCapabilities:
 @dataclass(frozen=True)
 class EndpointRuntimeCapabilities:
     native_token_counting: bool | None = None
+    prompt_caching: bool | None = None
     protocol_overrides: "ProtocolRuntimeCapabilities | None" = None
 
 
@@ -210,18 +211,70 @@ _ENDPOINT_PROTOCOL: dict[str, GenerationProtocol] = {
     "baai.self-hosted.embeddings": "openai-chat",
 }
 
-_ENDPOINT_NATIVE_COUNT = frozenset({
-    "anthropic.messages",
-    "gemini.google",
-})
+CACHE_CAPABILITY_EVIDENCE: tuple[dict[str, object], ...] = (
+    {
+        "endpoint_id": "anthropic.messages",
+        "source": "https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
+        "verified_at": "2026-08-26",
+        "classification": "documentation",
+        "usage_fields": ("cache_read_input_tokens", "cache_creation_input_tokens"),
+    },
+    {
+        "endpoint_id": "deepseek.openai",
+        "source": "https://api-docs.deepseek.com/guides/kv_cache",
+        "verified_at": "2026-08-26",
+        "classification": "documentation",
+        "usage_fields": ("prompt_cache_hit_tokens", "prompt_cache_miss_tokens"),
+    },
+)
+
+TOKEN_MEASUREMENT_EVIDENCE: tuple[dict[str, object], ...] = (
+    {
+        "endpoint_id": "anthropic.messages",
+        "source": "https://github.com/anthropics/anthropic-sdk-python/blob/main/api.md#count-tokens",
+        "verified_at": "2026-08-26",
+        "provider_api_state": "supported",
+        "adapter_state": "available",
+        "method": "provider_preflight",
+        "coverage": ("system", "messages", "tools"),
+        "sdk": "anthropic>=0.40",
+    },
+    {
+        "endpoint_id": "gemini.google",
+        "source": "https://googleapis.github.io/python-genai/genai.html#genai.models.Models.count_tokens",
+        "verified_at": "2026-08-26",
+        "provider_api_state": "supported",
+        "adapter_state": "available",
+        "method": "provider_preflight",
+        "coverage": ("contents", "system", "tools", "provider_options"),
+        "sdk": "google-genai>=1.0",
+    },
+    {
+        "endpoint_id": "openai.responses",
+        "source": "https://github.com/openai/openai-python/blob/main/src/openai/resources/responses/input_tokens.py",
+        "verified_at": "2026-08-26",
+        "provider_api_state": "supported",
+        "adapter_state": "available",
+        "method": "provider_preflight",
+        "coverage": ("input", "instructions", "tools", "provider_options"),
+        "sdk": "openai>=2.6",
+    },
+)
+
+_ENDPOINT_CAPABILITIES: dict[str, EndpointRuntimeCapabilities] = {
+    "anthropic.messages": EndpointRuntimeCapabilities(native_token_counting=True, prompt_caching=True),
+    "deepseek.openai": EndpointRuntimeCapabilities(prompt_caching=True),
+    "gemini.google": EndpointRuntimeCapabilities(native_token_counting=True),
+    "openai.responses": EndpointRuntimeCapabilities(native_token_counting=True),
+}
 
 _DEFAULT_ENDPOINT: dict[str, str] = {
     "anthropic": "anthropic.messages",
     "openai": "openai.chat",
-    "deepseek": "deepseek.anthropic",
-    "kimi": "kimi.global.anthropic",
-    "qwen": "qwen.global.anthropic",
-    "glm": "glm.global.anthropic",
+    "deepseek": "deepseek.openai",
+    "kimi": "kimi.cn.openai",
+    "qwen": "qwen.cn.openai",
+    "glm": "glm.cn.openai",
     "minimax": "minimax.anthropic",
     "gemini": "gemini.google",
     "ollama": "ollama.local",
@@ -229,6 +282,14 @@ _DEFAULT_ENDPOINT: dict[str, str] = {
 }
 
 _KNOWN_PROVIDERS = frozenset(_DEFAULT_ENDPOINT.keys())
+
+
+def default_endpoint_for_provider(provider_id: str) -> str:
+    return _DEFAULT_ENDPOINT[provider_id]
+
+
+def default_protocol_for_provider(provider_id: str) -> GenerationProtocol:
+    return _ENDPOINT_PROTOCOL[default_endpoint_for_provider(provider_id)]
 
 _POLICIES: dict[str, RuntimePolicy] = {
     # Anthropic
@@ -345,7 +406,12 @@ def resolve_effective_capabilities(
     if protocol is None:
         raise ValueError(f"Unknown endpoint {endpoint_id!r}")
     proto = _PROTOCOL_CAPS[protocol]
-    overrides = endpoint_overrides.protocol_overrides if endpoint_overrides else None
+    endpoint_capabilities = (
+        endpoint_overrides
+        if endpoint_overrides is not None
+        else _ENDPOINT_CAPABILITIES.get(endpoint_id, EndpointRuntimeCapabilities())
+    )
+    overrides = endpoint_capabilities.protocol_overrides
 
     def media_cap(key: str) -> EffectiveCapability:
         proto_value = getattr(proto, key, None)
@@ -431,17 +497,20 @@ def resolve_effective_capabilities(
             proto.structured_output,
             overrides.structured_output if overrides else None,
         )),
-        prompt_caching=_resolve_effective_capability(boolean_layers(
-            "unknown",
-            None,
-            _boolean_state(proto.prompt_caching),
-            proto.prompt_caching,
-            overrides.prompt_caching if overrides else None,
-        )),
+        prompt_caching=_resolve_effective_capability([
+            ("protocol", _boolean_state(proto.prompt_caching), proto.prompt_caching),
+            (
+                "endpoint",
+                _boolean_state(endpoint_capabilities.prompt_caching),
+                endpoint_capabilities.prompt_caching,
+            ),
+        ]),
         native_token_counting=_resolve_effective_capability(
-            [("endpoint", "supported", True)]
-            if endpoint_id in _ENDPOINT_NATIVE_COUNT
-            else [("endpoint", "unknown", None)]
+            [(
+                "endpoint",
+                _boolean_state(endpoint_capabilities.native_token_counting),
+                endpoint_capabilities.native_token_counting,
+            )]
         ),
         image_url=media_cap("image_url"),
         image_base64=media_cap("image_base64"),

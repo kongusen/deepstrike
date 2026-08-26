@@ -1,6 +1,6 @@
 import type {
   LLMProvider, Message, ContentPart, RenderedContext, ToolCall, ToolResult, ToolSchema, ToolOutputBlock,
-  StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
+  StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, UsageEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
   PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, MemorySummarizer,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
@@ -187,14 +187,14 @@ export interface TurnMetrics {
   inputTokens: number
   /** Tokens served from the prompt cache this turn (Anthropic `cache_read_input_tokens`). */
   cacheReadTokens: number
-  /** I1: per-slot attribution of `cacheReadTokens`. Anthropic reports a single cache-read total,
-   *  not a per-block breakdown — this field is a pro-rata estimate over the slots that actually
-   *  carried a `cache_control` breakpoint on the request. Missing / empty when the provider does
-   *  not honor `cache_control` (OpenAI-family auto-cache) or when no breakpoints were placed.
-   *  Useful for diagnosing which slot is buying the cache hit when comparing strategies. */
+  /** Provider-authoritative per-slot attribution, when the endpoint reports one. */
   cacheReadTokensBySlot?: { system?: number; tools?: number; messages?: number }
   /** Tokens written to the prompt cache this turn (Anthropic `cache_creation_input_tokens`). */
   cacheCreationTokens: number
+  cacheTelemetryStatus?: "measured" | "unavailable"
+  cacheTelemetrySource?: "anthropic_usage" | "openai_prompt_details" | "deepseek_prompt_cache" | "gemini_usage"
+  requestFingerprint?: string
+  stablePrefixFingerprint?: string
 }
 
 /** O5: decision returned by `onToolCall` — `block: true` denies this call before it executes; the
@@ -2224,6 +2224,8 @@ export class RuntimeRunner {
         let turnOutputTokens = 0
         let turnCacheReadTokens = 0
         let turnCacheCreationTokens = 0
+        let turnCacheTelemetryStatus: TurnMetrics["cacheTelemetryStatus"] = "unavailable"
+        let turnCacheTelemetrySource: TurnMetrics["cacheTelemetrySource"]
         let turnCacheReadBySlot: { system?: number; tools?: number; messages?: number } | undefined
         let turnStopReason: string | undefined
 
@@ -2282,16 +2284,43 @@ export class RuntimeRunner {
             // least stop here at the next event). The loop-top `interrupted` check then ends the run.
             if (abortSignal?.aborted) break
             if (evt.type === "usage") {
-              const usageEvt = evt as { type: string; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number }; stopReason?: string }
+              const usageEvt = evt as UsageEvent
               turnTokens = usageEvt.totalTokens
               turnInputTokens = usageEvt.inputTokens ?? 0
               turnOutputTokens = usageEvt.outputTokens ?? 0
               // P0-C: capture the prompt-cache split for the tool-gating hit-rate baseline.
               turnCacheReadTokens = usageEvt.cacheReadInputTokens ?? 0
               turnCacheCreationTokens = usageEvt.cacheCreationInputTokens ?? 0
+              turnCacheTelemetryStatus = usageEvt.cacheTelemetryStatus
+                ?? usageEvt.providerUsage?.cacheTelemetryStatus
+                ?? ((usageEvt.cacheReadInputTokens ?? 0) > 0 || (usageEvt.cacheCreationInputTokens ?? 0) > 0
+                  ? "measured"
+                  : "unavailable")
+              turnCacheTelemetrySource = usageEvt.cacheTelemetrySource ?? usageEvt.providerUsage?.cacheTelemetrySource
               // I1: per-slot attribution forwarded into TurnMetrics. Undefined when the provider
               // doesn't honor cache_control (OpenAI-family auto-cache).
               turnCacheReadBySlot = usageEvt.cacheReadInputTokensBySlot
+              // spc_024-06: postflight observed input is the authority (INV-024-08). Feed it back
+              // as a durable measurement fact for this exact request fingerprint so replay reuses
+              // the observed truth instead of re-counting (or trusting the preflight estimate).
+              if (turnInputTokens > 0) {
+                const postflight = recordPromptMeasurement(providerPlan, {
+                  inputTokens: turnInputTokens,
+                  source: { kind: "postflight" },
+                  confidence: "exact",
+                })
+                recordedMeasurements.set(providerPlan.fingerprint, postflight)
+                await this.opts.sessionLog.append(sessionId, {
+                  kind: "prompt_measured",
+                  turn: runtime.turn(),
+                  measurement: {
+                    requestFingerprint: postflight.requestFingerprint,
+                    inputTokens: postflight.inputTokens,
+                    source: postflight.source,
+                    confidence: postflight.confidence,
+                  },
+                })
+              }
               // Phase 4: stop_reason drives the kernel's max-output-tokens recovery. The closing
               // usage frame carries it; keep the last non-empty value seen this turn.
               if (usageEvt.stopReason) turnStopReason = usageEvt.stopReason
@@ -2424,6 +2453,10 @@ export class RuntimeRunner {
               inputTokens: turnInputTokens,
               cacheReadTokens: turnCacheReadTokens,
               cacheCreationTokens: turnCacheCreationTokens,
+              cacheTelemetryStatus: turnCacheTelemetryStatus,
+              ...(turnCacheTelemetrySource ? { cacheTelemetrySource: turnCacheTelemetrySource } : {}),
+              requestFingerprint: providerPlan.fingerprint,
+              stablePrefixFingerprint: providerPlan.stablePrefixFingerprint,
               ...(turnCacheReadBySlot ? { cacheReadTokensBySlot: turnCacheReadBySlot } : {}),
             })
           } catch { /* metrics must never break the run */ }

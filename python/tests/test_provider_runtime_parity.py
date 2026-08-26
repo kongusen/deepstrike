@@ -16,6 +16,7 @@ from deepstrike.providers.provider_error import (
 from deepstrike.providers.stop_reason import canonicalize_stop_reason
 from deepstrike.providers.usage import ProviderUsage, normalize_usage
 from deepstrike.providers.model_registry import (
+    CACHE_CAPABILITY_EVIDENCE,
     CapabilityState,
     EffectiveCapability,
     ModelRegistry,
@@ -360,6 +361,40 @@ def test_registry_provider_prefix_inference() -> None:
     reg = model_registry.resolve("anthropic/claude-opus-4-1")
     assert reg is not None
     assert reg.default_endpoint_id == "anthropic.messages"
+
+
+def test_spc_021_supported_cache_claims_have_endpoint_evidence() -> None:
+    assert sorted(entry["endpoint_id"] for entry in CACHE_CAPABILITY_EVIDENCE) == [
+        "anthropic.messages",
+        "deepseek.openai",
+    ]
+    for entry in CACHE_CAPABILITY_EVIDENCE:
+        assert entry["source"].startswith("https://")
+        assert entry["verified_at"] == "2026-08-26"
+        assert entry["classification"] == "documentation"
+        assert entry["usage_fields"]
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "model_id", "endpoint_id", "expected"),
+    [
+        ("anthropic", "claude-sonnet-4-6", "anthropic.messages", "supported"),
+        ("deepseek", "deepseek-chat", "deepseek.openai", "supported"),
+        ("deepseek", "deepseek-chat", "deepseek.anthropic", "unknown"),
+        ("kimi", "kimi-k2.6", "kimi.cn.openai", "unknown"),
+        ("qwen", "qwen3.6-plus", "qwen.cn.openai", "unknown"),
+        ("glm", "glm-5.2", "glm.cn.openai", "unknown"),
+        ("minimax", "MiniMax-M3", "minimax.anthropic", "unknown"),
+    ],
+)
+def test_spc_021_prompt_cache_capability_is_endpoint_evidenced(
+    provider_id: str,
+    model_id: str,
+    endpoint_id: str,
+    expected: str,
+) -> None:
+    runtime = model_registry.resolve_provider_runtime(provider_id, model_id, endpoint_id=endpoint_id)
+    assert runtime.effective_capabilities.prompt_caching.state == expected
 
 
 def test_provider_error_retains_cause_internally() -> None:

@@ -7,12 +7,24 @@ from deepstrike.providers.replay import assistant_replay_key  # re-exported for 
 
 __all__ = [
     "ProviderReplay",
+    "ProviderReplayProtocolMismatchError",
     "assistant_replay_key",
     "is_replay_compatible_with_provider",
     "seed_provider_replay_from_events",
     "peek_provider_replay",
     "assess_provider_replayability",
 ]
+
+
+class ProviderReplayProtocolMismatchError(RuntimeError):
+    code = "provider_replay_protocol_mismatch"
+
+    def __init__(self, provider: str, stored_protocol: str, resolved_protocol: str) -> None:
+        super().__init__(
+            f"Stored {stored_protocol} tool replay is incompatible with resolved "
+            f"{provider}/{resolved_protocol}; pin the previous {stored_protocol} endpoint "
+            "explicitly to resume this session"
+        )
 
 class ProviderReplay(TypedDict):
     protocol: str
@@ -51,7 +63,15 @@ def seed_provider_replay_from_events(provider: Any, events: list[Any]) -> None:
             continue
         tool_calls = event.get("tool_calls", [])
         stored = event.get("provider_replay")
-        if not stored or not is_replay_compatible_with_provider(stored, descriptor):
+        if not stored:
+            continue
+        if not is_replay_compatible_with_provider(stored, descriptor):
+            if tool_calls and descriptor is not None:
+                raise ProviderReplayProtocolMismatchError(
+                    getattr(descriptor, "provider", "unknown"),
+                    stored["protocol"],
+                    getattr(descriptor, "protocol", "unknown"),
+                )
             continue
         seed(event.get("content", ""), tool_calls, stored)
 

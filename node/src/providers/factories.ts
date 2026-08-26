@@ -7,7 +7,8 @@
 import type { LLMProvider } from "../types.js"
 import { PROVIDER_REGISTRY } from "./registry.js"
 import { OllamaProvider } from "./ollama.js"
-import { defaultModelForProvider, getRuntimePolicy, isKnownProviderId } from "./model-registry.js"
+import { defaultEndpointForProvider, defaultModelForProvider, getRuntimePolicy, isKnownProviderId } from "./model-registry.js"
+import { endpointProfiles, type ProviderId } from "./endpoints.js"
 
 /** Options for a backend provider factory. `protocol` only applies to backends with both wires. */
 export interface BackendProviderOptions {
@@ -20,8 +21,17 @@ export interface BackendProviderOptions {
   protocol?: "openai" | "anthropic"
 }
 
-function build(providerId: string, protocol: "openai-chat" | "anthropic-messages", o: BackendProviderOptions): LLMProvider {
+function build(providerId: ProviderId, o: BackendProviderOptions): LLMProvider {
   if (!isKnownProviderId(providerId)) throw new Error(`Unknown provider: ${providerId}`)
+  const defaultProtocol = endpointProfiles[defaultEndpointForProvider(providerId)].protocol
+  const protocol = o.protocol === "openai"
+    ? "openai-chat"
+    : o.protocol === "anthropic"
+      ? "anthropic-messages"
+      : defaultProtocol
+  if (protocol !== "openai-chat" && protocol !== "anthropic-messages") {
+    throw new Error(`Provider ${providerId} does not use an OpenAI- or Anthropic-compatible default`)
+  }
   const model = o.model ?? defaultModelForProvider(providerId)
   return PROVIDER_REGISTRY[`${providerId}:${protocol}`](
     o.apiKey,
@@ -34,27 +44,27 @@ function build(providerId: string, protocol: "openai-chat" | "anthropic-messages
 
 /** DeepSeek. Defaults to the OpenAI-compatible wire (richer reasoning-replay handling). */
 export function deepseek(o: BackendProviderOptions): LLMProvider {
-  return build("deepseek", o.protocol === "anthropic" ? "anthropic-messages" : "openai-chat", o)
+  return build("deepseek", o)
 }
 
 /** Moonshot Kimi. Defaults to the OpenAI-compatible wire. */
 export function kimi(o: BackendProviderOptions): LLMProvider {
-  return build("kimi", o.protocol === "anthropic" ? "anthropic-messages" : "openai-chat", o)
+  return build("kimi", o)
 }
 
 /** Alibaba Qwen / DashScope. Defaults to the OpenAI-compatible (DashScope) wire. */
 export function qwen(o: BackendProviderOptions): LLMProvider {
-  return build("qwen", o.protocol === "anthropic" ? "anthropic-messages" : "openai-chat", o)
+  return build("qwen", o)
 }
 
 /** Zhipu GLM. Defaults to the OpenAI-compatible wire. */
 export function glm(o: BackendProviderOptions): LLMProvider {
-  return build("glm", o.protocol === "anthropic" ? "anthropic-messages" : "openai-chat", o)
+  return build("glm", o)
 }
 
 /** MiniMax. Defaults to the Anthropic-compatible wire (the primary M2.x path). */
 export function minimax(o: BackendProviderOptions): LLMProvider {
-  return build("minimax", o.protocol === "openai" ? "openai-chat" : "anthropic-messages", o)
+  return build("minimax", o)
 }
 
 /** Google Gemini (single wire). */

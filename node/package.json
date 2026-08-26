@@ -74,7 +74,7 @@
     "@anthropic-ai/sdk": "^0.99.0",
     "@deepstrike/core": "0.2.60",
     "@google/generative-ai": "^0.24.1",
-    "openai": "^5.23.2"
+    "openai": "^7.5.0"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",

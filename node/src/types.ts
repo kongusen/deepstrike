@@ -548,7 +548,12 @@ export interface LLMProvider {
    * capability remains directly callable, but no dispatch trigger is enabled until request
    * fingerprinting and durable measurement semantics are defined.
    */
-  countTokens?(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<PromptMeasurement>
+  countTokens?(
+    context: RenderedContext,
+    tools: ToolSchema[],
+    extensions?: Record<string, unknown>,
+    state?: ProviderRunState,
+  ): Promise<PromptMeasurement>
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
   stream(
     context: RenderedContext,

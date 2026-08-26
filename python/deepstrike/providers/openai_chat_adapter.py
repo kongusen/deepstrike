@@ -350,6 +350,7 @@ class OpenAIChatAdapter:
                     events.append(TextDelta(delta=part["content"]))
         events.extend(self._pending_tool_events(state))
         if state.total_tokens:
+            provider_usage = self.normalize_usage(state.raw_usage)
             events.append(UsageEvent(
                 total_tokens=state.total_tokens,
                 input_tokens=state.input_tokens,
@@ -357,6 +358,8 @@ class OpenAIChatAdapter:
                 cache_read_input_tokens=state.cache_read_tokens,
                 stop_reason=canonicalize_stop_reason(state.finish_reason),
                 raw_stop_reason=state.finish_reason,
-                provider_usage=self.normalize_usage(state.raw_usage),
+                provider_usage=provider_usage,
+                cache_telemetry_status=(provider_usage.cache_telemetry_status if provider_usage else "unavailable"),
+                cache_telemetry_source=(provider_usage.cache_telemetry_source if provider_usage else None),
             ))
         return AdapterOutput(events=events, replay=self._stream_replay(state))

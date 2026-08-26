@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from types import SimpleNamespace
 from typing import AsyncIterator
 try:
     from google import genai as google_genai
@@ -102,6 +103,41 @@ class GeminiProvider:
             tools,
             extensions=extensions,
             resolved=getattr(self, "_resolved_runtime", None),
+        )
+
+    async def count_tokens(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None):
+        runtime = getattr(self, "_resolved_runtime", None)
+        enabled = (
+            runtime.effective_capabilities.native_token_counting.state == "supported"
+            if runtime is not None
+            else self._base_url == "https://generativelanguage.googleapis.com"
+        )
+        if not enabled:
+            raise RuntimeError("Native token counting is unavailable on this Gemini-compatible endpoint")
+        adapter_input = self._canonical_input(context, tools, extensions)
+        plan = self._adapter.build_request(adapter_input)
+        generation_config = {
+            key: value for key, value in (plan.config or {}).items()
+            if key not in {"system_instruction", "tools", "automatic_function_calling", "cached_content"}
+        }
+        if (plan.config or {}).get("cached_content") is not None:
+            raise ValueError("Gemini count_tokens cannot represent cached_content with this SDK")
+        count_config = {
+            key: plan.config[key]
+            for key in ("system_instruction", "tools")
+            if plan.config and key in plan.config
+        }
+        if generation_config:
+            count_config["generation_config"] = generation_config
+        response = await self._require_client().aio.models.count_tokens(
+            model=self._model_name,
+            contents=plan.contents,
+            config=count_config or None,
+        )
+        return SimpleNamespace(
+            input_tokens=response.total_tokens,
+            source={"kind": "native", "provider": "gemini"},
+            confidence="exact",
         )
 
     async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:

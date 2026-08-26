@@ -88,7 +88,8 @@ def _error_code(error: Any) -> str | None:
     body_error = _as_object(body.get("error")) if body else None
 
     return (
-        _scalar_string(getattr(error, "providerCode", None))
+        _scalar_string(getattr(error, "provider_code", None))
+        or _scalar_string(getattr(error, "providerCode", None))
         or _scalar_string(getattr(error, "code", None))
         or _scalar_string(getattr(error, "error_code", None))
         or _scalar_string(outer.get("providerCode") if outer else None)
@@ -165,10 +166,19 @@ def classify_provider_error(provider: str, error: Any) -> ProviderError:
     http_status = _error_status(error)
     provider_code = _error_code(error)
     kind = _classify_kind(error, http_status, provider_code)
+    explicit_protocol_retryable = (
+        getattr(error, "retryable", None)
+        if kind == "protocol" and isinstance(getattr(error, "retryable", None), bool)
+        else None
+    )
     err = ProviderError(
         provider=provider,
         kind=kind,
-        retryable=_retryable(kind, http_status),
+        retryable=(
+            explicit_protocol_retryable
+            if explicit_protocol_retryable is not None
+            else _retryable(kind, http_status)
+        ),
         message=_error_message(error),
         http_status=http_status,
         provider_code=provider_code,

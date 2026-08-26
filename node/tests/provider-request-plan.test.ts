@@ -63,6 +63,80 @@ describe("spc_016-01: provider request plans", () => {
     expect(base.options).toEqual({ temperature: 0.2 })
   })
 
+  it("spc_024-06: invalidates the fingerprint on model, endpoint, option, or state-turn drift", () => {
+    const same = createProviderRequestPlan({
+      providerId: "openai",
+      modelId: "gpt-4o",
+      endpoint: { id: "openai.chat", protocol: "openai-chat", baseURL: "https://api.openai.com/v1" },
+      context,
+      tools,
+      options: { temperature: 0.2 },
+    })
+    const drift = (patch: Partial<Parameters<typeof createProviderRequestPlan>[0]>) => createProviderRequestPlan({
+      providerId: "openai",
+      modelId: "gpt-4o",
+      endpoint: { id: "openai.chat", protocol: "openai-chat", baseURL: "https://api.openai.com/v1" },
+      context,
+      tools,
+      options: { temperature: 0.2 },
+      ...patch,
+    })
+
+    const base = drift({})
+    expect(base.fingerprint).toBe(same.fingerprint)
+    expect(base.fingerprint).not.toBe(drift({ modelId: "gpt-4o-mini" }).fingerprint)
+    expect(base.fingerprint).not.toBe(drift({
+      endpoint: { id: "openai.responses", protocol: "openai-responses", baseURL: "https://api.openai.com/v1" },
+    }).fingerprint)
+    expect(base.fingerprint).not.toBe(drift({ options: { temperature: 0.9 } }).fingerprint)
+    expect(base.fingerprint).not.toBe(drift({
+      context: { ...context, stateTurn: { role: "user", content: "signals v1" } } as RenderedContext,
+    }).fingerprint)
+    expect(base.fingerprint).not.toBe(drift({
+      context: { ...context, stateTurn: { role: "user", content: "signals v2" } } as RenderedContext,
+    }).fingerprint)
+  })
+
+  it("separates stable-prefix drift from append-only request drift", () => {
+    const frozenContext: RenderedContext = {
+      systemText: "Be precise.",
+      systemStable: "stable",
+      systemKnowledge: "knowledge",
+      frozenPrefixLen: 1,
+      turns: [
+        { role: "user", content: "frozen" },
+        { role: "assistant", content: "volatile tail" },
+      ],
+    }
+    const base = createProviderRequestPlan({
+      providerId: "deepseek",
+      modelId: "deepseek-chat",
+      endpoint: { id: "deepseek.openai", protocol: "openai-chat", baseURL: "https://api.deepseek.com" },
+      context: frozenContext,
+      tools,
+    })
+    const appended = createProviderRequestPlan({
+      providerId: "deepseek",
+      modelId: "deepseek-chat",
+      endpoint: base.endpoint,
+      context: { ...frozenContext, turns: [...frozenContext.turns, { role: "user", content: "append" }] },
+      tools,
+    })
+    const changedSystem = createProviderRequestPlan({
+      providerId: "deepseek", modelId: "deepseek-chat", endpoint: base.endpoint,
+      context: { ...frozenContext, systemKnowledge: "changed" }, tools,
+    })
+    const changedFrozenHistory = createProviderRequestPlan({
+      providerId: "deepseek", modelId: "deepseek-chat", endpoint: base.endpoint,
+      context: { ...frozenContext, turns: [{ role: "user", content: "rewritten" }, frozenContext.turns[1]] }, tools,
+    })
+
+    expect(appended.fingerprint).not.toBe(base.fingerprint)
+    expect(appended.stablePrefixFingerprint).toBe(base.stablePrefixFingerprint)
+    expect(changedSystem.stablePrefixFingerprint).not.toBe(base.stablePrefixFingerprint)
+    expect(changedFrozenHistory.stablePrefixFingerprint).not.toBe(base.stablePrefixFingerprint)
+  })
+
   it("normalizes full input footprint, cache splits, reasoning, and prices only a valid snapshot", () => {
     const usage = normalizeProviderUsage({
       inputTokens: 120,

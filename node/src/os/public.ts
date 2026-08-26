@@ -27,6 +27,7 @@ export type { ReplayProviderOpts } from "../runtime/replay-provider.js"
 export { extractRecordedMessages } from "../runtime/replay-fixture.js"
 export { ProviderReplayValidationError, DEGRADED_REASONING_PLACEHOLDER } from "../providers/replay-validator.js"
 export {
+  ProviderReplayProtocolMismatchError,
   assessProviderReplayability,
   peekProviderReplay,
   seedProviderReplayFromEvents,

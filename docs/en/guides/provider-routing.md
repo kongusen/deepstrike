@@ -94,6 +94,17 @@ p5 = ollama(model="qwen2.5-coder")
 | `openai` | OpenAI Chat-compatible wire |
 | `anthropic` | Anthropic Messages-compatible wire |
 
+When neither `endpoint` nor `protocol` is explicit, 0.2.61 uses these defaults:
+
+| vendor | Default protocol |
+|--------|------------------|
+| DeepSeek / Kimi / Qwen / GLM | OpenAI Chat-compatible |
+| MiniMax | Anthropic Messages-compatible |
+| Anthropic / OpenAI / Gemini / Ollama | Their official protocol |
+
+Resolution order is `explicit endpoint > explicit protocol > vendor default`. Explicit
+Anthropic-compatible routes remain available.
+
 ## Level 4: Region and Endpoint
 
 `kimi` / `glm` / `qwen` support region endpoint selection:
@@ -135,10 +146,25 @@ seed_provider_replay_from_events(provider, events)
 Rules:
 
 - replay protocol matches provider descriptor → seed
-- mismatch → skip the envelope
+- mismatched replay without tool calls → skip the envelope
+- mismatched tool-call replay → raise `provider_replay_protocol_mismatch` before dispatch
 - no descriptor / replay hook → no-op
 
-This prevents Anthropic native blocks from being replayed into OpenAI wire, or reasoning details from being sent to a provider that cannot accept them.
+The diagnostic contains only provider and protocol identifiers, never thinking text, tool names, or
+arguments. When resuming an old Session after a default-route change, pin its previous endpoint or
+protocol explicitly. The SDK does not guess a conversion from Anthropic native blocks to OpenAI reasoning.
+
+## Anthropic-Compatible Textual Tool-Call Safety
+
+When tools are exposed, built-in Anthropic-compatible endpoints and unknown custom Anthropic endpoints
+reject the exact DSML tool-call sentinel by default. Candidate control text is never emitted as a
+`text_delta` or final answer. The retryable error is classified as `protocol / textual_tool_call`, and
+the existing Kernel recovery policy decides whether to retry.
+
+Official `anthropic.messages` leaves this detection off by default. A caller can override the per-call
+extension with `textualToolCallPolicy="off" | "reject"`. This host-only field is never sent on the
+provider wire. Rejection detects and discards only: it does not parse arguments, synthesize tool calls,
+or execute tools. Text recovery is a separate future capability.
 
 ## Level 7: Route by Role
 
@@ -163,6 +189,31 @@ def provider_for(hint: str):
     return None
 ```
 
+## Token Measurement and Capability Semantics
+
+Token accounting has three value families whose semantics are not interchangeable:
+
+| Field | Sole meaning |
+|------|----------|
+| `Message.token_count` / `tokenCount` | the message's own footprint once it enters history; assistant messages take provider output tokens only — never this turn's input/total |
+| `ProviderUsage.inputTokens` | the provider-visible full prompt token count (the authority for billing and observation) |
+| `PromptMeasurement.inputTokens` | a pre-send measurement or estimate of the same wire plan; it feeds pre-send budgeting only and never impersonates billing facts |
+
+`native token counting` is endpoint evidence, not protocol inheritance. Endpoints with executable native counting today:
+
+| Endpoint | Requirement | Method |
+|----------|------|------|
+| `anthropic.messages` | `@anthropic-ai/sdk ^0.99` / `anthropic>=0.40` | `messages.countTokens` |
+| `gemini.google` | `@google/generative-ai ^0.24` / `google-genai>=1.0` | `models.countTokens` |
+| `openai.responses` | `openai ^7.5.0` / `openai>=2.6` | `responses.inputTokens.count`; Chat Completions does not inherit it |
+
+Semantics:
+
+- a registry `supported` at runtime means the provider instance really exposes a callable count method; an official endpoint without a wired adapter stays unavailable
+- a custom `base_url` does not inherit official evidence by default; an explicitly selected endpoint counts as vouching for that endpoint family (capability kept, runtime failures degrade to heuristic)
+- preflight reuses the same request plan as create/stream; failures or timeouts degrade to a heuristic estimate, and only native/local-exact results may hard-reject before send
+- postflight observed usage is the authority: the runner feeds observed input tokens back as a `postflight`-sourced measurement record journaled under `prompt_measured`; replay reuses the observed fact by request fingerprint without counting again
+
 ## Runtime and Application Responsibilities
 
 | Behavior | Owner |
@@ -178,4 +229,7 @@ def provider_for(hint: str):
 - `python/tests/test_provider_factories.py`
 - `python/tests/test_provider_routing.py`
 - `python/tests/test_provider_replay.py`
-- `node/tests/provider-routing.test.ts`
+- `python/tests/test_anthropic_protocol_adapter.py`
+- `node/tests/model-registry.test.ts`
+- `node/tests/provider-fallback-replay.test.ts`
+- `node/tests/anthropic-textual-tool-call.test.ts`

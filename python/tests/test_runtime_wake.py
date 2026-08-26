@@ -248,6 +248,48 @@ async def test_run_reactive_compacts_and_retries_prompt_too_long():
 
 
 @pytest.mark.asyncio
+async def test_textual_tool_call_error_never_persists_false_llm_completion_or_provider_body():
+  class TextualToolCallProvider:
+    async def complete(self, context, tools, extensions=None):
+      raise NotImplementedError
+
+    async def stream(self, context, tools, extensions=None, state=None):
+      cause = RuntimeError("untrusted:<｜｜DSML｜｜tool_calls>secret")
+      raise ProviderError(
+        provider="deepseek",
+        kind="protocol",
+        retryable=True,
+        provider_code="textual_tool_call",
+        message="Provider emitted a tool call as text instead of a native tool block",
+        cause=cause,
+      ) from cause
+      yield  # pragma: no cover
+
+  session_log = InMemorySessionLog()
+  runner = RuntimeRunner(RuntimeOptions(
+    provider=TextualToolCallProvider(),
+    session_log=session_log,
+    execution_plane=LocalExecutionPlane(),
+    max_tokens=8_000,
+    max_turns=3,
+  ))
+  emitted = []
+  async for event in runner.run(session_id="textual-tool-call", goal="use lookup"):
+    emitted.append(event)
+  persisted = await session_log.read("textual-tool-call")
+
+  assert not any(entry.event.get("kind") == "llm_completed" for entry in persisted)
+  assert any(
+    getattr(event, "message", None)
+    == "Provider emitted a tool call as text instead of a native tool block"
+    for event in emitted
+  )
+  serialized = repr((emitted, persisted))
+  assert "untrusted:" not in serialized
+  assert "secret" not in serialized
+
+
+@pytest.mark.asyncio
 async def test_recoverable_tool_failure_preserves_replay_context():
   class FakeProvider:
     def __init__(self) -> None:

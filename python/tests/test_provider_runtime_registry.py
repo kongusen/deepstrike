@@ -1,6 +1,8 @@
 """P-07 contracts for data-driven provider construction and OpenAI-chat dialects."""
 from __future__ import annotations
 
+import pytest
+
 from deepstrike._kernel import Message, ToolSchema
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.factories import deepseek, gemini, glm, kimi, minimax, qwen
@@ -10,6 +12,7 @@ from deepstrike.providers.runtime_registry import (
     create_provider,
     resolve_runtime_profile,
 )
+from deepstrike.providers.model_registry import model_registry
 
 
 def _tool() -> ToolSchema:
@@ -100,3 +103,62 @@ def test_kimi_cache_helper_remains_available_from_table_constructed_provider() -
         {"context_cache_id": "cache-1"},
     )
     assert messages[0] == {"role": "cache", "content": "cache_id=cache-1"}
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "endpoint_id", "protocol"),
+    [
+        ("deepseek", "deepseek.openai", "openai-chat"),
+        ("kimi", "kimi.cn.openai", "openai-chat"),
+        ("qwen", "qwen.cn.openai", "openai-chat"),
+        ("glm", "glm.cn.openai", "openai-chat"),
+        ("minimax", "minimax.anthropic", "anthropic-messages"),
+    ],
+)
+def test_spc_020_default_routing_is_consistent_across_registries(
+    provider_id: str,
+    endpoint_id: str,
+    protocol: str,
+) -> None:
+    registration = model_registry.resolve(f"{provider_id}/fixture-model")
+    runtime, _, _ = resolve_runtime_profile(provider_id, model="fixture-model", protocol=None)
+
+    assert registration is not None
+    assert registration.default_endpoint_id == endpoint_id
+    assert runtime.endpoint_id == endpoint_id
+    assert runtime.protocol == protocol
+
+
+@pytest.mark.parametrize(
+    ("provider_id", "protocol"),
+    [
+        ("deepseek", "openai-chat"),
+        ("kimi", "openai-chat"),
+        ("qwen", "openai-chat"),
+        ("glm", "openai-chat"),
+        ("minimax", "anthropic-messages"),
+    ],
+)
+def test_spc_020_direct_factory_uses_provider_default_protocol(provider_id: str, protocol: str) -> None:
+    provider = create_provider(provider_id, api_key="key", model="fixture-model", protocol=None)
+    assert provider._resolved_runtime.protocol == protocol
+
+
+def test_spc_020_explicit_compatible_protocols_remain_available() -> None:
+    assert create_provider(
+        "deepseek", api_key="key", model="fixture-model", protocol="anthropic"
+    ).descriptor().protocol == "anthropic-messages"
+    assert create_provider(
+        "minimax", api_key="key", model="fixture-model", protocol="openai"
+    ).descriptor().protocol == "openai-chat"
+
+
+def test_spc_021_custom_base_url_does_not_inherit_cache_evidence() -> None:
+    provider = create_provider(
+        "deepseek",
+        api_key="key",
+        model="deepseek-chat",
+        protocol=None,
+        base_url="https://proxy.invalid/v1",
+    )
+    assert provider._resolved_runtime.effective_capabilities.prompt_caching.state == "unknown"

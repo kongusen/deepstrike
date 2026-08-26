@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 from openai import AsyncOpenAI
 from deepstrike._kernel import Message, ToolCall, ToolSchema
@@ -35,6 +36,16 @@ from .protocol_adapter import AdapterOutput, ProtocolResponseError
 from deepstrike.types.content import CanonicalAdapterInput, normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
+
+_OFFICIAL_OPENAI_RESPONSES_BASE_URL = "https://api.openai.com/v1"
+
+# Params the official input-token count endpoint accepts (SDK ``input_token_count_params``).
+# The create plan is projected onto this set — remaining keys (max_output_tokens, store, …)
+# cannot change the input token count — rather than maintaining a second serialization.
+_COUNT_PARAM_KEYS = (
+    "conversation", "input", "instructions", "model", "parallel_tool_calls",
+    "previous_response_id", "reasoning", "text", "tool_choice", "tools", "truncation",
+)
 
 _OPENAI_RESPONSES_POLICIES: dict[str, RuntimePolicy] = {
     "gpt-5.5":      RuntimePolicy(max_turns=60),
@@ -358,6 +369,7 @@ class OpenAIResponsesProvider:
         self._retry = retry_config or RetryConfig()
         self._circuit = CircuitBreaker(self._retry)
         self._base_url = base_url.rstrip("/")
+        self._direct_native_token_counting = self._base_url == _OFFICIAL_OPENAI_RESPONSES_BASE_URL
         client_kwargs: dict[str, Any] = {"api_key": api_key, "base_url": base_url}
         if auth_mode == "bearer":
             client_kwargs["default_headers"] = {"Authorization": f"Bearer {api_key}"}
@@ -428,6 +440,38 @@ class OpenAIResponsesProvider:
                     await asyncio.sleep(self._retry.base_delay * (2 ** attempt))
 
         raise last_exc or RuntimeError("Complete failed")
+
+    async def count_tokens(
+        self,
+        context: RenderedContext,
+        tools: list[ToolSchema],
+        extensions: dict | None = None,
+        state: ProviderRunState | None = None,
+    ):
+        """spc_024-05: native preflight via the official Responses input-token count endpoint.
+
+        Counts the exact create request plan (stateful ``previous_response_id`` continuation
+        included), projected onto the count endpoint's accepted params. Native measurement
+        belongs to the verified official endpoint, not the wire protocol."""
+        runtime = getattr(self, "_resolved_runtime", None)
+        enabled = (
+            runtime.effective_capabilities.native_token_counting.state == "supported"
+            if runtime is not None
+            else self._direct_native_token_counting
+        )
+        input_tokens = getattr(self._client.responses, "input_tokens", None)
+        if not enabled or not hasattr(input_tokens, "count"):
+            raise RuntimeError("Native token counting is unavailable on this OpenAI-compatible endpoint")
+        run_state = self._as_run_state(state)
+        adapter_input = self._canonical_input(context, tools, extensions)
+        plan = self._responses.build_request(adapter_input, run_state)
+        params = {key: plan.params[key] for key in _COUNT_PARAM_KEYS if key in plan.params}
+        response = await input_tokens.count(**params)
+        return SimpleNamespace(
+            input_tokens=response.input_tokens,
+            source={"kind": "native", "provider": "openai"},
+            confidence="exact",
+        )
 
     async def stream(
         self,

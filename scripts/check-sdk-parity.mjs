@@ -232,7 +232,11 @@ const CHECKS = [
   {
     id: "core-workflow-checkpoint",
     lang: "core",
-    path: "crates/deepstrike-core/src/runtime/kernel/wire/driver.rs",
+    paths: [
+      "crates/deepstrike-core/src/runtime/kernel/wire/driver.rs",
+      "crates/deepstrike-core/src/runtime/kernel/wire/driver/projection.rs",
+      "crates/deepstrike-core/src/runtime/kernel/wire/driver/tests.rs",
+    ],
     patterns: ["restore_checkpoint_workflow", "workflow_checkpoint_nodes", "an_active_workflow_and_its_child_restore_to_the_same_completion"],
   },
   {
@@ -354,16 +358,17 @@ const FORBIDDEN = [
 
 let failed = 0
 for (const check of CHECKS) {
-  const file = join(root, check.path)
-  if (!existsSync(file)) {
-    console.error(`FAIL ${check.id}: missing file ${check.path}`)
+  const paths = check.paths ?? [check.path]
+  const missingPaths = paths.filter(path => !existsSync(join(root, path)))
+  if (missingPaths.length > 0) {
+    console.error(`FAIL ${check.id}: missing file(s) ${missingPaths.join(", ")}`)
     failed += 1
     continue
   }
-  const text = readFileSync(file, "utf8")
+  const text = paths.map(path => readFileSync(join(root, path), "utf8")).join("\n")
   const missing = check.patterns.filter(p => !text.includes(p))
   if (missing.length) {
-    console.error(`FAIL ${check.id} (${check.lang}): missing ${missing.join(", ")} in ${check.path}`)
+    console.error(`FAIL ${check.id} (${check.lang}): missing ${missing.join(", ")} in ${paths.join(", ")}`)
     failed += 1
   } else {
     console.log(`OK   ${check.id} (${check.lang})`)

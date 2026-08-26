@@ -47,7 +47,34 @@ describe("P0-C tool-gating telemetry (onTurnMetrics)", () => {
     expect(m.inputTokens).toBe(1000)
     expect(m.cacheReadTokens).toBe(900)
     expect(m.cacheCreationTokens).toBe(100)
+    expect(m.cacheTelemetryStatus).toBe("measured")
     expect(m.activeSkill).toBeUndefined()
+  })
+
+  it("does not report missing cache telemetry as a measured zero", async () => {
+    const provider: LLMProvider = {
+      async complete(): Promise<Message> {
+        return { role: "assistant", content: "done" }
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        yield {
+          type: "usage",
+          totalTokens: 110,
+          inputTokens: 100,
+          outputTokens: 10,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+        } as StreamEvent
+        yield { type: "text_delta", delta: "done" }
+      },
+    }
+    const metrics: TurnMetrics[] = []
+    const { runner } = createRunner(provider, [], { onTurnMetrics: metric => metrics.push(metric) })
+    await collectText(runner.run({ sessionId: "metrics-cache-unavailable", goal: "go" }))
+
+    expect(metrics[0].cacheReadTokens).toBe(0)
+    expect(metrics[0].cacheTelemetryStatus).toBe("unavailable")
+    expect(metrics[0].cacheTelemetrySource).toBeUndefined()
   })
 
   it("tracks activeSkill across turns for dwell measurement", async () => {
