@@ -330,6 +330,8 @@ class OpenAIResponsesAdapter:
                     input_tokens=self._number(usage, "input_tokens") or 0,
                     output_tokens=self._number(usage, "output_tokens") or 0,
                     cache_read_input_tokens=self._number(details, "cached_tokens") if details is not None else 0,
+                    cache_telemetry_status=provider_usage.cache_telemetry_status if provider_usage else None,
+                    cache_telemetry_source=provider_usage.cache_telemetry_source if provider_usage else None,
                     stop_reason=canonicalize_stop_reason(raw_stop_reason),
                     raw_stop_reason=raw_stop_reason,
                     provider_usage=provider_usage,

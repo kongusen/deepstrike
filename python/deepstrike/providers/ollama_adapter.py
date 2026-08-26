@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,8 +19,14 @@ def _number(raw: dict, field: str) -> int | None:
     value = raw.get(field)
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-        raise ProtocolResponseError("ollama-chat", f"{field} must be a non-negative number")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+        or not float(value).is_integer()
+    ):
+        raise ProtocolResponseError("ollama-chat", f"{field} must be a non-negative finite integer")
     return int(value)
 
 

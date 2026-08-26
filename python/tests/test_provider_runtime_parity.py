@@ -166,7 +166,38 @@ def test_normalize_usage_openai_shape() -> None:
         output_tokens=5,
         cache_read_input_tokens=3,
         cache_creation_input_tokens=0,
+        cache_telemetry_status="measured",
+        cache_telemetry_source="openai_prompt_details",
     )
+
+
+def test_normalize_usage_deepseek_cache_does_not_double_count_prompt() -> None:
+    usage = normalize_usage({
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "prompt_cache_hit_tokens": 80,
+        "prompt_cache_miss_tokens": 20,
+    })
+    assert usage == ProviderUsage(
+        input_tokens=100,
+        output_tokens=10,
+        cache_read_input_tokens=80,
+        cache_telemetry_status="measured",
+        cache_telemetry_source="deepseek_prompt_cache",
+    )
+
+
+def test_normalize_usage_distinguishes_measured_zero_from_unavailable() -> None:
+    measured = normalize_usage({
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "prompt_tokens_details": {"cached_tokens": 0},
+    })
+    unavailable = normalize_usage({"prompt_tokens": 100, "completion_tokens": 10})
+    assert measured is not None and measured.cache_telemetry_status == "measured"
+    assert measured.cache_telemetry_source == "openai_prompt_details"
+    assert unavailable is not None and unavailable.cache_telemetry_status == "unavailable"
+    assert unavailable.cache_telemetry_source is None
 
 
 def test_normalize_usage_anthropic_shape() -> None:
@@ -178,10 +209,27 @@ def test_normalize_usage_anthropic_shape() -> None:
     }
     usage = normalize_usage(raw)
     assert usage == ProviderUsage(
-        input_tokens=20,
+        input_tokens=26,
         output_tokens=7,
         cache_read_input_tokens=4,
         cache_creation_input_tokens=2,
+        cache_telemetry_status="measured",
+        cache_telemetry_source="anthropic_usage",
+    )
+
+
+def test_normalize_usage_gemini_cache_is_a_prompt_subset() -> None:
+    usage = normalize_usage({
+        "prompt_token_count": 900,
+        "candidates_token_count": 60,
+        "cached_content_token_count": 200,
+    })
+    assert usage == ProviderUsage(
+        input_tokens=900,
+        output_tokens=60,
+        cache_read_input_tokens=200,
+        cache_telemetry_status="measured",
+        cache_telemetry_source="gemini_usage",
     )
 
 
@@ -195,6 +243,32 @@ def test_normalize_usage_rejects_negative() -> None:
     with pytest.raises(ProviderError) as exc:
         normalize_usage({"input_tokens": -1, "output_tokens": 0})
     assert exc.value.kind == "protocol"
+
+
+@pytest.mark.parametrize("value", [1.5, float("inf"), float("nan")])
+def test_normalize_usage_rejects_non_integer_or_non_finite_counts(value: float) -> None:
+    with pytest.raises(ProviderError) as exc:
+        normalize_usage({"input_tokens": value, "output_tokens": 0})
+    assert exc.value.kind == "protocol"
+
+
+def test_normalize_usage_rejects_cache_subset_larger_than_prompt() -> None:
+    with pytest.raises(ProviderError, match="cache token subsets"):
+        normalize_usage({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "prompt_tokens_details": {"cached_tokens": 101},
+        })
+
+
+def test_normalize_usage_rejects_inconsistent_deepseek_hit_miss_total() -> None:
+    with pytest.raises(ProviderError, match="hit and miss"):
+        normalize_usage({
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "prompt_cache_hit_tokens": 80,
+            "prompt_cache_miss_tokens": 30,
+        })
 
 
 def test_normalize_usage_reasoning_tokens() -> None:

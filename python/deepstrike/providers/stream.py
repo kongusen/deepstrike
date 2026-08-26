@@ -70,8 +70,9 @@ class UsageEvent:
     # Cost breakdown (subset of input_tokens): reads bill ~0.1x, writes ~1.25x.
     cache_read_input_tokens: int = 0
     cache_creation_input_tokens: int = 0
-    # I1: pro-rata per-slot attribution of cache_read_input_tokens (Anthropic only). None when the
-    # provider doesn't honor cache_control. Shape: {"system": int?, "tools": int?, "messages": int?}.
+    cache_telemetry_status: str | None = None
+    cache_telemetry_source: str | None = None
+    # Reserved for provider-authoritative per-slot data. DeepStrike does not estimate this field.
     cache_read_input_tokens_by_slot: "dict | None" = None
     # Provider stop reason — "max_tokens" (Anthropic) / "length" (OpenAI) flag an output-cap
     # truncation that drives the kernel's max-output-tokens recovery. None when not reported.

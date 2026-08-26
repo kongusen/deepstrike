@@ -147,10 +147,9 @@ export interface UsageEvent extends StreamEvent {
   cacheReadInputTokens?: number
   /** Prompt tokens written to cache this request (billed ~1.25x). Subset of inputTokens. */
   cacheCreationInputTokens?: number
-  /** I1: per-slot pro-rata attribution of `cacheReadInputTokens`. Estimated, not authoritative —
-   *  Anthropic returns a single cache-read total, so the SDK divides it evenly across the slots
-   *  that carried a `cache_control` breakpoint on the request. Missing when the provider doesn't
-   *  honor `cache_control` (OpenAI-family auto-cache) or when no breakpoints were placed. */
+  cacheTelemetryStatus?: CacheTelemetryStatus
+  cacheTelemetrySource?: CacheTelemetrySource
+  /** Reserved for provider-authoritative per-slot data. DeepStrike does not estimate this field. */
   cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number }
   /** Canonical provider stop reason. `max_tokens` drives the kernel's output-cap recovery. */
   stopReason?: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "content_filter" | "other"
@@ -337,12 +336,21 @@ export interface ProviderUsage {
   outputTokens: number
   cacheReadInputTokens?: number
   cacheCreationInputTokens?: number
+  cacheTelemetryStatus?: CacheTelemetryStatus
+  cacheTelemetrySource?: CacheTelemetrySource
   /** Output tokens spent on hidden reasoning (OpenAI `completion_tokens_details.reasoning_tokens` /
    *  Responses `output_tokens_details.reasoning_tokens`). A SUBSET of `outputTokens`, not additional
    *  — vendors that don't report a separate count (Anthropic, Gemini via this SDK) leave this unset
    *  rather than guessing. */
   reasoningTokens?: number
 }
+
+export type CacheTelemetryStatus = "measured" | "unavailable"
+export type CacheTelemetrySource =
+  | "anthropic_usage"
+  | "openai_prompt_details"
+  | "deepseek_prompt_cache"
+  | "gemini_usage"
 
 /** Node-side mirror of the reserved Rust `context::measurement` types — where a
  *  preflight token count came from. Field names/shape intentionally match the Rust

@@ -25,6 +25,8 @@ describe("UsageNormalizer — OpenAI wire family (Chat Completions + Responses)"
       inputTokens: 1000,
       outputTokens: 250,
       cacheReadInputTokens: 400,
+      cacheTelemetryStatus: "measured",
+      cacheTelemetrySource: "openai_prompt_details",
       reasoningTokens: 80,
     })
   })
@@ -37,16 +39,62 @@ describe("UsageNormalizer — OpenAI wire family (Chat Completions + Responses)"
       input_tokens_details: { cached_tokens: 0 },
       output_tokens_details: { reasoning_tokens: 40 },
     }
-    expect(normalizeOpenAIUsage(usage)).toEqual({ inputTokens: 500, outputTokens: 120, reasoningTokens: 40 })
+    expect(normalizeOpenAIUsage(usage)).toEqual({
+      inputTokens: 500,
+      outputTokens: 120,
+      reasoningTokens: 40,
+      cacheTelemetryStatus: "measured",
+      cacheTelemetrySource: "openai_prompt_details",
+    })
   })
 
-  it("normalizes DeepSeek's prompt_cache_hit_tokens variant via the shared helper", () => {
-    const usage = { prompt_tokens: 800, completion_tokens: 100, prompt_cache_hit_tokens: 300 }
-    expect(normalizeOpenAIUsage(usage)?.cacheReadInputTokens).toBe(300)
+  it("normalizes DeepSeek hit/miss fields without double-counting the prompt", () => {
+    const usage = {
+      prompt_tokens: 100,
+      completion_tokens: 10,
+      prompt_cache_hit_tokens: 80,
+      prompt_cache_miss_tokens: 20,
+    }
+    expect(normalizeOpenAIUsage(usage)).toEqual({
+      inputTokens: 100,
+      outputTokens: 10,
+      cacheReadInputTokens: 80,
+      cacheTelemetryStatus: "measured",
+      cacheTelemetrySource: "deepseek_prompt_cache",
+    })
+  })
+
+  it("distinguishes measured zero from unavailable cache telemetry", () => {
+    expect(normalizeOpenAIUsage({
+      prompt_tokens: 100,
+      completion_tokens: 10,
+      prompt_tokens_details: { cached_tokens: 0 },
+    })).toMatchObject({
+      cacheTelemetryStatus: "measured",
+      cacheTelemetrySource: "openai_prompt_details",
+    })
+    expect(normalizeOpenAIUsage({ prompt_tokens: 100, completion_tokens: 10 })).toMatchObject({
+      cacheTelemetryStatus: "unavailable",
+    })
   })
 
   it("handles a missing/malformed usage object without throwing", () => {
     expect(normalizeOpenAIUsage(undefined)).toBeUndefined()
+  })
+
+  it("rejects invalid counts and inconsistent cache subsets", () => {
+    expect(() => normalizeOpenAIUsage({ prompt_tokens: 1.5, completion_tokens: 0 })).toThrow(/integer/)
+    expect(() => normalizeOpenAIUsage({
+      prompt_tokens: 100,
+      completion_tokens: 10,
+      prompt_tokens_details: { cached_tokens: 101 },
+    })).toThrow(/cache token subsets/)
+    expect(() => normalizeOpenAIUsage({
+      prompt_tokens: 100,
+      completion_tokens: 10,
+      prompt_cache_hit_tokens: 80,
+      prompt_cache_miss_tokens: 30,
+    })).toThrow(/hit and miss/)
   })
 })
 
@@ -63,6 +111,8 @@ describe("UsageNormalizer — Anthropic wire family", () => {
       outputTokens: 150,
       cacheReadInputTokens: 500,
       cacheCreationInputTokens: 100,
+      cacheTelemetryStatus: "measured",
+      cacheTelemetrySource: "anthropic_usage",
     })
   })
 
@@ -74,13 +124,31 @@ describe("UsageNormalizer — Anthropic wire family", () => {
 describe("UsageNormalizer — Gemini", () => {
   it("normalizes promptTokenCount/candidatesTokenCount/cachedContentTokenCount", () => {
     const usage = { promptTokenCount: 900, candidatesTokenCount: 60, totalTokenCount: 960, cachedContentTokenCount: 200 }
-    expect(normalizeGeminiUsage(usage)).toEqual({ inputTokens: 900, outputTokens: 60, cacheReadInputTokens: 200 })
+    expect(normalizeGeminiUsage(usage)).toEqual({
+      inputTokens: 900,
+      outputTokens: 60,
+      cacheReadInputTokens: 200,
+      cacheTelemetryStatus: "measured",
+      cacheTelemetrySource: "gemini_usage",
+    })
+  })
+
+  it("rejects cached content larger than the full prompt", () => {
+    expect(() => normalizeGeminiUsage({
+      promptTokenCount: 100,
+      candidatesTokenCount: 10,
+      cachedContentTokenCount: 101,
+    })).toThrow(/cache token subsets/)
   })
 })
 
 describe("UsageNormalizer — Ollama (first-ever usage extraction)", () => {
   it("normalizes prompt_eval_count/eval_count with no cache or reasoning concept", () => {
     const chunk = { done: true, prompt_eval_count: 300, eval_count: 45 }
-    expect(normalizeOllamaUsage(chunk)).toEqual({ inputTokens: 300, outputTokens: 45 })
+    expect(normalizeOllamaUsage(chunk)).toEqual({
+      inputTokens: 300,
+      outputTokens: 45,
+      cacheTelemetryStatus: "unavailable",
+    })
   })
 })

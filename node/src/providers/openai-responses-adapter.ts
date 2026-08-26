@@ -16,6 +16,7 @@ import type {
 } from "./content-normalization.js"
 import { normalizeCanonicalContext } from "./content-normalization.js"
 import { normalizeToolCall, UnsupportedModalityError } from "./base.js"
+import { normalizeOpenAIUsage } from "./usage-normalizer.js"
 import {
   type AdapterDecodeInput,
   type AdapterOutput,
@@ -46,8 +47,8 @@ export interface OpenAIResponsesStreamState {
 function numberField(raw: Record<string, unknown>, field: string): number | undefined {
   const value = raw[field]
   if (value === undefined || value === null) return undefined
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new ProtocolResponseError("openai-responses", `usage.${field} must be a non-negative finite number`)
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new ProtocolResponseError("openai-responses", `usage.${field} must be a non-negative safe integer`)
   }
   return value
 }
@@ -319,6 +320,12 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
             ...(inputTokens ? { inputTokens } : {}),
             ...(outputTokens ? { outputTokens } : {}),
             ...(cacheReadInputTokens ? { cacheReadInputTokens } : {}),
+            ...(providerUsage?.cacheTelemetryStatus
+              ? { cacheTelemetryStatus: providerUsage.cacheTelemetryStatus }
+              : {}),
+            ...(providerUsage?.cacheTelemetrySource
+              ? { cacheTelemetrySource: providerUsage.cacheTelemetrySource }
+              : {}),
             ...(providerUsage && (inputTokens || outputTokens) ? { providerUsage } : {}),
             ...(stopReason ? { stopReason } : {}),
             ...(rawStopReason ? { rawStopReason } : {}),
@@ -347,15 +354,9 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
       throw new ProtocolResponseError("openai-responses", "usage.output_tokens_details must be an object")
     }
     cacheReadTokens(usage)
-    const reasoningTokens = outputDetails
-      ? numberField(outputDetails as Record<string, unknown>, "reasoning_tokens")
-      : undefined
+    if (outputDetails) numberField(outputDetails as Record<string, unknown>, "reasoning_tokens")
     if (inputTokens === undefined && outputTokens === undefined) return undefined
-    return {
-      inputTokens: inputTokens ?? 0,
-      outputTokens: outputTokens ?? 0,
-      ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
-    }
+    return normalizeOpenAIUsage(usage)
   }
 
   normalizeStopReason(raw: string | undefined): CanonicalStopReason | undefined {

@@ -52,8 +52,8 @@ export function omitExtensionKeys(
 
 /**
  * Cached-prompt-token count from an OpenAI-compatible usage object. Covers the
- * standard `prompt_tokens_details.cached_tokens` (OpenAI, Qwen, MiniMax, GLM,
- * Kimi) and DeepSeek's `prompt_cache_hit_tokens`. These caches bill reads only,
+ * Chat `prompt_tokens_details.cached_tokens`, Responses
+ * `input_tokens_details.cached_tokens`, and DeepSeek's `prompt_cache_hit_tokens`. These caches bill reads only,
  * so there is no separate cache-creation count. The figure is a subset of
  * `prompt_tokens` (the full prompt), surfaced for cost visibility — it must not
  * be subtracted from the input count the kernel uses for context accounting.
@@ -61,10 +61,12 @@ export function omitExtensionKeys(
 export function openAICachedPromptTokens(usage: unknown): number {
   if (!usage || typeof usage !== "object") return 0
   const u = usage as Record<string, unknown>
-  const details = u.prompt_tokens_details as Record<string, unknown> | undefined
-  const standard = typeof details?.cached_tokens === "number" ? details.cached_tokens : 0
+  const promptDetails = u.prompt_tokens_details as Record<string, unknown> | undefined
+  const inputDetails = u.input_tokens_details as Record<string, unknown> | undefined
+  const standard = typeof promptDetails?.cached_tokens === "number" ? promptDetails.cached_tokens : 0
+  const responses = typeof inputDetails?.cached_tokens === "number" ? inputDetails.cached_tokens : 0
   const deepseek = typeof u.prompt_cache_hit_tokens === "number" ? u.prompt_cache_hit_tokens : 0
-  return Math.max(standard, deepseek)
+  return Math.max(standard, responses, deepseek)
 }
 
 /**

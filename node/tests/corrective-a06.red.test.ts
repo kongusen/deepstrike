@@ -141,7 +141,15 @@ describe("SPC-013 A-06 OpenAI Responses ProtocolAdapter", () => {
         inputTokens: 10,
         outputTokens: 4,
         cacheReadInputTokens: 3,
-        providerUsage: { inputTokens: 10, outputTokens: 4 },
+        cacheTelemetryStatus: "measured",
+        cacheTelemetrySource: "openai_prompt_details",
+        providerUsage: {
+          inputTokens: 10,
+          outputTokens: 4,
+          cacheReadInputTokens: 3,
+          cacheTelemetryStatus: "measured",
+          cacheTelemetrySource: "openai_prompt_details",
+        },
       },
     ])
     expect(outputs.at(-1)?.runStatePatch).toEqual({

@@ -102,10 +102,10 @@ function requestExtensions(
 function validCount(raw: Record<string, unknown>, field: string): number | undefined {
   const value = raw[field]
   if (value === undefined) return undefined
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new ProtocolResponseError(
       "ollama-chat",
-      `${field} must be a non-negative finite number`,
+      `${field} must be a non-negative safe integer`,
     )
   }
   return value

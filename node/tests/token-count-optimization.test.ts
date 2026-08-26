@@ -52,7 +52,12 @@ describe("Token Count Optimization", () => {
         outputTokens: 20,
         cacheReadInputTokens: 0,
         cacheCreationInputTokens: 0,
-        providerUsage: { inputTokens: 100, outputTokens: 20 },
+        cacheTelemetryStatus: "unavailable",
+        providerUsage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          cacheTelemetryStatus: "unavailable",
+        },
       })
     })
 
@@ -84,10 +89,7 @@ describe("Token Count Optimization", () => {
       for await (const event of provider.stream(mockContext, [])) events.push(event)
       const usage = events.filter(e => e.type === "usage").at(-1)
       // inputTokens is the FULL prompt: 200 uncached + 5000 read + 300 write.
-      // I1: cacheReadInputTokensBySlot may also be present when cache_control breakpoints land on
-      // any slot; this test exercises the default strategy with system_stable/knowledge so system
-      // and (rolling) message breakpoints both fire — `toMatchObject` keeps the assertion on the
-      // headline fields stable across that additive shape.
+      // The provider reports aggregate cache usage only; no slot attribution is fabricated.
       expect(usage).toMatchObject({
         type: "usage",
         totalTokens: 5540, // 5500 prompt + 40 output
@@ -140,7 +142,12 @@ describe("Token Count Optimization", () => {
         totalTokens: 65,
         inputTokens: 50,
         outputTokens: 15,
-        providerUsage: { inputTokens: 50, outputTokens: 15 },
+        cacheTelemetryStatus: "unavailable",
+        providerUsage: {
+          inputTokens: 50,
+          outputTokens: 15,
+          cacheTelemetryStatus: "unavailable",
+        },
       })
     })
   })
@@ -187,7 +194,8 @@ describe("Token Count Optimization", () => {
         totalTokens: 105,
         inputTokens: 80,
         outputTokens: 25,
-        providerUsage: { inputTokens: 80, outputTokens: 25 },
+        cacheTelemetryStatus: "unavailable",
+        providerUsage: { inputTokens: 80, outputTokens: 25, cacheTelemetryStatus: "unavailable" },
       })
     })
   })
@@ -233,7 +241,8 @@ describe("Token Count Optimization", () => {
         totalTokens: 120,
         inputTokens: 90,
         outputTokens: 30,
-        providerUsage: { inputTokens: 90, outputTokens: 30 },
+        cacheTelemetryStatus: "unavailable",
+        providerUsage: { inputTokens: 90, outputTokens: 30, cacheTelemetryStatus: "unavailable" },
       })
     })
   })

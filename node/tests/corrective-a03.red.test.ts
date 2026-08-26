@@ -160,7 +160,15 @@ describe("SPC-013 A-03 Gemini ProtocolAdapter lifecycle", () => {
           inputTokens: 80,
           outputTokens: 25,
           cacheReadInputTokens: 60,
-          providerUsage: { inputTokens: 80, outputTokens: 25, cacheReadInputTokens: 60 },
+          cacheTelemetryStatus: "measured",
+          cacheTelemetrySource: "gemini_usage",
+          providerUsage: {
+            inputTokens: 80,
+            outputTokens: 25,
+            cacheReadInputTokens: 60,
+            cacheTelemetryStatus: "measured",
+            cacheTelemetrySource: "gemini_usage",
+          },
           stopReason: "max_tokens",
           rawStopReason: "MAX_TOKENS",
         },
@@ -174,6 +182,15 @@ describe("SPC-013 A-03 Gemini ProtocolAdapter lifecycle", () => {
       promptTokenCount: "80",
       candidatesTokenCount: 25,
     })).toThrow(/usage.*promptTokenCount/i)
+    expect(() => adapter.normalizeUsage({
+      promptTokenCount: 1.5,
+      candidatesTokenCount: 0,
+    })).toThrow(/integer/i)
+    expect(() => adapter.normalizeUsage({
+      promptTokenCount: 100,
+      candidatesTokenCount: 10,
+      cachedContentTokenCount: 101,
+    })).toThrow(/cache token subsets/i)
   })
 
   it("keeps the adapter Registry-independent and binds one resolved runtime into transport", () => {

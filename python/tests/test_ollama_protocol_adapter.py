@@ -75,3 +75,5 @@ def test_ndjson_decoder_keeps_an_unterminated_final_record_and_skips_malformed_l
 def test_adapter_rejects_malformed_usage_shape() -> None:
     with pytest.raises(ValueError, match="prompt_eval_count"):
         OllamaAdapter().normalize_usage({"prompt_eval_count": "12"})
+    with pytest.raises(ValueError, match="integer"):
+        OllamaAdapter().normalize_usage({"prompt_eval_count": 1.5})

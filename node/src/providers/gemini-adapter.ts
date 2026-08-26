@@ -23,6 +23,7 @@ import type {
 } from "./content-normalization.js"
 import { projectToolOutputToText } from "./content-normalization.js"
 import { normalizeToolCall } from "./base.js"
+import { normalizeGeminiUsage } from "./usage-normalizer.js"
 import {
   type AdapterDecodeInput,
   type AdapterOutput,
@@ -207,8 +208,8 @@ function numberField(
 ): number | undefined {
   const value = raw[field]
   if (value === undefined) return undefined
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new ProtocolResponseError("gemini", `usage.${field} must be a non-negative finite number`)
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new ProtocolResponseError("gemini", `usage.${field} must be a non-negative safe integer`)
   }
   return value
 }
@@ -295,6 +296,8 @@ export class GeminiAdapter implements ProtocolAdapter<
         ...(usage.cacheReadInputTokens
           ? { cacheReadInputTokens: usage.cacheReadInputTokens }
           : {}),
+        ...(usage.cacheTelemetryStatus ? { cacheTelemetryStatus: usage.cacheTelemetryStatus } : {}),
+        ...(usage.cacheTelemetrySource ? { cacheTelemetrySource: usage.cacheTelemetrySource } : {}),
         providerUsage: usage,
         ...(stopReason ? { stopReason } : {}),
         ...(rawStopReason ? { rawStopReason } : {}),
@@ -309,20 +312,8 @@ export class GeminiAdapter implements ProtocolAdapter<
       throw new ProtocolResponseError("gemini", "usage must be an object")
     }
     const usage = raw as Record<string, unknown>
-    const inputTokens = numberField(usage, "promptTokenCount")
-    const outputTokens = numberField(usage, "candidatesTokenCount")
     numberField(usage, "totalTokenCount")
-    const cacheReadInputTokens = numberField(usage, "cachedContentTokenCount")
-    if (
-      inputTokens === undefined
-      && outputTokens === undefined
-      && cacheReadInputTokens === undefined
-    ) return undefined
-    return {
-      inputTokens: inputTokens ?? 0,
-      outputTokens: outputTokens ?? 0,
-      ...(cacheReadInputTokens ? { cacheReadInputTokens } : {}),
-    }
+    return normalizeGeminiUsage(usage)
   }
 
   normalizeStopReason(raw: string | undefined): CanonicalStopReason | undefined {

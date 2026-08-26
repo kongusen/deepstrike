@@ -1,4 +1,5 @@
 import pytest
+import deepstrike.runtime.runner as runtime_runner_module
 
 from deepstrike._kernel import ToolCall, ToolResult
 from deepstrike.providers.base import RenderedContext
@@ -103,6 +104,47 @@ async def test_run_session_continuity():
   if getattr(ctx, "state_turn", None) is not None:
       all_text.append(ctx.state_turn.content)
   assert any("What is my name?" in t for t in all_text)
+
+
+@pytest.mark.asyncio
+async def test_provider_usage_keeps_prompt_tokens_out_of_assistant_history(monkeypatch):
+  class UsageProvider:
+    async def complete(self, context, tools, extensions=None):
+      raise NotImplementedError
+
+    async def stream(self, context, tools, extensions=None, state=None):
+      yield UsageEvent(total_tokens=1040, input_tokens=1000, output_tokens=40)
+      yield TextDelta(delta="done")
+
+  provider_results: list[dict] = []
+  original_action_host = runtime_runner_module.action_host
+
+  async def capture_action_host(runtime, pending, event):
+    if event.get("kind") == "provider_result":
+      provider_results.append(dict(event))
+    return await original_action_host(runtime, pending, event)
+
+  monkeypatch.setattr(runtime_runner_module, "action_host", capture_action_host)
+  session_log = InMemorySessionLog()
+  runner = RuntimeRunner(RuntimeOptions(
+    provider=UsageProvider(),
+    session_log=session_log,
+    execution_plane=LocalExecutionPlane(),
+    max_tokens=2048,
+  ))
+
+  assert await collect_text(runner.run(session_id="provider-usage", goal="answer")) == "done"
+  completed = [
+    entry.event for entry in await session_log.read("provider-usage")
+    if entry.event.get("kind") == "llm_completed"
+  ]
+
+  assert len(provider_results) == 1
+  assert provider_results[0]["message"]["token_count"] == 40
+  assert provider_results[0]["observed_input_tokens"] == 1000
+  assert provider_results[0]["observed_output_tokens"] == 40
+  assert len(completed) == 1
+  assert completed[0]["token_count"] == 40
 
 
 @pytest.mark.asyncio

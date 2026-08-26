@@ -84,10 +84,14 @@ def test_adapter_finalizes_stream_tool_calls_usage_and_stop_reason() -> None:
         input_tokens=80,
         output_tokens=25,
         cache_read_input_tokens=60,
+        cache_telemetry_status="measured",
+        cache_telemetry_source="gemini_usage",
         stop_reason="max_tokens",
         raw_stop_reason="MAX_TOKENS",
         provider_usage=finished.events[1].provider_usage,
     )
+    assert finished.events[1].provider_usage.cache_telemetry_status == "measured"
+    assert finished.events[1].provider_usage.cache_telemetry_source == "gemini_usage"
 
 
 def test_adapter_rejects_malformed_usage_shape() -> None:
@@ -95,3 +99,13 @@ def test_adapter_rejects_malformed_usage_shape() -> None:
         GeminiAdapter("gemini-2.0-flash").normalize_usage(
             SimpleNamespace(prompt_token_count="80", candidates_token_count=25)
         )
+    with pytest.raises(ValueError, match="integer"):
+        GeminiAdapter("gemini-2.0-flash").normalize_usage(
+            SimpleNamespace(prompt_token_count=1.5, candidates_token_count=0)
+        )
+    with pytest.raises(ValueError, match="cache token subsets"):
+        GeminiAdapter("gemini-2.0-flash").normalize_usage(SimpleNamespace(
+            prompt_token_count=100,
+            candidates_token_count=10,
+            cached_content_token_count=101,
+        ))

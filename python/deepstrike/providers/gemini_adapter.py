@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -22,8 +23,14 @@ def _usage_number(raw: Any, field: str) -> int | None:
     value = _get(raw, field)
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-        raise ProtocolResponseError("gemini", f"usage.{field} must be a non-negative number")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value < 0
+        or not float(value).is_integer()
+    ):
+        raise ProtocolResponseError("gemini", f"usage.{field} must be a non-negative finite integer")
     return int(value)
 
 
@@ -204,6 +211,8 @@ class GeminiAdapter:
                 input_tokens=usage.input_tokens if usage else 0,
                 output_tokens=usage.output_tokens if usage else 0,
                 cache_read_input_tokens=usage.cache_read_input_tokens if usage else 0,
+                cache_telemetry_status=usage.cache_telemetry_status if usage else None,
+                cache_telemetry_source=usage.cache_telemetry_source if usage else None,
                 stop_reason=canonicalize_stop_reason(state.raw_stop_reason),
                 raw_stop_reason=state.raw_stop_reason,
                 provider_usage=usage,
@@ -219,8 +228,14 @@ class GeminiAdapter:
         _usage_number(raw, "total_token_count")
         if input_tokens is None and output_tokens is None and cache_read is None:
             return None
+        full_input = input_tokens or 0
+        if (cache_read or 0) > full_input:
+            raise ProtocolResponseError("gemini", "cache token subsets cannot exceed input tokens")
+        measured = _get(raw, "cached_content_token_count") is not None
         return ProviderUsage(
-            input_tokens=input_tokens or 0,
+            input_tokens=full_input,
             output_tokens=output_tokens or 0,
             cache_read_input_tokens=cache_read or 0,
+            cache_telemetry_status="measured" if measured else "unavailable",
+            cache_telemetry_source="gemini_usage" if measured else None,
         )

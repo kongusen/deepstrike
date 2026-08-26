@@ -281,8 +281,8 @@ function estimateCacheRead(
 function numeric(raw: Record<string, unknown>, field: string): number | undefined {
   const value = raw[field]
   if (value === undefined || value === null) return undefined
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
-    throw new ProtocolResponseError("anthropic-messages", `usage.${field} is invalid`)
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new ProtocolResponseError("anthropic-messages", `usage.${field} must be a non-negative safe integer`)
   }
   return value
 }

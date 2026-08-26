@@ -2203,6 +2203,7 @@ class RuntimeRunner:
               pass  # don't break the run if the context can't be cloned
         turn_tokens = 0
         turn_input_tokens = 0
+        turn_output_tokens = 0
         turn_cache_read_tokens = 0
         turn_cache_creation_tokens = 0
         turn_cache_read_by_slot = None
@@ -2279,6 +2280,7 @@ class RuntimeRunner:
               turn_tokens = getattr(evt, "total_tokens", 0)
               # P0-C: capture input + prompt-cache split for the tool-gating hit-rate baseline.
               turn_input_tokens = getattr(evt, "input_tokens", 0) or 0
+              turn_output_tokens = getattr(evt, "output_tokens", 0) or 0
               turn_cache_read_tokens = getattr(evt, "cache_read_input_tokens", 0) or 0
               turn_cache_creation_tokens = getattr(evt, "cache_creation_input_tokens", 0) or 0
               # I1: per-slot attribution forwarded to TurnMetrics; None on non-Anthropic providers.
@@ -2366,12 +2368,14 @@ class RuntimeRunner:
           canonical_tool_calls = leased
         assistant_message = Message(
           role="assistant", content=final_text, tool_calls=canonical_tool_calls,
-          token_count=turn_tokens or None,
+          token_count=turn_output_tokens or turn_tokens or None,
         )
         provider_event: dict[str, Any] = {
           "kind": "provider_result",
           "effect_id": provider_effect_id,
           "message": message_to_kernel(assistant_message),
+          **({"observed_input_tokens": turn_input_tokens} if turn_input_tokens > 0 else {}),
+          **({"observed_output_tokens": turn_output_tokens} if turn_output_tokens > 0 else {}),
           **({"stop_reason": turn_stop_reason} if turn_stop_reason else {}),
         }
         if skill_dir and skill_dir.is_dir():
@@ -2404,7 +2408,7 @@ class RuntimeRunner:
           turn=runtime.turn(),
           content=final_text,
           tool_calls=final_tool_calls,
-          token_count=turn_tokens or None,
+          token_count=turn_output_tokens or turn_tokens or None,
           provider_replay=provider_replay,
         ))
 

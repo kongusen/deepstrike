@@ -65,6 +65,16 @@ describe("SPC-013 A-09 canonical stop reasons", () => {
     expect(adapter.normalizeStopReason("vendor_future_value")).toBe("other")
   })
 
+  it.each([
+    [new AnthropicMessagesAdapter(), { input_tokens: 1.5 }],
+    [new OpenAIChatAdapter(), { prompt_tokens: 1.5 }],
+    [new OpenAIResponsesAdapter(), { input_tokens: 1.5 }],
+    [new GeminiAdapter(), { promptTokenCount: 1.5 }],
+    [new OllamaAdapter(), { prompt_eval_count: 1.5 }],
+  ])("rejects non-integer provider usage", (adapter, usage) => {
+    expect(() => adapter.normalizeUsage(usage)).toThrow(/integer/i)
+  })
+
   it("emits canonical + raw values for Anthropic", () => {
     const adapter = new AnthropicMessagesAdapter()
     const state = adapter.createStreamState({ input: canonicalInput })

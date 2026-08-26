@@ -110,8 +110,9 @@ def test_adapter_stream_returns_state_patch_without_mutating_input_state_or_sing
         input_tokens=10,
         output_tokens=2,
         cache_read_input_tokens=4,
+        cache_telemetry_status="measured",
+        cache_telemetry_source="openai_prompt_details",
         provider_usage=completed.events[0].provider_usage,
     )]
     assert original_state == before
     assert not hasattr(adapter, "function_calls")
-
