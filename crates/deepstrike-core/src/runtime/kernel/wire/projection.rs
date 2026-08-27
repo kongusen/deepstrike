@@ -289,6 +289,24 @@ mod tests {
     }
 
     #[test]
+    fn canonical_action_serialization_keeps_wire_kind_and_identity() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../../tests/fixtures/abi/multi_effect_step.json"
+        ))
+        .expect("fixture JSON");
+        let step: PlannedStep = serde_json::from_value(fixture["planned_step"].clone())
+            .expect("planned step");
+        let action = project_effect(step.disposition.effects().first().expect("effect"));
+        let value = serde_json::to_value(action).expect("action JSON");
+
+        assert_eq!(value["kind"], "query_memory");
+        assert_eq!(value["effect_id"], "op-contract:step:9:effect:0");
+        assert_eq!(value["causation_input_id"], "in-9");
+        assert_eq!(value["payload"]["requested_k"], 4);
+        assert_eq!(value["payload"]["query"]["text"], "past briefs");
+    }
+
+    #[test]
     fn current_projection_selects_first_effect_and_distinguishes_idle() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../../../tests/fixtures/abi/multi_effect_step.json"
