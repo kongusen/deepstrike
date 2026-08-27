@@ -8,10 +8,9 @@ use serde::{Deserialize, Serialize};
 
 use super::driver::PlannedStep;
 use super::effect::{
-    EffectKind, EffectKindTag, KernelEffect, QueryMemoryEffect, CallProviderEffect,
-    ExecuteToolsEffect, RequestApprovalEffect, SpawnTasksEffect, PreemptTasksEffect,
-    PersistMemoryEffect, ArchivePageOutEffect, LoadPayloadEffect, EvaluateMilestoneEffect,
-    MeasurePromptEffect,
+    ArchivePageOutEffect, CallProviderEffect, EffectKind, EffectKindTag, EvaluateMilestoneEffect,
+    ExecuteToolsEffect, KernelEffect, LoadPayloadEffect, MeasurePromptEffect, PersistMemoryEffect,
+    PreemptTasksEffect, QueryMemoryEffect, RequestApprovalEffect, SpawnTasksEffect,
 };
 use super::scalar::EffectId;
 
@@ -28,17 +27,61 @@ pub struct PublishedEffectRef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CanonicalHostAction {
-    CallProvider { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: CallProviderEffect },
-    ExecuteTools { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: ExecuteToolsEffect },
-    RequestApproval { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: RequestApprovalEffect },
-    SpawnTasks { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: SpawnTasksEffect },
-    PreemptTasks { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: PreemptTasksEffect },
-    PersistMemory { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: PersistMemoryEffect },
-    QueryMemory { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: QueryMemoryEffect },
-    ArchivePageOut { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: ArchivePageOutEffect },
-    LoadPayload { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: LoadPayloadEffect },
-    EvaluateMilestone { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: EvaluateMilestoneEffect },
-    MeasurePrompt { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: MeasurePromptEffect },
+    CallProvider {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: CallProviderEffect,
+    },
+    ExecuteTools {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: ExecuteToolsEffect,
+    },
+    RequestApproval {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: RequestApprovalEffect,
+    },
+    SpawnTasks {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: SpawnTasksEffect,
+    },
+    PreemptTasks {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: PreemptTasksEffect,
+    },
+    PersistMemory {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: PersistMemoryEffect,
+    },
+    QueryMemory {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: QueryMemoryEffect,
+    },
+    ArchivePageOut {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: ArchivePageOutEffect,
+    },
+    LoadPayload {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: LoadPayloadEffect,
+    },
+    EvaluateMilestone {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: EvaluateMilestoneEffect,
+    },
+    MeasurePrompt {
+        effect_id: EffectId,
+        causation_input_id: super::scalar::InputId,
+        payload: MeasurePromptEffect,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -58,17 +101,61 @@ pub fn project_effect(effect: &KernelEffect) -> CanonicalHostAction {
     let effect_id = effect.effect_id.clone();
     let causation_input_id = effect.causation_input_id.clone();
     match &effect.effect {
-        EffectKind::CallProvider(payload) => CanonicalHostAction::CallProvider { effect_id, causation_input_id, payload: payload.clone() },
-        EffectKind::ExecuteTools(payload) => CanonicalHostAction::ExecuteTools { effect_id, causation_input_id, payload: payload.clone() },
-        EffectKind::RequestApproval(payload) => CanonicalHostAction::RequestApproval { effect_id, causation_input_id, payload: payload.clone() },
-        EffectKind::SpawnTasks(payload) => CanonicalHostAction::SpawnTasks { effect_id, causation_input_id, payload: payload.clone() },
-        EffectKind::PreemptTasks(payload) => CanonicalHostAction::PreemptTasks { effect_id, causation_input_id, payload: payload.clone() },
-        EffectKind::PersistMemory(payload) => CanonicalHostAction::PersistMemory { effect_id, causation_input_id, payload: payload.clone() },
-        EffectKind::QueryMemory(payload) => CanonicalHostAction::QueryMemory { effect_id, causation_input_id, payload: payload.clone() },
-        EffectKind::ArchivePageOut(payload) => CanonicalHostAction::ArchivePageOut { effect_id, causation_input_id, payload: payload.clone() },
-        EffectKind::LoadPayload(payload) => CanonicalHostAction::LoadPayload { effect_id, causation_input_id, payload: payload.clone() },
-        EffectKind::EvaluateMilestone(payload) => CanonicalHostAction::EvaluateMilestone { effect_id, causation_input_id, payload: payload.clone() },
-        EffectKind::MeasurePrompt(payload) => CanonicalHostAction::MeasurePrompt { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::CallProvider(payload) => CanonicalHostAction::CallProvider {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::ExecuteTools(payload) => CanonicalHostAction::ExecuteTools {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::RequestApproval(payload) => CanonicalHostAction::RequestApproval {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::SpawnTasks(payload) => CanonicalHostAction::SpawnTasks {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::PreemptTasks(payload) => CanonicalHostAction::PreemptTasks {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::PersistMemory(payload) => CanonicalHostAction::PersistMemory {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::QueryMemory(payload) => CanonicalHostAction::QueryMemory {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::ArchivePageOut(payload) => CanonicalHostAction::ArchivePageOut {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::LoadPayload(payload) => CanonicalHostAction::LoadPayload {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::EvaluateMilestone(payload) => CanonicalHostAction::EvaluateMilestone {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
+        EffectKind::MeasurePrompt(payload) => CanonicalHostAction::MeasurePrompt {
+            effect_id,
+            causation_input_id,
+            payload: payload.clone(),
+        },
     }
 }
 
@@ -103,11 +190,7 @@ where
 /// from `PlannedStep`; re-sorting by map keys here would reintroduce the step:10-before-step:9
 /// bug that this projection boundary exists to prevent.
 pub fn published_effects_manifest(step: &PlannedStep) -> Vec<PublishedEffectRef> {
-    step.disposition
-        .effects()
-        .iter()
-        .map(effect_ref)
-        .collect()
+    step.disposition.effects().iter().map(effect_ref).collect()
 }
 
 fn effect_ref(effect: &KernelEffect) -> PublishedEffectRef {
@@ -119,7 +202,10 @@ fn effect_ref(effect: &KernelEffect) -> PublishedEffectRef {
 
 #[cfg(test)]
 mod tests {
-    use super::{project_current_action, project_current_pending_action, project_effect, published_effects_manifest, CanonicalHostAction, CurrentProjection};
+    use super::{
+        CanonicalHostAction, CurrentProjection, project_current_action,
+        project_current_pending_action, project_effect, published_effects_manifest,
+    };
     use crate::runtime::kernel::wire::{EffectKindTag, PlannedStep};
 
     #[test]
@@ -128,15 +214,21 @@ mod tests {
             "../../../../../../tests/fixtures/abi/multi_effect_step.json"
         ))
         .expect("fixture JSON");
-        let step: PlannedStep = serde_json::from_value(fixture["planned_step"].clone())
-            .expect("planned step");
+        let step: PlannedStep =
+            serde_json::from_value(fixture["planned_step"].clone()).expect("planned step");
 
         let manifest = published_effects_manifest(&step);
 
         assert_eq!(manifest.len(), 2);
-        assert_eq!(manifest[0].effect_id.as_str(), "op-contract:step:9:effect:0");
+        assert_eq!(
+            manifest[0].effect_id.as_str(),
+            "op-contract:step:9:effect:0"
+        );
         assert_eq!(manifest[0].kind, EffectKindTag::QueryMemory);
-        assert_eq!(manifest[1].effect_id.as_str(), "op-contract:step:9:effect:1");
+        assert_eq!(
+            manifest[1].effect_id.as_str(),
+            "op-contract:step:9:effect:1"
+        );
         assert_eq!(manifest[1].kind, EffectKindTag::ExecuteTools);
     }
 
@@ -172,14 +264,16 @@ mod tests {
             "../../../../../../tests/fixtures/abi/multi_effect_step.json"
         ))
         .expect("fixture JSON");
-        let step: PlannedStep = serde_json::from_value(fixture["planned_step"].clone())
-            .expect("planned step");
+        let step: PlannedStep =
+            serde_json::from_value(fixture["planned_step"].clone()).expect("planned step");
         let effect = step.disposition.effects().first().expect("first effect");
 
         let action = project_effect(effect);
 
         match action {
-            CanonicalHostAction::QueryMemory { effect_id, payload, .. } => {
+            CanonicalHostAction::QueryMemory {
+                effect_id, payload, ..
+            } => {
                 assert_eq!(effect_id.as_str(), "op-contract:step:9:effect:0");
                 assert_eq!(payload.query.text, "past briefs");
                 assert_eq!(payload.requested_k, 4);
@@ -194,11 +288,14 @@ mod tests {
             "../../../../../../tests/fixtures/abi/multi_effect_step.json"
         ))
         .expect("fixture JSON");
-        let step: PlannedStep = serde_json::from_value(fixture["planned_step"].clone())
-            .expect("planned step");
+        let step: PlannedStep =
+            serde_json::from_value(fixture["planned_step"].clone()).expect("planned step");
 
         let projection = project_current_action(&step).expect("projection");
-        assert!(matches!(projection, CurrentProjection::Action(CanonicalHostAction::QueryMemory { .. })));
+        assert!(matches!(
+            projection,
+            CurrentProjection::Action(CanonicalHostAction::QueryMemory { .. })
+        ));
 
         let idle = PlannedStep {
             root_kind: None,
@@ -206,7 +303,10 @@ mod tests {
             observations: Vec::new(),
             disposition: crate::runtime::kernel::wire::StepDisposition::Effects(Default::default()),
         };
-        assert!(matches!(project_current_action(&idle).expect("projection"), CurrentProjection::Idle));
+        assert!(matches!(
+            project_current_action(&idle).expect("projection"),
+            CurrentProjection::Idle
+        ));
 
         let ordered = step.disposition.effects().iter();
         assert!(matches!(

@@ -30,6 +30,7 @@ pub mod effect;
 pub mod envelope;
 pub mod event;
 pub mod fault;
+pub mod projection;
 pub mod record;
 pub mod restore;
 pub mod root;
@@ -37,7 +38,6 @@ pub mod scalar;
 pub mod syscall;
 pub mod terminal;
 pub mod transaction;
-pub mod projection;
 
 #[cfg(test)]
 mod tests;
@@ -51,6 +51,7 @@ pub use effect::*;
 pub use envelope::*;
 pub use event::*;
 pub use fault::*;
+pub use projection::*;
 pub use record::*;
 pub use restore::*;
 pub use root::*;
@@ -58,7 +59,6 @@ pub use scalar::*;
 pub use syscall::*;
 pub use terminal::*;
 pub use transaction::*;
-pub use projection::*;
 
 /// The single supported wire revision. Bindings export this core-owned value so host SDKs do not
 /// maintain independent ABI constants.
