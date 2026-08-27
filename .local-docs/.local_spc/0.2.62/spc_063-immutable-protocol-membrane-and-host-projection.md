@@ -182,21 +182,23 @@ manifest 是宿主写入事件日志的纯事实。Kernel 不主动生成 observ
 
 ### Card 063-02：实现 core effect projection
 
-- 状态：Todo；优先级：P0 Core；依赖：063-01。
+- 状态：Done（首版 typed projection 已完成）；优先级：P0 Core；依赖：063-01。
 - RED：core 对每个 fixture 投影失败或输出不一致。
 - GREEN：实现 `project_effect` 与 `CanonicalHostAction`，不接入 SDK。
 - REFACTOR：抽取 context、message、usage、termination、tier 等纯归一化辅助函数。
 - 验收：core golden 全绿；无 I/O/时间/随机依赖。
 - 验证：`cargo test -p deepstrike-core projection`。
+- 实现记录（2026-08-28）：新增 `CanonicalHostAction`，覆盖 11 个现有 effect kind；`project_effect()` 只复用 wire payload 类型，不引入 provider/SDK I/O。core focused tests 4 passed。
 
 ### Card 063-03：实现 current projection 与 manifest
 
-- 状态：Todo；优先级：P0 Core；依赖：063-02。
+- 状态：In Progress（current action 首版已完成，publication-order transaction 接线待补）；优先级：P0 Core；依赖：063-02。
 - RED：多 effect、step 编号 `9/10`、terminal 和空 effect 场景证明旧逻辑不满足统一规则。
 - GREEN：实现 `project_current_action`、`published_effects_manifest`。
 - REFACTOR：让排序规则只存在于 core 一个位置。
 - 验收：首 effect 始终按 publication order；terminal 不被误报为 idle；manifest 与实际 effect 集一致。
 - 验证：core property tests + golden。
+- 实现记录（2026-08-28）：新增显式 `CurrentProjection::{Idle, Action, Terminal}` 与 `project_current_action()`；当前按 committed step vector 取首 effect，后续将补 transaction pending-effects 聚合和 property tests。
 
 ### Card 063-04：Rust 生产运行时换接
 
