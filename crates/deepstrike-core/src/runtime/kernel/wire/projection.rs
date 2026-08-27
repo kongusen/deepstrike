@@ -7,7 +7,12 @@
 use serde::{Deserialize, Serialize};
 
 use super::driver::PlannedStep;
-use super::effect::{EffectKindTag, KernelEffect};
+use super::effect::{
+    EffectKind, EffectKindTag, KernelEffect, QueryMemoryEffect, CallProviderEffect,
+    ExecuteToolsEffect, RequestApprovalEffect, SpawnTasksEffect, PreemptTasksEffect,
+    PersistMemoryEffect, ArchivePageOutEffect, LoadPayloadEffect, EvaluateMilestoneEffect,
+    MeasurePromptEffect,
+};
 use super::scalar::EffectId;
 
 /// The minimal fact a host may append to its event log for a committed step.
@@ -16,6 +21,67 @@ use super::scalar::EffectId;
 pub struct PublishedEffectRef {
     pub effect_id: EffectId,
     pub kind: EffectKindTag,
+}
+
+/// Host-facing action with one canonical effect payload.  Payload structs are the existing wire
+/// structs; this first slice centralises selection without inventing a second payload schema.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CanonicalHostAction {
+    CallProvider { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: CallProviderEffect },
+    ExecuteTools { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: ExecuteToolsEffect },
+    RequestApproval { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: RequestApprovalEffect },
+    SpawnTasks { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: SpawnTasksEffect },
+    PreemptTasks { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: PreemptTasksEffect },
+    PersistMemory { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: PersistMemoryEffect },
+    QueryMemory { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: QueryMemoryEffect },
+    ArchivePageOut { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: ArchivePageOutEffect },
+    LoadPayload { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: LoadPayloadEffect },
+    EvaluateMilestone { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: EvaluateMilestoneEffect },
+    MeasurePrompt { effect_id: EffectId, causation_input_id: super::scalar::InputId, payload: MeasurePromptEffect },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CurrentProjection {
+    Idle,
+    Action(CanonicalHostAction),
+    Terminal(super::terminal::KernelTerminal),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionError {
+    pub message: String,
+}
+
+/// Project one wire effect without touching host state.
+pub fn project_effect(effect: &KernelEffect) -> CanonicalHostAction {
+    let effect_id = effect.effect_id.clone();
+    let causation_input_id = effect.causation_input_id.clone();
+    match &effect.effect {
+        EffectKind::CallProvider(payload) => CanonicalHostAction::CallProvider { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::ExecuteTools(payload) => CanonicalHostAction::ExecuteTools { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::RequestApproval(payload) => CanonicalHostAction::RequestApproval { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::SpawnTasks(payload) => CanonicalHostAction::SpawnTasks { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::PreemptTasks(payload) => CanonicalHostAction::PreemptTasks { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::PersistMemory(payload) => CanonicalHostAction::PersistMemory { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::QueryMemory(payload) => CanonicalHostAction::QueryMemory { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::ArchivePageOut(payload) => CanonicalHostAction::ArchivePageOut { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::LoadPayload(payload) => CanonicalHostAction::LoadPayload { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::EvaluateMilestone(payload) => CanonicalHostAction::EvaluateMilestone { effect_id, causation_input_id, payload: payload.clone() },
+        EffectKind::MeasurePrompt(payload) => CanonicalHostAction::MeasurePrompt { effect_id, causation_input_id, payload: payload.clone() },
+    }
+}
+
+/// Select the current host action from one committed step.  The step's vector is already the
+/// kernel's publication order, so the first effect is the only legal current action.
+pub fn project_current_action(step: &PlannedStep) -> Result<CurrentProjection, ProjectionError> {
+    if let Some(terminal) = step.disposition.terminal() {
+        return Ok(CurrentProjection::Terminal(terminal.clone()));
+    }
+    match step.disposition.effects().first() {
+        Some(effect) => Ok(CurrentProjection::Action(project_effect(effect))),
+        None => Ok(CurrentProjection::Idle),
+    }
 }
 
 /// Extract effects in the step's publication/mint order.
@@ -40,7 +106,7 @@ fn effect_ref(effect: &KernelEffect) -> PublishedEffectRef {
 
 #[cfg(test)]
 mod tests {
-    use super::published_effects_manifest;
+    use super::{project_current_action, project_effect, published_effects_manifest, CanonicalHostAction, CurrentProjection};
     use crate::runtime::kernel::wire::{EffectKindTag, PlannedStep};
 
     #[test]
@@ -85,5 +151,48 @@ mod tests {
         };
 
         assert!(published_effects_manifest(&step).is_empty());
+    }
+
+    #[test]
+    fn projects_the_first_query_memory_effect_to_a_typed_action() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../../tests/fixtures/abi/multi_effect_step.json"
+        ))
+        .expect("fixture JSON");
+        let step: PlannedStep = serde_json::from_value(fixture["planned_step"].clone())
+            .expect("planned step");
+        let effect = step.disposition.effects().first().expect("first effect");
+
+        let action = project_effect(effect);
+
+        match action {
+            CanonicalHostAction::QueryMemory { effect_id, payload, .. } => {
+                assert_eq!(effect_id.as_str(), "op-contract:step:9:effect:0");
+                assert_eq!(payload.query.text, "past briefs");
+                assert_eq!(payload.requested_k, 4);
+            }
+            other => panic!("expected query_memory action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn current_projection_selects_first_effect_and_distinguishes_idle() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../../tests/fixtures/abi/multi_effect_step.json"
+        ))
+        .expect("fixture JSON");
+        let step: PlannedStep = serde_json::from_value(fixture["planned_step"].clone())
+            .expect("planned step");
+
+        let projection = project_current_action(&step).expect("projection");
+        assert!(matches!(projection, CurrentProjection::Action(CanonicalHostAction::QueryMemory { .. })));
+
+        let idle = PlannedStep {
+            root_kind: None,
+            focus: None,
+            observations: Vec::new(),
+            disposition: crate::runtime::kernel::wire::StepDisposition::Effects(Default::default()),
+        };
+        assert!(matches!(project_current_action(&idle).expect("projection"), CurrentProjection::Idle));
     }
 }
