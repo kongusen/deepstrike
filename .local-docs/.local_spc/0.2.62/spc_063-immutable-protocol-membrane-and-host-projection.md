@@ -172,13 +172,13 @@ manifest 是宿主写入事件日志的纯事实。Kernel 不主动生成 observ
 
 ### Card 063-01：建立 host-action golden
 
-- 状态：In Progress（manifest golden 已完成，action golden 待补）；优先级：P0 Guardrail；依赖：063-00。
+- 状态：Done（首版 action serialization golden 已完成）；优先级：P0 Guardrail；依赖：063-00。
 - RED：把 `multi_effect_step.json`、terminal、empty、unknown、各主要 effect kind 转成 `planned_step → expected_current_projection` fixtures。
 - GREEN：先由现有实现生成候选结果，再人工审查并固定 expected JSON。
 - REFACTOR：去除 SDK 私有字段，fixture 只描述 canonical 语义。
 - 验收：fixture 覆盖多 effect 首 effect、publication order、terminal、unsupported 和 manifest。
 - 验证：fixture schema lint；候选输出与人工批准输出逐条比较。
-- 实现记录（2026-08-28）：已用 `multi_effect_step.json` 固定多 effect manifest 顺序，并新增 terminal 空 manifest 测试；current-action golden 将在下一切片随 typed projection 补齐。
+- 实现记录（2026-08-28）：已用 `multi_effect_step.json` 固定多 effect manifest 顺序、terminal 空 manifest，以及 canonical action 的 kind/effect identity/payload 序列化字段；core projection tests 5 passed。
 
 ### Card 063-02：实现 core effect projection
 
