@@ -202,12 +202,13 @@ manifest 是宿主写入事件日志的纯事实。Kernel 不主动生成 observ
 
 ### Card 063-04：Rust 生产运行时换接
 
-- 状态：Todo；优先级：P0 Binding；依赖：063-03。
+- 状态：In Progress（先接入 core 首 effect selector）；优先级：P0 Binding；依赖：063-03。
 - RED：Rust conformance 先比较旧 HostAction 与 core 输出，记录所有差异。
 - GREEN：Rust `HostAction` 改为 core 类型别名/re-export，runtime 只消费 `CurrentProjection`。
 - REFACTOR：删除 `protocol_action_from_wire` 和重复 switch。
 - 验收：Rust 行为与 core golden byte-level 一致；宿主 I/O 路径不变。
 - 验证：`cargo test --workspace`。
+- 实现记录（2026-08-28）：Rust `canonical_action_from_planned_step()` 已改用 core `current_effect()` 选择首 effect，旧 payload DTO 转换暂保留，characterization test 通过。
 
 ### Card 063-05：Node/WASM binding 换接
 
