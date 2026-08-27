@@ -20,6 +20,9 @@ pub enum MeasurementSource {
     /// provider's own (e.g. cl100k standing in for a non-OpenAI vendor) — see
     /// `FallbackEstimator` (spc_011-C-01) for the concrete counter this describes.
     LocalExact { tokenizer: String },
+    /// The provider's own postflight usage for this exact request, fed back after execution
+    /// (spc_024-06). The authority a replay reuses — never a preflight guess.
+    Postflight,
     /// No tokenizer ran at all; this is a coarse guess with a generous safety margin.
     Heuristic,
 }
@@ -75,6 +78,23 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let back: PromptMeasurement = serde_json::from_str(&json).unwrap();
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn postflight_source_round_trips_and_differs_from_preflight_kinds() {
+        // spc_024-06: observed usage fed back after execution — the authority a replay reuses.
+        let m = PromptMeasurement {
+            input_tokens: 1000,
+            source: MeasurementSource::Postflight,
+            confidence: MeasurementConfidence::Exact,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: PromptMeasurement = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
+        assert_eq!(
+            serde_json::to_string(&m.source).unwrap(),
+            r#"{"kind":"postflight"}"#
+        );
     }
 
     #[test]
