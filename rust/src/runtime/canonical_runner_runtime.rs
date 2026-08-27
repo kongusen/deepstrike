@@ -23,7 +23,9 @@ use deepstrike_core::mm::memory::{
     MemoryTrustLevel,
 };
 use deepstrike_core::runtime::kernel::wire::CancellationReason;
-use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
+use deepstrike_core::runtime::kernel::{
+    KernelObservation, KernelPressureAction, PublishedEffectRef,
+};
 use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolSchema};
 use deepstrike_core::types::milestone::{MilestoneContract, MilestoneVerifier};
 use deepstrike_core::types::result::{LoopResult, PaceAction, PaceDecision, TerminationReason};
@@ -865,6 +867,27 @@ impl CanonicalRunnerRuntime {
         if publish_observations {
             self.observations
                 .extend(transition.planned_step.observations.clone());
+            // §7.11 · a committed step that publishes effects is a fact worth recording in the
+            // host event log: the journal stores only a digest of the step, so this manifest is
+            // what makes the published effect ids + kinds recoverable post-hoc without replaying.
+            if let StepDisposition::Effects(effects) = &transition.planned_step.disposition {
+                if !effects.effects.is_empty() {
+                    self.observations
+                        .push(KernelObservation::StepPublishedEffects {
+                            effects: effects
+                                .effects
+                                .iter()
+                                .map(|effect| PublishedEffectRef {
+                                    effect_id: effect.effect_id.to_string(),
+                                    kind: serde_json::to_value(effect.tag())
+                                        .ok()
+                                        .and_then(|value| value.as_str().map(|tag| tag.to_string()))
+                                        .unwrap_or_default(),
+                                })
+                                .collect(),
+                        });
+                }
+            }
         }
         self.last_action = self.enrich_action(canonical_action_from_planned_step(
             &transition.planned_step,
@@ -1594,6 +1617,7 @@ pub(crate) async fn canonical_kernel_action(
 pub(crate) fn canonical_action_from_planned_step(
     planned: &PlannedStep,
 ) -> Result<Option<HostAction>> {
+    let current_effect = deepstrike_core::runtime::kernel::wire::projection::current_effect(planned);
     match &planned.disposition {
         StepDisposition::Terminal(terminal) => Ok(Some(HostAction {
             effect_id: String::new(),
@@ -1602,18 +1626,18 @@ pub(crate) fn canonical_action_from_planned_step(
                 result: loop_result_from_terminal(&terminal.terminal)?,
             },
         })),
-        StepDisposition::Effects(effects) => {
-            if effects.effects.is_empty() {
+        StepDisposition::Effects(_) => {
+            if current_effect.is_none() {
                 return Ok(None);
             }
-            if effects.effects.len() != 1 {
-                return Err(Error::Other(format!(
-                    "Rust runner expects one canonical effect at a time, received {}",
-                    effects.effects.len()
-                )));
-            }
+            // A step that reduces a syscall batch may legitimately publish several effects
+            // (different kinds — §15.3 admits at most one pending effect per kind). The host
+            // consumes them one pending effect at a time: the first is the current action, and
+            // the rest surface again in the pending-effects view once this one resolves.
+            // Effect order follows the mint order, which puts the syscalls' own effects ahead
+            // of the continuation's.
             Ok(Some(protocol_action_from_wire(
-                &effects.effects[0],
+                current_effect.expect("checked above"),
                 &planned.observations,
             )?))
         }
@@ -2195,6 +2219,29 @@ mod tests {
         let forbidden = ["skill", "activated"].join("_");
         assert!(!include_str!("runner.rs").contains(&forbidden));
         assert!(!include_str!("canonical_runner_runtime.rs").contains(&forbidden));
+    }
+
+    /// A syscall-batch step may legitimately carry several effects (different kinds — §15.3
+    /// admits at most one pending effect per kind). The projection hands the host the first
+    /// one; the rest surface again through the pending-effects view once it resolves. The
+    /// fixture is the SAME JSON the Node/WASM/Python projections test against.
+    #[test]
+    fn multi_effect_planned_step_projects_the_first_effect() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/abi/multi_effect_step.json"
+        ))
+        .expect("the shared multi-effect fixture parses");
+        let planned: super::PlannedStep =
+            serde_json::from_value(fixture["planned_step"].clone()).expect("a planned step");
+        let action = super::canonical_action_from_planned_step(&planned)
+            .expect("the projection succeeds on a multi-effect step")
+            .expect("an action");
+        let expected = &fixture["expected_action"];
+        assert_eq!(
+            action.effect_id,
+            expected["effect_id"].as_str().unwrap(),
+            "the host acts on the first (syscall-minted) effect"
+        );
     }
 
     fn test_options() -> CanonicalRunnerOptions {

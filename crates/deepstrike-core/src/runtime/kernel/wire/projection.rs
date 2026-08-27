@@ -165,6 +165,12 @@ pub fn project_current_action(step: &PlannedStep) -> Result<CurrentProjection, P
     project_current_pending_action(step.disposition.terminal(), step.disposition.effects())
 }
 
+/// Return the first effect in a committed step's publication order. Transitional SDK adapters
+/// use this selector while their payload conversion is migrated to [`project_effect`].
+pub fn current_effect(step: &PlannedStep) -> Option<&KernelEffect> {
+    step.disposition.effects().first()
+}
+
 /// Project the current action from the transaction's already ordered pending-effect view.
 /// Ordering is deliberately owned by `KernelTransaction::pending_effects_in_order`; this helper
 /// only selects the head and maps it to a canonical action.
