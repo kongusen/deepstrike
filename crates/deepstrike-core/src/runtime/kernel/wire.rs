@@ -37,6 +37,7 @@ pub mod scalar;
 pub mod syscall;
 pub mod terminal;
 pub mod transaction;
+pub mod projection;
 
 #[cfg(test)]
 mod tests;
@@ -57,6 +58,7 @@ pub use scalar::*;
 pub use syscall::*;
 pub use terminal::*;
 pub use transaction::*;
+pub use projection::*;
 
 /// The single supported wire revision. Bindings export this core-owned value so host SDKs do not
 /// maintain independent ABI constants.
