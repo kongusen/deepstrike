@@ -236,6 +236,23 @@ impl CanonicalKernel {
         self.transaction.pending_effects()
     }
 
+    /// [`Self::pending_effects`] in publication order — the order a host consumes a
+    /// multi-effect step in (see [`KernelTransaction::pending_effects_in_order`]).
+    pub fn pending_effects_in_order(&self) -> Vec<&KernelEffect> {
+        self.transaction.pending_effects_in_order()
+    }
+
+    /// The single host-facing current-action projection.  The transaction owns publication
+    /// ordering; this method only delegates the ordered view to the pure projection module.
+    pub fn current_projection(
+        &self,
+    ) -> Result<super::projection::CurrentProjection, super::projection::ProjectionError> {
+        super::projection::project_current_pending_action(
+            self.transaction.terminal(),
+            self.transaction.pending_effects_in_order(),
+        )
+    }
+
     pub fn terminal(&self) -> Option<&KernelTerminal> {
         self.transaction.terminal()
     }

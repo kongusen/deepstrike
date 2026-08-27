@@ -75,10 +75,23 @@ pub fn project_effect(effect: &KernelEffect) -> CanonicalHostAction {
 /// Select the current host action from one committed step.  The step's vector is already the
 /// kernel's publication order, so the first effect is the only legal current action.
 pub fn project_current_action(step: &PlannedStep) -> Result<CurrentProjection, ProjectionError> {
-    if let Some(terminal) = step.disposition.terminal() {
+    project_current_pending_action(step.disposition.terminal(), step.disposition.effects())
+}
+
+/// Project the current action from the transaction's already ordered pending-effect view.
+/// Ordering is deliberately owned by `KernelTransaction::pending_effects_in_order`; this helper
+/// only selects the head and maps it to a canonical action.
+pub fn project_current_pending_action<'a, I>(
+    terminal: Option<&super::terminal::KernelTerminal>,
+    effects: I,
+) -> Result<CurrentProjection, ProjectionError>
+where
+    I: IntoIterator<Item = &'a KernelEffect>,
+{
+    if let Some(terminal) = terminal {
         return Ok(CurrentProjection::Terminal(terminal.clone()));
     }
-    match step.disposition.effects().first() {
+    match effects.into_iter().next() {
         Some(effect) => Ok(CurrentProjection::Action(project_effect(effect))),
         None => Ok(CurrentProjection::Idle),
     }
@@ -106,7 +119,7 @@ fn effect_ref(effect: &KernelEffect) -> PublishedEffectRef {
 
 #[cfg(test)]
 mod tests {
-    use super::{project_current_action, project_effect, published_effects_manifest, CanonicalHostAction, CurrentProjection};
+    use super::{project_current_action, project_current_pending_action, project_effect, published_effects_manifest, CanonicalHostAction, CurrentProjection};
     use crate::runtime::kernel::wire::{EffectKindTag, PlannedStep};
 
     #[test]
@@ -194,5 +207,11 @@ mod tests {
             disposition: crate::runtime::kernel::wire::StepDisposition::Effects(Default::default()),
         };
         assert!(matches!(project_current_action(&idle).expect("projection"), CurrentProjection::Idle));
+
+        let ordered = step.disposition.effects().iter();
+        assert!(matches!(
+            project_current_pending_action(None, ordered).expect("projection"),
+            CurrentProjection::Action(CanonicalHostAction::QueryMemory { .. })
+        ));
     }
 }
