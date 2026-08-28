@@ -273,7 +273,7 @@ class CanonicalKernelHost:
     return transition
 
 
-def canonical_action_from_planned_step(planned_step: dict[str, Any]) -> KernelRunnerAction | None:
+def _action_from_core_step(planned_step: dict[str, Any]) -> KernelRunnerAction | None:
   disposition = _object(planned_step.get("disposition"))
   if disposition.get("kind") == "terminal":
     terminal = _object(disposition.get("terminal"))
@@ -314,8 +314,11 @@ def canonical_action_from_planned_step(planned_step: dict[str, Any]) -> KernelRu
   effects = disposition.get("effects") or []
   if not effects:
     return None
-  if len(effects) != 1:
-    raise RuntimeError(f"Python runner expects one canonical effect at a time, received {len(effects)}")
+  # A step that reduces a syscall batch may legitimately publish several effects (different
+  # kinds — §15.3 admits at most one pending effect per kind). The host consumes them one
+  # pending effect at a time: the first is the current action, and the rest surface again in
+  # pending_effects_json once this one resolves. Effect order follows the mint order, which
+  # puts the syscalls' own effects ahead of the continuation's.
   envelope = _object(effects[0])
   effect_id = str(envelope.get("effect_id") or "")
   effect = _object(envelope.get("effect"))
@@ -411,6 +414,25 @@ def canonical_action_from_planned_step(planned_step: dict[str, Any]) -> KernelRu
     effect_id=effect_id,
     effect_kind=str(kind),
   )
+
+
+def canonical_action_from_projection_json(raw: str) -> KernelRunnerAction | None:
+  """Adapt core CurrentProjection JSON to the existing Python action surface."""
+  projection = _object(json.loads(raw))
+  state = str(projection.get("state") or "idle")
+  if state == "idle":
+    return None
+  if state == "terminal":
+    return _action_from_core_step({"disposition": {
+      "kind": "terminal", "terminal": _object(projection.get("action"))}})
+  action = _object(projection.get("action"))
+  payload = _object(action.get("payload"))
+  return _action_from_core_step({"disposition": {
+    "kind": "effects", "effects": [{
+      "effect_id": action.get("effect_id"),
+      "causation_input_id": action.get("causation_input_id"),
+      "effect": {"kind": action.get("kind"), **payload},
+    }]}})
 
 
 class CanonicalRunnerRuntime:
@@ -735,6 +757,23 @@ class CanonicalRunnerRuntime:
           self._observations.extend(
             _object(item) for item in transition.planned_step.get("observations") or []
           )
+          # §7.11 · a committed step that publishes effects is a fact worth recording in the
+          # host event log: the journal stores only a digest of the step, so this manifest is
+          # what makes the published effect ids + kinds recoverable post-hoc without replaying.
+          published = json.loads(self.host.kernel.published_effects_manifest_json(
+            json.dumps(transition.planned_step),
+          ))
+          if published:
+            self._observations.append({
+              "kind": "step_published_effects",
+              "effects": [
+                {
+                  "effect_id": str(_object(envelope).get("effect_id") or ""),
+                  "kind": str(_object(envelope).get("kind") or ""),
+                }
+                for envelope in published
+              ],
+            })
           if transition.checkpoint_advice:
             self._observations.append({"kind": "checkpoint_advised", **transition.checkpoint_advice})
           if transition.checkpoint_failure:
@@ -742,7 +781,8 @@ class CanonicalRunnerRuntime:
               "kind": "checkpoint_deferred",
               "reason": transition.checkpoint_failure,
             })
-        self._last_action = canonical_action_from_planned_step(transition.planned_step)
+        self._last_action = canonical_action_from_projection_json(
+          self.host.kernel.project_planned_step_json(json.dumps(transition.planned_step)))
       if self._last_action is None or self._last_action.kind != "unsupported_effect":
         return self._last_action
       next_input = canonical_unsupported_effect_resolution(
@@ -760,11 +800,7 @@ class CanonicalRunnerRuntime:
                                  "kind": kind, "message": message, "retryable": retryable}}})
 
   def _current_action(self) -> KernelRunnerAction | None:
-    terminal = self.host.kernel.terminal_json()
-    if terminal:
-      return canonical_action_from_planned_step({"disposition": {"kind": "terminal", "terminal": json.loads(terminal)}})
-    return canonical_action_from_planned_step({"disposition": {
-      "kind": "effects", "effects": json.loads(self.host.kernel.pending_effects_json())}})
+    return canonical_action_from_projection_json(self.host.kernel.current_projection_json())
 
   def _pending_effects(self) -> list[dict[str, Any]]:
     raw = json.loads(self.host.kernel.pending_effects_json())

@@ -83,6 +83,9 @@ describe("renewal-boundary memory re-query (K4)", () => {
 
     const events = await sessionLog.read("renewal-requery")
     expect(events.some(e => e.event.kind === "context_renewed")).toBe(true)
+    const eventKinds = events.map(e => e.event.kind)
+    expect(eventKinds).toContain("compressed")
+    expect(eventKinds.indexOf("compressed")).toBeLessThan(eventKinds.indexOf("context_renewed"))
 
     // Turn-1 fetch first, then at least one renewal-boundary re-fetch.
     expect(phases[0]).toBe("initial")

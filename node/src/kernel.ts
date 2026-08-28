@@ -161,6 +161,10 @@ export interface CanonicalKernelInstance {
   restore(checkpointBytes: Buffer | undefined, recordBytes: Buffer[]): CanonicalRestoreCost
   lifecycle(): "created" | "configured" | "running" | "suspended" | "completed" | "cancelled" | "failed"
   pendingEffectsJson(): string
+  /** Canonical core projection; additive during the 0.2.62 migration. */
+  currentProjectionJson(): string
+  projectPlannedStepJson(plannedStepJson: string): string
+  publishedEffectsManifestJson(plannedStepJson: string): string
   terminalJson(): string | undefined
 }
 

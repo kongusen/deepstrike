@@ -1,4 +1,6 @@
 import { jest } from "@jest/globals"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import type {
   CanonicalCommit,
   CanonicalKernel as CanonicalKernelInstance,
@@ -9,6 +11,7 @@ import {
   CanonicalKernelHost,
   CanonicalKernelRebuildRequiredError,
   CanonicalRunnerRuntime,
+  canonicalActionFromProjectionJson,
 } from "../src/runtime/canonical-kernel-step.js"
 import {
   InMemoryKernelJournal,
@@ -89,6 +92,25 @@ function fakeKernel(phases: string[]): CanonicalKernelInstance {
     },
     lifecycle: () => "running",
     pendingEffectsJson: () => "[]",
+    currentProjectionJson: () => JSON.stringify({ state: "idle" }),
+    projectPlannedStepJson: (plannedStepJson: string) => {
+      const planned = JSON.parse(plannedStepJson) as Record<string, unknown>
+      const disposition = (planned.disposition ?? {}) as Record<string, unknown>
+      if (disposition.kind === "terminal") {
+        return JSON.stringify({ state: "terminal", action: disposition.terminal })
+      }
+      const effects = Array.isArray(disposition.effects) ? disposition.effects : []
+      const first = (effects[0] ?? {}) as Record<string, unknown>
+      const effect = (first.effect ?? {}) as Record<string, unknown>
+      return JSON.stringify(effects.length === 0
+        ? { state: "idle" }
+        : { state: "action", action: {
+            kind: effect.kind, effect_id: first.effect_id, payload: Object.fromEntries(
+              Object.entries(effect).filter(([key]) => key !== "kind"),
+            ),
+          } })
+    },
+    publishedEffectsManifestJson: () => "[]",
     terminalJson: () => undefined,
   }
 }
@@ -268,5 +290,38 @@ describe("CanonicalRunnerRuntime provider stop reasons", () => {
 
     const providerResult = inputs.at(-1) as { input?: { outcome?: { result?: { outcome?: Record<string, unknown> } } } }
     expect(providerResult.input?.outcome?.result?.outcome).not.toHaveProperty("stop_reason")
+  })
+})
+
+describe("multi-effect planned step projection", () => {
+  it("projects the first effect rather than throwing — the rest stay pending", () => {
+    const fixture = JSON.parse(readFileSync(
+      join(process.cwd(), "../tests/fixtures/abi/multi_effect_step.json"),
+      "utf8",
+    )) as {
+      planned_step: Record<string, unknown>
+      expected_action: Record<string, unknown>
+    }
+
+    const selectors = JSON.parse(readFileSync(
+      join(process.cwd(), "../tests/fixtures/abi/current_projection_multi_effect.json"),
+      "utf8",
+    )) as { expected: Record<string, unknown> }
+    const action = canonicalActionFromProjectionJson(JSON.stringify({
+      state: "action",
+      action: {
+        kind: selectors.expected.action_kind,
+        effect_id: selectors.expected.effect_id,
+        causation_input_id: selectors.expected.causation_input_id,
+        payload: {
+          requested_k: selectors.expected.payload_requested_k,
+          query: { text: selectors.expected.payload_query_text },
+        },
+      },
+    }))
+    // The syscall's effect is minted first, so it is the action the host runs first; the tool
+    // batch re-surfaces through the pending-effects view once this one resolves.
+    expect(action?.kind).toBe(fixture.expected_action.kind)
+    expect(action?.effectId).toBe(fixture.expected_action.effect_id)
   })
 })

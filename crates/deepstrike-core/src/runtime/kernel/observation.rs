@@ -421,6 +421,24 @@ pub enum KernelObservation {
         handle_id: String,
         error: String,
     },
+    /// Host-side audit fact — the kernel **never emits this observation itself** (an observation
+    /// the kernel produced would ride the planned step into `step_digest`, breaking replay of every
+    /// existing journal). Each host projection adds it to its event log when a committed step
+    /// publishes effects, so a journal's effect manifest — the very fact the record only stores a
+    /// digest of — is recoverable post-hoc without replaying. Contract tests bind only
+    /// `effect_id` + `kind`; the payload is stable and additive.
+    StepPublishedEffects {
+        effects: Vec<PublishedEffectRef>,
+    },
+}
+
+/// One entry of [`KernelObservation::StepPublishedEffects`]: the identity and kind of an effect a
+/// committed step published. The kind is the wire tag (`snake_case`), not the Rust variant name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedEffectRef {
+    pub effect_id: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

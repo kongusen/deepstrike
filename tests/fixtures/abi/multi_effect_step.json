@@ -1,0 +1,48 @@
+{
+  "description": "A syscall-batch step may carry several effects of different kinds (§15.3 admits at most one pending effect per kind). The host consumes the FIRST one as its current action — mint order puts the syscalls' own effects ahead of the continuation's — and the remainder surface again through the pending-effects view once the current one resolves. Every SDK projection must agree on this fixture.",
+  "planned_step": {
+    "disposition": {
+      "kind": "effects",
+      "effects": [
+        {
+          "effect_id": "op-contract:step:9:effect:0",
+          "causation_input_id": "in-9",
+          "effect": {
+            "kind": "query_memory",
+            "binding": {
+              "binding_id": "mem-1",
+              "capabilities": { "read": true, "write": false }
+            },
+            "query": {
+              "text": "past briefs",
+              "accepted_at_ms": "1",
+              "causation": {
+                "kind": "provider_tool",
+                "provider_effect_id": "pe",
+                "call_id": "c1",
+                "task_id": "root"
+              }
+            },
+            "requested_k": 4
+          }
+        },
+        {
+          "effect_id": "op-contract:step:9:effect:1",
+          "causation_input_id": "in-9",
+          "effect": {
+            "kind": "execute_tools",
+            "calls": [
+              { "call_id": "c2", "name": "knowledge", "arguments": { "topic": "kpi" } }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "expected_action": {
+    "kind": "query_memory",
+    "effect_id": "op-contract:step:9:effect:0",
+    "query": { "text": "past briefs" },
+    "requested_k": 4
+  }
+}

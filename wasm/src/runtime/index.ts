@@ -32,7 +32,6 @@ export {
   CanonicalKernelRejectedError,
   CanonicalKernelRebuildRequiredError,
   CanonicalRunnerRuntime,
-  canonicalActionFromPlannedStep,
   sha256,
 } from "./canonical-kernel-step.js"
 export type {

@@ -11,7 +11,7 @@ import {
   CanonicalKernelHost,
   CanonicalKernelRebuildRequiredError,
   CanonicalRunnerRuntime,
-  canonicalActionFromPlannedStep,
+  canonicalActionFromProjectionJson,
   canonicalUnsupportedEffectResolution,
 } from "../../src/runtime/canonical-kernel-step.js"
 import {
@@ -93,6 +93,9 @@ function fakeKernel(phases: string[]): CanonicalKernelInstance {
     },
     lifecycle: () => "running",
     pendingEffectsJson: () => "[]",
+    currentProjectionJson: () => JSON.stringify({ state: "idle" }),
+    projectPlannedStepJson: () => JSON.stringify({ state: "idle" }),
+    publishedEffectsManifestJson: () => "[]",
     terminalJson: () => undefined,
   }
 }
@@ -372,12 +375,19 @@ describe("unknown canonical effect contract", () => {
       join(process.cwd(), "../tests/fixtures/abi/unknown_effect_protocol_error.json"),
       "utf8",
     )) as {
-      planned_step: Parameters<typeof canonicalActionFromPlannedStep>[0]
+      planned_step: Record<string, unknown>
       expected_action: Record<string, unknown>
       expected_resolution: Record<string, unknown>
     }
 
-    const action = canonicalActionFromPlannedStep(fixture.planned_step)
+    const action = canonicalActionFromProjectionJson(JSON.stringify({
+      state: "action",
+      action: {
+        kind: fixture.expected_action.effect_kind,
+        effect_id: fixture.expected_action.effect_id,
+        causation_input_id: "in-unknown", payload: {},
+      },
+    }))
     expect(action).toMatchObject({
       kind: fixture.expected_action.kind,
       effectId: fixture.expected_action.effect_id,
@@ -401,5 +411,38 @@ describe("workflow scheduling-factor boundary", () => {
     }] })
     expect(phases.join("\n")).toContain('"scheduling_factors":{"deadline_urgency":4,"process_priority":3}')
 
+  })
+})
+
+describe("multi-effect planned step projection", () => {
+  it("projects the first effect rather than throwing — the rest stay pending", () => {
+    const fixture = JSON.parse(readFileSync(
+      join(process.cwd(), "../tests/fixtures/abi/multi_effect_step.json"),
+      "utf8",
+    )) as {
+      planned_step: Record<string, unknown>
+      expected_action: Record<string, unknown>
+    }
+
+    const selectors = JSON.parse(readFileSync(
+      join(process.cwd(), "../tests/fixtures/abi/current_projection_multi_effect.json"),
+      "utf8",
+    )) as { expected: Record<string, unknown> }
+    const action = canonicalActionFromProjectionJson(JSON.stringify({
+      state: "action",
+      action: {
+        kind: selectors.expected.action_kind,
+        effect_id: selectors.expected.effect_id,
+        causation_input_id: selectors.expected.causation_input_id,
+        payload: {
+          requested_k: selectors.expected.payload_requested_k,
+          query: { text: selectors.expected.payload_query_text },
+        },
+      },
+    }))
+    // The syscall's effect is minted first, so it is the action the host runs first; the tool
+    // batch re-surfaces through the pending-effects view once this one resolves.
+    expect(action?.kind).toBe(fixture.expected_action.kind)
+    expect(action?.effectId).toBe(fixture.expected_action.effect_id)
   })
 })

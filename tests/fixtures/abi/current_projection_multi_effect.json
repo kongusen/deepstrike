@@ -1,0 +1,12 @@
+{
+  "description": "Shared conformance selectors for the canonical CurrentProjection produced from multi_effect_step.json.",
+  "source_fixture": "multi_effect_step.json",
+  "expected": {
+    "state": "action",
+    "action_kind": "query_memory",
+    "effect_id": "op-contract:step:9:effect:0",
+    "causation_input_id": "in-9",
+    "payload_requested_k": 4,
+    "payload_query_text": "past briefs"
+  }
+}

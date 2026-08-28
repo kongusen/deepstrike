@@ -48,6 +48,9 @@ export type SessionEvent =
       message_count?: number
       archive_ref?: string
     }
+  | { kind: "semantic_archive_pending"; effect_id: string; action?: string }
+  | { kind: "semantic_archive_completed"; effect_id: string; record_id: string }
+  | { kind: "semantic_archive_failed"; effect_id: string; error: string }
   | { kind: "page_in"; turn: number; entry_count: number }
   | { kind: "rollbacked"; turn: number; checkpoint_history_len: number; reason?: RollbackReason }
   | { kind: "capability_changed"; turn: number; added: string[]; removed: string[]; change_kind?: string; capability_id?: string; version?: string; mounted_by?: string; mount_reason?: string }

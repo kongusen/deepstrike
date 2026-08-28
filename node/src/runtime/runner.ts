@@ -45,6 +45,7 @@ import {
   capabilityTool,
   capabilityCommandMount,
   capabilityCommandUnmount,
+  archivePresentationFromObservations,
   entropySampleFromObservation,
   messageToKernelMessage,
   skillMetadataToKernel,
@@ -68,6 +69,17 @@ import type {
   WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome,
   WorkflowNodeOutcome, KernelWorkflowNodeOutcome,
 } from "../types/agent.js"
+
+export function stableSemanticArchiveName(effectId: string): string {
+  const stableEffectId = effectId.replace(/[^a-zA-Z0-9._:-]/g, "_")
+  return `page-out-${stableEffectId || "unknown"}`
+}
+
+function compressionAction(action?: string): Extract<SessionEvent, { kind: "compressed" }>["action"] {
+  return action === "snip_compact" || action === "micro_compact" || action === "context_collapse" || action === "auto_compact"
+    ? action
+    : undefined
+}
 import {
   agentRunSpecToKernel,
   MILESTONE_UNVERIFIED_REASON,
@@ -591,8 +603,20 @@ export class RuntimeRunner {
    *  an already-active skill (loading is idempotent; the knowledge push should be too). */
   private knowledgePushedSkills = new Set<string>()
   private nextArchiveStart = 0
-  private pendingPageOutArchives: Array<{ archiveStart: number; compressedSeq: number }> = []
-  private activePageOutArchive: { archiveStart: number; compressedSeq: number } | undefined
+  private pendingPageOutArchives: Array<{
+    archiveStart: number
+    compressedSeq: number
+    action?: string
+    summary?: string
+    tier?: "semantic" | "durable"
+  }> = []
+  private activePageOutArchive: {
+    archiveStart: number
+    compressedSeq: number
+    action?: string
+    summary?: string
+    tier?: "semantic" | "durable"
+  } | undefined
   /** K4: the active run's goal, kept for the renewal-boundary memory re-query. */
   private currentGoal = ""
   private workflowContinuation: Extract<KernelRunnerAction, { kind: "call_provider" }> | null = null
@@ -2547,7 +2571,14 @@ export class RuntimeRunner {
         if (!error) await this.logMemoryRetrievalResult(sessionId, hits)
 
       } else if (action.kind === "archive_page_out") {
-        const archiveMeta: { archiveStart: number; compressedSeq: number } = this.activePageOutArchive
+        const archiveEffectId = action.effectId
+        const archiveMeta: {
+          archiveStart: number
+          compressedSeq: number
+          action?: string
+          summary?: string
+          tier?: "semantic" | "durable"
+        } = this.activePageOutArchive
           ?? this.pendingPageOutArchives.shift()
           ?? {
             archiveStart: this.nextArchiveStart,
@@ -2581,8 +2612,8 @@ export class RuntimeRunner {
         }
 
         const archived = action.archived ?? []
-        const archiveAction = compressionAction(action.action) ?? "auto_compact"
-        const archiveTier = action.tier
+        const archiveAction = archiveMeta.action ?? "auto_compact"
+        const archiveTier = archiveMeta.tier
         const compressedSeq = archiveMeta.compressedSeq
         if (!error) this.activePageOutArchive = undefined
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
@@ -2605,9 +2636,7 @@ export class RuntimeRunner {
           }
           if (archiveTier === "semantic" && archived.length > 0) {
             taskScope.spawn("semantic-page-out", () => this.archiveSemanticPageOut(
-              archived,
-              archiveAction,
-              sessionId,
+              archived, archiveAction, sessionId, archiveEffectId,
             ))
           }
         }
@@ -3211,7 +3240,12 @@ export class RuntimeRunner {
       const compressedSeq = await this.opts.sessionLog.append(sessionId, event)
       if (event.kind === "compressed") {
         if ((obs.archived_count ?? 0) > 0) {
-          this.pendingPageOutArchives.push({ archiveStart: nextArchiveStart, compressedSeq })
+          const archivePresentation = archivePresentationFromObservations([obs])
+          this.pendingPageOutArchives.push({
+            archiveStart: nextArchiveStart,
+            compressedSeq,
+            ...archivePresentation,
+          })
         }
         nextArchiveStart = compressedSeq + 1
       }
@@ -3229,8 +3263,15 @@ export class RuntimeRunner {
     archived: Message[],
     action: string | undefined,
     sessionId: string,
+    effectId = "unknown",
   ): Promise<void> {
     if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
+    await this.opts.sessionLog.append(sessionId, {
+      kind: "semantic_archive_pending",
+      effect_id: effectId,
+      ...(action ? { action } : {}),
+    })
+    try {
     const summary = this.opts.memorySummarizer
       ? await this.opts.memorySummarizer.summarize(archived, { action })
       : await summarizeForLongTermMemory(
@@ -3242,9 +3283,10 @@ export class RuntimeRunner {
     // the rolling write quota, dedup, and the memory_written audit all apply. Score is
     // advisory (0.6) — an automatic summary must never outrank curated content.
     const now = Date.now()
-    const name = `page-out-${now}`
+    const name = stableSemanticArchiveName(effectId)
+    const recordId = `${this.opts.memoryScope.tenant_id}:${this.opts.memoryScope.namespace}:project:${name}`
     await this.writeMemory({
-      record_id: `${this.opts.memoryScope.tenant_id}:${this.opts.memoryScope.namespace}:project:${name}`,
+      record_id: recordId,
       scope: this.opts.memoryScope,
       name,
       kind: "project",
@@ -3263,6 +3305,19 @@ export class RuntimeRunner {
       links: [],
       pinned: false,
     }, { sessionId, agentId: this.opts.agentId })
+    await this.opts.sessionLog.append(sessionId, {
+      kind: "semantic_archive_completed",
+      effect_id: effectId,
+      record_id: recordId,
+    })
+    } catch (error) {
+      await this.opts.sessionLog.append(sessionId, {
+        kind: "semantic_archive_failed",
+        effect_id: effectId,
+        error: formatToolError(error),
+      })
+      throw error
+    }
   }
 
   private async upgradeCompressedSummary(
@@ -3346,18 +3401,6 @@ function attachmentsToKernelMessage(parts: ContentPart[]): Record<string, unknow
     return { type: "text", text: "" }
   })
   return { role: "user", content }
-}
-
-function compressionAction(action?: string): Extract<SessionEvent, { kind: "compressed" }>["action"] {
-  if (
-    action === "snip_compact" ||
-    action === "micro_compact" ||
-    action === "context_collapse" ||
-    action === "auto_compact"
-  ) {
-    return action
-  }
-  return undefined
 }
 
 async function summarizeForLongTermMemory(

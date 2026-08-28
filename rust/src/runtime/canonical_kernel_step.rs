@@ -100,10 +100,13 @@ impl CanonicalKernelHost {
     }
 
     pub fn pending_effects(&self) -> Vec<crate::runtime::canonical_kernel::KernelEffect> {
+        // Publication order — the host consumes the first pending effect as the next action,
+        // and the map's lexicographic order is not the numeric step order.
         self.kernel
             .lock()
             .unwrap()
-            .pending_effects()
+            .pending_effects_in_order()
+            .into_iter()
             .cloned()
             .collect()
     }

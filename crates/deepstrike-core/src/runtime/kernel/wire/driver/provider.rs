@@ -182,6 +182,18 @@ impl CanonicalOperationDriver {
         if !effects.is_empty() {
             match &mut step.disposition {
                 StepDisposition::Effects(published) => {
+                    // A tool batch the turn dispatched is NOT published alongside the syscalls'
+                    // own effects. Publishing both would hand the host a two-effect step, and the
+                    // batch cannot be re-derived later either: §15.3 admits at most one pending
+                    // effect per kind, so the moment the syscall effect resolves, a resume that
+                    // rebuilds the batch from history would collide with the copy still pending.
+                    // The engine already dispatched the calls (its phase holds them unanswered),
+                    // so the honest shape is: this step publishes only the syscalls' effects, the
+                    // kernel awaits their resolution, and `resume_after_preload` re-derives the
+                    // batch — with the kind slot free again — once the last of them settles.
+                    published
+                        .effects
+                        .retain(|effect| !matches!(effect.effect, EffectKind::ExecuteTools(_)));
                     let mut merged = effects;
                     merged.append(&mut published.effects);
                     published.effects = merged;

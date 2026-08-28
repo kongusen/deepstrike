@@ -7,9 +7,9 @@ use deepstrike_core::runtime::session::RollbackReason;
 use deepstrike_core::scheduler::policy::SchedulerBudget;
 use deepstrike_core::scheduler::state_machine::*;
 use deepstrike_core::scheduler::tcb::TaskLifecycle;
+use deepstrike_core::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
 use deepstrike_core::types::message::*;
 use deepstrike_core::types::result::TerminationReason;
-use deepstrike_core::types::agent::{AgentIdentity, AgentRole, AgentRunSpec};
 use deepstrike_core::types::skill::SkillMetadata;
 use deepstrike_core::types::task::RuntimeTask;
 
@@ -29,8 +29,12 @@ fn default_sm() -> LoopStateMachine {
         })
         .collect();
     sm.run_spec = Some(
-        AgentRunSpec::new(AgentIdentity::new("root", "test-session"), AgentRole::Custom, "test")
-            .with_exposure_baseline(["add", "write_file", "read_file", "search"]),
+        AgentRunSpec::new(
+            AgentIdentity::new("root", "test-session"),
+            AgentRole::Custom,
+            "test",
+        )
+        .with_exposure_baseline(["add", "write_file", "read_file", "search"]),
     );
     sm
 }
@@ -568,8 +572,7 @@ fn user_tools_appear_in_call_llm() {
         description: "Read a file.".into(),
         parameters: serde_json::json!({"type": "object"}),
     }];
-    sm.run_spec.as_mut().unwrap().exposure_baseline =
-        Some(vec![CompactString::new("read_file")]);
+    sm.run_spec.as_mut().unwrap().exposure_baseline = Some(vec![CompactString::new("read_file")]);
     let action = sm.start(RuntimeTask::new("Read file"));
     match action {
         LoopAction::CallLLM { tools, .. } => {
@@ -587,8 +590,7 @@ fn user_tools_plus_skill_tool() {
         description: "Search.".into(),
         parameters: serde_json::json!({}),
     }];
-    sm.run_spec.as_mut().unwrap().exposure_baseline =
-        Some(vec![CompactString::new("search")]);
+    sm.run_spec.as_mut().unwrap().exposure_baseline = Some(vec![CompactString::new("search")]);
     sm.ctx
         .set_available_skills(vec![SkillMetadata::new("debug", "D")]);
 

@@ -3,4 +3,6 @@
 mod observation;
 pub mod wire;
 
-pub use observation::{KernelObservation, KernelPressureAction, WorkflowSpawnFailure};
+pub use observation::{
+    KernelObservation, KernelPressureAction, PublishedEffectRef, WorkflowSpawnFailure,
+};

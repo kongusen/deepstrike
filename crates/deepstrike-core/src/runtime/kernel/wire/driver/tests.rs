@@ -2507,6 +2507,96 @@ fn a_memory_query_is_clamped_to_the_operations_retrieval_policy() {
     assert_eq!(effect.binding.binding_id.as_str(), "mem-binding-1");
 }
 
+/// §7.6 + §15.3 · a provider turn that mixes an effect-publishing syscall (`memory`) with host
+/// tool calls publishes BOTH effects in one step — different kinds, so DEC-3 admits them
+/// together — and the host consumes them one pending effect at a time. Resolving the syscall's
+/// effect must not re-emit the dispatched tool batch: it is already pending, §15.3 admits at
+/// most one pending effect per kind, and the calls would dispatch twice.
+#[test]
+fn a_mixed_syscall_and_host_tool_batch_resolves_without_re_emitting_the_tool_batch() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let mixed = runtime.submit(&provider_result(
+        "in-mixed",
+        1_700_000_002_000,
+        &provider,
+        vec![
+            tool_call(
+                "call-1",
+                crate::context::manager::MEMORY_TOOL_NAME,
+                json!({"query": "past briefs"}),
+            ),
+            tool_call("call-2", "search", json!({"q": "kpi benchmarks"})),
+        ],
+    ));
+
+    // (1) the step publishes only the syscall's effect — one effect per step is the host's
+    //     consumption contract, and the tool batch stays re-derivable rather than pending
+    let query_effect = sole_effect(&mixed);
+    assert_eq!(
+        query_effect.tag(),
+        EffectKindTag::QueryMemory,
+        "the syscall effect is the step's only publication"
+    );
+
+    // (2) resolving the syscall effect re-derives the batch: the calls were dispatched but not
+    //     published, so the kind slot is free and the resume rebuilds it from history
+    let queried = runtime.submit(&resolved(
+        "in-recalls",
+        1_700_000_003_000,
+        &query_effect.effect_id,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
+            recalls: vec![MemoryRecall {
+                record_ref: MemoryRecordRef::new("rec-1").unwrap(),
+                name: "brief-style".to_string(),
+                kind: SyscallMemoryKind::Project,
+                content: "prefers numbered sections".to_string(),
+                score: None,
+            }],
+        }),
+    ));
+    let tools_effect = sole_effect(&queried);
+    assert_eq!(
+        tools_effect.tag(),
+        EffectKindTag::ExecuteTools,
+        "with the syscall effect settled, the resume rebuilds the tool batch"
+    );
+    let tools_effect = tools_effect.clone();
+    assert!(
+        history_text(&runtime)
+            .iter()
+            .any(|line| line.contains("prefers numbered sections")),
+        "the recall is in the context the resumed turn renders"
+    );
+
+    // (3) resolving the tool batch resumes the loop; the next provider call renders a context
+    //     that carries both the recall and the tool result
+    let resumed = runtime.submit(&payloads_resolved(
+        "in-tools",
+        1_700_000_004_000,
+        &tools_effect.effect_id,
+        vec![WireToolResultPayload::Inline(InlineToolResult {
+            call_id: CallId::new("call-2").unwrap(),
+            result: WireToolResult {
+                output: "kpi: 12%".into(),
+                durable_content: None,
+                is_error: false,
+                disposition: ToolResultDisposition::Recoverable,
+                tokens: None,
+            },
+        })],
+    ));
+    assert_eq!(
+        kinds(&resumed),
+        vec![EffectKindTag::CallProvider],
+        "results plus recalls are in, so the loop calls the provider again"
+    );
+    let text = history_text(&runtime).join("\n");
+    assert!(
+        text.contains("prefers numbered sections") && text.contains("kpi: 12%"),
+        "the resumed context carries the recall and the tool result"
+    );
+}
+
 // -----------------------------------------------------------------------------------------
 // fixture: no-host-session-identity (§22.6 · Task 11)
 // -----------------------------------------------------------------------------------------
@@ -3695,6 +3785,7 @@ fn a_plan_that_never_commits_fails_closed_instead_of_drifting() {
             previous_head: None,
             config: runtime.tx.config().unwrap(),
             resolving: None,
+            pending: &[],
         })
         .expect_err("a discarded plan poisons the driver");
     assert_eq!(fault.code, KernelFaultCode::TransactionConflict);

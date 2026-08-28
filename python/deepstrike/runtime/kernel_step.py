@@ -57,8 +57,6 @@ class KernelRunnerAction:
   original_size: int | None = None
   preview_size: int | None = None
   turn: int | None = None
-  action: str | None = None
-  summary: str | None = None
   archived: list[Message] | None = None
   tier: str | None = None
   handle_id: str | None = None

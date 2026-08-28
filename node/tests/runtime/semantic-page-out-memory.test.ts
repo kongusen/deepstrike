@@ -40,7 +40,7 @@ describe("semantic page_out → MemoryStore (Layer 5 contract)", () => {
       },
     }
 
-    const { runner } = createRunner(
+    const { runner, sessionLog } = createRunner(
       provider,
       [tool("fill", "fill", { type: "object", properties: { n: { type: "number" } } }, () => "w".repeat(200))],
       {
@@ -57,5 +57,8 @@ describe("semantic page_out → MemoryStore (Layer 5 contract)", () => {
 
     expect(commitCalls).toBeGreaterThan(0)
     expect(lastSummary).toContain("long-term summary")
+    const events = await sessionLog.read("semantic-page-out")
+    expect(events.some(e => e.event.kind === "semantic_archive_pending")).toBe(true)
+    expect(events.some(e => e.event.kind === "semantic_archive_completed")).toBe(true)
   })
 })

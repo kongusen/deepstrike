@@ -37,6 +37,7 @@ import {
 } from "./session-repair.js"
 import {
   messageToKernelMessage,
+  archivePresentationFromObservations,
   skillMetadataToKernel,
   taskUpdateToKernel,
   toolResultToKernel,
@@ -434,8 +435,12 @@ export class RuntimeRunner {
   /** K4: the active run's goal, kept for the renewal-boundary memory re-query. */
   private currentGoal = ""
   private nextArchiveStart = 0
-  private pendingPageOutArchives: Array<{ archiveStart: number; compressedSeq: number }> = []
-  private activePageOutArchive: { archiveStart: number; compressedSeq: number } | undefined
+  private pendingPageOutArchives: Array<{
+    archiveStart: number; compressedSeq: number; action?: string; summary?: string; tier?: "semantic" | "durable"
+  }> = []
+  private activePageOutArchive: {
+    archiveStart: number; compressedSeq: number; action?: string; summary?: string; tier?: "semantic" | "durable"
+  } | undefined
   /** Provider continuation emitted after a canonical nested workflow completes. */
   private workflowContinuation: Extract<KernelRunnerAction, { kind: "call_provider" }> | null = null
 
@@ -1258,7 +1263,9 @@ export class RuntimeRunner {
         }
 
       } else if (action.kind === "archive_page_out") {
-        const archiveMeta: { archiveStart: number; compressedSeq: number } = this.activePageOutArchive
+        const archiveMeta: {
+          archiveStart: number; compressedSeq: number; action?: string; summary?: string; tier?: "semantic" | "durable"
+        } = this.activePageOutArchive
           ?? this.pendingPageOutArchives.shift()
           ?? { archiveStart: this.nextArchiveStart, compressedSeq: await this.opts.sessionLog.latestSeq(sessionId) }
         this.activePageOutArchive = archiveMeta
@@ -1276,8 +1283,8 @@ export class RuntimeRunner {
           error = formatToolError(cause)
         }
         const archived = action.archived
-        const archiveAction = compressionAction(action.action) ?? "auto_compact"
-        const archiveTier = action.tier
+        const archiveAction = archiveMeta.action ?? "auto_compact"
+        const archiveTier = archiveMeta.tier
         if (!error) this.activePageOutArchive = undefined
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "page_out_archive_result",
@@ -2189,7 +2196,11 @@ export class RuntimeRunner {
       const compressedSeq = await this.opts.sessionLog.append(sessionId, event)
       if (event.kind === "compressed") {
         if ((obs.archived_count ?? 0) > 0) {
-          this.pendingPageOutArchives.push({ archiveStart: nextArchiveStart, compressedSeq })
+          this.pendingPageOutArchives.push({
+            archiveStart: nextArchiveStart,
+            compressedSeq,
+            ...archivePresentationFromObservations([obs]),
+          })
         }
         nextArchiveStart = compressedSeq + 1
       }

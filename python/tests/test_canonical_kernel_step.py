@@ -220,7 +220,7 @@ async def test_staged_outbound_survives_append_failure_and_drain_replays_exact_b
 
 def test_unknown_effect_preserves_correlation_and_returns_shared_protocol_error_resolution():
     from deepstrike.runtime.canonical_kernel_step import (
-        canonical_action_from_planned_step,
+        canonical_action_from_projection_json,
         canonical_unsupported_effect_resolution,
     )
 
@@ -228,7 +228,15 @@ def test_unknown_effect_preserves_correlation_and_returns_shared_protocol_error_
         (Path(__file__).parents[2] / "tests/fixtures/abi/unknown_effect_protocol_error.json")
         .read_text(encoding="utf-8")
     )
-    action = canonical_action_from_planned_step(fixture["planned_step"])
+    action = canonical_action_from_projection_json(json.dumps({
+        "state": "action",
+        "action": {
+            "kind": fixture["expected_action"]["effect_kind"],
+            "effect_id": fixture["expected_action"]["effect_id"],
+            "causation_input_id": "in-unknown",
+            "payload": {},
+        },
+    }))
 
     assert action is not None
     assert {
@@ -304,6 +312,31 @@ class SequencedFakeKernel:
     def pending_effects_json(self) -> str:
         return "[]"
 
+    def current_projection_json(self) -> str:
+        return '{"state":"idle"}'
+
+    def project_planned_step_json(self, planned_step_json: str) -> str:
+        planned = json.loads(planned_step_json)
+        disposition = planned.get("disposition") or {}
+        if disposition.get("kind") == "terminal":
+            return json.dumps({"state": "terminal", "action": disposition.get("terminal") or {}})
+        effects = disposition.get("effects") or []
+        if not effects:
+            return '{"state":"idle"}'
+        envelope = effects[0]
+        effect = dict(envelope.get("effect") or {})
+        kind = effect.pop("kind", None)
+        return json.dumps({"state": "action", "action": {
+            "kind": kind, "effect_id": envelope.get("effect_id"), "payload": effect,
+        }})
+
+    def published_effects_manifest_json(self, planned_step_json: str) -> str:
+        planned = json.loads(planned_step_json)
+        return json.dumps([
+            {"effect_id": item.get("effect_id"), "kind": (item.get("effect") or {}).get("kind")}
+            for item in (planned.get("disposition") or {}).get("effects") or []
+        ])
+
     def terminal_json(self) -> str | None:
         return None
 
@@ -373,3 +406,33 @@ async def test_runner_still_fails_when_journal_rebuild_itself_fails():
 
     with pytest.raises(CanonicalKernelRebuildRequiredError):
         await runtime.start_agent({"goal": "fatal"})
+
+
+def test_multi_effect_planned_step_projects_first_effect_not_throw():
+    from deepstrike.runtime.canonical_kernel_step import canonical_action_from_projection_json
+
+    fixture = json.loads(
+        (Path(__file__).parents[2] / "tests/fixtures/abi/multi_effect_step.json").read_text()
+    )
+
+    selectors = json.loads(
+        (Path(__file__).parents[2] / "tests/fixtures/abi/current_projection_multi_effect.json").read_text()
+    )["expected"]
+    action = canonical_action_from_projection_json(json.dumps({
+        "state": "action",
+        "action": {
+            "kind": selectors["action_kind"],
+            "effect_id": selectors["effect_id"],
+            "causation_input_id": selectors["causation_input_id"],
+            "payload": {
+                "requested_k": selectors["payload_requested_k"],
+                "query": {"text": selectors["payload_query_text"]},
+            },
+        },
+    }))
+    # The syscall's effect is minted first, so it is the action the host runs first; the tool
+    # batch re-surfaces through the pending-effects view once this one resolves.
+    assert action is not None
+    assert action.kind == selectors["action_kind"]
+    assert action.effect_id == selectors["effect_id"]
+    assert action.requested_k == selectors["payload_requested_k"]

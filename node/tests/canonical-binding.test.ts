@@ -64,6 +64,18 @@ describe("CanonicalKernel native binding", () => {
     expect(kernel.lifecycle()).toBe("configured")
   })
 
+  it("projects the published manifest in publication order after restore", () => {
+    const manifestFixture = JSON.parse(readFileSync(
+      join(process.cwd(), "../tests/fixtures/abi/multi_effect_step.json"), "utf8",
+    )) as { planned_step: unknown }
+    const kernel = new (getKernel().CanonicalKernel)()
+    expect(JSON.parse(kernel.publishedEffectsManifestJson(JSON.stringify(manifestFixture.planned_step))))
+      .toEqual([
+        { effect_id: "op-contract:step:9:effect:0", kind: "query_memory" },
+        { effect_id: "op-contract:step:9:effect:1", kind: "execute_tools" },
+      ])
+  })
+
   it("does not export the legacy runtime binding", () => {
     const nativeRoot = join(process.cwd(), "../crates/deepstrike-node")
     const source = readFileSync(join(nativeRoot, "src/lib.rs"), "utf8")

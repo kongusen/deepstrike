@@ -479,6 +479,45 @@ export class CanonicalKernel {
     return JSON.stringify(this.pendingEffects)
   }
 
+  currentProjectionJson(): string {
+    if (this.terminalPayload) return JSON.stringify({ state: "terminal", action: this.terminalPayload })
+    const effect = this.pendingEffects[0] as Record<string, unknown> | undefined
+    if (!effect) return JSON.stringify({ state: "idle" })
+    const payload = { ...(effect.effect as Record<string, unknown> ?? {}) }
+    delete payload.kind
+    return JSON.stringify({ state: "action", action: {
+      kind: (effect.effect as Record<string, unknown> | undefined)?.kind,
+      effect_id: effect.effect_id,
+      payload,
+    }})
+  }
+
+  projectPlannedStepJson(plannedStepJson: string): string {
+    const planned = JSON.parse(plannedStepJson) as Record<string, unknown>
+    const disposition = planned.disposition as Record<string, unknown> | undefined
+    if (disposition?.kind === "terminal") {
+      return JSON.stringify({ state: "terminal", action: disposition.terminal })
+    }
+    const effects = Array.isArray(disposition?.effects) ? disposition.effects : []
+    const effect = effects[0] as Record<string, unknown> | undefined
+    if (!effect) return JSON.stringify({ state: "idle" })
+    const body = { ...(effect.effect as Record<string, unknown> ?? {}) }
+    const kind = body.kind
+    delete body.kind
+    return JSON.stringify({ state: "action", action: {
+      kind, effect_id: effect.effect_id, payload: body,
+    }})
+  }
+
+  publishedEffectsManifestJson(plannedStepJson: string): string {
+    const planned = JSON.parse(plannedStepJson) as Record<string, any>
+    const effects = planned.disposition?.effects ?? []
+    return JSON.stringify(effects.map((effect: any) => ({
+      effect_id: effect.effect_id,
+      kind: effect.effect?.kind,
+    })))
+  }
+
   terminalJson(): string | undefined {
     return this.terminalPayload ? JSON.stringify(this.terminalPayload) : undefined
   }

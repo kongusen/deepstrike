@@ -62,6 +62,8 @@ export type {
   JournalRecordInput,
   KernelJournal,
 } from "./runtime/kernel-journal.js"
+export { diagnoseKernelJournal } from "./runtime/kernel-doctor.js"
+export type { KernelJournalDiagnosis } from "./runtime/kernel-doctor.js"
 export { InMemoryGroupBudgetStore, GroupBudgetScope } from "./runtime/run-group.js"
 export type {
   RunGroup, GroupBudgetStore, GroupLedger, GroupCharge, GroupMember,

@@ -178,6 +178,16 @@ class CanonicalKernel:
   def pending_effects_json(self) -> str:
     return self._native.pending_effects_json()
 
+  def current_projection_json(self) -> str:
+    """Return the additive core CurrentProjection JSON during the 0.2.62 migration."""
+    return self._native.current_projection_json()
+
+  def project_planned_step_json(self, planned_step_json: str) -> str:
+    return self._native.project_planned_step_json(planned_step_json)
+
+  def published_effects_manifest_json(self, planned_step_json: str) -> str:
+    return self._native.published_effects_manifest_json(planned_step_json)
+
   def terminal_json(self) -> str | None:
     return self._native.terminal_json()
 

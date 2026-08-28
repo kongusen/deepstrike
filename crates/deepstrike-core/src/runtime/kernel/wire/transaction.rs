@@ -230,6 +230,11 @@ pub struct PlanContext<'a> {
     /// `HostEffectFailure` is deliberately kind-agnostic, so the one policy decision DEC-5 allows
     /// has to be looked up from what the kernel asked for, never from what the host echoed back.
     pub resolving: Option<&'a KernelEffect>,
+    /// The effects that stay pending **after** this input settles the one it answers: the §5k
+    /// answer of "what does this kernel still have outstanding". A step that resolves one effect
+    /// of a multi-effect batch (or that shares its turn with still-running children) must not
+    /// resume the loop — the provider call it would emit would outrun work the host still owes.
+    pub pending: &'a [KernelEffect],
 }
 
 /// One durable transition, after the host's append and this runtime's commit.
@@ -620,12 +625,21 @@ where
             _ => None,
         };
         let resolving = settled.and_then(|effect_id| self.pending_effects.get(effect_id));
+        // §5k · what stays outstanding once this input settles its own effect. Cloned because the
+        // planner borrows the context across the `plan` call while `self` stays live.
+        let outstanding: Vec<KernelEffect> = self
+            .pending_effects
+            .values()
+            .filter(|effect| Some(&effect.effect_id) != settled)
+            .cloned()
+            .collect();
         let step = plan(&PlanContext {
             input: &input,
             step_seq,
             previous_head: self.head.as_ref().map(|anchor| &anchor.record_digest),
             config,
             resolving,
+            pending: &outstanding,
         })?;
 
         self.screen_planned_effects(&step, config, settled)?;
@@ -869,18 +883,24 @@ where
         // A replay re-runs the same effects in the same order, so the pending set here is the set
         // the original prepare saw — the planner reads its resolution target from the same place
         // either way.
-        let resolving = match &input.input {
-            NormalizedPayload::ResolveEffect(resolve) => {
-                self.pending_effects.get(&resolve.effect_id)
-            }
+        let settled = match &input.input {
+            NormalizedPayload::ResolveEffect(resolve) => Some(&resolve.effect_id),
             _ => None,
         };
+        let resolving = settled.and_then(|effect_id| self.pending_effects.get(effect_id));
+        let outstanding: Vec<KernelEffect> = self
+            .pending_effects
+            .values()
+            .filter(|effect| Some(&effect.effect_id) != settled)
+            .cloned()
+            .collect();
         let step = plan(&PlanContext {
             input,
             step_seq,
             previous_head: self.head.as_ref().map(|anchor| &anchor.record_digest),
             config,
             resolving,
+            pending: &outstanding,
         })?;
 
         let rebuilt = KernelRecord::chain_after(self.head.as_ref(), input, &step)
@@ -1310,8 +1330,21 @@ where
 
     /// Effects published by committed records and not yet resolved. A prepared-but-uncommitted
     /// step's effects are **not** here (§15.2).
+    ///
+    /// Iteration order is the map's lexicographic key order, which is **not** the numeric
+    /// publication order — `step:10` sorts before `step:9`. Consumers that pick "the first
+    /// pending effect" as the host's next action want [`Self::pending_effects_in_order`].
     pub fn pending_effects(&self) -> impl Iterator<Item = &KernelEffect> {
         self.pending_effects.values()
+    }
+
+    /// The same effects in **publication order** — earlier steps first, and within one step the
+    /// mint order that puts a syscall batch's own effects ahead of the continuation's. This is
+    /// the order a host consumes a multi-effect step in: take the head, resolve it, re-derive.
+    pub fn pending_effects_in_order(&self) -> Vec<&KernelEffect> {
+        let mut effects: Vec<&KernelEffect> = self.pending_effects.values().collect();
+        effects.sort_by_key(|effect| effect_position(effect.effect_id.as_str()));
+        effects
     }
 
     pub fn is_effect_resolved(&self, effect_id: &EffectId) -> bool {
@@ -1769,6 +1802,22 @@ fn outcome_digest(outcome: &EffectOutcome) -> Result<Digest, KernelFault> {
         .map_err(record_fault)
 }
 
+/// `(step_seq, effect_index, whole_id)` parsed out of a kernel-minted effect id
+/// (`{operation}:step:{seq}:effect:{index}`). The whole id rides along as the final key so an id
+/// this binary did not mint — or a same-position tie — still orders stably instead of tying.
+fn effect_position(id: &str) -> (u64, u64, &str) {
+    let step = id
+        .rsplit_once(":step:")
+        .and_then(|(_, rest)| rest.split_once(':'))
+        .and_then(|(digits, _)| digits.parse::<u64>().ok())
+        .unwrap_or(u64::MAX);
+    let index = id
+        .rsplit_once(":effect:")
+        .and_then(|(_, digits)| digits.parse::<u64>().ok())
+        .unwrap_or(u64::MAX);
+    (step, index, id)
+}
+
 fn cancel_digest(cancel: &CancelCommand) -> Result<Digest, KernelFault> {
     canonical_bytes(cancel)
         .map(|bytes| canonical_digest(bytes.as_slice()))
@@ -1821,6 +1870,32 @@ mod tests {
     use serde::Serialize;
 
     use super::super::*;
+
+    #[test]
+    fn effect_position_parses_numeric_step_order_not_lexicographic() {
+        // `step:10` sorts *before* `step:9` lexicographically; the position key must not.
+        let mut ids = [
+            "op-1:step:10:effect:0",
+            "op-1:step:9:effect:2",
+            "op-1:step:9:effect:10",
+            "op-1:step:9:effect:1",
+        ];
+        ids.sort_by_key(|id| super::effect_position(id));
+        assert_eq!(
+            ids,
+            [
+                "op-1:step:9:effect:1",
+                "op-1:step:9:effect:2",
+                "op-1:step:9:effect:10",
+                "op-1:step:10:effect:0",
+            ]
+        );
+        // An id this binary did not mint still orders stably (after every parseable position).
+        assert!(
+            super::effect_position("not-a-kernel-id")
+                > super::effect_position("op-1:step:1:effect:0")
+        );
+    }
 
     // -----------------------------------------------------------------------------------------
     // fixtures

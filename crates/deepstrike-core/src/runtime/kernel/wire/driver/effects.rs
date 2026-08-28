@@ -154,6 +154,15 @@ impl CanonicalOperationDriver {
                 // erased by the very continuation it describes.
                 let engine = self.engine_mut()?;
                 let action = engine.resume_after_preload();
+                // §5k · other effects this kernel published are still outstanding — resuming the
+                // turn now would emit a provider call that outruns work the host still owes (the
+                // sibling effect of a mixed syscall batch). The last of them to settle re-runs
+                // this resume with a free hand.
+                let action = if context.pending.is_empty() {
+                    action
+                } else {
+                    LoopAction::AwaitingResume
+                };
                 engine.observations.push(KernelObservation::MemoryQueried {
                     turn,
                     scope: binding_scope(&query.binding_id),
@@ -627,7 +636,12 @@ impl CanonicalOperationDriver {
             tokens,
             Residency::Resident,
         );
-        let action = engine.resume_after_preload();
+        let mut action = engine.resume_after_preload();
+        // §5k · same rule as the memory-query resume: a sibling effect still pending means the
+        // turn resumes when the last of them settles, not now.
+        if !context.pending.is_empty() {
+            action = LoopAction::AwaitingResume;
+        }
         engine
             .observations
             .push(KernelObservation::PayloadResidencyChanged {

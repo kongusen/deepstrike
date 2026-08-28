@@ -19,6 +19,22 @@ export interface ProviderRequestPlan {
   stablePrefixFingerprint: string
 }
 
+export interface ProviderRequestIdentity {
+  providerId: string
+  modelId: string
+  endpoint: Pick<ProviderRequestEndpoint, "id" | "protocol" | "baseURL">
+}
+
+/** Fail closed when a replayed request is resumed under a different provider identity. */
+export function assertProviderRequestIdentity(
+  plan: Pick<ProviderRequestPlan, "providerId" | "modelId" | "endpoint">,
+  expected: ProviderRequestIdentity,
+): void {
+  const actual = `${plan.providerId}/${plan.modelId}/${plan.endpoint.id}/${plan.endpoint.protocol}/${plan.endpoint.baseURL}`
+  const wanted = `${expected.providerId}/${expected.modelId}/${expected.endpoint.id}/${expected.endpoint.protocol}/${expected.endpoint.baseURL.replace(/\/$/, "")}`
+  if (actual !== wanted) throw new Error(`provider request identity mismatch: expected ${wanted}, got ${actual}`)
+}
+
 export interface NormalizedProviderUsage extends ProviderUsage {
   /** Input not accounted as a cache read or write. `inputTokens` remains the full footprint. */
   uncachedInputTokens: number

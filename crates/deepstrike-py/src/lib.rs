@@ -43,9 +43,9 @@ use deepstrike_core::governance::permission::{PermissionAction, PermissionRule};
 use deepstrike_core::governance::pipeline::GovernancePipeline as RustGovernancePipeline;
 use deepstrike_core::governance::rate_limit::RateLimit;
 use deepstrike_core::harness::eval::{
+    Criterion as RustCriterion, SkillCandidate as RustSkillCandidate,
     build_eval_messages as rust_build_eval_messages, parse_verdict as rust_parse_verdict,
-    verdict_output_schema as rust_verdict_output_schema, Criterion as RustCriterion,
-    SkillCandidate as RustSkillCandidate,
+    verdict_output_schema as rust_verdict_output_schema,
 };
 use deepstrike_core::runtime::kernel::wire::{
     CanonicalKernel as RustCanonicalKernel, CheckpointBoundary as RustCheckpointBoundary,
@@ -994,8 +994,32 @@ impl CanonicalKernel {
     }
 
     fn pending_effects_json(&self) -> PyResult<String> {
-        serde_json::to_string(&self.inner.pending_effects().collect::<Vec<_>>())
+        // Publication order, not the map's lexicographic order (`step:10` sorts before `step:9`)
+        // — hosts consume the first pending effect as the next action.
+        serde_json::to_string(&self.inner.pending_effects_in_order())
             .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn current_projection_json(&self) -> PyResult<String> {
+        let projection = self
+            .inner
+            .current_projection()
+            .map_err(|error| PyValueError::new_err(error.message))?;
+        serde_json::to_string(&projection)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn project_planned_step_json(&self, planned_step_json: String) -> PyResult<String> {
+        deepstrike_core::runtime::kernel::wire::projection::project_planned_step_json(
+            &planned_step_json,
+        )
+        .map_err(|error| PyValueError::new_err(error.message))
+    }
+
+    fn published_effects_manifest_json(&self, planned_step_json: String) -> PyResult<String> {
+        deepstrike_core::runtime::kernel::wire::projection::published_effects_manifest_json(
+            &planned_step_json,
+        ).map_err(|error| PyValueError::new_err(error.message))
     }
 
     fn terminal_json(&self) -> PyResult<Option<String>> {

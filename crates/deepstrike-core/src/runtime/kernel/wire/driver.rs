@@ -46,7 +46,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::checkpoint::{
     AuthoredMemoryQueryState, AuthoredMemoryWriteState, ChildProcessState, ContextVmState,
@@ -153,13 +153,13 @@ use crate::types::task::{RuntimeTask, TaskLane};
 ///   divergence;
 /// * `observations` — facts produced by this exact transition, published only after commit;
 /// * `disposition` — effects **or** a terminal, never both (§7.12).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedStep {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub root_kind: Option<RootKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus: Option<ExecutionFocus>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub observations: Vec<KernelObservation>,
     pub disposition: StepDisposition,
 }

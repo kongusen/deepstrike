@@ -37,9 +37,25 @@ const flakyTool = () =>
     throw new Error("kaboom")
   })
 
-/** run_started carries a random run_id; normalize it so two runs are comparable. */
+/** run_started carries a random run_id; the step_published_effects audit fact carries the
+ *  run's random operation id inside each effect_id. Normalize both so two runs are comparable. */
 function normalize(events: SessionEvent[]): SessionEvent[] {
-  return events.map(e => (e.kind === "run_started" ? { ...e, run_id: "<run>" } : e))
+  return events.map(e => {
+    if (e.kind === "run_started") return { ...e, run_id: "<run>" }
+    if (e.kind === "kernel_observation" && e.observation_kind === "step_published_effects") {
+      return {
+        ...e,
+        raw: {
+          ...(e.raw as Record<string, unknown>),
+          effects: ((e.raw as { effects?: Array<{ effect_id: string }> }).effects ?? []).map(effect => ({
+            ...effect,
+            effect_id: effect.effect_id.replace(/^[^:]+/, "<operation>"),
+          })),
+        },
+      }
+    }
+    return e
+  })
 }
 
 const NOTE = "the flaky tool failed — try a different approach"

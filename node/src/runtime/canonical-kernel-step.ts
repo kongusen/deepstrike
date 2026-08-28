@@ -99,241 +99,186 @@ export function canonicalUnsupportedEffectResolution(
 }
 
 /** The only ABI-v3 planned-step → Node host-action projection. */
-export function canonicalActionFromPlannedStep(
-  plannedStep: CanonicalPlannedStep,
-): KernelRunnerAction | null {
-  if (plannedStep.disposition.kind === "terminal") {
-    const terminal = plannedStep.disposition.terminal
-    const usage = asObject(terminal.usage)
-    let termination = String(terminal.kind ?? "failed")
-    let turnsUsed = Number(usage.turns ?? 0)
-    if (terminal.kind === "agent") {
-      const result = asObject(terminal.result)
-      termination = String(result.termination ?? "completed")
-      turnsUsed = Number(result.turns_used ?? turnsUsed)
-      const finalMessage = asObject(result.final_message)
-      const pace = asObject(result.pace_decision)
-      if (Object.keys(finalMessage).length > 0) {
-        return {
-          kind: "done",
-          effectId: "",
-          result: {
-            termination,
-            turnsUsed,
-            totalTokensUsed: totalUsageTokens(terminal),
-            finalMessage: {
-              role: String(finalMessage.role ?? "assistant") as Message["role"],
-              content: String(finalMessage.content ?? ""),
-              toolCalls: (Array.isArray(finalMessage.tool_calls) ? finalMessage.tool_calls : [])
-                .map(value => {
-                  const call = asObject(value)
-                  return {
-                    id: String(call.call_id ?? ""),
-                    name: String(call.name ?? ""),
-                    arguments: JSON.stringify(call.arguments ?? {}),
-                  }
-                }),
-            },
-            ...(Object.keys(pace).length > 0
-              ? {
-                  paceDecision: {
-                    action: String(pace.action ?? "stop") as "continue" | "sleep" | "stop",
-                    ...(pace.delay_ms !== undefined ? { delayMs: Number(pace.delay_ms) } : {}),
-                    reason: String(pace.reason ?? ""),
-                    ...(pace.coerced_from ? { coercedFrom: String(pace.coerced_from) } : {}),
-                  },
-                }
-              : {}),
-          },
-        }
-      }
-    } else if (terminal.kind === "workflow") {
-      const outcome = asObject(terminal.outcome)
-      termination = String(outcome.status ?? "completed")
-    } else if (terminal.kind === "cancelled") {
-      termination = String(terminal.reason ?? "cancelled")
-    } else if (terminal.kind === "failed") {
-      const failure = asObject(terminal.failure)
-      termination = failure.code === "provider_recovery_exhausted"
-        ? "context_overflow"
-        : "error"
-    }
+
+function canonicalDoneFromTerminal(terminal: Record<string, unknown>): KernelRunnerAction {
+  const usage = asObject(terminal.usage)
+  let termination = String(terminal.kind ?? "failed")
+  let turnsUsed = Number(usage.turns ?? 0)
+  if (terminal.kind === "agent") {
+    const result = asObject(terminal.result)
+    termination = String(result.termination ?? "completed")
+    turnsUsed = Number(result.turns_used ?? turnsUsed)
+    const finalMessage = asObject(result.final_message)
+    const pace = asObject(result.pace_decision)
     return {
-      kind: "done",
-      effectId: "",
+      kind: "done", effectId: "",
       result: {
-        termination,
-        turnsUsed,
-        totalTokensUsed: totalUsageTokens(terminal),
+        termination, turnsUsed, totalTokensUsed: totalUsageTokens(terminal),
+        ...(Object.keys(finalMessage).length > 0 ? { finalMessage: {
+          role: String(finalMessage.role ?? "assistant") as Message["role"],
+          content: String(finalMessage.content ?? ""),
+          toolCalls: (Array.isArray(finalMessage.tool_calls) ? finalMessage.tool_calls : []).map(value => {
+            const call = asObject(value)
+            return { id: String(call.call_id ?? ""), name: String(call.name ?? ""), arguments: JSON.stringify(call.arguments ?? {}) }
+          }),
+        } } : {}),
+        ...(Object.keys(pace).length > 0 ? { paceDecision: {
+          action: String(pace.action ?? "stop") as "continue" | "sleep" | "stop",
+          ...(pace.delay_ms !== undefined ? { delayMs: Number(pace.delay_ms) } : {}),
+          reason: String(pace.reason ?? ""),
+          ...(pace.coerced_from ? { coercedFrom: String(pace.coerced_from) } : {}),
+        } } : {}),
       },
     }
   }
+  if (terminal.kind === "workflow") termination = String(asObject(terminal.outcome).status ?? "completed")
+  if (terminal.kind === "cancelled") termination = String(terminal.reason ?? "cancelled")
+  if (terminal.kind === "failed") termination = asObject(terminal.failure).code === "provider_recovery_exhausted" ? "context_overflow" : "error"
+  return { kind: "done", effectId: "", result: { termination, turnsUsed, totalTokensUsed: totalUsageTokens(terminal) } }
+}
 
-  const published = plannedStep.disposition.effects ?? []
-  if (published.length === 0) return null
-  if (published.length !== 1) {
-    throw new Error(`Node runner expects one canonical effect at a time, received ${published.length}`)
+/** Adapt the additive core CurrentProjection JSON into the existing Node action surface. */
+export function canonicalActionFromProjectionJson(raw: string): KernelRunnerAction | null {
+  const projection = asObject(JSON.parse(raw))
+  const state = String(projection.state ?? "idle")
+  if (state === "idle") return null
+  if (state === "terminal") {
+    return canonicalDoneFromTerminal(asObject(projection.action))
   }
-  const envelope = asObject(published[0])
-  const effectId = String(envelope.effect_id ?? "")
-  const effect = asObject(envelope.effect)
-  if (!effectId) throw new Error("canonical effect is missing effect_id")
-
-  switch (effect.kind) {
-    case "call_provider":
-      return {
-        kind: "call_provider",
-        effectId,
-        context: renderedContextToSdk(asObject(effect.context)),
-        tools: (Array.isArray(effect.tools) ? effect.tools : []).map(raw => {
-          const tool = asObject(raw)
-          return {
-            name: String(tool.name ?? ""),
-            description: String(tool.description ?? ""),
-            parameters: JSON.stringify(tool.parameters ?? {}),
-          }
-        }),
-      }
-    case "execute_tools":
-      return {
-        kind: "execute_tool",
-        effectId,
-        calls: (Array.isArray(effect.calls) ? effect.calls : []).map(raw => {
-          const call = asObject(raw)
-          return {
-            id: String(call.call_id ?? ""),
-            name: String(call.name ?? ""),
-            arguments: JSON.stringify(call.arguments ?? {}),
-          }
-        }),
-      }
-    case "request_approval":
-      return {
-        kind: "request_approval",
-        effectId,
-        requests: (Array.isArray(effect.requests) ? effect.requests : []).map(raw => {
-          const request = asObject(raw)
-          return {
-            callId: String(request.call_id ?? ""),
-            tool: String(request.tool_name ?? ""),
-            arguments: JSON.stringify(request.arguments ?? {}),
-            reason: String(request.reason ?? ""),
-          }
-        }),
-      }
-    case "spawn_tasks":
-      return {
-        kind: "spawn_workflow",
-        effectId,
-        nodes: (Array.isArray(effect.tasks) ? effect.tasks : []).map(raw => {
-          const task = asObject(raw)
-          const spec = asObject(task.spec)
-          return {
-            agent_id: String(task.task_id ?? ""),
-            task_id: String(task.task_id ?? ""),
-            attempt_id: String(task.attempt_id ?? ""),
-            launch_token: String(task.launch_token ?? ""),
-            node_id: String(task.node_id ?? ""),
-            goal: String(spec.goal ?? ""),
-            role: String(spec.role ?? "custom"),
-            isolation: String(spec.isolation ?? "shared"),
-            context_inheritance: String(spec.context_inheritance ?? "none"),
-            ...(spec.metadata && typeof spec.metadata === "object"
-              ? asObject(spec.metadata)
-              : {}),
-          }
-        }),
-        ...(effect.budget ? { budget: asObject(effect.budget) } : {}),
-      }
-    case "preempt_tasks": {
-      const attempts = (Array.isArray(effect.attempts) ? effect.attempts : []).map(raw => {
-        const attempt = asObject(raw)
+  const action = asObject(projection.action)
+  const payload = asObject(action.payload)
+  const effectId = String(action.effect_id ?? "")
+  if (action.kind === "query_memory") {
+    return {
+      kind: "query_memory",
+      effectId,
+      query: asObject(payload.query),
+      requestedK: Number(payload.requested_k ?? 0),
+    }
+  }
+  if (action.kind === "execute_tools") {
+    return {
+      kind: "execute_tool",
+      effectId,
+      calls: (Array.isArray(payload.calls) ? payload.calls : []).map(raw => {
+        const call = asObject(raw)
         return {
-          task_id: String(attempt.task_id ?? ""),
-          attempt_id: String(attempt.attempt_id ?? ""),
+          id: String(call.call_id ?? ""),
+          name: String(call.name ?? ""),
+          arguments: JSON.stringify(call.arguments ?? {}),
         }
-      })
-      return {
-        kind: "preempt_sub_agents",
-        effectId,
-        attempts,
-        agentIds: attempts.map(attempt => attempt.task_id),
-        reason: String(effect.reason ?? ""),
-      }
+      }),
     }
-    case "persist_memory":
-      return {
-        kind: "persist_memory",
-        effectId,
-        memory: asObject(effect.memory),
-      }
-    case "query_memory":
-      return {
-        kind: "query_memory",
-        effectId,
-        query: asObject(effect.query),
-        requestedK: Number(effect.requested_k ?? 0),
-      }
-    case "archive_page_out": {
-      const payload = asObject(effect.payload) as {
-        content: string
-        digest: string
-        original_size: string
-        preview?: string
-      }
-      let archived: Message[] = []
-      try {
-        const decoded = JSON.parse(String(payload.content ?? "")) as unknown
-        if (Array.isArray(decoded)) {
-          archived = decoded.map(value => kernelMessageToSdk(asObject(value)))
+  }
+  if (action.kind === "call_provider") {
+    const context = asObject(payload.context)
+    return {
+      kind: "call_provider",
+      effectId,
+      context: renderedContextToSdk(context),
+      tools: (Array.isArray(payload.tools) ? payload.tools : []).map(raw => {
+        const tool = asObject(raw)
+        return {
+          name: String(tool.name ?? ""),
+          description: String(tool.description ?? ""),
+          parameters: JSON.stringify(tool.parameters ?? {}),
         }
-      } catch {
-        // Persistence still uses the opaque body and digest. Only optional presentation-side
-        // summarization is skipped if the archived message batch cannot be decoded.
-      }
-      const compressed = (plannedStep.observations ?? [])
-        .find(observation => observation.kind === "compressed")
-      const pressureAction = compressed ? String(compressed.action ?? "") : ""
-      return {
-        kind: "archive_page_out",
-        effectId,
-        handleId: String(effect.handle_id ?? ""),
-        payload,
-        archived,
-        ...(pressureAction ? { action: pressureAction } : {}),
-        ...(compressed?.summary ? { summary: String(compressed.summary) } : {}),
-        ...(pressureAction
-          ? {
-              tier: ["context_collapse", "auto_compact"].includes(pressureAction)
-                ? "semantic"
-                : "durable",
-            }
-          : {}),
-      }
+      }),
     }
-    case "load_payload":
-      return {
-        kind: "load_payload",
-        effectId,
-        handleId: String(effect.handle_id ?? ""),
-        payloadRef: String(effect.payload_ref ?? ""),
-      }
-    case "evaluate_milestone": {
-      const request = asObject(effect.request)
-      return {
-        kind: "evaluate_milestone",
-        effectId,
-        phaseId: String(request.phase_id ?? ""),
-        criteria: [],
-        requiredEvidence: [],
-      }
+  }
+  if (action.kind === "request_approval") {
+    return {
+      kind: "request_approval",
+      effectId,
+      requests: (Array.isArray(payload.requests) ? payload.requests : []).map(raw => {
+        const request = asObject(raw)
+        return {
+          callId: String(request.call_id ?? ""),
+          tool: String(request.tool_name ?? ""),
+          arguments: JSON.stringify(request.arguments ?? {}),
+          reason: String(request.reason ?? ""),
+        }
+      }),
     }
-    default:
-      return {
-        kind: "unsupported_effect",
-        effectId,
-        effectKind: String(effect.kind),
-      }
+  }
+  if (action.kind === "load_payload") {
+    return {
+      kind: "load_payload",
+      effectId,
+      handleId: String(payload.handle_id ?? ""),
+      payloadRef: String(payload.payload_ref ?? ""),
+    }
+  }
+  if (action.kind === "evaluate_milestone") {
+    const request = asObject(payload.request)
+    return {
+      kind: "evaluate_milestone",
+      effectId,
+      phaseId: String(request.phase_id ?? ""),
+      criteria: [],
+      requiredEvidence: [],
+    }
+  }
+  if (action.kind === "spawn_tasks") {
+    return {
+      kind: "spawn_workflow",
+      effectId,
+      nodes: (Array.isArray(payload.tasks) ? payload.tasks : []).map(raw => {
+        const task = asObject(raw)
+        const spec = asObject(task.spec)
+        return {
+          agent_id: String(task.task_id ?? ""), task_id: String(task.task_id ?? ""),
+          attempt_id: String(task.attempt_id ?? ""), launch_token: String(task.launch_token ?? ""),
+          node_id: String(task.node_id ?? ""), goal: String(spec.goal ?? ""),
+          role: String(spec.role ?? "custom"), isolation: String(spec.isolation ?? "shared"),
+          context_inheritance: String(spec.context_inheritance ?? "none"),
+          ...(spec.metadata && typeof spec.metadata === "object" ? asObject(spec.metadata) : {}),
+        }
+      }),
+      ...(payload.budget ? { budget: asObject(payload.budget) } : {}),
+    }
+  }
+  if (action.kind === "preempt_tasks") {
+    const attempts = (Array.isArray(payload.attempts) ? payload.attempts : []).map(raw => {
+      const attempt = asObject(raw)
+      return { task_id: String(attempt.task_id ?? ""), attempt_id: String(attempt.attempt_id ?? "") }
+    })
+    return { kind: "preempt_sub_agents", effectId, attempts, agentIds: attempts.map(a => a.task_id), reason: String(payload.reason ?? "") }
+  }
+  if (action.kind === "persist_memory") {
+    return { kind: "persist_memory", effectId, memory: asObject(payload.memory) }
+  }
+  if (action.kind === "archive_page_out") {
+    const archivePayload = asObject(payload.payload) as {
+      content?: string
+      digest?: string
+      original_size?: string
+      preview?: string
+    }
+    let archived: Message[] = []
+    try {
+      const decoded = JSON.parse(String(archivePayload.content ?? "")) as unknown
+      if (Array.isArray(decoded)) archived = decoded.map(value => kernelMessageToSdk(asObject(value)))
+    } catch {
+      // The opaque archive payload remains authoritative even when presentation decoding fails.
+    }
+    return {
+      kind: "archive_page_out",
+      effectId,
+      handleId: String(payload.handle_id ?? ""),
+      payload: {
+        content: String(archivePayload.content ?? ""),
+        digest: String(archivePayload.digest ?? ""),
+        original_size: String(archivePayload.original_size ?? "0"),
+        ...(archivePayload.preview ? { preview: String(archivePayload.preview) } : {}),
+      },
+      archived,
+    }
+  }
+  return {
+    kind: "unsupported_effect",
+    effectId,
+    effectKind: String(action.kind ?? ""),
   }
 }
 
@@ -1330,6 +1275,18 @@ export class CanonicalRunnerRuntime {
             if (!kind) throw new Error("canonical observation is missing kind")
             this.hostObservations.push({ ...raw, kind })
           }
+          // §7.11 · a committed step that publishes effects is a fact worth recording in the
+          // host event log: the journal stores only a digest of the step, so this manifest is
+          // what makes the published effect ids + kinds recoverable post-hoc without replaying.
+          const published = JSON.parse(this.host.kernel.publishedEffectsManifestJson(
+            JSON.stringify(transition.plannedStep),
+          )) as Array<{ effect_id: string; kind: string }>
+          if (published.length > 0) {
+            this.hostObservations.push({
+              kind: "step_published_effects",
+              effects: published,
+            })
+          }
           if (transition.checkpointAdvice) {
             this.hostObservations.push({
               kind: "checkpoint_advised",
@@ -1343,7 +1300,9 @@ export class CanonicalRunnerRuntime {
             })
           }
         }
-        this.lastAction = canonicalActionFromPlannedStep(transition.plannedStep)
+        this.lastAction = canonicalActionFromProjectionJson(
+          this.host.kernel.projectPlannedStepJson(JSON.stringify(transition.plannedStep)),
+        )
       }
       if (this.lastAction?.kind !== "unsupported_effect") return this.lastAction
       nextInput = canonicalUnsupportedEffectResolution(
@@ -1354,16 +1313,7 @@ export class CanonicalRunnerRuntime {
   }
 
   private currentAction(): KernelRunnerAction | null {
-    const terminal = this.host.kernel.terminalJson()
-    if (terminal) {
-      return canonicalActionFromPlannedStep({
-        disposition: { kind: "terminal", terminal: JSON.parse(terminal) as Record<string, unknown> },
-      })
-    }
-    const effects = this.pendingEffects()
-    return canonicalActionFromPlannedStep({
-      disposition: { kind: "effects", effects },
-    })
+    return canonicalActionFromProjectionJson(this.host.kernel.currentProjectionJson())
   }
 
   private pendingEffects(): Array<Record<string, unknown>> {

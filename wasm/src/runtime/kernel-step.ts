@@ -83,11 +83,7 @@ export type KernelRunnerAction =
   | {
       kind: "archive_page_out"
       effectId: string
-      turn?: number
-      action?: string
-      summary?: string
       archived: Message[]
-      tier?: string
       handleId?: string
       payload?: {
         content: string
@@ -186,6 +182,23 @@ export interface KernelObservation {
   rollbacks_in_window?: number
   window_turns?: number
   threshold?: number
+  // step_published_effects: the effect manifest of a committed step (host-side audit fact; the
+  // kernel never emits it — see the §7.11 note in the spec).
+  effects?: Array<{ effect_id: string; kind: string }>
+}
+
+/** Presentation/policy facts for archive actions are sourced from committed observations. */
+export function archivePresentationFromObservations(
+  observations: readonly KernelObservation[],
+): { action?: string; summary?: string; tier?: "semantic" | "durable" } {
+  const compressed = [...observations].reverse().find(observation => observation.kind === "compressed")
+  const action = compressed?.action
+  if (action !== "snip_compact" && action !== "micro_compact" && action !== "context_collapse" && action !== "auto_compact") return {}
+  return {
+    action,
+    ...(compressed?.summary ? { summary: compressed.summary } : {}),
+    tier: action === "context_collapse" || action === "auto_compact" ? "semantic" : "durable",
+  }
 }
 
 function tryParseJson(s: string): unknown {

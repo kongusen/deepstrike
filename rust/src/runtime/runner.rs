@@ -2600,6 +2600,7 @@ impl RuntimeRunner {
                 // Rejections are already durable in the kernel transaction record. Call-specific
                 // APIs inspect the observation directly; the generic runner has no host effect.
                 KernelObservation::ControlRequestRejected { .. } => {}
+                KernelObservation::StepPublishedEffects { .. } => {}
             }
         }
         next_archive_start

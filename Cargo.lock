@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "deepstrike-tokenizer"
-version = "0.2.60"
+version = "0.2.61"
 dependencies = [
  "pretty_assertions",
  "tiktoken-rs",

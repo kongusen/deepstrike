@@ -91,6 +91,15 @@ describe("SPC-013 A-01 model registry", () => {
     expect(explicit.effectiveCapabilities.nativeTokenCounting.state).toBe("supported")
   })
 
+  it("never reports native token counting without an adapter method", () => {
+    for (const model of ["openai/gpt-5.5", "anthropic/claude-sonnet-4-6", "gemini/gemini-2.5-pro"]) {
+      const runtime = resolveProviderRuntime({ model, apiKey: "k" })
+      if (runtime.effectiveCapabilities.nativeTokenCounting.state === "supported") {
+        expect(typeof runtime.adapter.countTokens).toBe("function")
+      }
+    }
+  })
+
   it("owns Ollama prefix policy and GLM alias normalization in one resolver", () => {
     expect(modelRegistry.resolve("llama3.1-70b", "ollama")?.recommendedRuntimePolicy).toEqual({ maxTurns: 20 })
     expect(modelRegistry.resolve("totally-unknown-xyz", "ollama")?.descriptor).toEqual({

@@ -4,6 +4,47 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed — mixed syscall/tool batches no longer produce multi-effect steps
+
+- A provider turn that mixes an effect-publishing syscall (`memory`, `read_result`,
+  `start_workflow`) with host tool calls used to publish both the syscall's effect and the
+  `execute_tools` batch in one planned step. Every SDK projection rejected that shape
+  ("expects one canonical effect at a time, received 2"), killing the run inside the SSE stream
+  and leaving a journal record whose replay re-derived the same two-effect step — the operation
+  could never be restored. The kernel now publishes only the syscalls' effects for such a step:
+  the engine keeps the dispatched calls unanswered, and `resume_after_preload` re-derives the
+  batch as a fresh effect once the last syscall effect resolves (the §15.3 one-pending-per-kind
+  slot is free again by then). Resolving a `query_memory` or `load_payload` effect while
+  sibling effects are still pending now holds the turn (`AwaitingResume`) instead of emitting a
+  provider call that outruns work the host still owes.
+- All four host projections (Node, Python, Rust, WASM) consume a multi-effect step by acting on
+  the first effect rather than throwing. A step that reduces a syscall batch may legitimately
+  carry several effects of different kinds; the remainder surface again through the
+  pending-effects view once the current one resolves, and the mint order puts the syscalls'
+  own effects first.
+- Pending effects now surface in publication order — earlier steps first, and within a step the
+  mint order — instead of the map's lexicographic key order, which put `step:10` before `step:9`.
+- Note for operators: the planning change alters the shape of steps that mix syscalls with host
+  tools. Operations whose journals already contain such a step (they were already failing with
+  the cardinality error above) remain unrestorable; every other journal replays identically.
+
+### Added — journal diagnosability
+
+- Hosts now record a `step_published_effects` observation (effect ids + kinds) in their event
+  log whenever a committed step publishes effects. The journal stores only a digest of each
+  step, so this manifest is what makes a run's effect history recoverable post-hoc without
+  replaying. The kernel never emits it itself — an observation the kernel produced would ride
+  the planned step into `step_digest` and break replay of every existing journal.
+- `diagnoseKernelJournal` (Node) replays a durable journal without committing anything and
+  reports whether the operation still restores, which record first diverges from its digest,
+  and what the head holds (terminal / pending effects). This turns a silent brick into an
+  actionable diagnosis.
+- A shared cross-SDK fixture (`tests/fixtures/abi/multi_effect_step.json`) now pins the
+  multi-effect projection contract; Node, Python, Rust, and WASM all project the same planned
+  step to the same action.
+
 ## [0.2.61] - 2026-08-27
 
 ### Changed — provider token measurement and usage authority (SPC-024)

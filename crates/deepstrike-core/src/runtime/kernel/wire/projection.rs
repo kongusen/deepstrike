@@ -85,6 +85,7 @@ pub enum CanonicalHostAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", content = "action", rename_all = "snake_case")]
 pub enum CurrentProjection {
     Idle,
     Action(CanonicalHostAction),
@@ -169,6 +170,28 @@ pub fn project_current_action(step: &PlannedStep) -> Result<CurrentProjection, P
 /// use this selector while their payload conversion is migrated to [`project_effect`].
 pub fn current_effect(step: &PlannedStep) -> Option<&KernelEffect> {
     step.disposition.effects().first()
+}
+
+/// JSON bridge used by bindings for transitions that carry a planned step directly.
+pub fn project_planned_step_json(raw: &str) -> Result<String, ProjectionError> {
+    let step: PlannedStep = serde_json::from_str(raw).map_err(|error| ProjectionError {
+        message: format!("invalid planned step: {error}"),
+    })?;
+    let projection = project_current_action(&step)?;
+    serde_json::to_string(&projection).map_err(|error| ProjectionError {
+        message: format!("projection serialization failed: {error}"),
+    })
+}
+
+/// JSON bridge for the host audit manifest. This intentionally excludes payloads and preserves
+/// the publication order already encoded in the planned step.
+pub fn published_effects_manifest_json(raw: &str) -> Result<String, ProjectionError> {
+    let step: PlannedStep = serde_json::from_str(raw).map_err(|error| ProjectionError {
+        message: format!("invalid planned step: {error}"),
+    })?;
+    serde_json::to_string(&published_effects_manifest(&step)).map_err(|error| ProjectionError {
+        message: format!("manifest serialization failed: {error}"),
+    })
 }
 
 /// Project the current action from the transaction's already ordered pending-effect view.
@@ -294,8 +317,8 @@ mod tests {
             "../../../../../../tests/fixtures/abi/multi_effect_step.json"
         ))
         .expect("fixture JSON");
-        let step: PlannedStep = serde_json::from_value(fixture["planned_step"].clone())
-            .expect("planned step");
+        let step: PlannedStep =
+            serde_json::from_value(fixture["planned_step"].clone()).expect("planned step");
         let action = project_effect(step.disposition.effects().first().expect("effect"));
         let value = serde_json::to_value(action).expect("action JSON");
 
@@ -304,6 +327,37 @@ mod tests {
         assert_eq!(value["causation_input_id"], "in-9");
         assert_eq!(value["payload"]["requested_k"], 4);
         assert_eq!(value["payload"]["query"]["text"], "past briefs");
+    }
+
+    #[test]
+    fn current_projection_serialization_has_explicit_state_tag() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../../tests/fixtures/abi/multi_effect_step.json"
+        ))
+        .expect("fixture JSON");
+        let step: PlannedStep = serde_json::from_value(fixture["planned_step"].clone())
+            .expect("planned step");
+        let value = serde_json::to_value(project_current_action(&step).expect("projection"))
+            .expect("projection JSON");
+
+        assert_eq!(value["state"], "action");
+        assert_eq!(value["action"]["kind"], "query_memory");
+        assert_eq!(value["action"]["effect_id"], "op-contract:step:9:effect:0");
+    }
+
+    #[test]
+    fn planned_step_json_bridge_matches_current_projection() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../../tests/fixtures/abi/multi_effect_step.json"
+        ))
+        .expect("fixture JSON");
+        let output = super::project_planned_step_json(
+            &serde_json::to_string(&fixture["planned_step"]).expect("planned step JSON"),
+        )
+        .expect("projection JSON");
+        let value: serde_json::Value = serde_json::from_str(&output).expect("projection");
+        assert_eq!(value["state"], "action");
+        assert_eq!(value["action"]["kind"], "query_memory");
     }
 
     #[test]

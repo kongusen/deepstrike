@@ -63,6 +63,9 @@ declare module "@deepstrike/wasm-kernel" {
     restore(checkpointBytes: Uint8Array | undefined, recordBytes: Uint8Array[]): CanonicalRestoreCost
     lifecycle(): "created" | "configured" | "running" | "suspended" | "completed" | "cancelled" | "failed"
     pendingEffectsJson(): string
+    currentProjectionJson(): string
+    projectPlannedStepJson(plannedStepJson: string): string
+    publishedEffectsManifestJson(plannedStepJson: string): string
     terminalJson(): string | undefined
   }
 

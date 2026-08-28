@@ -642,7 +642,32 @@ impl CanonicalKernel {
 
     #[napi(js_name = "pendingEffectsJson")]
     pub fn pending_effects_json(&self) -> Result<String> {
-        serde_json::to_string(&self.inner.pending_effects().collect::<Vec<_>>()).map_err(json_error)
+        // Publication order, not the map's lexicographic order (`step:10` sorts before `step:9`)
+        // — hosts consume the first pending effect as the next action.
+        serde_json::to_string(&self.inner.pending_effects_in_order()).map_err(json_error)
+    }
+
+    #[napi(js_name = "currentProjectionJson")]
+    pub fn current_projection_json(&self) -> Result<String> {
+        let projection = self.inner.current_projection().map_err(|error| {
+            napi::Error::from_reason(error.message)
+        })?;
+        serde_json::to_string(&projection).map_err(json_error)
+    }
+
+    #[napi(js_name = "projectPlannedStepJson")]
+    pub fn project_planned_step_json(&self, planned_step_json: String) -> Result<String> {
+        deepstrike_core::runtime::kernel::wire::projection::project_planned_step_json(
+            &planned_step_json,
+        )
+        .map_err(|error| napi::Error::from_reason(error.message))
+    }
+
+    #[napi(js_name = "publishedEffectsManifestJson")]
+    pub fn published_effects_manifest_json(&self, planned_step_json: String) -> Result<String> {
+        deepstrike_core::runtime::kernel::wire::projection::published_effects_manifest_json(
+            &planned_step_json,
+        ).map_err(|error| napi::Error::from_reason(error.message))
     }
 
     #[napi(js_name = "terminalJson")]

@@ -202,40 +202,70 @@ manifest 是宿主写入事件日志的纯事实。Kernel 不主动生成 observ
 
 ### Card 063-04：Rust 生产运行时换接
 
-- 状态：In Progress（先接入 core 首 effect selector）；优先级：P0 Binding；依赖：063-03。
+- 状态：Done；优先级：P0 Binding；依赖：063-03。
 - RED：Rust conformance 先比较旧 HostAction 与 core 输出，记录所有差异。
 - GREEN：Rust `HostAction` 改为 core 类型别名/re-export，runtime 只消费 `CurrentProjection`。
 - REFACTOR：删除 `protocol_action_from_wire` 和重复 switch。
 - 验收：Rust 行为与 core golden byte-level 一致；宿主 I/O 路径不变。
 - 验证：`cargo test --workspace`。
-- 实现记录（2026-08-28）：Rust `canonical_action_from_planned_step()` 已改用 core `current_effect()` 选择首 effect，旧 payload DTO 转换暂保留，characterization test 通过。
+- 实现记录（2026-08-28）：Rust `action_from_core_step()` 已统一消费 core `CurrentProjection`，terminal/idle/首 effect 选择不再由 Rust 自行判断；全部可执行 effect 分支（含 `ArchivePageOut`）已改为消费 core `CanonicalHostAction` 后再映射到 Rust DTO，characterization test 通过。保留的 `MeasurePrompt` 分支仍按当前 reserved 语义拒绝。当前环境的 Git index 写入受限，新增代码暂以工作树形式保留。
 
 ### Card 063-05：Node/WASM binding 换接
 
-- 状态：Todo；优先级：P0 Binding；依赖：063-04。
+- 状态：Done；优先级：P0 Binding；依赖：063-04。
 - RED：Node/WASM binding conformance 对旧投影和 core golden 做差异矩阵。
 - GREEN：新增 `projectHostActionJson(plannedStepJson)`，TS/WASM 只做解析和类型映射。
 - REFACTOR：删除 `canonicalActionFromPlannedStep` 中的协议 switch 与首 effect逻辑。
 - 验收：Node/WASM 输出与 core golden 一致；938 类现有投影消费路径保持执行结果一致。
 - 验证：Node focused tests/build；WASM conformance。
+- 实现记录（2026-08-28）：Node/WASM binding 新增并强制使用 `currentProjectionJson()` 与 `projectPlannedStepJson()`；运行时删除旧 planned-step fallback，仅保留 projection JSON 到宿主 DTO 的适配。共享 fixture `tests/fixtures/abi/current_projection_multi_effect.json` 已建立；Node/WASM conformance selector tests 均通过，WASM build 与 171 项全量测试通过。
 
 ### Card 063-06：Python binding 换接
 
-- 状态：Todo；优先级：P0 Binding；依赖：063-04。
+- 状态：Done；优先级：P0 Binding；依赖：063-04。
 - RED：Python fixture 断言旧 dict 投影与 canonical JSON 存在已知差异。
 - GREEN：Python 使用 core projection binding，`json.loads` 后只做公共字段映射。
 - REFACTOR：删除 `_context_from_kernel` 等已下沉的 action 投影辅助。
 - 验收：Python 与 Node/Rust/WASM 对同一 fixture 输出等价；unknown/unsupported 语义一致。
 - 验证：Python focused tests + parity tests。
+- 实现记录（2026-08-28）：Python binding 新增并强制使用 `current_projection_json()` 与 `project_planned_step_json()`；运行时删除旧 dict planned-step fallback，仅保留 projection JSON 到宿主 DTO 的适配。Python conformance selector 与 focused tests 均通过（12 passed）。
+
+### Card 063-06R：Archive presentation 回归隔离（方案修订）
+
+- 状态：Done；优先级：P0 Regression；依赖：063-05、063-06。
+- 背景：`archive_page_out` 的 `action`、`summary`、`tier` 来自同一 `planned_step` 的 `compressed` observation，不属于 effect payload。切换到 core projection 后，`currentProjectionJson()` 只携带单 effect payload，旧 runtime 若继续从 action DTO 读取这些字段就会丢失语义页出路径。
+- 架构决策：不把 observations 回填到 core projection；不在四个 SDK 中复制一套 observation-aware projection。core `CanonicalHostAction::ArchivePageOut` 保持 wire payload-only。
+- RED：新增 Node/Python/WASM/Rust characterization test，构造带 `archive_page_out + compressed observation` 的 step，证明 projection action 不包含 `action`、`summary`、`tier`，同时证明 runtime 仍必须从 observation 流恢复这些事实。
+- GREEN：runtime 在提交 transition 时，将与 page-out effect 关联的 observation 事实放入既有 `pendingObservations`/host observation 流，按 `effect_id` 关联；archive 执行路径只从该事实读取 `action`、`summary`、`tier`。`tier=semantic` 时继续触发长期记忆归档。
+- REFACTOR：删除四语言 archive DTO 中由 observation 派生的 presentation 字段；保留 effect payload 的 `handle_id`、`payload`、digest 等 wire 事实；禁止 runtime 从 projection action 反推 pressure policy。
+- 验收：
+  - projection JSON 的 archive action 只包含 canonical wire payload。
+  - semantic page-out 仍调用 `archiveSemanticPageOut`，durable page-out 不误写长期记忆。
+  - archive observation 与 effect ID 一一对应，多 effect 和 publication order 下不串线。
+  - 未知/缺失 observation 不伪造 tier，按既有安全默认处理。
+- 验证：Node/Python/WASM/Rust archive characterization；`renewal-memory-requery`；`semantic-page-out-memory` 独立与受控串行运行；journal replay/restore 测试。
+- 实现记录（2026-08-28）：Node/WASM/Python archive 执行路径统一从 `compressed` observation 关联的 pending archive metadata 读取 action/tier，不再读取 projection action；archive action DTO 删除 observation 派生字段。Rust 保持 observation-aware runtime 映射。Node `semantic-page-out-memory` 与 `renewal-memory-requery` 均通过，WASM build 与 projection/canonical focused tests 通过，Python focused/conformance 12 passed。
+
+### Card 063-06S：Renewal 记忆链路实证
+
+- 状态：Done；优先级：P0 Regression；依赖：063-06R。
+- 目标：把“tier 缺失导致语义页出断裂”与 renewal 后 recall 是否进入 turns 的因果链拆开验证，不把 K4 的失败直接归因于单一原因。
+- RED：分别关闭 semantic page-out、关闭 renewal re-query、固定 `memoryStore.search` 返回值，记录 `seed keyed entry → turns/knowledge → renewal recall` 的状态差异。
+- GREEN：补齐 runtime observation 恢复后，验证 page-out 归档、长期记忆写入、renewal 查询、turn 渲染四个阶段的事件序列。
+- REFACTOR：将测试断言从“最终看到 recall”拆为可定位的事件断言，避免 fixture 恒返 RECALL 掩盖中间链路。
+- 验收：能明确区分 projection 回归、semantic archive 回归和 turns/knowledge 分类回归；任何失败都能定位到具体事件边界。
+- 验证：K4 renewal test、semantic page-out test、受控单测及 replay test。
+- 实现记录（2026-08-28）：renewal 测试增加事件级断言，明确 `compressed → context_renewed` 顺序，同时保留 renewal re-query 与 recall 落入新 sprint turns 的断言；测试通过。
 
 ### Card 063-07：宿主 manifest 与 journal 接线
 
-- 状态：Todo；优先级：P0 Runtime；依赖：063-03、063-04。
+- 状态：In Progress（四端 manifest 接线完成，Node native replay/ordering 覆盖完成）；优先级：P0 Runtime；依赖：063-03、063-04、063-06R。
 - RED：证明各 SDK 手工提取 manifest 会在 map 顺序和多 effect 下漂移。
 - GREEN：宿主只调用 core manifest，再把结果写入既有 observation/event log。
 - REFACTOR：保持 Kernel 不生成该 observation，确保旧正确 journal digest 不变。
 - 验收：事件日志含完整 effect id/kind；digest/replay 输入未意外增加字段。
 - 验证：Rust/Node/Python journal replay tests。
+- 实现记录（2026-08-28）：新增 `published_effects_manifest_json` core/binding 接口，Node/WASM/Python 以及 Rust runtime 的 `step_published_effects` observation 均改为直接消费 core manifest；Node native binding 已补充 restore/replay 后的 publication-order manifest 测试，各端 focused/build 测试通过。
 
 ### Card 063-08：RequestPlan 与协议身份护栏
 
@@ -248,30 +278,106 @@ manifest 是宿主写入事件日志的纯事实。Kernel 不主动生成 observ
 
 ### Card 063-09：Capability evidence 收口
 
-- 状态：Todo；优先级：P1；依赖：063-08。
+- 状态：Done；优先级：P1；依赖：063-08。
 - RED：registry 宣称 supported 但 adapter 无可调用方法时测试失败。
 - GREEN：effective capability 由 endpoint evidence、SDK adapter 和 method availability 共同决定。
 - REFACTOR：provider catalog、factory、runtime registry 共用 resolver。
 - 验收：supported 一定可执行；未知保持 unknown；自定义 endpoint 不继承官方能力。
 - 验证：Node/Python registry parity tests。
+- 实现记录（2026-08-28）：补充 registry/adapter parity 门禁。native token counting 的 `supported` 由 endpoint evidence（静态表 anthropic.messages/gemini.google/openai.responses）+ adapter evidence 共同决定；parity 测试反向强制「凡 supported，adapter 必暴露 `countTokens`」，保证 supported 一定可执行。model-registry / token-measurement / provider-runtime parity tests 实测 Node 63 + Python 60 全绿。
 
 ### Card 063-10：删除旧实现与发布门禁
 
-- 状态：Todo；优先级：P0 Release；依赖：063-04..09。
+- 状态：In Progress；优先级：P0 Release；依赖：063-04..09。
 - RED：静态 parity guard 仍能找到旧 switch、重复 manifest 提取或旧单 effect断言。
 - GREEN：删除旧函数、旧 fixtures 和已错误的兼容测试；保留迁移说明。
 - REFACTOR：更新 changelog、migration 和架构图，补充失败诊断文档。
 - 验收：仓库中只有一份协议投影实现；全量测试、构建、conformance、docs drift、parity guard 全绿。
 - 验证：`cargo test --workspace`；Node build/test；Python pytest；`npm run test:conformance`；`npm run docs:drift`；SDK parity guard。
+- 实现记录（2026-08-28）：静态扫描已确认仓库不再存在旧 `canonicalActionFromPlannedStep`/`canonical_action_from_planned_step` 入口；`docs:drift` 通过（141/141 paths、222/222 symbols、47/47 zh/en parity）。`test:conformance` 当前被本机缺少 `wasm32-unknown-unknown` target 阻塞，非代码失败。
 
 ## 7. 执行顺序与检查点
+
+## 8. 方案修订结论：Projection 与 Page Strategy
+
+### 8.1 是否解决本次回归
+
+该方案解决了已确认的架构错误：archive 的 `action`、`summary`、`tier` 不再被误认为 effect payload，projection 不再承担 observation 上下文职责。它能消除“切换到 core projection 后语义页出丢失”的直接回归。
+
+但在 `063-06R/063-06S` 完成并通过 replay、renewal 和 semantic page-out 测试前，不能声称 K4 的整条记忆链已经闭合。当前仍需实证 `page-out → 长期记忆写入 → renewal re-query → turns/knowledge 分类` 的事件因果链。
+
+### 8.2 Projection 不做整体推倒，改为三种明确投影
+
+保留现有 core projection 的主体设计，并明确三种不同用途：
+
+1. **EffectProjection**：wire effect → `CanonicalHostAction`。只含 effect payload、effect identity 和 causation identity。
+2. **CurrentProjection**：从已排序 pending effects 选择当前可执行 action，或返回 idle/terminal。只回答“现在宿主该执行什么”。
+3. **Observation/Facts stream**：承载 `compressed`、`page_out_archived`、`renewed` 等已提交事实。只回答“内核刚刚证明了什么”。
+
+禁止把第 3 类事实拼回第 1、2 类 action DTO。SDK binding 只做 JSON/DTO 映射，runtime 负责把 observation facts 与 effect ID 关联。
+
+后续可增加静态 parity guard，确保任何 SDK 不再自行完成首 effect 选择、effect 排序、pressure tier 推导或 observation-aware switch。
+
+### 8.3 Page strategy 的目标结构
+
+Page-out 应拆成四个阶段，避免把策略、搬运和展示混在一个 action 中：
+
+```text
+Kernel policy decision
+  → compressed observation(action/summary/tier)
+  → archive_page_out effect(payload/handle/digest)
+  → host archive I/O
+  → resolve effect + page_out_archived/page_out_archive_failed observation
+```
+
+具体规则：
+
+- `compressed` observation 是 pressure policy 的权威来源。
+- `archive_page_out` effect 是内容搬运的权威来源。
+- `page_out_archived` observation 是归档结果的权威来源。
+- semantic 长期记忆写入必须以稳定的 `effect_id` 或 archive correlation id 做幂等键。
+- async summarizer 若继续保留，必须有 pending/completed 的可恢复事实；不能让进程退出造成“归档成功但长期记忆静默丢失”。
+- archive range、compressed sequence、effect ID 的关联不能只依赖队列位置，必须可在多 effect、重试和 replay 后重建。
+- page-in、renewal 和 turns/knowledge 渲染只读取已提交 observation/session event，不读取 action DTO 中的派生字段。
+
+### 8.4 下一阶段卡片顺序
+
+- **063-06R**：先修 archive presentation 回归，删除 action DTO 中的 observation 派生字段。
+- **063-06S**：补齐 renewal 因果链的分段测试，确认 K4 的真实断点。
+- **063-06P**：建立 page-out correlation/idempotency，覆盖多 effect、重试、restore（Node 已先切入稳定 effect key）。
+- **063-06Q**：明确 semantic archive 的同步/异步 durability contract，并补 pending/completed replay 测试（Node 事件闭环已完成）。
+- **063-07**：在上述边界稳定后，再接通 manifest 与 journal 的最终收口。
+
+实现记录（2026-08-28）：Node semantic archive memory record name 改为基于稳定 `effect_id`，替代时间戳命名，降低 retry/replay 重复写入风险；完整 archive store 幂等接口和其余 SDK 迁移仍待完成。
+
+### 8.5 进一步的 Projection 优化建议
+
+在不改变模型/provider 协议的前提下，projection 还可以做以下增强：
+
+- **收紧 live API**：运行时长期只依赖 `currentProjectionJson()`；`pendingEffectsJson()` 和 `projectPlannedStepJson()` 仅保留给诊断、迁移和 replay，避免宿主重新实现首 effect 选择。
+- **加入 projection contract metadata**：binding 返回的 envelope 可带 projection ABI revision/schema fingerprint，便于旧 native addon、旧 WASM glue 或旧 Python wheel 被及时拒绝，而不是静默产生错误 DTO。
+- **统一错误分类**：区分 malformed projection、unsupported effect、stale projection 和 binding ABI mismatch；不要把四类错误都降级成 `unsupported_effect`。
+- **建立不变量测试**：同一 ordered pending-effect 集合在四语言中必须得到相同的 state、effect identity、kind 和 payload；projection 不得改变 journal digest，也不得读取时钟、随机数或 host state。
+- **限制 action DTO 表面积**：只暴露宿主执行所需字段；summary、tier、usage 展示和策略建议一律走 observation/facts stream。
+- **为扩展保留未知语义通道**：当未来 wire 增加 effect/observation kind 时，优先返回结构化 `unknown`/`unsupported`，不要因 SDK 版本落后而误判为 idle 或 terminal。
+
+### 8.6 进一步的 Page Strategy 优化建议
+
+- **策略、搬运、索引三段分离**：pressure decision 只决定压缩范围与 tier；archive effect 只负责内容搬运；session/memory index 只消费已提交归档事实。
+- **显式关联与幂等**：page-out 任务必须能用 `effect_id + archive_range` 重建，不能只依赖 `pendingPageOutArchives` 的数组位置；重试、并发多 effect 和 restore 都必须得到同一 archive key。
+- **滞回与背压**：进入 page-out 与退出 page-out 使用不同阈值，并设置最小保留尾部、最大单批大小和 provider 调用前的硬预算，避免在阈值附近反复压缩/恢复。
+- **语义归档可恢复**：semantic archive 的 memory write 需要 pending/completed/fail 可观察状态；异步任务必须可重放、可去重、可补偿，不能只依赖进程内 task。
+- **page-in 只读事实**：renewal/page-in 渲染从 `page_out_archived`、archive reference 和 knowledge events 重建，不从当前 action 猜测历史压缩策略。
+- **增加运行指标**：记录压缩前后 token、page-out 延迟、archive retry、semantic write lag、page-in 命中率和 renewal recall 落点，用于区分策略问题与投影问题。
 
 ```text
 063-00
   ↓
 063-01 → 063-02 → 063-03
-                    ├→ 063-04 → 063-05 → 063-06
+                    ├→ 063-04 → 063-05 → 063-06 → 063-06R → 063-06S
                     └→ 063-07
+                               ↑
+                             063-06R
                                ↓
                          063-08 → 063-09
                                       ↓

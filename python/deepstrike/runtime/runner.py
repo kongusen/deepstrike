@@ -453,8 +453,8 @@ class RuntimeRunner:
     # an already-active skill (loading is idempotent; the knowledge push should be too).
     self._knowledge_pushed_skills: set[str] = set()
     self._next_archive_start: int = 0
-    self._pending_page_out_archives: list[tuple[int, int]] = []
-    self._active_page_out_archive: tuple[int, int] | None = None
+    self._pending_page_out_archives: list[tuple[int, int, str | None, str | None, str | None]] = []
+    self._active_page_out_archive: tuple[int, int, str | None, str | None, str | None] | None = None
     # Provider continuation emitted after a canonical nested workflow completes.
     self._workflow_continuation_action: KernelRunnerAction | None = None
     self._fallback_payload_store: Any = None
@@ -2532,7 +2532,7 @@ class RuntimeRunner:
               self._next_archive_start,
               await self._opts.session_log.latest_seq(session_id),
             )
-        archive_start, _compressed_seq = self._active_page_out_archive
+        archive_start, _compressed_seq, archive_action, _archive_summary, archive_tier = self._active_page_out_archive
         archive_ref = None
         error = None
         archived = list(action.archived or [])
@@ -2541,8 +2541,7 @@ class RuntimeRunner:
             archive_ref = await self._opts.compression_store.write(session_id, archive_start, archived)
         except Exception as exc:
           error = format_tool_error(exc)
-        archive_action = _compression_action(action.action) or "auto_compact"
-        archive_tier = action.tier
+        archive_action = archive_action or "auto_compact"
         if error is None:
           self._active_page_out_archive = None
         action = await action_host(runtime, self._pending_observations, {
@@ -3009,7 +3008,15 @@ class RuntimeRunner:
       compressed_seq = await self._opts.session_log.append(session_id, event)
       if event.get("kind") == "compressed":
         if int(obs.get("archived_count") or 0) > 0:
-          self._pending_page_out_archives.append((next_archive_start, compressed_seq))
+          action_name = _compression_action(str(obs.get("action") or ""))
+          tier = "semantic" if action_name in ("context_collapse", "auto_compact") else "durable" if action_name else None
+          self._pending_page_out_archives.append((
+            next_archive_start,
+            compressed_seq,
+            action_name,
+            str(obs.get("summary")) if obs.get("summary") else None,
+            tier,
+          ))
         next_archive_start = compressed_seq + 1
       # K4: a sprint renewal dropped the old history — including any earlier memory hits — so
       # re-run the pre_query_memory prefetch for the new sprint (live observations only: this
