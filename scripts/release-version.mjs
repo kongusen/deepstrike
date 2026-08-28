@@ -7,6 +7,7 @@ const cargoWorkspacePackages = [
   "deepstrike-node",
   "deepstrike-py",
   "deepstrike-sdk",
+  "deepstrike-tokenizer",
   "deepstrike-wasm",
 ]
 
