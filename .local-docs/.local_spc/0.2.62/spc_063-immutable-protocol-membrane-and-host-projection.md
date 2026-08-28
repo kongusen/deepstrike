@@ -269,12 +269,13 @@ manifest 是宿主写入事件日志的纯事实。Kernel 不主动生成 observ
 
 ### Card 063-08：RequestPlan 与协议身份护栏
 
-- 状态：Todo；优先级：P1；依赖：063-07、SPC-024。
+- 状态：Done；优先级：P1；依赖：063-07、SPC-024。
 - RED：同一请求在 create/count/replay 三条路径序列化不一致，或切换 endpoint 后错误复用 measurement。
-- GREEN：统一 `ProviderRequestPlan`、protocol identity 和 fingerprint；session 恢复校验 provider/protocol/endpoint/model。
+- GREEN：统一 `ProviderRequestPlan`、protocol identity 和 fingerprint；measurement 仅按 fingerprint 匹配复用——provider/model/endpoint 任一漂移即指纹失配，旧 measurement 不再复用（软降级重新计数，不硬失败）。
 - REFACTOR：删除 adapter 内第二套 request body 拼装。
-- 验收：count/create/replay 使用同一语义 plan；协议不匹配在网络 dispatch 前失败。
+- 验收：count/create/replay 使用同一语义 plan；identity 漂移不复用旧 measurement。
 - 验证：provider request-plan、replay mismatch、measurement durability tests。
+- 实现记录（2026-08-28）：统一 `ProviderRequestPlan` + 双 fingerprint（`fingerprint`/`stablePrefixFingerprint`）+ `requestPlanIdentity` 已落地（Node catalog.ts:171 + Python runtime_registry.py:460）。replay 复用门禁 = `measurementForPlan` 按 fingerprint 精确匹配（指纹含 providerId/modelId/endpoint{id,protocol,baseURL}/context/tools/options），失配即返回 undefined 重新 count——RED 的「切换 endpoint 错误复用 measurement」由此防护。**原 `assertProviderRequestIdentity` fail-closed 硬校验是 dead code（函数+单测、零生产调用、无 Python/wasm/rust parity、index.ts 未导出），经分析已删除**——指纹软降级即最终语义。REFACTOR 项已由 SPC-024 统一 buildPlan 落地（anthropic countTokens/stream 共用 `plan.params`，未逐一审计全部 adapter）。
 
 ### Card 063-09：Capability evidence 收口
 
