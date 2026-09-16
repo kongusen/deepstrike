@@ -35,6 +35,23 @@
 //!   failing them. A proven digest mismatch fails C1 even when identity fields survive; every degraded hop is marked on its segment's report. A blob that is not a
 //!   record at all counts as unparseable input, which is an exit-code-2 condition
 //!   ("evidence insufficient"), never a violation.
+//!
+//! ## Batch 3 · the SessionLog input plane (0.2.64 S4)
+//!
+//! [`validate_with_session_log`] adds a second plane: SessionLog event streams. SessionLog is
+//! Evidence Truth (P6 §S) — never recovery authority, and never kernel input. Where the journal
+//! plane is order-independent blobs, a session log is one file's append-ordered events, so the
+//! input is a list of **streams** (one per file) whose internal order is preserved.
+//!
+//! The core has no typed SessionLog vocabulary (P6: the core treats SessionLog as opaque JSON),
+//! so events are classified leniently: the `kind` field picks the extraction shape, missing
+//! additive fields parse as absent, and both spellings of host-nested fields are accepted
+//! (`route.routeId` from node, `route.route_id` from python). Unknown kinds are parseable but
+//! ignored — the vocabulary evolves; only C6/C8-relevant kinds are extracted. An event that is
+//! not a JSON object at all counts as unparseable (exit-code-2), exactly like the journal plane.
+//!
+//! C7 carries across planes: old logs simply lack `provider_attempt` / the additive fields —
+//! the rules that need them degrade, never fail.
 
 use std::collections::HashMap;
 
@@ -105,6 +122,19 @@ pub struct ValidationReport {
     pub segments: Vec<SegmentReport>,
     /// Blobs that are not records at all (not JSON objects, or carrying no identity fields).
     pub unparseable_records: usize,
+    /// Batch 3: SessionLog↔journal cross-verification verdicts (C6/C8). Report-scope, not
+    /// per-segment: these rules join two evidence planes.
+    #[serde(default)]
+    pub cross_checks: Vec<RuleReport>,
+    /// SessionLog event blobs that were not JSON objects at all. `0` when no session plane
+    /// was handed over.
+    #[serde(default)]
+    pub unparseable_events: usize,
+    /// `Some(count)` when SessionLog streams were handed over — the total of parseable events
+    /// across every stream. `None` = journal-only validation (batch-1 mode). An explicitly
+    /// provided session plane with zero parseable events is evidence-insufficient (exit 2).
+    #[serde(default)]
+    pub session_events: Option<usize>,
     /// Batch-scope limits a green verdict does not cover.
     pub deferred: Vec<String>,
 }
@@ -114,16 +144,22 @@ impl ValidationReport {
         self.segments
             .iter()
             .flat_map(|segment| segment.rules.iter())
+            .chain(self.cross_checks.iter())
             .any(|rule| rule.verdict == Verdict::Fail)
     }
 
     /// The CLI contract (P7 §3.2): `0` all green, `1` a violation was proven, `2` the evidence
     /// was insufficient. A proven violation outranks insufficient evidence; degraded hops and
-    /// deferred scope never move the code.
+    /// deferred scope never move the code. An explicitly provided SessionLog plane that yields
+    /// nothing parseable is insufficient evidence of the same kind as unparseable records.
     pub fn exit_code(&self) -> i32 {
         if self.has_violations() {
             1
-        } else if self.unparseable_records > 0 || self.segments.is_empty() {
+        } else if self.unparseable_records > 0
+            || self.unparseable_events > 0
+            || self.segments.is_empty()
+            || matches!(self.session_events, Some(0))
+        {
             2
         } else {
             0
@@ -179,6 +215,72 @@ impl Hop {
 /// group into per-operation segments, each judged independently; blob order never matters
 /// because the chain's own `step_seq`/digest links define the order.
 pub fn validate_journal<B: AsRef<[u8]>>(blobs: &[B]) -> ValidationReport {
+    validate_with_session_log(blobs, &[] as &[Vec<Vec<u8>>])
+}
+
+/// Batch 3 entry point: the journal plane plus SessionLog evidence streams. Each inner slice
+/// is one session-log file's events **in append order** — unlike journal blobs, event order
+/// within a stream is meaningful (a `run_started` delimits the run its following attempts
+/// belong to). Streams never cross-join: fingerprint and route-stability checks are per-stream.
+pub fn validate_with_session_log<J, S>(journal_blobs: &[J], session_streams: &[Vec<S>]) -> ValidationReport
+where
+    J: AsRef<[u8]>,
+    S: AsRef<[u8]>,
+{
+    let (segments, unparseable_records) = validate_journal_plane(journal_blobs);
+
+    let mut streams: Vec<SessionStream> = Vec::with_capacity(session_streams.len());
+    for stream_blobs in session_streams {
+        let mut events = Vec::with_capacity(stream_blobs.len());
+        let mut unparseable_events = 0;
+        for blob in stream_blobs {
+            match classify_session_event(blob.as_ref()) {
+                Some(event) => events.push(event),
+                None => unparseable_events += 1,
+            }
+        }
+        streams.push(SessionStream {
+            events,
+            unparseable_events,
+        });
+    }
+
+    let session_plane_provided = !session_streams.is_empty();
+    let session_events = session_plane_provided
+        .then(|| streams.iter().map(|stream| stream.events.len()).sum());
+    let unparseable_events = streams
+        .iter()
+        .map(|stream| stream.unparseable_events)
+        .sum();
+
+    let mut deferred: Vec<String> = DEFERRED.iter().map(|line| (*line).to_string()).collect();
+    if session_plane_provided {
+        // Interim batch-3 scope note: the input plane landed before its rules. Removed as
+        // C6/C8 land (0.2.64 S4b/S4c).
+        deferred.push(
+            "c6.session_log_correspondence: the SessionLog input plane is parsed; the \
+             attempt↔journal correspondence rule arrives with batch-3 rule C6"
+                .to_string(),
+        );
+        deferred.push(
+            "c8.invocation_adjacency: the SessionLog input plane is parsed; the invocation \
+             chain adjacency rule arrives with batch-3 rule C8"
+                .to_string(),
+        );
+    }
+
+    ValidationReport {
+        segments,
+        unparseable_records,
+        cross_checks: Vec::new(),
+        unparseable_events,
+        session_events,
+        deferred,
+    }
+}
+
+/// The journal plane on its own: classify blobs into hops, group into segments, judge each.
+fn validate_journal_plane<B: AsRef<[u8]>>(blobs: &[B]) -> (Vec<SegmentReport>, usize) {
     let mut hops: Vec<Hop> = Vec::with_capacity(blobs.len());
     let mut unparseable_records = 0;
     for (ordinal, blob) in blobs.iter().enumerate() {
@@ -203,12 +305,103 @@ pub fn validate_journal<B: AsRef<[u8]>>(blobs: &[B]) -> ValidationReport {
         .iter()
         .map(|key| validate_segment(key, segments.remove(key).unwrap_or_default()))
         .collect();
+    (reports, unparseable_records)
+}
 
-    ValidationReport {
-        segments: reports,
-        unparseable_records,
-        deferred: DEFERRED.iter().map(|line| (*line).to_string()).collect(),
-    }
+// ---------------------------------------------------------------------------------------------
+// batch 3 · the SessionLog evidence plane
+// ---------------------------------------------------------------------------------------------
+
+/// One session-log file, classified: its events in append order plus the count of blobs that
+/// were not JSON objects at all.
+pub struct SessionStream {
+    pub events: Vec<EvidenceEvent>,
+    pub unparseable_events: usize,
+}
+
+/// A SessionLog event, leniently classified. Only the kinds C6/C8 read are extracted; every
+/// other kind — known or future — is `Other`. Field absence is data (C7 degrades), not error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvidenceEvent {
+    /// `run_started` — delimits a run; its `route` is the batch-3 route-stability baseline
+    /// (Q3). Absent route = old log = degraded, never failed.
+    RunStarted { route_id: Option<String> },
+    /// `provider_attempt` — one effect's physical execution (P4 §1.2).
+    ProviderAttempt {
+        effect_id: Option<String>,
+        request_fingerprint: Option<String>,
+        route_id: Option<String>,
+        status: Option<String>,
+    },
+    /// `prompt_measured` — the durable measurement fact; `request_fingerprint` joins a
+    /// `provider_attempt` to the request plan it executed (G2, C6).
+    PromptMeasured {
+        effect_id: Option<String>,
+        request_fingerprint: Option<String>,
+    },
+    /// `llm_completed` — the invocation's terminal projection: `invocation_id` derives as the
+    /// chain's first effect (P4 §1.1), `effect_id` is the selected outcome effect.
+    LlmCompleted {
+        effect_id: Option<String>,
+        invocation_id: Option<String>,
+    },
+    /// Any other kind — parseable, ignored by batch-3 rules.
+    Other,
+}
+
+/// Lenient event classification: a JSON object with an extractable `kind` classifies; anything
+/// else is unparseable input (exit-code-2, never a violation).
+fn classify_session_event(bytes: &[u8]) -> Option<EvidenceEvent> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let object = value.as_object()?;
+    let string = |key: &str| {
+        object
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let kind = string("kind");
+    let event = match kind.as_deref() {
+        Some("run_started") => EvidenceEvent::RunStarted {
+            route_id: route_id_of(&value),
+        },
+        Some("provider_attempt") => EvidenceEvent::ProviderAttempt {
+            effect_id: string("effect_id"),
+            request_fingerprint: string("request_fingerprint"),
+            route_id: route_id_of(&value),
+            status: string("status"),
+        },
+        Some("prompt_measured") => EvidenceEvent::PromptMeasured {
+            effect_id: string("effect_id"),
+            // The nested measurement keeps its host-native shape: node serializes camelCase
+            // (`requestFingerprint`), python snake_case (`request_fingerprint`).
+            request_fingerprint: object
+                .get("measurement")
+                .and_then(|measurement| {
+                    measurement
+                        .get("requestFingerprint")
+                        .or_else(|| measurement.get("request_fingerprint"))
+                })
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+        },
+        Some("llm_completed") => EvidenceEvent::LlmCompleted {
+            effect_id: string("effect_id"),
+            invocation_id: string("invocation_id"),
+        },
+        _ => EvidenceEvent::Other,
+    };
+    Some(event)
+}
+
+/// `route.route_id`, accepting both host spellings (node camelCase, python snake_case).
+fn route_id_of(event: &serde_json::Value) -> Option<String> {
+    let route = event.get("route")?;
+    route
+        .get("routeId")
+        .or_else(|| route.get("route_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
 }
 
 /// Strict first, lenient second: a record that fails the strict decode but still shows its
@@ -1176,6 +1369,172 @@ mod tests {
     #[test]
     fn an_empty_journal_is_evidence_insufficient() {
         let report = validate_journal::<Vec<u8>>(&[]);
+        assert_eq!(report.exit_code(), 2);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // batch 3 · SessionLog input plane (C6/C8 land in S4b/S4c)
+    // -----------------------------------------------------------------------------------------
+
+    fn session_event(value: serde_json::Value) -> Vec<u8> {
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    #[test]
+    fn session_events_classify_leniently_across_host_spellings() {
+        let node_attempt = session_event(json!({
+            "kind": "provider_attempt",
+            "effect_id": "op:step:1:effect:0",
+            "request_fingerprint": "fp-1",
+            "route": { "routeId": "route-a", "provider": "p" },
+            "status": "success"
+        }));
+        let py_attempt = session_event(json!({
+            "kind": "provider_attempt",
+            "effect_id": "op:step:2:effect:0",
+            "route": { "route_id": "route-b" }
+        }));
+        let run_started = session_event(json!({
+            "kind": "run_started",
+            "run_id": "run-1",
+            "route": { "routeId": "route-a" }
+        }));
+        let node_measured = session_event(json!({
+            "kind": "prompt_measured",
+            "turn": 1,
+            "effect_id": "op:step:1:effect:0",
+            "measurement": { "requestFingerprint": "fp-1", "inputTokens": 10 }
+        }));
+        let py_measured = session_event(json!({
+            "kind": "prompt_measured",
+            "measurement": { "request_fingerprint": "fp-2" }
+        }));
+        let llm_completed = session_event(json!({
+            "kind": "llm_completed",
+            "effect_id": "op:step:2:effect:0",
+            "invocation_id": "op:step:1:effect:0"
+        }));
+        let unknown_kind = session_event(json!({ "kind": "compressed", "turn": 3 }));
+        let kindless = session_event(json!({ "turn": 3 }));
+
+        assert_eq!(
+            classify_session_event(&node_attempt),
+            Some(EvidenceEvent::ProviderAttempt {
+                effect_id: Some("op:step:1:effect:0".to_string()),
+                request_fingerprint: Some("fp-1".to_string()),
+                route_id: Some("route-a".to_string()),
+                status: Some("success".to_string()),
+            })
+        );
+        assert_eq!(
+            classify_session_event(&py_attempt),
+            Some(EvidenceEvent::ProviderAttempt {
+                effect_id: Some("op:step:2:effect:0".to_string()),
+                request_fingerprint: None,
+                route_id: Some("route-b".to_string()),
+                status: None,
+            })
+        );
+        assert_eq!(
+            classify_session_event(&run_started),
+            Some(EvidenceEvent::RunStarted {
+                route_id: Some("route-a".to_string())
+            })
+        );
+        assert_eq!(
+            classify_session_event(&node_measured),
+            Some(EvidenceEvent::PromptMeasured {
+                effect_id: Some("op:step:1:effect:0".to_string()),
+                request_fingerprint: Some("fp-1".to_string()),
+            })
+        );
+        assert_eq!(
+            classify_session_event(&py_measured),
+            Some(EvidenceEvent::PromptMeasured {
+                effect_id: None,
+                request_fingerprint: Some("fp-2".to_string()),
+            })
+        );
+        assert_eq!(
+            classify_session_event(&llm_completed),
+            Some(EvidenceEvent::LlmCompleted {
+                effect_id: Some("op:step:2:effect:0".to_string()),
+                invocation_id: Some("op:step:1:effect:0".to_string()),
+            })
+        );
+        assert_eq!(
+            classify_session_event(&unknown_kind),
+            Some(EvidenceEvent::Other),
+            "unknown kinds are parseable but ignored — the vocabulary evolves"
+        );
+        assert_eq!(classify_session_event(&kindless), Some(EvidenceEvent::Other));
+        assert_eq!(
+            classify_session_event(b"not json"),
+            None,
+            "a non-object event blob is unparseable input, never a violation"
+        );
+    }
+
+    #[test]
+    fn dual_input_with_a_green_journal_and_real_events_stays_green() {
+        let op = operation("op-dual-green");
+        let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let stream = vec![
+            session_event(json!({ "kind": "run_started", "run_id": "r1" })),
+            session_event(json!({
+                "kind": "provider_attempt",
+                "effect_id": "op-dual-green:step:1:effect:0",
+                "request_fingerprint": "fp-1"
+            })),
+        ];
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(report.session_events, Some(2));
+        assert_eq!(report.unparseable_events, 0);
+        assert!(
+            report.cross_checks.is_empty(),
+            "C6/C8 land in S4b/S4c; the input plane alone renders no cross verdicts"
+        );
+        assert!(
+            report.deferred.iter().any(|line| line.starts_with("c6."))
+                && report.deferred.iter().any(|line| line.starts_with("c8.")),
+            "the pending batch-3 rules are named while the session plane is provided"
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn journal_only_validation_carries_no_session_plane() {
+        let op = operation("op-journal-only");
+        let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let report = validate_journal(&blobs(&chain));
+        assert_eq!(report.session_events, None);
+        assert_eq!(report.unparseable_events, 0);
+        assert_eq!(report.deferred.len(), 2, "batch-1 deferred scope is unchanged");
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn an_empty_session_plane_is_evidence_insufficient() {
+        let op = operation("op-empty-session");
+        let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let report = validate_with_session_log(&blobs(&chain), &[Vec::<Vec<u8>>::new()]);
+        assert_eq!(report.session_events, Some(0));
+        assert!(!report.has_violations(), "an empty log proves nothing either way");
+        assert_eq!(report.exit_code(), 2);
+    }
+
+    #[test]
+    fn garbage_session_events_are_evidence_insufficient_not_guilty() {
+        let op = operation("op-garbage-session");
+        let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let stream = vec![
+            session_event(json!({ "kind": "run_started", "run_id": "r1" })),
+            b"this is not an event".to_vec(),
+        ];
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(report.session_events, Some(1));
+        assert_eq!(report.unparseable_events, 1);
+        assert!(!report.has_violations());
         assert_eq!(report.exit_code(), 2);
     }
 }
