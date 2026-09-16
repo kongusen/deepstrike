@@ -58,7 +58,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use crate::runtime::kernel::wire::ConfigDefaults;
-use crate::runtime::kernel::wire::effect::{EffectOutcome, EffectSuccess};
+use crate::runtime::kernel::wire::effect::{EffectOutcome, EffectSuccess, ProviderOutcome};
 use crate::runtime::kernel::wire::record::{
     KernelRecord, NormalizedPayload, RecordError, verify_record_chain,
 };
@@ -253,21 +253,16 @@ where
         .map(|stream| stream.unparseable_events)
         .sum();
 
-    // C6 joins the planes; C8 (invocation adjacency) is the remaining batch-3 rule.
+    // C6/C8 join the planes.
     let cross_checks = if session_plane_provided {
-        check_c6(&streams, &outcomes)
+        let mut checks = check_c6(&streams, &outcomes);
+        checks.push(check_c8(&streams, &outcomes));
+        checks
     } else {
         Vec::new()
     };
 
-    let mut deferred: Vec<String> = DEFERRED.iter().map(|line| (*line).to_string()).collect();
-    if session_plane_provided {
-        deferred.push(
-            "c8.invocation_adjacency: the SessionLog input plane is parsed; the invocation \
-             chain adjacency rule arrives with batch-3 rule C8"
-                .to_string(),
-        );
-    }
+    let deferred: Vec<String> = DEFERRED.iter().map(|line| (*line).to_string()).collect();
 
     ValidationReport {
         segments: outcomes.into_iter().map(|outcome| outcome.report).collect(),
@@ -649,6 +644,207 @@ impl ClauseAccumulator {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// C8 · invocation chain adjacency (batch 3, 0.2.64 S4c)
+// ---------------------------------------------------------------------------------------------
+
+/// C8 · a retried invocation's chain must be journal-real. The SessionLog's falsifiable claim
+/// is the endpoint pair: `llm_completed.invocation_id` (the chain's first effect — the derived
+/// identity, P4 §1.1) and `llm_completed.effect_id` (the effect the kernel adopted). When they
+/// differ, the journal must show that the head did NOT close the invocation:
+///
+/// - both ids parse in the `{operation}:step:N:effect:M` vocabulary, same operation (causation
+///   cannot cross operations — C4's spirit), and the selected effect's step strictly follows
+///   the head's;
+/// - the head's resolution is **chain-advancing** — `Overflow` (the compaction ladder
+///   republishes call_provider) or `Failed` (accepted for forward-compat: today's kernel
+///   answers a CallProvider failure with a terminal per DEC-5, and a restored segment has
+///   already proven the kernel itself walked whatever followed). A `Completed` head with a
+///   *different* selected effect is the "merge two invocations into one" forgery: it fails.
+///
+/// Two deliberate deviations from P4 §5's letter, both forced by the wire reality:
+/// 1. §5 says the hop between adjacent effects is a *Failed* resolution. Today's kernel never
+///    re-emits after a CallProvider failure (DEC-5: `plan_effect_failure` → terminal), so real
+///    chains advance through **Succeeded/ContextOverflow** resolutions. C8 checks
+///    chain-advancing, not Failed, or every honest 0.2.63 overflow-retry log would read forged.
+/// 2. §5's per-adjacent-pair walk needs published-effect causation, which the record format
+///    deliberately omits (the step payload stays out of records — only step_digest). C8
+///    verifies the chain's endpoints journal-directly and delegates the middle to the C3
+///    re-plan's determinism: a segment that restored cleanly contains only steps the kernel's
+///    own rules produced.
+///
+/// Plane lag degrades, never fails: the journal may trail the SessionLog, so a head whose
+/// resolution hasn't landed yet (pending) or an effect claiming a step past the journal's tip
+/// is unverifiable, not forged. A first-try chain (`invocation_id == effect_id`) has no
+/// adjacency to prove. Old logs without `invocation_id` degrade per C7.
+fn check_c8(streams: &[SessionStream], outcomes: &[SegmentOutcome]) -> RuleReport {
+    let rule = "C8".to_string();
+    let segments: HashMap<&str, &SegmentOutcome> = outcomes
+        .iter()
+        .filter(|outcome| outcome.report.operation_id != UNATTRIBUTED_SEGMENT)
+        .map(|outcome| (outcome.report.operation_id.as_str(), outcome))
+        .collect();
+
+    let mut llm_completed_events = 0usize;
+    let mut checked = 0usize;
+    let mut trivial = 0usize;
+    let mut unverifiable = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+    let mut degraded_notes: Vec<String> = Vec::new();
+
+    for (index, stream) in streams.iter().enumerate() {
+        for event in &stream.events {
+            let EvidenceEvent::LlmCompleted {
+                effect_id,
+                invocation_id,
+            } = event
+            else {
+                continue;
+            };
+            llm_completed_events += 1;
+            let (Some(head), Some(selected)) = (invocation_id.as_deref(), effect_id.as_deref())
+            else {
+                // A 0.2.62 log's llm_completed lacks the additive fields. C7: unverifiable,
+                // never failed.
+                unverifiable += 1;
+                continue;
+            };
+            if head == selected {
+                trivial += 1;
+                continue;
+            }
+
+            let (Some((head_op, head_step)), Some((selected_op, selected_step))) =
+                (parse_effect_step(head), parse_effect_step(selected))
+            else {
+                violations.push(format!(
+                    "stream #{index}: llm_completed claims invocation {head} → {selected}, but \
+                     one of the pair is not in the `operation:step:N:effect:M` vocabulary"
+                ));
+                continue;
+            };
+            if head_op != selected_op {
+                violations.push(format!(
+                    "stream #{index}: llm_completed claims invocation {head} → {selected} — an \
+                     invocation chain cannot cross operations"
+                ));
+                continue;
+            }
+            if selected_step <= head_step {
+                violations.push(format!(
+                    "stream #{index}: llm_completed claims invocation {head} → {selected}, but \
+                     the selected effect does not follow the chain head"
+                ));
+                continue;
+            }
+            let Some(outcome) = segments.get(head_op) else {
+                degraded_notes.push(format!(
+                    "stream #{index}: operation {head_op} has no journal segment (the journal \
+                     may cover a subset of the session)"
+                ));
+                continue;
+            };
+            let Some(effects) = &outcome.effects else {
+                degraded_notes.push(format!(
+                    "stream #{index}: segment {head_op} could not be re-planned, so the \
+                     invocation {head} → {selected} is unverifiable"
+                ));
+                continue;
+            };
+
+            // The head must be chain-advancing.
+            match effects.resolutions.get(head) {
+                Some(ResolutionFact::Completed) | Some(ResolutionFact::Other) => {
+                    violations.push(format!(
+                        "stream #{index}: llm_completed claims invocation {head} → {selected}, \
+                         but {head} resolved to completion — a completed effect closes its \
+                         invocation; nothing chains from it"
+                    ));
+                    continue;
+                }
+                Some(ResolutionFact::Overflow) | Some(ResolutionFact::Failed) => {}
+                None if effects.published.contains(head) => degraded_notes.push(format!(
+                    "stream #{index}: chain head {head} is published but its resolution has \
+                     not landed in the journal (the planes are not synchronised)"
+                )),
+                None if head_step > effects.max_step => degraded_notes.push(format!(
+                    "stream #{index}: chain head {head} claims step {head_step}, past the \
+                     journal's tip (step {})",
+                    effects.max_step
+                )),
+                None => {
+                    violations.push(format!(
+                        "stream #{index}: llm_completed claims invocation head {head}, but the \
+                         deterministic re-plan of {head_op} never published it"
+                    ));
+                    continue;
+                }
+            }
+
+            // The selected effect must exist on the chain.
+            if effects.resolutions.contains_key(selected) {
+                checked += 1;
+            } else if effects.published.contains(selected) || selected_step > effects.max_step {
+                degraded_notes.push(format!(
+                    "stream #{index}: selected effect {selected} is not resolved in the \
+                     journal (the planes are not synchronised)"
+                ));
+            } else {
+                violations.push(format!(
+                    "stream #{index}: llm_completed selects {selected}, but the deterministic \
+                     re-plan of {selected_op} never published it"
+                ));
+            }
+        }
+    }
+
+    if !violations.is_empty() {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Fail,
+            detail: violations.join("; "),
+        };
+    }
+    if llm_completed_events == 0 {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Degraded,
+            detail: "no llm_completed events in any stream — invocation adjacency unchecked"
+                .to_string(),
+        };
+    }
+    if !degraded_notes.is_empty() || unverifiable > 0 {
+        let mut detail = degraded_notes.join("; ");
+        if unverifiable > 0 {
+            if !detail.is_empty() {
+                detail.push_str("; ");
+            }
+            detail.push_str(&format!(
+                "{unverifiable} llm_completed event(s) without invocation_id/effect_id \
+                 (pre-0.2.63 fields — C7)"
+            ));
+        }
+        if !detail.is_empty() {
+            return RuleReport {
+                rule,
+                verdict: Verdict::Degraded,
+                detail: format!(
+                    "{checked} retried invocation(s) verified, {trivial} first-try chain(s) \
+                     closed; {detail}"
+                ),
+            };
+        }
+    }
+    RuleReport {
+        rule,
+        verdict: Verdict::Pass,
+        detail: format!(
+            "{checked} retried invocation(s) verified end-to-end, {trivial} first-try chain(s) \
+             closed"
+        ),
+    }
+}
+
 /// Strict first, lenient second: a record that fails the strict decode but still shows its
 /// identity fields retains its context for C7 reporting. Proven digest corruption still fails
 /// C1; only unavailable evidence degrades. Anything else is not a record.
@@ -723,10 +919,14 @@ fn validate_segment(operation_id: &str, mut hops: Vec<Hop>) -> SegmentOutcome {
     // exactly (journal-resolved effect ids) ∪ (still-pending effects after the re-plan).
     let effects = match &replan {
         Replan::Restored(restored) => {
-            let mut published: std::collections::HashSet<String> = hops
-                .iter()
-                .filter_map(resolved_effect_of)
-                .collect();
+            let mut published: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut resolutions: HashMap<String, ResolutionFact> = HashMap::new();
+            for hop in &hops {
+                if let Some((effect_id, fact)) = resolution_of(hop) {
+                    published.insert(effect_id.clone());
+                    resolutions.insert(effect_id, fact);
+                }
+            }
             published.extend(
                 restored
                     .transaction
@@ -737,6 +937,7 @@ fn validate_segment(operation_id: &str, mut hops: Vec<Hop>) -> SegmentOutcome {
             Some(SegmentEffects {
                 max_step,
                 published,
+                resolutions,
             })
         }
         _ => None,
@@ -766,17 +967,46 @@ struct SegmentEffects {
     max_step: u64,
     /// Every effect the operation published through the journal's tip.
     published: std::collections::HashSet<String>,
+    /// The journal-direct resolution fact per resolved effect — C8's adjacency evidence.
+    resolutions: HashMap<String, ResolutionFact>,
 }
 
-/// The effect a record's ResolveEffect input settles, if it is one — the journal-direct
-/// resolved-effect set (the same read C4 makes).
-fn resolved_effect_of(hop: &Hop) -> Option<String> {
+/// How a resolved effect's outcome bears on an invocation chain (C8). The two planes are not
+/// synchronised, so this is read only on fully restored segments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolutionFact {
+    /// Succeeded with `ProviderOutcome::Completed` — closes the invocation; nothing chains.
+    Completed,
+    /// Succeeded with `ProviderOutcome::ContextOverflow` — the compaction ladder republishes
+    /// call_provider: the one chain-advancing resolution in today's kernel (see check_c8).
+    Overflow,
+    /// `EffectOutcome::Failed` — terminal for CallProvider under DEC-5 today, but
+    /// chain-advancing under any future kernel with a failure retry ladder; a restored
+    /// segment has already proven the kernel itself walked whatever follows.
+    Failed,
+    /// Any other resolution (tools/spawn/syscall/...) — never invocation-chain-advancing.
+    Other,
+}
+
+/// The effect a record's ResolveEffect input settles and how, if it is one — the
+/// journal-direct resolution facts (the same read C4 makes, with the outcome kept).
+fn resolution_of(hop: &Hop) -> Option<(String, ResolutionFact)> {
     let Hop::Complete(record) = hop else { return None };
     let input = record.normalized_input().ok()?;
     let NormalizedPayload::ResolveEffect(resolve) = &input.input else {
         return None;
     };
-    Some(resolve.effect_id.as_str().to_string())
+    let fact = match &resolve.outcome {
+        EffectOutcome::Failed(_) => ResolutionFact::Failed,
+        EffectOutcome::Succeeded(success) => match &success.result {
+            EffectSuccess::Provider(provider) => match &provider.outcome {
+                ProviderOutcome::Completed(_) => ResolutionFact::Completed,
+                ProviderOutcome::ContextOverflow(_) => ResolutionFact::Overflow,
+            },
+            _ => ResolutionFact::Other,
+        },
+    };
+    Some((resolve.effect_id.as_str().to_string(), fact))
 }
 
 /// C1 · chain integrity.
@@ -1162,19 +1392,20 @@ mod tests {
     };
     use crate::runtime::kernel::wire::driver::CanonicalOperationDriver;
     use crate::runtime::kernel::wire::effect::{
-        EffectKindTag, EffectSucceeded, ProviderContextOverflow, ProviderOutcome, ProviderSuccess,
-        TaskLaunchOutcome, TaskLaunchStarted, TaskLaunchStatus, TasksSpawnedSuccess,
+        EffectKindTag, EffectSucceeded, ProviderCompleted, ProviderContextOverflow,
+        ProviderMessage, ProviderOutcome, ProviderSuccess, TaskLaunchOutcome, TaskLaunchStarted,
+        TaskLaunchStatus, TasksSpawnedSuccess, ToolCall,
     };
     use crate::runtime::kernel::wire::envelope::{
         ConfigureOperation, KernelInput, ResolveEffect, StartOperation, WireEnvelope,
     };
     use crate::runtime::kernel::wire::record::{KernelRecord, NormalizedInput};
     use crate::runtime::kernel::wire::root::{
-        InitialContext, LogicalAgentSpec, LogicalTask, RootAgentEntry, RootEntry,
-        RootWorkflowEntry, WorkflowNode, WorkflowSpec,
+        InitialContext, LogicalAgentSpec, LogicalMessage, LogicalTask, MessageRole,
+        RootAgentEntry, RootEntry, RootWorkflowEntry, WorkflowNode, WorkflowSpec,
     };
     use crate::runtime::kernel::wire::scalar::{
-        AttemptId, EffectId, InputId, NodeId, OperationId, TaskId, WireU64,
+        AttemptId, BoundedJson, CallId, EffectId, InputId, NodeId, OperationId, TaskId, WireU64,
     };
     use crate::runtime::kernel::wire::transaction::{InMemoryRecordIndex, KernelTransaction};
 
@@ -1231,6 +1462,41 @@ mod tests {
         )
     }
 
+    /// An agent start carrying `messages` history items — the compaction ladder needs real
+    /// history to reclaim, or the first context overflow exhausts recovery and terminates the
+    /// operation instead of republishing a call_provider effect.
+    fn agent_start_with_history_envelope(op: &OperationId, messages: usize) -> WireEnvelope {
+        envelope(
+            op,
+            "in-start",
+            1_700_000_001_000,
+            KernelInput::StartOperation(StartOperation {
+                entry: RootEntry::Agent(RootAgentEntry {
+                    task: LogicalTask::new("write the brief"),
+                    run_spec: Some(LogicalAgentSpec::new("write the brief")),
+                }),
+                initial_context: InitialContext {
+                    messages: (0..messages)
+                        .map(|index| LogicalMessage {
+                            role: if index % 2 == 0 {
+                                MessageRole::User
+                            } else {
+                                MessageRole::Assistant
+                            },
+                            content: format!(
+                                "turn {index}: a long enough body that compaction has \
+                                 something to reclaim when the prompt stops fitting"
+                            ),
+                            tokens: Some(64),
+                            tool_call_id: None,
+                        })
+                        .collect(),
+                    ..InitialContext::default()
+                },
+            }),
+        )
+    }
+
     fn workflow_start_envelope(op: &OperationId) -> WireEnvelope {
         envelope(
             op,
@@ -1273,6 +1539,49 @@ mod tests {
                         outcome: ProviderOutcome::ContextOverflow(
                             ProviderContextOverflow::default(),
                         ),
+                    }),
+                }),
+            }),
+        )
+    }
+
+    /// A provider completion. `with_tool_call` makes the completion request a tool, so the
+    /// next step publishes an ExecuteTools effect instead of terminating the operation.
+    fn resolve_completed_envelope(
+        op: &OperationId,
+        id: &str,
+        at: u64,
+        effect_step: u64,
+        with_tool_call: bool,
+    ) -> WireEnvelope {
+        envelope(
+            op,
+            id,
+            at,
+            KernelInput::ResolveEffect(ResolveEffect {
+                effect_id: EffectId::new(format!("{op}:step:{effect_step}:effect:0")).unwrap(),
+                outcome: EffectOutcome::Succeeded(EffectSucceeded {
+                    result: EffectSuccess::Provider(ProviderSuccess {
+                        outcome: ProviderOutcome::Completed(ProviderCompleted {
+                            message: ProviderMessage {
+                                role: MessageRole::Assistant,
+                                content: "done".to_string(),
+                                tool_calls: if with_tool_call {
+                                    vec![ToolCall {
+                                        call_id: CallId::new("call-1").unwrap(),
+                                        name: "read_file".to_string(),
+                                        arguments: BoundedJson::new(json!({})).unwrap(),
+                                    }]
+                                } else {
+                                    Vec::new()
+                                },
+                                tool_call_id: None,
+                                tokens: None,
+                            },
+                            observed_input_tokens: None,
+                            observed_output_tokens: None,
+                            stop_reason: None,
+                        }),
                     }),
                 }),
             }),
@@ -1817,11 +2126,17 @@ mod tests {
                 "route": { "routeId": "route-a" },
                 "status": "success"
             })),
+            session_event(json!({
+                "kind": "llm_completed",
+                "turn": 1,
+                "effect_id": "op-dual-green:step:1:effect:0",
+                "invocation_id": "op-dual-green:step:1:effect:0"
+            })),
         ];
         let report = validate_with_session_log(&blobs(&chain), &[stream]);
-        assert_eq!(report.session_events, Some(3));
+        assert_eq!(report.session_events, Some(4));
         assert_eq!(report.unparseable_events, 0);
-        for id in ["C6.1", "C6.2", "C6.3"] {
+        for id in ["C6.1", "C6.2", "C6.3", "C8"] {
             assert_eq!(
                 cross(&report, id).verdict,
                 Verdict::Pass,
@@ -1830,12 +2145,8 @@ mod tests {
             );
         }
         assert!(
-            !report.deferred.iter().any(|line| line.starts_with("c6.")),
-            "C6 is implemented — its interim scope note is gone"
-        );
-        assert!(
-            report.deferred.iter().any(|line| line.starts_with("c8.")),
-            "C8 remains named until S4c"
+            !report.deferred.iter().any(|line| line.starts_with("c6.") || line.starts_with("c8.")),
+            "C6/C8 are implemented — the interim scope notes are gone"
         );
         assert_eq!(report.exit_code(), 0);
     }
@@ -2092,7 +2403,7 @@ mod tests {
             session_event(json!({ "kind": "llm_completed", "turn": 1, "content": "done" })),
         ];
         let report = validate_with_session_log(&blobs(&chain), &[stream]);
-        for id in ["C6.1", "C6.2", "C6.3"] {
+        for id in ["C6.1", "C6.2", "C6.3", "C8"] {
             assert_eq!(
                 cross(&report, id).verdict,
                 Verdict::Degraded,
@@ -2100,6 +2411,167 @@ mod tests {
                 cross(&report, id).detail
             );
         }
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // C8 · invocation chain adjacency
+    // -----------------------------------------------------------------------------------------
+
+    /// A live chain whose first provider call overflows and whose retry completes:
+    /// step 1 publishes `step:1:effect:0` (overflowed), its resolution's step publishes the
+    /// retry `step:2:effect:0` (completed). The honest llm_completed for this invocation is
+    /// `invocation_id = step:1:effect:0`, `effect_id = step:2:effect:0`. The operation starts
+    /// with history so the compaction ladder can actually recover from the overflow.
+    fn overflow_retry_chain(op_name: &str) -> Vec<KernelRecord> {
+        let op = operation(op_name);
+        live_chain(&[
+            configure_envelope(&op),
+            agent_start_with_history_envelope(&op, 14),
+            resolve_overflow_envelope(&op, 1),
+            resolve_completed_envelope(&op, "in-resolve-2", 1_700_000_003_000, 2, false),
+        ])
+    }
+
+    #[test]
+    fn an_honest_overflow_retry_invocation_passes_c8() {
+        let chain = overflow_retry_chain("op-c8-green");
+        let stream = vec![
+            session_event(json!({ "kind": "run_started", "run_id": "r1" })),
+            session_event(json!({
+                "kind": "llm_completed",
+                "turn": 1,
+                "effect_id": "op-c8-green:step:2:effect:0",
+                "invocation_id": "op-c8-green:step:1:effect:0"
+            })),
+        ];
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(
+            cross(&report, "C8").verdict,
+            Verdict::Pass,
+            "{}",
+            cross(&report, "C8").detail
+        );
+        assert!(
+            cross(&report, "C8").detail.contains("1 retried invocation(s)"),
+            "{}",
+            cross(&report, "C8").detail
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_completed_chain_head_is_the_merge_forgery() {
+        // The provider call completes with a tool call, so step 2 publishes an ExecuteTools
+        // effect. Claiming invocation step:1:effect:0 → step:2:effect:0 merges the tool
+        // execution into the provider invocation — the head COMPLETED, so nothing chains.
+        let op = operation("op-c8-merged");
+        let chain = live_chain(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_completed_envelope(&op, "in-resolve-1", 1_700_000_002_000, 1, true),
+        ]);
+        let stream = vec![session_event(json!({
+            "kind": "llm_completed",
+            "turn": 1,
+            "effect_id": "op-c8-merged:step:2:effect:0",
+            "invocation_id": "op-c8-merged:step:1:effect:0"
+        }))];
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(cross(&report, "C8").verdict, Verdict::Fail);
+        assert!(
+            cross(&report, "C8").detail.contains("closes its invocation"),
+            "{}",
+            cross(&report, "C8").detail
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_selected_effect_preceding_the_chain_head_fails_c8() {
+        let chain = overflow_retry_chain("op-c8-backwards");
+        let stream = vec![session_event(json!({
+            "kind": "llm_completed",
+            "turn": 1,
+            "effect_id": "op-c8-backwards:step:1:effect:0",
+            "invocation_id": "op-c8-backwards:step:2:effect:0"
+        }))];
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(cross(&report, "C8").verdict, Verdict::Fail);
+        assert!(
+            cross(&report, "C8").detail.contains("does not follow the chain head"),
+            "{}",
+            cross(&report, "C8").detail
+        );
+    }
+
+    #[test]
+    fn a_selected_effect_the_replan_never_published_fails_c8() {
+        let chain = overflow_retry_chain("op-c8-phantom");
+        let stream = vec![session_event(json!({
+            "kind": "llm_completed",
+            "turn": 1,
+            "effect_id": "op-c8-phantom:step:2:effect:9",
+            "invocation_id": "op-c8-phantom:step:1:effect:0"
+        }))];
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(cross(&report, "C8").verdict, Verdict::Fail);
+        assert!(
+            cross(&report, "C8").detail.contains("never published"),
+            "{}",
+            cross(&report, "C8").detail
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_first_try_invocation_has_no_adjacency_to_prove() {
+        let op = operation("op-c8-first-try");
+        let chain = live_chain(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_completed_envelope(&op, "in-resolve-1", 1_700_000_002_000, 1, false),
+        ]);
+        let stream = vec![session_event(json!({
+            "kind": "llm_completed",
+            "turn": 1,
+            "effect_id": "op-c8-first-try:step:1:effect:0",
+            "invocation_id": "op-c8-first-try:step:1:effect:0"
+        }))];
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(
+            cross(&report, "C8").verdict,
+            Verdict::Pass,
+            "{}",
+            cross(&report, "C8").detail
+        );
+        assert!(
+            cross(&report, "C8").detail.contains("1 first-try"),
+            "{}",
+            cross(&report, "C8").detail
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn an_invocation_past_the_journal_tip_degrades_c8() {
+        // The journal is a prefix cut before the overflow resolution lands; the SessionLog
+        // already tells the whole story. Plane lag degrades, never fails.
+        let op = operation("op-c8-lag");
+        let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let stream = vec![session_event(json!({
+            "kind": "llm_completed",
+            "turn": 1,
+            "effect_id": "op-c8-lag:step:2:effect:0",
+            "invocation_id": "op-c8-lag:step:1:effect:0"
+        }))];
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(
+            cross(&report, "C8").verdict,
+            Verdict::Degraded,
+            "{}",
+            cross(&report, "C8").detail
+        );
         assert_eq!(report.exit_code(), 0);
     }
 }
