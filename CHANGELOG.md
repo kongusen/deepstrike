@@ -6,6 +6,97 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.64] - 2026-09-17
+
+### BREAKING CHANGES
+
+- **`UsageSettlement` is renamed to `ModelUsageSettlement`** in all three SDKs
+  (node `runtime/execution-evidence`, python `runtime/execution_evidence`, wasm
+  `runtime/execution-evidence`), with no compatibility alias. The rename reserves the
+  `UsageSettlement` namespace for future runtime resources (CPU/GPU/storage/network/
+  wall-time/money); it is a fast-follow break on the one-day-old 0.2.63 API, taken
+  under roadmap decision Q1. Migration: rename the import; semantics are unchanged.
+
+### Added — execution evidence plane, python + wasm parity (P4)
+
+- The python and wasm runners now emit the full evidence surface node gained in 0.2.63:
+  - **`provider_attempt` at all four terminal exits** — `success` (usage +
+    `wire_evidence` + pinned `accounting_policy_id`), `transport_exhausted` (error
+    *class* only, never the message — B1), `aborted` (host cancellation mid-stream),
+    `rejected` (zero rungs; the request fingerprint still binds `prompt_measured`, G2).
+  - **`run_started.route`**: the content-addressed provider route
+    (`route_id` = hash of the addressed route spelling) pinned on both start paths.
+  - **`llm_completed` carries `effect_id` / `invocation_id` / `wire_evidence`.**
+    Invocation identity is derived, never minted (P4 §1.1): it *is* the chain's first
+    `effect_id`, and a kernel-recovered retry continues the pending invocation instead
+    of starting a new one.
+  - `prompt_measured` and `tool_completed` pin `effect_id` (the latter on both the
+    `execute_tools` and governance-denial paths).
+  - **`UsageAccountingPolicy` runner option** (default `FULL_FOOTPRINT`): settlement
+    crosses the kernel boundary only as `observed_input_tokens` /
+    `observed_output_tokens` (B4); the wasm route resolver reports
+    `adapter_version: "unknown"` honestly where the bundle cannot read its own
+    package manifest.
+- Evidence-path validation stays non-blocking everywhere: a malformed attempt record
+  degrades evidence, never fails a run (the `tryNormalizeProviderUsage` precedent).
+- python parity fixed three latent defects the wiring exposed, including
+  `resolve_provider_route` hashing a `ProviderRequestEndpoint` instead of the
+  addressed route.
+
+### Added — `provider_attempt_record` conformance domain
+
+- The SessionLog attempt record is now a pinned cross-SDK JSON contract: snake_case
+  top-level fields + camelCase nested `route`/`usage` (the wire-family spelling the
+  `provider_request_plan` fingerprint already pins). Six fixtures cover the builder
+  shape (full / transport-exhausted), durable-codec roundtrip through
+  `FileSessionLog`, and three negatives (`missing effect_id`, `invalid status`,
+  `non-integer transport_rungs`) with pinned error code/path. Rust skips by
+  runner-owned `DOMAIN_SDKS` (no local codec or validator to exercise).
+- wasm exports **`assertCanonicalProviderAttemptRecord`** — its first validation
+  teeth, for hosts bridging attempt events to durable storage (wasm's in-memory
+  SessionLog has no durable read path of its own).
+
+### Added — chain validator, batch 3 (`ds-chain-validator`)
+
+- **`--session-log` input plane** (batch 2's deferred item, now live): SessionLog event
+  blobs join the journal as a second evidence plane — Evidence Truth (P6 §S), never
+  recovery authority.
+- **C6 · SessionLog↔journal cross-verification**: `provider_attempt.effect_id` must
+  resolve to a journal effect; the attempt's `request_fingerprint` must match the
+  `prompt_measured` record bound to the same invocation. Route-id semantics (locked
+  decision Q3): within one `run_started` the attempt sequence's route must equal that
+  run's pinned route — a change is a violation; across a resume (a new `run_started`)
+  it degrades instead, because an adapter upgrade is a legitimate reality (C7
+  philosophy).
+- **C8 · invocation chain adjacency**: two `provider_attempt` effects adjacent in the
+  chain require a `Failed` resolution between them (a retry must explain itself).
+- C7 compatibility holds: legacy logs missing `provider_attempt` or additive fields
+  degrade, never fail. Exit-code contract unchanged (`0`/`1`/`2`/`64`).
+
+### Added — D-A mixed-batch sequence fixtures
+
+- A new fixture kind — whole **multi-step sequences** rather than single envelopes —
+  pinned in the mixed-batch constitution vocabulary (runtime-causality M1–M5):
+  `published_kinds` / `withheld_kinds` / `rederived` per step. Two founding scenarios:
+  - **syscall-host-tool-mixed-batch** — the 0.2.62 incident scene: a provider turn
+    mixing a memory query with a host tool call publishes only the syscall effect
+    (M3 forbids co-publication); settling it re-derives the `execute_tools` batch;
+    settling that resumes the loop.
+  - **syscall-only-control-plane** — §5k: a `skill` + `update_plan` batch publishes
+    nothing of its own, so the kernel continues the turn itself.
+- Runner shape (locked decision Q2): `tests/rust` t17 replays the literal pinned
+  envelopes through the public durable path (prepare → append → commit → fold) with a
+  hand-rolled schema gate and a `DS_EMIT_MIXED_BATCH=1` emitter for regeneration; the
+  node projection layer consumes the same fixtures to pin first-effect semantics (the
+  current host action is always the publication manifest's head).
+
+### Notes
+
+- Kernel ABI is unchanged end to end: no new wire types, no vocabulary additions; the
+  core diff is confined to the additive `chain_validator` host tooling.
+- SessionLog changes are additive only; attempt-level facts (route/usage/wall-clock/
+  wire) remain pure host evidence (B7) and never re-enter the kernel as input.
+
 ## [0.2.63] - 2026-09-16
 
 ### Added — runtime constitution documents
