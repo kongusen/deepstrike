@@ -418,10 +418,32 @@ export class CanonicalKernel {
   }
 
   checkpointCandidate() {
+    // The checkpoint bytes are a JSON state snapshot — the same fields restore() replays — so
+    // that checkpoint+tail recovery actually resumes loop state rather than a marker string.
+    const snapshot = {
+      through_step_seq: this.checkpointThrough,
+      covered_head: this.head ?? `digest-${this.checkpointThrough}`,
+      state: {
+        life: this.life,
+        phase: this.phase,
+        turns: this.turns,
+        next_effect: this.nextEffect,
+        pending_effects: this.pendingEffects,
+        terminal_payload: this.terminalPayload,
+        loop_round: this.loopRound,
+        pace_proposal: this.paceProposal,
+        governance_ask_user: this.governanceAskUser,
+        resumed_after_ask: this.resumedAfterAsk,
+        recovery_attempts: this.recoveryAttempts,
+        workflow_nodes: this.workflowNodes,
+        workflow_started: [...this.workflowStarted],
+        workflow_completed: [...this.workflowCompleted],
+      },
+    }
     return {
-      checkpointBytes: new TextEncoder().encode(`checkpoint-${this.checkpointThrough}`),
+      checkpointBytes: new TextEncoder().encode(JSON.stringify(snapshot)),
       throughStepSeq: String(this.checkpointThrough),
-      coveredHead: this.head ?? `digest-${this.checkpointThrough}`,
+      coveredHead: snapshot.covered_head,
       stateDigest: `state-${this.checkpointThrough}`,
       ackToken: `checkpoint-${this.checkpointThrough}`,
     }
@@ -433,19 +455,71 @@ export class CanonicalKernel {
 
   ackCheckpoint(_throughStepSeq: string, _coveredHead: string): void {}
 
-  restore(_checkpointBytes: Uint8Array | null | undefined, recordBytes: Uint8Array[]) {
-    this.nextStep = recordBytes.length
+  restore(checkpointBytes: Uint8Array | null | undefined, recordBytes: Uint8Array[]) {
+    // Loop state resets to genesis first — restore rebuilds it from the checkpoint and/or the
+    // replayed tail, never from whatever the dying kernel happened to hold.
     this.pendingEffects = []
     this.terminalPayload = undefined
     this.life = "created"
     this.head = undefined
-    if (recordBytes.length > 0) {
-      const restored = JSON.parse(new TextDecoder().decode(recordBytes[recordBytes.length - 1])) as {
+    this.phase = 0
+    this.turns = 0
+    this.loopRound = null
+    this.paceProposal = null
+    this.governanceAskUser = false
+    this.resumedAfterAsk = false
+    this.recoveryAttempts = 0
+    if (checkpointBytes && checkpointBytes.length > 0) {
+      const snapshot = JSON.parse(new TextDecoder().decode(checkpointBytes)) as {
+        through_step_seq: number
+        covered_head: string
+        state: {
+          life: CanonicalLifecycle
+          phase: number
+          turns: number
+          next_effect?: number
+          pending_effects: Array<Record<string, unknown>>
+          terminal_payload?: Record<string, unknown>
+          loop_round: { default_action?: string } | null
+          pace_proposal: { action: string; reason: string } | null
+          governance_ask_user: boolean
+          resumed_after_ask: boolean
+          recovery_attempts: number
+          workflow_nodes?: Array<Record<string, unknown>>
+          workflow_started?: string[]
+          workflow_completed?: string[]
+        }
+      }
+      this.checkpointThrough = snapshot.through_step_seq
+      this.head = snapshot.covered_head
+      this.nextStep = snapshot.through_step_seq + 1
+      this.life = snapshot.state.life
+      this.phase = snapshot.state.phase
+      this.turns = snapshot.state.turns
+      this.pendingEffects = snapshot.state.pending_effects ?? []
+      this.terminalPayload = snapshot.state.terminal_payload
+      this.loopRound = snapshot.state.loop_round ?? null
+      this.paceProposal = snapshot.state.pace_proposal ?? null
+      this.governanceAskUser = snapshot.state.governance_ask_user ?? false
+      this.resumedAfterAsk = snapshot.state.resumed_after_ask ?? false
+      this.recoveryAttempts = snapshot.state.recovery_attempts ?? 0
+      this.nextEffect = snapshot.state.next_effect ?? 1
+      this.workflowNodes = snapshot.state.workflow_nodes ?? []
+      this.workflowStarted = new Set(snapshot.state.workflow_started ?? [])
+      this.workflowCompleted = new Set(snapshot.state.workflow_completed ?? [])
+    } else {
+      this.nextStep = 0
+    }
+    // Tail replay re-derives loop state the way prepare's planning would have: the real
+    // kernel rebuilds by re-running its transition semantics over the authoritative tail, so
+    // phase, turns, and life come from the records — never from the dying process's memory.
+    for (const bytes of recordBytes) {
+      const restored = JSON.parse(new TextDecoder().decode(bytes)) as {
         inputJson: string
         plannedStepJson: string
         recordDigest: string
       }
-      const input = (JSON.parse(restored.inputJson) as { input?: { kind?: string } }).input ?? {}
+      const input = (JSON.parse(restored.inputJson) as { input?: Record<string, unknown> }).input ?? {}
       const planned = JSON.parse(restored.plannedStepJson) as {
         disposition: {
           kind: string
@@ -458,10 +532,56 @@ export class CanonicalKernel {
         this.terminalPayload = planned.disposition.terminal
         const kind = String(planned.disposition.terminal?.kind ?? "completed")
         this.life = kind === "cancelled" ? "cancelled" : kind === "failed" ? "failed" : "completed"
-      } else {
-        this.pendingEffects = planned.disposition.effects ?? []
-        this.life = input.kind === "configure_operation" ? "configured" : "running"
+        this.pendingEffects = []
+        continue
       }
+      this.pendingEffects = planned.disposition.effects ?? []
+      const kind = String(input.kind ?? "")
+      if (kind === "configure_operation") {
+        const config = (input.config && typeof input.config === "object" ? input.config : {}) as Record<string, unknown>
+        const governance = (
+          (config.governance_policy && typeof config.governance_policy === "object"
+            ? config.governance_policy
+            : config.governance && typeof config.governance === "object"
+              ? config.governance
+              : {})
+        ) as { rules?: Array<{ action?: string }> }
+        this.governanceAskUser = (governance.rules ?? []).some(rule => rule.action === "ask_user")
+        this.life = "configured"
+      } else if (kind === "start_operation") {
+        const entry = (input.entry && typeof input.entry === "object" ? input.entry : {}) as Record<string, unknown>
+        const runSpec = (entry.run_spec && typeof entry.run_spec === "object" ? entry.run_spec : {}) as {
+          loop_round?: { default_action?: string }
+        }
+        this.phase = 0
+        this.terminalPayload = undefined
+        this.resumedAfterAsk = false
+        this.recoveryAttempts = 0
+        this.paceProposal = null
+        this.loopRound = runSpec.loop_round ?? null
+        this.life = "running"
+      } else if (kind === "resolve_effect") {
+        const outcome = (input.outcome && typeof input.outcome === "object" ? input.outcome : {}) as Record<string, unknown>
+        if (outcome.status === "failed") {
+          this.life = "failed"
+          continue
+        }
+        const result = (outcome.result && typeof outcome.result === "object" ? outcome.result : {}) as Record<string, unknown>
+        if (result.kind !== "provider") continue
+        const providerOutcome = (result.outcome && typeof result.outcome === "object" ? result.outcome : {}) as Record<string, unknown>
+        if (providerOutcome.kind === "context_overflow") {
+          this.recoveryAttempts += 1
+          continue
+        }
+        this.recoveryAttempts = 0
+        this.turns += 1
+        const message = (providerOutcome.message && typeof providerOutcome.message === "object"
+          ? providerOutcome.message
+          : {}) as { tool_calls?: unknown[] }
+        const hadToolCalls = (Array.isArray(message.tool_calls) ? message.tool_calls : []).length > 0
+        if (hadToolCalls && this.phase === 0) this.phase = 1
+      }
+      this.nextStep += 1
     }
     return {
       recordsBeforeCheckpoint: "0",
