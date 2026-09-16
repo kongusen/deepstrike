@@ -1,4 +1,4 @@
-import type { Message, ProviderReplay, ToolCall } from "../types.js"
+import type { Message, ProviderReplay, ProviderWireEvidence, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
 import type { WorkflowNodeStatus } from "./types/agent.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
@@ -30,6 +30,11 @@ export function normalizeLlmCompleted(
     tool_calls: toolCalls,
     token_count: event.token_count ?? estimateTokenCount(content),
     ...(providerReplay ? { provider_replay: providerReplay } : {}),
+    // P4 §3: the evidence-plane fields ride along verbatim — recovery never reads them
+    // (SessionLog is evidence, not authority), so normalize must neither synthesize nor drop them.
+    ...(event.effect_id !== undefined ? { effect_id: event.effect_id } : {}),
+    ...(event.invocation_id !== undefined ? { invocation_id: event.invocation_id } : {}),
+    ...(event.wire_evidence !== undefined ? { wire_evidence: event.wire_evidence } : {}),
   }
 }
 
@@ -49,6 +54,9 @@ export function buildLlmCompletedEvent(input: {
   tokenCount?: number
   toolCalls: ToolCall[]
   providerReplay?: ProviderReplay
+  effectId?: string
+  invocationId?: string
+  wireEvidence?: ProviderWireEvidence
 }): Extract<SessionEvent, { kind: "llm_completed" }> {
   return normalizeLlmCompleted({
     kind: "llm_completed",
@@ -57,6 +65,9 @@ export function buildLlmCompletedEvent(input: {
     tool_calls: input.toolCalls ?? [],
     token_count: input.tokenCount,
     provider_replay: input.providerReplay,
+    ...(input.effectId !== undefined ? { effect_id: input.effectId } : {}),
+    ...(input.invocationId !== undefined ? { invocation_id: input.invocationId } : {}),
+    ...(input.wireEvidence !== undefined ? { wire_evidence: input.wireEvidence } : {}),
   })
 }
 

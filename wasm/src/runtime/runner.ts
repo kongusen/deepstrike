@@ -87,8 +87,17 @@ import {
   estimateProviderPromptTokens,
   measurementForPlan,
   recordPromptMeasurement,
+  resolveProviderRoute,
   type RecordedPromptMeasurement,
+  type ResolvedProviderRoute,
 } from "../providers/request-plan.js"
+import {
+  FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY,
+  providerAttemptToRecord,
+  tryNormalizeProviderUsage,
+  type ProviderAttempt,
+  type UsageAccountingPolicy,
+} from "./execution-evidence.js"
 
 export interface MemoryWriteRateLimit {
   maxWrites: number
@@ -285,6 +294,10 @@ export interface RuntimeOptions {
   governancePolicy?: GovernancePolicy
   signalPolicy?: SignalPolicy
   promptBudget?: PromptBudget
+  /** P4 §2.1: the named policy turning a provider measurement into the two observed_* numbers
+   *  that cross the kernel boundary. Undefined ⇒ FULL_FOOTPRINT (the numbers the runner has
+   *  always fed); only makes the conversion named, pinnable on `provider_attempt`, replayable. */
+  usageAccountingPolicy?: UsageAccountingPolicy
   /** Stable replayable context behavior; ratios are normalized to integer ppm. */
   contextPolicy?: ContextPolicyOverrides
   schedulerPolicy?: SchedulerPolicy
@@ -443,12 +456,37 @@ export class RuntimeRunner {
   } | undefined
   /** Provider continuation emitted after a canonical nested workflow completes. */
   private workflowContinuation: Extract<KernelRunnerAction, { kind: "call_provider" }> | null = null
+  /** P4 (0.2.64 Evidence Plane): the resolved route every provider attempt is pinned to —
+   *  resolved once so evidence identity is byte-stable across the run (C6.3 pins in-run
+   *  route stability). */
+  private readonly providerRoute: ResolvedProviderRoute
+  private readonly usageAccountingPolicy: UsageAccountingPolicy
+  /** P4 §1.1: the active invocation's derived identity = its chain's FIRST effect_id. Tracked
+   *  across the kernel-recovered retry loop; a fresh call_provider with no pending retry opens
+   *  a new invocation. */
+  private providerRetryPending = false
+  private activeProviderInvocationId: string | undefined
 
   constructor(private readonly opts: RuntimeOptions) {
     const schemaAttempts = opts.workflowSchemaValidationAttempts ?? 2
     if (!Number.isInteger(schemaAttempts) || schemaAttempts < 1 || schemaAttempts > 16) {
       throw new RangeError("workflowSchemaValidationAttempts must be an integer between 1 and 16")
     }
+    this.providerRoute = resolveProviderRoute(opts.provider)
+    this.usageAccountingPolicy = opts.usageAccountingPolicy ?? FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY
+  }
+
+  /**
+   * P4-S1 (G1): land one provider_attempt evidence record per effect execution. Pure host
+   * evidence (B7) — appended AFTER the transport fact exists (success/failure/abort), never
+   * consulted for kernel input. The accounting policy id pins only when a measurement exists,
+   * so (usage, policy_id) deterministically recomputes the settlement that crossed the wire.
+   */
+  private async appendProviderAttempt(sessionId: string, attempt: ProviderAttempt): Promise<void> {
+    await this.opts.sessionLog.append(sessionId, {
+      kind: "provider_attempt",
+      ...providerAttemptToRecord(attempt, attempt.usage ? this.usageAccountingPolicy.policyId : undefined),
+    })
   }
 
   private resolveKernelJournal(): KernelJournal {
@@ -628,6 +666,7 @@ export class RuntimeRunner {
         agent_id: this.opts.agentId,
         system_prompt: this.opts.systemPrompt,
         ...(attachments ? { attachments } : {}),
+        route: this.providerRoute,
       })
     }
     yield* this.execute(
@@ -727,6 +766,7 @@ export class RuntimeRunner {
     requests: Array<{ callId: string; tool: string; arguments: string; reason: string }>,
     runtime: CanonicalRunnerRuntime,
     sessionId: string,
+    effectId?: string,
   ): Promise<{ approved: string[]; denied: string[]; events: StreamEvent[] }> {
     const approved: string[] = []
     const denied: string[] = []
@@ -793,6 +833,8 @@ export class RuntimeRunner {
         await this.opts.sessionLog.append(sessionId, {
           kind: "tool_completed",
           turn: runtime.turn(),
+          // P4 §1.1: governance-denied completions carry the requesting effect's identity.
+          ...(effectId !== undefined ? { effect_id: effectId } : {}),
           results: [{
             call_id: requestAction.callId,
             output: `permission denied: ${denyReason}`,
@@ -1034,6 +1076,18 @@ export class RuntimeRunner {
 
       if (action.kind === "call_provider") {
         const providerEffectId = action.effectId
+        // P4 §1.1: invocation identity is derived, never minted — the chain's FIRST effect_id.
+        // A provider_error commit armed `providerRetryPending`, so this effect CONTINUES the
+        // pending invocation; otherwise it opens a new one. The chain itself lives in the
+        // journal (each hop a resolution input → new effect); this is the SessionLog evidence
+        // projection of it.
+        if (!this.providerRetryPending || this.activeProviderInvocationId === undefined) {
+          this.activeProviderInvocationId = providerEffectId
+        }
+        this.providerRetryPending = false
+        const invocationId = this.activeProviderInvocationId
+        // Host wall-clock, pure evidence (B7/DEC-2): never crosses into kernel input.
+        const attemptStartedAtMs = Date.now()
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
         // I5: governance schema-level pre-filter — see Node runner for full rationale.
@@ -1080,7 +1134,7 @@ export class RuntimeRunner {
             })
           }
           recordedMeasurements.set(providerPlan.fingerprint, promptMeasurement)
-          await this.opts.sessionLog.append(sessionId, { kind: "prompt_measured", turn: runtime.turn(), measurement: promptMeasurement })
+          await this.opts.sessionLog.append(sessionId, { kind: "prompt_measured", turn: runtime.turn(), measurement: promptMeasurement, effect_id: providerEffectId })
         }
         const reservedPromptTokens = (this.opts.promptBudget?.promptOverheadTokens ?? 0)
           + (this.opts.promptBudget?.outputReserveTokens ?? 0)
@@ -1089,11 +1143,29 @@ export class RuntimeRunner {
           && promptMeasurement.source.kind !== "heuristic"
           && promptMeasurement.inputTokens + reservedPromptTokens > this.opts.maxTokens
         if (context.budgetOverflow || measuredOverflow) {
+          // P4 §1.2: blocked BEFORE any transport — zero rungs, status rejected. The
+          // fingerprint still binds the would-be request to its prompt_measured record (G2).
+          await this.appendProviderAttempt(sessionId, {
+            effectId: providerEffectId,
+            attemptSeq: 1,
+            route: this.providerRoute,
+            requestFingerprint: providerPlan.fingerprint,
+            status: "rejected",
+            transportRungs: 0,
+            lastErrorClass: "context_overflow",
+            startedAtMs: attemptStartedAtMs,
+            finishedAtMs: Date.now(),
+            wireEvidence: {
+              protocol: this.providerRoute.protocol,
+              request_fingerprint: providerPlan.fingerprint,
+            },
+          })
           action = await this.commitKernelAction(runtime, this.pendingObservations, {
             kind: "provider_error", effect_id: providerEffectId,
             message: "provider-visible prompt exceeds the configured context budget",
             error_kind: "context_overflow", retryable: false,
           })
+          this.providerRetryPending = action.kind === "call_provider"
           continue
         }
 
@@ -1133,6 +1205,23 @@ export class RuntimeRunner {
           } else {
             const descriptor = this.opts.provider.descriptor?.()
             const providerError = classifyProviderError(descriptor?.provider ?? "unknown", err)
+            // P4 §1.2: the transport ladder is exhausted — one attempt record, error CLASS only
+            // (B1: never the raw vendor text). The single-shot stream path reports 1 rung.
+            await this.appendProviderAttempt(sessionId, {
+              effectId: providerEffectId,
+              attemptSeq: 1,
+              route: this.providerRoute,
+              requestFingerprint: providerPlan.fingerprint,
+              status: "transport_exhausted",
+              transportRungs: 1,
+              lastErrorClass: providerError.kind,
+              startedAtMs: attemptStartedAtMs,
+              finishedAtMs: Date.now(),
+              wireEvidence: {
+                protocol: this.providerRoute.protocol,
+                request_fingerprint: providerPlan.fingerprint,
+              },
+            })
             // Reactive recovery is now a kernel decision. Forward the raw provider error and
             // dispatch whatever the kernel returns: `call_provider` to retry with a freshly
             // compacted context, or `done` to terminate with an honest `ContextOverflow`. The
@@ -1144,6 +1233,9 @@ export class RuntimeRunner {
               message: providerError.message,
               ...providerErrorEventFields(providerError),
             })
+            // P4 §1.1: a kernel-recovered retry CONTINUES this invocation (the journal holds the
+            // causation hop); a terminal closes it.
+            this.providerRetryPending = action.kind === "call_provider"
             // Withholding (query.ts parity): surface the raw provider error only when the kernel
             // could NOT recover (it returned a terminal). On a recovered retry (`call_provider`)
             // the error stays hidden. `continue` re-enters the loop: a recovered turn persists its
@@ -1158,6 +1250,21 @@ export class RuntimeRunner {
 
         // #2-B-ii: stream aborted (preempt/interrupt) via the break path — end the turn now.
         if (abortSignal?.aborted) {
+          // P4 §1.2: host cancellation mid-stream — the attempt is evidence too.
+          await this.appendProviderAttempt(sessionId, {
+            effectId: providerEffectId,
+            attemptSeq: 1,
+            route: this.providerRoute,
+            requestFingerprint: providerPlan.fingerprint,
+            status: "aborted",
+            transportRungs: 1,
+            startedAtMs: attemptStartedAtMs,
+            finishedAtMs: Date.now(),
+            wireEvidence: {
+              protocol: this.providerRoute.protocol,
+              request_fingerprint: providerPlan.fingerprint,
+            },
+          })
           action = await this.commitKernelAction(runtime, this.pendingObservations, {
             kind: "cancel_operation",
             reason: this.cancellationReason ?? "user",
@@ -1172,22 +1279,60 @@ export class RuntimeRunner {
           toolCalls: finalToolCalls,
           tokenCount: turnOutputTokens || turnTokens || undefined,
         }
+        // P4 §2: assemble the measurement from the exact numbers that cross the boundary today
+        // (input/output turn counters + the cache split). An invalid frame degrades to no
+        // measurement (evidence never breaks a run); the settlement then falls back to the raw
+        // counts below.
+        const attemptUsage = (turnInputTokens > 0 || turnOutputTokens > 0)
+          ? tryNormalizeProviderUsage({
+              inputTokens: turnInputTokens,
+              outputTokens: turnOutputTokens,
+              ...(turnCacheReadTokens > 0 ? { cacheReadInputTokens: turnCacheReadTokens } : {}),
+              ...(turnCacheCreationTokens > 0 ? { cacheCreationInputTokens: turnCacheCreationTokens } : {}),
+            })
+          : undefined
+        const settlement = attemptUsage ? this.usageAccountingPolicy.settle(attemptUsage) : undefined
         const providerEvent: Record<string, unknown> = {
           kind: "provider_result",
           effect_id: providerEffectId,
           message: messageToKernelMessage(assistantMessage),
-          ...(turnInputTokens > 0 ? { observed_input_tokens: turnInputTokens } : {}),
-          ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
+          // P4-S2: observed_* now comes from the pinned policy's settlement of the measurement.
+          // Under the default full-footprint policy these are provably the numbers the runner
+          // has always fed (inputTokens/outputTokens verbatim under the same >0 gates).
+          ...(turnInputTokens > 0 ? { observed_input_tokens: settlement?.observed_input_tokens ?? turnInputTokens } : {}),
+          ...(turnOutputTokens > 0 ? { observed_output_tokens: settlement?.observed_output_tokens ?? turnOutputTokens } : {}),
           ...(turnStopReason ? { stop_reason: turnStopReason } : {}),
         }
-        action = await this.commitKernelAction(runtime, this.pendingObservations, providerEvent)
+        // P4-S1: land the attempt evidence BEFORE the kernel resolution commits — the record
+        // describes the transport fact, which exists regardless of what the kernel decides next.
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
+        const wireEvidence = {
+          protocol: this.providerRoute.protocol,
+          request_fingerprint: providerPlan.fingerprint,
+          ...(providerReplay !== undefined ? { replay_state: providerReplay } : {}),
+        }
+        await this.appendProviderAttempt(sessionId, {
+          effectId: providerEffectId,
+          attemptSeq: 1,
+          route: this.providerRoute,
+          requestFingerprint: providerPlan.fingerprint,
+          status: "success",
+          transportRungs: 1,
+          startedAtMs: attemptStartedAtMs,
+          finishedAtMs: Date.now(),
+          ...(attemptUsage !== undefined ? { usage: attemptUsage } : {}),
+          wireEvidence,
+        })
+        action = await this.commitKernelAction(runtime, this.pendingObservations, providerEvent)
         await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
           turn: runtime.turn(),
           content: finalText,
           tokenCount: turnOutputTokens || turnTokens || undefined,
           toolCalls: finalToolCalls,
           providerReplay,
+          effectId: providerEffectId,
+          invocationId,
+          wireEvidence,
         }))
 
         // P0-C: per-turn tool-gating telemetry. `activeSkill` reflects the skill in effect GOING INTO
@@ -1215,7 +1360,7 @@ export class RuntimeRunner {
         }
 
       } else if (action.kind === "request_approval") {
-        const resolved = await this.resolveKernelSuspend(action.requests, runtime, sessionId)
+        const resolved = await this.resolveKernelSuspend(action.requests, runtime, sessionId, action.effectId)
         for (const evt of resolved.events) yield evt
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "approval_result",
@@ -1453,6 +1598,8 @@ export class RuntimeRunner {
         await this.opts.sessionLog.append(sessionId, {
           kind: "tool_completed",
           turn: runtime.turn(),
+          // P4 §1.1: the completion carries the execute_tools effect's identity.
+          effect_id: toolEffectId,
           results: toolResults.map(r => ({
             call_id: r.callId,
             output: r.output,
@@ -1939,6 +2086,7 @@ export class RuntimeRunner {
         goal: `workflow:${spec.nodes.length} nodes`,
         criteria: [],
         ...(this.opts.agentId ? { agent_id: this.opts.agentId } : {}),
+        route: this.providerRoute,
       })
       await this.initializeWorkflowKernel(sessionId, runId)
     }

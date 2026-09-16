@@ -1,4 +1,4 @@
-import type { RenderedContext, ToolSchema } from "../types.js"
+import type { ProviderProtocol, RenderedContext, ToolSchema } from "../types.js"
 import { sha256Hex } from "../runtime/sha256.js"
 
 export interface ProviderRequestEndpoint { id: string; protocol: string; baseURL: string }
@@ -36,7 +36,7 @@ export interface ProviderUsage {
 export interface ResolvedProviderRoute {
   routeId: string
   provider: string
-  protocol: string
+  protocol: ProviderProtocol
   model: string
   endpoint: ProviderRequestEndpoint
   adapterVersion: string
@@ -171,6 +171,63 @@ function sanitizeEndpoint(endpoint: ProviderRequestEndpoint): ProviderRequestEnd
     return { ...clone(endpoint), baseURL: url.toString().replace(/\/$/, "") }
   } catch {
     return { ...clone(endpoint), baseURL: "" }
+  }
+}
+
+const KNOWN_GENERATION_PROTOCOLS = new Set([
+  "anthropic-messages",
+  "openai-chat",
+  "openai-responses",
+  "gemini",
+  "ollama-chat",
+])
+
+/**
+ * P4-S1: assemble the run's route once at runner construction (P4 §0.2 — the provider is
+ * fixed for the run today; a future failover resolver re-evaluates per attempt with the same
+ * shape). Never throws: evidence assembly degrades to "unknown" fields rather than breaking a
+ * run. The wasm bundle cannot read its own package manifest at runtime (browser targets), so
+ * adapterVersion is honestly "unknown" — the field is a report, not a gate.
+ */
+export function resolveProviderRoute(provider: {
+  descriptor?(): { provider: string; protocol: string; model: string }
+  requestPlanIdentity?(): {
+    providerId?: string
+    modelId?: string
+    endpoint?: { id?: string; protocol?: string; baseURL?: string }
+  }
+}): ResolvedProviderRoute {
+  try {
+    const descriptor = provider.descriptor?.() ?? { provider: "unknown", protocol: "unknown", model: "unknown" }
+    const identity = provider.requestPlanIdentity?.()
+    const protocolRaw = identity?.endpoint?.protocol ?? descriptor.protocol
+    // Evidence records what the descriptor said, even when a foreign provider speaks a protocol
+    // outside the in-tree vocabulary — the field is a report, not a gate.
+    const protocol = protocolRaw as ProviderProtocol
+    const route = {
+      provider: identity?.providerId ?? descriptor.provider,
+      protocol,
+      model: identity?.modelId ?? descriptor.model,
+      endpoint: sanitizeEndpoint({
+        id: identity?.endpoint?.id ?? `${descriptor.provider}.${descriptor.protocol}`,
+        protocol: protocolRaw,
+        baseURL: identity?.endpoint?.baseURL ?? "",
+      }),
+      adapterVersion: "unknown",
+      capabilitiesRef: KNOWN_GENERATION_PROTOCOLS.has(protocolRaw) ? protocolRaw : "unknown",
+    }
+    // §1.3: content addressing covers every field EXCEPT capabilitiesRef (a reference, not content).
+    const { capabilitiesRef: _ref, ...addressed } = route
+    return { ...route, routeId: sha256Hex(stableJson(addressed)) }
+  } catch {
+    const fallback = {
+      provider: "unknown",
+      protocol: "unknown" as ProviderProtocol,
+      model: "unknown",
+      endpoint: { id: "unknown", protocol: "unknown", baseURL: "" },
+      adapterVersion: "unknown",
+    }
+    return { ...fallback, capabilitiesRef: "unknown", routeId: sha256Hex(stableJson(fallback)) }
   }
 }
 
