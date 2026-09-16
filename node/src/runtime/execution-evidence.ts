@@ -39,7 +39,7 @@ export interface InvocationOutcome {
   selectedEffectId: string
   stopReason?: CanonicalStopReason
   /** Absent on a failed chain (nothing settled). */
-  settlement?: UsageSettlement
+  settlement?: ModelUsageSettlement
 }
 
 export type ProviderAttemptStatus = "success" | "transport_exhausted" | "aborted" | "rejected"
@@ -114,7 +114,7 @@ export function providerAttemptToRecord(attempt: ProviderAttempt, accountingPoli
  * existing ResolveEffect wire shape — this is what the runner already feeds the kernel as
  * `observed_input_tokens` / `observed_output_tokens`.
  */
-export interface UsageSettlement {
+export interface ModelUsageSettlement {
   observed_input_tokens: number
   observed_output_tokens: number
 }
@@ -126,7 +126,7 @@ export interface UsageSettlement {
  */
 export interface UsageAccountingPolicy {
   policyId: string
-  settle(usage: NormalizedProviderUsage): UsageSettlement
+  settle(usage: NormalizedProviderUsage): ModelUsageSettlement
 }
 
 /**
@@ -137,7 +137,7 @@ export interface UsageAccountingPolicy {
  */
 export const FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY: UsageAccountingPolicy = {
   policyId: "deepstrike.full-footprint@2026-09-15",
-  settle(usage: NormalizedProviderUsage): UsageSettlement {
+  settle(usage: NormalizedProviderUsage): ModelUsageSettlement {
     return {
       observed_input_tokens: usage.inputTokens,
       observed_output_tokens: usage.outputTokens,

@@ -21,7 +21,7 @@ class ProviderWireEvidence(TypedDict, total=False):
     raw_usage: Any  # optional, BoundedJson semantics: truncated to ≤4KB
     replay_state: dict[str, Any]  # optional, former llm_completed.provider_replay
 
-class UsageSettlement(TypedDict):
+class ModelUsageSettlement(TypedDict):
     """
     P4 §2: the only two numbers that cross the kernel boundary (B4). Field names match the
     existing ResolveEffect wire shape — this is what the runner already feeds the kernel as
@@ -39,7 +39,7 @@ class UsageAccountingPolicy(Protocol):
     """
     policy_id: str
 
-    def settle(self, usage: NormalizedProviderUsage) -> UsageSettlement:
+    def settle(self, usage: NormalizedProviderUsage) -> ModelUsageSettlement:
         ...
 
 
@@ -52,7 +52,7 @@ class _FullFootprintPolicy:
     """
     policy_id = "deepstrike.full-footprint@2026-09-15"
 
-    def settle(self, usage: NormalizedProviderUsage) -> UsageSettlement:
+    def settle(self, usage: NormalizedProviderUsage) -> ModelUsageSettlement:
         return {
             "observed_input_tokens": usage["input_tokens"],
             "observed_output_tokens": usage["output_tokens"],
@@ -110,7 +110,7 @@ class InvocationOutcome(TypedDict, total=False):
     invocation_id: str  # required
     selected_effect_id: str  # required, the effect the kernel adopted as the outcome
     stop_reason: CanonicalStopReason  # optional
-    settlement: UsageSettlement  # optional, absent on a failed chain
+    settlement: ModelUsageSettlement  # optional, absent on a failed chain
 
 
 class ModelInvocation(TypedDict, total=False):

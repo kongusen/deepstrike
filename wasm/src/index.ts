@@ -157,7 +157,7 @@ export type {
   ProviderAttemptStatus,
   ModelInvocation,
   InvocationOutcome,
-  UsageSettlement,
+  ModelUsageSettlement,
   UsageAccountingPolicy,
 } from "./runtime/execution-evidence.js"
 export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY, providerAttemptToRecord, tryNormalizeProviderUsage } from "./runtime/execution-evidence.js"

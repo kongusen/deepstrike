@@ -115,7 +115,7 @@ export type { CreateProviderOptions, EndpointProfileId } from "./providers/catal
 export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement, resolveProviderRoute } from "./providers/request-plan.js"
 export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement, ResolvedProviderRoute } from "./providers/request-plan.js"
 export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY } from "./runtime/execution-evidence.js"
-export type { InvocationOutcome, ModelInvocation, ProviderAttempt, ProviderAttemptRecord, ProviderAttemptStatus, UsageAccountingPolicy, UsageSettlement } from "./runtime/execution-evidence.js"
+export type { InvocationOutcome, ModelInvocation, ProviderAttempt, ProviderAttemptRecord, ProviderAttemptStatus, UsageAccountingPolicy, ModelUsageSettlement } from "./runtime/execution-evidence.js"
 
 export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 
