@@ -2597,4 +2597,386 @@ mod tests {
                 .all(|effect| !matches!(&effect.effect, EffectKind::LoadPayload(_)))
         );
     }
+
+    /* ------------------------------------------------------------ *
+     * Durable restart recovery — rust restart-equivalence (0.2.65 S2)
+     * ------------------------------------------------------------ */
+
+    /// Rust runs the REAL canonical kernel over a **file-backed** journal, so the restart
+    /// ladder here is the honest two-instance form: every phase reopens the directory with a
+    /// fresh `FileSessionLog` + `FileKernelJournal`, the way a restarted process would. The
+    /// crash-window projections (CAS conflict during append, staged-envelope drain on wake)
+    /// are proven by the node/python FileKernelJournal suites over the same host protocol.
+    ///
+    /// Equivalence criterion: the recovered run's next step is the step the original input
+    /// determined — the pending effect survives the restart at its exact chain position —
+    /// and the run reaches the same terminal an uninterrupted twin reaches, with each effect
+    /// executed exactly once across the restart.
+
+    const RESTART_RUN_ID: &str = "rust-restart-op-1";
+    const RESTART_SESSION: &str = "durable-restart";
+    const RESTART_FINAL_TEXT: &str = "restart-equivalent-finish";
+
+    /// Streams the ping tool call until history holds a tool result, then the final text —
+    /// restart-safe by construction: the branch reads the durable history, never a live
+    /// counter, so a resumed process cannot re-emit the tool call.
+    struct PingThenFinishProvider;
+
+    #[async_trait::async_trait]
+    impl crate::providers::LLMProvider for PingThenFinishProvider {
+        async fn complete(
+            &self,
+            context: &deepstrike_core::context::renderer::RenderedContext,
+            _tools: &[deepstrike_core::types::message::ToolSchema],
+            _extensions: Option<&serde_json::Value>,
+        ) -> crate::Result<deepstrike_core::types::message::Message> {
+            use deepstrike_core::types::message::{Content, Message, Role, ToolCall};
+            let has_tool_result = context.turns.iter().any(|message| message.role == Role::Tool);
+            let (content, tool_calls) = if has_tool_result {
+                (RESTART_FINAL_TEXT.to_string(), vec![])
+            } else {
+                (
+                    "Let's ping".to_string(),
+                    vec![ToolCall {
+                        id: compact_str::CompactString::new("call_ping"),
+                        name: compact_str::CompactString::new("ping"),
+                        arguments: serde_json::json!({}),
+                    }],
+                )
+            };
+            Ok(Message {
+                role: Role::Assistant,
+                content: Content::Text(content),
+                tool_calls,
+                token_count: None,
+            })
+        }
+
+        async fn stream(
+            &self,
+            context: &deepstrike_core::context::renderer::RenderedContext,
+            tools: &[deepstrike_core::types::message::ToolSchema],
+            extensions: Option<&serde_json::Value>,
+            _state: Option<&crate::providers::ProviderRunState>,
+        ) -> crate::Result<
+            Box<dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>> + Send + Unpin>,
+        > {
+            use crate::providers::StreamEvent;
+            use deepstrike_core::types::message::Content;
+            let message = self.complete(context, tools, extensions).await?;
+            let mut events = vec![];
+            for call in &message.tool_calls {
+                events.push(Ok(StreamEvent::ToolCall {
+                    id: call.id.to_string(),
+                    name: call.name.to_string(),
+                    arguments: call.arguments.clone(),
+                }));
+            }
+            if message.tool_calls.is_empty() {
+                if let Content::Text(text) = &message.content {
+                    events.push(Ok(StreamEvent::TextDelta { delta: text.clone() }));
+                }
+            }
+            events.push(Ok(StreamEvent::Done));
+            Ok(Box::new(futures::stream::iter(events)))
+        }
+    }
+
+    /// Unique per-test directory so concurrent restart ladders never share durable state.
+    fn restart_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ds-restart-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn ping_tool(executions: std::sync::Arc<std::sync::atomic::AtomicU32>) -> crate::tools::RegisteredTool {
+        crate::tools::RegisteredTool::text(
+            "ping",
+            "Ping",
+            serde_json::json!({ "type": "object", "properties": {} }),
+            move |_args| {
+                executions.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Box::pin(async { Ok("pong".to_string()) })
+            },
+        )
+    }
+
+    fn restart_kernel_options() -> CanonicalRunnerOptions {
+        CanonicalRunnerOptions {
+            max_context_tokens: 8_000,
+            max_turns: Some(8),
+            max_total_tokens: None,
+            max_wall_ms: None,
+            memory_binding_id: "restart-memory".into(),
+            persist_payload: None,
+        }
+    }
+
+    /// A fresh runner over the directory — the restarted process. `baseline_tool_ids` carries
+    /// the same exposure surface the manual drives seed, or the resumed tool call is denied
+    /// instead of executed.
+    fn restart_runner(
+        dir: &std::path::Path,
+        executions: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) -> crate::runtime::runner::RuntimeRunner {
+        use crate::runtime::kernel_journal::FileKernelJournal;
+        use crate::runtime::runner::{RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::{FileSessionLog, SessionLog};
+
+        let mut plane = crate::runtime::execution_plane::LocalExecutionPlane::new();
+        plane.register(ping_tool(executions));
+        let session_log: std::sync::Arc<dyn SessionLog> =
+            std::sync::Arc::new(FileSessionLog::new(dir));
+        let journal: std::sync::Arc<dyn KernelJournal> =
+            std::sync::Arc::new(FileKernelJournal::new(dir.join("kernel-journal")));
+        RuntimeRunner::new_with_kernel_journal(
+            RuntimeOptions {
+                provider: Box::new(PingThenFinishProvider),
+                execution_plane: Some(Box::new(plane)),
+                session_log: Some(session_log),
+                compression_store: None,
+                payload_store: None,
+                kernel_reliability: None,
+                session_id: None,
+                max_tokens: 8_000,
+                max_turns: Some(8),
+                timeout_ms: None,
+                extensions: None,
+                agent_id: None,
+                memory_scope: None,
+                system_prompt: None,
+                initial_memory: vec![],
+                skill_dir: None,
+                memory_store: None,
+                knowledge_source: None,
+                signal_source: None,
+                governance: None,
+                os_profile: None,
+                governance_policy: None,
+                signal_policy: None,
+                scheduler_policy: None,
+                resource_quota: None,
+                memory_policy: None,
+                tokenizer: None,
+                enable_plan_tool: None,
+                on_tool_suspend: None,
+                on_permission_request: None,
+                milestone_policy: crate::runtime::MilestonePolicy::AutoPass,
+                milestone_contract: None,
+                run_spec: None,
+                allowed_tool_ids: None,
+                baseline_tool_ids: Some(vec!["ping".into()]),
+                on_turn_metrics: None,
+                stable_core_tool_ids: vec![],
+                pre_query_memory: None,
+                on_milestone_evaluate: None,
+            },
+            journal,
+        )
+    }
+
+    /// Seed the session identity so the wake finds the operation the manual drive committed.
+    async fn seed_run_started(
+        log: &std::sync::Arc<dyn crate::runtime::session_log::SessionLog>,
+    ) {
+        log.append(
+            RESTART_SESSION,
+            deepstrike_core::runtime::session::SessionEvent::RunStarted {
+                run_id: RESTART_RUN_ID.to_string(),
+                goal: "use ping then finish".to_string(),
+                criteria: vec![],
+                agent_id: None,
+                system_prompt: None,
+                attachments: vec![],
+            },
+        )
+        .await
+        .expect("seed run_started");
+    }
+
+    /// Drive the operation to a pending execute_tool effect — the freeze frame of a run
+    /// interrupted between committing the provider turn and executing the requested tool.
+    async fn drive_to_pending_tool_effect(runtime: &mut CanonicalRunnerRuntime) {
+        runtime
+            .apply_host_event(serde_json::json!({
+                "kind": "set_tools",
+                "tools": [
+                    {
+                        "name": "ping",
+                        "description": "Ping",
+                        "parameters": { "type": "object", "properties": {} }
+                    }
+                ],
+            }))
+            .await
+            .expect("set_tools");
+        let first = runtime
+            .start_agent_value(
+                serde_json::json!({ "goal": "use ping then finish" }),
+                Some(serde_json::json!({ "exposure_baseline": ["ping"] })),
+            )
+            .await
+            .expect("start_agent")
+            .expect("call_provider action");
+        assert!(
+            matches!(first.effect, HostEffect::CallProvider { .. }),
+            "expected call_provider"
+        );
+        let pending = runtime
+            .apply_host_event(serde_json::json!({
+                "kind": "provider_result",
+                "effect_id": first.effect_id,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{ "id": "call_ping", "name": "ping", "arguments": {} }],
+                },
+                "stop_reason": "tool_use",
+            }))
+            .await
+            .expect("provider_result")
+            .expect("execute_tool action");
+        assert!(
+            matches!(pending.effect, HostEffect::ExecuteTool { .. }),
+            "expected execute_tool"
+        );
+    }
+
+    /// The journal chain — `JournalEntry` is `PartialEq`, so the bytes compare directly.
+    async fn restart_chain(
+        journal: &std::sync::Arc<dyn KernelJournal>,
+    ) -> Vec<crate::runtime::JournalEntry> {
+        journal
+            .read_from(RESTART_RUN_ID, 0)
+            .await
+            .expect("read chain")
+    }
+
+    #[tokio::test]
+    async fn durable_restart_baseline_fixes_the_terminal() {
+        let dir = restart_dir("baseline");
+        let executions = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let runner = restart_runner(&dir, executions.clone());
+        let text = crate::runtime::runner::collect_text(
+            runner
+                .run_streaming("use ping then finish", &[], None, Some(RESTART_SESSION))
+                .await
+                .expect("run"),
+        )
+        .await
+        .expect("collect text");
+        assert_eq!(text, RESTART_FINAL_TEXT);
+        assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn durable_restart_journal_only_ladder_resumes_from_journal_bytes() {
+        use crate::runtime::canonical_kernel::CanonicalKernel;
+        use crate::runtime::kernel_journal::FileKernelJournal;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let dir = restart_dir("journal-only");
+        let log: std::sync::Arc<dyn crate::runtime::session_log::SessionLog> =
+            std::sync::Arc::new(crate::runtime::session_log::FileSessionLog::new(&dir));
+        seed_run_started(&log).await;
+        let journal: std::sync::Arc<dyn KernelJournal> =
+            std::sync::Arc::new(FileKernelJournal::new(dir.join("kernel-journal")));
+        {
+            let mut runtime = CanonicalRunnerRuntime::new(
+                CanonicalKernel::default(),
+                journal.clone(),
+                RESTART_RUN_ID.to_string(),
+                restart_kernel_options(),
+            )
+            .expect("runtime");
+            drive_to_pending_tool_effect(&mut runtime).await;
+        }
+        let frozen = restart_chain(&journal).await;
+        assert!(frozen.len() >= 3, "the frozen chain holds the full prefix");
+
+        // Process restart: a fresh journal instance over the same directory reads the frozen
+        // chain byte-identically — the bytes are the whole contract.
+        let remounted: std::sync::Arc<dyn KernelJournal> =
+            std::sync::Arc::new(FileKernelJournal::new(dir.join("kernel-journal")));
+        assert_eq!(restart_chain(&remounted).await, frozen);
+
+        // runner.wake builds a fresh kernel over the journal and resumes the pending effect.
+        let executions = std::sync::Arc::new(AtomicU32::new(0));
+        let runner = restart_runner(&dir, executions.clone());
+        let text = runner.wake(RESTART_SESSION).await.expect("wake");
+        assert_eq!(text, RESTART_FINAL_TEXT);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        let resumed = restart_chain(&remounted).await;
+        assert_eq!(&resumed[..frozen.len()], &frozen[..]);
+        assert!(resumed.len() > frozen.len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn durable_restart_checkpoint_tail_ladder_restores_through_checkpoint() {
+        use crate::runtime::canonical_kernel::CanonicalKernel;
+        use crate::runtime::kernel_journal::FileKernelJournal;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let dir = restart_dir("checkpoint-tail");
+        let log: std::sync::Arc<dyn crate::runtime::session_log::SessionLog> =
+            std::sync::Arc::new(crate::runtime::session_log::FileSessionLog::new(&dir));
+        seed_run_started(&log).await;
+        let journal: std::sync::Arc<dyn KernelJournal> =
+            std::sync::Arc::new(FileKernelJournal::new(dir.join("kernel-journal")));
+        let (installed, retained) = {
+            let mut runtime = CanonicalRunnerRuntime::new(
+                CanonicalKernel::default(),
+                journal.clone(),
+                RESTART_RUN_ID.to_string(),
+                restart_kernel_options(),
+            )
+            .expect("runtime");
+            drive_to_pending_tool_effect(&mut runtime).await;
+            let frozen = restart_chain(&journal).await;
+
+            // The §12.3 boundary — install, ack, reclaim — runs before the process dies. The
+            // pending tool effect lives inside the checkpoint; the covered prefix is reclaimed.
+            let installed = runtime.host.checkpoint().await.expect("checkpoint");
+            assert!(installed.acknowledged);
+            let retained = restart_chain(&journal).await;
+            assert!(
+                retained.len() < frozen.len(),
+                "the covered prefix is reclaimed"
+            );
+            (installed, retained)
+        };
+        assert!(
+            journal
+                .latest_checkpoint(RESTART_RUN_ID)
+                .await
+                .expect("latest checkpoint")
+                .expect("installed checkpoint")
+                .acknowledged
+        );
+
+        // The wake restore takes the checkpoint+tail ladder: latest_checkpoint + records_after(
+        // covered_head). The reclaimed prefix never returns; the run continues past it.
+        let executions = std::sync::Arc::new(AtomicU32::new(0));
+        let runner = restart_runner(&dir, executions.clone());
+        let text = runner.wake(RESTART_SESSION).await.expect("wake");
+        assert_eq!(text, RESTART_FINAL_TEXT);
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+        let resumed = restart_chain(&journal).await;
+        assert_eq!(&resumed[..retained.len()], &retained[..]);
+        assert!(
+            resumed
+                .iter()
+                .all(|entry| entry.step_seq > installed.through_step_seq)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
