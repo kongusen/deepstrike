@@ -62,7 +62,7 @@ use crate::runtime::kernel::wire::effect::{EffectOutcome, EffectSuccess};
 use crate::runtime::kernel::wire::record::{
     KernelRecord, NormalizedPayload, RecordError, verify_record_chain,
 };
-use crate::runtime::kernel::wire::restore::restore_operation;
+use crate::runtime::kernel::wire::restore::{RestoredOperation, restore_operation};
 use crate::runtime::kernel::wire::transaction::InMemoryRecordIndex;
 
 /// The pseudo-segment for degraded hops whose `operation_id` did not survive. Kept obviously
@@ -227,7 +227,7 @@ where
     J: AsRef<[u8]>,
     S: AsRef<[u8]>,
 {
-    let (segments, unparseable_records) = validate_journal_plane(journal_blobs);
+    let (outcomes, unparseable_records) = validate_journal_plane(journal_blobs);
 
     let mut streams: Vec<SessionStream> = Vec::with_capacity(session_streams.len());
     for stream_blobs in session_streams {
@@ -253,15 +253,15 @@ where
         .map(|stream| stream.unparseable_events)
         .sum();
 
+    // C6 joins the planes; C8 (invocation adjacency) is the remaining batch-3 rule.
+    let cross_checks = if session_plane_provided {
+        check_c6(&streams, &outcomes)
+    } else {
+        Vec::new()
+    };
+
     let mut deferred: Vec<String> = DEFERRED.iter().map(|line| (*line).to_string()).collect();
     if session_plane_provided {
-        // Interim batch-3 scope note: the input plane landed before its rules. Removed as
-        // C6/C8 land (0.2.64 S4b/S4c).
-        deferred.push(
-            "c6.session_log_correspondence: the SessionLog input plane is parsed; the \
-             attempt↔journal correspondence rule arrives with batch-3 rule C6"
-                .to_string(),
-        );
         deferred.push(
             "c8.invocation_adjacency: the SessionLog input plane is parsed; the invocation \
              chain adjacency rule arrives with batch-3 rule C8"
@@ -270,9 +270,9 @@ where
     }
 
     ValidationReport {
-        segments,
+        segments: outcomes.into_iter().map(|outcome| outcome.report).collect(),
         unparseable_records,
-        cross_checks: Vec::new(),
+        cross_checks,
         unparseable_events,
         session_events,
         deferred,
@@ -280,7 +280,7 @@ where
 }
 
 /// The journal plane on its own: classify blobs into hops, group into segments, judge each.
-fn validate_journal_plane<B: AsRef<[u8]>>(blobs: &[B]) -> (Vec<SegmentReport>, usize) {
+fn validate_journal_plane<B: AsRef<[u8]>>(blobs: &[B]) -> (Vec<SegmentOutcome>, usize) {
     let mut hops: Vec<Hop> = Vec::with_capacity(blobs.len());
     let mut unparseable_records = 0;
     for (ordinal, blob) in blobs.iter().enumerate() {
@@ -404,6 +404,251 @@ fn route_id_of(event: &serde_json::Value) -> Option<String> {
         .map(str::to_string)
 }
 
+// ---------------------------------------------------------------------------------------------
+// C6 · SessionLog↔journal cross-verification (batch 3, 0.2.64 S4b)
+// ---------------------------------------------------------------------------------------------
+
+/// C6 joins the two planes: host-side SessionLog evidence against the journal's authority.
+/// Three clauses, three reports — their degradation conditions differ, so one merged verdict
+/// would hide which clause actually ran:
+///
+/// - **C6.1 · attempt↔journal effect correspondence** — every `provider_attempt.effect_id`
+///   must name an effect its operation's segment actually published. Membership comes from
+///   the deterministic re-plan (resolved effect ids read journal-directly ∪ pending effects
+///   after restore): a complete segment either published the effect or it did not, which makes
+///   a mismatched attempt provably forged rather than merely unverifiable. Journal prefixes
+///   degrade honestly: an attempt naming a step past the journal's tip, a missing segment
+///   (the journal may cover a subset of the session's operations), or an unrestorable segment
+///   all degrade instead of failing.
+/// - **C6.2 · fingerprint join** — every `provider_attempt.request_fingerprint` must appear on
+///   a `prompt_measured` in the same stream (G2: the fingerprint binds the evidence to the
+///   request plan; P4 §5). Streams never cross-join.
+/// - **C6.3 · route stability** (裁决 Q3) — within one run (delimited by `run_started`), every
+///   attempt's routeId equals the pinning `run_started.route.route_id`; an in-run mismatch is
+///   a violation. A *new* `run_started` naming a different route is a legal cross-resume change
+///   (adapter upgrades happen) and is degraded-marked, never failed.
+///
+/// C7 spans all three: a stream with no `provider_attempt` events at all (a pre-0.2.63 log)
+/// degrades every clause. A `provider_attempt` missing its primary key (`effect_id`) or its
+/// `request_fingerprint` fails — the event kind itself is new, so no old log can produce one,
+/// and the conformant writers require both fields; a keyless attempt is forged evidence.
+fn check_c6(streams: &[SessionStream], outcomes: &[SegmentOutcome]) -> Vec<RuleReport> {
+    let segments: HashMap<&str, &SegmentOutcome> = outcomes
+        .iter()
+        .filter(|outcome| outcome.report.operation_id != UNATTRIBUTED_SEGMENT)
+        .map(|outcome| (outcome.report.operation_id.as_str(), outcome))
+        .collect();
+
+    let mut correspondence = ClauseAccumulator::default();
+    let mut fingerprints = ClauseAccumulator::default();
+    let mut routes = ClauseAccumulator::default();
+    let mut total_attempts = 0usize;
+
+    for (index, stream) in streams.iter().enumerate() {
+        let measured: std::collections::HashSet<&str> = stream
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                EvidenceEvent::PromptMeasured {
+                    request_fingerprint,
+                    ..
+                } => request_fingerprint.as_deref(),
+                _ => None,
+            })
+            .collect();
+
+        // C6.3 per-stream walk state: the current run's pinned route, and the previous run's
+        // for the cross-resume comparison.
+        let mut baseline: Option<&str> = None;
+        let mut last_pinned: Option<&str> = None;
+
+        for event in &stream.events {
+            match event {
+                EvidenceEvent::RunStarted { route_id } => {
+                    if let Some(new_route) = route_id.as_deref() {
+                        if let Some(previous) = last_pinned
+                            && previous != new_route
+                        {
+                            routes.degraded(format!(
+                                "stream #{index}: run resumed on route {new_route} (was \
+                                 {previous}) — a cross-resume change, degraded per Q3"
+                            ));
+                        }
+                        baseline = Some(new_route);
+                        last_pinned = Some(new_route);
+                    } else {
+                        // A routeless run_started is old-format: attempts under it cannot be
+                        // route-checked.
+                        baseline = None;
+                    }
+                }
+                EvidenceEvent::ProviderAttempt {
+                    effect_id,
+                    request_fingerprint,
+                    route_id,
+                    ..
+                } => {
+                    total_attempts += 1;
+                    let label = effect_id.as_deref().unwrap_or("(no effect_id)");
+
+                    // C6.1
+                    match effect_id.as_deref() {
+                        None => correspondence.violation(format!(
+                            "stream #{index}: provider_attempt without effect_id — the writers \
+                             mint it from the kernel effect, so a keyless attempt is forged \
+                             evidence"
+                        )),
+                        Some(effect) => match parse_effect_step(effect) {
+                            None => correspondence.violation(format!(
+                                "stream #{index}: attempt names {effect}, which is not in the \
+                                 `operation:step:N:effect:M` vocabulary"
+                            )),
+                            Some((operation, step)) => match segments.get(operation) {
+                                None => correspondence.degraded(format!(
+                                    "stream #{index}: attempt names {effect}, but operation \
+                                     {operation} has no journal segment (the journal may cover \
+                                     a subset of the session)"
+                                )),
+                                Some(outcome) => match &outcome.effects {
+                                    None => correspondence.degraded(format!(
+                                        "stream #{index}: segment {operation} could not be \
+                                         re-planned, so {effect}'s publication is unverifiable"
+                                    )),
+                                    Some(effects) if effects.published.contains(effect) => {
+                                        correspondence.checked += 1;
+                                    }
+                                    Some(effects) if step > effects.max_step => {
+                                        correspondence.degraded(format!(
+                                            "stream #{index}: attempt names {effect} at step \
+                                             {step}, past the journal's tip (step {}) — a \
+                                             prefix cannot disprove it",
+                                            effects.max_step
+                                        ));
+                                    }
+                                    Some(_) => correspondence.violation(format!(
+                                        "stream #{index}: attempt names {effect}, but the \
+                                         deterministic re-plan of {operation} never published \
+                                         it — the attempt is unmoored from the journal"
+                                    )),
+                                },
+                            },
+                        },
+                    }
+
+                    // C6.2
+                    match request_fingerprint.as_deref() {
+                        None => fingerprints.violation(format!(
+                            "stream #{index}: provider_attempt {label} without \
+                             request_fingerprint — the writers require it (G2)"
+                        )),
+                        Some(fingerprint) if measured.contains(fingerprint) => {
+                            fingerprints.checked += 1;
+                        }
+                        Some(fingerprint) => fingerprints.violation(format!(
+                            "stream #{index}: attempt {label} carries fingerprint \
+                             {fingerprint}, but no prompt_measured in this session carries it"
+                        )),
+                    }
+
+                    // C6.3
+                    match (route_id.as_deref(), baseline) {
+                        (Some(route), Some(pinned)) if route != pinned => routes.violation(
+                            format!(
+                                "stream #{index}: attempt {label} ran on route {route} inside \
+                                 a run pinned to {pinned} — an in-run route change is a \
+                                 violation (Q3)"
+                            ),
+                        ),
+                        (Some(_), Some(_)) => routes.checked += 1,
+                        // No pinned run, or the attempt lacks a route: unverifiable.
+                        _ => routes.unverifiable += 1,
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    vec![
+        correspondence.report(
+            "C6.1",
+            total_attempts,
+            "attempt↔journal effect correspondence",
+        ),
+        fingerprints.report("C6.2", total_attempts, "attempt fingerprint↔prompt_measured join"),
+        routes.report("C6.3", total_attempts, "in-run route stability"),
+    ]
+}
+
+/// One C6 clause's tally across every stream. Fail outranks degrade; a clause that found no
+/// attempts at all degrades (a pre-0.2.63 log carries none — C7).
+#[derive(Default)]
+struct ClauseAccumulator {
+    checked: usize,
+    unverifiable: usize,
+    violations: Vec<String>,
+    degraded_notes: Vec<String>,
+}
+
+impl ClauseAccumulator {
+    fn violation(&mut self, detail: String) {
+        self.violations.push(detail);
+    }
+
+    fn degraded(&mut self, note: String) {
+        self.degraded_notes.push(note);
+    }
+
+    fn report(self, rule: &str, total_attempts: usize, what: &str) -> RuleReport {
+        let rule = rule.to_string();
+        if !self.violations.is_empty() {
+            return RuleReport {
+                rule,
+                verdict: Verdict::Fail,
+                detail: self.violations.join("; "),
+            };
+        }
+        if total_attempts == 0 {
+            return RuleReport {
+                rule,
+                verdict: Verdict::Degraded,
+                detail: format!(
+                    "no provider_attempt events in any stream — a pre-0.2.63 log carries none \
+                     (C7); {what} unchecked"
+                ),
+            };
+        }
+        if !self.degraded_notes.is_empty() || self.unverifiable > 0 {
+            let mut detail = self.degraded_notes.join("; ");
+            if self.unverifiable > 0 {
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                detail.push_str(&format!(
+                    "{} attempt(s) unverifiable (no pinned run route)",
+                    self.unverifiable
+                ));
+            }
+            return RuleReport {
+                rule,
+                verdict: Verdict::Degraded,
+                detail: format!(
+                    "{} attempt(s) verified for {what}; {detail}",
+                    self.checked
+                ),
+            };
+        }
+        RuleReport {
+            rule,
+            verdict: Verdict::Pass,
+            detail: format!(
+                "{} attempt(s) verified — {what} holds across every stream",
+                self.checked
+            ),
+        }
+    }
+}
+
 /// Strict first, lenient second: a record that fails the strict decode but still shows its
 /// identity fields retains its context for C7 reporting. Proven digest corruption still fails
 /// C1; only unavailable evidence degrades. Anything else is not a record.
@@ -446,7 +691,7 @@ fn classify(ordinal: usize, bytes: &[u8]) -> Option<Hop> {
     }
 }
 
-fn validate_segment(operation_id: &str, mut hops: Vec<Hop>) -> SegmentReport {
+fn validate_segment(operation_id: &str, mut hops: Vec<Hop>) -> SegmentOutcome {
     // The chain's own fields define the order; the input order is a storage detail. Hops that
     // cannot say where they sit sort last, in input order.
     hops.sort_by_key(|hop| {
@@ -469,16 +714,69 @@ fn validate_segment(operation_id: &str, mut hops: Vec<Hop>) -> SegmentReport {
     let hop_count = hops.len();
 
     let c1 = check_c1(&hops);
+    let replan = replan_segment(&hops, &c1);
     let c2 = check_c2(&hops);
-    let c3 = check_c3(&hops, &c1);
+    let c3 = render_c3(&replan);
     let c4 = check_c4(&hops, operation_id);
 
-    SegmentReport {
-        operation_id: operation_id.to_string(),
-        hops: hop_count,
-        degraded_hops,
-        rules: vec![c1, c2, c3, c4],
+    // C6.1's membership evidence: when the re-plan ran, the operation's published effects are
+    // exactly (journal-resolved effect ids) ∪ (still-pending effects after the re-plan).
+    let effects = match &replan {
+        Replan::Restored(restored) => {
+            let mut published: std::collections::HashSet<String> = hops
+                .iter()
+                .filter_map(resolved_effect_of)
+                .collect();
+            published.extend(
+                restored
+                    .transaction
+                    .pending_effects()
+                    .map(|effect| effect.effect_id.as_str().to_string()),
+            );
+            let max_step = hops.iter().filter_map(|hop| hop.step_seq()).max().unwrap_or(0);
+            Some(SegmentEffects {
+                max_step,
+                published,
+            })
+        }
+        _ => None,
+    };
+
+    SegmentOutcome {
+        report: SegmentReport {
+            operation_id: operation_id.to_string(),
+            hops: hop_count,
+            degraded_hops,
+            rules: vec![c1, c2, c3, c4],
+        },
+        effects,
     }
+}
+
+/// A segment's verdict plus the cross-plane evidence C6 needs from it.
+struct SegmentOutcome {
+    report: SegmentReport,
+    /// `Some` iff the deterministic re-plan ran (the same condition under which C3 passes).
+    effects: Option<SegmentEffects>,
+}
+
+struct SegmentEffects {
+    /// The highest step the journal reaches — an attempt naming a later step is unverifiable
+    /// (prefix), not forged.
+    max_step: u64,
+    /// Every effect the operation published through the journal's tip.
+    published: std::collections::HashSet<String>,
+}
+
+/// The effect a record's ResolveEffect input settles, if it is one — the journal-direct
+/// resolved-effect set (the same read C4 makes).
+fn resolved_effect_of(hop: &Hop) -> Option<String> {
+    let Hop::Complete(record) = hop else { return None };
+    let input = record.normalized_input().ok()?;
+    let NormalizedPayload::ResolveEffect(resolve) = &input.input else {
+        return None;
+    };
+    Some(resolve.effect_id.as_str().to_string())
 }
 
 /// C1 · chain integrity.
@@ -651,24 +949,28 @@ fn check_c2(hops: &[Hop]) -> RuleReport {
     }
 }
 
-/// C3 · causal closure: the §12.2 genesis-leg restore re-plans every transition and compares
-/// each produced record digest against the durable one.
-fn check_c3(hops: &[Hop], c1: &RuleReport) -> RuleReport {
-    let rule = "C3".to_string();
+/// C3 · causal closure runs on the §12.2 genesis-leg restore: the deterministic re-plan of
+/// every transition. Batch 3 shares that one restore with C6.1 — the restored transaction
+/// answers "did this operation ever publish effect X" — so the restore happens once per
+/// segment, here, and C3's report only renders the outcome.
+enum Replan {
+    /// C3/C6.1 degrade: the re-plan never ran.
+    Unavailable(&'static str),
+    /// The restore itself faulted — C3 fails.
+    Failed(String),
+    Restored(RestoredOperation),
+}
+
+fn replan_segment(hops: &[Hop], c1: &RuleReport) -> Replan {
     if hops.iter().any(|hop| matches!(hop, Hop::Degraded(_))) {
-        return RuleReport {
-            rule,
-            verdict: Verdict::Degraded,
-            detail: "re-plan requires complete records; this segment has degraded hops".to_string(),
-        };
+        return Replan::Unavailable(
+            "re-plan requires complete records; this segment has degraded hops",
+        );
     }
     if c1.verdict == Verdict::Fail {
-        return RuleReport {
-            rule,
-            verdict: Verdict::Degraded,
-            detail: "C1 failed; a re-plan over a broken chain would only re-report that break"
-                .to_string(),
-        };
+        return Replan::Unavailable(
+            "C1 failed; a re-plan over a broken chain would only re-report that break",
+        );
     }
     let records: Vec<KernelRecord> = hops
         .iter()
@@ -678,11 +980,7 @@ fn check_c3(hops: &[Hop], c1: &RuleReport) -> RuleReport {
         })
         .collect();
     if records.is_empty() {
-        return RuleReport {
-            rule,
-            verdict: Verdict::Degraded,
-            detail: "no records in this segment".to_string(),
-        };
+        return Replan::Unavailable("no records in this segment");
     }
     match restore_operation(
         None,
@@ -690,18 +988,31 @@ fn check_c3(hops: &[Hop], c1: &RuleReport) -> RuleReport {
         ConfigDefaults::default(),
         InMemoryRecordIndex::from_records(&records),
     ) {
-        Ok(restored) => RuleReport {
+        Ok(restored) => Replan::Restored(restored),
+        Err(fault) => Replan::Failed(format!("{}: {}", fault.code.as_str(), fault.message)),
+    }
+}
+
+fn render_c3(replan: &Replan) -> RuleReport {
+    let rule = "C3".to_string();
+    match replan {
+        Replan::Unavailable(reason) => RuleReport {
+            rule,
+            verdict: Verdict::Degraded,
+            detail: (*reason).to_string(),
+        },
+        Replan::Failed(fault) => RuleReport {
+            rule,
+            verdict: Verdict::Fail,
+            detail: fault.clone(),
+        },
+        Replan::Restored(restored) => RuleReport {
             rule,
             verdict: Verdict::Pass,
             detail: format!(
                 "re-planned {} record(s) from genesis; every durable record digest reproduced",
                 restored.cost.records_before_checkpoint
             ),
-        },
-        Err(fault) => RuleReport {
-            rule,
-            verdict: Verdict::Fail,
-            detail: format!("{}: {}", fault.code.as_str(), fault.message),
         },
     }
 }
@@ -1054,6 +1365,14 @@ mod tests {
             .iter()
             .find(|rule| rule.rule == id)
             .unwrap_or_else(|| panic!("segment {segment} has no {id} verdict"))
+    }
+
+    fn cross<'a>(report: &'a ValidationReport, id: &str) -> &'a RuleReport {
+        report
+            .cross_checks
+            .iter()
+            .find(|rule| rule.rule == id)
+            .unwrap_or_else(|| panic!("the report has no {id} cross-check"))
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1480,24 +1799,43 @@ mod tests {
         let op = operation("op-dual-green");
         let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
         let stream = vec![
-            session_event(json!({ "kind": "run_started", "run_id": "r1" })),
+            session_event(json!({
+                "kind": "run_started",
+                "run_id": "r1",
+                "route": { "routeId": "route-a" }
+            })),
+            session_event(json!({
+                "kind": "prompt_measured",
+                "turn": 1,
+                "effect_id": "op-dual-green:step:1:effect:0",
+                "measurement": { "requestFingerprint": "fp-1", "inputTokens": 10 }
+            })),
             session_event(json!({
                 "kind": "provider_attempt",
                 "effect_id": "op-dual-green:step:1:effect:0",
-                "request_fingerprint": "fp-1"
+                "request_fingerprint": "fp-1",
+                "route": { "routeId": "route-a" },
+                "status": "success"
             })),
         ];
         let report = validate_with_session_log(&blobs(&chain), &[stream]);
-        assert_eq!(report.session_events, Some(2));
+        assert_eq!(report.session_events, Some(3));
         assert_eq!(report.unparseable_events, 0);
+        for id in ["C6.1", "C6.2", "C6.3"] {
+            assert_eq!(
+                cross(&report, id).verdict,
+                Verdict::Pass,
+                "{id}: {}",
+                cross(&report, id).detail
+            );
+        }
         assert!(
-            report.cross_checks.is_empty(),
-            "C6/C8 land in S4b/S4c; the input plane alone renders no cross verdicts"
+            !report.deferred.iter().any(|line| line.starts_with("c6.")),
+            "C6 is implemented — its interim scope note is gone"
         );
         assert!(
-            report.deferred.iter().any(|line| line.starts_with("c6."))
-                && report.deferred.iter().any(|line| line.starts_with("c8.")),
-            "the pending batch-3 rules are named while the session plane is provided"
+            report.deferred.iter().any(|line| line.starts_with("c8.")),
+            "C8 remains named until S4c"
         );
         assert_eq!(report.exit_code(), 0);
     }
@@ -1536,5 +1874,232 @@ mod tests {
         assert_eq!(report.unparseable_events, 1);
         assert!(!report.has_violations());
         assert_eq!(report.exit_code(), 2);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // C6 · SessionLog↔journal cross-verification
+    // -----------------------------------------------------------------------------------------
+
+    /// A green chain whose step-1 call_provider effect was resolved, plus a matching honest
+    /// session stream: run pinned to route-a, the measurement, the attempt.
+    fn honest_dual_input(op_name: &str) -> (Vec<KernelRecord>, Vec<Vec<u8>>) {
+        let op = operation(op_name);
+        let chain = live_chain(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_overflow_envelope(&op, 1),
+        ]);
+        let effect = format!("{op_name}:step:1:effect:0");
+        let stream = vec![
+            session_event(json!({
+                "kind": "run_started",
+                "run_id": "r1",
+                "route": { "routeId": "route-a" }
+            })),
+            session_event(json!({
+                "kind": "prompt_measured",
+                "turn": 1,
+                "effect_id": effect,
+                "measurement": { "requestFingerprint": "fp-1", "inputTokens": 10 }
+            })),
+            session_event(json!({
+                "kind": "provider_attempt",
+                "effect_id": effect,
+                "request_fingerprint": "fp-1",
+                "route": { "routeId": "route-a" },
+                "status": "success"
+            })),
+        ];
+        (chain, stream)
+    }
+
+    #[test]
+    fn an_attempt_naming_an_effect_the_replan_never_published_fails_c6() {
+        let (chain, mut stream) = honest_dual_input("op-forged-effect");
+        stream[2] = session_event(json!({
+            "kind": "provider_attempt",
+            "effect_id": "op-forged-effect:step:1:effect:7",
+            "request_fingerprint": "fp-1",
+            "route": { "routeId": "route-a" },
+            "status": "success"
+        }));
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(cross(&report, "C6.1").verdict, Verdict::Fail);
+        assert!(
+            cross(&report, "C6.1").detail.contains("never published"),
+            "{}",
+            cross(&report, "C6.1").detail
+        );
+        assert_eq!(report.exit_code(), 1, "the forged attempt turns the run red");
+    }
+
+    #[test]
+    fn an_attempt_without_an_effect_id_fails_c6_as_forged_evidence() {
+        let (chain, mut stream) = honest_dual_input("op-keyless-attempt");
+        stream[2] = session_event(json!({
+            "kind": "provider_attempt",
+            "request_fingerprint": "fp-1",
+            "route": { "routeId": "route-a" },
+            "status": "success"
+        }));
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(cross(&report, "C6.1").verdict, Verdict::Fail);
+        assert!(
+            cross(&report, "C6.1").detail.contains("without effect_id"),
+            "{}",
+            cross(&report, "C6.1").detail
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn an_attempt_past_the_journal_tip_degrades_c6_instead_of_failing() {
+        let (chain, mut stream) = honest_dual_input("op-prefix-attempt");
+        stream[2] = session_event(json!({
+            "kind": "provider_attempt",
+            "effect_id": "op-prefix-attempt:step:9:effect:0",
+            "request_fingerprint": "fp-1",
+            "route": { "routeId": "route-a" },
+            "status": "success"
+        }));
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(
+            cross(&report, "C6.1").verdict,
+            Verdict::Degraded,
+            "a journal prefix cannot disprove an effect past its tip: {}",
+            cross(&report, "C6.1").detail
+        );
+        assert_eq!(report.exit_code(), 0, "degradation never turns the run red");
+    }
+
+    #[test]
+    fn an_attempt_on_an_operation_without_a_segment_degrades_c6() {
+        let (chain, mut stream) = honest_dual_input("op-subset-journal");
+        stream[2] = session_event(json!({
+            "kind": "provider_attempt",
+            "effect_id": "op-elsewhere:step:1:effect:0",
+            "request_fingerprint": "fp-1",
+            "route": { "routeId": "route-a" },
+            "status": "success"
+        }));
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(cross(&report, "C6.1").verdict, Verdict::Degraded);
+        assert!(
+            cross(&report, "C6.1").detail.contains("no journal segment"),
+            "{}",
+            cross(&report, "C6.1").detail
+        );
+    }
+
+    #[test]
+    fn an_orphan_fingerprint_fails_c6() {
+        let (chain, mut stream) = honest_dual_input("op-orphan-fp");
+        stream.remove(1); // drop the prompt_measured — the attempt's fingerprint is orphaned
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(cross(&report, "C6.2").verdict, Verdict::Fail);
+        assert!(
+            cross(&report, "C6.2").detail.contains("fp-1"),
+            "{}",
+            cross(&report, "C6.2").detail
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn an_attempt_without_a_fingerprint_fails_c6() {
+        let (chain, mut stream) = honest_dual_input("op-fpless-attempt");
+        stream[2] = session_event(json!({
+            "kind": "provider_attempt",
+            "effect_id": "op-fpless-attempt:step:1:effect:0",
+            "route": { "routeId": "route-a" },
+            "status": "success"
+        }));
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(cross(&report, "C6.2").verdict, Verdict::Fail);
+        assert!(
+            cross(&report, "C6.2")
+                .detail
+                .contains("without request_fingerprint"),
+            "{}",
+            cross(&report, "C6.2").detail
+        );
+    }
+
+    #[test]
+    fn an_in_run_route_change_fails_c6() {
+        let (chain, mut stream) = honest_dual_input("op-route-flip");
+        stream[2] = session_event(json!({
+            "kind": "provider_attempt",
+            "effect_id": "op-route-flip:step:1:effect:0",
+            "request_fingerprint": "fp-1",
+            "route": { "routeId": "route-b" },
+            "status": "success"
+        }));
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(cross(&report, "C6.3").verdict, Verdict::Fail);
+        assert!(
+            cross(&report, "C6.3").detail.contains("in-run route change"),
+            "{}",
+            cross(&report, "C6.3").detail
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_cross_resume_route_change_degrades_c6_per_q3() {
+        let (chain, mut stream) = honest_dual_input("op-route-resume");
+        // A new run_started pins route-b; its attempt follows honestly. The route CHANGE
+        // across the resume is degraded-marked (adapter upgrades are legal), never failed.
+        stream.push(session_event(json!({
+            "kind": "run_started",
+            "run_id": "r1",
+            "route": { "routeId": "route-b" }
+        })));
+        stream.push(session_event(json!({
+            "kind": "prompt_measured",
+            "turn": 2,
+            "effect_id": "op-route-resume:step:1:effect:0",
+            "measurement": { "requestFingerprint": "fp-2", "inputTokens": 11 }
+        })));
+        stream.push(session_event(json!({
+            "kind": "provider_attempt",
+            "effect_id": "op-route-resume:step:1:effect:0",
+            "request_fingerprint": "fp-2",
+            "route": { "routeId": "route-b" },
+            "status": "success"
+        })));
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        assert_eq!(
+            cross(&report, "C6.3").verdict,
+            Verdict::Degraded,
+            "cross-resume route changes mark, they do not fail: {}",
+            cross(&report, "C6.3").detail
+        );
+        assert!(
+            cross(&report, "C6.3").detail.contains("cross-resume"),
+            "{}",
+            cross(&report, "C6.3").detail
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_pre_0_2_63_log_without_attempts_degrades_every_c6_clause() {
+        let op = operation("op-old-log");
+        let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let stream = vec![
+            session_event(json!({ "kind": "run_started", "run_id": "r1" })),
+            session_event(json!({ "kind": "llm_completed", "turn": 1, "content": "done" })),
+        ];
+        let report = validate_with_session_log(&blobs(&chain), &[stream]);
+        for id in ["C6.1", "C6.2", "C6.3"] {
+            assert_eq!(
+                cross(&report, id).verdict,
+                Verdict::Degraded,
+                "{id}: old logs degrade (C7), never fail — {}",
+                cross(&report, id).detail
+            );
+        }
+        assert_eq!(report.exit_code(), 0);
     }
 }
