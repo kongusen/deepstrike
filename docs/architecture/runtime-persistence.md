@@ -51,7 +51,7 @@ L4 层宪法：三库三真相的权威划分、每库条文（J1–J7 / K1–K6
 
 **K6 · 配置真值链**：genesis record 绑定 → acked checkpoint 的 resolved_config 接续。pruning 后配置真值的权威随之迁移，迁移点即 ack。
 
-> **实施状态**：checkpoint 模块当前只实现 generation/verify；install/restore/rebase/ack 路径属迭代总谱 0.2.65（Task 16）。K5 是已生成未安装的契约。
+> **实施状态（0.2.65 已闭环）**：install/restore/rebase/ack 全路径已落地——内核侧 `checkpoint_candidate`/`checkpoint_rebase` 生成、`KernelCheckpoint::assemble/verify` 安装点校验（covered_head 对安装点）、`restore_from_checkpoint`/`restore_operation` 双梯子、`note_checkpoint_acked` 回收记账（replay/dedupe ledger 不动 = K5 原文）；宿主侧四 SDK `canonical_kernel_step.checkpoint()` 走 compareAndInstallCheckpoint → journal+kernel 双 ack → pruneAckedPrefix（node canonical-kernel-step.ts、core transaction.rs/checkpoint.rs）。持久面 FileKernelJournal（node+python）跨进程原子 CAS；重启恢复 e2e 四 SDK 全绿（0.2.65 S2）。
 
 ## SessionLog 契约（S1–S4）
 

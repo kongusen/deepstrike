@@ -51,7 +51,7 @@ One fact has at most one authoritative home across the three stores. Cross-store
 
 **K6 · The config truth chain**: bound by the genesis record → continued by the acked checkpoint's resolved_config. After pruning, config-truth authority migrates; the migration point is the ack.
 
-> **Implementation status**: the checkpoint module currently implements generation/verify only; the install/restore/rebase/ack paths belong to roadmap 0.2.65 (Task 16). K5 is a generated-but-not-yet-installed contract.
+> **Implementation status (closed in 0.2.65)**: the install/restore/rebase/ack paths have all landed — kernel-side `checkpoint_candidate`/`checkpoint_rebase` generation, `KernelCheckpoint::assemble/verify` install-point validation (covered_head against the install point), the `restore_from_checkpoint`/`restore_operation` dual ladders, and `note_checkpoint_acked` reclaim accounting (replay/dedupe ledger untouched, per K5); host-side, all four SDKs' `canonical_kernel_step.checkpoint()` run compareAndInstallCheckpoint → journal+kernel dual ack → pruneAckedPrefix (node canonical-kernel-step.ts, core transaction.rs/checkpoint.rs). The durable plane FileKernelJournal (node+python) does cross-process atomic CAS; restart-recovery e2e is green across all four SDKs (0.2.65 S2).
 
 ## SessionLog Contract (S1–S4)
 

@@ -6,6 +6,90 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.65] - 2026-09-17
+
+### Added — crash-point matrix (durable recovery closure, S0)
+
+- The §8.2/§12 durable path now has a **ten-scenario crash-point matrix**
+  (`runtime/kernel/wire/crash_point.rs`), one test per seam, asserting that
+  every boundary cut converges byte-identically with an uninterrupted run:
+  before append / after append before commit / after commit before publish /
+  after publish before resolve / before install / after install before ack /
+  after ack before prune / CAS conflict during append / checkpoint +
+  incomplete tail / **redelivery below checkpoint base** (the K5 idempotent-
+  confirmation-not-step-replay article, now machine-proven).
+- Boundaries, not timers: a crash is modelled exactly as the API surface
+  allows (staged-but-uncommitted tokens, unacked installed checkpoints,
+  `note_append_conflict`), and every rebuild rides the public recovery doors
+  (`restore_operation` both arms) — **Kernel ABI unchanged**, every scenario
+  uses existing primitives. The module header carries the seam table, so the
+  scenario list is reviewable (and change-controlled) in one place.
+
+### Added — chain validator C5: checkpoint consistency (batch 2, S1)
+
+- **`--checkpoint <file>` input plane** joins `--journal` and `--session-log`
+  (a State-Snapshot evidence plane, never recovery authority). The CLI also
+  auto-unwraps golden-fixture wrappers and no longer requires `--journal`
+  when a checkpoint plane is present (pure checkpoint audits are legal).
+- **C5a · digest anchoring (default)**: a checkpoint's `genesis_digest` /
+  `covered_head` / `through_step_seq` must anchor to the journal prefix, and
+  `tail_inputs` must match the journal's corresponding range record-for-
+  record. **C5b · launch-token ledger**: token uniqueness within the ledger,
+  no entry crossing the covered boundary, pending SpawnTasks tokens already
+  accounted at their own step; `--strict` additionally compares the base
+  ledger against a journal-replayed re-export and runs the C3-style re-plan
+  replay plus the checkpoint+tail restore ladder (locked decision Q2: heavy
+  replay stays opt-in; evidence never justifies failing a run).
+- Degradation per C7 philosophy: no `--checkpoint` input leaves C5 deferred
+  (not red); unparseable checkpoints are counted and yield exit `2`
+  (evidence insufficient), not fabricated verdicts. Three forge negatives
+  (foreign-chain genesis, token reuse, spliced tail — each passing C1 yet
+  failing C5a) pin the rule's independent value. Exit-code contract
+  unchanged (`0`/`1`/`2`/`64`).
+
+### Added — restart-recovery e2e across all four SDKs (S2)
+
+- **Node + Python**: the "process restart" is real — a fresh kernel instance
+  remounts the same `FileKernelJournal` directory and resumes the same
+  operation on both recovery ladders (journal-only; checkpoint+tail via
+  `canonical_kernel_step.checkpoint()`), with the resumed next step
+  byte-equivalent to the uninterrupted baseline (same input → same record
+  digest; chain prefixes compared as full `(step_seq, digest, record_bytes)`
+  triples). CAS-conflict retry and staged-envelope crash-window crash points
+  (#6/#8 projections) are proven end-to-end here.
+- **Rust**: restart-equivalence ladders over `FileKernelJournal` in the
+  two-instance form — real kernel, real file journal, remounted per phase.
+- **WASM** (locked decision Q3: no File layer for the browser target — host
+  persistence is host responsibility): the InMemory ladder proves recovery
+  semantics, with a mock-fidelity upgrade as the substantive change —
+  `checkpointCandidate` serializes a JSON state snapshot and `restore`
+  re-derives loop state by replaying the authoritative tail, no longer
+  inheriting the dying instance's memory (the mock version of the real
+  kernel's restart-equivalence semantics).
+- Provider restart-safety everywhere: providers branch on **durable history**
+  (does the rendered context already contain the tool result), never a live
+  counter — a resumed process cannot re-emit the tool call; exactly-once is
+  pinned by a cross-instance shared execution counter.
+
+### Changed — docs: persistence status notes promoted (S3)
+
+- The K5 implementation-status notes in `runtime-persistence` (ZH + EN) and
+  the P6 spec's honesty note move from "generated but not yet installed" to
+  **closed in 0.2.65**: install/restore/rebase/ack all landed, with the
+  four-SDK host install boundary (`compareAndInstallCheckpoint` → journal+
+  kernel dual ack → `pruneAckedPrefix`) now machine-verified by S0–S2.
+
+### Notes
+
+- **No breaking changes.** Kernel ABI is unchanged end to end — zero new
+  kernel primitives, zero new SDK public API, no SessionLog vocabulary
+  additions; the durable-step articles hold (ack is not a KernelInput; the
+  replay/dedupe ledger is never emptied by an ack; the journal remains the
+  only State Truth, the checkpoint only a State Snapshot).
+- 0.2.65 is the last safety net before the roadmap's high-risk 0.2.68
+  (L1 Convergence true deletion): the recovery ladder it relies on is now
+  crash-proven at every seam and restart-proven in every SDK.
+
 ## [0.2.64] - 2026-09-17
 
 ### BREAKING CHANGES
