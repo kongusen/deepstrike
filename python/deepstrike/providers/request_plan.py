@@ -329,15 +329,17 @@ def resolve_provider_route(provider: Any) -> ResolvedProviderRoute:
     identity = getattr(provider, "request_plan_identity", lambda: {})()
     protocol_raw = identity.get("endpoint", {}).get("protocol") or descriptor.get("protocol", "unknown")
     protocol = protocol_raw
+    endpoint = _sanitize_endpoint({
+      "id": identity.get("endpoint", {}).get("id") or f"{descriptor.get('provider', 'unknown')}.{descriptor.get('protocol', 'unknown')}",
+      "protocol": protocol_raw,
+      "base_url": identity.get("endpoint", {}).get("base_url", ""),
+    })
     route = {
       "provider": identity.get("provider_id") or descriptor.get("provider", "unknown"),
       "protocol": protocol,
       "model": identity.get("model_id") or descriptor.get("model", "unknown"),
-      "endpoint": _sanitize_endpoint({
-        "id": identity.get("endpoint", {}).get("id") or f"{descriptor.get('provider', 'unknown')}.{descriptor.get('protocol', 'unknown')}",
-        "protocol": protocol_raw,
-        "base_url": identity.get("endpoint", {}).get("base_url", ""),
-      }),
+      # Content addressing hashes the JSON shape, not the dataclass.
+      "endpoint": {"id": endpoint.id, "protocol": endpoint.protocol, "base_url": endpoint.base_url},
       "adapter_version": _adapter_package_version(),
       "capabilities_ref": protocol if protocol in KNOWN_GENERATION_PROTOCOLS else "unknown",
     }
@@ -349,7 +351,7 @@ def resolve_provider_route(provider: Any) -> ResolvedProviderRoute:
       provider=route["provider"],
       protocol=route["protocol"],
       model=route["model"],
-      endpoint=route["endpoint"],
+      endpoint=endpoint,
       adapter_version=route["adapter_version"],
       capabilities_ref=route["capabilities_ref"],
     )
@@ -358,7 +360,7 @@ def resolve_provider_route(provider: Any) -> ResolvedProviderRoute:
       "provider": "unknown",
       "protocol": "unknown",
       "model": "unknown",
-      "endpoint": ProviderRequestEndpoint("unknown", "unknown", ""),
+      "endpoint": {"id": "unknown", "protocol": "unknown", "base_url": ""},
       "adapter_version": "unknown",
     }
     route_id = "sha256:" + sha256(_canonical_json(fallback).encode()).hexdigest()

@@ -7,7 +7,13 @@ fed back as kernel input (B4/DEC-2 discipline: wall-clock and wire facts stay ho
 """
 
 from typing import TypedDict, Literal, Protocol, Any
-from deepstrike.providers.request_plan import NormalizedProviderUsage, ResolvedProviderRoute
+
+from deepstrike.providers.request_plan import (
+    NormalizedProviderUsage,
+    ResolvedProviderRoute,
+    normalize_provider_usage,
+)
+from deepstrike.providers.usage import ProviderUsage
 
 # Canonical stop-reason vocabulary already carried on the wire usage frame (types.py).
 CanonicalStopReason = Literal["end_turn", "max_tokens", "stop_sequence", "tool_use", "content_filtered"]
@@ -54,12 +60,64 @@ class _FullFootprintPolicy:
 
     def settle(self, usage: NormalizedProviderUsage) -> ModelUsageSettlement:
         return {
-            "observed_input_tokens": usage["input_tokens"],
-            "observed_output_tokens": usage["output_tokens"],
+            "observed_input_tokens": usage.input_tokens,
+            "observed_output_tokens": usage.output_tokens,
         }
 
 
 FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY: UsageAccountingPolicy = _FullFootprintPolicy()
+
+
+def route_to_record(route: ResolvedProviderRoute) -> dict[str, Any]:
+    """ResolvedProviderRoute → its SessionLog JSON shape (python-native snake_case fields —
+    same nested-shape convention as `prompt_measured.measurement`; the chain validator reads
+    both spellings)."""
+    return {
+        "route_id": route.route_id,
+        "provider": route.provider,
+        "protocol": route.protocol,
+        "model": route.model,
+        "endpoint": {
+            "id": route.endpoint.id,
+            "protocol": route.endpoint.protocol,
+            "base_url": route.endpoint.base_url,
+        },
+        "adapter_version": route.adapter_version,
+        "capabilities_ref": route.capabilities_ref,
+    }
+
+
+def try_normalize_provider_usage(usage: ProviderUsage) -> NormalizedProviderUsage | None:
+    """Defensive measurement assembly for the attempt evidence path: an invalid frame (cache
+    subsets exceeding input, etc.) degrades to NO measurement instead of breaking the run —
+    evidence is never worth a run failure, and the settlement falls back to the raw counts."""
+    try:
+        return normalize_provider_usage(usage)
+    except (TypeError, ValueError):
+        return None
+
+
+def usage_to_record(
+    usage: NormalizedProviderUsage,
+    *,
+    cache_telemetry_status: str = "unavailable",
+    cache_telemetry_source: str | None = None,
+) -> dict[str, Any]:
+    """NormalizedProviderUsage → its SessionLog JSON shape, with the telemetry fields
+    normalization drops re-attached so `usage` stays full-field."""
+    record: dict[str, Any] = {
+        "input_tokens": usage.input_tokens,
+        "uncached_input_tokens": usage.uncached_input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read_input_tokens": usage.cache_read_input_tokens,
+        "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+        "cache_telemetry_status": cache_telemetry_status,
+    }
+    if usage.reasoning_tokens is not None:
+        record["reasoning_tokens"] = usage.reasoning_tokens
+    if cache_telemetry_source is not None:
+        record["cache_telemetry_source"] = cache_telemetry_source
+    return record
 
 
 ProviderAttemptStatus = Literal["success", "transport_exhausted", "aborted", "rejected"]
@@ -103,6 +161,34 @@ class ProviderAttemptRecord(TypedDict, total=False):
     usage: NormalizedProviderUsage  # optional
     wire_evidence: ProviderWireEvidence  # optional
     accounting_policy_id: str  # optional, P4 §2.1
+
+
+def provider_attempt_to_record(
+    attempt: "ProviderAttempt",
+    accounting_policy_id: str | None = None,
+) -> "ProviderAttemptRecord":
+    """ProviderAttempt → its SessionLog wire payload. The accounting policy id pins only when
+    the caller passes it (the runner does so iff a measurement exists), so (usage, policy_id)
+    deterministically recomputes the settlement that crossed the wire."""
+    record: ProviderAttemptRecord = {
+        "effect_id": attempt["effect_id"],
+        "attempt_seq": attempt["attempt_seq"],
+        "route": attempt["route"],
+        "request_fingerprint": attempt["request_fingerprint"],
+        "status": attempt["status"],
+        "transport_rungs": attempt["transport_rungs"],
+        "started_at_ms": attempt["started_at_ms"],
+        "finished_at_ms": attempt["finished_at_ms"],
+    }
+    if attempt.get("last_error_class") is not None:
+        record["last_error_class"] = attempt["last_error_class"]
+    if attempt.get("usage") is not None:
+        record["usage"] = attempt["usage"]
+    if attempt.get("wire_evidence") is not None:
+        record["wire_evidence"] = attempt["wire_evidence"]
+    if accounting_policy_id is not None:
+        record["accounting_policy_id"] = accounting_policy_id
+    return record
 
 
 class InvocationOutcome(TypedDict, total=False):

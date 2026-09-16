@@ -729,6 +729,8 @@ def _decode_persisted_session_record(value: Any) -> dict[str, Any]:
     if event.get("kind") == "llm_completed" and "provider_replay" in event:
         from deepstrike.runtime.provider_replay import is_replay_compatible_with_provider
         is_replay_compatible_with_provider(event["provider_replay"], None)
+    if event.get("kind") == "provider_attempt":
+        _validate_provider_attempt_event(event)
     if event.get("kind") == "tool_completed":
         results = event.get("results")
         if not isinstance(results, list):
@@ -740,6 +742,29 @@ def _decode_persisted_session_record(value: Any) -> dict[str, Any]:
                 raise ValueError("tool_completed result has removed blocks field")
             decode_durable_content(result.get("content"))
     return value
+
+
+def _validate_provider_attempt_event(event: dict[str, Any]) -> None:
+    """P4 §3 teeth (node G2 parity): a persisted provider_attempt must carry the linkage the
+    C6 cross-checks verify — the kernel-minted effect id and the request fingerprint binding it
+    to a prompt_measured record. Nested objects keep the host-native spelling, so `route` is
+    only required to be an object (the chain validator reads both spellings)."""
+    effect_id = event.get("effect_id")
+    if not isinstance(effect_id, str) or not effect_id:
+        raise ValueError("provider_attempt effect_id is required")
+    attempt_seq = event.get("attempt_seq")
+    if isinstance(attempt_seq, bool) or not isinstance(attempt_seq, int) or attempt_seq < 1:
+        raise ValueError("provider_attempt attempt_seq must be a positive integer")
+    if not isinstance(event.get("route"), dict):
+        raise ValueError("provider_attempt route must be an object")
+    fingerprint = event.get("request_fingerprint")
+    if not isinstance(fingerprint, str) or not fingerprint:
+        raise ValueError("provider_attempt request_fingerprint is required")
+    if event.get("status") not in ("success", "transport_exhausted", "aborted", "rejected"):
+        raise ValueError("provider_attempt status must be success|transport_exhausted|aborted|rejected")
+    rungs = event.get("transport_rungs")
+    if isinstance(rungs, bool) or not isinstance(rungs, int) or rungs < 0:
+        raise ValueError("provider_attempt transport_rungs must be a non-negative integer")
 
 
 def _event_to_json(event: SessionEvent) -> dict:
@@ -792,6 +817,10 @@ def _event_from_json(raw: dict) -> SessionEvent:
         for c in raw.get("tool_calls", [])
       ],
       **({"provider_replay": raw["provider_replay"]} if "provider_replay" in raw else {}),
+      # P4 §3 evidence fields — passthrough, never read by recovery.
+      **({"effect_id": raw["effect_id"]} if raw.get("effect_id") is not None else {}),
+      **({"invocation_id": raw["invocation_id"]} if raw.get("invocation_id") is not None else {}),
+      **({"wire_evidence": raw["wire_evidence"]} if raw.get("wire_evidence") is not None else {}),
     }
   if kind == "tool_requested":
     return {
@@ -807,11 +836,15 @@ def _event_from_json(raw: dict) -> SessionEvent:
       results.append({
         "call_id": r["call_id"], "output": r.get("output", ""),
         "is_error": r.get("is_error", False), "token_count": r.get("token_count"),
+        # _event_to_json writes these; dropping them here lost them on read.
+        "is_fatal": r.get("is_fatal", False),
+        "error_kind": r.get("error_kind"),
         "content": r["content"],
       })
     return {
       "kind": "tool_completed",
       "turn": raw["turn"],
       "results": results,
+      **({"effect_id": raw["effect_id"]} if raw.get("effect_id") is not None else {}),
     }
   return raw  # type: ignore[return-value]

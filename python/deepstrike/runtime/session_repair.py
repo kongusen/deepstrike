@@ -32,6 +32,11 @@ def normalize_llm_completed(event: dict[str, Any], max_bytes: int | None = None)
   }
   if provider_replay:
     out["provider_replay"] = provider_replay
+  # P4 §3: the evidence-plane fields ride along verbatim — recovery never reads them (SessionLog
+  # is evidence, not authority), so normalize must neither synthesize nor drop them.
+  for field in ("effect_id", "invocation_id", "wire_evidence"):
+    if event.get(field) is not None:
+      out[field] = event[field]
   return out
 
 
@@ -59,6 +64,9 @@ def build_llm_completed_event(
   tool_calls: list[ToolCall],
   token_count: int | None = None,
   provider_replay: dict[str, Any] | None = None,
+  effect_id: str | None = None,
+  invocation_id: str | None = None,
+  wire_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
   return normalize_llm_completed({
     "kind": "llm_completed",
@@ -67,6 +75,9 @@ def build_llm_completed_event(
     "tool_calls": tool_calls,
     "token_count": token_count,
     "provider_replay": provider_replay,
+    "effect_id": effect_id,
+    "invocation_id": invocation_id,
+    "wire_evidence": wire_evidence,
   })
 
 

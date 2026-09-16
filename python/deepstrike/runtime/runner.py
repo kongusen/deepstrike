@@ -28,7 +28,17 @@ from deepstrike.providers.request_plan import (
   estimate_provider_prompt_tokens,
   measurement_for_plan,
   record_prompt_measurement,
+  resolve_provider_route,
   ProviderRequestEndpoint,
+)
+from deepstrike.providers.usage import ProviderUsage
+from deepstrike.runtime.execution_evidence import (
+  FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY,
+  UsageAccountingPolicy,
+  provider_attempt_to_record,
+  route_to_record,
+  try_normalize_provider_usage,
+  usage_to_record,
 )
 from deepstrike.providers.provider_error import (
   classify_provider_error,
@@ -328,6 +338,10 @@ class RuntimeOptions:
   # inject_note). Errs-open. Sync or async.
   on_tool_result: Callable[[dict], Awaitable[dict | None] | dict | None] | None = None
   on_permission_request: Callable[[PermissionRequestEvent], Awaitable[PermissionResponse | bool | dict[str, Any]] | PermissionResponse | bool | dict[str, Any]] | None = None
+  # P4 §2.1: the named policy turning a provider measurement into the two observed_* numbers that
+  # cross the kernel boundary. None ⇒ FULL_FOOTPRINT (the numbers the runner has always fed);
+  # only makes the conversion named, pinnable on `provider_attempt`, and replayable.
+  usage_accounting_policy: "UsageAccountingPolicy | None" = None
   sub_agent_orchestrator: Any | None = None
   sub_agent_harness: SubAgentHarnessConfig | None = None
   # G2: custom reducers for NodeKind::Reduce nodes, merged over the built-ins. A reduce node runs no LLM.
@@ -459,6 +473,18 @@ class RuntimeRunner:
     self._workflow_continuation_action: KernelRunnerAction | None = None
     self._fallback_payload_store: Any = None
     self._deferred_host_events: list[dict[str, Any]] = []
+    # P4 (0.2.64 Evidence Plane): the resolved route every provider attempt is pinned to, and the
+    # policy deriving the settlement from a measurement. Both resolved once — evidence identity
+    # must be byte-stable across the run (C6.3 pins in-run route stability).
+    self._usage_accounting_policy: UsageAccountingPolicy = (
+      opts.usage_accounting_policy or FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY
+    )
+    self._provider_route = resolve_provider_route(opts.provider)
+    # P4 §1.1: invocation identity is derived, never minted — the chain's FIRST effect_id. A
+    # provider_error commit the kernel answers with a fresh call_provider arms
+    # `_provider_retry_pending`, so the next effect CONTINUES the pending invocation.
+    self._provider_retry_pending = False
+    self._active_provider_invocation_id: str | None = None
   def _with_structured_tool_outputs(
     self,
     context: RenderedContext,
@@ -884,6 +910,7 @@ class RuntimeRunner:
           "goal": f"workflow:{len(spec.nodes)} nodes",
           "criteria": [],
           "agent_id": self._opts.agent_id,
+          "route": route_to_record(self._provider_route),
         })
         standalone_runtime = await self._initialize_workflow_kernel(sid, run_id, group_budget_scope)
       outcome = await self._run_workflow_inner(spec)
@@ -1667,6 +1694,7 @@ class RuntimeRunner:
         **({"agent_id": self._opts.agent_id} if self._opts.agent_id else {}),
         **({"system_prompt": self._opts.system_prompt} if self._opts.system_prompt else {}),
         **({"attachments": attachments} if attachments else {}),
+        "route": route_to_record(self._provider_route),
       })
     try:
       async for evt in self._execute(
@@ -1713,11 +1741,25 @@ class RuntimeRunner:
     finally:
       await self._close_active_scopes()
 
+  async def _append_provider_attempt(self, session_id: str, attempt: dict[str, Any]) -> None:
+    """P4-S1 (G1): land one provider_attempt evidence record per effect execution. Pure host
+    evidence (B7) — appended AFTER the transport fact exists (success/failure/abort), never
+    consulted for kernel input. The accounting policy id pins only when a measurement exists,
+    so (usage, policy_id) deterministically recomputes the settlement that crossed the wire."""
+    await self._opts.session_log.append(session_id, {
+      "kind": "provider_attempt",
+      **provider_attempt_to_record(
+        attempt,
+        self._usage_accounting_policy.policy_id if attempt.get("usage") else None,
+      ),
+    })
+
   async def _resolve_approval_requests(
     self,
     requests: list[dict[str, Any]],
     runtime: CanonicalRunnerRuntime,
     session_id: str,
+    effect_id: str | None = None,
   ) -> tuple[list[str], list[str], list[StreamEvent]]:
     from deepstrike.runtime.execution_plane import resolve_permission_request
 
@@ -1789,6 +1831,8 @@ class RuntimeRunner:
             "error_kind": "governance_denied",
             "content": {"blocks": [{"type": "text", "text": f"permission denied: {deny_reason}"}]},
           }],
+          # P3-S2 (G4): pin the request_approval effect's id on the denial's tool_completed.
+          **({"effect_id": effect_id} if effect_id is not None else {}),
         })
 
     return approved, denied, events
@@ -2186,6 +2230,16 @@ class RuntimeRunner:
 
       if action.kind == "call_provider":
         provider_effect_id = action.effect_id
+        # P4 §1.1: invocation identity is derived, never minted — the chain's FIRST effect_id.
+        # A provider_error commit armed `_provider_retry_pending`, so this effect CONTINUES the
+        # pending invocation; otherwise it opens a new one. The chain itself lives in the journal
+        # (each hop a resolution input → new effect); this is the SessionLog evidence projection.
+        if not self._provider_retry_pending or self._active_provider_invocation_id is None:
+          self._active_provider_invocation_id = provider_effect_id
+        self._provider_retry_pending = False
+        invocation_id = self._active_provider_invocation_id
+        # Host wall-clock, pure evidence (B7/DEC-2): never crosses into kernel input.
+        attempt_started_at_ms = int(time.time() * 1000)
         final_tool_calls: list[ToolCall] = []
         final_text = ""
         context = self._with_structured_tool_outputs(
@@ -2208,6 +2262,7 @@ class RuntimeRunner:
         turn_tokens = 0
         turn_input_tokens = 0
         turn_output_tokens = 0
+        turn_provider_usage = None
         turn_cache_read_tokens = 0
         turn_cache_creation_tokens = 0
         turn_cache_telemetry_status = "unavailable"
@@ -2256,6 +2311,7 @@ class RuntimeRunner:
           await self._opts.session_log.append(session_id, {
             "kind": "prompt_measured", "turn": runtime.turn(),
             "measurement": recorded_measurements[provider_plan.fingerprint],
+            "effect_id": provider_effect_id,
           })
         reserved = sum((getattr(self._opts.prompt_budget, field, 0) for field in ("prompt_overhead_tokens", "output_reserve_tokens", "safety_margin_tokens")), 0) if self._opts.prompt_budget else 0
         # Heuristic counts guide compaction but cannot authoritatively reject a request. Only a
@@ -2266,11 +2322,29 @@ class RuntimeRunner:
           and prompt_measurement.input_tokens + reserved > self._opts.max_tokens
         )
         if context.budget_overflow or measured_overflow:
+          # P4 §1.2: blocked BEFORE any transport — zero rungs, status rejected. The fingerprint
+          # still binds the would-be request to its prompt_measured record (G2).
+          await self._append_provider_attempt(session_id, {
+            "effect_id": provider_effect_id,
+            "attempt_seq": 1,
+            "route": route_to_record(self._provider_route),
+            "request_fingerprint": provider_plan.fingerprint,
+            "status": "rejected",
+            "transport_rungs": 0,
+            "last_error_class": "context_overflow",
+            "started_at_ms": attempt_started_at_ms,
+            "finished_at_ms": int(time.time() * 1000),
+            "wire_evidence": {
+              "protocol": self._provider_route.protocol,
+              "request_fingerprint": provider_plan.fingerprint,
+            },
+          })
           action = await action_host(runtime, self._pending_observations, {
             "kind": "provider_error", "effect_id": provider_effect_id,
             "message": "provider-visible prompt exceeds the configured context budget",
             "error_kind": "context_overflow", "retryable": False,
           })
+          self._provider_retry_pending = getattr(action, "kind", None) == "call_provider"
           continue
         try:
           async for evt in self._opts.provider.stream(
@@ -2290,6 +2364,7 @@ class RuntimeRunner:
               turn_cache_read_tokens = getattr(evt, "cache_read_input_tokens", 0) or 0
               turn_cache_creation_tokens = getattr(evt, "cache_creation_input_tokens", 0) or 0
               provider_usage = getattr(evt, "provider_usage", None)
+              turn_provider_usage = provider_usage
               turn_cache_telemetry_status = (
                 getattr(evt, "cache_telemetry_status", None)
                 or getattr(provider_usage, "cache_telemetry_status", None)
@@ -2326,6 +2401,7 @@ class RuntimeRunner:
                 await self._opts.session_log.append(session_id, {
                   "kind": "prompt_measured", "turn": runtime.turn(),
                   "measurement": recorded_measurements[provider_plan.fingerprint],
+                  "effect_id": provider_effect_id,
                 })
               # Phase 4: stop_reason drives the kernel's max-output-tokens recovery; keep the last
               # non-empty value seen this turn (the closing usage frame carries it).
@@ -2342,6 +2418,21 @@ class RuntimeRunner:
         except asyncio.CancelledError:
           self._interrupted = True
           self._cancellation_reason = self._cancellation_reason or "user"
+          # P4 §1.2: host cancellation mid-stream — the attempt is evidence too.
+          await self._append_provider_attempt(session_id, {
+            "effect_id": provider_effect_id,
+            "attempt_seq": 1,
+            "route": route_to_record(self._provider_route),
+            "request_fingerprint": provider_plan.fingerprint,
+            "status": "aborted",
+            "transport_rungs": 1,
+            "started_at_ms": attempt_started_at_ms,
+            "finished_at_ms": int(time.time() * 1000),
+            "wire_evidence": {
+              "protocol": self._provider_route.protocol,
+              "request_fingerprint": provider_plan.fingerprint,
+            },
+          })
           await action_host(runtime, self._pending_observations, {
             "kind": "cancel_operation",
             "reason": self._cancellation_reason,
@@ -2367,12 +2458,33 @@ class RuntimeRunner:
               getattr(self._opts.provider, "descriptor", lambda: type("D", (), {"provider": "unknown"})())().provider,
               exc,
             )
+            # P4 §1.2: the transport ladder is exhausted — one attempt record, error CLASS only
+            # (B1: never the raw vendor text). Python providers carry no rung telemetry yet, so
+            # the single-shot stream path reports 1.
+            await self._append_provider_attempt(session_id, {
+              "effect_id": provider_effect_id,
+              "attempt_seq": 1,
+              "route": route_to_record(self._provider_route),
+              "request_fingerprint": provider_plan.fingerprint,
+              "status": "transport_exhausted",
+              "transport_rungs": 1,
+              "last_error_class": provider_err.kind,
+              "started_at_ms": attempt_started_at_ms,
+              "finished_at_ms": int(time.time() * 1000),
+              "wire_evidence": {
+                "protocol": self._provider_route.protocol,
+                "request_fingerprint": provider_plan.fingerprint,
+              },
+            })
             action = await action_host(runtime, self._pending_observations, {
               "kind": "provider_error",
               "effect_id": provider_effect_id,
               "message": provider_err.message,
               **provider_error_event_fields(provider_err),
             })
+            # P4 §1.1: a kernel-recovered retry CONTINUES this invocation (the journal holds the
+            # causation hop); a terminal closes it.
+            self._provider_retry_pending = getattr(action, "kind", None) == "call_provider"
             # Withholding (query.ts parity): surface the raw provider error only when the kernel
             # could NOT recover (it returned a terminal). On a recovered retry (call_provider) the
             # error stays hidden, so embedders that terminate on `error` events don't see a phantom
@@ -2383,6 +2495,21 @@ class RuntimeRunner:
 
         # #2-B-ii: stream aborted (preempt/interrupt) via the break path — end the turn now.
         if self._interrupted:
+          # P4 §1.2: host cancellation mid-stream — the attempt is evidence too.
+          await self._append_provider_attempt(session_id, {
+            "effect_id": provider_effect_id,
+            "attempt_seq": 1,
+            "route": route_to_record(self._provider_route),
+            "request_fingerprint": provider_plan.fingerprint,
+            "status": "aborted",
+            "transport_rungs": 1,
+            "started_at_ms": attempt_started_at_ms,
+            "finished_at_ms": int(time.time() * 1000),
+            "wire_evidence": {
+              "protocol": self._provider_route.protocol,
+              "request_fingerprint": provider_plan.fingerprint,
+            },
+          })
           action = await action_host(runtime, self._pending_observations, {
             "kind": "cancel_operation",
             "reason": self._cancellation_reason or "user",
@@ -2412,12 +2539,39 @@ class RuntimeRunner:
           role="assistant", content=final_text, tool_calls=canonical_tool_calls,
           token_count=turn_output_tokens or turn_tokens or None,
         )
+        # P4 §2: assemble the measurement from the exact numbers that cross the boundary today
+        # (input/output turn counters), enriched with the raw provider frame's cache split and
+        # reasoning fields. An invalid frame degrades to no measurement (evidence never breaks a
+        # run); the settlement then falls back to the raw counts below.
+        attempt_usage = None
+        if turn_input_tokens > 0 or turn_output_tokens > 0:
+          attempt_usage = try_normalize_provider_usage(ProviderUsage(
+            input_tokens=turn_input_tokens,
+            output_tokens=turn_output_tokens,
+            cache_read_input_tokens=(
+              getattr(turn_provider_usage, "cache_read_input_tokens", None)
+              if getattr(turn_provider_usage, "cache_read_input_tokens", None) is not None
+              else turn_cache_read_tokens
+            ),
+            cache_creation_input_tokens=(
+              getattr(turn_provider_usage, "cache_creation_input_tokens", None)
+              if getattr(turn_provider_usage, "cache_creation_input_tokens", None) is not None
+              else turn_cache_creation_tokens
+            ),
+            reasoning_tokens=getattr(turn_provider_usage, "reasoning_tokens", None),
+            cache_telemetry_status=turn_cache_telemetry_status,
+            cache_telemetry_source=turn_cache_telemetry_source,
+          ))
+        settlement = self._usage_accounting_policy.settle(attempt_usage) if attempt_usage is not None else None
         provider_event: dict[str, Any] = {
           "kind": "provider_result",
           "effect_id": provider_effect_id,
           "message": message_to_kernel(assistant_message),
-          **({"observed_input_tokens": turn_input_tokens} if turn_input_tokens > 0 else {}),
-          **({"observed_output_tokens": turn_output_tokens} if turn_output_tokens > 0 else {}),
+          # P4-S2: observed_* now comes from the pinned policy's settlement of the measurement.
+          # Under the default full-footprint policy these are provably the numbers the runner
+          # has always fed (input_tokens/output_tokens verbatim under the same >0 gates).
+          **({"observed_input_tokens": settlement["observed_input_tokens"] if settlement is not None else turn_input_tokens} if turn_input_tokens > 0 else {}),
+          **({"observed_output_tokens": settlement["observed_output_tokens"] if settlement is not None else turn_output_tokens} if turn_output_tokens > 0 else {}),
           **({"stop_reason": turn_stop_reason} if turn_stop_reason else {}),
         }
         if skill_dir and skill_dir.is_dir():
@@ -2443,15 +2597,41 @@ class RuntimeRunner:
               })
             except Exception:
               pass
-        action = await action_host(runtime, self._pending_observations, provider_event)
+        # P4-S1: land the attempt evidence BEFORE the kernel resolution commits — the record
+        # describes the transport fact, which exists regardless of what the kernel decides next.
         from deepstrike.runtime.provider_replay import peek_provider_replay
         provider_replay = peek_provider_replay(self._opts.provider, final_text, final_tool_calls)
+        wire_evidence: dict[str, Any] = {
+          "protocol": self._provider_route.protocol,
+          "request_fingerprint": provider_plan.fingerprint,
+          **({"replay_state": provider_replay} if provider_replay is not None else {}),
+        }
+        await self._append_provider_attempt(session_id, {
+          "effect_id": provider_effect_id,
+          "attempt_seq": 1,
+          "route": route_to_record(self._provider_route),
+          "request_fingerprint": provider_plan.fingerprint,
+          "status": "success",
+          "transport_rungs": 1,
+          "started_at_ms": attempt_started_at_ms,
+          "finished_at_ms": int(time.time() * 1000),
+          **({"usage": usage_to_record(
+            attempt_usage,
+            cache_telemetry_status=turn_cache_telemetry_status,
+            cache_telemetry_source=turn_cache_telemetry_source,
+          )} if attempt_usage is not None else {}),
+          "wire_evidence": wire_evidence,
+        })
+        action = await action_host(runtime, self._pending_observations, provider_event)
         await self._opts.session_log.append(session_id, build_llm_completed_event(
           turn=runtime.turn(),
           content=final_text,
           tool_calls=final_tool_calls,
           token_count=turn_output_tokens or turn_tokens or None,
           provider_replay=provider_replay,
+          effect_id=provider_effect_id,
+          invocation_id=invocation_id,
+          wire_evidence=wire_evidence,
         ))
 
         # P0-C: per-turn tool-gating telemetry. ``active_skill`` reflects the skill in effect GOING
@@ -2486,7 +2666,7 @@ class RuntimeRunner:
 
       elif action.kind == "request_approval":
         approved, denied, suspend_events = await self._resolve_approval_requests(
-          action.requests or [], runtime, session_id,
+          action.requests or [], runtime, session_id, effect_id=action.effect_id,
         )
         for evt in suspend_events:
           yield evt
@@ -2724,6 +2904,7 @@ class RuntimeRunner:
               [{"type": "text", "text": r.output}],
             )},
           } for r in tool_results],
+          "effect_id": tool_effect_id,
         })
         # Canonical provider-result reduction activates a successfully resolved `skill` call. The
         # host only pins its METHOD content — how to do something — for later turns.
