@@ -1,0 +1,16 @@
+{
+  "id": "content-parts-key-order",
+  "domain": "content_parts_v1",
+  "input": {
+    "parts": [
+      { "text": "key order is insertion order", "type": "text" },
+      { "url": "https://example.com/a.bin", "type": "file" }
+    ]
+  },
+  "expected": {
+    "canonical": {
+      "encoded": "[[deepstrike-content-parts]]W3sidGV4dCI6ImtleSBvcmRlciBpcyBpbnNlcnRpb24gb3JkZXIiLCJ0eXBlIjoidGV4dCJ9LHsidXJsIjoiaHR0cHM6Ly9leGFtcGxlLmNvbS9hLmJpbiIsInR5cGUiOiJmaWxlIn1d",
+      "roundtrip": true
+    }
+  }
+}

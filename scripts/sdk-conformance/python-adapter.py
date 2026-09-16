@@ -19,8 +19,11 @@ FIXTURES_ROOT = (ROOT / "tests" / "fixtures").resolve()
 try:
   from deepstrike import (
     InMemorySessionLog,
+    SESSION_EVENT_KINDS,
+    decode_canonical_content_parts,
     decode_durable_content,
     decode_durable_tool_result,
+    encode_canonical_content_parts,
     lower_agent,
     normalize_agent,
   )
@@ -35,8 +38,11 @@ except ModuleNotFoundError as error:
   sys.path.insert(0, str(ROOT / "python"))
   from deepstrike import (
     InMemorySessionLog,
+    SESSION_EVENT_KINDS,
+    decode_canonical_content_parts,
     decode_durable_content,
     decode_durable_tool_result,
+    encode_canonical_content_parts,
     lower_agent,
     normalize_agent,
   )
@@ -150,6 +156,25 @@ def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
       "confidence": record.confidence,
     }
     return canonical
+
+  if domain == "content_parts_v1":
+    # F14/B5 byte contract: encode pins exact bytes; decode of an unknown prefix or an
+    # undecodable payload must return None (the text stays literal — never guess).
+    parts = input_value.get("parts")
+    if isinstance(parts, list):
+      encoded = encode_canonical_content_parts(parts)
+      decoded = decode_canonical_content_parts(encoded)
+      return {"encoded": encoded, "roundtrip": decoded == parts}
+    literal = input_value.get("decode")
+    if isinstance(literal, str):
+      return {"decoded": decode_canonical_content_parts(literal)}
+    raise ConformanceError("invalid_content_parts", "/input", "content_parts_v1 input must carry parts or decode")
+
+  if domain == "session_event_vocabulary":
+    # F9/S3 (P7-S4): the local registered vocabulary, sorted for byte-stable comparison.
+    # The manifest fixture pins this list across SDKs — extra or missing kinds both fail.
+    kinds = sorted(SESSION_EVENT_KINDS)
+    return {"kinds": kinds, "count": len(kinds)}
 
   if domain == "provider_error":
     stop_reason = input_value.get("stopReason")

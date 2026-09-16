@@ -7,6 +7,7 @@ import type {
   ProviderDescriptor,
   ProviderReplay,
   ProviderRunState,
+  ProviderTransportTelemetry,
   RenderedContext,
   RuntimePolicy,
   StreamEvent,
@@ -107,6 +108,14 @@ export class AnthropicProvider implements LLMProvider {
     }
   }
 
+  /** P4-S1: transport facts of the most recent execution (rung count + wire response id).
+   *  Host evidence only — never kernel input (B7). */
+  private lastTelemetry: ProviderTransportTelemetry | undefined
+
+  peekTransportTelemetry(): ProviderTransportTelemetry | undefined {
+    return this.lastTelemetry
+  }
+
   bindResolvedRuntime(resolved: ResolvedAnthropicRuntime): void {
     if (
       resolved.identity.protocol !== "anthropic-messages"
@@ -194,8 +203,10 @@ export class AnthropicProvider implements LLMProvider {
     let lastErr: unknown
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
+        this.lastTelemetry = { rungs: attempt + 1 }
         const raw = await this.createMessage(plan.params, plan.transport)
         this.circuit.recordSuccess()
+        if (typeof raw.id === "string") this.lastTelemetry = { rungs: attempt + 1, responseId: raw.id }
         const decoded = this.adapter.decodeComplete(raw, { input })
         if (decoded.replay?.native_blocks) {
           this.rememberNativeBlocks(decoded.message, decoded.replay.native_blocks)
@@ -250,7 +261,12 @@ export class AnthropicProvider implements LLMProvider {
     try {
       const { input, plan } = this.buildPlan(context, tools, extensions)
       const state = this.adapter.createStreamState({ input })
+      this.lastTelemetry = { rungs: 1 }
       for await (const chunk of this.streamMessage(plan.params, plan.transport, signal)) {
+        if (this.lastTelemetry.responseId === undefined && chunk.type === "message_start") {
+          const id = (chunk as Record<string, any>).message?.id
+          if (typeof id === "string") this.lastTelemetry = { rungs: 1, responseId: id }
+        }
         for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
       }
       const final = this.adapter.finishStream(state)

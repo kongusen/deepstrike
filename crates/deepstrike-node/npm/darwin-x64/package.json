@@ -9,7 +9,7 @@
     "deepstrike-core.darwin-x64.node"
   ],
   "description": "DeepStrike kernel — pre-built native addon",
-  "license": "Apache-2.0 OR MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "os": [
     "darwin"
   ]

@@ -335,8 +335,8 @@ mod tests {
             "../../../../../../tests/fixtures/abi/multi_effect_step.json"
         ))
         .expect("fixture JSON");
-        let step: PlannedStep = serde_json::from_value(fixture["planned_step"].clone())
-            .expect("planned step");
+        let step: PlannedStep =
+            serde_json::from_value(fixture["planned_step"].clone()).expect("planned step");
         let value = serde_json::to_value(project_current_action(&step).expect("projection"))
             .expect("projection JSON");
 

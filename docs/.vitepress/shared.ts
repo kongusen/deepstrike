@@ -86,6 +86,15 @@ function sidebar(prefix: '' | '/en'): SidebarGroup[] {
         { text: 'Kernel ABI', link: `${p}/architecture/kernel-abi` },
       ],
     },
+    {
+      text: prefix ? 'Runtime Data Constitution' : '运行时数据宪法',
+      items: [
+        { text: prefix ? 'Data Model' : '数据模型总纲', link: `${p}/architecture/runtime-data-model` },
+        { text: prefix ? 'Authority & Identity' : 'Authority 矩阵与身份', link: `${p}/architecture/runtime-authority` },
+        { text: prefix ? 'Persistence Contract' : '持久契约', link: `${p}/architecture/runtime-persistence` },
+        { text: prefix ? 'Causality & Chain Validator' : '因果链与链验证器', link: `${p}/architecture/runtime-causality` },
+      ],
+    },
   ]
 }
 

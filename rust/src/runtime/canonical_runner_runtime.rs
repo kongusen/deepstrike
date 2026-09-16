@@ -870,28 +870,27 @@ impl CanonicalRunnerRuntime {
             // §7.11 · a committed step that publishes effects is a fact worth recording in the
             // host event log: the journal stores only a digest of the step, so this manifest is
             // what makes the published effect ids + kinds recoverable post-hoc without replaying.
-            let manifest = deepstrike_core::runtime::kernel::wire::projection::published_effects_manifest(
-                &transition.planned_step,
-            );
+            let manifest =
+                deepstrike_core::runtime::kernel::wire::projection::published_effects_manifest(
+                    &transition.planned_step,
+                );
             if !manifest.is_empty() {
-                    self.observations
-                        .push(KernelObservation::StepPublishedEffects {
-                            effects: manifest
-                                .iter()
-                                .map(|effect| PublishedEffectRef {
-                                    effect_id: effect.effect_id.to_string(),
-                                    kind: serde_json::to_value(effect.kind)
-                                        .ok()
-                                        .and_then(|value| value.as_str().map(|tag| tag.to_string()))
-                                        .unwrap_or_default(),
-                                })
-                                .collect(),
-                        });
+                self.observations
+                    .push(KernelObservation::StepPublishedEffects {
+                        effects: manifest
+                            .iter()
+                            .map(|effect| PublishedEffectRef {
+                                effect_id: effect.effect_id.to_string(),
+                                kind: serde_json::to_value(effect.kind)
+                                    .ok()
+                                    .and_then(|value| value.as_str().map(|tag| tag.to_string()))
+                                    .unwrap_or_default(),
+                            })
+                            .collect(),
+                    });
             }
         }
-        self.last_action = self.enrich_action(action_from_core_step(
-            &transition.planned_step,
-        )?);
+        self.last_action = self.enrich_action(action_from_core_step(&transition.planned_step)?);
         Ok(self.last_action.clone())
     }
 
@@ -938,14 +937,12 @@ impl CanonicalRunnerRuntime {
             });
         }
         let effects = self.host.pending_effects();
-        Ok(
-            self.enrich_action(action_from_core_step(&PlannedStep {
-                root_kind: None,
-                focus: None,
-                observations: Vec::new(),
-                disposition: StepDisposition::Effects(EffectsDisposition { effects }),
-            })?),
-        )
+        Ok(self.enrich_action(action_from_core_step(&PlannedStep {
+            root_kind: None,
+            focus: None,
+            observations: Vec::new(),
+            disposition: StepDisposition::Effects(EffectsDisposition { effects }),
+        })?))
     }
 
     fn enrich_action(&self, mut action: Option<HostAction>) -> Option<HostAction> {
@@ -1614,15 +1611,16 @@ pub(crate) async fn canonical_kernel_action(
     })
 }
 
-pub(crate) fn action_from_core_step(
-    planned: &PlannedStep,
-) -> Result<Option<HostAction>> {
-    let projection = deepstrike_core::runtime::kernel::wire::projection::project_current_action(
-        planned,
-    )
-    .map_err(|error| Error::Other(format!("kernel projection failed: {}", error.message)))?;
+pub(crate) fn action_from_core_step(planned: &PlannedStep) -> Result<Option<HostAction>> {
+    let projection =
+        deepstrike_core::runtime::kernel::wire::projection::project_current_action(planned)
+            .map_err(|error| {
+                Error::Other(format!("kernel projection failed: {}", error.message))
+            })?;
     match projection {
-        deepstrike_core::runtime::kernel::wire::projection::CurrentProjection::Terminal(terminal) => Ok(Some(HostAction {
+        deepstrike_core::runtime::kernel::wire::projection::CurrentProjection::Terminal(
+            terminal,
+        ) => Ok(Some(HostAction {
             effect_id: String::new(),
             causation_id: String::new(),
             effect: HostEffect::Done {
@@ -1631,8 +1629,9 @@ pub(crate) fn action_from_core_step(
         })),
         deepstrike_core::runtime::kernel::wire::projection::CurrentProjection::Idle => Ok(None),
         deepstrike_core::runtime::kernel::wire::projection::CurrentProjection::Action(_) => {
-            let current_effect = deepstrike_core::runtime::kernel::wire::projection::current_effect(planned)
-                .expect("action projection must have a current effect");
+            let current_effect =
+                deepstrike_core::runtime::kernel::wire::projection::current_effect(planned)
+                    .expect("action projection must have a current effect");
             // A step that reduces a syscall batch may legitimately publish several effects
             // (different kinds — §15.3 admits at most one pending effect per kind). The host
             // consumes them one pending effect at a time: the first is the current action, and
@@ -1655,7 +1654,8 @@ fn protocol_action_from_wire(
     let causation_id = effect.causation_input_id.as_str().to_string();
     let mapped = match &effect.effect {
         EffectKind::CallProvider(_) => {
-            let canonical = deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
+            let canonical =
+                deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::CallProvider {
                 payload: call,
                 ..
@@ -1664,20 +1664,21 @@ fn protocol_action_from_wire(
                 unreachable!("call_provider effect must project to provider action");
             };
             HostEffect::CallProvider {
-            context: rendered_context_from_wire(&call.context)?,
-            tools: call
-                .tools
-                .iter()
-                .map(|tool| ToolSchema {
-                    name: CompactString::from(tool.name.as_str()),
-                    description: tool.description.clone(),
-                    parameters: tool.parameters.get().clone(),
-                })
-                .collect(),
+                context: rendered_context_from_wire(&call.context)?,
+                tools: call
+                    .tools
+                    .iter()
+                    .map(|tool| ToolSchema {
+                        name: CompactString::from(tool.name.as_str()),
+                        description: tool.description.clone(),
+                        parameters: tool.parameters.get().clone(),
+                    })
+                    .collect(),
             }
         }
         EffectKind::ExecuteTools(_) => {
-            let canonical = deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
+            let canonical =
+                deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::ExecuteTools {
                 payload: execute,
                 ..
@@ -1686,19 +1687,20 @@ fn protocol_action_from_wire(
                 unreachable!("execute_tools effect must project to execute action");
             };
             HostEffect::ExecuteTool {
-            calls: execute
-                .calls
-                .iter()
-                .map(|call| ToolCall {
-                    id: CompactString::from(call.call_id.as_str()),
-                    name: CompactString::from(call.name.as_str()),
-                    arguments: call.arguments.get().clone(),
-                })
-                .collect(),
+                calls: execute
+                    .calls
+                    .iter()
+                    .map(|call| ToolCall {
+                        id: CompactString::from(call.call_id.as_str()),
+                        name: CompactString::from(call.name.as_str()),
+                        arguments: call.arguments.get().clone(),
+                    })
+                    .collect(),
             }
         }
         EffectKind::RequestApproval(_) => {
-            let canonical = deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
+            let canonical =
+                deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::RequestApproval {
                 payload: request,
                 ..
@@ -1707,85 +1709,90 @@ fn protocol_action_from_wire(
                 unreachable!("request_approval effect must project to approval action");
             };
             HostEffect::RequestApproval {
-            requests: request
-                .requests
-                .iter()
-                .map(
-                    |item| deepstrike_core::scheduler::state_machine::ApprovalRequest {
-                        call_id: item.call_id.as_str().to_string(),
-                        tool: item.tool_name.clone(),
-                        arguments: item.arguments.get().clone(),
-                        reason: item.reason.clone().unwrap_or_default(),
-                    },
-                )
-                .collect(),
+                requests: request
+                    .requests
+                    .iter()
+                    .map(
+                        |item| deepstrike_core::scheduler::state_machine::ApprovalRequest {
+                            call_id: item.call_id.as_str().to_string(),
+                            tool: item.tool_name.clone(),
+                            arguments: item.arguments.get().clone(),
+                            reason: item.reason.clone().unwrap_or_default(),
+                        },
+                    )
+                    .collect(),
             }
         }
         EffectKind::SpawnTasks(_) => {
-            let canonical = deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
+            let canonical =
+                deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::SpawnTasks { payload: spawn, .. } = canonical else {
                 unreachable!("spawn_tasks effect must project to spawn action");
             };
             HostEffect::SpawnWorkflow {
-            nodes: spawn
-                .tasks
-                .iter()
-                .map(|task| {
-                    let role = task
-                        .spec
-                        .role
-                        .and_then(|role| serde_json::to_value(role).ok())
-                        .and_then(|v| v.as_str().map(|s| s.to_string()))
-                        .unwrap_or_else(|| "custom".into());
-                    let isolation = task
-                        .spec
-                        .isolation
-                        .and_then(|isolation| serde_json::to_value(isolation).ok())
-                        .and_then(|v| v.as_str().map(|s| s.to_string()))
-                        .unwrap_or_else(|| "shared".into());
-                    deepstrike_core::orchestration::workflow::WorkflowSpawnInfo {
-                        agent_id: task.task_id.as_str().to_string(),
-                        goal: task.spec.goal.clone(),
-                        role,
-                        isolation,
-                        context_inheritance: "none".into(),
-                        model_hint: None,
-                        trust: "trusted".into(),
-                        output_schema: None,
-                        reducer: None,
-                        input_agent_ids: Vec::new(),
-                        judge_match: None,
-                        loop_max_iters: None,
-                        classify_labels: Vec::new(),
-                        token_budget: None,
-                        max_turns: None,
-                        max_wall_ms: None,
-                    }
-                })
-                .collect(),
-            budget: None,
+                nodes: spawn
+                    .tasks
+                    .iter()
+                    .map(|task| {
+                        let role = task
+                            .spec
+                            .role
+                            .and_then(|role| serde_json::to_value(role).ok())
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                            .unwrap_or_else(|| "custom".into());
+                        let isolation = task
+                            .spec
+                            .isolation
+                            .and_then(|isolation| serde_json::to_value(isolation).ok())
+                            .and_then(|v| v.as_str().map(|s| s.to_string()))
+                            .unwrap_or_else(|| "shared".into());
+                        deepstrike_core::orchestration::workflow::WorkflowSpawnInfo {
+                            agent_id: task.task_id.as_str().to_string(),
+                            goal: task.spec.goal.clone(),
+                            role,
+                            isolation,
+                            context_inheritance: "none".into(),
+                            model_hint: None,
+                            trust: "trusted".into(),
+                            output_schema: None,
+                            reducer: None,
+                            input_agent_ids: Vec::new(),
+                            judge_match: None,
+                            loop_max_iters: None,
+                            classify_labels: Vec::new(),
+                            token_budget: None,
+                            max_turns: None,
+                            max_wall_ms: None,
+                        }
+                    })
+                    .collect(),
+                budget: None,
             }
         }
         EffectKind::PreemptTasks(_) => {
-            let canonical = deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
+            let canonical =
+                deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::PreemptTasks { payload: preempt, .. } = canonical else {
                 unreachable!("preempt_tasks effect must project to preempt action");
             };
             HostEffect::PreemptSubAgents {
-            agent_ids: preempt
-                .attempts
-                .iter()
-                .map(|attempt| attempt.task_id.as_str().to_string())
-                .collect(),
-            reason: preempt.reason.clone(),
+                agent_ids: preempt
+                    .attempts
+                    .iter()
+                    .map(|attempt| attempt.task_id.as_str().to_string())
+                    .collect(),
+                reason: preempt.reason.clone(),
             }
         }
         EffectKind::PersistMemory(_) => {
-            let canonical = deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
+            let canonical =
+                deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::PersistMemory { payload: persist, .. } = canonical else {
                 unreachable!("persist_memory effect must project to persist action");
             };
-            HostEffect::PersistMemory { memory: memory_record_from_wire(&persist.memory) }
+            HostEffect::PersistMemory {
+                memory: memory_record_from_wire(&persist.memory),
+            }
         }
         EffectKind::QueryMemory(_) => {
             let canonical =
@@ -1818,7 +1825,8 @@ fn protocol_action_from_wire(
             }
         }
         EffectKind::ArchivePageOut(_) => {
-            let canonical = deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
+            let canonical =
+                deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::ArchivePageOut {
                 payload: archive,
                 ..
@@ -1851,25 +1859,27 @@ fn protocol_action_from_wire(
             }
         }
         EffectKind::LoadPayload(_) => {
-            let canonical = deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
+            let canonical =
+                deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::LoadPayload { payload: load, .. } = canonical else {
                 unreachable!("load_payload effect must project to load action");
             };
             HostEffect::LoadPayload {
-            handle_id: load.handle_id.as_str().to_string(),
-            payload_ref: load.payload_ref.as_str().to_string(),
+                handle_id: load.handle_id.as_str().to_string(),
+                payload_ref: load.payload_ref.as_str().to_string(),
             }
         }
         EffectKind::EvaluateMilestone(_) => {
-            let canonical = deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
+            let canonical =
+                deepstrike_core::runtime::kernel::wire::projection::project_effect(effect);
             let deepstrike_core::runtime::kernel::wire::projection::CanonicalHostAction::EvaluateMilestone { payload: eval, .. } = canonical else {
                 unreachable!("evaluate_milestone effect must project to milestone action");
             };
             HostEffect::EvaluateMilestone {
-            phase_id: eval.request.phase_id.clone(),
-            criteria: Vec::new(),
-            verifier: None,
-            required_evidence: Vec::new(),
+                phase_id: eval.request.phase_id.clone(),
+                criteria: Vec::new(),
+                verifier: None,
+                required_evidence: Vec::new(),
             }
         }
         // The wire tag remains reserved, but A-00R removed the non-durable adaptive scheduler

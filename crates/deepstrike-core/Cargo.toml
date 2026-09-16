@@ -3,7 +3,7 @@ name = "deepstrike-core"
 description = "Cross-language agent runtime kernel — pure computation, zero I/O"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file = "LICENSE"
 
 [dependencies]
 serde = { workspace = true }
@@ -16,6 +16,12 @@ deepstrike-tokenizer = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = "1"
+
+# P7-S5 · chain validator CLI (P2 §5 batch 1: C1–C4 + C7). Host-ops tooling with its own
+# release rhythm (P7 §3.1: tool nature — does not gate SDK versions).
+[[bin]]
+name = "ds-chain-validator"
+path = "src/bin/ds-chain-validator.rs"
 
 [[bench]]
 name = "kernel_baseline"

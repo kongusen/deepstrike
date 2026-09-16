@@ -32,6 +32,17 @@ export interface ProviderUsage {
   reasoningTokens?: number
 }
 
+/** P4 §1.3 mirror of the node ResolvedProviderRoute (content-addressed route evidence). */
+export interface ResolvedProviderRoute {
+  routeId: string
+  provider: string
+  protocol: string
+  model: string
+  endpoint: ProviderRequestEndpoint
+  adapterVersion: string
+  capabilitiesRef: string
+}
+
 export interface NormalizedProviderUsage extends ProviderUsage {
   uncachedInputTokens: number
 }

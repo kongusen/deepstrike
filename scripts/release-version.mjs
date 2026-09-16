@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 
 const semverPattern = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
 const cargoWorkspacePackages = [
@@ -9,6 +9,19 @@ const cargoWorkspacePackages = [
   "deepstrike-sdk",
   "deepstrike-tokenizer",
   "deepstrike-wasm",
+]
+
+// Every published package must ship a byte-identical copy of the root LICENSE.
+export const licenseCopyRelativePaths = [
+  "crates/deepstrike-core/LICENSE",
+  "crates/deepstrike-tokenizer/LICENSE",
+  "crates/deepstrike-py/LICENSE",
+  "crates/deepstrike-node/LICENSE",
+  "crates/deepstrike-wasm/LICENSE",
+  "rust/LICENSE",
+  "node/LICENSE",
+  "wasm/LICENSE",
+  "python/LICENSE",
 ]
 
 export function readCanonicalVersion(repoRoot) {
@@ -26,7 +39,14 @@ export function syncReleaseVersion({ repoRoot, check = false }) {
     .map(path => readJson(path).name)
     .sort()
 
+  const licenseText = readFileSync(join(repoRoot, "LICENSE"), "utf8")
+  const licenseCopyPaths = [
+    ...licenseCopyRelativePaths.map(path => join(repoRoot, path)),
+    ...platformPackagePaths.map(path => join(dirname(path), "LICENSE")),
+  ]
+
   const updates = [
+    ...licenseCopyPaths.map(path => syncFile(path, licenseText)),
     updateTextFile(join(repoRoot, "Cargo.toml"), text => updateCargoToml(text, version)),
     updateTextFile(join(repoRoot, "Cargo.lock"), text => updateCargoLock(text, version)),
     updateTextFile(join(repoRoot, "python", "pyproject.toml"), text => updatePythonProject(text, version)),
@@ -65,6 +85,7 @@ export function syncReleaseVersion({ repoRoot, check = false }) {
 
   if (!check) {
     for (const update of changed) {
+      mkdirSync(dirname(update.path), { recursive: true })
       writeFileSync(update.path, update.after)
     }
   }
@@ -86,6 +107,11 @@ function listPlatformPackagePaths(repoRoot) {
 function updateTextFile(path, transform) {
   const before = readFileSync(path, "utf8")
   return { path, before, after: transform(before) }
+}
+
+function syncFile(path, content) {
+  const before = existsSync(path) ? readFileSync(path, "utf8") : null
+  return { path, before, after: content }
 }
 
 function updateJsonFile(path, transform) {

@@ -463,6 +463,33 @@ export interface ProviderReplay {
   tool_calls?: unknown[]
 }
 
+/**
+ * P3 §3.3 (D1): the wire-level evidence bundle for one provider call — what was actually
+ * asked (fingerprint) and what came back (response id, raw usage). SessionLog evidence only;
+ * nothing here ever crosses into kernel state (B1/B4).
+ */
+export interface ProviderWireEvidence {
+  protocol: import("./providers/protocol-capabilities.js").GenerationProtocol
+  /** → ProviderRequestPlan.fingerprint. Mandatory non-empty (G2). */
+  request_fingerprint: string
+  /** G3: OpenAI response id / Anthropic message id / protocol equivalent, when the wire exposes one. */
+  response_id?: string
+  /** BoundedJson semantics: producers truncate to ≤4KB before landing it here. */
+  raw_usage?: unknown
+  /** The former `llm_completed.provider_replay` field, carried verbatim (P3-S2 migration). */
+  replay_state?: ProviderReplay
+}
+
+/**
+ * P4 §1.2: host-observed transport facts for one provider execution. `rungs` counts the HTTP
+ * attempts inside the provider's transport ladder (1 when the call path never retries, e.g.
+ * streaming); rung-level detail stays in adapter debug logs, never in SessionLog.
+ */
+export interface ProviderTransportTelemetry {
+  rungs: number
+  responseId?: string
+}
+
 /** Result of a pre-flight reasoning-replay assessment for a target provider. */
 export interface ReplayabilityAssessment {
   /** True when every reasoning-requiring tool-call turn has replay available. */
@@ -528,6 +555,13 @@ export interface LLMProvider {
   runtimePolicy?(): RuntimePolicy
   /** Read provider-native replay fields captured after the most recent assistant turn. */
   peekProviderReplay?(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined
+  /**
+   * P4-S1: read the transport facts captured during the most recent execution (HTTP rung count,
+   * wire response id). Optional — a provider without it simply omits the telemetry and the
+   * runner falls back to `rungs: 1` with no response id. Pure host evidence (B7); the values
+   * never feed kernel input.
+   */
+  peekTransportTelemetry?(): ProviderTransportTelemetry | undefined
   /** Restore provider-native replay fields when rebuilding history from SessionLog. */
   seedProviderReplay?(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void
   /**

@@ -19,4 +19,4 @@ npm install @deepstrike/sdk
 
 ## License
 
-Apache-2.0 OR MIT
+Dual-licensed: MIT-style terms for individuals and organizations with annual revenue below USD 1,000,000; a commercial license is required at or above that threshold. See https://github.com/kongusen/deepstrike/blob/main/LICENSE

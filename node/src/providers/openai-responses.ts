@@ -4,6 +4,7 @@ import type {
   Message,
   PromptMeasurement,
   ProviderRunState,
+  ProviderTransportTelemetry,
   RenderedContext,
   RuntimePolicy,
   StreamEvent,
@@ -134,10 +135,13 @@ export class OpenAIResponsesProvider implements LLMProvider {
 
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
+        this.lastTelemetry = { rungs: attempt + 1 }
         const response = await this.client.responses.create(
           plan.params as unknown as OpenAI.Responses.ResponseCreateParamsNonStreaming,
         )
         this.circuit.recordSuccess()
+        const responseId = (response as unknown as Record<string, unknown>).id
+        if (typeof responseId === "string") this.lastTelemetry = { rungs: attempt + 1, responseId }
         return this.responses.decodeComplete(response as unknown as Record<string, any>, { input }).message
       } catch (error) {
         lastError = error
@@ -201,7 +205,13 @@ export class OpenAIResponsesProvider implements LLMProvider {
         signal ? { signal } : undefined,
       )
 
+      this.lastTelemetry = { rungs: 1 }
       for await (const chunk of stream as unknown as AsyncIterable<OpenAIResponsesStreamChunk>) {
+        if (this.lastTelemetry.responseId === undefined
+          && (chunk.type === "response.completed" || chunk.type === "response.incomplete" || chunk.type === "response.created")) {
+          const id = (chunk as Record<string, any>).response?.id
+          if (typeof id === "string") this.lastTelemetry = { rungs: 1, responseId: id }
+        }
         const output = this.responses.pushStreamChunk(chunk, streamState)
         for (const event of output.events) yield event
         if (output.runStatePatch) {
@@ -228,6 +238,13 @@ export class OpenAIResponsesProvider implements LLMProvider {
 
   private requestExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
     return this.responses.requestExtensions(extensions)
+  }
+
+  /** P4-S1: transport facts of the most recent execution. Host evidence only (B7). */
+  private lastTelemetry: ProviderTransportTelemetry | undefined
+
+  peekTransportTelemetry(): ProviderTransportTelemetry | undefined {
+    return this.lastTelemetry
   }
 
   private asRunState(state?: ProviderRunState): OpenAIResponsesRunState {

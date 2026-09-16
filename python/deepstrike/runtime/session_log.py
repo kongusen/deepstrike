@@ -40,6 +40,7 @@ class RunStartedEvent(TypedDict, total=False):
     criteria: list[str]
     agent_id: str
     system_prompt: str
+    route: dict[str, Any]
 
 
 class LlmCompletedEvent(TypedDict, total=False):
@@ -49,12 +50,32 @@ class LlmCompletedEvent(TypedDict, total=False):
     token_count: int
     tool_calls: list[ToolCall]
     provider_replay: dict
+    effect_id: str
+    invocation_id: str
+    wire_evidence: dict[str, Any]
 
 
 class PromptMeasuredEvent(TypedDict, total=False):
     kind: Literal["prompt_measured"]
     turn: int
     measurement: dict[str, Any]
+    effect_id: str
+
+
+class ProviderAttemptEvent(TypedDict, total=False):
+    kind: Literal["provider_attempt"]
+    effect_id: str
+    attempt_seq: int
+    route: dict[str, Any]
+    request_fingerprint: str
+    status: Literal["success", "transport_exhausted", "aborted", "rejected"]
+    transport_rungs: int
+    last_error_class: str
+    started_at_ms: int
+    finished_at_ms: int
+    usage: dict[str, Any]
+    wire_evidence: dict[str, Any]
+    accounting_policy_id: str
 
 
 class ToolRequestedEvent(TypedDict, total=False):
@@ -67,6 +88,7 @@ class ToolCompletedEvent(TypedDict, total=False):
     kind: Literal["tool_completed"]
     turn: int
     results: list[ToolResult | dict[str, Any]]
+    effect_id: str
 
 
 class ToolArgumentRepairedEvent(TypedDict, total=False):
@@ -205,6 +227,24 @@ class PageInEvent(TypedDict, total=False):
     entry_count: int
 
 
+class SemanticArchivePendingEvent(TypedDict, total=False):
+    kind: Literal["semantic_archive_pending"]
+    effect_id: str
+    action: str
+
+
+class SemanticArchiveCompletedEvent(TypedDict, total=False):
+    kind: Literal["semantic_archive_completed"]
+    effect_id: str
+    record_id: str
+
+
+class SemanticArchiveFailedEvent(TypedDict, total=False):
+    kind: Literal["semantic_archive_failed"]
+    effect_id: str
+    error: str
+
+
 class SuspendedEvent(TypedDict, total=False):
     kind: Literal["suspended"]
     turn: int
@@ -297,6 +337,21 @@ class MemoryValidationFailedEvent(TypedDict, total=False):
     error: str
 
 
+class MemoryWriteFailedEvent(TypedDict, total=False):
+    kind: Literal["memory_write_failed"]
+    turn: int
+    record_id: str
+    error: str
+
+
+class MemoryQueryFailedEvent(TypedDict, total=False):
+    kind: Literal["memory_query_failed"]
+    turn: int
+    scope: dict[str, str]
+    query: str
+    error: str
+
+
 class MemoryRetrievalResultEvent(TypedDict, total=False):
     kind: Literal["memory_retrieval_result"]
     hits: list[dict[str, Any]]
@@ -330,10 +385,67 @@ class WorkflowCompletedEvent(TypedDict, total=False):
     total_nodes: int
 
 
+class WorkflowNodesSubmittedEvent(TypedDict, total=False):
+    kind: Literal["workflow_nodes_submitted"]
+    turn: int
+    # Kernel-shape (snake_case) submitted node specs — persisted so resume can re-apply them.
+    nodes: list[dict[str, Any]]
+    # R3-1: graph base index the batch was appended at — lets resume rebuild exact indices.
+    base_index: int
+    # W-N3: the submitting node's agent id (absent = host/bootstrap).
+    submitter_agent_id: str
+
+
+class KernelObservationEvent(TypedDict, total=False):
+    kind: Literal["kernel_observation"]
+    turn: int
+    observation_kind: str
+    raw: dict[str, Any]
+
+
+class SummaryUpgradedEvent(TypedDict, total=False):
+    kind: Literal["summary_upgraded"]
+    compressed_seq: int
+    summary: str
+
+
+class GroupMemberJoinedEvent(TypedDict, total=False):
+    kind: Literal["group_member_joined"]
+    session_id: str
+    role: str
+    member_kind: Literal["peer", "vehicle"]
+
+
+class GroupBudgetChargedEvent(TypedDict, total=False):
+    kind: Literal["group_budget_charged"]
+    tokens: int
+    subagents: int
+    rounds: int
+
+
+class RoundStartedEvent(TypedDict, total=False):
+    kind: Literal["round_started"]
+    # 1-based round number within the loop.
+    round: int
+    goal: str
+
+
+class RoundPacedEvent(TypedDict, total=False):
+    kind: Literal["round_paced"]
+    round: int
+    action: Literal["continue", "sleep", "stop"]
+    delay_ms: int
+    # Absolute wake time for sleep — lets a stateless host re-arm from the log alone.
+    wake_at_ms: int
+    reason: str
+    coerced_from: str
+
+
 SessionEvent = (
     RunStartedEvent
     | LlmCompletedEvent
     | PromptMeasuredEvent
+    | ProviderAttemptEvent
     | ToolRequestedEvent
     | ToolCompletedEvent
     | ToolArgumentRepairedEvent
@@ -350,6 +462,9 @@ SessionEvent = (
     | EntropyAlertEvent
     | AgentProcessChangedEvent
     | PageOutEvent
+    | SemanticArchivePendingEvent
+    | SemanticArchiveCompletedEvent
+    | SemanticArchiveFailedEvent
     | PageInEvent
     | SuspendedEvent
     | ResumedEvent
@@ -362,11 +477,92 @@ SessionEvent = (
     | MemoryWrittenEvent
     | MemoryQueriedEvent
     | MemoryValidationFailedEvent
+    | MemoryWriteFailedEvent
+    | MemoryQueryFailedEvent
     | MemoryRetrievalResultEvent
     | WorkflowNodeCompletedEvent
+    | WorkflowNodesSubmittedEvent
     | WorkflowBatchSpawnedEvent
     | WorkflowCompletedEvent
+    | KernelObservationEvent
     | RunTerminalEvent
+    | SummaryUpgradedEvent
+    | GroupMemberJoinedEvent
+    | GroupBudgetChargedEvent
+    | RoundStartedEvent
+    | RoundPacedEvent
+)
+
+
+# The registered session-event vocabulary (F9 / S3, P7-S4), in `SessionEvent` union order. This
+# list must equal the Node SDK's `SESSION_EVENT_KINDS` — the cross-SDK manifest fixture
+# `tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json` pins both, and any
+# same-commit desync turns conformance red. The assertion below keeps the list and the union in
+# lockstep inside this SDK at import time.
+SESSION_EVENT_KINDS: tuple[str, ...] = (
+    "run_started",
+    "llm_completed",
+    "prompt_measured",
+    "provider_attempt",
+    "tool_requested",
+    "tool_completed",
+    "tool_argument_repaired",
+    "tool_denied",
+    "permission_requested",
+    "permission_resolved",
+    "compressed",
+    "rollbacked",
+    "capability_changed",
+    "milestone_advanced",
+    "milestone_blocked",
+    "checkpoint_taken",
+    "entropy_sample",
+    "entropy_alert",
+    "agent_process_changed",
+    "page_out",
+    "semantic_archive_pending",
+    "semantic_archive_completed",
+    "semantic_archive_failed",
+    "page_in",
+    "suspended",
+    "resumed",
+    "tool_gated",
+    "signal_delivery_disposed",
+    "budget_exceeded",
+    "budget_usage_reported",
+    "operation_cancelled",
+    "context_renewed",
+    "memory_written",
+    "memory_queried",
+    "memory_validation_failed",
+    "memory_write_failed",
+    "memory_query_failed",
+    "memory_retrieval_result",
+    "workflow_node_completed",
+    "workflow_nodes_submitted",
+    "workflow_batch_spawned",
+    "workflow_completed",
+    "kernel_observation",
+    "run_terminal",
+    "summary_upgraded",
+    "group_member_joined",
+    "group_budget_charged",
+    "round_started",
+    "round_paced",
+)
+
+
+def _session_event_union_kinds() -> frozenset[str]:
+    from typing import get_args, get_type_hints
+
+    kinds: set[str] = set()
+    for member in get_args(SessionEvent):
+        kinds.update(get_args(get_type_hints(member)["kind"]))
+    return frozenset(kinds)
+
+
+assert frozenset(SESSION_EVENT_KINDS) == _session_event_union_kinds(), (
+    "SESSION_EVENT_KINDS must mirror the SessionEvent union exactly"
 )
 
 

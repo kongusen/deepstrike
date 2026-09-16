@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto"
+import { createRequire } from "node:module"
 import type { RenderedContext, ToolSchema, ProviderUsage } from "../types.js"
+import type { GenerationProtocol } from "./protocol-capabilities.js"
 
 export interface ProviderRequestEndpoint {
   id: string
@@ -115,6 +117,93 @@ export function createProviderRequestPlanForProvider(
     tools,
     options,
   })
+}
+
+/**
+ * P4 §1.3: the resolved route one provider execution is pinned to. Content-addressed
+ * (`routeId` = stable hash of every field except `capabilitiesRef`); the capability table's
+ * authority stays the static vocabulary in protocol-capabilities.ts — this holds a reference,
+ * never a copy.
+ */
+export interface ResolvedProviderRoute {
+  routeId: string
+  provider: string
+  protocol: GenerationProtocol
+  model: string
+  endpoint: ProviderRequestEndpoint
+  /** Adapter implementation version (the @deepstrike/sdk package version; F8). */
+  adapterVersion: string
+  /** Capability snapshot reference: the protocol constant name (e.g. "anthropic-messages").
+   *  A provider exposing capability overrides would append a summary here — none does today. */
+  capabilitiesRef: string
+}
+
+const KNOWN_GENERATION_PROTOCOLS = new Set<GenerationProtocol>([
+  "anthropic-messages",
+  "openai-chat",
+  "openai-responses",
+  "gemini",
+  "ollama-chat",
+])
+
+/**
+ * P4-S1: assemble the run's route once at runner construction (P4 §0.2 — the provider is
+ * fixed for the run today; a future failover resolver re-evaluates per attempt with the same
+ * shape). Never throws: evidence assembly degrades to "unknown" fields rather than breaking a run.
+ */
+export function resolveProviderRoute(provider: {
+  descriptor?(): { provider: string; protocol: string; model: string }
+  requestPlanIdentity?(): {
+    providerId?: string
+    modelId?: string
+    endpoint?: { id?: string; protocol?: string; baseURL?: string }
+  }
+}): ResolvedProviderRoute {
+  try {
+    const descriptor = provider.descriptor?.() ?? { provider: "unknown", protocol: "unknown", model: "unknown" }
+    const identity = provider.requestPlanIdentity?.()
+    const protocolRaw = identity?.endpoint?.protocol ?? descriptor.protocol
+    // Evidence records what the descriptor said, even when a foreign provider speaks a protocol
+    // outside the in-tree vocabulary — the field is a report, not a gate.
+    const protocol = protocolRaw as GenerationProtocol
+    const route = {
+      provider: identity?.providerId ?? descriptor.provider,
+      protocol,
+      model: identity?.modelId ?? descriptor.model,
+      endpoint: sanitizeEndpoint({
+        id: identity?.endpoint?.id ?? `${descriptor.provider}.${descriptor.protocol}`,
+        protocol: protocolRaw,
+        baseURL: identity?.endpoint?.baseURL ?? "",
+      }),
+      adapterVersion: adapterPackageVersion(),
+      capabilitiesRef: KNOWN_GENERATION_PROTOCOLS.has(protocol) ? protocol : "unknown",
+    }
+    // §1.3: content addressing covers every field EXCEPT capabilitiesRef (a reference, not content).
+    const { capabilitiesRef: _ref, ...addressed } = route
+    return { ...route, routeId: sha256(stableJson(addressed)) }
+  } catch {
+    const fallback = {
+      provider: "unknown",
+      protocol: "unknown" as GenerationProtocol,
+      model: "unknown",
+      endpoint: { id: "unknown", protocol: "unknown", baseURL: "" },
+      adapterVersion: "unknown",
+    }
+    return { ...fallback, capabilitiesRef: "unknown", routeId: sha256(stableJson(fallback)) }
+  }
+}
+
+/** The adapter's package version, read from package.json at runtime. "unknown" when unreadable —
+ *  route assembly is evidence plumbing and must never throw (B7: evidence, not kernel input). */
+function adapterPackageVersion(): string {
+  try {
+    // From both src/providers/ (ts) and dist/providers/ (js), ../../package.json is the SDK manifest.
+    const require = createRequire(import.meta.url)
+    const manifest = require("../../package.json") as { version?: unknown }
+    return typeof manifest.version === "string" && manifest.version.length > 0 ? manifest.version : "unknown"
+  } catch {
+    return "unknown"
+  }
 }
 
 export function estimateProviderPromptTokens(context: RenderedContext, tools: ToolSchema[]): number {

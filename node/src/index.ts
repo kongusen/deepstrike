@@ -43,7 +43,15 @@ export type {
 export { LocalExecutionPlane } from "./runtime/execution-plane.js"
 export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
 export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
-export type { SessionLog, SessionEvent } from "./runtime/session-log.js"
+export type { SessionLog, SessionEvent, SessionEventKind } from "./runtime/session-log.js"
+// Registered session-event vocabulary (F9/S3; manifest-pinned by sdk-conformance, P7-S4)
+export { SESSION_EVENT_KINDS } from "./runtime/session-log.js"
+// ── content-parts-v1 registered encoding (F14/B5; byte-pinned by sdk-conformance) ──
+export {
+  CANONICAL_CONTENT_PARTS_PREFIX,
+  encodeCanonicalContentParts,
+  decodeCanonicalContentParts,
+} from "./runtime/kernel-step.js"
 // ── Durable transaction capability (Canonical Kernel ABI §9.1) ──────────────
 export {
   FileKernelJournal,
@@ -104,8 +112,10 @@ export { OpenAIResponsesProvider } from "./providers/openai-responses.js"
 export { createProvider, createProviderAsync, resolveProviderRuntime, resolveProviderRuntimeAsync } from "./providers/catalog.js"
 export { UnsupportedModalityError } from "./providers/base.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
-export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./providers/request-plan.js"
-export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement } from "./providers/request-plan.js"
+export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement, resolveProviderRoute } from "./providers/request-plan.js"
+export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement, ResolvedProviderRoute } from "./providers/request-plan.js"
+export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY } from "./runtime/execution-evidence.js"
+export type { InvocationOutcome, ModelInvocation, ProviderAttempt, ProviderAttemptRecord, ProviderAttemptStatus, UsageAccountingPolicy, UsageSettlement } from "./runtime/execution-evidence.js"
 
 export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 
@@ -143,6 +153,7 @@ export type {
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
   LLMProvider, RetryConfig, TokenUsage,
+  ProviderWireEvidence, ProviderTransportTelemetry,
 } from "./types.js"
 export {
   DurableContentError,

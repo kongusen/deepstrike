@@ -75,6 +75,19 @@ test: cover milestone wake recovery
 
 Docs should explain what a user can do, what contract the runtime guarantees, and what tradeoff led to the design. Avoid duplicating implementation details that are already obvious from source.
 
+## Licensing of Contributions
+
+DeepStrike is dual-licensed (see [LICENSE](./LICENSE) and
+[COMMERCIAL.md](./COMMERCIAL.md)). By submitting a contribution (pull request,
+patch, or otherwise), you agree that:
+
+1. Your contribution is licensed under the same terms as the project's LICENSE.
+2. You grant the project maintainer a perpetual, worldwide, irrevocable,
+   royalty-free right to sublicense your contribution under different terms,
+   including as part of commercial licenses for the Software.
+
+If you cannot agree to these terms, please do not submit the contribution.
+
 ## Community
 
 For design discussion and project questions, join Discord: <https://discord.gg/cwS3RBYCv>.

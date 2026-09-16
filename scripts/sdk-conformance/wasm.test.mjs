@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
 import { resolve } from "node:path"
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import test from "node:test"
 
@@ -42,6 +42,15 @@ test("WASM adapter matches request plan, measurement, session event, and provide
   assert.equal(JSON.parse(providerError.stdout).error.code, "unknown_stop_reason")
 })
 
+test("WASM adapter matches the session-event vocabulary manifest", () => {
+  const fixture = JSON.parse(readFileSync(resolve("tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json"), "utf8"))
+  const result = run("session-event-vocabulary")
+  assert.equal(result.status, 0, result.stderr)
+  const envelope = JSON.parse(result.stdout)
+  assert.equal(envelope.ok, true, JSON.stringify(envelope))
+  assert.deepEqual(envelope.canonical, fixture.expected.canonical)
+})
+
 test("WASM adapter requires one absolute fixture path", () => {
   const result = spawnSync(process.execPath, ["scripts/sdk-conformance/wasm.mjs", "tests/fixtures/sdk-conformance/canonical/agent-ir-basic.json"], { encoding: "utf8" })
   assert.notEqual(result.status, 0)
@@ -66,6 +75,20 @@ test("WASM adapter projects from the SDK public entry point", () => {
     source: { kind: "heuristic" },
     confidence: "low_confidence",
   })
+})
+
+test("WASM adapter matches content-parts-v1 byte fixtures", () => {
+  const dir = resolve("tests/fixtures/sdk-conformance/canonical")
+  const names = readdirSync(dir).filter(name => name.startsWith("content-parts-") && name.endsWith(".json")).sort()
+  assert.ok(names.length >= 7, `expected the content-parts-v1 fixture family, got ${names.length}`)
+  for (const name of names) {
+    const fixture = JSON.parse(readFileSync(resolve(dir, name), "utf8"))
+    const result = run(name.replace(/\.json$/, ""))
+    assert.equal(result.status, 0, `${name}: ${result.stderr}`)
+    const envelope = JSON.parse(result.stdout)
+    assert.equal(envelope.ok, true, `${name}: ${JSON.stringify(envelope)}`)
+    assert.deepEqual(envelope.canonical, fixture.expected.canonical, name)
+  }
 })
 
 test("WASM adapter rejects fixture references outside tests/fixtures", () => {

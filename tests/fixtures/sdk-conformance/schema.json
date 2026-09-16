@@ -14,7 +14,9 @@
         "durable_tool_result",
         "prompt_measurement",
         "provider_error",
-        "session_event"
+        "session_event",
+        "content_parts_v1",
+        "session_event_vocabulary"
       ]
     },
     "input": { "type": "object" },

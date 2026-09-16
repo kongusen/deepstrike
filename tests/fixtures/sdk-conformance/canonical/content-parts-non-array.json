@@ -1,0 +1,12 @@
+{
+  "id": "content-parts-non-array",
+  "domain": "content_parts_v1",
+  "input": {
+    "decode": "[[deepstrike-content-parts]]eyJhIjoxfQ"
+  },
+  "expected": {
+    "canonical": {
+      "decoded": null
+    }
+  }
+}

@@ -7,6 +7,10 @@ pub mod repair;
 pub mod replay;
 pub mod session;
 
+/// P7-S5 · the chain validator (P2 §5 rules C1–C4 + C7). Host-ops tooling — CI and incident
+/// triage run the same knife — never part of an SDK runtime path.
+pub mod chain_validator;
+
 pub use kernel::{KernelObservation, KernelPressureAction};
 
 pub use event_log::{KernelEventCategory, Primitive, category_for_kind, primitive_for_kind};

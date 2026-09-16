@@ -1,0 +1,16 @@
+{
+  "id": "content-parts-multimodal",
+  "domain": "content_parts_v1",
+  "input": {
+    "parts": [
+      { "type": "text", "text": "看这张图" },
+      { "type": "image", "source": { "type": "url", "url": "https://example.com/cat.png" } }
+    ]
+  },
+  "expected": {
+    "canonical": {
+      "encoded": "[[deepstrike-content-parts]]W3sidHlwZSI6InRleHQiLCJ0ZXh0Ijoi55yL6L-Z5byg5Zu-In0seyJ0eXBlIjoiaW1hZ2UiLCJzb3VyY2UiOnsidHlwZSI6InVybCIsInVybCI6Imh0dHBzOi8vZXhhbXBsZS5jb20vY2F0LnBuZyJ9fV0",
+      "roundtrip": true
+    }
+  }
+}

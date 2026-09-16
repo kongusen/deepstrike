@@ -28,6 +28,22 @@ const adapters = {
   rust: ["cargo", "run", "--quiet", "-p", "deepstrike-sdk", "--bin", "sdk-conformance", "--"],
 }
 
+/**
+ * Domain coverage is runner-owned, never adapter-claimed (SPC-017: an SDK cannot declare
+ * itself conformant — nor exempt itself). A domain absent here runs on every SDK.
+ *
+ * content_parts_v1 (F14/B5, P7-S3): the `[[deepstrike-content-parts]]` string-content
+ * encoding channel exists only in the JSON-projection SDKs. The Rust canonical surface is
+ * typed wire values with no string-content smuggle channel, so there is no contract to pin.
+ *
+ * session_event_vocabulary (F9/S3, P7-S4): the Rust SessionLog is an opaque-JSON projection
+ * (events are `kind_str()`, not a typed vocabulary), so there is no local kind list to pin.
+ */
+const DOMAIN_SDKS = {
+  content_parts_v1: ["node", "python", "wasm"],
+  session_event_vocabulary: ["node", "python", "wasm"],
+}
+
 const fixtures = loadFixtures()
 const selected = selectFixtures(fixtures, args.fixture)
 const selectedSdks = args.sdk.length ? args.sdk.map(name => {
@@ -46,8 +62,15 @@ if (args.dryRun) {
 buildSelectedSdks(selectedSdks)
 
 let failures = 0
+let skips = 0
 for (const fixture of selected) {
   for (const sdk of selectedSdks) {
+    const coverage = DOMAIN_SDKS[fixture.value.domain]
+    if (coverage && !coverage.includes(sdk)) {
+      skips += 1
+      console.log(`SKIP ${sdk} ${fixture.value.id} (domain ${fixture.value.domain} not exposed by this SDK)`)
+      continue
+    }
     const actual = runAdapter(sdk, fixture.path)
     const difference = compareEnvelope(fixture.value, actual, sdk)
     if (difference) {
@@ -60,10 +83,10 @@ for (const fixture of selected) {
 }
 
 if (failures) {
-  console.error(`\n${failures} conformance difference(s)`)
+  console.error(`\n${failures} conformance difference(s)${skips ? `, ${skips} skip(s) by runner-owned domain coverage` : ""}`)
   process.exit(1)
 }
-console.log(`\nCross-SDK conformance passed (${selected.length} fixtures x ${selectedSdks.length} SDKs)`)
+console.log(`\nCross-SDK conformance passed (${selected.length} fixtures x ${selectedSdks.length} SDKs${skips ? `, ${skips} skip(s) by runner-owned domain coverage` : ""})`)
 
 function loadFixtures() {
   const fixtures = readdirSync(fixtureDir)

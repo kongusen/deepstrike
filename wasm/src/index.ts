@@ -4,6 +4,7 @@ export {
   runAgent,
   runFanout,
   InMemorySessionLog,
+  SESSION_EVENT_KINDS,
   LocalExecutionPlane,
   DEFAULT_NATIVE_SIGNAL_POLICY,
   DEFAULT_NATIVE_GOVERNANCE_POLICY,
@@ -38,6 +39,12 @@ export type {
   JournalStorageDriver,
   KernelJournal,
 } from "./runtime/kernel-journal.js"
+// ── content-parts-v1 registered encoding (F14/B5; byte-pinned by sdk-conformance) ──
+export {
+  CANONICAL_CONTENT_PARTS_PREFIX,
+  encodeCanonicalContentParts,
+  decodeCanonicalContentParts,
+} from "./runtime/kernel-step.js"
 export type {
   ReplayProviderOpts,
   Criterion,
@@ -56,6 +63,7 @@ export type {
   SchedulerPolicy,
   SignalPolicy,
   SessionEvent,
+  SessionEventKind,
   SessionLog,
   RunContext,
   ExecutionPlane,
@@ -142,7 +150,17 @@ export { ScheduledPrompt } from "./signals/index.js"
 export type { RuntimeSignal, SignalSource } from "./signals/index.js"
 export { PermissionManager, PermissionMode } from "./safety/index.js"
 export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./providers/request-plan.js"
-export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, ProviderUsage, RecordedPromptMeasurement } from "./providers/request-plan.js"
+export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, ProviderUsage, RecordedPromptMeasurement, ResolvedProviderRoute } from "./providers/request-plan.js"
+export type {
+  ProviderAttempt,
+  ProviderAttemptRecord,
+  ProviderAttemptStatus,
+  ModelInvocation,
+  InvocationOutcome,
+  UsageSettlement,
+  UsageAccountingPolicy,
+} from "./runtime/execution-evidence.js"
+export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY, providerAttemptToRecord, tryNormalizeProviderUsage } from "./runtime/execution-evidence.js"
 export { decodeCanonicalStopReason, normalizeProviderStopReason } from "./providers/stop-reason.js"
 export type { CanonicalStopReason } from "./providers/stop-reason.js"
 export { ContentPolicyError, contentDispositionFor, requireContentDisposition } from "./providers/content-policy.js"
@@ -157,6 +175,8 @@ export type {
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
   LLMProvider,
   CacheBreakpointStrategy,
+  ProviderWireEvidence,
+  ProviderTransportTelemetry,
 } from "./types.js"
 export { DurableContentError, decodeDurableContent, decodeDurableToolResult, encodeDurableContent, encodeDurableToolResult, toolOutputBlocksToDurable, durableBlocksToToolOutput } from "./runtime/durable-content.js"
 export type { DurableContent, DurableContentBlock, DurableSource, DurableToolResult } from "./runtime/durable-content.js"

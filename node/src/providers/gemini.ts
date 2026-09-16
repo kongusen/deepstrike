@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI, type Content, type RequestOptions } from "@google/generative-ai"
-import type { Message, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, PromptMeasurement } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, PromptMeasurement, ProviderTransportTelemetry } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker } from "./base.js"
 import { endpointProfiles } from "./endpoints.js"
@@ -27,6 +27,12 @@ export class GeminiProvider implements LLMProvider {
   private requestOptions: RequestOptions
   private readonly resolvedRuntimePolicy: RuntimePolicy
   private readonly adapter = new GeminiAdapter()
+  /** P4-S1: transport facts of the most recent execution. Host evidence only (B7). */
+  private lastTelemetry: ProviderTransportTelemetry | undefined
+
+  peekTransportTelemetry(): ProviderTransportTelemetry | undefined {
+    return this.lastTelemetry
+  }
 
   constructor(
     apiKey: string,
@@ -120,9 +126,12 @@ export class GeminiProvider implements LLMProvider {
     let lastErr: unknown
     for (let i = 0; i < this.maxRetries; i++) {
       try {
+        this.lastTelemetry = { rungs: i + 1 }
         const m = this.genAI.getGenerativeModel(plan.modelParams, this.requestOptions)
         const resp = await m.generateContent(plan.request)
         this.circuit.recordSuccess()
+        const responseId = (resp.response as unknown as Record<string, unknown>).responseId
+        if (typeof responseId === "string") this.lastTelemetry = { rungs: i + 1, responseId }
         return this.adapter.decodeComplete(resp.response, { input }).message
       } catch (err) {
         lastErr = err
@@ -140,12 +149,16 @@ export class GeminiProvider implements LLMProvider {
       const m = this.genAI.getGenerativeModel(plan.modelParams, this.requestOptions)
       const result = await m.generateContentStream(plan.request)
       const state = this.adapter.createStreamState({ input })
+      this.lastTelemetry = { rungs: 1 }
 
       for await (const chunk of result.stream) {
         for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
       }
 
-      for (const event of this.adapter.finishStream(state, await result.response).events) yield event
+      const finalResponse = await result.response
+      const responseId = (finalResponse as unknown as Record<string, unknown>).responseId
+      if (typeof responseId === "string") this.lastTelemetry = { rungs: 1, responseId }
+      for (const event of this.adapter.finishStream(state, finalResponse).events) yield event
     } catch (error) {
       throw classifyProviderError("gemini", error)
     }

@@ -1,4 +1,4 @@
-import type { Message, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy } from "../types.js"
+import type { Message, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, ProviderTransportTelemetry } from "../types.js"
 import {
   normalizeCanonicalAdapterInput,
   type CanonicalAdapterInput,
@@ -18,6 +18,13 @@ export class OllamaProvider implements LLMProvider {
     private readonly resolvedRuntimePolicy: RuntimePolicy = {},
     private resolvedRuntime?: ResolvedOllamaRuntime,
   ) {}
+
+  /** P4-S1: transport facts of the most recent execution (Ollama's wire has no response id). */
+  private lastTelemetry: ProviderTransportTelemetry | undefined
+
+  peekTransportTelemetry(): ProviderTransportTelemetry | undefined {
+    return this.lastTelemetry
+  }
 
   runtimePolicy(): RuntimePolicy {
     return this.resolvedRuntimePolicy
@@ -75,6 +82,7 @@ export class OllamaProvider implements LLMProvider {
     try {
       const input = this.adapterInput(context, tools, extensions)
       const body = { ...this.adapter.buildRequest(input), stream: false }
+      this.lastTelemetry = { rungs: 1 }
       const resp = await fetch(`${this.baseUrl}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -92,6 +100,7 @@ export class OllamaProvider implements LLMProvider {
     try {
       const input = this.adapterInput(context, tools, extensions)
       const body = { ...this.adapter.buildRequest(input), stream: true }
+      this.lastTelemetry = { rungs: 1 }
       const resp = await fetch(`${this.baseUrl}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

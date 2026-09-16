@@ -2,6 +2,7 @@
   "name": "@deepstrike/sdk",
   "version": "0.2.62",
   "description": "DeepStrike Node.js SDK",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

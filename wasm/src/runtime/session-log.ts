@@ -1,10 +1,10 @@
-import type { ProviderReplay, ToolCall, ToolErrorKind } from "../types.js"
+import type { ProviderReplay, ProviderWireEvidence, ToolCall, ToolErrorKind } from "../types.js"
 import type { MemoryRecall, MemoryScope } from "../memory/index.js"
 import type { KernelPrimitive } from "./kernel-event-log.js"
 import { primitiveForKind } from "./kernel-event-log.js"
 import type { KernelJournal } from "./kernel-journal.js"
 import { InMemoryKernelJournal } from "./kernel-journal.js"
-import type { RecordedPromptMeasurement } from "../providers/request-plan.js"
+import type { NormalizedProviderUsage, RecordedPromptMeasurement, ResolvedProviderRoute } from "../providers/request-plan.js"
 
 export type RollbackReason =
   | { kind: "fatal_tool_error"; tool_name: string; error: string }
@@ -14,12 +14,37 @@ export type RollbackReason =
   | { kind: "user_interrupt" }
   | { kind: "malformed_replay"; reason: string }
 
+/**
+ * P4 §3 mirror: the SessionLog wire payload of a ProviderAttempt (P4 §1.2 fields, flattened,
+ * snake_case). Nested objects keep their native shape. The kernel-minted effect_id joins this
+ * host evidence to the journal effect chain 1:1 (C6); step_seq NEVER enters SessionLog (P2 §4).
+ */
+export interface ProviderAttemptRecord {
+  effect_id: string
+  attempt_seq: number
+  route: ResolvedProviderRoute
+  request_fingerprint: string
+  status: "success" | "transport_exhausted" | "aborted" | "rejected"
+  transport_rungs: number
+  last_error_class?: string
+  started_at_ms: number
+  finished_at_ms: number
+  usage?: NormalizedProviderUsage
+  wire_evidence?: ProviderWireEvidence
+  accounting_policy_id?: string
+}
+
 export type SessionEvent =
-  | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: import("../types.js").ContentPart[] }
-  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay }
-  | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement }
+  // P4-S1: `route` is the runner-construction ResolvedProviderRoute snapshot (P4 §0.2).
+  | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: import("../types.js").ContentPart[]; route?: ResolvedProviderRoute }
+  // P3-S2 + P4-S1: effect_id (G4) + invocation_id + wire_evidence (D1). `provider_replay` is
+  // DEPRECATED — carried unchanged for one full minor, then removed (P3 §3.3).
+  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
+  | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement; effect_id?: string }
+  // P4-S1 (G1): one record per provider attempt — the full P4 §1.2 payload.
+  | ({ kind: "provider_attempt" } & ProviderAttemptRecord)
   | { kind: "tool_requested"; turn: number; calls: ToolCall[] }
-  | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; is_fatal?: boolean; error_kind?: ToolErrorKind; token_count?: number; content: { blocks: Record<string, unknown>[] } }> }
+  | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; is_fatal?: boolean; error_kind?: ToolErrorKind; token_count?: number; content: { blocks: Record<string, unknown>[] } }>; effect_id?: string }
   | { kind: "tool_argument_repaired"; turn: number; tool: string; original_arguments: string; repaired_arguments: string }
   | { kind: "tool_denied"; turn: number; call_id: string; tool_name: string; reason: string }
   | { kind: "permission_requested"; turn: number; tool: string; arguments: string; reason?: string }
@@ -42,6 +67,9 @@ export type SessionEvent =
       message_count?: number
       archive_ref?: string
     }
+  | { kind: "semantic_archive_pending"; effect_id: string; action?: string }
+  | { kind: "semantic_archive_completed"; effect_id: string; record_id: string }
+  | { kind: "semantic_archive_failed"; effect_id: string; error: string }
   | { kind: "page_in"; turn: number; entry_count: number }
   | { kind: "rollbacked"; turn: number; checkpoint_history_len: number; reason?: RollbackReason }
   | { kind: "capability_changed"; turn: number; added: string[]; removed: string[]; change_kind?: string; capability_id?: string; version?: string; mounted_by?: string; mount_reason?: string }
@@ -93,6 +121,8 @@ export type SessionEvent =
   | { kind: "memory_written"; turn: number; record_id: string; scope: MemoryScope; memory_kind: string; name: string; size_bytes: number }
   | { kind: "memory_queried"; turn: number; scope: MemoryScope; query: string; requested_k: number; requires_async_response: boolean }
   | { kind: "memory_validation_failed"; turn: number; record_id: string; error: string }
+  | { kind: "memory_write_failed"; turn: number; record_id: string; error: string }
+  | { kind: "memory_query_failed"; turn: number; scope: MemoryScope; query: string; error: string }
   | { kind: "memory_retrieval_result"; hits: MemoryRecall[] }
   | {
       kind: "workflow_node_completed"
@@ -139,6 +169,92 @@ export type SessionEvent =
     }
   | { kind: "run_terminal"; reason: string; turns_used: number; total_tokens: number }
   | { kind: "summary_upgraded"; compressed_seq: number; summary: string }
+  // L1 (RunGroup): group-ledger events, appended under a group-anchor key (= the group id) so the
+  // governance domain's cumulative budget + membership (lineage) persist and rebuild by fold-on-read.
+  | { kind: "group_member_joined"; session_id: string; role?: string; member_kind?: "peer" | "vehicle" }
+  | { kind: "group_budget_charged"; tokens: number; subagents: number; rounds?: number }
+  | {
+      kind: "round_started"
+      /** 1-based round number within the loop. */
+      round: number
+      goal: string
+    }
+  | {
+      kind: "round_paced"
+      round: number
+      action: "continue" | "sleep" | "stop"
+      delay_ms?: number
+      /** Absolute wake time for sleep — lets a stateless host re-arm from the log alone. */
+      wake_at_ms?: number
+      reason: string
+      coerced_from?: string
+    }
+
+export type SessionEventKind = SessionEvent["kind"]
+
+/**
+ * The registered session-event vocabulary (F9 / S3, P7-S4). This list must equal the Node SDK's
+ * `SESSION_EVENT_KINDS` — the cross-SDK manifest fixture
+ * `tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json` pins both, and any
+ * same-commit desync turns conformance red. Declared in `SessionEvent` union order.
+ */
+export const SESSION_EVENT_KINDS = [
+  "run_started",
+  "llm_completed",
+  "prompt_measured",
+  "provider_attempt",
+  "tool_requested",
+  "tool_completed",
+  "tool_argument_repaired",
+  "tool_denied",
+  "permission_requested",
+  "permission_resolved",
+  "compressed",
+  "page_out",
+  "semantic_archive_pending",
+  "semantic_archive_completed",
+  "semantic_archive_failed",
+  "page_in",
+  "rollbacked",
+  "capability_changed",
+  "context_renewed",
+  "suspended",
+  "resumed",
+  "tool_gated",
+  "signal_delivery_disposed",
+  "budget_exceeded",
+  "budget_usage_reported",
+  "operation_cancelled",
+  "milestone_advanced",
+  "milestone_blocked",
+  "checkpoint_taken",
+  "entropy_sample",
+  "entropy_alert",
+  "agent_process_changed",
+  "memory_written",
+  "memory_queried",
+  "memory_validation_failed",
+  "memory_write_failed",
+  "memory_query_failed",
+  "memory_retrieval_result",
+  "workflow_node_completed",
+  "workflow_nodes_submitted",
+  "workflow_batch_spawned",
+  "workflow_completed",
+  "kernel_observation",
+  "run_terminal",
+  "summary_upgraded",
+  "group_member_joined",
+  "group_budget_charged",
+  "round_started",
+  "round_paced",
+] as const satisfies readonly SessionEventKind[]
+
+// Compile-time lockstep: the list above and the union must cover each other exactly.
+// `satisfies` rejects list entries the union lacks; this rejects union members the list lacks.
+type _AssertVocabularyCoversUnion = Exclude<SessionEventKind, (typeof SESSION_EVENT_KINDS)[number]> extends never ? true : never
+const _vocabularyCoversUnion: _AssertVocabularyCoversUnion = true
+void _vocabularyCoversUnion
 
 /**
  * The business-projection log (spec §9.2): run started/terminal, stream events, observations,

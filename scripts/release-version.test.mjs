@@ -3,11 +3,14 @@ import test from "node:test"
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { syncReleaseVersion } from "./release-version.mjs"
+import { licenseCopyRelativePaths, syncReleaseVersion } from "./release-version.mjs"
+
+const licenseText = "DeepStrike Test License\n"
 
 test("syncReleaseVersion propagates the canonical version across release manifests", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "deepstrike-version-sync-"))
   writeFixture(repoRoot, "VERSION", "1.2.3\n")
+  writeFixture(repoRoot, "LICENSE", licenseText)
   writeFixture(repoRoot, "Cargo.toml", `
 [workspace.package]
 version = "0.0.1"
@@ -120,11 +123,16 @@ version = "0.0.1"
   assert.equal(readJson(repoRoot, "wasm/package.json").dependencies["@deepstrike/wasm-kernel"], "1.2.3")
   assert.equal(readJson(repoRoot, "wasm/package-lock.json").packages[""].dependencies["@deepstrike/wasm-kernel"], "1.2.3")
   assert.match(readText(repoRoot, "README.md"), /deepstrike-sdk = "1\.2\.3"/)
+  assert.equal(readText(repoRoot, "node/LICENSE"), licenseText)
+  assert.equal(readText(repoRoot, "rust/LICENSE"), licenseText)
+  assert.equal(readText(repoRoot, "crates/deepstrike-core/LICENSE"), licenseText)
+  assert.equal(readText(repoRoot, "crates/deepstrike-node/npm/linux-x64-gnu/LICENSE"), licenseText)
 })
 
 test("syncReleaseVersion check mode reports drift without mutating files", () => {
   const repoRoot = mkdtempSync(join(tmpdir(), "deepstrike-version-check-"))
   writeFixture(repoRoot, "VERSION", "1.2.3\n")
+  writeFixture(repoRoot, "LICENSE", licenseText)
   writeFixture(repoRoot, "Cargo.toml", `
 [workspace.package]
 version = "0.0.1"
@@ -195,6 +203,7 @@ version = "0.0.1"
     /Release version drift detected/,
   )
   assert.match(readText(repoRoot, "Cargo.toml"), /version = "0\.0\.1"/)
+  assert.throws(() => readText(repoRoot, "node/LICENSE"), /ENOENT/)
 })
 
 test("syncReleaseVersion supports an Agent-first README without a pinned Rust dependency example", () => {
@@ -210,6 +219,10 @@ test("syncReleaseVersion supports an Agent-first README without a pinned Rust de
 
 function writeReleaseFixture(repoRoot, version, readme) {
   writeFixture(repoRoot, "VERSION", `${version}\n`)
+  writeFixture(repoRoot, "LICENSE", licenseText)
+  for (const relativePath of licenseCopyRelativePaths) {
+    writeFixture(repoRoot, relativePath, licenseText)
+  }
   writeFixture(repoRoot, "Cargo.toml", `
 [workspace.package]
 version = "${version}"

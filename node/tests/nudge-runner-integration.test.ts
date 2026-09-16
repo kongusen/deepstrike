@@ -42,6 +42,15 @@ const flakyTool = () =>
 function normalize(events: SessionEvent[]): SessionEvent[] {
   return events.map(e => {
     if (e.kind === "run_started") return { ...e, run_id: "<run>" }
+    if ("effect_id" in e && typeof e.effect_id === "string") {
+      const normalized = { ...e, effect_id: e.effect_id.replace(/^[^:]+/, "<operation>") } as SessionEvent
+      if ("finished_at_ms" in normalized) delete (normalized as { finished_at_ms?: number }).finished_at_ms
+      if ("started_at_ms" in normalized) delete (normalized as { started_at_ms?: number }).started_at_ms
+      if ("invocation_id" in normalized && typeof normalized.invocation_id === "string") {
+        normalized.invocation_id = normalized.invocation_id.replace(/^[^:]+/, "<operation>")
+      }
+      return normalized
+    }
     if (e.kind === "kernel_observation" && e.observation_kind === "step_published_effects") {
       return {
         ...e,

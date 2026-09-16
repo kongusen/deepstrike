@@ -1,0 +1,12 @@
+{
+  "id": "content-parts-malformed-payload",
+  "domain": "content_parts_v1",
+  "input": {
+    "decode": "[[deepstrike-content-parts]]%%%not!base64%%%"
+  },
+  "expected": {
+    "canonical": {
+      "decoded": null
+    }
+  }
+}

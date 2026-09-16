@@ -1,0 +1,1181 @@
+//! P7-S5 · the chain validator, batch 1: rules C1–C4 with C7 degradation marking (P2 §5).
+//!
+//! Host-ops tooling, not an SDK runtime path: CI gates and incident triage run the same knife,
+//! and C3 needs the deterministic transition (re-plan), which only the core can perform. The CLI
+//! half is `src/bin/ds-chain-validator.rs`; this module is the verdict logic.
+//!
+//! Input is a journal prefix — a sequence of opaque record byte blobs. Records are grouped into
+//! per-operation chain segments and every segment is judged independently. Nothing here ever
+//! re-serializes a record: blobs pass through untouched, so a self-digest verdict is a verdict
+//! about the bytes the host durably wrote.
+//!
+//! The rules, and where each one gets its teeth:
+//!
+//! - **C1 · chain integrity** — `record[i].previous_record_digest == digest(record[i-1])`,
+//!   `step_seq` strictly +1, genesis `previous_record_digest = None`. Complete segments go
+//!   through [`verify_record_chain`]; a segment with degraded hops falls back to checking every
+//!   link whose digests survived.
+//! - **C2 · input idempotency** — one `input_id` never yields two different records: a retry
+//!   must reach the same record. Grouped per operation (the idempotency key's namespace).
+//! - **C3 · causal closure** — every record's resolved effect must be reproducible by
+//!   re-planning the earlier records. This is the §12.2 restore ladder's genesis leg
+//!   ([`restore_operation`] with no checkpoint): chain verify + deterministic re-plan + per-step
+//!   record-digest comparison. It doubles as the re-plan determinism regression gate — the
+//!   direct gate for 0.2.62-class "this binary does not reproduce the history it is resuming"
+//!   incidents. If C1 failed, C3 reports degraded rather than re-reporting the same break.
+//! - **C4 · task lineage** — the journal-direct half: every `(task_id, attempt_id)` launch pair
+//!   appears at most once (the launch token is *derived* from that pair, so a repeated pair is a
+//!   reused token), and a spawn resolution names an effect the same operation published at an
+//!   earlier step. The parent chain itself is not journaled; it holds structurally under C3's
+//!   re-plan because an orphan spawn has no outstanding effect to resolve. The durable
+//!   launch-token ledger lives in checkpoints — batch 2 territory. Both limits are named in
+//!   [`ValidationReport::deferred`].
+//! - **C7 · degradation** — an old-format hop (strict decode fails but the
+//!   identity fields survive) degrades the checks that need the missing fields instead of
+//!   failing them. A proven digest mismatch fails C1 even when identity fields survive; every degraded hop is marked on its segment's report. A blob that is not a
+//!   record at all counts as unparseable input, which is an exit-code-2 condition
+//!   ("evidence insufficient"), never a violation.
+
+use std::collections::HashMap;
+
+use serde::Serialize;
+
+use crate::runtime::kernel::wire::ConfigDefaults;
+use crate::runtime::kernel::wire::effect::{EffectOutcome, EffectSuccess};
+use crate::runtime::kernel::wire::record::{
+    KernelRecord, NormalizedPayload, RecordError, verify_record_chain,
+};
+use crate::runtime::kernel::wire::restore::restore_operation;
+use crate::runtime::kernel::wire::transaction::InMemoryRecordIndex;
+
+/// The pseudo-segment for degraded hops whose `operation_id` did not survive. Kept obviously
+/// synthetic so a report reader never confuses it with a real operation.
+pub const UNATTRIBUTED_SEGMENT: &str = "(unattributed)";
+
+/// Batch-1 scope limits, surfaced verbatim on every report so a reader never mistakes a green
+/// segment for a complete C4.
+const DEFERRED: &[&str] = &[
+    "c4.parent_chain: parent links are not journaled; an orphan spawn cannot resolve (no \
+     outstanding effect), which C3's re-plan enforces structurally",
+    "c4.launch_token_ledger: the durable LaunchToken ledger lives in checkpoints, so reuse \
+     across different TaskLaunch payloads is a batch-2 (checkpoint input) check; the \
+     journal-direct shadow — (task_id, attempt_id) pair uniqueness — is checked here",
+];
+
+/// One rule's verdict on one segment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RuleReport {
+    /// `C1`…`C4`.
+    pub rule: String,
+    pub verdict: Verdict,
+    /// What was checked, or what broke, or why the check degraded.
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    Pass,
+    Fail,
+    /// C7: the check could not run to completion on this segment's evidence. Never a failure.
+    Degraded,
+}
+
+/// A hop whose strict record decode failed but whose identity fields survived — the C7 marking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DegradedHop {
+    /// Position in the validator's input, for cross-referencing the raw journal.
+    pub ordinal: usize,
+    pub step_seq: Option<u64>,
+    /// Why the strict decode rejected the bytes.
+    pub reason: String,
+}
+
+/// One operation's chain, judged independently.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SegmentReport {
+    pub operation_id: String,
+    pub hops: usize,
+    pub degraded_hops: Vec<DegradedHop>,
+    pub rules: Vec<RuleReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ValidationReport {
+    pub segments: Vec<SegmentReport>,
+    /// Blobs that are not records at all (not JSON objects, or carrying no identity fields).
+    pub unparseable_records: usize,
+    /// Batch-scope limits a green verdict does not cover.
+    pub deferred: Vec<String>,
+}
+
+impl ValidationReport {
+    pub fn has_violations(&self) -> bool {
+        self.segments
+            .iter()
+            .flat_map(|segment| segment.rules.iter())
+            .any(|rule| rule.verdict == Verdict::Fail)
+    }
+
+    /// The CLI contract (P7 §3.2): `0` all green, `1` a violation was proven, `2` the evidence
+    /// was insufficient. A proven violation outranks insufficient evidence; degraded hops and
+    /// deferred scope never move the code.
+    pub fn exit_code(&self) -> i32 {
+        if self.has_violations() {
+            1
+        } else if self.unparseable_records > 0 || self.segments.is_empty() {
+            2
+        } else {
+            0
+        }
+    }
+}
+
+/// One input blob, classified. `Complete` records are self-digest-verified by construction
+/// ([`KernelRecord::from_record_bytes`] cannot produce an unverified one).
+enum Hop {
+    Complete(KernelRecord),
+    Degraded(DegradedRecord),
+}
+
+struct DegradedRecord {
+    ordinal: usize,
+    operation_id: Option<String>,
+    input_id: Option<String>,
+    step_seq: Option<u64>,
+    previous_record_digest: Option<String>,
+    record_digest: Option<String>,
+    reason: String,
+    integrity_failure: bool,
+}
+
+impl DegradedRecord {
+    fn marking(&self) -> DegradedHop {
+        DegradedHop {
+            ordinal: self.ordinal,
+            step_seq: self.step_seq,
+            reason: self.reason.clone(),
+        }
+    }
+}
+
+impl Hop {
+    fn operation_id(&self) -> Option<&str> {
+        match self {
+            Self::Complete(record) => Some(record.operation_id().as_str()),
+            Self::Degraded(degraded) => degraded.operation_id.as_deref(),
+        }
+    }
+
+    fn step_seq(&self) -> Option<u64> {
+        match self {
+            Self::Complete(record) => Some(record.step_seq().get()),
+            Self::Degraded(degraded) => degraded.step_seq,
+        }
+    }
+}
+
+/// Validate a journal prefix: a sequence of opaque record byte blobs, in any order. Records
+/// group into per-operation segments, each judged independently; blob order never matters
+/// because the chain's own `step_seq`/digest links define the order.
+pub fn validate_journal<B: AsRef<[u8]>>(blobs: &[B]) -> ValidationReport {
+    let mut hops: Vec<Hop> = Vec::with_capacity(blobs.len());
+    let mut unparseable_records = 0;
+    for (ordinal, blob) in blobs.iter().enumerate() {
+        match classify(ordinal, blob.as_ref()) {
+            Some(hop) => hops.push(hop),
+            None => unparseable_records += 1,
+        }
+    }
+
+    let mut segments: HashMap<String, Vec<Hop>> = HashMap::new();
+    for hop in hops {
+        let key = hop
+            .operation_id()
+            .map(str::to_string)
+            .unwrap_or_else(|| UNATTRIBUTED_SEGMENT.to_string());
+        segments.entry(key).or_default().push(hop);
+    }
+
+    let mut keys: Vec<String> = segments.keys().cloned().collect();
+    keys.sort();
+    let reports = keys
+        .iter()
+        .map(|key| validate_segment(key, segments.remove(key).unwrap_or_default()))
+        .collect();
+
+    ValidationReport {
+        segments: reports,
+        unparseable_records,
+        deferred: DEFERRED.iter().map(|line| (*line).to_string()).collect(),
+    }
+}
+
+/// Strict first, lenient second: a record that fails the strict decode but still shows its
+/// identity fields retains its context for C7 reporting. Proven digest corruption still fails
+/// C1; only unavailable evidence degrades. Anything else is not a record.
+fn classify(ordinal: usize, bytes: &[u8]) -> Option<Hop> {
+    let error = match KernelRecord::from_record_bytes(bytes) {
+        Ok(record) => return Some(Hop::Complete(record)),
+        Err(error) => error,
+    };
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let object = value.as_object()?;
+    let string = |key: &str| {
+        object
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    // `step_seq` rides the wire as a branded decimal string (scalar.rs), but an old-format or
+    // foreign record may carry a bare number — accept both.
+    let step_seq = object.get("step_seq").and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+    });
+    let degraded = DegradedRecord {
+        ordinal,
+        operation_id: string("operation_id"),
+        input_id: string("input_id"),
+        step_seq,
+        previous_record_digest: string("previous_record_digest"),
+        record_digest: string("record_digest"),
+        reason: format!("{}: {}", error.code().as_str(), error.message()),
+        integrity_failure: matches!(error, RecordError::DigestMismatch(_)),
+    };
+    // An old-format record must still answer "which chain, which hop" to count as evidence;
+    // without either it is unparseable input.
+    if degraded.operation_id.is_some() || degraded.step_seq.is_some() {
+        Some(Hop::Degraded(degraded))
+    } else {
+        None
+    }
+}
+
+fn validate_segment(operation_id: &str, mut hops: Vec<Hop>) -> SegmentReport {
+    // The chain's own fields define the order; the input order is a storage detail. Hops that
+    // cannot say where they sit sort last, in input order.
+    hops.sort_by_key(|hop| {
+        (
+            hop.step_seq().unwrap_or(u64::MAX),
+            match hop {
+                Hop::Complete(_) => 0usize,
+                Hop::Degraded(degraded) => degraded.ordinal,
+            },
+        )
+    });
+
+    let degraded_hops: Vec<DegradedHop> = hops
+        .iter()
+        .filter_map(|hop| match hop {
+            Hop::Degraded(degraded) => Some(degraded.marking()),
+            Hop::Complete(_) => None,
+        })
+        .collect();
+    let hop_count = hops.len();
+
+    let c1 = check_c1(&hops);
+    let c2 = check_c2(&hops);
+    let c3 = check_c3(&hops, &c1);
+    let c4 = check_c4(&hops, operation_id);
+
+    SegmentReport {
+        operation_id: operation_id.to_string(),
+        hops: hop_count,
+        degraded_hops,
+        rules: vec![c1, c2, c3, c4],
+    }
+}
+
+/// C1 · chain integrity.
+fn check_c1(hops: &[Hop]) -> RuleReport {
+    let rule = "C1".to_string();
+    if hops.is_empty() {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Degraded,
+            detail: "no records in this segment".to_string(),
+        };
+    }
+    let all_complete = hops.iter().all(|hop| matches!(hop, Hop::Complete(_)));
+    if all_complete {
+        let records: Vec<KernelRecord> = hops
+            .iter()
+            .filter_map(|hop| match hop {
+                Hop::Complete(record) => Some(record.clone()),
+                Hop::Degraded(_) => None,
+            })
+            .collect();
+        return match verify_record_chain(&records) {
+            Ok(genesis_digest) => RuleReport {
+                rule,
+                verdict: Verdict::Pass,
+                detail: format!(
+                    "{} record(s), genesis {genesis_digest}, every link verified",
+                    records.len()
+                ),
+            },
+            Err(error) => RuleReport {
+                rule,
+                verdict: Verdict::Fail,
+                detail: format!("{}: {}", error.code().as_str(), error.message()),
+            },
+        };
+    }
+
+    // Mixed segment: check every link whose digests survived, and the genesis claim when the
+    // first hop can make one. Degraded hops verify nothing themselves.
+    let mut broken: Vec<String> = hops
+        .iter()
+        .filter_map(|hop| match hop {
+            Hop::Degraded(record) if record.integrity_failure => Some(record.reason.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut unverifiable_links = 0usize;
+    let mut previous: Option<(&Hop, Option<&KernelRecord>)> = None;
+    for hop in hops {
+        let step = hop.step_seq();
+        let (prev_digest, _) = digests_of(hop);
+        if let Some((previous_hop, previous_complete)) = previous {
+            let previous_step = previous_hop.step_seq();
+            let previous_digest = digests_of(previous_hop).1;
+            match (prev_digest, previous_digest) {
+                (Some(expected), Some(actual)) if expected != actual => broken.push(format!(
+                    "hop at step {} expects head {expected}, but its predecessor's digest is \
+                     {actual}",
+                    step.map_or("?".to_string(), |seq| seq.to_string()),
+                )),
+                (None, _) => unverifiable_links += 1,
+                (_, None) => unverifiable_links += 1,
+                _ => {}
+            }
+            match (step, previous_step) {
+                (Some(step), Some(previous_step)) if step != previous_step + 1 => broken.push(
+                    format!("hop is step {step}, but its predecessor is step {previous_step}"),
+                ),
+                (Some(_), Some(_)) => {}
+                _ => unverifiable_links += 1,
+            }
+            // `verify_follows` is only meaningful across an unbroken run of complete records:
+            // a degraded hop in between severs the chain of custody for the +1/digest pair.
+            if let (Hop::Complete(record), Some(previous_record)) = (hop, previous_complete)
+                && let Err(error) = record.verify_follows(Some(previous_record))
+            {
+                broken.push(format!("{}: {}", error.code().as_str(), error.message()));
+            }
+        } else if let Hop::Complete(record) = hop
+            && let Err(error) = record.verify_follows(None)
+        {
+            broken.push(format!("{}: {}", error.code().as_str(), error.message()));
+        }
+        previous = Some((
+            hop,
+            match hop {
+                Hop::Complete(record) => Some(record),
+                Hop::Degraded(_) => None,
+            },
+        ));
+    }
+
+    if !broken.is_empty() {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Fail,
+            detail: broken.join("; "),
+        };
+    }
+    RuleReport {
+        rule,
+        verdict: Verdict::Degraded,
+        detail: format!(
+            "partial chain: every surviving link verified, {unverifiable_links} link(s) \
+             unverifiable across degraded hop(s)"
+        ),
+    }
+}
+
+/// C2 · input idempotency: one input_id, one record.
+fn check_c2(hops: &[Hop]) -> RuleReport {
+    let rule = "C2".to_string();
+    let mut by_input: HashMap<&str, &str> = HashMap::new();
+    let mut conflicts: Vec<String> = Vec::new();
+    let mut retries = 0usize;
+    let mut unverifiable = 0usize;
+    for hop in hops {
+        let (input_id, record_digest) = match hop {
+            Hop::Complete(record) => (
+                Some(record.input_id().as_str()),
+                Some(record.record_digest().as_str()),
+            ),
+            Hop::Degraded(degraded) => (
+                degraded.input_id.as_deref(),
+                degraded.record_digest.as_deref(),
+            ),
+        };
+        let Some(input_id) = input_id else { continue };
+        let Some(digest) = record_digest else {
+            unverifiable += 1;
+            continue;
+        };
+        match by_input.get(input_id) {
+            Some(existing) if *existing != digest => conflicts.push(format!(
+                "input {input_id} produced two different records ({existing} and {digest}); a \
+                 retry must reach the same record"
+            )),
+            Some(_) => retries += 1,
+            None => {
+                by_input.insert(input_id, digest);
+            }
+        }
+    }
+    if !conflicts.is_empty() {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Fail,
+            detail: conflicts.join("; "),
+        };
+    }
+    if unverifiable > 0 {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Degraded,
+            detail: format!(
+                "{} unique input(s), {retries} idempotent retry hit(s); {unverifiable} degraded \
+                 hop(s) could not be compared",
+                by_input.len(),
+            ),
+        };
+    }
+    RuleReport {
+        rule,
+        verdict: Verdict::Pass,
+        detail: format!(
+            "{} unique input(s), {retries} idempotent retry hit(s), no divergent duplicates",
+            by_input.len(),
+        ),
+    }
+}
+
+/// C3 · causal closure: the §12.2 genesis-leg restore re-plans every transition and compares
+/// each produced record digest against the durable one.
+fn check_c3(hops: &[Hop], c1: &RuleReport) -> RuleReport {
+    let rule = "C3".to_string();
+    if hops.iter().any(|hop| matches!(hop, Hop::Degraded(_))) {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Degraded,
+            detail: "re-plan requires complete records; this segment has degraded hops".to_string(),
+        };
+    }
+    if c1.verdict == Verdict::Fail {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Degraded,
+            detail: "C1 failed; a re-plan over a broken chain would only re-report that break"
+                .to_string(),
+        };
+    }
+    let records: Vec<KernelRecord> = hops
+        .iter()
+        .filter_map(|hop| match hop {
+            Hop::Complete(record) => Some(record.clone()),
+            Hop::Degraded(_) => None,
+        })
+        .collect();
+    if records.is_empty() {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Degraded,
+            detail: "no records in this segment".to_string(),
+        };
+    }
+    match restore_operation(
+        None,
+        &records,
+        ConfigDefaults::default(),
+        InMemoryRecordIndex::from_records(&records),
+    ) {
+        Ok(restored) => RuleReport {
+            rule,
+            verdict: Verdict::Pass,
+            detail: format!(
+                "re-planned {} record(s) from genesis; every durable record digest reproduced",
+                restored.cost.records_before_checkpoint
+            ),
+        },
+        Err(fault) => RuleReport {
+            rule,
+            verdict: Verdict::Fail,
+            detail: format!("{}: {}", fault.code.as_str(), fault.message),
+        },
+    }
+}
+
+/// C4 · task lineage, the journal-direct half.
+fn check_c4(hops: &[Hop], operation_id: &str) -> RuleReport {
+    let rule = "C4".to_string();
+    struct LaunchFact {
+        task_id: String,
+        attempt_id: String,
+        step_seq: u64,
+        effect_id: String,
+    }
+
+    let mut launches: Vec<LaunchFact> = Vec::new();
+    let mut unreadable_inputs = 0usize;
+    for hop in hops {
+        let Hop::Complete(record) = hop else { continue };
+        let input = match record.normalized_input() {
+            Ok(input) => input,
+            Err(_) => {
+                unreadable_inputs += 1;
+                continue;
+            }
+        };
+        let NormalizedPayload::ResolveEffect(resolve) = &input.input else {
+            continue;
+        };
+        let EffectOutcome::Succeeded(success) = &resolve.outcome else {
+            continue;
+        };
+        let EffectSuccess::TasksSpawned(spawned) = &success.result else {
+            continue;
+        };
+        for attempt in &spawned.attempts {
+            launches.push(LaunchFact {
+                task_id: attempt.task_id.as_str().to_string(),
+                attempt_id: attempt.attempt_id.as_str().to_string(),
+                step_seq: record.step_seq().get(),
+                effect_id: resolve.effect_id.as_str().to_string(),
+            });
+        }
+    }
+
+    let mut violations: Vec<String> = Vec::new();
+    let mut seen: HashMap<(&str, &str), u64> = HashMap::new();
+    for fact in &launches {
+        let pair = (fact.task_id.as_str(), fact.attempt_id.as_str());
+        if let Some(first_step) = seen.insert(pair, fact.step_seq) {
+            violations.push(format!(
+                "task {} attempt {} launched at steps {first_step} and {}; the launch token is \
+                 derived from that pair, so a repeated pair is a reused LaunchToken",
+                fact.task_id, fact.attempt_id, fact.step_seq,
+            ));
+        }
+        match parse_effect_step(&fact.effect_id) {
+            Some((effect_operation, effect_step)) => {
+                if effect_operation != operation_id {
+                    violations.push(format!(
+                        "task {} launch at step {} resolves effect {} of another operation — \
+                         causation cannot cross operations",
+                        fact.task_id, fact.step_seq, fact.effect_id,
+                    ));
+                } else if effect_step >= fact.step_seq {
+                    violations.push(format!(
+                        "task {} launch resolved at step {} names an effect published at step \
+                         {effect_step} — the resolution precedes the publication",
+                        fact.task_id, fact.step_seq,
+                    ));
+                }
+            }
+            None => violations.push(format!(
+                "task {} launch at step {} names effect {}, which is not in the \
+                 `operation:step:N:effect:M` vocabulary",
+                fact.task_id, fact.step_seq, fact.effect_id,
+            )),
+        }
+    }
+
+    if !violations.is_empty() {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Fail,
+            detail: violations.join("; "),
+        };
+    }
+    let degraded_hops = hops
+        .iter()
+        .filter(|hop| matches!(hop, Hop::Degraded(_)))
+        .count();
+    if degraded_hops > 0 || unreadable_inputs > 0 {
+        return RuleReport {
+            rule,
+            verdict: Verdict::Degraded,
+            detail: format!(
+                "{} launch(es) checked; {degraded_hops} degraded hop(s) and \
+                 {unreadable_inputs} unreadable input(s) could hide further launches",
+                launches.len(),
+            ),
+        };
+    }
+    RuleReport {
+        rule,
+        verdict: Verdict::Pass,
+        detail: format!(
+            "{} launch(es), every (task_id, attempt_id) pair unique, every spawn resolution \
+             names an earlier step of this operation",
+            launches.len(),
+        ),
+    }
+}
+
+/// The kernel's effect-id vocabulary is `{operation}:step:{N}:effect:{M}` (driver minting).
+/// Operation ids may themselves contain colons, so parse from the right.
+fn parse_effect_step(effect_id: &str) -> Option<(&str, u64)> {
+    let (before_effect, _) = effect_id.rsplit_once(":effect:")?;
+    let (operation, step) = before_effect.rsplit_once(":step:")?;
+    Some((operation, step.parse().ok()?))
+}
+
+fn digests_of(hop: &Hop) -> (Option<&str>, Option<&str>) {
+    match hop {
+        Hop::Complete(record) => (
+            record
+                .previous_record_digest()
+                .map(|digest| digest.as_str()),
+            Some(record.record_digest().as_str()),
+        ),
+        Hop::Degraded(degraded) => (
+            degraded.previous_record_digest.as_deref(),
+            degraded.record_digest.as_deref(),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// tests
+// ---------------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::runtime::kernel::wire::config::{
+        ConfigDefaults, ExecutionPolicy, HostEffectSupport, OperationConfig,
+    };
+    use crate::runtime::kernel::wire::driver::CanonicalOperationDriver;
+    use crate::runtime::kernel::wire::effect::{
+        EffectKindTag, EffectSucceeded, ProviderContextOverflow, ProviderOutcome, ProviderSuccess,
+        TaskLaunchOutcome, TaskLaunchStarted, TaskLaunchStatus, TasksSpawnedSuccess,
+    };
+    use crate::runtime::kernel::wire::envelope::{
+        ConfigureOperation, KernelInput, ResolveEffect, StartOperation, WireEnvelope,
+    };
+    use crate::runtime::kernel::wire::record::{KernelRecord, NormalizedInput};
+    use crate::runtime::kernel::wire::root::{
+        InitialContext, LogicalAgentSpec, LogicalTask, RootAgentEntry, RootEntry,
+        RootWorkflowEntry, WorkflowNode, WorkflowSpec,
+    };
+    use crate::runtime::kernel::wire::scalar::{
+        AttemptId, EffectId, InputId, NodeId, OperationId, TaskId, WireU64,
+    };
+    use crate::runtime::kernel::wire::transaction::{InMemoryRecordIndex, KernelTransaction};
+
+    // -----------------------------------------------------------------------------------------
+    // envelopes
+    // -----------------------------------------------------------------------------------------
+
+    fn operation(id: &str) -> OperationId {
+        OperationId::new(id).unwrap()
+    }
+
+    fn envelope(op: &OperationId, id: &str, at: u64, input: KernelInput) -> WireEnvelope {
+        WireEnvelope::new(
+            op.clone(),
+            InputId::new(id).unwrap(),
+            WireU64::new(at),
+            input,
+        )
+    }
+
+    fn configure_envelope(op: &OperationId) -> WireEnvelope {
+        envelope(
+            op,
+            "in-configure",
+            1_700_000_000_000,
+            KernelInput::ConfigureOperation(ConfigureOperation {
+                config: OperationConfig {
+                    execution_policy: Some(ExecutionPolicy {
+                        max_turns: Some(12),
+                        ..ExecutionPolicy::default()
+                    }),
+                    host_effect_support: HostEffectSupport::new([
+                        EffectKindTag::CallProvider,
+                        EffectKindTag::SpawnTasks,
+                    ]),
+                    ..OperationConfig::default()
+                },
+            }),
+        )
+    }
+
+    fn agent_start_envelope(op: &OperationId) -> WireEnvelope {
+        envelope(
+            op,
+            "in-start",
+            1_700_000_001_000,
+            KernelInput::StartOperation(StartOperation {
+                entry: RootEntry::Agent(RootAgentEntry {
+                    task: LogicalTask::new("write the brief"),
+                    run_spec: Some(LogicalAgentSpec::new("write the brief")),
+                }),
+                initial_context: InitialContext::default(),
+            }),
+        )
+    }
+
+    fn workflow_start_envelope(op: &OperationId) -> WireEnvelope {
+        envelope(
+            op,
+            "in-start",
+            1_700_000_001_000,
+            KernelInput::StartOperation(StartOperation {
+                entry: RootEntry::Workflow(RootWorkflowEntry {
+                    spec: WorkflowSpec {
+                        name: "brief".to_string(),
+                        nodes: vec![
+                            WorkflowNode {
+                                node_id: NodeId::new("collect").unwrap(),
+                                task: LogicalTask::new("collect the sources"),
+                                depends_on: vec![],
+                                run_spec: Some(LogicalAgentSpec::new("collect the sources")),
+                            },
+                            WorkflowNode {
+                                node_id: NodeId::new("write").unwrap(),
+                                task: LogicalTask::new("write the brief"),
+                                depends_on: vec![NodeId::new("collect").unwrap()],
+                                run_spec: Some(LogicalAgentSpec::new("write the brief")),
+                            },
+                        ],
+                    },
+                }),
+                initial_context: InitialContext::default(),
+            }),
+        )
+    }
+
+    fn resolve_overflow_envelope(op: &OperationId, effect_step: u64) -> WireEnvelope {
+        envelope(
+            op,
+            "in-resolve",
+            1_700_000_002_000,
+            KernelInput::ResolveEffect(ResolveEffect {
+                effect_id: EffectId::new(format!("{op}:step:{effect_step}:effect:0")).unwrap(),
+                outcome: EffectOutcome::Succeeded(EffectSucceeded {
+                    result: EffectSuccess::Provider(ProviderSuccess {
+                        outcome: ProviderOutcome::ContextOverflow(
+                            ProviderContextOverflow::default(),
+                        ),
+                    }),
+                }),
+            }),
+        )
+    }
+
+    fn resolve_spawn_envelope(
+        op: &OperationId,
+        id: &str,
+        at: u64,
+        effect_id: &str,
+        tasks: &[(&str, &str)],
+    ) -> WireEnvelope {
+        envelope(
+            op,
+            id,
+            at,
+            KernelInput::ResolveEffect(ResolveEffect {
+                effect_id: EffectId::new(effect_id).unwrap(),
+                outcome: EffectOutcome::Succeeded(EffectSucceeded {
+                    result: EffectSuccess::TasksSpawned(TasksSpawnedSuccess {
+                        attempts: tasks
+                            .iter()
+                            .map(|(task, attempt)| TaskLaunchOutcome {
+                                task_id: TaskId::new(*task).unwrap(),
+                                attempt_id: AttemptId::new(*attempt).unwrap(),
+                                outcome: TaskLaunchStatus::Started(TaskLaunchStarted {}),
+                            })
+                            .collect(),
+                    }),
+                }),
+            }),
+        )
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // chain builders
+    // -----------------------------------------------------------------------------------------
+
+    /// The honest path: a live transaction driven by the real driver, so every record's step is
+    /// exactly what a re-plan reproduces. This is what a host's journal prefix looks like.
+    fn live_chain(envelopes: &[WireEnvelope]) -> Vec<KernelRecord> {
+        let mut tx = KernelTransaction::new(ConfigDefaults::default(), InMemoryRecordIndex::new());
+        let mut driver = CanonicalOperationDriver::new();
+        let mut journal = Vec::new();
+        for envelope in envelopes {
+            let preparation = tx.prepare(envelope, |context| driver.plan(context));
+            let token = preparation
+                .token()
+                .unwrap_or_else(|| {
+                    panic!("expected a prepared step, got {:?}", preparation.fault())
+                })
+                .clone();
+            let head = preparation.record().unwrap().record_digest().clone();
+            let committed = tx.commit(&token, &head).expect("commit must succeed");
+            journal.push(committed.record.clone());
+            driver
+                .note_committed(committed.step_seq)
+                .expect("the driver folds the step it planned");
+        }
+        journal
+    }
+
+    /// A structurally sound chain whose steps are hand-pinned JSON — **not** the driver's plans.
+    /// C1/C2/C4 read only the records, so they judge these chains; C3 necessarily fails on them
+    /// (the re-plan cannot reproduce a hand-pinned step) and is simply not asserted there.
+    fn hand_chain(envelopes: &[WireEnvelope]) -> Vec<KernelRecord> {
+        let mut records: Vec<KernelRecord> = Vec::new();
+        for (index, envelope) in envelopes.iter().enumerate() {
+            let input = NormalizedInput::normalize(envelope, &ConfigDefaults::default())
+                .expect("the envelope normalises");
+            let step = json!({ "planned": format!("step-{index}"), "effects": [] });
+            let record =
+                KernelRecord::chain(records.last(), &input, &step).expect("the record chains");
+            records.push(record);
+        }
+        records
+    }
+
+    fn blobs(records: &[KernelRecord]) -> Vec<Vec<u8>> {
+        records
+            .iter()
+            .map(|record| record.record_bytes().into_vec())
+            .collect()
+    }
+
+    fn rule<'a>(report: &'a ValidationReport, segment: usize, id: &str) -> &'a RuleReport {
+        report.segments[segment]
+            .rules
+            .iter()
+            .find(|rule| rule.rule == id)
+            .unwrap_or_else(|| panic!("segment {segment} has no {id} verdict"))
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // green paths
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_green_agent_chain_passes_every_rule() {
+        let op = operation("op-green-agent");
+        let chain = live_chain(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_overflow_envelope(&op, 1),
+        ]);
+        let report = validate_journal(&blobs(&chain));
+        assert_eq!(report.segments.len(), 1);
+        for id in ["C1", "C2", "C3", "C4"] {
+            assert_eq!(
+                rule(&report, 0, id).verdict,
+                Verdict::Pass,
+                "{id}: {}",
+                rule(&report, 0, id).detail
+            );
+        }
+        assert!(
+            rule(&report, 0, "C3")
+                .detail
+                .contains("every durable record digest reproduced"),
+            "C3 proves the re-plan: {}",
+            rule(&report, 0, "C3").detail
+        );
+        assert_eq!(report.exit_code(), 0);
+        assert_eq!(report.unparseable_records, 0);
+    }
+
+    #[test]
+    fn a_green_workflow_chain_passes_c4_with_real_launches() {
+        let op = operation("op-green-workflow");
+        let chain = live_chain(&[
+            configure_envelope(&op),
+            workflow_start_envelope(&op),
+            resolve_spawn_envelope(
+                &op,
+                "in-ack-1",
+                1_700_000_002_000,
+                "op-green-workflow:step:1:effect:0",
+                &[("wf-node0", "wf-node0:attempt:1")],
+            ),
+        ]);
+        let report = validate_journal(&blobs(&chain));
+        assert_eq!(report.segments.len(), 1);
+        for id in ["C1", "C2", "C3", "C4"] {
+            assert_eq!(
+                rule(&report, 0, id).verdict,
+                Verdict::Pass,
+                "{id}: {}",
+                rule(&report, 0, id).detail
+            );
+        }
+        assert!(
+            rule(&report, 0, "C4").detail.contains("1 launch(es)"),
+            "{}",
+            rule(&report, 0, "C4").detail
+        );
+        assert_eq!(report.deferred.len(), 2, "batch-1 scope limits are named");
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn input_order_is_a_storage_detail() {
+        let op = operation("op-shuffled");
+        let chain = live_chain(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_overflow_envelope(&op, 1),
+        ]);
+        let mut shuffled = blobs(&chain);
+        shuffled.reverse();
+        let report = validate_journal(&shuffled);
+        assert_eq!(
+            report.exit_code(),
+            0,
+            "the chain's own links define the order"
+        );
+    }
+
+    #[test]
+    fn two_operations_validate_as_independent_segments() {
+        let op_a = operation("op-seg-a");
+        let op_b = operation("op-seg-b");
+        let chain_a = live_chain(&[configure_envelope(&op_a), agent_start_envelope(&op_a)]);
+        let chain_b = live_chain(&[configure_envelope(&op_b), agent_start_envelope(&op_b)]);
+        // Interleaved and sharing input ids — idempotency is namespaced per operation.
+        let mut mixed = Vec::new();
+        for index in 0..2 {
+            mixed.push(chain_a[index].record_bytes().into_vec());
+            mixed.push(chain_b[index].record_bytes().into_vec());
+        }
+        let report = validate_journal(&mixed);
+        assert_eq!(report.segments.len(), 2);
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // C1 · chain integrity
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_gap_in_the_chain_fails_c1_and_degrades_c3() {
+        let op = operation("op-gapped");
+        let chain = live_chain(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_overflow_envelope(&op, 1),
+        ]);
+        let gapped = blobs(&[chain[0].clone(), chain[2].clone()]);
+        let report = validate_journal(&gapped);
+        assert_eq!(rule(&report, 0, "C1").verdict, Verdict::Fail);
+        assert_eq!(
+            rule(&report, 0, "C3").verdict,
+            Verdict::Degraded,
+            "a re-plan over a broken chain would only re-report the C1 break"
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // C2 · input idempotency
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn two_different_records_for_one_input_fail_c2() {
+        let op = operation("op-dup-input");
+        // Two chains over the same operation id whose `in-start` envelopes differ only in the
+        // observed clock — same input id, different canonical input, different records.
+        let chain_a = hand_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let mut later_start = agent_start_envelope(&op);
+        later_start.observed_at_ms = WireU64::new(1_700_000_001_500);
+        let chain_b = hand_chain(&[configure_envelope(&op), later_start]);
+        assert_ne!(
+            chain_a[1].record_digest(),
+            chain_b[1].record_digest(),
+            "the fixture must produce two different records for one input id"
+        );
+        let report = validate_journal(&blobs(&[
+            chain_a[0].clone(),
+            chain_a[1].clone(),
+            chain_b[1].clone(),
+        ]));
+        assert_eq!(rule(&report, 0, "C2").verdict, Verdict::Fail);
+        assert!(
+            rule(&report, 0, "C2").detail.contains("in-start"),
+            "{}",
+            rule(&report, 0, "C2").detail
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // C4 · task lineage
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_repeated_attempt_pair_is_a_reused_launch_token() {
+        let op = operation("op-dup-launch");
+        let chain = hand_chain(&[
+            configure_envelope(&op),
+            resolve_spawn_envelope(
+                &op,
+                "in-ack-1",
+                1_700_000_001_000,
+                "op-dup-launch:step:0:effect:0",
+                &[("writer", "writer:attempt:1")],
+            ),
+            resolve_spawn_envelope(
+                &op,
+                "in-ack-2",
+                1_700_000_002_000,
+                "op-dup-launch:step:0:effect:0",
+                &[("writer", "writer:attempt:1")],
+            ),
+        ]);
+        let report = validate_journal(&blobs(&chain));
+        assert_eq!(rule(&report, 0, "C1").verdict, Verdict::Pass);
+        assert_eq!(rule(&report, 0, "C4").verdict, Verdict::Fail);
+        assert!(
+            rule(&report, 0, "C4").detail.contains("LaunchToken"),
+            "the verdict names the token reuse: {}",
+            rule(&report, 0, "C4").detail
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_resolution_naming_a_future_step_fails_c4() {
+        let op = operation("op-future-effect");
+        let chain = hand_chain(&[
+            configure_envelope(&op),
+            resolve_spawn_envelope(
+                &op,
+                "in-ack-1",
+                1_700_000_001_000,
+                "op-future-effect:step:5:effect:0",
+                &[("writer", "writer:attempt:1")],
+            ),
+        ]);
+        let report = validate_journal(&blobs(&chain));
+        assert_eq!(rule(&report, 0, "C4").verdict, Verdict::Fail);
+        assert!(
+            rule(&report, 0, "C4")
+                .detail
+                .contains("precedes the publication"),
+            "{}",
+            rule(&report, 0, "C4").detail
+        );
+    }
+
+    #[test]
+    fn a_resolution_naming_another_operation_fails_c4() {
+        let op = operation("op-foreign-effect");
+        let chain = hand_chain(&[
+            configure_envelope(&op),
+            resolve_spawn_envelope(
+                &op,
+                "in-ack-1",
+                1_700_000_001_000,
+                "op-somewhere-else:step:0:effect:0",
+                &[("writer", "writer:attempt:1")],
+            ),
+        ]);
+        let report = validate_journal(&blobs(&chain));
+        assert_eq!(rule(&report, 0, "C4").verdict, Verdict::Fail);
+        assert!(
+            rule(&report, 0, "C4").detail.contains("another operation"),
+            "{}",
+            rule(&report, 0, "C4").detail
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // C7 · degradation
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_tampered_hop_fails_integrity_validation() {
+        let op = operation("op-tampered");
+        let chain = live_chain(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_overflow_envelope(&op, 1),
+        ]);
+        let mut input = blobs(&chain);
+        // Corrupt the middle record's step_digest: the strict decode now fails the self-digest
+        // check. Surviving identity fields must not hide proven corruption.
+        let mut forged: serde_json::Value = serde_json::from_slice(&input[1]).unwrap();
+        forged["step_digest"] = serde_json::Value::String(chain[0].record_digest().to_string());
+        input[1] = serde_json::to_vec(&forged).unwrap();
+
+        let report = validate_journal(&input);
+        assert_eq!(report.segments.len(), 1);
+        assert_eq!(report.segments[0].degraded_hops.len(), 1);
+        assert_eq!(
+            rule(&report, 0, "C1").verdict,
+            Verdict::Fail,
+            "a digest mismatch must fail C1: {}",
+            rule(&report, 0, "C1").detail
+        );
+        assert_eq!(rule(&report, 0, "C3").verdict, Verdict::Degraded);
+        assert_eq!(rule(&report, 0, "C4").verdict, Verdict::Degraded);
+        assert_eq!(
+            report.exit_code(),
+            1,
+            "proven digest corruption must fail the validator"
+        );
+    }
+
+    #[test]
+    fn missing_legacy_digest_degrades_without_claiming_corruption() {
+        let op = operation("op-legacy");
+        let chain = live_chain(&[configure_envelope(&op)]);
+        let mut legacy: serde_json::Value = serde_json::from_slice(&blobs(&chain)[0]).unwrap();
+        legacy.as_object_mut().unwrap().remove("step_digest");
+        let report = validate_journal(&[serde_json::to_vec(&legacy).unwrap()]);
+        assert_eq!(rule(&report, 0, "C1").verdict, Verdict::Degraded);
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn unparseable_input_is_evidence_insufficient_not_guilty() {
+        let report = validate_journal(&[b"this is not a record".to_vec()]);
+        assert!(report.segments.is_empty());
+        assert_eq!(report.unparseable_records, 1);
+        assert_eq!(report.exit_code(), 2);
+    }
+
+    #[test]
+    fn garbage_beside_a_green_chain_stays_exit_2_without_a_violation() {
+        let op = operation("op-plus-garbage");
+        let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let mut input = blobs(&chain);
+        input.push(b"this is not a record".to_vec());
+        let report = validate_journal(&input);
+        assert_eq!(report.segments.len(), 1);
+        assert_eq!(rule(&report, 0, "C1").verdict, Verdict::Pass);
+        assert_eq!(report.unparseable_records, 1);
+        assert_eq!(
+            report.exit_code(),
+            2,
+            "no violation was proven, but the evidence was partially unreadable"
+        );
+    }
+
+    #[test]
+    fn an_empty_journal_is_evidence_insufficient() {
+        let report = validate_journal::<Vec<u8>>(&[]);
+        assert_eq!(report.exit_code(), 2);
+    }
+}

@@ -49,6 +49,7 @@ from deepstrike.runtime import (
     InMemorySessionLog,
     FileSessionLog,
     SessionLog,
+    SESSION_EVENT_KINDS,
     KernelJournal,
     InMemoryKernelJournal,
     FileKernelJournal,
@@ -183,6 +184,12 @@ from deepstrike.runtime.durable_content import (
     encode_durable_content,
     encode_durable_tool_result,
 )
+# content-parts-v1 registered encoding (F14/B5; byte-pinned by sdk-conformance)
+from deepstrike.runtime.kernel_step import (
+    CANONICAL_CONTENT_PARTS_PREFIX,
+    decode_canonical_content_parts,
+    encode_canonical_content_parts,
+)
 from deepstrike.collaboration import (
     AcceptanceCriterion, VerificationContract, ContractCheckResult,
     ContractBuilder, format_contract_for_system_prompt, contract_to_criteria_strings,
@@ -238,6 +245,7 @@ __all__ = [
     "InMemorySessionLog",
     "FileSessionLog",
     "SessionLog",
+    "SESSION_EVENT_KINDS",
     "KernelJournal",
     "InMemoryKernelJournal",
     "FileKernelJournal",

@@ -1,0 +1,14 @@
+{
+  "id": "content-parts-filters-non-objects",
+  "domain": "content_parts_v1",
+  "input": {
+    "decode": "[[deepstrike-content-parts]]WzEsIngiLHsidHlwZSI6InRleHQiLCJ0ZXh0IjoiaGkifV0"
+  },
+  "expected": {
+    "canonical": {
+      "decoded": [
+        { "type": "text", "text": "hi" }
+      ]
+    }
+  }
+}

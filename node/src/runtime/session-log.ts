@@ -3,8 +3,9 @@ import type { KernelPrimitive } from "./kernel-event-log.js"
 import { access, mkdir, open as openFile } from "node:fs/promises"
 import { join } from "node:path"
 import { createInterface } from "node:readline"
-import type { ContentPart, ProviderReplay, ToolCall, ToolErrorKind, ToolOutputBlock } from "../types.js"
-import type { RecordedPromptMeasurement } from "../providers/request-plan.js"
+import type { ContentPart, ProviderReplay, ProviderWireEvidence, ToolCall, ToolErrorKind, ToolOutputBlock } from "../types.js"
+import type { RecordedPromptMeasurement, ResolvedProviderRoute } from "../providers/request-plan.js"
+import type { ProviderAttemptRecord } from "./execution-evidence.js"
 import type { MemoryRecall, MemoryScope } from "../memory/protocols.js"
 import { primitiveForKind } from "./kernel-event-log.js"
 import { KeyedSerialExecutor } from "./reliability.js"
@@ -21,11 +22,20 @@ export type RollbackReason =
   | { kind: "malformed_replay"; reason: string }
 
 export type SessionEvent =
-  | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: ContentPart[] }
-  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay }
-  | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement }
+  // P4-S1: `route` is the runner-construction ResolvedProviderRoute snapshot (P4 §0.2: one
+  // fixed route per run today). Older logs simply lack it — C7 degrades, never fails.
+  | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: ContentPart[]; route?: ResolvedProviderRoute }
+  // P3-S2 + P4-S1: `effect_id` (G4) + `invocation_id` (P4 §3) join this evidence projection to
+  // the journal effect chain; `wire_evidence` (D1) is the ProviderWireEvidence bundle.
+  // `provider_replay` is DEPRECATED — carried unchanged for one full minor, then removed (P3 §3.3).
+  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
+  | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement; effect_id?: string }
+  // P4-S1 (G1): one record per provider attempt — the full P4 §1.2 payload. The kernel-minted
+  // effect_id joins this host evidence to the journal effect chain 1:1 (C6); step_seq NEVER
+  // enters SessionLog (P2 §4).
+  | ({ kind: "provider_attempt" } & ProviderAttemptRecord)
   | { kind: "tool_requested"; turn: number; calls: ToolCall[] }
-  | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; is_fatal?: boolean; error_kind?: ToolErrorKind; token_count?: number; content: { blocks: Record<string, unknown>[] } }> }
+  | { kind: "tool_completed"; turn: number; results: Array<{ call_id: string; output: string; is_error?: boolean; is_fatal?: boolean; error_kind?: ToolErrorKind; token_count?: number; content: { blocks: Record<string, unknown>[] } }>; effect_id?: string }
   | { kind: "tool_argument_repaired"; turn: number; tool: string; original_arguments: string; repaired_arguments: string }
   | { kind: "tool_denied"; turn: number; call_id: string; tool_name: string; reason: string }
   | { kind: "permission_requested"; turn: number; tool: string; arguments: string; reason?: string }
@@ -184,6 +194,72 @@ export type SessionEvent =
       reason: string
       coerced_from?: string
     }
+
+export type SessionEventKind = SessionEvent["kind"]
+
+/**
+ * The registered session-event vocabulary (F9 / S3, P7-S4). This list is the single authority
+ * the cross-SDK manifest fixture pins: a kind added here without the same-commit update to
+ * `tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json` and the python/wasm
+ * vocabularies turns cross-SDK conformance red. Declared in `SessionEvent` union order.
+ */
+export const SESSION_EVENT_KINDS = [
+  "run_started",
+  "llm_completed",
+  "prompt_measured",
+  "provider_attempt",
+  "tool_requested",
+  "tool_completed",
+  "tool_argument_repaired",
+  "tool_denied",
+  "permission_requested",
+  "permission_resolved",
+  "compressed",
+  "page_out",
+  "semantic_archive_pending",
+  "semantic_archive_completed",
+  "semantic_archive_failed",
+  "page_in",
+  "rollbacked",
+  "capability_changed",
+  "context_renewed",
+  "suspended",
+  "resumed",
+  "tool_gated",
+  "signal_delivery_disposed",
+  "budget_exceeded",
+  "budget_usage_reported",
+  "operation_cancelled",
+  "milestone_advanced",
+  "milestone_blocked",
+  "checkpoint_taken",
+  "entropy_sample",
+  "entropy_alert",
+  "agent_process_changed",
+  "memory_written",
+  "memory_queried",
+  "memory_validation_failed",
+  "memory_write_failed",
+  "memory_query_failed",
+  "memory_retrieval_result",
+  "workflow_node_completed",
+  "workflow_nodes_submitted",
+  "workflow_batch_spawned",
+  "workflow_completed",
+  "kernel_observation",
+  "run_terminal",
+  "summary_upgraded",
+  "group_member_joined",
+  "group_budget_charged",
+  "round_started",
+  "round_paced",
+] as const satisfies readonly SessionEventKind[]
+
+// Compile-time lockstep: the list above and the union must cover each other exactly.
+// `satisfies` rejects list entries the union lacks; this rejects union members the list lacks.
+type _AssertVocabularyCoversUnion = Exclude<SessionEventKind, (typeof SESSION_EVENT_KINDS)[number]> extends never ? true : never
+const _vocabularyCoversUnion: _AssertVocabularyCoversUnion = true
+void _vocabularyCoversUnion
 
 /**
  * The business-projection log (spec §9.2): run started/terminal, stream events, observations,
@@ -353,6 +429,15 @@ function decodePersistedSessionRecord(value: unknown): PersistedSessionRecord {
   if (event.kind === "llm_completed" && event.provider_replay !== undefined) {
     assertCanonicalProviderReplay(event.provider_replay)
   }
+  if (event.kind === "llm_completed" && event.wire_evidence !== undefined) {
+    assertCanonicalWireEvidence(event.wire_evidence)
+  }
+  if (event.kind === "run_started" && event.route !== undefined) {
+    assertCanonicalRoute(event.route)
+  }
+  if (event.kind === "provider_attempt") {
+    assertCanonicalProviderAttempt(event)
+  }
   if (event.kind === "tool_completed") {
     if (!Array.isArray(event.results)) throw new Error("tool_completed results must be an array")
     for (const result of event.results) {
@@ -372,4 +457,74 @@ function assertCanonicalProviderReplay(value: unknown): void {
   const replay = value as Record<string, unknown>
   for (const key of Object.keys(replay)) if (!REPLAY_KEYS.has(key)) throw new Error(`provider replay has unknown field ${key}`)
   if (typeof replay.protocol !== "string" || replay.protocol.length === 0) throw new Error("provider replay protocol is required")
+}
+
+const WIRE_EVIDENCE_KEYS = new Set(["protocol", "request_fingerprint", "response_id", "raw_usage", "replay_state"])
+/** P3 §3.3: raw_usage carries BoundedJson semantics — the 4KB cap is enforced at the boundary. */
+const WIRE_EVIDENCE_RAW_USAGE_MAX_BYTES = 4096
+
+function assertCanonicalWireEvidence(value: unknown): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("wire evidence must be an object")
+  const evidence = value as Record<string, unknown>
+  for (const key of Object.keys(evidence)) if (!WIRE_EVIDENCE_KEYS.has(key)) throw new Error(`wire evidence has unknown field ${key}`)
+  if (typeof evidence.protocol !== "string" || evidence.protocol.length === 0) throw new Error("wire evidence protocol is required")
+  // G2: the fingerprint is mandatory non-empty — it is what binds this evidence to a request plan.
+  if (typeof evidence.request_fingerprint !== "string" || evidence.request_fingerprint.length === 0) {
+    throw new Error("wire evidence request_fingerprint is required")
+  }
+  if (evidence.response_id !== undefined && typeof evidence.response_id !== "string") {
+    throw new Error("wire evidence response_id must be a string")
+  }
+  if (evidence.raw_usage !== undefined
+    && new TextEncoder().encode(JSON.stringify(evidence.raw_usage)).byteLength > WIRE_EVIDENCE_RAW_USAGE_MAX_BYTES) {
+    throw new Error("wire evidence raw_usage exceeds the 4KB BoundedJson cap")
+  }
+  if (evidence.replay_state !== undefined) assertCanonicalProviderReplay(evidence.replay_state)
+}
+
+function assertCanonicalRoute(value: unknown): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("route must be an object")
+  const route = value as Record<string, unknown>
+  for (const field of ["routeId", "provider", "protocol", "model", "adapterVersion", "capabilitiesRef"]) {
+    if (typeof route[field] !== "string" || (route[field] as string).length === 0) {
+      throw new Error(`route ${field} must be a non-empty string`)
+    }
+  }
+  if (!route.endpoint || typeof route.endpoint !== "object" || Array.isArray(route.endpoint)) {
+    throw new Error("route endpoint must be an object")
+  }
+}
+
+const PROVIDER_ATTEMPT_KEYS = new Set([
+  "kind", "effect_id", "attempt_seq", "route", "request_fingerprint", "status", "transport_rungs",
+  "last_error_class", "started_at_ms", "finished_at_ms", "usage", "wire_evidence", "accounting_policy_id",
+])
+const PROVIDER_ATTEMPT_STATUSES = new Set(["success", "transport_exhausted", "aborted", "rejected"])
+
+function assertCanonicalProviderAttempt(event: Record<string, unknown>): void {
+  for (const key of Object.keys(event)) if (!PROVIDER_ATTEMPT_KEYS.has(key)) throw new Error(`provider_attempt has unknown field ${key}`)
+  if (typeof event.effect_id !== "string" || event.effect_id.length === 0) throw new Error("provider_attempt effect_id is required")
+  if (!Number.isInteger(event.attempt_seq) || (event.attempt_seq as number) < 1) throw new Error("provider_attempt attempt_seq must be a positive integer")
+  assertCanonicalRoute(event.route)
+  if (typeof event.request_fingerprint !== "string" || event.request_fingerprint.length === 0) {
+    throw new Error("provider_attempt request_fingerprint is required")
+  }
+  if (typeof event.status !== "string" || !PROVIDER_ATTEMPT_STATUSES.has(event.status)) {
+    throw new Error("provider_attempt status must be success|transport_exhausted|aborted|rejected")
+  }
+  if (!Number.isInteger(event.transport_rungs) || (event.transport_rungs as number) < 0) {
+    throw new Error("provider_attempt transport_rungs must be a non-negative integer")
+  }
+  if (event.last_error_class !== undefined && typeof event.last_error_class !== "string") {
+    throw new Error("provider_attempt last_error_class must be a string")
+  }
+  for (const field of ["started_at_ms", "finished_at_ms"]) {
+    if (typeof event[field] !== "number" || !Number.isFinite(event[field] as number)) {
+      throw new Error(`provider_attempt ${field} must be a finite number`)
+    }
+  }
+  if (event.wire_evidence !== undefined) assertCanonicalWireEvidence(event.wire_evidence)
+  if (event.accounting_policy_id !== undefined && typeof event.accounting_policy_id !== "string") {
+    throw new Error("provider_attempt accounting_policy_id must be a string")
+  }
 }

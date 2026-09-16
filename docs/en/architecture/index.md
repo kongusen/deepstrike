@@ -65,3 +65,4 @@ Remote tools, MCP servers, queues, and sandboxes can be connected by the applica
 - [Sessions and recovery](/en/guides/session-replay-and-recovery)
 - [Implementation reference](./overview)
 - [Kernel ABI reference](./kernel-abi)
+- Runtime data constitution: [Data model](./runtime-data-model) · [Authority & identity](./runtime-authority) · [Persistence contract](./runtime-persistence) · [Causality & chain validator](./runtime-causality)

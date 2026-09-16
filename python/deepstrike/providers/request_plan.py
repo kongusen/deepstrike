@@ -46,6 +46,23 @@ class NormalizedProviderUsage:
 
 
 @dataclass(frozen=True)
+class ResolvedProviderRoute:
+  """P4 §1.3: the resolved route one provider execution is pinned to.
+
+  Content-addressed (route_id = stable hash of every field except capabilities_ref);
+  the capability table's authority stays the static vocabulary — this holds a reference,
+  never a copy.
+  """
+  route_id: str
+  provider: str
+  protocol: str
+  model: str
+  endpoint: ProviderRequestEndpoint
+  adapter_version: str
+  capabilities_ref: str
+
+
+@dataclass(frozen=True)
 class PromptMeasurementRecord:
   request_fingerprint: str
   input_tokens: int
@@ -295,3 +312,96 @@ def _parse_time(value: str | None) -> datetime:
     raise ValueError("missing time")
   parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
   return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+
+
+KNOWN_GENERATION_PROTOCOLS = frozenset({"anthropic-messages", "openai-chat", "openai-responses", "gemini", "ollama-chat"})
+
+
+def resolve_provider_route(provider: Any) -> ResolvedProviderRoute:
+  """P4-S1: assemble the run's route once at runner construction.
+
+  The provider is fixed for the run today (P4 §0.2); a future failover resolver
+  re-evaluates per attempt with the same shape. Never throws: evidence assembly
+  degrades to "unknown" fields rather than breaking a run.
+  """
+  try:
+    descriptor = getattr(provider, "descriptor", lambda: {"provider": "unknown", "protocol": "unknown", "model": "unknown"})()
+    identity = getattr(provider, "request_plan_identity", lambda: {})()
+    protocol_raw = identity.get("endpoint", {}).get("protocol") or descriptor.get("protocol", "unknown")
+    protocol = protocol_raw
+    route = {
+      "provider": identity.get("provider_id") or descriptor.get("provider", "unknown"),
+      "protocol": protocol,
+      "model": identity.get("model_id") or descriptor.get("model", "unknown"),
+      "endpoint": _sanitize_endpoint({
+        "id": identity.get("endpoint", {}).get("id") or f"{descriptor.get('provider', 'unknown')}.{descriptor.get('protocol', 'unknown')}",
+        "protocol": protocol_raw,
+        "base_url": identity.get("endpoint", {}).get("base_url", ""),
+      }),
+      "adapter_version": _adapter_package_version(),
+      "capabilities_ref": protocol if protocol in KNOWN_GENERATION_PROTOCOLS else "unknown",
+    }
+    # §1.3: content addressing covers every field EXCEPT capabilities_ref
+    addressed = {k: v for k, v in route.items() if k != "capabilities_ref"}
+    route_id = "sha256:" + sha256(_canonical_json(addressed).encode()).hexdigest()
+    return ResolvedProviderRoute(
+      route_id=route_id,
+      provider=route["provider"],
+      protocol=route["protocol"],
+      model=route["model"],
+      endpoint=route["endpoint"],
+      adapter_version=route["adapter_version"],
+      capabilities_ref=route["capabilities_ref"],
+    )
+  except Exception:
+    fallback = {
+      "provider": "unknown",
+      "protocol": "unknown",
+      "model": "unknown",
+      "endpoint": ProviderRequestEndpoint("unknown", "unknown", ""),
+      "adapter_version": "unknown",
+    }
+    route_id = "sha256:" + sha256(_canonical_json(fallback).encode()).hexdigest()
+    return ResolvedProviderRoute(
+      route_id=route_id,
+      provider="unknown",
+      protocol="unknown",
+      model="unknown",
+      endpoint=ProviderRequestEndpoint("unknown", "unknown", ""),
+      adapter_version="unknown",
+      capabilities_ref="unknown",
+    )
+
+
+def _adapter_package_version() -> str:
+  """The adapter's package version from pyproject.toml. 'unknown' when unreadable."""
+  try:
+    from importlib.metadata import version
+    return version("deepstrike")
+  except Exception:
+    return "unknown"
+
+
+def _sanitize_endpoint(endpoint: dict[str, Any]) -> ProviderRequestEndpoint:
+  """Strip credentials from endpoint baseURL."""
+  try:
+    base_url = endpoint.get("base_url", "")
+    if not base_url:
+      return ProviderRequestEndpoint(
+        id=str(endpoint.get("id", "unknown")),
+        protocol=str(endpoint.get("protocol", "unknown")),
+        base_url="",
+      )
+    parsed = urlsplit(base_url)
+    clean = urlunsplit((parsed.scheme, parsed.netloc.split("@")[-1], parsed.path, parsed.query, ""))
+    return ProviderRequestEndpoint(
+      id=str(endpoint.get("id", "unknown")),
+      protocol=str(endpoint.get("protocol", "unknown")),
+      base_url=clean,
+    )
+  except Exception:
+    return ProviderRequestEndpoint(
+      id=str(endpoint.get("id", "unknown")),
+      protocol=str(endpoint.get("protocol", "unknown")),
+      base_url="",
+    )

@@ -1,0 +1,12 @@
+{
+  "id": "content-parts-unknown-prefix",
+  "domain": "content_parts_v1",
+  "input": {
+    "decode": "[[deepstrike-content-parts-v2]]W10"
+  },
+  "expected": {
+    "canonical": {
+      "decoded": null
+    }
+  }
+}

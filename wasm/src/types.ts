@@ -224,6 +224,23 @@ export interface ProviderReplay {
   tool_calls?: unknown[]
 }
 
+/** P3 §3.3 (D1) mirror of the node ProviderWireEvidence — SessionLog wire evidence bundle. */
+export interface ProviderWireEvidence {
+  protocol: ProviderProtocol
+  /** → ProviderRequestPlan.fingerprint. Mandatory non-empty (G2). */
+  request_fingerprint: string
+  response_id?: string
+  /** BoundedJson semantics: producers truncate to ≤4KB. */
+  raw_usage?: unknown
+  replay_state?: ProviderReplay
+}
+
+/** P4 §1.2 mirror: host-observed transport facts for one provider execution. */
+export interface ProviderTransportTelemetry {
+  rungs: number
+  responseId?: string
+}
+
 export interface LLMProvider {
   createRunState?(): ProviderRunState
   runtimePolicy?(): { maxTurns?: number; timeoutMs?: number }
@@ -235,6 +252,8 @@ export interface LLMProvider {
   }
   peekProviderReplay?(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined
   seedProviderReplay?(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void
+  /** P4-S1 mirror: transport facts of the most recent execution (host evidence only, B7). */
+  peekTransportTelemetry?(): ProviderTransportTelemetry | undefined
   countTokens?(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<PromptMeasurement>
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message>
   stream(

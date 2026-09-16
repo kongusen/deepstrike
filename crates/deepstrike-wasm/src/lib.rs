@@ -726,10 +726,14 @@ impl CanonicalKernel {
     }
 
     #[wasm_bindgen(js_name = publishedEffectsManifestJson)]
-    pub fn published_effects_manifest_json(&self, planned_step_json: String) -> Result<String, JsValue> {
+    pub fn published_effects_manifest_json(
+        &self,
+        planned_step_json: String,
+    ) -> Result<String, JsValue> {
         deepstrike_core::runtime::kernel::wire::projection::published_effects_manifest_json(
             &planned_step_json,
-        ).map_err(|error| JsValue::from_str(&error.message))
+        )
+        .map_err(|error| JsValue::from_str(&error.message))
     }
 
     #[wasm_bindgen(js_name = terminalJson)]

@@ -32,18 +32,27 @@ export const CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts]]"
 /**
  * Browser/worker-safe transport for typed content. `btoa` and `atob` operate on
  * binary strings, so explicitly bridge UTF-8 bytes rather than assuming Latin-1.
+ *
+ * Byte contract (content-parts-v1, F14/B5): compact JSON with literal UTF-8, insertion key
+ * order, **base64url alphabet, no padding** — identical bytes to the Node and Python SDKs.
+ * Decode stays lenient (both alphabets, optional padding) so payloads written before the
+ * url-alphabet alignment remain readable.
  */
 export function encodeCanonicalContentParts(parts: unknown[]): string {
   const bytes = new TextEncoder().encode(JSON.stringify(parts))
   let binary = ""
   for (const byte of bytes) binary += String.fromCharCode(byte)
-  return `${CANONICAL_CONTENT_PARTS_PREFIX}${btoa(binary)}`
+  const payload = btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")
+  return `${CANONICAL_CONTENT_PARTS_PREFIX}${payload}`
 }
 
 export function decodeCanonicalContentParts(content: string): Array<Record<string, unknown>> | undefined {
   if (!content.startsWith(CANONICAL_CONTENT_PARTS_PREFIX)) return undefined
   try {
-    const binary = atob(content.slice(CANONICAL_CONTENT_PARTS_PREFIX.length))
+    const raw = content.slice(CANONICAL_CONTENT_PARTS_PREFIX.length)
+    const standard = raw.replaceAll("-", "+").replaceAll("_", "/")
+    const padded = standard + "=".repeat((4 - (standard.length % 4)) % 4)
+    const binary = atob(padded)
     const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
     const decoded = JSON.parse(new TextDecoder().decode(bytes)) as unknown
     return Array.isArray(decoded)

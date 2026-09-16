@@ -5,6 +5,7 @@ import type {
   ProviderDescriptor,
   ProviderReplay,
   ProviderRunState,
+  ProviderTransportTelemetry,
   RenderedContext,
   ReplayabilityAssessment,
   RuntimePolicy,
@@ -123,6 +124,13 @@ export class OpenAIChatProvider implements LLMProvider {
     return { ok: offendingCallIds.length === 0, offendingCallIds }
   }
 
+  /** P4-S1: transport facts of the most recent execution. Host evidence only (B7). */
+  private lastTelemetry: ProviderTransportTelemetry | undefined
+
+  peekTransportTelemetry(): ProviderTransportTelemetry | undefined {
+    return this.lastTelemetry
+  }
+
   peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
     const replay = this.replayStore.get(assistantReplayKey(message))
     if (!replay || !("reasoning_content" in replay || "reasoning_details" in replay)) return undefined
@@ -197,10 +205,13 @@ export class OpenAIChatProvider implements LLMProvider {
     let lastError: unknown
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
+        this.lastTelemetry = { rungs: attempt + 1 }
         const response = await this.client.chat.completions.create(
           plan.params as unknown as OpenAI.ChatCompletionCreateParamsNonStreaming,
         )
         this.circuit.recordSuccess()
+        const responseId = (response as unknown as Record<string, unknown>).id
+        if (typeof responseId === "string") this.lastTelemetry = { rungs: attempt + 1, responseId }
         const decoded = this.chat.decodeComplete(
           response as unknown as Record<string, any>,
           { input },
@@ -236,7 +247,11 @@ export class OpenAIChatProvider implements LLMProvider {
         stream: true,
         stream_options: { include_usage: true },
       } as unknown as OpenAI.ChatCompletionCreateParamsStreaming, signal ? { signal } : undefined)
+      this.lastTelemetry = { rungs: 1 }
       for await (const chunk of stream as unknown as AsyncIterable<OpenAIChatStreamChunk>) {
+        if (this.lastTelemetry.responseId === undefined && typeof chunk.id === "string") {
+          this.lastTelemetry = { rungs: 1, responseId: chunk.id }
+        }
         const output = this.chat.pushStreamChunk(chunk, state)
         if (output.replay) {
           this.rememberReplay({

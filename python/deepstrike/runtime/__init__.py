@@ -16,11 +16,18 @@ from deepstrike.runtime.runner import (
   collect_text,
 )
 from deepstrike.runtime.session_log import (
+  SESSION_EVENT_KINDS,
   FileSessionLog,
   InMemorySessionLog,
   SessionEntry,
   SessionEvent,
   SessionLog,
+)
+# content-parts-v1 registered encoding (F14/B5; byte-pinned by sdk-conformance)
+from deepstrike.runtime.kernel_step import (
+  CANONICAL_CONTENT_PARTS_PREFIX,
+  decode_canonical_content_parts,
+  encode_canonical_content_parts,
 )
 # Durable transaction capability (Canonical Kernel ABI §9.1).
 from deepstrike.runtime.kernel_journal import (
@@ -280,6 +287,7 @@ __all__ = [
   "primitive_for_kind",
   "SessionEvent",
   "SessionEntry",
+  "SESSION_EVENT_KINDS",
   "ProviderReplay",
   "ProviderReplayProtocolMismatchError",
   "assistant_replay_key",

@@ -1,5 +1,5 @@
 import type {
-  LLMProvider, Message, ContentPart, RenderedContext, ToolCall, ToolResult, ToolSchema, ToolOutputBlock,
+  LLMProvider, Message, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolResult, ToolSchema, ToolOutputBlock,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, UsageEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
   PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, MemorySummarizer,
@@ -112,9 +112,20 @@ import {
   createProviderRequestPlanForProvider,
   estimateProviderPromptTokens,
   measurementForPlan,
+  normalizeProviderUsage,
   recordPromptMeasurement,
+  resolveProviderRoute,
+  type NormalizedProviderUsage,
   type RecordedPromptMeasurement,
+  type ResolvedProviderRoute,
 } from "../providers/request-plan.js"
+import {
+  FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY,
+  providerAttemptToRecord,
+  tryNormalizeProviderUsage,
+  type ProviderAttempt,
+  type UsageAccountingPolicy,
+} from "./execution-evidence.js"
 import { kernelObservationToSessionEvent } from "./kernel-event-log.js"
 import { assertNativeProfile, type NativeOsProfile, type OsProfileId, type SignalPolicy } from "./os-profile.js"
 import { PayloadStore } from "./payload-store.js"
@@ -358,6 +369,12 @@ export interface RuntimeOptions {
   signalPolicy?: SignalPolicy
   /** Provider-envelope overhead plus output and safety reserves journaled before start. */
   promptBudget?: PromptBudget
+  /**
+   * P4-S2: the measurement→settlement conversion policy. Absent ⇒ the default full-footprint
+   * policy — byte-identical numbers to what the runner has always fed `observed_*`; the policy
+   * only makes the conversion named, pinnable on `provider_attempt`, and replayable.
+   */
+  usageAccountingPolicy?: UsageAccountingPolicy
   /** Stable replayable context behavior; SDK ratios are normalized to integer ppm on the ABI wire. */
   contextPolicy?: ContextPolicyOverrides
   /** Deterministic DAG scheduling policy installed atomically through ConfigureRun. */
@@ -628,6 +645,16 @@ export class RuntimeRunner {
   private readonly composedSystemPrompt: string | undefined
   /** H1.2: present only when `opts.nudges` is non-empty; else null and the append funnel is untouched. */
   private readonly nudgeEngine: NudgeEngine | null
+  /** P4-S1: the run's resolved provider route, assembled once at construction (P4 §0.2 — the
+   *  provider is fixed for the run today; every attempt references this same route object). */
+  private readonly providerRoute: ResolvedProviderRoute
+  /** P4-S2: measurement→settlement policy; default = the exact implicit behavior (numbers unchanged). */
+  private readonly usageAccountingPolicy: UsageAccountingPolicy
+  /** P4 §1.1: the active invocation's derived identity = its chain's FIRST effect_id. Tracked
+   *  across kernel-driven provider retries (a provider_error commit arms `providerRetryPending`;
+   *  the next call_provider adopts the pending invocation instead of opening a new one). */
+  private activeProviderInvocationId: string | undefined
+  private providerRetryPending = false
 
   constructor(private readonly opts: RuntimeOptions) {
     const schemaAttempts = opts.workflowSchemaValidationAttempts ?? 2
@@ -637,6 +664,8 @@ export class RuntimeRunner {
     if (opts.kernelReliability) kernelReliabilityToKernel(opts.kernelReliability)
     if (opts.memoryPolicy) memoryPolicyToKernel(opts.memoryPolicy)
     this.composedSystemPrompt = composeSystemPrompt(opts.systemPrompt, opts.instructions)
+    this.providerRoute = resolveProviderRoute(opts.provider)
+    this.usageAccountingPolicy = opts.usageAccountingPolicy ?? FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY
     if (opts.enableDiagnosticsDashboard) {
       const originalAppend = opts.sessionLog.append.bind(opts.sessionLog)
       opts.sessionLog.append = async (sessionId, event) => {
@@ -716,6 +745,19 @@ export class RuntimeRunner {
     if (this.opts.payloadStore) return this.opts.payloadStore
     this.fallbackPayloadStore ??= new PayloadStore()
     return this.fallbackPayloadStore
+  }
+
+  /**
+   * P4-S1 (G1): land one provider_attempt evidence record per effect execution. Pure host
+   * evidence (B7) — appended AFTER the transport fact exists (success/failure/abort), never
+   * consulted for kernel input. The accounting policy id pins only when a measurement exists,
+   * so (usage, policy_id) deterministically recomputes the settlement that crossed the wire.
+   */
+  private async appendProviderAttempt(sessionId: string, attempt: ProviderAttempt): Promise<void> {
+    await this.opts.sessionLog.append(sessionId, {
+      kind: "provider_attempt",
+      ...providerAttemptToRecord(attempt, attempt.usage ? this.usageAccountingPolicy.policyId : undefined),
+    })
   }
 
   private async persistMemoryToStore(memory: MemoryRecord, agentId: string): Promise<void> {
@@ -1318,6 +1360,7 @@ export class RuntimeRunner {
           goal: `workflow:${spec.nodes.length} nodes`,
           criteria: [],
           agent_id: this.opts.agentId,
+          route: this.providerRoute,
         })
         await this.initializeWorkflowKernel(sessionId, runId, groupBudgetScope)
       }
@@ -1814,6 +1857,7 @@ export class RuntimeRunner {
         agent_id: this.opts.agentId,
         system_prompt: this.composedSystemPrompt,
         ...(attachments ? { attachments } : {}),
+        route: this.providerRoute,
       })
     }
     yield* this.execute(
@@ -1861,6 +1905,9 @@ export class RuntimeRunner {
     requests: Array<{ callId: string; tool: string; arguments: string; reason: string }>,
     runtime: CanonicalRunnerRuntime,
     sessionId: string,
+    /** P3-S2 (G4): the request_approval effect's id — pinned on the denial's tool_completed
+     *  so the denial evidence joins the journal effect chain like an executed tool's does. */
+    effectId?: string,
   ): Promise<{ approved: string[]; denied: string[]; events: StreamEvent[] }> {
     const approved: string[] = []
     const denied: string[] = []
@@ -1934,6 +1981,7 @@ export class RuntimeRunner {
             error_kind: "governance_denied",
             content: { blocks: [{ type: "text", text: `permission denied: ${denyReason}` }] },
           }],
+          ...(effectId !== undefined ? { effect_id: effectId } : {}),
         })
       }
     }
@@ -1958,6 +2006,8 @@ export class RuntimeRunner {
     this.pendingPageOutArchives = []
     this.activePageOutArchive = undefined
     this.currentSessionId = sessionId
+    this.activeProviderInvocationId = undefined
+    this.providerRetryPending = false
     if (this.opts.enableDiagnosticsDashboard) {
       this.dashboard = new KernelPrimitivesDashboard(sessionId)
     }
@@ -2221,6 +2271,18 @@ export class RuntimeRunner {
 
       if (action.kind === "call_provider") {
         const providerEffectId = action.effectId
+        // P4 §1.1: invocation identity is derived, never minted — the chain's FIRST effect_id.
+        // A provider_error commit armed `providerRetryPending`, so this effect CONTINUES the
+        // pending invocation; otherwise it opens a new one. The chain itself lives in the
+        // journal (each hop a Failed resolution input → new effect); this is the SessionLog
+        // evidence projection of it.
+        if (!this.providerRetryPending || this.activeProviderInvocationId === undefined) {
+          this.activeProviderInvocationId = providerEffectId
+        }
+        this.providerRetryPending = false
+        const invocationId = this.activeProviderInvocationId
+        // Host wall-clock, pure evidence (B7/DEC-2): never crosses into kernel input.
+        const attemptStartedAtMs = Date.now()
         const finalToolCalls: ToolCall[] = []
         let finalText = ""
         // I5: governance schema-level pre-filter. When a declarative GovernancePolicy is loaded
@@ -2252,6 +2314,9 @@ export class RuntimeRunner {
         let turnCacheTelemetrySource: TurnMetrics["cacheTelemetrySource"]
         let turnCacheReadBySlot: { system?: number; tools?: number; messages?: number } | undefined
         let turnStopReason: string | undefined
+        // P4 §2: the raw postflight provider usage frame, kept whole so the attempt's
+        // measurement carries full fields (only the settlement crosses the kernel boundary, B4).
+        let turnProviderUsage: ProviderUsage | undefined
 
         const providerPlan = createProviderRequestPlanForProvider(this.opts.provider, context, tools, ext)
         const recorded = measurementForPlan(providerPlan, recordedMeasurements.get(providerPlan.fingerprint))
@@ -2278,6 +2343,7 @@ export class RuntimeRunner {
             kind: "prompt_measured",
             turn: runtime.turn(),
             measurement: promptMeasurement,
+            effect_id: providerEffectId,
           })
         }
         const reservedPromptTokens = (this.opts.promptBudget?.promptOverheadTokens ?? 0)
@@ -2290,6 +2356,23 @@ export class RuntimeRunner {
           && promptMeasurement.source.kind !== "heuristic"
           && promptMeasurement.inputTokens + reservedPromptTokens > this.opts.maxTokens
         if (context.budgetOverflow || measuredOverflow) {
+          // P4 §1.2: blocked BEFORE any transport — zero rungs, status rejected. The
+          // fingerprint still binds the would-be request to its prompt_measured record (G2).
+          await this.appendProviderAttempt(sessionId, {
+            effectId: providerEffectId,
+            attemptSeq: 1,
+            route: this.providerRoute,
+            requestFingerprint: providerPlan.fingerprint,
+            status: "rejected",
+            transportRungs: 0,
+            lastErrorClass: "context_overflow",
+            startedAtMs: attemptStartedAtMs,
+            finishedAtMs: Date.now(),
+            wireEvidence: {
+              protocol: this.providerRoute.protocol,
+              request_fingerprint: providerPlan.fingerprint,
+            },
+          })
           action = await this.commitKernelAction(runtime, this.pendingObservations, {
             kind: "provider_error",
             effect_id: providerEffectId,
@@ -2297,6 +2380,7 @@ export class RuntimeRunner {
             error_kind: "context_overflow",
             retryable: false,
           })
+          this.providerRetryPending = action.kind === "call_provider"
           continue
         }
 
@@ -2312,6 +2396,7 @@ export class RuntimeRunner {
               turnTokens = usageEvt.totalTokens
               turnInputTokens = usageEvt.inputTokens ?? 0
               turnOutputTokens = usageEvt.outputTokens ?? 0
+              turnProviderUsage = usageEvt.providerUsage ?? turnProviderUsage
               // P0-C: capture the prompt-cache split for the tool-gating hit-rate baseline.
               turnCacheReadTokens = usageEvt.cacheReadInputTokens ?? 0
               turnCacheCreationTokens = usageEvt.cacheCreationInputTokens ?? 0
@@ -2343,6 +2428,7 @@ export class RuntimeRunner {
                     source: postflight.source,
                     confidence: postflight.confidence,
                   },
+                  effect_id: providerEffectId,
                 })
               }
               // Phase 4: stop_reason drives the kernel's max-output-tokens recovery. The closing
@@ -2366,6 +2452,26 @@ export class RuntimeRunner {
             const provider = this.opts.provider.descriptor?.().provider ?? "unknown"
             const providerError = classifyProviderError(provider, err)
             const message = providerError.message
+            // P4 §1.2: the transport ladder is exhausted — one attempt record, rung count from
+            // provider telemetry (1 on the single-shot stream path), error CLASS only (B1:
+            // never the raw vendor text).
+            const telemetry = this.opts.provider.peekTransportTelemetry?.()
+            await this.appendProviderAttempt(sessionId, {
+              effectId: providerEffectId,
+              attemptSeq: 1,
+              route: this.providerRoute,
+              requestFingerprint: providerPlan.fingerprint,
+              status: "transport_exhausted",
+              transportRungs: telemetry?.rungs ?? 1,
+              lastErrorClass: providerError.kind,
+              startedAtMs: attemptStartedAtMs,
+              finishedAtMs: Date.now(),
+              wireEvidence: {
+                protocol: this.providerRoute.protocol,
+                request_fingerprint: providerPlan.fingerprint,
+                ...(telemetry?.responseId !== undefined ? { response_id: telemetry.responseId } : {}),
+              },
+            })
             // Reactive recovery is now a kernel decision. Forward the raw provider error and
             // dispatch whatever the kernel returns: `call_provider` to retry with a freshly
             // compacted context, or `done` to terminate with an honest `ContextOverflow`. The
@@ -2379,6 +2485,9 @@ export class RuntimeRunner {
               message,
               ...providerErrorEventFields(providerError),
             })
+            // P4 §1.1: a kernel-recovered retry CONTINUES this invocation (the journal holds the
+            // causation hop); a terminal closes it.
+            this.providerRetryPending = action.kind === "call_provider"
             // Withholding (query.ts parity): surface the raw provider error only when the kernel
             // could NOT recover (it returned a terminal). On a recovered retry (`call_provider`)
             // the error stays hidden, so embedders that terminate on `error` events don't see a
@@ -2392,6 +2501,23 @@ export class RuntimeRunner {
 
         // Do not commit partial provider output after host cancellation.
         if (abortSignal?.aborted) {
+          // P4 §1.2: host cancellation mid-stream — the attempt is evidence too.
+          const telemetry = this.opts.provider.peekTransportTelemetry?.()
+          await this.appendProviderAttempt(sessionId, {
+            effectId: providerEffectId,
+            attemptSeq: 1,
+            route: this.providerRoute,
+            requestFingerprint: providerPlan.fingerprint,
+            status: "aborted",
+            transportRungs: telemetry?.rungs ?? 1,
+            startedAtMs: attemptStartedAtMs,
+            finishedAtMs: Date.now(),
+            wireEvidence: {
+              protocol: this.providerRoute.protocol,
+              request_fingerprint: providerPlan.fingerprint,
+              ...(telemetry?.responseId !== undefined ? { response_id: telemetry.responseId } : {}),
+            },
+          })
           action = await this.commitKernelAction(runtime, this.pendingObservations, {
             kind: "cancel_operation",
             reason: this.cancellationReason ?? "user",
@@ -2422,12 +2548,37 @@ export class RuntimeRunner {
           toolCalls: canonicalToolCalls,
           tokenCount: turnOutputTokens || turnTokens || undefined,
         }
+        // P4 §2: assemble the measurement from the exact numbers that cross the boundary today
+        // (inputTokens/outputTokens turn counters), enriched with the raw provider frame's cache
+        // split and reasoning fields. An invalid frame degrades to no measurement (evidence
+        // never breaks a run); the settlement then falls back to the raw counts below.
+        const attemptUsage = (turnInputTokens > 0 || turnOutputTokens > 0)
+          ? tryNormalizeProviderUsage({
+              inputTokens: turnInputTokens,
+              outputTokens: turnOutputTokens,
+              ...(turnProviderUsage?.cacheReadInputTokens !== undefined
+                ? { cacheReadInputTokens: turnProviderUsage.cacheReadInputTokens }
+                : turnCacheReadTokens > 0 ? { cacheReadInputTokens: turnCacheReadTokens } : {}),
+              ...(turnProviderUsage?.cacheCreationInputTokens !== undefined
+                ? { cacheCreationInputTokens: turnProviderUsage.cacheCreationInputTokens }
+                : turnCacheCreationTokens > 0 ? { cacheCreationInputTokens: turnCacheCreationTokens } : {}),
+              ...(turnProviderUsage?.reasoningTokens !== undefined
+                ? { reasoningTokens: turnProviderUsage.reasoningTokens } : {}),
+              cacheTelemetryStatus: turnCacheTelemetryStatus,
+              ...(turnCacheTelemetrySource !== undefined
+                ? { cacheTelemetrySource: turnCacheTelemetrySource } : {}),
+            })
+          : undefined
+        const settlement = attemptUsage ? this.usageAccountingPolicy.settle(attemptUsage) : undefined
         const providerEvent: Record<string, unknown> = {
           kind: "provider_result",
           effect_id: providerEffectId,
           message: messageToKernelMessage(assistantMessage),
-          ...(turnInputTokens > 0 ? { observed_input_tokens: turnInputTokens } : {}),
-          ...(turnOutputTokens > 0 ? { observed_output_tokens: turnOutputTokens } : {}),
+          // P4-S2: observed_* now comes from the pinned policy's settlement of the measurement.
+          // Under the default full-footprint policy these are provably the numbers the runner
+          // has always fed (inputTokens/outputTokens verbatim under the same >0 gates).
+          ...(turnInputTokens > 0 ? { observed_input_tokens: settlement?.observed_input_tokens ?? turnInputTokens } : {}),
+          ...(turnOutputTokens > 0 ? { observed_output_tokens: settlement?.observed_output_tokens ?? turnOutputTokens } : {}),
           ...(turnStopReason ? { stop_reason: turnStopReason } : {}),
         }
         if (this.opts.skillDir) {
@@ -2454,14 +2605,38 @@ export class RuntimeRunner {
             }
           }
         }
-        action = await this.commitKernelAction(runtime, this.pendingObservations, providerEvent)
+        // P4-S1: land the attempt evidence BEFORE the kernel resolution commits — the record
+        // describes the transport fact, which exists regardless of what the kernel decides next.
+        const attemptTelemetry = this.opts.provider.peekTransportTelemetry?.()
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
+        const wireEvidence: ProviderWireEvidence = {
+          protocol: this.providerRoute.protocol,
+          request_fingerprint: providerPlan.fingerprint,
+          ...(attemptTelemetry?.responseId !== undefined ? { response_id: attemptTelemetry.responseId } : {}),
+          ...(providerReplay !== undefined ? { replay_state: providerReplay } : {}),
+        }
+        await this.appendProviderAttempt(sessionId, {
+          effectId: providerEffectId,
+          attemptSeq: 1,
+          route: this.providerRoute,
+          requestFingerprint: providerPlan.fingerprint,
+          status: "success",
+          transportRungs: attemptTelemetry?.rungs ?? 1,
+          startedAtMs: attemptStartedAtMs,
+          finishedAtMs: Date.now(),
+          ...(attemptUsage !== undefined ? { usage: attemptUsage } : {}),
+          wireEvidence,
+        })
+        action = await this.commitKernelAction(runtime, this.pendingObservations, providerEvent)
         await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
           turn: runtime.turn(),
           content: finalText,
           tokenCount: turnOutputTokens || turnTokens || undefined,
           toolCalls: finalToolCalls,
           providerReplay,
+          effectId: providerEffectId,
+          invocationId,
+          wireEvidence,
         }))
 
         // P0-C: emit per-turn tool-gating telemetry. `activeSkill` reflects the skill in effect
@@ -2494,7 +2669,7 @@ export class RuntimeRunner {
         }
 
       } else if (action.kind === "request_approval") {
-        const resolved = await this.resolveApprovalRequests(action.requests, runtime, sessionId)
+        const resolved = await this.resolveApprovalRequests(action.requests, runtime, sessionId, action.effectId)
         for (const event of resolved.events) yield event
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "approval_result",
@@ -2840,6 +3015,7 @@ export class RuntimeRunner {
               r.contentParts?.length ? r.contentParts : [{ type: "text", text: r.output }],
             ) as Record<string, unknown>[] },
           })),
+          effect_id: toolEffectId,
         })
         // The canonical provider resolution already activates a successfully resolved `skill` call.
         // The host's remaining responsibility is to pin the resolved METHOD content — how to do

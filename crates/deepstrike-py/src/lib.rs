@@ -1005,8 +1005,7 @@ impl CanonicalKernel {
             .inner
             .current_projection()
             .map_err(|error| PyValueError::new_err(error.message))?;
-        serde_json::to_string(&projection)
-            .map_err(|error| PyValueError::new_err(error.to_string()))
+        serde_json::to_string(&projection).map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     fn project_planned_step_json(&self, planned_step_json: String) -> PyResult<String> {
@@ -1019,7 +1018,8 @@ impl CanonicalKernel {
     fn published_effects_manifest_json(&self, planned_step_json: String) -> PyResult<String> {
         deepstrike_core::runtime::kernel::wire::projection::published_effects_manifest_json(
             &planned_step_json,
-        ).map_err(|error| PyValueError::new_err(error.message))
+        )
+        .map_err(|error| PyValueError::new_err(error.message))
     }
 
     fn terminal_json(&self) -> PyResult<Option<String>> {

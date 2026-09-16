@@ -1,5 +1,7 @@
-export type { SessionEvent, SessionLog } from "./session-log.js"
+export type { SessionEvent, SessionEventKind, SessionLog } from "./session-log.js"
 export { InMemorySessionLog } from "./session-log.js"
+// Registered session-event vocabulary (F9/S3; manifest-pinned by sdk-conformance, P7-S4)
+export { SESSION_EVENT_KINDS } from "./session-log.js"
 // Durable transaction capability (Canonical Kernel ABI §9.1)
 export {
   DriverKernelJournal,

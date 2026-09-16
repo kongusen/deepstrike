@@ -3,7 +3,7 @@ name = "deepstrike-node"
 description = "Node.js bindings for DeepStrike runtime kernel"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file = "LICENSE"
 
 [lib]
 crate-type = ["cdylib"]

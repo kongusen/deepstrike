@@ -10,13 +10,13 @@ import type {
 import type { SkillMetadata } from "../skills/loader.js"
 import type { RollbackReason } from "./session-log.js"
 
-const CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts]]"
+export const CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts]]"
 
 export function encodeCanonicalContentParts(parts: unknown[]): string {
   return `${CANONICAL_CONTENT_PARTS_PREFIX}${Buffer.from(JSON.stringify(parts)).toString("base64url")}`
 }
 
-function decodeCanonicalContentParts(content: string): Array<Record<string, unknown>> | undefined {
+export function decodeCanonicalContentParts(content: string): Array<Record<string, unknown>> | undefined {
   if (!content.startsWith(CANONICAL_CONTENT_PARTS_PREFIX)) return undefined
   try {
     const decoded = JSON.parse(

@@ -70,12 +70,31 @@ async function project(value) {
       )
       return clone(recorded)
     }
+    case "content_parts_v1": {
+      // F14/B5 byte contract: encode pins exact bytes; decode of an unknown prefix or an
+      // undecodable payload must return nothing (the text stays literal — never guess).
+      if (Array.isArray(value.input.parts)) {
+        const encoded = sdk.encodeCanonicalContentParts(value.input.parts)
+        const decoded = sdk.decodeCanonicalContentParts(encoded)
+        return { encoded, roundtrip: JSON.stringify(decoded) === JSON.stringify(value.input.parts) }
+      }
+      if (typeof value.input.decode === "string") {
+        return { decoded: sdk.decodeCanonicalContentParts(value.input.decode) ?? null }
+      }
+      throw new StructuredError("invalid_content_parts", "/input", "content_parts_v1 input must carry parts or decode")
+    }
     case "provider_error": {
       try {
         return { stopReason: stopReason.decodeCanonicalStopReason(value.input.stopReason) }
       } catch (error) {
         throw new StructuredError("unknown_stop_reason", "/stopReason", String(error?.message ?? error))
       }
+    }
+    case "session_event_vocabulary": {
+      // F9/S3 (P7-S4): the local registered vocabulary, sorted for byte-stable comparison.
+      // The manifest fixture pins this list across SDKs — extra or missing kinds both fail.
+      const kinds = [...sdk.SESSION_EVENT_KINDS].sort()
+      return { kinds, count: kinds.length }
     }
     case "session_event": {
       const event = value.input.event

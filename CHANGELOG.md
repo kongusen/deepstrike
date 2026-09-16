@@ -4,6 +4,18 @@ All notable changes to DeepStrike are documented here.
 
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed — dual licensing
+
+- DeepStrike is now distributed under a dual license: free under MIT-style terms for
+  individuals and organizations with annual revenue below USD 1,000,000; organizations at
+  or above that threshold must obtain a commercial license from the author (30-day
+  evaluation period excepted). All versions released up to and including 0.2.62 were
+  published under the MIT License and remain available under MIT terms. See
+  [LICENSE](./LICENSE) and [COMMERCIAL.md](./COMMERCIAL.md). Crate/npm/PyPI package
+  metadata now points at the bundled LICENSE file.
+
 ## [0.2.62] - 2026-08-28
 
 ### Fixed — mixed syscall/tool batches no longer produce multi-effect steps

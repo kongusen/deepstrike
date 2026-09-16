@@ -1,0 +1,15 @@
+{
+  "id": "content-parts-no-padding",
+  "domain": "content_parts_v1",
+  "input": {
+    "parts": [
+      { "type": "text", "text": "hi" }
+    ]
+  },
+  "expected": {
+    "canonical": {
+      "encoded": "[[deepstrike-content-parts]]W3sidHlwZSI6InRleHQiLCJ0ZXh0IjoiaGkifV0",
+      "roundtrip": true
+    }
+  }
+}
