@@ -40,6 +40,9 @@ pub mod terminal;
 pub mod transaction;
 
 #[cfg(test)]
+mod crash_point;
+
+#[cfg(test)]
 mod tests;
 
 pub use binding::CanonicalKernel;
