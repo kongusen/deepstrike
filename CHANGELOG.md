@@ -6,6 +6,89 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.63] - 2026-09-16
+
+### Added — runtime constitution documents
+
+- Four constitution documents now govern the runtime data model, in both Chinese and
+  English under `docs/architecture/` (new "运行时数据宪法 / Runtime Data Constitution"
+  sidebar group): **runtime-data-model** (five-layer semantic model L0–L4, engineering
+  principles A1–A6, boundary invariants B1–B9), **runtime-authority** (authority matrix,
+  decisions D1–D5, four identity-minting modes, projection-pair discipline),
+  **runtime-persistence** (Journal = State Truth / Checkpoint = State Snapshot /
+  SessionLog = Evidence Truth; clauses J1–J7, K1–K6, S1–S4, P-1–P-5), and
+  **runtime-causality** (10-hop causality chain, mixed-batch ordering clauses M1–M5,
+  five admission gates, validator rules C1–C8). All `code_refs` are machine-checked by
+  the docs-drift gate.
+
+### Added — chain validator, batch 1 (`ds-chain-validator`)
+
+- New host-ops tooling in the core crate (`runtime::chain_validator` plus the
+  `ds-chain-validator` CLI; never on the SDK runtime path) that judges a journal prefix
+  segment-by-segment: **C1** chain integrity (digest linkage, `step_seq` continuity,
+  genesis), **C2** input idempotency (one `input_id` never yields two different records),
+  **C3** causal closure via `restore_operation` — the §12.2 genesis leg doing chain verify
+  + deterministic re-plan + per-step record-digest comparison, doubling as the direct
+  regression gate for 0.2.62-class "this binary does not reproduce the history it is
+  resuming" incidents, **C4** task lineage (launch-pair uniqueness; spawn resolutions must
+  name an earlier same-operation effect), and **C7** degradation marking (legacy-format
+  hops degrade the checks that need the missing fields instead of failing them). Exit
+  codes: `0` green (degraded/deferred is not a violation), `1` violation, `2` evidence
+  insufficient, `64` usage. Accepts a directory of `*.json`, a single record, a JSON
+  array, or JSONL; record bytes are never re-serialized. Checkpoint (`--checkpoint`) and
+  SessionLog (`--session-log`) inputs are explicitly deferred to batch 2.
+
+### Added — four-SDK golden-fixture sweeps (P7-S1)
+
+- All four SDKs now execute the **entire** kernel-wire fixture directory instead of
+  sampling: every `.json` must land in an executed family or a charter-documented
+  exemption (a stale charter, or an undocumented exemption, fails the suite). Node and
+  Python golden suites were rewritten to per-family directory assertions with per-link
+  record byte + `record_digest` pinning; Rust gained `tests/golden_fixtures_sweep.rs`
+  (reject fixtures pin the exact `WireRejectionKind` against `fixture.expect`,
+  cross-verifying the marker map against typed classification); WASM gained
+  `tests/golden-fixtures-sweep.node.cjs` exercising the **real binding** (the jest suite's
+  moduleNameMapper mock never touched it). Two live drifts surfaced and are recorded:
+  record fixtures pin core's synthetic-step pin (SDKs assert normalized payload + identity
+  and verify chain linkage against the true digests separately), and
+  `collection_too_large` resolves to `malformed_envelope` at the binding boundary while
+  other resolution-stage policy rejections report `invalid_config` — encoded as-is and
+  flagged "under constitution review".
+
+### Added — `content-parts-v1` byte-pinned conformance (P7-S3)
+
+- The `[[deepstrike-content-parts]]` compatibility encoding is now pinned at the byte
+  level across SDKs: base64url **without padding**, compact JSON, literal UTF-8, insertion
+  key order, and unknown prefixes decoded as literal text (never guessed). Sweeping found
+  the SDKs had in fact drifted — Python escaped CJK (`json.dumps` default), WASM used the
+  standard base64 alphabet with padding and could not even decode node/Python output — so
+  Python encodes with `ensure_ascii=False` and WASM encodes/decodes the URL alphabet
+  (decode stays tolerant of legacy padded/std-alphabet payloads). Seven new canonical
+  fixtures (multimodal, no-padding, key-order, unknown-prefix, malformed-payload,
+  non-array, filters-non-objects) run through the conformance runner; the runner owns the
+  `DOMAIN_SDKS` exemption for Rust (no string-content channel), so adapters can no longer
+  self-declare compliance. The prefix and encode/decode helpers are now public exports on
+  node/wasm/python.
+
+### Added — SessionEvent vocabulary manifest (P7-S4)
+
+- The session-event vocabulary is now a machine-enforced manifest: the node union is
+  authoritatively **48** kinds (the earlier "54" count included six `RollbackReason`
+  non-events); the real drift was a strict subset chain py(36) ⊂ wasm(39) ⊂ node(48), so
+  WASM gained 9 union members and Python 12 `TypedDict` mirrors — pure type mirrors, zero
+  runtime change. Lockstep is enforced three ways: compile-time `satisfies`/`Exclude`
+  assertions on node/wasm `SESSION_EVENT_KINDS`, an import-time assert on Python's tuple,
+  and the `session-event-vocabulary.json` conformance fixture diffed across all three
+  adapters (one kind more or less turns the runner red). Rust is runner-exempt (its
+  session log is opaque JSON with no local vocabulary).
+
+### Added — Execution Evidence Plane groundwork (host-side, no runtime change)
+
+- New host-side type modules (`execution-evidence` in node/python/wasm) define the L2
+  evidence vocabulary for 0.2.64 — `ModelInvocation`, `ProviderAttempt`,
+  `ResolvedProviderRoute`, `UsageAccountingPolicy` — under the B7 discipline: this evidence
+  lands in SessionLog and is never fed back as kernel input. Kernel ABI is untouched.
+
 ### Changed — dual licensing
 
 - DeepStrike is now distributed under a dual license: free under MIT-style terms for
