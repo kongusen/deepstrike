@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://deepstrike.dev/fixtures/mixed-batch/schema.json",
+  "title": "Mixed-batch multi-step sequence fixture",
+  "description": "A whole input sequence replayed through the kernel's durable path, pinning the publication contract of every step in the mixed-batch constitution vocabulary (M1-M5). See tests/rust/src/t17_mixed_batch_sequences.rs for the runner and node/tests/mixed-batch-projection.test.ts for the projection-layer consumer.",
+  "type": "object",
+  "required": ["id", "kind", "title", "semantics", "provenance", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["mixed_batch_sequence"]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "semantics": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provenance": {
+      "type": "object",
+      "required": ["sources"],
+      "additionalProperties": false,
+      "properties": {
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["input", "expect"],
+        "additionalProperties": false,
+        "properties": {
+          "input": {
+            "type": "object",
+            "description": "One literal WireEnvelope: operation_id, input_id, observed_at_ms, input. Resolve envelopes pin the exact effect id they settle — minting is deterministic, so a drifted id fails the replay."
+          },
+          "expect": {
+            "type": "object",
+            "required": ["published_kinds"],
+            "additionalProperties": false,
+            "properties": {
+              "published_kinds": {
+                "type": "array",
+                "description": "The step's exact ordered publication, as EffectKindTag snake_case strings.",
+                "items": {
+                  "type": "string",
+                  "enum": ["call_provider", "execute_tools", "request_approval", "spawn_tasks", "preempt_tasks", "persist_memory", "query_memory", "archive_page_out", "load_payload", "evaluate_milestone", "measure_prompt"]
+                }
+              },
+              "withheld_kinds": {
+                "type": "array",
+                "description": "M3: kinds the step dispatched but must not co-publish.",
+                "items": {
+                  "type": "string",
+                  "enum": ["call_provider", "execute_tools", "request_approval", "spawn_tasks", "preempt_tasks", "persist_memory", "query_memory", "archive_page_out", "load_payload", "evaluate_milestone", "measure_prompt"]
+                }
+              },
+              "rederived": {
+                "type": "array",
+                "description": "M3/M4: kinds published by this step that an earlier step withheld.",
+                "items": {
+                  "type": "string",
+                  "enum": ["call_provider", "execute_tools", "request_approval", "spawn_tasks", "preempt_tasks", "persist_memory", "query_memory", "archive_page_out", "load_payload", "evaluate_milestone", "measure_prompt"]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

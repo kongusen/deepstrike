@@ -1,0 +1,253 @@
+{
+  "id": "syscall-host-tool-mixed-batch",
+  "kind": "mixed_batch_sequence",
+  "provenance": {
+    "sources": [
+      "docs/architecture/runtime-causality.md M3/M4",
+      "crates/deepstrike-core/src/runtime/kernel/wire/driver/provider.rs plan_provider_completed",
+      "crates/deepstrike-core/src/runtime/kernel/wire/driver/tests.rs a_mixed_syscall_and_host_tool_batch_resolves_without_re_emitting_the_tool_batch"
+    ]
+  },
+  "semantics": "One provider turn mixes a memory query (syscall) with a host tool call. M3: the kernel publishes only the syscall effect; the execute_tools batch is withheld from the step, then re-derived by the resume once the syscall effect settles and the kind slot is free. Settling the batch continues the loop with a fresh provider call.",
+  "steps": [
+    {
+      "expect": {
+        "published_kinds": []
+      },
+      "input": {
+        "input": {
+          "config": {
+            "execution_policy": {
+              "max_turns": 12
+            },
+            "host_effect_support": {
+              "supported": [
+                "call_provider",
+                "execute_tools",
+                "load_payload",
+                "spawn_tasks",
+                "preempt_tasks",
+                "persist_memory",
+                "query_memory"
+              ]
+            },
+            "memory_access": {
+              "binding_id": "mem-binding-1",
+              "capabilities": {
+                "read": true,
+                "write": true
+              }
+            },
+            "memory_policy": {
+              "retrieval_top_k": 4
+            },
+            "resource_quota": {
+              "max_workflow_nodes": 3
+            },
+            "skill_catalog": [
+              {
+                "description": "debug helper",
+                "name": "debug"
+              }
+            ],
+            "tool_catalog": [
+              {
+                "name": "start_workflow"
+              },
+              {
+                "name": "submit_workflow_nodes"
+              },
+              {
+                "name": "skill"
+              },
+              {
+                "name": "update_plan"
+              },
+              {
+                "name": "memory"
+              },
+              {
+                "name": "read_result"
+              },
+              {
+                "name": "send_message"
+              },
+              {
+                "name": "publish_channel"
+              },
+              {
+                "name": "receive_mailbox"
+              },
+              {
+                "name": "receive_channel"
+              },
+              {
+                "name": "read_object"
+              },
+              {
+                "name": "search"
+              }
+            ]
+          },
+          "kind": "configure_operation"
+        },
+        "input_id": "in-configure",
+        "observed_at_ms": "1700000000000",
+        "operation_id": "op-mixed-batch-1"
+      }
+    },
+    {
+      "expect": {
+        "published_kinds": [
+          "call_provider"
+        ]
+      },
+      "input": {
+        "input": {
+          "entry": {
+            "kind": "agent",
+            "run_spec": {
+              "exposure_baseline": [
+                "start_workflow",
+                "submit_workflow_nodes",
+                "skill",
+                "update_plan",
+                "memory",
+                "read_result",
+                "send_message",
+                "publish_channel",
+                "receive_mailbox",
+                "receive_channel",
+                "read_object",
+                "search"
+              ],
+              "goal": "write the research brief"
+            },
+            "task": {
+              "goal": "write the research brief"
+            }
+          },
+          "initial_context": {},
+          "kind": "start_operation"
+        },
+        "input_id": "in-start",
+        "observed_at_ms": "1700000001000",
+        "operation_id": "op-mixed-batch-1"
+      }
+    },
+    {
+      "expect": {
+        "published_kinds": [
+          "query_memory"
+        ],
+        "withheld_kinds": [
+          "execute_tools"
+        ]
+      },
+      "input": {
+        "input": {
+          "effect_id": "op-mixed-batch-1:step:1:effect:0",
+          "kind": "resolve_effect",
+          "outcome": {
+            "result": {
+              "kind": "provider",
+              "outcome": {
+                "kind": "completed",
+                "message": {
+                  "content": "",
+                  "role": "assistant",
+                  "tool_calls": [
+                    {
+                      "arguments": {
+                        "query": "past briefs"
+                      },
+                      "call_id": "call-1",
+                      "name": "memory"
+                    },
+                    {
+                      "arguments": {
+                        "q": "kpi benchmarks"
+                      },
+                      "call_id": "call-2",
+                      "name": "search"
+                    }
+                  ]
+                }
+              }
+            },
+            "status": "succeeded"
+          }
+        },
+        "input_id": "in-mixed",
+        "observed_at_ms": "1700000002000",
+        "operation_id": "op-mixed-batch-1"
+      }
+    },
+    {
+      "expect": {
+        "published_kinds": [
+          "execute_tools"
+        ],
+        "rederived": [
+          "execute_tools"
+        ]
+      },
+      "input": {
+        "input": {
+          "effect_id": "op-mixed-batch-1:step:2:effect:0",
+          "kind": "resolve_effect",
+          "outcome": {
+            "result": {
+              "kind": "memory_queried",
+              "recalls": [
+                {
+                  "content": "prefers numbered sections",
+                  "kind": "project",
+                  "name": "brief-style",
+                  "record_ref": "rec-1"
+                }
+              ]
+            },
+            "status": "succeeded"
+          }
+        },
+        "input_id": "in-recalls",
+        "observed_at_ms": "1700000003000",
+        "operation_id": "op-mixed-batch-1"
+      }
+    },
+    {
+      "expect": {
+        "published_kinds": [
+          "call_provider"
+        ]
+      },
+      "input": {
+        "input": {
+          "effect_id": "op-mixed-batch-1:step:3:effect:0",
+          "kind": "resolve_effect",
+          "outcome": {
+            "result": {
+              "kind": "tools",
+              "results": [
+                {
+                  "call_id": "call-2",
+                  "kind": "inline",
+                  "result": {
+                    "disposition": "recoverable",
+                    "output": "kpi: 12%"
+                  }
+                }
+              ]
+            },
+            "status": "succeeded"
+          }
+        },
+        "input_id": "in-tools",
+        "observed_at_ms": "1700000004000",
+        "operation_id": "op-mixed-batch-1"
+      }
+    }
+  ],
+  "title": "0.2.62 incident scene: a syscall + host-tool mixed batch"
+}

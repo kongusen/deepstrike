@@ -1,0 +1,185 @@
+{
+  "id": "syscall-only-control-plane",
+  "kind": "mixed_batch_sequence",
+  "provenance": {
+    "sources": [
+      "docs/architecture/runtime-causality.md M1",
+      "crates/deepstrike-core/src/runtime/kernel/wire/driver/provider.rs plan_provider_completed (§5k note)",
+      "crates/deepstrike-core/src/runtime/kernel/wire/driver/tests.rs a_syscall_only_turn_continues_with_another_provider_call"
+    ]
+  },
+  "semantics": "A provider turn of syscalls alone (skill activation + plan update) publishes no effect of its own. Without an answer the operation would stall, so the kernel continues the turn itself: the step's only publication is the next provider call.",
+  "steps": [
+    {
+      "expect": {
+        "published_kinds": []
+      },
+      "input": {
+        "input": {
+          "config": {
+            "execution_policy": {
+              "max_turns": 12
+            },
+            "host_effect_support": {
+              "supported": [
+                "call_provider",
+                "execute_tools",
+                "load_payload",
+                "spawn_tasks",
+                "preempt_tasks",
+                "persist_memory",
+                "query_memory"
+              ]
+            },
+            "memory_access": {
+              "binding_id": "mem-binding-1",
+              "capabilities": {
+                "read": true,
+                "write": true
+              }
+            },
+            "memory_policy": {
+              "retrieval_top_k": 4
+            },
+            "resource_quota": {
+              "max_workflow_nodes": 3
+            },
+            "skill_catalog": [
+              {
+                "description": "debug helper",
+                "name": "debug"
+              }
+            ],
+            "tool_catalog": [
+              {
+                "name": "start_workflow"
+              },
+              {
+                "name": "submit_workflow_nodes"
+              },
+              {
+                "name": "skill"
+              },
+              {
+                "name": "update_plan"
+              },
+              {
+                "name": "memory"
+              },
+              {
+                "name": "read_result"
+              },
+              {
+                "name": "send_message"
+              },
+              {
+                "name": "publish_channel"
+              },
+              {
+                "name": "receive_mailbox"
+              },
+              {
+                "name": "receive_channel"
+              },
+              {
+                "name": "read_object"
+              },
+              {
+                "name": "search"
+              }
+            ]
+          },
+          "kind": "configure_operation"
+        },
+        "input_id": "in-configure",
+        "observed_at_ms": "1700000000000",
+        "operation_id": "op-control-plane-1"
+      }
+    },
+    {
+      "expect": {
+        "published_kinds": [
+          "call_provider"
+        ]
+      },
+      "input": {
+        "input": {
+          "entry": {
+            "kind": "agent",
+            "run_spec": {
+              "exposure_baseline": [
+                "start_workflow",
+                "submit_workflow_nodes",
+                "skill",
+                "update_plan",
+                "memory",
+                "read_result",
+                "send_message",
+                "publish_channel",
+                "receive_mailbox",
+                "receive_channel",
+                "read_object",
+                "search"
+              ],
+              "goal": "write the research brief"
+            },
+            "task": {
+              "goal": "write the research brief"
+            }
+          },
+          "initial_context": {},
+          "kind": "start_operation"
+        },
+        "input_id": "in-start",
+        "observed_at_ms": "1700000001000",
+        "operation_id": "op-control-plane-1"
+      }
+    },
+    {
+      "expect": {
+        "published_kinds": [
+          "call_provider"
+        ]
+      },
+      "input": {
+        "input": {
+          "effect_id": "op-control-plane-1:step:1:effect:0",
+          "kind": "resolve_effect",
+          "outcome": {
+            "result": {
+              "kind": "provider",
+              "outcome": {
+                "kind": "completed",
+                "message": {
+                  "content": "",
+                  "role": "assistant",
+                  "tool_calls": [
+                    {
+                      "arguments": {
+                        "name": "debug"
+                      },
+                      "call_id": "call-1",
+                      "name": "skill"
+                    },
+                    {
+                      "arguments": {
+                        "progress": "sources listed"
+                      },
+                      "call_id": "call-2",
+                      "name": "update_plan"
+                    }
+                  ]
+                }
+              }
+            },
+            "status": "succeeded"
+          }
+        },
+        "input_id": "in-control",
+        "observed_at_ms": "1700000002000",
+        "operation_id": "op-control-plane-1"
+      }
+    }
+  ],
+  "title": "§5k: a pure control-plane batch"
+}
