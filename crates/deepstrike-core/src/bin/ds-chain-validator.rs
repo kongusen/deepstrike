@@ -1,4 +1,5 @@
-//! `ds-chain-validator` — the P7-S5 chain validator CLI (P2 §5 rules C1–C4 + C7, batch 1).
+//! `ds-chain-validator` — the P7-S5 chain validator CLI: rules C1–C4 (batch 1), C6/C8
+//! (batch 3, SessionLog plane), C5 (batch 2, checkpoint plane).
 //!
 //! Host-ops tooling: CI gates and incident triage run the same knife. Input is a journal prefix
 //! — a sequence of kernel record blobs — grouped into per-operation chain segments, each judged
@@ -20,20 +21,30 @@
 //!   stream — events keep the file's append order, and streams never cross-join;
 //! - a file: one stream — a JSON object (one event), a JSON array (one event per element), or
 //!   JSON Lines (one event per non-empty line).
+//!
+//! Checkpoint input forms (batch 2), per `--checkpoint` path — same shapes as the journal:
+//! a directory of `*.json` checkpoints, a JSON object (one checkpoint), a JSON array, or JSON
+//! Lines. A golden-fixture wrapper (a JSON object holding a nested `checkpoint` document
+//! beside its ack/restore metadata) is unwrapped automatically. Without this plane C5 is
+//! deferred, not red; `--strict` arms the re-plan replay.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use deepstrike_core::runtime::chain_validator::{
-    ValidationReport, Verdict, validate_journal, validate_with_session_log,
+    ValidationReport, Verdict, validate_journal, validate_with_checkpoint,
 };
 
-const USAGE: &str = "Usage: ds-chain-validator --journal <path> [--journal <path>...] \
-                     [--session-log <path>...] [--format human|json]\n\
+const USAGE: &str = "Usage: ds-chain-validator [--journal <path>...] [--session-log <path>...] \
+                     [--checkpoint <path>...] [--strict] [--format human|json]\n\
+                     \x20                    (at least one evidence plane is required)\n\
                      \n\
-                     Validates a kernel journal prefix against P2 §5 rules C1–C4, marking\n\
+                     Validates a kernel journal prefix against P2 §5 rules C1–C5, marking\n\
                      degraded evidence per C7. With --session-log, the batch-3 cross-checks\n\
-                     (C6/C8) join the SessionLog evidence plane against the journal.\n\
+                     (C6/C8) join the SessionLog evidence plane against the journal. With\n\
+                     --checkpoint, the batch-2 rule (C5) anchors each checkpoint against the\n\
+                     journal: genesis/covered-head/tail digests (C5a) and the launch-token\n\
+                     ledger (C5b).\n\
                      Exit codes: 0 = all green, 1 = violation proven, 2 = evidence insufficient.\n\
                      \n\
                      --journal <path>     record source: directory of *.json records, a JSON\n\
@@ -41,14 +52,22 @@ const USAGE: &str = "Usage: ds-chain-validator --journal <path> [--journal <path
                      --session-log <path> session-log source: a directory (each *.json/*.jsonl\n\
                      \x20                    file is one append-ordered stream) or a single\n\
                      \x20                    stream file — object/array/JSONL (repeatable)\n\
-                     --format <mode>      human (default) or json\n\
-                     \n\
-                     Batch 3 does not consume checkpoint inputs; the C5 checkpoint\n\
-                     self-consistency rule and the launch-token ledger arrive with batch 2.";
+                     --checkpoint <path>  checkpoint source: directory of *.json checkpoints,\n\
+                     \x20                    a JSON object/array file, or a JSONL file\n\
+                     \x20                    (repeatable; golden-fixture wrappers holding a\n\
+                     \x20                    nested `checkpoint` are unwrapped). Omit it and\n\
+                     \x20                    C5 is deferred, not red\n\
+                     --strict             with --checkpoint: re-plan the journal prefix from\n\
+                     \x20                    genesis through the covered step and require the\n\
+                     \x20                    re-derived state digest and launch-token ledger to\n\
+                     \x20                    match the checkpoint (costs one full fold)\n\
+                     --format <mode>      human (default) or json";
 
 fn main() -> ExitCode {
     let mut journals: Vec<PathBuf> = Vec::new();
     let mut session_logs: Vec<PathBuf> = Vec::new();
+    let mut checkpoints: Vec<PathBuf> = Vec::new();
+    let mut strict = false;
     let mut format = "human".to_string();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -65,6 +84,13 @@ fn main() -> ExitCode {
                 };
                 session_logs.push(PathBuf::from(path));
             }
+            "--checkpoint" => {
+                let Some(path) = args.next() else {
+                    return usage("--checkpoint requires a path");
+                };
+                checkpoints.push(PathBuf::from(path));
+            }
+            "--strict" => strict = true,
             "--format" => {
                 let Some(mode) = args.next() else {
                     return usage("--format requires human or json");
@@ -74,11 +100,6 @@ fn main() -> ExitCode {
                 }
                 format = mode;
             }
-            "--checkpoint" => {
-                return usage(
-                    "--checkpoint is consumed by batch-2 rules; batch-1/batch-3 rules do not read it",
-                );
-            }
             "--help" | "-h" => {
                 println!("{USAGE}");
                 return ExitCode::from(0);
@@ -86,8 +107,8 @@ fn main() -> ExitCode {
             _ => return usage(&format!("unknown argument: {arg}")),
         }
     }
-    if journals.is_empty() {
-        return usage("at least one --journal path is required");
+    if journals.is_empty() && session_logs.is_empty() && checkpoints.is_empty() {
+        return usage("at least one --journal, --session-log, or --checkpoint path is required");
     }
 
     let mut blobs: Vec<Vec<u8>> = Vec::new();
@@ -117,10 +138,21 @@ fn main() -> ExitCode {
         }
     }
 
-    let report = if session_logs.is_empty() {
+    let mut checkpoint_blobs: Vec<Vec<u8>> = Vec::new();
+    for path in &checkpoints {
+        match read_checkpoint(path, &mut checkpoint_blobs) {
+            Ok(count) => eprintln!("read {count} checkpoint blob(s) from {}", path.display()),
+            Err(message) => {
+                eprintln!("ds-chain-validator: {message}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
+    let report = if session_logs.is_empty() && checkpoints.is_empty() {
         validate_journal(&blobs)
     } else {
-        validate_with_session_log(&blobs, &streams)
+        validate_with_checkpoint(&blobs, &streams, &checkpoint_blobs, strict)
     };
     match format.as_str() {
         "json" => match serde_json::to_string_pretty(&report) {
@@ -208,6 +240,29 @@ fn read_session_log(path: &Path, streams: &mut Vec<Vec<Vec<u8>>>) -> Result<usiz
     Ok(added)
 }
 
+/// Collect checkpoint blobs from one checkpoint-plane source — the same shapes the journal
+/// accepts: a directory of `*.json` files (name-sorted), a whole-file JSON object, a JSON
+/// array (one checkpoint per element), or JSON Lines. Bytes pass through untouched, with one
+/// accommodation for the published artifact shape: a blob that parses as a JSON object
+/// carrying a nested `checkpoint` object (the golden-fixture wrapper, which also holds
+/// ack/restore metadata) contributes that nested document instead — re-serialized compactly,
+/// digest-safe because a checkpoint's self-digest is computed from its decoded fields, not
+/// its input byte layout. Every verdict about the bytes belongs to the validator's decoder.
+fn read_checkpoint(path: &Path, blobs: &mut Vec<Vec<u8>>) -> Result<usize, String> {
+    let before = blobs.len();
+    read_journal(path, blobs)?;
+    for blob in &mut blobs[before..] {
+        if let Ok(serde_json::Value::Object(map)) =
+            serde_json::from_slice::<serde_json::Value>(blob)
+            && let Some(nested) = map.get("checkpoint")
+            && nested.is_object()
+        {
+            *blob = serde_json::to_vec(nested).unwrap_or_default();
+        }
+    }
+    Ok(blobs.len() - before)
+}
+
 /// Split one file's bytes into blobs: a JSON array yields one blob per element, a single JSON
 /// value yields one blob, anything else parses as JSON Lines. Array elements are re-emitted
 /// compactly — safe for journal records because the record's self-digest is computed from its
@@ -279,6 +334,15 @@ fn print_human(report: &ValidationReport) {
             report.unparseable_events
         );
     }
+    if let Some(checkpoints) = report.checkpoints {
+        println!("checkpoint plane: {checkpoints} parseable checkpoint(s)");
+    }
+    if report.unparseable_checkpoints > 0 {
+        println!(
+            "unparseable checkpoint blob(s): {} (evidence insufficient, not a violation)",
+            report.unparseable_checkpoints
+        );
+    }
     for rule in &report.cross_checks {
         let label = match rule.verdict {
             Verdict::Pass => "pass",
@@ -286,6 +350,14 @@ fn print_human(report: &ValidationReport) {
             Verdict::Degraded => "degraded",
         };
         println!("cross-check {} {label}: {}", rule.rule, rule.detail);
+    }
+    for rule in &report.checkpoint_checks {
+        let label = match rule.verdict {
+            Verdict::Pass => "pass",
+            Verdict::Fail => "FAIL",
+            Verdict::Degraded => "degraded",
+        };
+        println!("checkpoint-check {} {label}: {}", rule.rule, rule.detail);
     }
     for deferred in &report.deferred {
         println!("deferred: {deferred}");

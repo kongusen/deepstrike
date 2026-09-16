@@ -52,13 +52,39 @@
 //!
 //! C7 carries across planes: old logs simply lack `provider_attempt` / the additive fields —
 //! the rules that need them degrade, never fail.
+//!
+//! ## Batch 2 · the checkpoint input plane (0.2.65 S1)
+//!
+//! [`validate_with_checkpoint`] adds the third plane: one or more logical checkpoints (§12).
+//! A checkpoint is a *claim about the journal* — "this logical state was captured at step N,
+//! anchored by these digests" — and C5 is the rule that makes the claim answer to the bytes.
+//! Without a checkpoint input, C5 is deferred, not red (the C7 philosophy: a plane nobody
+//! handed over cannot fail).
+//!
+//! - **C5a · checkpoint anchoring** — the checkpoint's `genesis_digest` names the journal's
+//!   genesis record, its covered head names the record at `through_step_seq`, and every
+//!   bounded-tail entry whose journal record survives carries that record's digest. A present
+//!   record with the wrong digest is a proven contradiction (fail); a pruned or missing record
+//!   is unverifiable (degrade) — retention is not a crime.
+//! - **C5b · the launch-token ledger** — the durable half of C4: within one checkpoint the
+//!   same launch token may not name two mints at different steps (reuse across `TaskLaunch`
+//!   payloads), every pending `SpawnTasks` effect must carry tokens the ledger registered at
+//!   the effect's own step, and no ledger entry may sit beyond the covered boundary. Under
+//!   `--strict` the re-plan fold must re-derive the exact ledger.
+//! - **`--strict` · the re-plan replay** — the journal is folded from genesis through the
+//!   covered step through the same restore path C3 uses, and the re-derived checkpoint must
+//!   carry the checkpoint's `state_digest`; the checkpoint+tail restore ladder must also hold
+//!   against the journal above the covered step. Cost is one full fold — explicit request only.
 
 use std::collections::HashMap;
 
 use serde::Serialize;
 
 use crate::runtime::kernel::wire::ConfigDefaults;
-use crate::runtime::kernel::wire::effect::{EffectOutcome, EffectSuccess, ProviderOutcome};
+use crate::runtime::kernel::wire::checkpoint::KernelCheckpoint;
+use crate::runtime::kernel::wire::effect::{
+    EffectKind, EffectOutcome, EffectSuccess, ProviderOutcome, SpawnTasksEffect,
+};
 use crate::runtime::kernel::wire::record::{
     KernelRecord, NormalizedPayload, RecordError, verify_record_chain,
 };
@@ -69,15 +95,18 @@ use crate::runtime::kernel::wire::transaction::InMemoryRecordIndex;
 /// synthetic so a report reader never confuses it with a real operation.
 pub const UNATTRIBUTED_SEGMENT: &str = "(unattributed)";
 
-/// Batch-1 scope limits, surfaced verbatim on every report so a reader never mistakes a green
-/// segment for a complete C4.
-const DEFERRED: &[&str] = &[
-    "c4.parent_chain: parent links are not journaled; an orphan spawn cannot resolve (no \
-     outstanding effect), which C3's re-plan enforces structurally",
-    "c4.launch_token_ledger: the durable LaunchToken ledger lives in checkpoints, so reuse \
-     across different TaskLaunch payloads is a batch-2 (checkpoint input) check; the \
-     journal-direct shadow — (task_id, attempt_id) pair uniqueness — is checked here",
-];
+/// Scope limits that hold no matter which evidence planes were handed over, surfaced verbatim
+/// on every report so a reader never mistakes a green verdict for a complete §5.
+const DEFERRED_ALWAYS: &str = "c4.parent_chain: parent links are not journaled; an orphan spawn \
+     cannot resolve (no outstanding effect), which C3's re-plan enforces structurally";
+
+/// The checkpoint-plane deferral: without `--checkpoint`, C5's durable half cannot run. The
+/// journal-direct shadow it names is real and checked under C4, so the limit is a scope
+/// statement, not a gap.
+const DEFERRED_WITHOUT_CHECKPOINT: &str = "c5b.launch_token_ledger: the durable LaunchToken \
+     ledger lives in checkpoints; provide --checkpoint to check token reuse across TaskLaunch \
+     payloads (the journal-direct shadow — (task_id, attempt_id) pair uniqueness — is checked \
+     under C4)";
 
 /// One rule's verdict on one segment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -135,6 +164,19 @@ pub struct ValidationReport {
     /// provided session plane with zero parseable events is evidence-insufficient (exit 2).
     #[serde(default)]
     pub session_events: Option<usize>,
+    /// Batch 2: checkpoint↔journal anchoring verdicts (C5a/C5b). Report-scope, not
+    /// per-segment: these rules join the checkpoint plane to the journal plane.
+    #[serde(default)]
+    pub checkpoint_checks: Vec<RuleReport>,
+    /// Checkpoint blobs that did not decode at all. `0` when no checkpoint plane was handed
+    /// over.
+    #[serde(default)]
+    pub unparseable_checkpoints: usize,
+    /// `Some(count)` when checkpoint blobs were handed over — how many decoded. `None` = no
+    /// checkpoint plane. An explicitly provided checkpoint plane with zero parseable
+    /// checkpoints is evidence-insufficient (exit 2), exactly like the other planes.
+    #[serde(default)]
+    pub checkpoints: Option<usize>,
     /// Batch-scope limits a green verdict does not cover.
     pub deferred: Vec<String>,
 }
@@ -145,20 +187,24 @@ impl ValidationReport {
             .iter()
             .flat_map(|segment| segment.rules.iter())
             .chain(self.cross_checks.iter())
+            .chain(self.checkpoint_checks.iter())
             .any(|rule| rule.verdict == Verdict::Fail)
     }
 
     /// The CLI contract (P7 §3.2): `0` all green, `1` a violation was proven, `2` the evidence
     /// was insufficient. A proven violation outranks insufficient evidence; degraded hops and
-    /// deferred scope never move the code. An explicitly provided SessionLog plane that yields
-    /// nothing parseable is insufficient evidence of the same kind as unparseable records.
+    /// deferred scope never move the code. An explicitly provided SessionLog or checkpoint
+    /// plane that yields nothing parseable is insufficient evidence of the same kind as
+    /// unparseable records.
     pub fn exit_code(&self) -> i32 {
         if self.has_violations() {
             1
         } else if self.unparseable_records > 0
             || self.unparseable_events > 0
+            || self.unparseable_checkpoints > 0
             || self.segments.is_empty()
             || matches!(self.session_events, Some(0))
+            || matches!(self.checkpoints, Some(0))
         {
             2
         } else {
@@ -227,7 +273,27 @@ where
     J: AsRef<[u8]>,
     S: AsRef<[u8]>,
 {
-    let (outcomes, unparseable_records) = validate_journal_plane(journal_blobs);
+    validate_with_checkpoint(journal_blobs, session_streams, &[] as &[Vec<u8>], false)
+}
+
+/// Batch 2 entry point: the journal plane plus whichever evidence planes the caller holds.
+/// An empty `session_streams` means journal-only; an empty `checkpoint_blobs` means C5 is
+/// deferred, not run. `strict` arms the re-plan replay (C5's `--strict`): each checkpoint's
+/// journal prefix is folded from genesis through the covered step and both the state digest
+/// and the launch-token ledger must re-derive exactly. Strict costs one fold per checkpoint
+/// and is meaningless without checkpoint blobs.
+pub fn validate_with_checkpoint<J, S, C>(
+    journal_blobs: &[J],
+    session_streams: &[Vec<S>],
+    checkpoint_blobs: &[C],
+    strict: bool,
+) -> ValidationReport
+where
+    J: AsRef<[u8]>,
+    S: AsRef<[u8]>,
+    C: AsRef<[u8]>,
+{
+    let (outcomes, unparseable_records, segment_records) = validate_journal_plane(journal_blobs);
 
     let mut streams: Vec<SessionStream> = Vec::with_capacity(session_streams.len());
     for stream_blobs in session_streams {
@@ -262,7 +328,19 @@ where
         Vec::new()
     };
 
-    let deferred: Vec<String> = DEFERRED.iter().map(|line| (*line).to_string()).collect();
+    // C5 joins the checkpoint plane to the journal.
+    let checkpoint_plane_provided = !checkpoint_blobs.is_empty();
+    let (checkpoint_checks, unparseable_checkpoints, checkpoints) = if checkpoint_plane_provided {
+        let (checks, unparseable, parsed) = check_c5(&segment_records, checkpoint_blobs, strict);
+        (checks, unparseable, Some(parsed))
+    } else {
+        (Vec::new(), 0, None)
+    };
+
+    let mut deferred = vec![DEFERRED_ALWAYS.to_string()];
+    if !checkpoint_plane_provided {
+        deferred.push(DEFERRED_WITHOUT_CHECKPOINT.to_string());
+    }
 
     ValidationReport {
         segments: outcomes.into_iter().map(|outcome| outcome.report).collect(),
@@ -270,12 +348,23 @@ where
         cross_checks,
         unparseable_events,
         session_events,
+        checkpoint_checks,
+        unparseable_checkpoints,
+        checkpoints,
         deferred,
     }
 }
 
 /// The journal plane on its own: classify blobs into hops, group into segments, judge each.
-fn validate_journal_plane<B: AsRef<[u8]>>(blobs: &[B]) -> (Vec<SegmentOutcome>, usize) {
+/// The complete records also come back grouped per operation — C5 anchors checkpoints against
+/// them without re-decoding a single blob.
+fn validate_journal_plane<B: AsRef<[u8]>>(
+    blobs: &[B],
+) -> (
+    Vec<SegmentOutcome>,
+    usize,
+    HashMap<String, Vec<KernelRecord>>,
+) {
     let mut hops: Vec<Hop> = Vec::with_capacity(blobs.len());
     let mut unparseable_records = 0;
     for (ordinal, blob) in blobs.iter().enumerate() {
@@ -286,11 +375,15 @@ fn validate_journal_plane<B: AsRef<[u8]>>(blobs: &[B]) -> (Vec<SegmentOutcome>, 
     }
 
     let mut segments: HashMap<String, Vec<Hop>> = HashMap::new();
+    let mut complete: HashMap<String, Vec<KernelRecord>> = HashMap::new();
     for hop in hops {
         let key = hop
             .operation_id()
             .map(str::to_string)
             .unwrap_or_else(|| UNATTRIBUTED_SEGMENT.to_string());
+        if let Hop::Complete(record) = &hop {
+            complete.entry(key.clone()).or_default().push(record.clone());
+        }
         segments.entry(key).or_default().push(hop);
     }
 
@@ -300,7 +393,7 @@ fn validate_journal_plane<B: AsRef<[u8]>>(blobs: &[B]) -> (Vec<SegmentOutcome>, 
         .iter()
         .map(|key| validate_segment(key, segments.remove(key).unwrap_or_default()))
         .collect();
-    (reports, unparseable_records)
+    (reports, unparseable_records, complete)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1376,6 +1469,472 @@ fn digests_of(hop: &Hop) -> (Option<&str>, Option<&str>) {
             degraded.record_digest.as_deref(),
         ),
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// batch 2 · the checkpoint evidence plane (C5, 0.2.65 S1)
+// ---------------------------------------------------------------------------------------------
+
+/// Verdict accumulation for one C5 rule — the C7 ordering every other rule uses: any proven
+/// contradiction fails, else any unverifiable clause degrades, else pass.
+struct C5Clauses {
+    violations: Vec<String>,
+    degradations: Vec<String>,
+    confirmations: Vec<String>,
+}
+
+impl C5Clauses {
+    fn new() -> Self {
+        Self {
+            violations: Vec::new(),
+            degradations: Vec::new(),
+            confirmations: Vec::new(),
+        }
+    }
+
+    fn violation(&mut self, detail: String) {
+        self.violations.push(detail);
+    }
+
+    fn degraded(&mut self, detail: String) {
+        self.degradations.push(detail);
+    }
+
+    fn confirms(&mut self, detail: String) {
+        self.confirmations.push(detail);
+    }
+
+    fn report(self, rule: &str) -> RuleReport {
+        let rule = rule.to_string();
+        if !self.violations.is_empty() {
+            return RuleReport {
+                rule,
+                verdict: Verdict::Fail,
+                detail: self.violations.join("; "),
+            };
+        }
+        if !self.degradations.is_empty() {
+            let mut detail = self.degradations.join("; ");
+            if !self.confirmations.is_empty() {
+                detail.push_str("; ");
+                detail.push_str(&self.confirmations.join("; "));
+            }
+            return RuleReport {
+                rule,
+                verdict: Verdict::Degraded,
+                detail,
+            };
+        }
+        RuleReport {
+            rule,
+            verdict: Verdict::Pass,
+            detail: if self.confirmations.is_empty() {
+                "nothing to anchor".to_string()
+            } else {
+                self.confirmations.join("; ")
+            },
+        }
+    }
+}
+
+/// Decode and judge every checkpoint blob against the journal's per-operation records.
+/// Returns the C5 verdicts, the blob count that did not decode, and the count that did.
+fn check_c5<C: AsRef<[u8]>>(
+    segments: &HashMap<String, Vec<KernelRecord>>,
+    blobs: &[C],
+    strict: bool,
+) -> (Vec<RuleReport>, usize, usize) {
+    let mut checks = Vec::new();
+    let mut unparseable = 0usize;
+    let mut parsed = 0usize;
+    for blob in blobs {
+        match KernelCheckpoint::from_checkpoint_bytes(blob.as_ref()) {
+            Ok(checkpoint) => {
+                parsed += 1;
+                let records = segments.get(checkpoint.operation_id().as_str());
+                // The strict fold feeds both rules, so it runs once per checkpoint.
+                let replay = strict.then(|| strict_replay(&checkpoint, records.map(Vec::as_slice)));
+                checks.push(check_c5a(
+                    &checkpoint,
+                    records.map(Vec::as_slice),
+                    replay.as_ref(),
+                ));
+                checks.push(check_c5b(&checkpoint, replay.as_ref()));
+            }
+            Err(error) => {
+                unparseable += 1;
+                checks.push(RuleReport {
+                    rule: "C5a".to_string(),
+                    verdict: Verdict::Degraded,
+                    detail: format!(
+                        "checkpoint blob did not decode — its claims are unverifiable (C7): {}",
+                        error.message()
+                    ),
+                });
+            }
+        }
+    }
+    (checks, unparseable, parsed)
+}
+
+/// What `--strict` produced for one checkpoint. The re-plan replay folds the journal from
+/// genesis through the checkpoint's own anchor steps through the same restore path C3 uses,
+/// re-derives the checkpoint the fold would have written, and independently drives the
+/// checkpoint+tail restore ladder against the records above the covered step. A windowed
+/// checkpoint (base < through) captures its logical state **at the base** and bridges to
+/// `through` with its bounded tail, so the fold lands on two steps: base, and covered.
+enum StrictReplay {
+    /// The replay could not run on this evidence — unverifiable, never a failure.
+    Skipped(String),
+    /// The fold or the ladder itself refused the records — a proven inconsistency.
+    Faulted(String),
+    Done {
+        /// The re-derived checkpoint at the checkpoint's base step — the state its
+        /// `state_digest` and launch-token ledger claim. A windowed checkpoint (base <
+        /// through) captures its logical state **at the base** and bridges to `through` with
+        /// its bounded tail, so this is the fold the checkpoint's claims answer to; the tail's
+        /// landing is proven by the ladder arm plus C5a's digest reconciliation.
+        at_base: KernelCheckpoint,
+        ladder: Result<(), String>,
+        above_records: usize,
+    },
+}
+
+fn strict_replay(checkpoint: &KernelCheckpoint, records: Option<&[KernelRecord]>) -> StrictReplay {
+    let through = checkpoint.through_step_seq().get();
+    let base = checkpoint.base_step_seq().get();
+    let Some(records) = records else {
+        return StrictReplay::Skipped(
+            "the journal holds no segment for this operation".to_string(),
+        );
+    };
+
+    // The fold must start at the real genesis and run unbroken to the covered step; anything
+    // less would re-derive a *different* history and every mismatch it reported would be an
+    // artifact of the gap, not of the checkpoint.
+    let mut steps: Vec<u64> = records
+        .iter()
+        .map(|record| record.step_seq().get())
+        .filter(|step| *step <= through)
+        .collect();
+    steps.sort_unstable();
+    steps.dedup();
+    if steps != (0..=through).collect::<Vec<u64>>() {
+        return StrictReplay::Skipped(format!(
+            "the journal does not hold an unbroken record run from step 0 through {through} \
+             (pruned prefix or partial copy); the re-plan replay cannot start at genesis"
+        ));
+    }
+
+    // The fold to the base answers the checkpoint's own claims (state digest, ledger); the
+    // tail's landing is proven by the ladder arm plus C5a's digest reconciliation, so one
+    // fold suffices for both full-state and windowed checkpoints.
+    let fold_to_base = || -> Result<KernelCheckpoint, String> {
+        let mut prefix: Vec<&KernelRecord> = records
+            .iter()
+            .filter(|record| record.step_seq().get() <= base)
+            .collect();
+        prefix.sort_by_key(|record| record.step_seq().get());
+        let prefix: Vec<KernelRecord> = prefix.into_iter().cloned().collect();
+        let folded = restore_operation(
+            None,
+            &prefix,
+            ConfigDefaults::default(),
+            InMemoryRecordIndex::from_records(&prefix),
+        )
+        .map_err(|fault| format!("{}: {}", fault.code.as_str(), fault.message))?;
+        folded
+            .transaction
+            .checkpoint_candidate(folded.driver.project_logical_state())
+            .map_err(|fault| format!("{}: {}", fault.code.as_str(), fault.message))?
+            .decode()
+            .map_err(|error| {
+                format!(
+                    "the re-derived checkpoint does not decode: {}",
+                    error.message()
+                )
+            })
+    };
+    let at_base = match fold_to_base() {
+        Ok(checkpoint) => checkpoint,
+        Err(fault) => return StrictReplay::Faulted(fault),
+    };
+
+    // The other half of §12.2: the checkpoint plus the journal above it must drive the real
+    // restore. An empty tail (checkpoint at the journal head) still proves the ladder's first
+    // three lines.
+    let mut above: Vec<&KernelRecord> = records
+        .iter()
+        .filter(|record| record.step_seq().get() > through)
+        .collect();
+    above.sort_by_key(|record| record.step_seq().get());
+    let above_records = above.len();
+    let above: Vec<KernelRecord> = above.into_iter().cloned().collect();
+    let ladder = restore_operation(
+        Some(checkpoint),
+        &above,
+        ConfigDefaults::default(),
+        InMemoryRecordIndex::from_records(&above),
+    )
+    .map(|_: RestoredOperation<InMemoryRecordIndex>| ())
+    .map_err(|fault| format!("{}: {}", fault.code.as_str(), fault.message));
+
+    StrictReplay::Done {
+        at_base,
+        ladder,
+        above_records,
+    }
+}
+
+/// C5a · every digest the checkpoint claims about the journal must anchor. A present record
+/// with the wrong digest is a proven contradiction; a pruned or missing record is unverifiable.
+/// Under `--strict`, the re-plan must also reproduce the captured state.
+fn check_c5a(
+    checkpoint: &KernelCheckpoint,
+    records: Option<&[KernelRecord]>,
+    replay: Option<&StrictReplay>,
+) -> RuleReport {
+    let rule = "C5a";
+    let mut clauses = C5Clauses::new();
+    let Some(records) = records else {
+        return RuleReport {
+            rule: rule.to_string(),
+            verdict: Verdict::Degraded,
+            detail: format!(
+                "checkpoint names operation {}; the journal holds no segment for it, so no \
+                 anchor can be checked",
+                checkpoint.operation_id()
+            ),
+        };
+    };
+    let through = checkpoint.through_step_seq().get();
+
+    // The genesis anchor: a checkpoint binds itself to the operation's identity record.
+    match record_at(records, 0) {
+        Some(genesis)
+            if genesis.record_digest().as_str() != checkpoint.genesis_digest().as_str() =>
+        {
+            clauses.violation(format!(
+                "the journal's genesis record hashes to {}, but the checkpoint binds genesis {} — \
+                 this checkpoint was captured on another chain",
+                genesis.record_digest(),
+                checkpoint.genesis_digest()
+            ));
+        }
+        Some(_) => clauses.confirms("genesis digest anchored".to_string()),
+        None => clauses.degraded(
+            "the genesis record is not in the journal (pruned prefix); the identity anchor is \
+             unverifiable"
+                .to_string(),
+        ),
+    }
+
+    // The covered-head anchor: §12.3 rule 2 — the covered head names the through step, not the
+    // journal's current tip.
+    match record_at(records, through) {
+        Some(record)
+            if record.record_digest().as_str()
+                != checkpoint.covered_transaction_head_digest().as_str() =>
+        {
+            clauses.violation(format!(
+                "the journal record at the covered step {through} hashes to {}, but the \
+                 checkpoint's covered head is {}",
+                record.record_digest(),
+                checkpoint.covered_transaction_head_digest()
+            ));
+        }
+        Some(_) => clauses.confirms(format!("covered head anchored at step {through}")),
+        None => clauses.degraded(format!(
+            "no journal record at the covered step {through}; the covered head is unverifiable"
+        )),
+    }
+
+    // The base anchor and the bounded-tail reconciliation matter only when the checkpoint
+    // covers a window (base < through); a full-state checkpoint's base is its covered head.
+    let base = checkpoint.base_step_seq().get();
+    if base != through {
+        match record_at(records, base) {
+            Some(record)
+                if record.record_digest().as_str() != checkpoint.base_record_digest().as_str() =>
+            {
+                clauses.violation(format!(
+                    "the journal record at the tail base step {base} hashes to {}, but the \
+                     checkpoint anchors its tail on {}",
+                    record.record_digest(),
+                    checkpoint.base_record_digest()
+                ));
+            }
+            _ => {}
+        }
+    }
+    let mut reconciled = 0usize;
+    let mut pruned = 0usize;
+    for entry in checkpoint.tail_inputs() {
+        match record_at(records, entry.step_seq.get()) {
+            Some(record) if record.record_digest().as_str() != entry.record_digest.as_str() => {
+                clauses.violation(format!(
+                    "the journal record at step {} disagrees with the checkpoint's bounded tail \
+                     (journal {}, checkpoint {})",
+                    entry.step_seq.get(),
+                    record.record_digest(),
+                    entry.record_digest
+                ));
+            }
+            Some(_) => reconciled += 1,
+            None => pruned += 1,
+        }
+    }
+    if reconciled > 0 {
+        clauses.confirms(format!(
+            "{reconciled} bounded-tail entries reconcile with the journal"
+        ));
+    }
+    if pruned > 0 {
+        clauses.degraded(format!(
+            "{pruned} bounded-tail entries have no journal record (pruned interval)"
+        ));
+    }
+
+    match replay {
+        Some(StrictReplay::Skipped(reason)) => {
+            clauses.degraded(format!("strict replay skipped: {reason}"));
+        }
+        Some(StrictReplay::Faulted(fault)) => {
+            clauses.violation(format!("strict replay faulted: {fault}"));
+        }
+        Some(StrictReplay::Done {
+            at_base,
+            ladder,
+            above_records,
+        }) => {
+            let base = checkpoint.base_step_seq().get();
+            if at_base.state_digest() != checkpoint.state_digest() {
+                clauses.violation(format!(
+                    "strict replay folds the journal to state digest {} at the checkpoint's \
+                     base step {base}, but the checkpoint captured {} there",
+                    at_base.state_digest(),
+                    checkpoint.state_digest()
+                ));
+            } else {
+                clauses.confirms(format!(
+                    "strict replay reproduces the captured state digest at step {base}"
+                ));
+            }
+            match ladder {
+                Ok(()) => clauses.confirms(format!(
+                    "the checkpoint+tail restore ladder holds against the {above_records} \
+                     journal record(s) above the covered step"
+                )),
+                Err(fault) => clauses.violation(format!(
+                    "the checkpoint+tail restore ladder faults against this journal: {fault}"
+                )),
+            }
+        }
+        None => {}
+    }
+
+    clauses.report(rule)
+}
+
+/// C5b · the durable launch-token ledger — the batch-2 half C4 defers to this plane. Within
+/// one checkpoint, no token may name two mints at different steps (reuse across `TaskLaunch`
+/// payloads), every pending `SpawnTasks` effect must carry a token the ledger registered at
+/// the effect's own step, and no entry may sit beyond the covered boundary. Under `--strict`
+/// the re-plan must re-derive the exact ledger.
+fn check_c5b(checkpoint: &KernelCheckpoint, replay: Option<&StrictReplay>) -> RuleReport {
+    let rule = "C5b";
+    let mut clauses = C5Clauses::new();
+    let transition = &checkpoint.logical_state().transition;
+    let through = checkpoint.through_step_seq().get();
+
+    let mut mints: HashMap<&str, u64> = HashMap::new();
+    for entry in &transition.launch_tokens {
+        let token = entry.launch_token.as_str();
+        let step = entry.step_seq.get();
+        match mints.get(token) {
+            Some(previous) if *previous != step => clauses.violation(format!(
+                "launch token {token} is minted at step {step} and step {previous} — reuse \
+                 across TaskLaunch payloads"
+            )),
+            Some(_) => clauses.violation(format!(
+                "launch token {token} is registered twice at step {step} — a duplicated ledger \
+                 entry"
+            )),
+            None => {
+                mints.insert(token, step);
+            }
+        }
+        if step > through {
+            clauses.violation(format!(
+                "launch token {token} is minted at step {step}, beyond the covered boundary \
+                 {through}"
+            ));
+        }
+    }
+
+    for effect in &transition.pending_effects {
+        let EffectKind::SpawnTasks(spawn) = &effect.effect else {
+            continue;
+        };
+        let SpawnTasksEffect { tasks, .. } = spawn;
+        let effect_step = parse_effect_step(effect.effect_id.as_str()).map(|(_, step)| step);
+        for launch in tasks {
+            let token = launch.launch_token.as_str();
+            match (mints.get(token), effect_step) {
+                (None, _) => clauses.violation(format!(
+                    "pending effect {} carries launch token {token} the ledger never registered",
+                    effect.effect_id
+                )),
+                (Some(&minted), Some(step)) if minted != step => clauses.violation(format!(
+                    "pending effect {} carries launch token {token} minted at step {minted}, not \
+                     at the effect's own step {step}",
+                    effect.effect_id
+                )),
+                _ => {}
+            }
+        }
+    }
+
+    if !transition.launch_tokens.is_empty() {
+        clauses.confirms(format!(
+            "{} launch token(s) anchored; no reuse across TaskLaunch payloads",
+            transition.launch_tokens.len()
+        ));
+    }
+
+    match replay {
+        Some(StrictReplay::Skipped(reason)) => {
+            clauses.degraded(format!("strict replay skipped: {reason}"));
+        }
+        Some(StrictReplay::Faulted(fault)) => {
+            clauses.violation(format!("strict replay faulted: {fault}"));
+        }
+        Some(StrictReplay::Done { at_base, .. }) => {
+            let replayed_ledger = &at_base.logical_state().transition.launch_tokens;
+            if replayed_ledger != &transition.launch_tokens {
+                clauses.violation(format!(
+                    "strict replay mints a different launch-token ledger: the journal fold \
+                     registers {} token(s), the checkpoint carries {}",
+                    replayed_ledger.len(),
+                    transition.launch_tokens.len()
+                ));
+            } else {
+                clauses.confirms(
+                    "strict replay reproduces the launch-token ledger exactly".to_string(),
+                );
+            }
+        }
+        None => {}
+    }
+
+    clauses.report(rule)
+}
+
+/// The segment's complete record at one step, if the journal holds it.
+fn record_at(records: &[KernelRecord], step_seq: u64) -> Option<&KernelRecord> {
+    records
+        .iter()
+        .find(|record| record.step_seq().get() == step_seq)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2573,5 +3132,583 @@ mod tests {
             cross(&report, "C8").detail
         );
         assert_eq!(report.exit_code(), 0);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // batch 2 · C5 — the checkpoint evidence plane
+    // -----------------------------------------------------------------------------------------
+
+    use crate::runtime::kernel::wire::checkpoint::{
+        CheckpointDraft, KernelCheckpoint, LaunchTokenState,
+    };
+    use crate::runtime::kernel::wire::driver::PlannedStep;
+    use crate::runtime::kernel::wire::transaction::CheckpointBoundary;
+    use std::path::PathBuf;
+
+    /// A live run whose runtime stays alive, so a test can take checkpoint candidates the way
+    /// the kernel does — and keep driving the same runtime afterwards.
+    fn live_runtime(
+        envelopes: &[WireEnvelope],
+    ) -> (
+        Vec<KernelRecord>,
+        KernelTransaction<PlannedStep, InMemoryRecordIndex>,
+        CanonicalOperationDriver,
+    ) {
+        let mut tx = KernelTransaction::new(ConfigDefaults::default(), InMemoryRecordIndex::new());
+        let mut driver = CanonicalOperationDriver::new();
+        let mut journal = Vec::new();
+        for envelope in envelopes {
+            let preparation = tx.prepare(envelope, |context| driver.plan(context));
+            let token = preparation
+                .token()
+                .unwrap_or_else(|| {
+                    panic!("expected a prepared step, got {:?}", preparation.fault())
+                })
+                .clone();
+            let head = preparation.record().unwrap().record_digest().clone();
+            let committed = tx.commit(&token, &head).expect("commit must succeed");
+            journal.push(committed.record.clone());
+            driver
+                .note_committed(committed.step_seq)
+                .expect("the driver folds the step it planned");
+        }
+        (journal, tx, driver)
+    }
+
+    fn checkpoint_at_head(
+        tx: &KernelTransaction<PlannedStep, InMemoryRecordIndex>,
+        driver: &CanonicalOperationDriver,
+    ) -> KernelCheckpoint {
+        tx.checkpoint_candidate(driver.project_logical_state())
+            .expect("the head checkpoints")
+            .decode()
+            .expect("the candidate decodes")
+    }
+
+    fn checkpoint_blob(checkpoint: &KernelCheckpoint) -> Vec<u8> {
+        checkpoint.checkpoint_bytes().into_vec()
+    }
+
+    fn checkpoint_check<'a>(report: &'a ValidationReport, id: &str) -> &'a RuleReport {
+        report
+            .checkpoint_checks
+            .iter()
+            .find(|rule| rule.rule == id)
+            .unwrap_or_else(|| panic!("the report has no {id} checkpoint-check"))
+    }
+
+    fn no_streams() -> Vec<Vec<Vec<u8>>> {
+        Vec::new()
+    }
+
+    #[test]
+    fn without_a_checkpoint_plane_c5_is_deferred_not_red() {
+        let op = operation("op-c5-deferred");
+        let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let report = validate_journal(&blobs(&chain));
+        assert!(report.checkpoint_checks.is_empty());
+        assert_eq!(report.checkpoints, None);
+        assert_eq!(report.unparseable_checkpoints, 0);
+        assert_eq!(
+            report.deferred.len(),
+            2,
+            "the checkpoint plane was never offered"
+        );
+        assert!(
+            report.deferred[1].contains("c5b.launch_token_ledger"),
+            "{}",
+            report.deferred[1]
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_real_checkpoint_anchors_its_journal() {
+        let op = operation("op-c5-green");
+        let (chain, tx, driver) = live_runtime(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_overflow_envelope(&op, 1),
+        ]);
+        let checkpoint = checkpoint_at_head(&tx, &driver);
+        let report = validate_with_checkpoint(
+            &blobs(&chain),
+            &no_streams(),
+            &[checkpoint_blob(&checkpoint)],
+            false,
+        );
+        assert_eq!(report.checkpoints, Some(1));
+        assert_eq!(report.unparseable_checkpoints, 0);
+        for id in ["C5a", "C5b"] {
+            assert_eq!(
+                checkpoint_check(&report, id).verdict,
+                Verdict::Pass,
+                "{id}: {}",
+                checkpoint_check(&report, id).detail
+            );
+        }
+        assert!(
+            checkpoint_check(&report, "C5a")
+                .detail
+                .contains("covered head anchored at step"),
+            "{}",
+            checkpoint_check(&report, "C5a").detail
+        );
+        assert_eq!(
+            report.deferred.len(),
+            1,
+            "the checkpoint plane retires the c5b deferral"
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn strict_replay_reproduces_the_covered_state_and_the_ladder_holds() {
+        let op = operation("op-c5-strict");
+        let (chain, tx, driver) = live_runtime(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_overflow_envelope(&op, 1),
+        ]);
+        let checkpoint = checkpoint_at_head(&tx, &driver);
+        let report = validate_with_checkpoint(
+            &blobs(&chain),
+            &no_streams(),
+            &[checkpoint_blob(&checkpoint)],
+            true,
+        );
+        let c5a = checkpoint_check(&report, "C5a");
+        assert_eq!(c5a.verdict, Verdict::Pass, "{}", c5a.detail);
+        assert!(
+            c5a.detail
+                .contains("strict replay reproduces the captured state digest"),
+            "{}",
+            c5a.detail
+        );
+        assert!(
+            c5a.detail.contains("restore ladder holds"),
+            "{}",
+            c5a.detail
+        );
+        let c5b = checkpoint_check(&report, "C5b");
+        assert_eq!(c5b.verdict, Verdict::Pass, "{}", c5b.detail);
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn strict_replay_with_tail_records_drives_the_whole_ladder() {
+        let op = operation("op-c5-strict-tail");
+        let (mut chain, mut tx, mut driver) =
+            live_runtime(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        // The checkpoint is taken at step 1; the record that lands afterwards is the tail the
+        // ladder has to replay.
+        let checkpoint = checkpoint_at_head(&tx, &driver);
+        let preparation = tx.prepare(&resolve_overflow_envelope(&op, 1), |context| {
+            driver.plan(context)
+        });
+        let token = preparation.token().expect("the tail step prepares").clone();
+        let head = preparation.record().unwrap().record_digest().clone();
+        let committed = tx.commit(&token, &head).expect("the tail step commits");
+        chain.push(committed.record.clone());
+        driver
+            .note_committed(committed.step_seq)
+            .expect("the driver folds the tail step");
+
+        let report = validate_with_checkpoint(
+            &blobs(&chain),
+            &no_streams(),
+            &[checkpoint_blob(&checkpoint)],
+            true,
+        );
+        let c5a = checkpoint_check(&report, "C5a");
+        assert_eq!(c5a.verdict, Verdict::Pass, "{}", c5a.detail);
+        assert!(
+            c5a.detail.contains("against the 1 journal record(s) above"),
+            "{}",
+            c5a.detail
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_bounded_tail_checkpoint_reconciles_with_the_journal() {
+        let op = operation("op-c5-bounded");
+        let (mut chain, mut tx, mut driver) =
+            live_runtime(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        // Base the window at step 1, then let the run grow past it and rebase: the checkpoint
+        // then covers (1, 2] as a bounded tail instead of a full state.
+        let candidate = tx
+            .checkpoint_candidate(driver.project_logical_state())
+            .expect("the base checkpoints");
+        let boundary: CheckpointBoundary = candidate.boundary();
+        let base_state = candidate
+            .decode()
+            .expect("the base decodes")
+            .logical_state()
+            .clone();
+        let preparation = tx.prepare(&resolve_overflow_envelope(&op, 1), |context| {
+            driver.plan(context)
+        });
+        let token = preparation.token().expect("the tail step prepares").clone();
+        let head = preparation.record().unwrap().record_digest().clone();
+        let committed = tx.commit(&token, &head).expect("the tail step commits");
+        chain.push(committed.record.clone());
+        driver
+            .note_committed(committed.step_seq)
+            .expect("the driver folds the tail step");
+
+        let rebased = tx
+            .checkpoint_rebase(&boundary, base_state)
+            .expect("the window rebases")
+            .decode()
+            .expect("the rebase decodes");
+        assert_eq!(rebased.base_step_seq().get(), 1);
+        assert_eq!(rebased.through_step_seq().get(), 2);
+        assert_eq!(rebased.tail_inputs().len(), 1);
+
+        // Strict, to prove the re-plan replay agrees with a windowed checkpoint too: the
+        // windowed checkpoint captures its state at the base step, so the fold lands there,
+        // and the ladder replays the tail onto it.
+        let report = validate_with_checkpoint(
+            &blobs(&chain),
+            &no_streams(),
+            &[checkpoint_blob(&rebased)],
+            true,
+        );
+        let c5a = checkpoint_check(&report, "C5a");
+        assert_eq!(c5a.verdict, Verdict::Pass, "{}", c5a.detail);
+        assert!(
+            c5a.detail.contains("1 bounded-tail entries reconcile"),
+            "{}",
+            c5a.detail
+        );
+        assert!(
+            c5a.detail.contains("the captured state digest at step 1"),
+            "{}",
+            c5a.detail
+        );
+        assert_eq!(report.exit_code(), 0);
+    }
+
+    #[test]
+    fn a_checkpoint_from_another_chain_fails_c5a() {
+        let op = operation("op-c5-foreign");
+        // Same operation id, different genesis: the journal's configure froze max_turns 12,
+        // the checkpoint's chain froze 24. Identity digests are the only witness.
+        let (chain, _tx, _driver) =
+            live_runtime(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let foreign_config = |max_turns: u32| {
+            envelope(
+                &op,
+                "in-configure",
+                1_700_000_000_000,
+                KernelInput::ConfigureOperation(ConfigureOperation {
+                    config: OperationConfig {
+                        execution_policy: Some(ExecutionPolicy {
+                            max_turns: Some(max_turns),
+                            ..ExecutionPolicy::default()
+                        }),
+                        host_effect_support: HostEffectSupport::new([
+                            EffectKindTag::CallProvider,
+                            EffectKindTag::SpawnTasks,
+                        ]),
+                        ..OperationConfig::default()
+                    },
+                }),
+            )
+        };
+        let (_chain_other, other_tx, other_driver) =
+            live_runtime(&[foreign_config(24), agent_start_envelope(&op)]);
+        let foreign = checkpoint_at_head(&other_tx, &other_driver);
+
+        let report = validate_with_checkpoint(
+            &blobs(&chain),
+            &no_streams(),
+            &[checkpoint_blob(&foreign)],
+            false,
+        );
+        let c5a = checkpoint_check(&report, "C5a");
+        assert_eq!(c5a.verdict, Verdict::Fail, "{}", c5a.detail);
+        assert!(
+            c5a.detail.contains("captured on another chain"),
+            "{}",
+            c5a.detail
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_reused_launch_token_fails_c5b() {
+        let op = operation("op-c5-tokens");
+        let (chain, tx, driver) = live_runtime(&[
+            configure_envelope(&op),
+            workflow_start_envelope(&op),
+            resolve_spawn_envelope(
+                &op,
+                "in-ack-1",
+                1_700_000_002_000,
+                "op-c5-tokens:step:1:effect:0",
+                &[("wf-node0", "wf-node0:attempt:1")],
+            ),
+        ]);
+        let checkpoint = checkpoint_at_head(&tx, &driver);
+        assert_eq!(
+            checkpoint.logical_state().transition.launch_tokens.len(),
+            1,
+            "the workflow start minted one launch token"
+        );
+
+        // Forge the reuse honestly: re-assemble with the same token registered at a second
+        // step. The digests are computed, so the blob decodes — the content is what lies.
+        let mut state = checkpoint.logical_state().clone();
+        let minted = state.transition.launch_tokens[0].clone();
+        state.transition.launch_tokens.push(LaunchTokenState {
+            launch_token: minted.launch_token,
+            step_seq: WireU64::new(2),
+        });
+        let forged = KernelCheckpoint::assemble(CheckpointDraft {
+            operation_id: checkpoint.operation_id().clone(),
+            genesis_digest: checkpoint.genesis_digest().clone(),
+            base_step_seq: checkpoint.base_step_seq(),
+            base_record_digest: checkpoint.base_record_digest().clone(),
+            through_step_seq: checkpoint.through_step_seq(),
+            covered_transaction_head_digest: checkpoint.covered_transaction_head_digest().clone(),
+            logical_state: state,
+            tail_inputs: checkpoint.tail_inputs().to_vec(),
+        })
+        .expect("the forged draft assembles");
+
+        let report = validate_with_checkpoint(
+            &blobs(&chain),
+            &no_streams(),
+            &[checkpoint_blob(&forged)],
+            false,
+        );
+        let c5b = checkpoint_check(&report, "C5b");
+        assert_eq!(c5b.verdict, Verdict::Fail, "{}", c5b.detail);
+        assert!(
+            c5b.detail.contains("reuse across TaskLaunch payloads"),
+            "{}",
+            c5b.detail
+        );
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn strict_replay_catches_a_ledger_the_journal_never_minted() {
+        let op = operation("op-c5-moved-mint");
+        let (chain, tx, driver) = live_runtime(&[
+            configure_envelope(&op),
+            workflow_start_envelope(&op),
+            resolve_spawn_envelope(
+                &op,
+                "in-ack-1",
+                1_700_000_002_000,
+                "op-c5-moved-mint:step:1:effect:0",
+                &[("wf-node0", "wf-node0:attempt:1")],
+            ),
+        ]);
+        let checkpoint = checkpoint_at_head(&tx, &driver);
+
+        // Move the mint from step 1 to step 2. No duplicate, nothing beyond the boundary, no
+        // pending effect to contradict — the default anchors cannot see the lie; the re-plan
+        // is the only witness.
+        let mut state = checkpoint.logical_state().clone();
+        state.transition.launch_tokens[0].step_seq = WireU64::new(2);
+        let forged = KernelCheckpoint::assemble(CheckpointDraft {
+            operation_id: checkpoint.operation_id().clone(),
+            genesis_digest: checkpoint.genesis_digest().clone(),
+            base_step_seq: checkpoint.base_step_seq(),
+            base_record_digest: checkpoint.base_record_digest().clone(),
+            through_step_seq: checkpoint.through_step_seq(),
+            covered_transaction_head_digest: checkpoint.covered_transaction_head_digest().clone(),
+            logical_state: state,
+            tail_inputs: checkpoint.tail_inputs().to_vec(),
+        })
+        .expect("the forged draft assembles");
+
+        let default_report = validate_with_checkpoint(
+            &blobs(&chain),
+            &no_streams(),
+            &[checkpoint_blob(&forged)],
+            false,
+        );
+        assert_eq!(
+            checkpoint_check(&default_report, "C5b").verdict,
+            Verdict::Pass,
+            "the default plane cannot see a moved mint: {}",
+            checkpoint_check(&default_report, "C5b").detail
+        );
+
+        let strict_report = validate_with_checkpoint(
+            &blobs(&chain),
+            &no_streams(),
+            &[checkpoint_blob(&forged)],
+            true,
+        );
+        let c5b = checkpoint_check(&strict_report, "C5b");
+        assert_eq!(c5b.verdict, Verdict::Fail, "{}", c5b.detail);
+        assert!(
+            c5b.detail.contains("different launch-token ledger"),
+            "{}",
+            c5b.detail
+        );
+        assert_eq!(
+            checkpoint_check(&strict_report, "C5a").verdict,
+            Verdict::Fail,
+            "the ledger is part of the state, so the state digest moves too"
+        );
+        assert_eq!(strict_report.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_tail_disconnected_from_the_journal_fails_c5a() {
+        let op = operation("op-c5-spliced");
+        let (chain_a, tx, driver) = live_runtime(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_overflow_envelope(&op, 1),
+        ]);
+        let checkpoint = checkpoint_at_head(&tx, &driver);
+
+        // A second run sharing the first two envelopes (deterministic, so byte-identical) but
+        // resolving step 1 through a different input id. Its record chains cleanly onto a's
+        // step 1 — C1 cannot see the splice; only the checkpoint's covered head can.
+        let other_resolution = envelope(
+            &op,
+            "in-resolve-other",
+            1_700_000_002_000,
+            KernelInput::ResolveEffect(ResolveEffect {
+                effect_id: EffectId::new("op-c5-spliced:step:1:effect:0").unwrap(),
+                outcome: EffectOutcome::Succeeded(EffectSucceeded {
+                    result: EffectSuccess::Provider(ProviderSuccess {
+                        outcome: ProviderOutcome::ContextOverflow(
+                            ProviderContextOverflow::default(),
+                        ),
+                    }),
+                }),
+            }),
+        );
+        let (chain_b, _tx_b, _driver_b) = live_runtime(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            other_resolution,
+        ]);
+        let mut spliced = chain_a[..2].to_vec();
+        spliced.push(chain_b[2].clone());
+
+        let report = validate_with_checkpoint(
+            &blobs(&spliced),
+            &no_streams(),
+            &[checkpoint_blob(&checkpoint)],
+            false,
+        );
+        assert_eq!(
+            rule(&report, 0, "C1").verdict,
+            Verdict::Pass,
+            "the splice chains cleanly — C1 is not the witness here"
+        );
+        let c5a = checkpoint_check(&report, "C5a");
+        assert_eq!(c5a.verdict, Verdict::Fail, "{}", c5a.detail);
+        assert!(c5a.detail.contains("covered step 2"), "{}", c5a.detail);
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn a_pruned_journal_degrades_the_c5_anchors_and_c1_keeps_its_verdict() {
+        let op = operation("op-c5-pruned");
+        let (chain, tx, driver) = live_runtime(&[
+            configure_envelope(&op),
+            agent_start_envelope(&op),
+            resolve_overflow_envelope(&op, 1),
+        ]);
+        let checkpoint = checkpoint_at_head(&tx, &driver);
+        // Retention reclaimed the prefix: the genesis and the start record are gone.
+        let pruned = chain[2..].to_vec();
+
+        let report = validate_with_checkpoint(
+            &blobs(&pruned),
+            &no_streams(),
+            &[checkpoint_blob(&checkpoint)],
+            true,
+        );
+        // C5 judges honestly: the identity anchor is unverifiable, the covered head anchors
+        // fine, and the strict replay skips rather than folding a foreign history.
+        let c5a = checkpoint_check(&report, "C5a");
+        assert_eq!(c5a.verdict, Verdict::Degraded, "{}", c5a.detail);
+        assert!(
+            c5a.detail.contains("identity anchor is unverifiable"),
+            "{}",
+            c5a.detail
+        );
+        assert!(
+            c5a.detail.contains("covered head anchored at step 2"),
+            "{}",
+            c5a.detail
+        );
+        assert!(
+            c5a.detail.contains("strict replay skipped"),
+            "{}",
+            c5a.detail
+        );
+        // C1's batch-1 stance is unchanged by the checkpoint plane: a segment whose first
+        // record is not genesis is a broken chain until a rule is taught about acked
+        // reclamation — deliberately out of C5's scope (S1 adds C5a/C5b, nothing else).
+        assert_eq!(rule(&report, 0, "C1").verdict, Verdict::Fail);
+        assert!(report.has_violations());
+        assert_eq!(report.exit_code(), 1);
+    }
+
+    #[test]
+    fn an_unparseable_checkpoint_leaves_evidence_insufficient() {
+        let op = operation("op-c5-junk");
+        let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
+        let report = validate_with_checkpoint(
+            &blobs(&chain),
+            &no_streams(),
+            &[b"{not a checkpoint".to_vec()],
+            false,
+        );
+        assert_eq!(report.unparseable_checkpoints, 1);
+        assert_eq!(report.checkpoints, Some(0));
+        assert_eq!(
+            checkpoint_check(&report, "C5a").verdict,
+            Verdict::Degraded,
+            "{}",
+            checkpoint_check(&report, "C5a").detail
+        );
+        assert_eq!(report.exit_code(), 2);
+    }
+
+    #[test]
+    fn the_published_golden_checkpoints_decode_through_the_checkpoint_plane() {
+        let fixture_dir =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/kernel-wire");
+        let mut blobs = Vec::new();
+        for name in [
+            "golden_checkpoint_agent_turn",
+            "golden_checkpoint_bounded_tail",
+        ] {
+            let wrapper: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(fixture_dir.join(format!("{name}.json")))
+                    .expect("fixture readable"),
+            )
+            .expect("fixture json");
+            blobs.push(
+                serde_json::to_vec(&wrapper["checkpoint"]).expect("the nested checkpoint writes"),
+            );
+        }
+        // No journal segment names these operations, so C5a degrades; C5b is
+        // checkpoint-internal and still runs — it must never fail on a real published
+        // checkpoint.
+        let report = validate_with_checkpoint(&[] as &[Vec<u8>], &no_streams(), &blobs, false);
+        assert_eq!(report.checkpoints, Some(2));
+        assert_eq!(report.unparseable_checkpoints, 0);
+        let c5a = checkpoint_check(&report, "C5a");
+        assert_eq!(c5a.verdict, Verdict::Degraded, "{}", c5a.detail);
+        assert!(c5a.detail.contains("holds no segment"), "{}", c5a.detail);
+        let c5b = checkpoint_check(&report, "C5b");
+        assert_ne!(c5b.verdict, Verdict::Fail, "{}", c5b.detail);
+        assert!(!report.has_violations());
     }
 }
