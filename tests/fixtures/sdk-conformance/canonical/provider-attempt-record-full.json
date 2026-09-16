@@ -1,0 +1,80 @@
+{
+  "id": "provider-attempt-record-full",
+  "domain": "provider_attempt_record",
+  "input": {
+    "attempt": {
+      "effectId": "op-fixture:step:1:effect:0",
+      "attemptSeq": 1,
+      "route": {
+        "routeId": "sha256:fixture-route",
+        "provider": "fixture-provider",
+        "protocol": "anthropic-messages",
+        "model": "fixture-model",
+        "endpoint": {
+          "id": "fixture-provider.anthropic-messages",
+          "protocol": "anthropic-messages",
+          "baseURL": "https://api.fixture.invalid"
+        },
+        "adapterVersion": "0.2.64",
+        "capabilitiesRef": "anthropic-messages"
+      },
+      "requestFingerprint": "sha256:fixture-request",
+      "status": "success",
+      "transportRungs": 1,
+      "startedAtMs": 1700000000000,
+      "finishedAtMs": 1700000000123,
+      "usage": {
+        "inputTokens": 100,
+        "uncachedInputTokens": 60,
+        "outputTokens": 40,
+        "cacheReadInputTokens": 25,
+        "cacheCreationInputTokens": 15,
+        "reasoningTokens": 5
+      },
+      "wireEvidence": {
+        "protocol": "anthropic-messages",
+        "request_fingerprint": "sha256:fixture-request",
+        "response_id": "msg_fixture"
+      }
+    },
+    "policyId": "deepstrike.full-footprint@2026-09-15"
+  },
+  "expected": {
+    "canonical": {
+      "effect_id": "op-fixture:step:1:effect:0",
+      "attempt_seq": 1,
+      "route": {
+        "routeId": "sha256:fixture-route",
+        "provider": "fixture-provider",
+        "protocol": "anthropic-messages",
+        "model": "fixture-model",
+        "endpoint": {
+          "id": "fixture-provider.anthropic-messages",
+          "protocol": "anthropic-messages",
+          "baseURL": "https://api.fixture.invalid"
+        },
+        "adapterVersion": "0.2.64",
+        "capabilitiesRef": "anthropic-messages"
+      },
+      "request_fingerprint": "sha256:fixture-request",
+      "status": "success",
+      "transport_rungs": 1,
+      "started_at_ms": 1700000000000,
+      "finished_at_ms": 1700000000123,
+      "usage": {
+        "inputTokens": 100,
+        "uncachedInputTokens": 60,
+        "outputTokens": 40,
+        "cacheReadInputTokens": 25,
+        "cacheCreationInputTokens": 15,
+        "reasoningTokens": 5
+      },
+      "wire_evidence": {
+        "protocol": "anthropic-messages",
+        "request_fingerprint": "sha256:fixture-request",
+        "response_id": "msg_fixture"
+      },
+      "accounting_policy_id": "deepstrike.full-footprint@2026-09-15"
+    }
+  }
+}

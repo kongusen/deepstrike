@@ -1,0 +1,33 @@
+{
+  "id": "provider-attempt-record-missing-effect-id",
+  "domain": "provider_attempt_record",
+  "input": {
+    "record": {
+      "attempt_seq": 1,
+      "route": {
+        "routeId": "sha256:fixture-route",
+        "provider": "fixture-provider",
+        "protocol": "anthropic-messages",
+        "model": "fixture-model",
+        "endpoint": {
+          "id": "fixture-provider.anthropic-messages",
+          "protocol": "anthropic-messages",
+          "baseURL": "https://api.fixture.invalid"
+        },
+        "adapterVersion": "0.2.64",
+        "capabilitiesRef": "anthropic-messages"
+      },
+      "request_fingerprint": "sha256:fixture-request",
+      "status": "success",
+      "transport_rungs": 1,
+      "started_at_ms": 1700000000000,
+      "finished_at_ms": 1700000000123
+    }
+  },
+  "expected": {
+    "error": {
+      "code": "invalid_provider_attempt",
+      "path": "/effect_id"
+    }
+  }
+}

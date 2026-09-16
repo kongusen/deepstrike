@@ -309,3 +309,69 @@ export class InMemorySessionLog implements SessionLog {
   }
 
 }
+
+const PROVIDER_ATTEMPT_KEYS = new Set([
+  "kind", "effect_id", "attempt_seq", "route", "request_fingerprint", "status", "transport_rungs",
+  "last_error_class", "started_at_ms", "finished_at_ms", "usage", "wire_evidence", "accounting_policy_id",
+])
+const PROVIDER_ATTEMPT_STATUSES = new Set(["success", "transport_exhausted", "aborted", "rejected"])
+const WIRE_EVIDENCE_KEYS = new Set(["protocol", "request_fingerprint", "response_id", "raw_usage", "replay_state"])
+
+function assertCanonicalRoute(value: unknown): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("route must be an object")
+  const route = value as Record<string, unknown>
+  for (const field of ["routeId", "provider", "protocol", "model", "adapterVersion", "capabilitiesRef"]) {
+    if (typeof route[field] !== "string" || (route[field] as string).length === 0) {
+      throw new Error(`route ${field} must be a non-empty string`)
+    }
+  }
+  if (!route.endpoint || typeof route.endpoint !== "object" || Array.isArray(route.endpoint)) {
+    throw new Error("route endpoint must be an object")
+  }
+}
+
+function assertCanonicalWireEvidence(value: unknown): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("wire evidence must be an object")
+  const evidence = value as Record<string, unknown>
+  for (const key of Object.keys(evidence)) if (!WIRE_EVIDENCE_KEYS.has(key)) throw new Error(`wire evidence has unknown field ${key}`)
+  if (typeof evidence.protocol !== "string" || evidence.protocol.length === 0) throw new Error("wire evidence protocol is required")
+  // G2: the fingerprint is mandatory non-empty — it is what binds this evidence to a request plan.
+  if (typeof evidence.request_fingerprint !== "string" || evidence.request_fingerprint.length === 0) {
+    throw new Error("wire evidence request_fingerprint is required")
+  }
+}
+
+/**
+ * P4 §3 teeth, wasm mirror of the node/python persisted-record validator. The wasm SessionLog is
+ * in-memory only (no durable read path where validation would otherwise live), so the teeth are
+ * exported for hosts that bridge these events to durable storage — and for the conformance
+ * runner, which pins the rejection contract (`invalid_provider_attempt`) across all three
+ * JSON-projection SDKs. Same checks and message wording as node `assertCanonicalProviderAttempt`.
+ */
+export function assertCanonicalProviderAttemptRecord(event: Record<string, unknown>): void {
+  for (const key of Object.keys(event)) if (!PROVIDER_ATTEMPT_KEYS.has(key)) throw new Error(`provider_attempt has unknown field ${key}`)
+  if (typeof event.effect_id !== "string" || event.effect_id.length === 0) throw new Error("provider_attempt effect_id is required")
+  if (!Number.isInteger(event.attempt_seq) || (event.attempt_seq as number) < 1) throw new Error("provider_attempt attempt_seq must be a positive integer")
+  assertCanonicalRoute(event.route)
+  if (typeof event.request_fingerprint !== "string" || event.request_fingerprint.length === 0) {
+    throw new Error("provider_attempt request_fingerprint is required")
+  }
+  if (typeof event.status !== "string" || !PROVIDER_ATTEMPT_STATUSES.has(event.status)) {
+    throw new Error("provider_attempt status must be success|transport_exhausted|aborted|rejected")
+  }
+  if (!Number.isInteger(event.transport_rungs) || (event.transport_rungs as number) < 0) {
+    throw new Error("provider_attempt transport_rungs must be a non-negative integer")
+  }
+  if (event.last_error_class !== undefined && typeof event.last_error_class !== "string") {
+    throw new Error("provider_attempt last_error_class must be a string")
+  }
+  for (const field of ["started_at_ms", "finished_at_ms"]) {
+    if (typeof event[field] !== "number" || !Number.isFinite(event[field] as number)) {
+      throw new Error(`provider_attempt ${field} must be a finite number`)
+    }
+  }
+  if (event.wire_evidence !== undefined) assertCanonicalWireEvidence(event.wire_evidence)
+  if (event.accounting_policy_id !== undefined && typeof event.accounting_policy_id !== "string") {
+    throw new Error("provider_attempt accounting_policy_id must be a string")
+  }
+}

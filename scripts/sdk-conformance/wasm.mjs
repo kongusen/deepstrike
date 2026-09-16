@@ -90,6 +90,24 @@ async function project(value) {
         throw new StructuredError("unknown_stop_reason", "/stopReason", String(error?.message ?? error))
       }
     }
+    case "provider_attempt_record": {
+      // P4 §3 (0.2.64 S3): canonical JSON form — snake_case top level, nested objects verbatim
+      // (camelCase wire-family spelling, same as provider_request_plan). `attempt` exercises the
+      // SDK record builder; `record` runs the exported validator (wasm's teeth live there — the
+      // in-memory SessionLog has no durable read path) then roundtrips through the log.
+      if (value.input.attempt) {
+        return projectAttemptRecord(sdk.providerAttemptToRecord(value.input.attempt, value.input.policyId))
+      }
+      if (value.input.record) {
+        const record = { kind: "provider_attempt", ...value.input.record }
+        assertAttemptRecord(record)
+        const log = new sdk.InMemorySessionLog()
+        await log.append("spc-017", record)
+        const [entry] = await log.read("spc-017")
+        return projectAttemptRecord(entry.event)
+      }
+      throw new StructuredError("invalid_provider_attempt", "/input", "provider_attempt_record input must carry attempt or record")
+    }
     case "session_event_vocabulary": {
       // F9/S3 (P7-S4): the local registered vocabulary, sorted for byte-stable comparison.
       // The manifest fixture pins this list across SDKs — extra or missing kinds both fail.
@@ -131,6 +149,34 @@ async function project(value) {
     }
     default:
       throw new StructuredError("unsupported_domain", "/domain", `unsupported domain: ${String(value.domain)}`)
+  }
+}
+
+function projectAttemptRecord(record) {
+  // Canonical comparison form (0.2.64 S3): snake_case top level, nested objects verbatim.
+  return {
+    effect_id: record.effect_id,
+    attempt_seq: record.attempt_seq,
+    route: record.route,
+    request_fingerprint: record.request_fingerprint,
+    status: record.status,
+    transport_rungs: record.transport_rungs,
+    ...(record.last_error_class !== undefined ? { last_error_class: record.last_error_class } : {}),
+    started_at_ms: record.started_at_ms,
+    finished_at_ms: record.finished_at_ms,
+    ...(record.usage !== undefined ? { usage: record.usage } : {}),
+    ...(record.wire_evidence !== undefined ? { wire_evidence: record.wire_evidence } : {}),
+    ...(record.accounting_policy_id !== undefined ? { accounting_policy_id: record.accounting_policy_id } : {}),
+  }
+}
+
+function assertAttemptRecord(record) {
+  try {
+    sdk.assertCanonicalProviderAttemptRecord(record)
+  } catch (error) {
+    // Native messages name the rejected field: "provider_attempt effect_id is required".
+    const field = String(error?.message ?? "").match(/provider_attempt (\w+)/)?.[1] ?? ""
+    throw new StructuredError("invalid_provider_attempt", `/${field}`, String(error?.message ?? error))
   }
 }
 

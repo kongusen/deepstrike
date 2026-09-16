@@ -1,0 +1,54 @@
+{
+  "id": "provider-attempt-record-exhausted",
+  "domain": "provider_attempt_record",
+  "input": {
+    "attempt": {
+      "effectId": "op-fixture:step:2:effect:1",
+      "attemptSeq": 1,
+      "route": {
+        "routeId": "sha256:fixture-route",
+        "provider": "fixture-provider",
+        "protocol": "openai-chat",
+        "model": "fixture-model",
+        "endpoint": {
+          "id": "fixture-provider.openai-chat",
+          "protocol": "openai-chat",
+          "baseURL": "https://api.fixture.invalid"
+        },
+        "adapterVersion": "0.2.64",
+        "capabilitiesRef": "openai-chat"
+      },
+      "requestFingerprint": "sha256:fixture-request-2",
+      "status": "transport_exhausted",
+      "transportRungs": 4,
+      "lastErrorClass": "rate_limit",
+      "startedAtMs": 1700000001000,
+      "finishedAtMs": 1700000002400
+    }
+  },
+  "expected": {
+    "canonical": {
+      "effect_id": "op-fixture:step:2:effect:1",
+      "attempt_seq": 1,
+      "route": {
+        "routeId": "sha256:fixture-route",
+        "provider": "fixture-provider",
+        "protocol": "openai-chat",
+        "model": "fixture-model",
+        "endpoint": {
+          "id": "fixture-provider.openai-chat",
+          "protocol": "openai-chat",
+          "baseURL": "https://api.fixture.invalid"
+        },
+        "adapterVersion": "0.2.64",
+        "capabilitiesRef": "openai-chat"
+      },
+      "request_fingerprint": "sha256:fixture-request-2",
+      "status": "transport_exhausted",
+      "transport_rungs": 4,
+      "last_error_class": "rate_limit",
+      "started_at_ms": 1700000001000,
+      "finished_at_ms": 1700000002400
+    }
+  }
+}

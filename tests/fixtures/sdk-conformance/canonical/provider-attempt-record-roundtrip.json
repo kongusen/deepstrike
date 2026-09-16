@@ -1,0 +1,60 @@
+{
+  "id": "provider-attempt-record-roundtrip",
+  "domain": "provider_attempt_record",
+  "input": {
+    "record": {
+      "effect_id": "op-fixture:step:3:effect:0",
+      "attempt_seq": 2,
+      "route": {
+        "routeId": "sha256:fixture-route",
+        "provider": "fixture-provider",
+        "protocol": "gemini",
+        "model": "fixture-model",
+        "endpoint": {
+          "id": "fixture-provider.gemini",
+          "protocol": "gemini",
+          "baseURL": "https://api.fixture.invalid"
+        },
+        "adapterVersion": "0.2.64",
+        "capabilitiesRef": "gemini"
+      },
+      "request_fingerprint": "sha256:fixture-request-3",
+      "status": "aborted",
+      "transport_rungs": 1,
+      "started_at_ms": 1700000002000,
+      "finished_at_ms": 1700000002050,
+      "wire_evidence": {
+        "protocol": "gemini",
+        "request_fingerprint": "sha256:fixture-request-3"
+      }
+    }
+  },
+  "expected": {
+    "canonical": {
+      "effect_id": "op-fixture:step:3:effect:0",
+      "attempt_seq": 2,
+      "route": {
+        "routeId": "sha256:fixture-route",
+        "provider": "fixture-provider",
+        "protocol": "gemini",
+        "model": "fixture-model",
+        "endpoint": {
+          "id": "fixture-provider.gemini",
+          "protocol": "gemini",
+          "baseURL": "https://api.fixture.invalid"
+        },
+        "adapterVersion": "0.2.64",
+        "capabilitiesRef": "gemini"
+      },
+      "request_fingerprint": "sha256:fixture-request-3",
+      "status": "aborted",
+      "transport_rungs": 1,
+      "started_at_ms": 1700000002000,
+      "finished_at_ms": 1700000002050,
+      "wire_evidence": {
+        "protocol": "gemini",
+        "request_fingerprint": "sha256:fixture-request-3"
+      }
+    }
+  }
+}

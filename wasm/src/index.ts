@@ -4,6 +4,7 @@ export {
   runAgent,
   runFanout,
   InMemorySessionLog,
+  assertCanonicalProviderAttemptRecord,
   SESSION_EVENT_KINDS,
   LocalExecutionPlane,
   DEFAULT_NATIVE_SIGNAL_POLICY,

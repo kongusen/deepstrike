@@ -16,7 +16,8 @@
         "provider_error",
         "session_event",
         "content_parts_v1",
-        "session_event_vocabulary"
+        "session_event_vocabulary",
+        "provider_attempt_record"
       ]
     },
     "input": { "type": "object" },

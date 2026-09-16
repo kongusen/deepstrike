@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { readFile, realpath } from "node:fs/promises"
+import { readFile, mkdtemp, realpath } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import {
@@ -8,7 +9,9 @@ import {
   decodeDurableContent,
   decodeCanonicalContentParts,
   encodeCanonicalContentParts,
+  FileSessionLog,
   InMemorySessionLog,
+  providerAttemptToRecord,
   SESSION_EVENT_KINDS,
   lowerAgent,
   normalizeAgent,
@@ -113,6 +116,23 @@ async function canonicalFor(fixture) {
       }
       invalid("invalid_content_parts", "/input", "content_parts_v1 input must carry parts or decode")
     }
+    case "provider_attempt_record": {
+      // P4 §3 (0.2.64 S3): the attempt record is pinned in its canonical JSON form — snake_case
+      // top-level fields (the wire convention in every SDK), nested objects in the TS-native
+      // camelCase spelling (the wire-family convention the provider_request_plan fingerprint
+      // already pins). `attempt` exercises the SDK's record builder; `record` roundtrips a wire
+      // record through the durable codec, whose read path carries the validation teeth (G2).
+      if (input.attempt) {
+        return projectAttemptRecord(providerAttemptToRecord(input.attempt, input.policyId))
+      }
+      if (input.record) {
+        const log = new FileSessionLog(await mkdtemp(join(tmpdir(), "ds-conf-")))
+        await log.append("spc-017", { kind: "provider_attempt", ...input.record })
+        const [entry] = await log.read("spc-017")
+        return projectAttemptRecord(entry.event)
+      }
+      invalid("invalid_provider_attempt", "/input", "provider_attempt_record input must carry attempt or record")
+    }
     case "session_event_vocabulary": {
       // F9/S3 (P7-S4): the local registered vocabulary, sorted for byte-stable comparison.
       // The manifest fixture pins this list across SDKs — extra or missing kinds both fail.
@@ -151,6 +171,26 @@ async function canonicalFor(fixture) {
   }
 }
 
+function projectAttemptRecord(record) {
+  // Canonical comparison form (0.2.64 S3): snake_case top level, nested objects verbatim
+  // (camelCase wire-family spelling). Only the pinned field set survives — `kind` is the
+  // SessionLog envelope, not part of the record.
+  return {
+    effect_id: record.effect_id,
+    attempt_seq: record.attempt_seq,
+    route: record.route,
+    request_fingerprint: record.request_fingerprint,
+    status: record.status,
+    transport_rungs: record.transport_rungs,
+    ...(record.last_error_class !== undefined ? { last_error_class: record.last_error_class } : {}),
+    started_at_ms: record.started_at_ms,
+    finished_at_ms: record.finished_at_ms,
+    ...(record.usage !== undefined ? { usage: record.usage } : {}),
+    ...(record.wire_evidence !== undefined ? { wire_evidence: record.wire_evidence } : {}),
+    ...(record.accounting_policy_id !== undefined ? { accounting_policy_id: record.accounting_policy_id } : {}),
+  }
+}
+
 async function main() {
   if (process.argv.length !== 3) throw new Error("usage: node-adapter.mjs <fixture.json>")
   if (!isAbsolute(process.argv[2])) throw new Error("fixture path must be absolute")
@@ -167,8 +207,15 @@ async function main() {
     const durableError = fixture.domain === "durable_tool_result"
       ? { code: "invalid_durable_tool_result", path: String(error?.message ?? "").includes("is_error") ? "/is_error" : "" }
       : undefined
-    const code = error?.code ?? durableError?.code ?? "conformance_error"
-    const path = error?.path ?? durableError?.path ?? ""
+    const attemptError = fixture.domain === "provider_attempt_record"
+      ? {
+          code: "invalid_provider_attempt",
+          // Native messages name the rejected field: "provider_attempt effect_id is required".
+          path: `/${String(error?.message ?? "").match(/provider_attempt (\w+)/)?.[1] ?? ""}`,
+        }
+      : undefined
+    const code = error?.code ?? durableError?.code ?? attemptError?.code ?? "conformance_error"
+    const path = error?.path ?? durableError?.path ?? attemptError?.path ?? ""
     const message = error instanceof Error ? error.message : String(error)
     process.stdout.write(`${JSON.stringify({ ok: false, ...base, error: { code, path, message } })}\n`)
   }

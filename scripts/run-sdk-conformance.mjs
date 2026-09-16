@@ -38,10 +38,14 @@ const adapters = {
  *
  * session_event_vocabulary (F9/S3, P7-S4): the Rust SessionLog is an opaque-JSON projection
  * (events are `kind_str()`, not a typed vocabulary), so there is no local kind list to pin.
+ *
+ * provider_attempt_record (P4 §3, 0.2.64 S3): same Rust rationale — the evidence plane's
+ * SessionLog record is a JSON-projection contract; Rust holds no local codec or validator.
  */
 const DOMAIN_SDKS = {
   content_parts_v1: ["node", "python", "wasm"],
   session_event_vocabulary: ["node", "python", "wasm"],
+  provider_attempt_record: ["node", "python", "wasm"],
 }
 
 const fixtures = loadFixtures()

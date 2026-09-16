@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 import asyncio
+import tempfile
 from pathlib import Path
 import re
 from typing import Any
@@ -32,6 +33,8 @@ try:
     create_provider_request_plan,
     record_prompt_measurement,
   )
+  from deepstrike.runtime.execution_evidence import provider_attempt_to_record
+  from deepstrike.runtime.session_log import FileSessionLog
 except ModuleNotFoundError as error:
   if error.name != "deepstrike":
     raise
@@ -51,6 +54,8 @@ except ModuleNotFoundError as error:
     create_provider_request_plan,
     record_prompt_measurement,
   )
+  from deepstrike.runtime.execution_evidence import provider_attempt_to_record
+  from deepstrike.runtime.session_log import FileSessionLog
 
 
 STOP_REASONS = {"end_turn", "tool_use", "max_tokens", "stop_sequence", "content_filter", "other"}
@@ -100,6 +105,42 @@ async def replay_session_event(event: dict[str, Any], content: dict[str, Any]) -
     raise ConformanceError("invalid_session_event", "/event", "session event did not replay as tool_completed")
   recorded = entries[0].event["results"][0]
   return entries[0].event, recorded
+
+
+def snake_top_level_attempt(attempt: dict[str, Any]) -> dict[str, Any]:
+  """Object-model (camelCase) attempt → the snake_case dict python's record builder takes.
+  Nested route/usage pass through verbatim — builders never respell nested objects."""
+  key_map = {
+    "effectId": "effect_id",
+    "attemptSeq": "attempt_seq",
+    "requestFingerprint": "request_fingerprint",
+    "transportRungs": "transport_rungs",
+    "lastErrorClass": "last_error_class",
+    "startedAtMs": "started_at_ms",
+    "finishedAtMs": "finished_at_ms",
+    "wireEvidence": "wire_evidence",
+  }
+  return {key_map.get(key, key): value for key, value in attempt.items()}
+
+
+def project_attempt_record(record: dict[str, Any]) -> dict[str, Any]:
+  """Canonical comparison form (0.2.64 S3): snake_case top level, nested objects verbatim
+  (camelCase wire-family spelling). Only the pinned field set survives — `kind` is the
+  SessionLog envelope, not part of the record."""
+  projected = {
+    "effect_id": record.get("effect_id"),
+    "attempt_seq": record.get("attempt_seq"),
+    "route": record.get("route"),
+    "request_fingerprint": record.get("request_fingerprint"),
+    "status": record.get("status"),
+    "transport_rungs": record.get("transport_rungs"),
+    "started_at_ms": record.get("started_at_ms"),
+    "finished_at_ms": record.get("finished_at_ms"),
+  }
+  for optional in ("last_error_class", "usage", "wire_evidence", "accounting_policy_id"):
+    if record.get(optional) is not None:
+      projected[optional] = record[optional]
+  return projected
 
 
 def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
@@ -170,6 +211,25 @@ def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
       return {"decoded": decode_canonical_content_parts(literal)}
     raise ConformanceError("invalid_content_parts", "/input", "content_parts_v1 input must carry parts or decode")
 
+  if domain == "provider_attempt_record":
+    # P4 §3 (0.2.64 S3): the attempt record is pinned in its canonical JSON form — snake_case
+    # top-level fields (the wire convention in every SDK), nested objects in the TS-native
+    # camelCase spelling (the wire-family convention the provider_request_plan fingerprint
+    # already pins). `attempt` exercises the SDK's record builder (top-level keys re-spelled to
+    # python's snake_case builder input; nested route/usage pass through verbatim); `record`
+    # roundtrips a wire record through the durable codec, whose read path carries the teeth (G2).
+    attempt = input_value.get("attempt")
+    if isinstance(attempt, dict):
+      return project_attempt_record(provider_attempt_to_record(
+        snake_top_level_attempt(attempt), input_value.get("policyId")))
+    wire_record = input_value.get("record")
+    if isinstance(wire_record, dict):
+      log = FileSessionLog(Path(tempfile.mkdtemp(prefix="ds-conf-")))
+      asyncio.run(log.append("spc-017", {"kind": "provider_attempt", **wire_record}))
+      entries = asyncio.run(log.read("spc-017"))
+      return project_attempt_record(entries[0].event)
+    raise ConformanceError("invalid_provider_attempt", "/input", "provider_attempt_record input must carry attempt or record")
+
   if domain == "session_event_vocabulary":
     # F9/S3 (P7-S4): the local registered vocabulary, sorted for byte-stable comparison.
     # The manifest fixture pins this list across SDKs — extra or missing kinds both fail.
@@ -217,6 +277,11 @@ def main() -> None:
     if fixture.get("domain") == "durable_tool_result":
       code = "invalid_durable_tool_result"
       path = "/is_error" if "is_error" in str(error) else ""
+    elif fixture.get("domain") == "provider_attempt_record":
+      code = "invalid_provider_attempt"
+      # Native messages name the rejected field: "provider_attempt effect_id is required".
+      match = re.search(r"provider_attempt (\w+)", str(error))
+      path = f"/{match.group(1)}" if match else ""
     else:
       code = "conformance_error"
       path = ""
