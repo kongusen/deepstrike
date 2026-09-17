@@ -15,8 +15,9 @@ pub enum Role {
 /// The internal runtime message (0.2.67, Q1) — explicitly distinct from `LogicalMessage`
 /// (operation-bootstrap Intent), `ProviderMessage` (provider boundary), and
 /// `StoredMessageState` (L1 persistent authority, the durable representation of the
-/// CanonicalMessageState concept). The public alias `Message` (`crate::Message`) remains
-/// for the migration window and is removed in 0.2.68 (DEL-4).
+/// CanonicalMessageState concept). The public alias `Message` (`crate::Message` and the
+/// deep path `crate::types::message::Message`) remains for the migration window and is
+/// removed in 0.2.68 (DEL-4).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreMessage {
     pub role: Role,
@@ -34,6 +35,11 @@ pub struct CoreMessage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_count: Option<u32>,
 }
+
+// 0.2.67 (Q1): module-path grace alias — external consumers import through the deep path
+// (`types::message::Message`), not only the crate root; removed in 0.2.68 (DEL-4) together
+// with the crate-root alias.
+pub use CoreMessage as Message;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]

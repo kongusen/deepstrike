@@ -61,7 +61,8 @@ Deletions land in 0.2.68.
   content types are already DurableContent-shaped.
 - SDK mirrors: node `ImagePart.data` / `AudioPart.data` and wasm
   `ContentPart.data` carry `@deprecated` JSDoc; python's
-  `Message.image_base64` / `Message.audio` carry doc-level deprecation.
+  `ContentPartObj.image_base64` / `ContentPartObj.audio` carry doc-level
+  deprecation.
 
 ## [0.2.66] - 2026-09-17
 

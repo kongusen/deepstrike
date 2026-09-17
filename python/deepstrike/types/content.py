@@ -286,6 +286,8 @@ class RenderedMessage:
   isinstance-strict on turns."""
   role: str = "user"
   content: str = ""
+  # Deprecated since 0.2.67, removed in 0.2.68 (DEL-1): projection-only during the
+  # migration window — the kernel recomputes via its token engine.
   token_count: int | None = None
   tool_calls: list | None = None
   content_parts: list | None = None

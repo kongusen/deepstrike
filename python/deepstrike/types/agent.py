@@ -268,6 +268,8 @@ def sub_agent_result_to_kernel(result: SubAgentResult) -> dict[str, Any]:
         for c in tool_calls
       ],
     }
+    # token_count is deprecated since 0.2.67 (DEL-1, removed 0.2.68): projection-only
+    # during the dual-write window; forwarded for wire parity until the field is deleted.
     token_count = getattr(final, "token_count", None)
     if token_count is not None:
       final_kernel["token_count"] = token_count
