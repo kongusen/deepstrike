@@ -84,12 +84,12 @@ L4 · Durable Truth       Journal = State Truth / Checkpoint = State Snapshot /
 | `DurableContent` 族 | **L1 内容词表**：`Text/Image/Audio/Video/File` × `DurableSource{Url, Base64, FileId, Object}` |
 | `LogicalMessage` | **入边界 Intent 形态**：仅 StartOperation initial_context（不可带 tool_calls） |
 | `ProviderMessage` | **渲染/事实边界形态**：render 输出与 ProviderCompleted 载荷 |
-| `types::Message` / node `Message` | **遗留内部形态**（缓刑，按迭代总谱 0.2.67/68 收敛为 CoreMessage） |
-| `ContentPart` | **遗留渲染期形态**（缓刑，inline base64 将删；大字节由 adapter 在 L0 物化） |
+| `CoreMessage`（原 `types::Message`，0.2.67 改名，公共别名 `Message` 宽限期保留） | **内部运行期形态**（收敛中，0.2.68 DEL-4 删别名并降级 ContentPart） |
+| `ContentPart` | **遗留渲染期形态**（缓刑；inline base64 已 deprecated 0.2.67 → 0.2.68 删除，大字节由 adapter 在 L0 物化，正式路径 = `DurableSource::Object/FileId/Url`） |
 
 工具关联是**结构字段**（`tool_calls` 前向指针 + body 内 `tool_call_id` 后向指针），不是 content part。Reasoning 不进内容词表（条文 B3）。
 
-**token 数字的分界线**：出现在 checkpoint 里 = 冻结记账锚（合法——restore 必须复现 budget 算术，即使 tokenizer 变了）；出现在运行期消息对象上 = 必须有 fingerprint provenance 的 TokenMeasurement，否则违规。
+**token 数字的分界线**：出现在 checkpoint 里 = 冻结记账锚（合法——restore 必须复现 budget 算术，即使 tokenizer 变了）；出现在运行期消息对象上 = 必须有 fingerprint provenance 的 TokenMeasurement，否则违规。过渡状态（0.2.67）：`CoreMessage.token_count` / `ToolResult.token_count` 已 `#[deprecated]` 进入双写窗（projection only，0.2.68 DEL-1 删除）。
 
 ## 注册编码：content-parts-v1
 

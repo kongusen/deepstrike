@@ -84,12 +84,12 @@ Any representation that is not the authority must register as one of:
 | `DurableContent` family | **L1 content vocabulary**: `Text/Image/Audio/Video/File` × `DurableSource{Url, Base64, FileId, Object}` |
 | `LogicalMessage` | **Inbound Intent form**: StartOperation initial_context only (no tool_calls) |
 | `ProviderMessage` | **Render/fact boundary form**: render output and ProviderCompleted payload |
-| `types::Message` / node `Message` | **Legacy internal form** (probation; converges to CoreMessage per roadmap 0.2.67/68) |
-| `ContentPart` | **Legacy render-time form** (probation; inline base64 to be removed; large bytes are materialized by the adapter at L0) |
+| `CoreMessage` (formerly `types::Message`, renamed 0.2.67; public alias `Message` kept for the window) | **Internal runtime form** (converging; 0.2.68 DEL-4 removes the alias and demotes ContentPart) |
+| `ContentPart` | **Legacy render-time form** (probation; inline base64 deprecated 0.2.67 → removed 0.2.68; large bytes are materialized by the adapter at L0, canonical path = `DurableSource::Object/FileId/Url`) |
 
 Tool association is a **structural field** (`tool_calls` forward pointers + in-body `tool_call_id` back pointers), not a content part. Reasoning is not in the content vocabulary (article B3).
 
-**The token-number dividing line**: in a checkpoint, a token count is a frozen accounting anchor (legal — a restore must reproduce the same budget arithmetic even if the tokenizer moved); on a runtime message object it must be a TokenMeasurement with fingerprint provenance, or it is a violation.
+**The token-number dividing line**: in a checkpoint, a token count is a frozen accounting anchor (legal — a restore must reproduce the same budget arithmetic even if the tokenizer moved); on a runtime message object it must be a TokenMeasurement with fingerprint provenance, or it is a violation. Transitional state (0.2.67): `CoreMessage.token_count` / `ToolResult.token_count` carry `#[deprecated]` in the dual-write window (projection only, removed by DEL-1 in 0.2.68).
 
 ## Registered Encoding: content-parts-v1
 

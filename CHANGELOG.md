@@ -6,6 +6,63 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.67] - 2026-09-18
+
+Semantic migration: three concept landings (CanonicalMessageState ↔ DTO
+decoupling, CoreMessage as the internal runtime name, DurableContent as the
+canonical content vocabulary) plus the deprecation half of the P8 deletion
+pair. **No breaking changes; no behavior change; Kernel ABI unchanged.**
+Deletions land in 0.2.68.
+
+### Changed — the internal message type is `CoreMessage`
+
+- `types::Message` is renamed `CoreMessage` (0.2.67, ruling Q1): the name now
+  says what the role registry says — it is the internal runtime form,
+  distinct from the L1 durable authority (`StoredMessageState`) and the wire
+  boundary forms (`LogicalMessage` / `ProviderMessage`). A public alias
+  `pub use CoreMessage as Message` keeps the 0.2.x surface byte-identical for
+  the migration window; the alias is removed in 0.2.68 (DEL-4).
+- The rust SDK follows the same rename internally; node/python/wasm binding
+  mirror names (`Message`) are unchanged.
+- `StoredMessageState`'s doc now records the decoupling ruling:
+  CanonicalMessageState is the L1 semantic *concept*; the checkpoint DTO is
+  merely its current storage vehicle, so a future distributed persistence is
+  not locked to the DTO's shape.
+
+### Deprecated — DEL-1: `token_count` fields (removal in 0.2.68)
+
+- `CoreMessage.token_count` and `ToolResult.token_count` carry
+  `#[deprecated(since = "0.2.67")]`: during the dual-write window they are
+  projection-only — the authority is engine recompute (`ContextTokenEngine`)
+  in-kernel, or a host-side TokenMeasurement side table keyed by content
+  fingerprint. Every in-kernel consumer already falls back to recompute
+  (`unwrap_or_else(|| engine.count_message(..))`), so nothing about budget
+  arithmetic changes.
+- Migration path: stop reading the field; call the token engine (kernel side)
+  or keep a host-side measurement table (SDK side). Provider-reported usage
+  keeps flowing through the field until removal, so hosts relying on real
+  provider counts should move to the usage/attempt evidence surfaces.
+- SDK mirrors carry doc-level deprecation: node `Message.tokenCount` /
+  `ToolResult.tokenCount` (`@deprecated` JSDoc), wasm `Message.tokenCount` /
+  `ToolResult.tokenCount`, python `Message` / `ToolResult` docstrings.
+  `StoredMessageState.tokens` is deliberately untouched — it is the frozen
+  accounting anchor (P3 §2.1), not a parasitic field.
+
+### Deprecated — DEL-3: `ContentPart` inline base64 (removal in 0.2.68)
+
+- `ContentPart::Image.data` / `Audio.data` and the `image_base64` /
+  `image_base64_with_detail` / `audio` constructors carry
+  `#[deprecated(since = "0.2.67")]`: inline base64 is the duplicated inline
+  home (F4) that bypasses B2 (large bytes never cross the kernel).
+- Migration path: carry media via `DurableContent` with
+  `DurableSource::Object` / `FileId` / `Url`; the provider adapter
+  materialises bytes at L0. Node's `ContentBlockImage` / `MediaSource`
+  (`fileId` / `object` / `url`) is already the dual-form mirror; python's
+  content types are already DurableContent-shaped.
+- SDK mirrors: node `ImagePart.data` / `AudioPart.data` and wasm
+  `ContentPart.data` carry `@deprecated` JSDoc; python's
+  `Message.image_base64` / `Message.audio` carry doc-level deprecation.
+
 ## [0.2.66] - 2026-09-17
 
 Safe cleanup: every P8 deletion-list item that does **not** require breaking a
