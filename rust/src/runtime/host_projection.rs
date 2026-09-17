@@ -9,7 +9,7 @@ use deepstrike_core::mm::memory::{MemoryQuery, MemoryRecord};
 use deepstrike_core::orchestration::workflow::{WorkflowBudget, WorkflowSpawnInfo};
 use deepstrike_core::runtime::kernel::KernelPressureAction;
 use deepstrike_core::scheduler::state_machine::ApprovalRequest;
-use deepstrike_core::types::message::{Message, ToolCall, ToolSchema};
+use deepstrike_core::types::message::{CoreMessage, ToolCall, ToolSchema};
 use deepstrike_core::types::milestone::MilestoneVerifier;
 use deepstrike_core::types::result::LoopResult;
 
@@ -54,7 +54,7 @@ pub(crate) enum HostEffect {
         turn: u32,
         action: KernelPressureAction,
         summary: Option<String>,
-        archived: Vec<Message>,
+        archived: Vec<CoreMessage>,
         tier: String,
     },
     LoadPayload {

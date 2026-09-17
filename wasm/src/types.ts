@@ -7,7 +7,10 @@ export interface ContentPart {
   text?: string
   /** Remote image URL (mutually exclusive with `data`). */
   url?: string
-  /** Raw base64-encoded bytes (image/audio). */
+  /** Raw base64-encoded bytes (image/audio).
+   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-3). Carry media via
+   * `ToolOutputBlock`/`MediaSource` (`fileId`/`object`/`url`) instead; the provider
+   * adapter materialises bytes at the wire boundary. */
   data?: string
   /** MIME type, e.g. `"image/png"`. */
   mediaType?: string
@@ -30,6 +33,10 @@ export type ToolOutputBlock =
 export interface Message {
   role: "system" | "user" | "assistant" | "tool"
   content: string
+  /** Cached or provider-reported token count.
+   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-1). Projection only during the
+   * migration window — the kernel recomputes via its token engine; hosts should keep
+   * counts in a TokenMeasurement-style side table keyed by content fingerprint. */
   tokenCount?: number
   toolCalls?: ToolCall[]
   /** Multimodal parts (text + image/audio). When present, providers render these
@@ -57,6 +64,10 @@ export interface ToolResult {
   isError: boolean
   isFatal?: boolean
   errorKind?: ToolErrorKind
+  /** Cached or provider-reported token count.
+   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-1). Projection only during the
+   * migration window — the kernel recomputes via its token engine; hosts should keep
+   * counts in a TokenMeasurement-style side table keyed by content fingerprint. */
   tokenCount?: number
   contentParts?: ToolOutputBlock[]
 }

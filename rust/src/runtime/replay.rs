@@ -1,8 +1,12 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
+// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
+#![allow(deprecated)]
+
 use deepstrike_core::runtime::repair::{
     reconstruct_messages_with_fallback, repair_events_with_cap,
 };
 use deepstrike_core::runtime::session::SessionEvent;
-use deepstrike_core::types::message::Message;
+use deepstrike_core::types::message::CoreMessage;
 
 use super::session_log::SessionEntry;
 
@@ -32,11 +36,11 @@ pub fn is_mid_run(entries: &[SessionEntry]) -> bool {
     latest_start.is_some_and(|start| latest_terminal.map_or(true, |terminal| start > terminal))
 }
 
-pub fn replay_messages(entries: &[SessionEntry]) -> Vec<Message> {
+pub fn replay_messages(entries: &[SessionEntry]) -> Vec<CoreMessage> {
     replay_messages_with_cap(entries, 0)
 }
 
-pub fn replay_messages_with_cap(entries: &[SessionEntry], max_bytes: usize) -> Vec<Message> {
+pub fn replay_messages_with_cap(entries: &[SessionEntry], max_bytes: usize) -> Vec<CoreMessage> {
     replay_messages_with_cap_and_loader(entries, max_bytes, |_| {
         Err(
             deepstrike_core::context::fault::ContextFault::MissingArchive {
@@ -51,9 +55,9 @@ pub fn replay_messages_with_cap_and_loader<F>(
     entries: &[SessionEntry],
     max_bytes: usize,
     load_archive: F,
-) -> Vec<Message>
+) -> Vec<CoreMessage>
 where
-    F: FnMut(&str) -> Result<Vec<Message>, deepstrike_core::context::fault::ContextFault>,
+    F: FnMut(&str) -> Result<Vec<CoreMessage>, deepstrike_core::context::fault::ContextFault>,
 {
     let events: Vec<SessionEvent> = entries.iter().map(|e| e.event.clone()).collect();
     reconstruct_messages_with_fallback(&events, "", max_bytes, load_archive)
@@ -146,7 +150,7 @@ mod tests {
                 seq: 1,
                 event: SessionEvent::LlmCompleted {
                     turn: 0,
-                    message: Message {
+                    message: CoreMessage {
                         role: Role::Assistant,
                         content: Content::Text("pong".into()),
                         tool_calls: vec![],

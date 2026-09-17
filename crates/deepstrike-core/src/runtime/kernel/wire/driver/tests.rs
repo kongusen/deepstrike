@@ -4022,7 +4022,7 @@ fn history_text(runtime: &Runtime) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn message_text(message: &Message) -> String {
+fn message_text(message: &CoreMessage) -> String {
     match &message.content {
         Content::Text(text) => text.clone(),
         Content::Parts(parts) => parts
@@ -8898,7 +8898,7 @@ fn a_paged_out_result_restores_to_the_same_rendered_provider_context() {
             .engine
             .as_mut()
             .expect("the configured agent has an engine");
-        let mut assistant = Message::assistant("I checked the archive.");
+        let mut assistant = CoreMessage::assistant("I checked the archive.");
         assistant.tool_calls = vec![crate::types::message::ToolCall {
             id: "call-archived".into(),
             name: "search".into(),
@@ -8906,7 +8906,7 @@ fn a_paged_out_result_restores_to_the_same_rendered_provider_context() {
         }];
         engine.ctx.push_history(assistant, 8);
         engine.ctx.push_history(
-            Message::tool(vec![ContentPart::ToolResult {
+            CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: "call-archived".into(),
                 output: archived_body,
                 is_error: false,
@@ -9335,7 +9335,7 @@ fn structured_tool_result_is_explicitly_downgraded_when_micro_compacted() {
         }],
     };
     let mut partitions = ContextPartitions::default();
-    let message = Message::tool(vec![ContentPart::ToolResult {
+    let message = CoreMessage::tool(vec![ContentPart::ToolResult {
         call_id: "call-1".into(),
         output: "x".repeat(12_000),
         is_error: false,
@@ -10041,7 +10041,7 @@ fn plain_multi_tool_results_use_the_canonical_checkpoint_carrier() {
         },
     ]);
     assert!(
-        message_body_parts(&Message::tool(match content.clone() {
+        message_body_parts(&CoreMessage::tool(match content.clone() {
             Content::Parts(parts) => parts,
             Content::Text(_) => unreachable!(),
         }))

@@ -1,3 +1,7 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use super::config::ContextConfig;
 use super::partitions::ContextPartitions;
 use super::pressure::PressureMonitor;
@@ -93,7 +97,7 @@ mod tests {
     use crate::context::config::ContextConfig;
     use crate::context::partitions::ContextPartitions;
     use crate::context::task_state::TaskState;
-    use crate::types::message::Message;
+    use crate::types::message::CoreMessage;
 
     fn make_policy(carryover_ratio: f64) -> RenewalPolicy {
         RenewalPolicy::from_config(&ContextConfig {
@@ -106,8 +110,8 @@ mod tests {
     fn renewal_preserves_system_and_knowledge() {
         let cfg = ContextConfig::default();
         let mut ctx = ContextPartitions::new(&cfg);
-        ctx.system.push(Message::system("rules"), 10);
-        ctx.knowledge.push(Message::system("skill: debug"), 20);
+        ctx.system.push(CoreMessage::system("rules"), 10);
+        ctx.knowledge.push(CoreMessage::system("skill: debug"), 20);
         let renewed = make_policy(0.05).renew(&ctx, 1_000);
         assert_eq!(renewed.system.len(), 1);
         assert_eq!(renewed.knowledge.len(), 1);
@@ -127,7 +131,7 @@ mod tests {
         let cfg = ContextConfig::default();
         let mut ctx = ContextPartitions::new(&cfg);
         for i in 0..10 {
-            ctx.history.push(Message::user(format!("msg {i}")), 100);
+            ctx.history.push(CoreMessage::user(format!("msg {i}")), 100);
         }
         let renewed = make_policy(0.05).renew(&ctx, 1_000);
         assert!(renewed.history.token_count <= 100);

@@ -700,7 +700,7 @@ fn parse_anthropic_sse(
 mod tests {
     use super::*;
     use compact_str::CompactString;
-    use deepstrike_core::types::message::{ContentPart, Message, ToolCall};
+    use deepstrike_core::types::message::{ContentPart, CoreMessage, ToolCall};
 
     #[test]
     fn anthropic_usage_breakdown_extracts_raw_components() {
@@ -731,8 +731,8 @@ mod tests {
             system_stable: "system rules".into(),
             system_knowledge: String::new(),
             turns: vec![
-                Message::user("What is the weather?"),
-                Message {
+                CoreMessage::user("What is the weather?"),
+                CoreMessage {
                     role: Role::Assistant,
                     content: Content::Text("I'll check.".into()),
                     tool_calls: vec![ToolCall {
@@ -742,7 +742,7 @@ mod tests {
                     }],
                     token_count: None,
                 },
-                Message::tool(vec![ContentPart::ToolResult {
+                CoreMessage::tool(vec![ContentPart::ToolResult {
                     call_id: CompactString::new("call_1"),
                     output: "sunny".into(),
                     is_error: false,
@@ -803,7 +803,7 @@ mod tests {
             system_text: "rules\nknowledge".into(),
             system_stable: "rules".into(),
             system_knowledge: "knowledge".into(),
-            turns: vec![Message::user("hi")],
+            turns: vec![CoreMessage::user("hi")],
             state_turn: None,
             frozen_prefix_len: None,
             budget_overflow: None,
@@ -822,10 +822,10 @@ mod tests {
             system_stable: String::new(),
             system_knowledge: String::new(),
             turns: vec![
-                Message::user("earlier question"),
-                Message::assistant("earlier answer"),
+                CoreMessage::user("earlier question"),
+                CoreMessage::assistant("earlier answer"),
             ],
-            state_turn: Some(Message::user("[TASK STATE] goal: g\n\nProceed.")),
+            state_turn: Some(CoreMessage::user("[TASK STATE] goal: g\n\nProceed.")),
             frozen_prefix_len: None,
             budget_overflow: None,
         };

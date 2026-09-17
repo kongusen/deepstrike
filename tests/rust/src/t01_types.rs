@@ -1,3 +1,7 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
+// deprecated `token_count` projection field; removed with DEL-1.
+#![allow(deprecated)]
+
 use compact_str::CompactString;
 use deepstrike_core::AgentIdentity;
 use deepstrike_core::types::message::*;
@@ -5,11 +9,11 @@ use deepstrike_core::types::result::TerminationReason;
 use deepstrike_core::types::skill::SkillMetadata;
 use deepstrike_core::types::task::RuntimeTask;
 
-// ─── Message constructors ───────────────────────────────────────────────────
+// ─── CoreMessage constructors ───────────────────────────────────────────────────
 
 #[test]
 fn system_message_has_correct_role() {
-    let msg = Message::system("You are helpful.");
+    let msg = CoreMessage::system("You are helpful.");
     assert_eq!(msg.role, Role::System);
     assert_eq!(msg.content.as_text().unwrap(), "You are helpful.");
     assert!(msg.tool_calls.is_empty());
@@ -17,14 +21,14 @@ fn system_message_has_correct_role() {
 
 #[test]
 fn user_message_has_correct_role() {
-    let msg = Message::user("Hello");
+    let msg = CoreMessage::user("Hello");
     assert_eq!(msg.role, Role::User);
     assert_eq!(msg.content.as_text().unwrap(), "Hello");
 }
 
 #[test]
 fn assistant_message_has_correct_role() {
-    let msg = Message::assistant("World");
+    let msg = CoreMessage::assistant("World");
     assert_eq!(msg.role, Role::Assistant);
     assert_eq!(msg.content.as_text().unwrap(), "World");
 }
@@ -37,7 +41,7 @@ fn tool_message_with_result_parts() {
         is_error: false,
         durable_content: None,
     }];
-    let msg = Message::tool(parts);
+    let msg = CoreMessage::tool(parts);
     assert_eq!(msg.role, Role::Tool);
     assert!(matches!(msg.content, Content::Parts(_)));
 }
@@ -61,7 +65,7 @@ fn content_parts_as_text_returns_none() {
 #[test]
 fn content_parts_count_sums_parts_via_engine() {
     let e = deepstrike_core::context::token_engine::ContextTokenEngine::char_approx();
-    let msg = Message::user_multimodal(vec![ContentPart::text("hello"), ContentPart::text("world")]);
+    let msg = CoreMessage::user_multimodal(vec![ContentPart::text("hello"), ContentPart::text("world")]);
     assert_eq!(e.count_message(&msg), 2); // char/4 per part, min 1
 }
 
@@ -109,7 +113,7 @@ fn content_part_audio_constructor() {
 
 #[test]
 fn user_multimodal_message() {
-    let msg = Message::user_multimodal(vec![
+    let msg = CoreMessage::user_multimodal(vec![
         ContentPart::text("Describe this image"),
         ContentPart::image_url("https://example.com/image.png"),
     ]);
@@ -160,13 +164,13 @@ fn tool_schema_fields() {
     assert_eq!(ts.name.as_str(), "read_file");
 }
 
-// ─── Message serialization roundtrip ────────────────────────────────────────
+// ─── CoreMessage serialization roundtrip ────────────────────────────────────────
 
 #[test]
 fn message_json_roundtrip() {
-    let msg = Message::user("Test");
+    let msg = CoreMessage::user("Test");
     let json = serde_json::to_string(&msg).unwrap();
-    let decoded: Message = serde_json::from_str(&json).unwrap();
+    let decoded: CoreMessage = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.role, Role::User);
     assert_eq!(decoded.content.as_text().unwrap(), "Test");
 }
@@ -267,7 +271,7 @@ fn agent_identity_sub_agent() {
 #[test]
 fn image_low_detail_token_estimate() {
     let e = deepstrike_core::context::token_engine::ContextTokenEngine::char_approx();
-    let msg = Message::user_multimodal(vec![ContentPart::Image {
+    let msg = CoreMessage::user_multimodal(vec![ContentPart::Image {
         url: Some("https://example.com/img.png".into()),
         data: None,
         media_type: None,
@@ -279,7 +283,7 @@ fn image_low_detail_token_estimate() {
 #[test]
 fn image_high_detail_token_estimate() {
     let e = deepstrike_core::context::token_engine::ContextTokenEngine::char_approx();
-    let msg = Message::user_multimodal(vec![ContentPart::Image {
+    let msg = CoreMessage::user_multimodal(vec![ContentPart::Image {
         url: Some("https://example.com/img.png".into()),
         data: None,
         media_type: None,

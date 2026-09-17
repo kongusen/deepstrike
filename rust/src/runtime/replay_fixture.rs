@@ -5,13 +5,13 @@
 //! `ReplayProvider` consumes.
 
 use deepstrike_core::runtime::session::SessionEvent;
-use deepstrike_core::types::message::Message;
+use deepstrike_core::types::message::CoreMessage;
 
 use super::session_log::SessionEntry;
 
 /// Walk `SessionEntry`s (the wrapped `{ seq, event }` shape `SessionLog::read()` returns)
 /// and produce the ordered list of assistant messages.
-pub fn extract_recorded_messages_from_entries(entries: &[SessionEntry]) -> Vec<Message> {
+pub fn extract_recorded_messages_from_entries(entries: &[SessionEntry]) -> Vec<CoreMessage> {
     entries
         .iter()
         .filter_map(|e| message_from_event(&e.event))
@@ -20,11 +20,11 @@ pub fn extract_recorded_messages_from_entries(entries: &[SessionEntry]) -> Vec<M
 
 /// Walk bare `SessionEvent`s — useful when reading a `serde_json::Value` log file rather
 /// than a `SessionLog`.
-pub fn extract_recorded_messages(events: &[SessionEvent]) -> Vec<Message> {
+pub fn extract_recorded_messages(events: &[SessionEvent]) -> Vec<CoreMessage> {
     events.iter().filter_map(message_from_event).collect()
 }
 
-fn message_from_event(event: &SessionEvent) -> Option<Message> {
+fn message_from_event(event: &SessionEvent) -> Option<CoreMessage> {
     if let SessionEvent::LlmCompleted { message, .. } = event {
         Some(message.clone())
     } else {

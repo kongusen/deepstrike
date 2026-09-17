@@ -57,7 +57,7 @@ use deepstrike_core::types::contract::{
     VerificationContract as RustVerificationContract,
 };
 use deepstrike_core::types::message::{
-    Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
+    Content, ContentPart, CoreMessage as RustMessage, Role, ToolCall as RustToolCall,
 };
 use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
 use deepstrike_core::types::signal::{
@@ -91,6 +91,8 @@ pub struct Message {
     pub content: String,
     /// Structured multimodal content parts. When present, takes precedence over `content`.
     pub content_parts: Option<Vec<ContentPartObj>>,
+    /// Deprecated since 0.2.67, removed in 0.2.68 (DEL-1): projection-only during the
+    /// migration window — the kernel recomputes via its token engine.
     pub token_count: Option<u32>,
     pub tool_calls: Vec<ToolCall>,
 }
@@ -112,6 +114,8 @@ pub struct ToolResult {
     pub is_error: bool,
     pub is_fatal: Option<bool>,
     pub error_kind: Option<String>,
+    /// Deprecated since 0.2.67, removed in 0.2.68 (DEL-1): projection-only during the
+    /// migration window — the kernel recomputes via its token engine.
     pub token_count: Option<u32>,
 }
 
@@ -920,3 +924,4 @@ pub fn parse_verdict(content: String) -> Verdict {
 pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
     rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
+

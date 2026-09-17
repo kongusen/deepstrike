@@ -1,8 +1,12 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
+// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
+#![allow(deprecated)]
+
 use async_trait::async_trait;
 use compact_str::CompactString;
 use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::runtime::session::ProviderReplay;
-use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolSchema};
+use deepstrike_core::types::message::{Content, CoreMessage, Role, ToolCall, ToolSchema};
 use futures::{Stream, StreamExt};
 
 pub mod anthropic;
@@ -110,7 +114,7 @@ pub trait LLMProvider: Send + Sync {
         context: &InternalRenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&serde_json::Value>,
-    ) -> crate::Result<Message> {
+    ) -> crate::Result<CoreMessage> {
         let mut stream = self.stream(context, tools, extensions, None).await?;
         collect_message_from_stream(&mut stream).await
     }
@@ -126,7 +130,7 @@ pub trait LLMProvider: Send + Sync {
 
 pub async fn collect_message_from_stream(
     stream: &mut (dyn Stream<Item = crate::Result<StreamEvent>> + Send + Unpin),
-) -> crate::Result<Message> {
+) -> crate::Result<CoreMessage> {
     let mut content = String::new();
     let mut tool_calls = Vec::new();
     while let Some(evt) = stream.next().await {
@@ -147,7 +151,7 @@ pub async fn collect_message_from_stream(
             StreamEvent::Usage { .. } | StreamEvent::Done => {}
         }
     }
-    Ok(Message {
+    Ok(CoreMessage {
         role: Role::Assistant,
         content: Content::Text(content),
         tool_calls,

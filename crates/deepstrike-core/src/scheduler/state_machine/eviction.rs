@@ -4,7 +4,7 @@ use super::{KernelObservation, LoopAction, LoopPhase, LoopStateMachine, PendingH
 use crate::context::pressure::PressureAction;
 use crate::mm::tier_hint_for_compress;
 use crate::runtime::kernel::KernelPressureAction;
-use crate::types::message::Message;
+use crate::types::message::CoreMessage;
 use crate::types::result::TerminationReason;
 
 /// Max consecutive compact-and-retry attempts before a context overflow is declared
@@ -109,7 +109,7 @@ impl LoopStateMachine {
         &mut self,
         action: PressureAction,
         summary: Option<String>,
-        archived: Vec<Message>,
+        archived: Vec<CoreMessage>,
         invalidates_prefix_at: Option<usize>,
     ) {
         let rho_after = self.ctx.rho();
@@ -235,7 +235,7 @@ impl LoopStateMachine {
                 .unwrap_or_else(|| self.ctx.engine.count(&entry.content).max(1));
             self.ctx.push_knowledge_entry(
                 entry.key.as_deref().map(compact_str::CompactString::new),
-                Message::system(entry.content.clone()),
+                CoreMessage::system(entry.content.clone()),
                 tokens,
                 entry.pinned,
             );

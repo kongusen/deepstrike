@@ -15,7 +15,12 @@
 //! a single node, so per-iteration eval cannot be a static DAG), and the declarative
 //! "loop-the-worker-then-verify-with-a-structured-verdict" shape is the `gen_eval` template. Both
 //! reuse these primitives, so the verdict shape stays consistent across the two paths.
-use crate::types::message::{Content, Message, Role};
+
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
+use crate::types::message::{Content, CoreMessage, Role};
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -116,7 +121,7 @@ pub fn build_eval_messages(
     result: &str,
     attempt: u32,
     extract_skill_on_pass: bool,
-) -> Vec<Message> {
+) -> Vec<CoreMessage> {
     let criteria_text = if criteria.is_empty() {
         "No explicit criteria — use general quality judgement.".to_string()
     } else {
@@ -149,7 +154,7 @@ pub fn build_eval_messages(
         ""
     };
 
-    let system = Message {
+    let system = CoreMessage {
         role: Role::System,
         content: Content::Text(format!(
             "You are an impartial evaluator. Assess whether the agent's output meets the goal and criteria.\n\
@@ -163,7 +168,7 @@ pub fn build_eval_messages(
         token_count: None,
     };
 
-    let user = Message {
+    let user = CoreMessage {
         role: Role::User,
         content: Content::Text(format!(
             "## Goal\n{goal}\n\n## Criteria\n{criteria_text}\n\n## Agent Output (attempt {attempt})\n{result}"

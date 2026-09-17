@@ -1,4 +1,4 @@
-use crate::types::message::{Content, ContentPart, Message, Role};
+use crate::types::message::{Content, ContentPart, CoreMessage, Role};
 use std::collections::BTreeSet;
 use std::ops::Range;
 
@@ -8,7 +8,7 @@ use std::ops::Range;
 /// assistant call, every correlated result, and the trailing answer on the same side of every
 /// compression/render boundary. Malformed recovery input is kept together until its open calls
 /// close, which is safer than manufacturing an orphaned result.
-pub fn unit_boundaries(messages: &[Message]) -> Vec<Range<usize>> {
+pub fn unit_boundaries(messages: &[CoreMessage]) -> Vec<Range<usize>> {
     if messages.is_empty() {
         return Vec::new();
     }
@@ -68,7 +68,7 @@ pub fn unit_boundaries(messages: &[Message]) -> Vec<Range<usize>> {
 /// Rust-side equivalent of the strict provider replay pairing invariant. This is intentionally
 /// small and deterministic so compression and rendering tests can prove they never manufacture an
 /// orphan or leave a call unanswered when their input was valid.
-pub(crate) fn strict_tool_pairing_is_valid(messages: &[Message]) -> bool {
+pub(crate) fn strict_tool_pairing_is_valid(messages: &[CoreMessage]) -> bool {
     let mut pending: Option<BTreeSet<String>> = None;
     let mut completed = BTreeSet::new();
 
@@ -123,10 +123,10 @@ pub(crate) fn strict_tool_pairing_is_valid(messages: &[Message]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::message::{ContentPart, Message, ToolCall};
+    use crate::types::message::{ContentPart, CoreMessage, ToolCall};
 
-    fn assistant_call(id: &str) -> Message {
-        let mut message = Message::assistant("calling");
+    fn assistant_call(id: &str) -> CoreMessage {
+        let mut message = CoreMessage::assistant("calling");
         message.tool_calls.push(ToolCall {
             id: id.into(),
             name: "read".into(),
@@ -135,8 +135,8 @@ mod tests {
         message
     }
 
-    fn tool_result(id: &str) -> Message {
-        Message::tool(vec![ContentPart::ToolResult {
+    fn tool_result(id: &str) -> CoreMessage {
+        CoreMessage::tool(vec![ContentPart::ToolResult {
             call_id: id.into(),
             output: "ok".into(),
             is_error: false,
@@ -147,12 +147,12 @@ mod tests {
     #[test]
     fn groups_tool_transaction_and_trailing_answer_as_one_unit() {
         let messages = vec![
-            Message::user("question"),
+            CoreMessage::user("question"),
             assistant_call("call-1"),
             tool_result("call-1"),
-            Message::assistant("answer"),
-            Message::user("next"),
-            Message::assistant("done"),
+            CoreMessage::assistant("answer"),
+            CoreMessage::user("next"),
+            CoreMessage::assistant("done"),
         ];
 
         assert_eq!(super::unit_boundaries(&messages), vec![0..4, 4..6]);
@@ -161,14 +161,14 @@ mod tests {
     #[test]
     fn iterative_tool_loop_is_partitioned_without_requiring_new_user_messages() {
         let messages = vec![
-            Message::user("do the task"),
+            CoreMessage::user("do the task"),
             assistant_call("call-1"),
             tool_result("call-1"),
             assistant_call("call-2"),
             tool_result("call-2"),
             assistant_call("call-3"),
             tool_result("call-3"),
-            Message::assistant("done"),
+            CoreMessage::assistant("done"),
         ];
 
         assert_eq!(super::unit_boundaries(&messages), vec![0..3, 3..5, 5..8]);
@@ -181,9 +181,9 @@ mod tests {
     fn does_not_split_at_user_boundary_while_tool_results_are_missing() {
         let messages = vec![
             assistant_call("call-1"),
-            Message::user("provider recovery"),
+            CoreMessage::user("provider recovery"),
             tool_result("call-1"),
-            Message::user("next"),
+            CoreMessage::user("next"),
         ];
 
         assert_eq!(super::unit_boundaries(&messages), vec![0..3, 3..4]);

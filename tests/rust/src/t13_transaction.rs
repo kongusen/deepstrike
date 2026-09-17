@@ -40,7 +40,7 @@ fn default_sm() -> LoopStateMachine {
 
 fn make_llm_response_with_tool_call(call_id: &str, tool_name: &str) -> LoopEvent {
     LoopEvent::LLMResponse {
-        message: Message {
+        message: CoreMessage {
             role: Role::Assistant,
             content: Content::Text(String::new()),
             tool_calls: vec![ToolCall {
@@ -236,7 +236,7 @@ fn replay_truncates_to_checkpoint_on_rollback() {
         },
         SessionEvent::LlmCompleted {
             turn: 0,
-            message: Message {
+            message: CoreMessage {
                 role: Role::Assistant,
                 content: Content::Text("I'll write a file".into()),
                 tool_calls: vec![ToolCall {
@@ -286,7 +286,7 @@ fn replay_without_rollback_keeps_full_history() {
         },
         SessionEvent::LlmCompleted {
             turn: 0,
-            message: Message {
+            message: CoreMessage {
                 role: Role::Assistant,
                 content: Content::Text("I'll read a file".into()),
                 tool_calls: vec![ToolCall {

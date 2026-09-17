@@ -1,7 +1,7 @@
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 
-use super::message::Message;
+use super::message::CoreMessage;
 
 /// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): the wire
 /// version is the ABI authority; this is the richer internal semantic vocabulary. The
@@ -90,7 +90,7 @@ pub struct PaceDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopResult {
     pub termination: TerminationReason,
-    pub final_message: Option<Message>,
+    pub final_message: Option<CoreMessage>,
     pub turns_used: u32,
     pub total_tokens_used: u64,
     /// Loop-node "until done" signal (loop-control): when an iteration of a `NodeKind::Loop` workflow

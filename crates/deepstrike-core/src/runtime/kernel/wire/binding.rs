@@ -301,7 +301,7 @@ impl CanonicalKernel {
     }
 
     /// Messages added to the canonical operation history.
-    pub fn new_messages(&self) -> Vec<crate::types::message::Message> {
+    pub fn new_messages(&self) -> Vec<crate::types::message::CoreMessage> {
         self.driver
             .engine()
             .map(|engine| engine.drain_new_messages())

@@ -1,3 +1,7 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
+// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
+#![allow(deprecated)]
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -958,7 +962,7 @@ mod tests {
                 session_id,
                 deepstrike_core::runtime::session::SessionEvent::LlmCompleted {
                     turn: 0,
-                    message: deepstrike_core::types::message::Message {
+                    message: deepstrike_core::types::message::CoreMessage {
                         role: deepstrike_core::types::message::Role::Assistant,
                         content: deepstrike_core::types::message::Content::Text(
                             "prior answer ".repeat(400),
@@ -1017,7 +1021,7 @@ mod tests {
         use crate::runtime::replay::replay_messages;
         use crate::runtime::runner::{RuntimeOptions, RuntimeRunner};
         use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
-        use deepstrike_core::types::message::{Content, Message, Role, ToolCall};
+        use deepstrike_core::types::message::{Content, CoreMessage, Role, ToolCall};
         use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1035,10 +1039,10 @@ mod tests {
                 _context: &deepstrike_core::context::renderer::InternalRenderedContext,
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
-            ) -> crate::Result<Message> {
+            ) -> crate::Result<CoreMessage> {
                 let count = self.call_count.fetch_add(1, Ordering::SeqCst);
                 if count == 0 {
-                    Ok(Message {
+                    Ok(CoreMessage {
                         role: Role::Assistant,
                         content: Content::Text("Let's call tool".into()),
                         tool_calls: vec![ToolCall {
@@ -1049,7 +1053,7 @@ mod tests {
                         token_count: None,
                     })
                 } else {
-                    Ok(Message {
+                    Ok(CoreMessage {
                         role: Role::Assistant,
                         content: Content::Text("Recovered".into()),
                         tool_calls: vec![],

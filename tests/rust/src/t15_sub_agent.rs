@@ -26,7 +26,7 @@ fn default_sm() -> LoopStateMachine {
 
 fn text_response() -> LoopEvent {
     LoopEvent::LLMResponse {
-        message: Message {
+        message: CoreMessage {
             role: Role::Assistant,
             content: Content::Text("done".into()),
             tool_calls: vec![],
@@ -246,7 +246,7 @@ fn sub_agent_completed_resumes_loop_with_call_llm() {
         agent_id: CompactString::new("worker"),
         result: LoopResult {
             termination: TerminationReason::Completed,
-            final_message: Some(Message::assistant("task complete")),
+            final_message: Some(CoreMessage::assistant("task complete")),
             turns_used: 3,
             total_tokens_used: 500,
             loop_continue: None,
@@ -288,7 +288,7 @@ fn sub_agent_completed_updates_kernel_process() {
         agent_id: CompactString::new("worker"),
         result: LoopResult {
             termination: TerminationReason::Completed,
-            final_message: Some(Message::assistant("task complete")),
+            final_message: Some(CoreMessage::assistant("task complete")),
             turns_used: 3,
             total_tokens_used: 500,
             loop_continue: None,

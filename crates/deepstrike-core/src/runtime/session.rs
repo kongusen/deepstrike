@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::kernel::wire::CancellationReason;
-use crate::types::message::{Message, ToolCall, ToolResult};
+use crate::types::message::{CoreMessage, ToolCall, ToolResult};
 
 /// Provider-native replay payload persisted in `llm_completed` for wake/preload recovery.
 ///
@@ -59,7 +59,7 @@ pub enum SessionEvent {
     },
     LlmCompleted {
         turn: u32,
-        message: Message,
+        message: CoreMessage,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         provider_replay: Option<ProviderReplay>,
     },

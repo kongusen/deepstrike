@@ -19,7 +19,7 @@ use deepstrike_core::runtime::kernel::wire::{
 use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::message::{
-    Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
+    Content, ContentPart, CoreMessage as RustMessage, Role, ToolCall as RustToolCall,
 };
 use deepstrike_core::types::policy::SignalDisposition as RustSignalDisposition;
 use deepstrike_core::types::signal::{
@@ -60,6 +60,8 @@ pub struct Message {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_parts: Option<Vec<ContentPartObj>>,
+    /// Deprecated since 0.2.67, removed in 0.2.68 (DEL-1): projection-only during the
+    /// migration window — the kernel recomputes via its token engine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_count: Option<u32>,
     #[serde(default)]
@@ -87,6 +89,8 @@ pub struct ToolResult {
     pub is_fatal: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
+    /// Deprecated since 0.2.67, removed in 0.2.68 (DEL-1): projection-only during the
+    /// migration window — the kernel recomputes via its token engine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_count: Option<u32>,
 }

@@ -1,6 +1,10 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use std::sync::Arc;
 
-use crate::types::message::{Content, ContentPart, Message};
+use crate::types::message::{Content, ContentPart, CoreMessage};
 
 /// Token counting and truncation interface. Implementations must be
 /// deterministic and must never panic on any valid UTF-8 input.
@@ -116,7 +120,7 @@ impl ContextTokenEngine {
         (tokens as usize).saturating_mul(4)
     }
 
-    pub fn count_message(&self, msg: &Message) -> u32 {
+    pub fn count_message(&self, msg: &CoreMessage) -> u32 {
         match &msg.content {
             Content::Text(t) => self.count(t),
             Content::Parts(parts) => parts.iter().map(|p| self.count_part(p)).sum(),
@@ -139,7 +143,7 @@ impl ContextTokenEngine {
     /// Truncate a text message to `max_tokens`. Returns the message unchanged
     /// if it fits. Parts messages are never truncated — mangling structured
     /// content produces worse outcomes than a minor token overrun.
-    pub fn truncate_message(&self, msg: &Message, max_tokens: u32) -> Message {
+    pub fn truncate_message(&self, msg: &CoreMessage, max_tokens: u32) -> CoreMessage {
         match &msg.content {
             Content::Text(t) => {
                 let kept = self.0.truncate(t, max_tokens);
@@ -183,7 +187,7 @@ fn modality_estimate_tokens(part: &ContentPart) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::message::{ContentPart, Message};
+    use crate::types::message::{ContentPart, CoreMessage};
 
     fn engine() -> ContextTokenEngine {
         ContextTokenEngine::char_approx()
@@ -238,7 +242,7 @@ mod tests {
     #[test]
     fn truncate_message_appends_suffix_on_cut() {
         let e = engine();
-        let msg = Message::user("a".repeat(200));
+        let msg = CoreMessage::user("a".repeat(200));
         let truncated = e.truncate_message(&msg, 5);
         let text = truncated.content.as_text().unwrap();
         assert!(text.ends_with("… [truncated]"), "got: {text}");
@@ -247,7 +251,7 @@ mod tests {
     #[test]
     fn truncate_message_unchanged_when_fits() {
         let e = engine();
-        let msg = Message::user("hi");
+        let msg = CoreMessage::user("hi");
         let out = e.truncate_message(&msg, 1000);
         assert_eq!(out.content.as_text().unwrap(), "hi");
     }
@@ -255,13 +259,13 @@ mod tests {
     #[test]
     fn count_image_uses_detail_heuristic_not_one() {
         let e = engine();
-        let low = Message::user_multimodal(vec![ContentPart::image_base64_with_detail(
+        let low = CoreMessage::user_multimodal(vec![ContentPart::image_base64_with_detail(
             "abc",
             "image/png",
             "low",
         )]);
-        let auto = Message::user_multimodal(vec![ContentPart::image_base64("abc", "image/png")]);
-        let high = Message::user_multimodal(vec![ContentPart::image_base64_with_detail(
+        let auto = CoreMessage::user_multimodal(vec![ContentPart::image_base64("abc", "image/png")]);
+        let high = CoreMessage::user_multimodal(vec![ContentPart::image_base64_with_detail(
             "abc",
             "image/png",
             "high",
@@ -338,7 +342,7 @@ mod tests {
         let e = engine();
         // 6400 base64 chars → ~4800 decoded bytes → 4800/1600 = 3 tokens
         let audio =
-            Message::user_multimodal(vec![ContentPart::audio("A".repeat(6400), "audio/wav")]);
+            CoreMessage::user_multimodal(vec![ContentPart::audio("A".repeat(6400), "audio/wav")]);
         assert_eq!(e.count_message(&audio), 3);
         // Must not explode to thousands the way counting base64 as text would.
         assert!(e.count_message(&audio) < 100);

@@ -1,3 +1,7 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
+// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
+#![allow(deprecated)]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
@@ -13,7 +17,7 @@ use deepstrike_core::runtime::kernel::wire::{CancellationReason, MemoryPolicy};
 use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
 use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::SchedulerPolicyConfig;
-use deepstrike_core::types::message::{Message, ToolCall};
+use deepstrike_core::types::message::{CoreMessage, ToolCall};
 use deepstrike_core::types::milestone::MilestoneCheckResult;
 use deepstrike_core::types::signal::{
     RuntimeSignal as KernelSignal, SignalSource as KernelSignalSource,
@@ -251,7 +255,7 @@ pub struct RuntimeRunner {
     active_kernel:
         std::sync::Mutex<Option<std::sync::Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>>>,
     memory_write_timestamps: tokio::sync::Mutex<std::collections::VecDeque<u64>>,
-    local_page_out_cache: std::sync::Mutex<Vec<Message>>,
+    local_page_out_cache: std::sync::Mutex<Vec<CoreMessage>>,
 }
 
 impl RuntimeRunner {
@@ -463,10 +467,10 @@ impl RuntimeRunner {
             "{transcript}\n\nReturn {{\"memories\":[{{\"name\":\"stable-kebab-key\",\"kind\":\"user|feedback|project|reference\",\"content\":\"fact\",\"description\":\"why durable\",\"confidence\":0.0,\"links\":[],\"pinned\":false,\"ttl_days\":null,\"evidence_refs\":[]}}]}} with at most 10 items. Return {{\"memories\":[]}} when nothing is durable."
         );
         let context = rendered_context_from_messages(vec![
-            Message::system(
+            CoreMessage::system(
                 "Extract durable, reusable facts from this completed session. Return only JSON; do not include transient progress or guesses.",
             ),
-            Message::user(prompt),
+            CoreMessage::user(prompt),
         ]);
         let state = self.opts.provider.create_run_state();
         let mut stream = self
@@ -1082,7 +1086,7 @@ impl RuntimeRunner {
                         &mut pending_observations,
                         serde_json::json!({
                             "kind": "add_history_message",
-                            "message": Message::user_multimodal(attachments.clone()),
+                            "message": CoreMessage::user_multimodal(attachments.clone()),
                         }),
                     ).await?;
                 }
@@ -1124,7 +1128,7 @@ impl RuntimeRunner {
                                 &mut pending_observations,
                                 serde_json::json!({
                                     "kind": "add_history_message",
-                                    "message": Message::user(recalled.join("\n")),
+                                    "message": CoreMessage::user(recalled.join("\n")),
                                 }),
                             ).await?;
                         }
@@ -1488,7 +1492,7 @@ impl RuntimeRunner {
                             continue;
                         }
 
-                        let mut assistant = Message {
+                        let mut assistant = CoreMessage {
                             role: deepstrike_core::types::message::Role::Assistant,
                             content: deepstrike_core::types::message::Content::Text(final_text.clone()),
                             tool_calls: final_tool_calls.clone(),
@@ -2620,7 +2624,7 @@ impl RuntimeRunner {
         }
     }
 
-    async fn archive_semantic_page_out(&self, archived: Vec<Message>, action: Option<String>) {
+    async fn archive_semantic_page_out(&self, archived: Vec<CoreMessage>, action: Option<String>) {
         let (Some(_store), Some(agent_id), Some(scope)) = (
             &self.opts.memory_store,
             &self.opts.agent_id,
@@ -2670,7 +2674,7 @@ impl RuntimeRunner {
         let _ = self.write_memory(request, None, Some(agent_id)).await;
     }
 
-    async fn summarize_for_long_term_memory(&self, archived: &[Message]) -> crate::Result<String> {
+    async fn summarize_for_long_term_memory(&self, archived: &[CoreMessage]) -> crate::Result<String> {
         let transcript = archived
             .iter()
             .map(|m| {
@@ -2699,7 +2703,7 @@ impl RuntimeRunner {
             system_text,
             system_stable: String::new(),
             system_knowledge: String::new(),
-            turns: vec![deepstrike_core::types::message::Message {
+            turns: vec![deepstrike_core::types::message::CoreMessage {
                 role: deepstrike_core::types::message::Role::User,
                 content: deepstrike_core::types::message::Content::Text(transcript.clone()),
                 tool_calls: vec![],
@@ -2929,7 +2933,7 @@ fn next_archived_seq_start(events: Option<&[SessionEntry]>) -> u64 {
 }
 
 fn rendered_context_from_messages(
-    messages: Vec<Message>,
+    messages: Vec<CoreMessage>,
 ) -> deepstrike_core::context::renderer::InternalRenderedContext {
     let mut system_parts = Vec::new();
     let mut turns = Vec::new();

@@ -9,7 +9,10 @@ export interface ImagePart {
   type: "image"
   /** Remote image URL (mutually exclusive with `data`). */
   url?: string
-  /** Raw base64-encoded image bytes (mutually exclusive with `url`). */
+  /** Raw base64-encoded image bytes (mutually exclusive with `url`).
+   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-3). Carry media via
+   * `ContentBlockImage`/`MediaSource` (`fileId`/`object`/`url`) instead; the provider
+   * adapter materialises bytes at the wire boundary. */
   data?: string
   /** MIME type, e.g. `"image/png"`. Required when `data` is set. */
   mediaType?: string
@@ -19,7 +22,10 @@ export interface ImagePart {
 
 export interface AudioPart {
   type: "audio"
-  /** Raw base64-encoded audio bytes. */
+  /** Raw base64-encoded audio bytes.
+   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-3). Carry media via
+   * `ContentBlockAudio`/`MediaSource` (`fileId`/`object`/`url`) instead; the provider
+   * adapter materialises bytes at the wire boundary. */
   data: string
   /** MIME type, e.g. `"audio/wav"`. */
   mediaType: string
@@ -77,6 +83,10 @@ export interface Message {
   content: string
   /** Structured multimodal content. When present, takes precedence over `content` for provider calls. */
   contentParts?: ContentPart[]
+  /** Cached or provider-reported token count.
+   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-1). Projection only during the
+   * migration window — the kernel recomputes via its token engine; hosts should keep
+   * counts in a TokenMeasurement-style side table keyed by content fingerprint. */
   tokenCount?: number
   toolCalls?: ToolCall[]
 }
@@ -101,6 +111,10 @@ export interface ToolResult {
   isError: boolean
   isFatal?: boolean
   errorKind?: ToolErrorKind
+  /** Cached or provider-reported token count.
+   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-1). Projection only during the
+   * migration window — the kernel recomputes via its token engine; hosts should keep
+   * counts in a TokenMeasurement-style side table keyed by content fingerprint. */
   tokenCount?: number
   /** spc_012-N-01: same additive contract as `ToolResultPart.contentParts` (see there). */
   contentParts?: ToolOutputBlock[]

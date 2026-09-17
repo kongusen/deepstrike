@@ -52,7 +52,7 @@ pub struct WorkflowNodeOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub termination: Option<TerminationReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub output: Option<crate::types::message::Message>,
+    pub output: Option<crate::types::message::CoreMessage>,
 }
 
 /// Deterministic kernel agent id for a workflow node (stable across resume / audit).

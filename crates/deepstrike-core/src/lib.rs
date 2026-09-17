@@ -75,7 +75,9 @@ pub use types::capability::{
 };
 pub use types::contract::{AcceptanceCriterion, VerificationContract};
 pub use types::error::{DeepStrikeError, Result};
-pub use types::message::{Message, ToolCall, ToolResult};
+// 0.2.67 (Q1): the internal runtime message is `CoreMessage`; the public name `Message`
+// stays as an alias for the migration window and is removed in 0.2.68 (DEL-4).
+pub use types::message::{CoreMessage, CoreMessage as Message, ToolCall, ToolResult};
 pub use types::milestone::{
     MilestoneCheckResult, MilestoneContract, MilestonePhase, MilestoneRollbackPolicy,
     MilestoneUnlockPolicy, MilestoneVerifier, RetryPolicy,

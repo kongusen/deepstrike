@@ -1,3 +1,7 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use super::*;
 
 impl CanonicalOperationDriver {
@@ -145,7 +149,7 @@ impl CanonicalOperationDriver {
                     );
                     let engine = self.engine_mut()?;
                     let tokens = engine.ctx.engine.count(&content).max(1);
-                    engine.ctx.push_history(Message::user(content), tokens);
+                    engine.ctx.push_history(CoreMessage::user(content), tokens);
                     recalled.push(recall.record_ref.as_str().to_string());
                 }
                 // The recalls are in history now, so the turn that asked for them resumes with a
@@ -629,7 +633,7 @@ impl CanonicalOperationDriver {
         // rewritten and the model reads the page-in as the answer to the read it asked for.
         let body = format!("[PAYLOAD handle_id={}]\n{content}", pending.handle_id);
         let tokens = engine.ctx.engine.count(&body).max(1);
-        engine.ctx.push_history(Message::user(body), tokens);
+        engine.ctx.push_history(CoreMessage::user(body), tokens);
         let previous = engine.ctx.set_payload_residency(
             &pending.handle_id,
             HandleKind::ToolResult,
@@ -739,7 +743,7 @@ impl CanonicalOperationDriver {
         &self,
         context: &PlanContext<'_>,
         summary: Option<&str>,
-        archived: &[Message],
+        archived: &[CoreMessage],
         effect_index: u32,
     ) -> Result<ArchivePageOutEffect, KernelFault> {
         let content = serde_json::to_string(archived).map_err(|error| {

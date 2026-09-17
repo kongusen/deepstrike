@@ -1,10 +1,14 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use super::config::ContextConfig;
 use super::partitions::ContextPartitions;
 use super::pressure::PressureAction;
 use super::token_engine::ContextTokenEngine;
 use super::units::{strict_tool_pairing_is_valid, unit_boundaries};
 use super::utility::{UtilitySelectionContext, plan_utility_archive};
-use crate::types::message::{Content, ContentPart, Message};
+use crate::types::message::{Content, ContentPart, CoreMessage};
 
 /// Compression result returned by every compactor.
 #[derive(Default)]
@@ -14,7 +18,7 @@ pub struct CompressResult {
     /// Generated summary text if any.
     pub summary: Option<String>,
     /// Messages drained/archived from the context.
-    pub archived: Vec<Message>,
+    pub archived: Vec<CoreMessage>,
     /// Cache-aware (W1-1 step 2 / DoD #4): the earliest history-message index this op rewrote or
     /// removed — i.e. where it invalidates the prompt-cache prefix. `None` = prefix-safe (touched
     /// nothing). The pipeline folds the minimum across stages and surfaces it on the observation.
@@ -114,7 +118,7 @@ fn prefix_keep_for(len: usize, preserve_k: usize) -> usize {
 }
 
 fn oversized_text_message_indices(
-    messages: &[Message],
+    messages: &[CoreMessage],
     per_msg_limit: u32,
     prefix_keep: usize,
     engine: &ContextTokenEngine,
@@ -240,7 +244,7 @@ fn excerpt_text_with_total(
 /// eligible result in the selected envelope. The cache-aware planner reuses this: tool
 /// results are interleaved mid/late history, so excerpting them is prefix-safe.
 fn excerptable_tool_result_indices(
-    messages: &[Message],
+    messages: &[CoreMessage],
     preserved_refs: &[String],
     prefix_keep: usize,
     engine: &ContextTokenEngine,
@@ -288,7 +292,7 @@ impl Compressor for MicroCompactor {
         preserve_k: usize,
         engine: &ContextTokenEngine,
     ) -> CompressResult {
-        let find_tool_name = |call_id: &str, msgs: &[Message]| -> Option<String> {
+        let find_tool_name = |call_id: &str, msgs: &[CoreMessage]| -> Option<String> {
             for m in msgs {
                 for tc in &m.tool_calls {
                     if tc.id == call_id {
@@ -388,7 +392,7 @@ impl Compressor for MicroCompactor {
 /// decision the cache-aware planner reuses to "batch one big drop to target" rather than re-deriving
 /// the count inside the compactor.
 pub fn plan_drop_oldest(
-    messages: &[Message],
+    messages: &[CoreMessage],
     total_tokens: u32,
     target_tokens: u32,
     keep: usize,
@@ -510,7 +514,7 @@ impl Compressor for AutoCompactor {
 fn apply_utility_plan(
     partition: &mut super::partitions::Partition,
     plan: &super::utility::UtilityArchivePlan,
-) -> (Vec<Message>, u32) {
+) -> (Vec<CoreMessage>, u32) {
     let pairing_was_valid = strict_tool_pairing_is_valid(&partition.messages);
     let archived_indices = plan
         .archived_ranges
@@ -569,7 +573,7 @@ impl CompressionPipeline {
         max_tokens: u32,
         target_tokens: u32,
         engine: &ContextTokenEngine,
-    ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
+    ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
         if action == PressureAction::None {
             return (0, None, vec![], None);
         }
@@ -638,7 +642,7 @@ mod tests {
     use crate::context::config::ContextConfig;
     use crate::context::partitions::ContextPartitions;
     use crate::context::token_engine::ContextTokenEngine;
-    use crate::types::message::Message;
+    use crate::types::message::CoreMessage;
 
     fn engine() -> ContextTokenEngine {
         ContextTokenEngine::char_approx()
@@ -658,7 +662,7 @@ mod tests {
             per_msg_ratio: cfg.snip_per_msg_ratio,
         };
         let mut ctx = ContextPartitions::new(&cfg);
-        ctx.history.push(Message::user("a".repeat(800)), 200);
+        ctx.history.push(CoreMessage::user("a".repeat(800)), 200);
         // preserve_k=0: exercise the truncation transform directly (no cache-prefix protection).
         let result = compactor.compress(&mut ctx, 0, MAX, 0, &engine());
         assert!(result.tokens_saved > 0);
@@ -677,7 +681,7 @@ mod tests {
             per_msg_ratio: cfg.snip_per_msg_ratio,
         };
         let mut ctx = ContextPartitions::new(&cfg);
-        ctx.history.push(Message::user("short"), 5);
+        ctx.history.push(CoreMessage::user("short"), 5);
         let result = compactor.compress(&mut ctx, 0, MAX, 2, &engine());
         assert_eq!(result.tokens_saved, 0);
     }
@@ -695,7 +699,7 @@ mod tests {
             is_error: false,
             durable_content: None,
         }];
-        let msg = Message {
+        let msg = CoreMessage {
             role: Role::Tool,
             content: Content::Parts(parts),
             tool_calls: vec![],
@@ -731,7 +735,7 @@ mod tests {
 
         let compactor = MicroCompactor;
         let mut ctx = ContextPartitions::new(&config());
-        let msg = Message {
+        let msg = CoreMessage {
             role: Role::Tool,
             content: Content::Parts(vec![
                 ContentPart::Text {
@@ -780,7 +784,7 @@ mod tests {
         let compactor = CollapseCompactor;
         let mut ctx = ContextPartitions::new(&config());
         for _ in 0..8 {
-            ctx.history.push(Message::user("msg"), 50);
+            ctx.history.push(CoreMessage::user("msg"), 50);
         }
         let result = compactor.compress(&mut ctx, 250, MAX, 2, &engine());
         assert!(result.tokens_saved > 0);
@@ -815,8 +819,8 @@ mod tests {
             ("routine chatter two", "acknowledged"),
             ("latest request", "working on it"),
         ] {
-            ctx.history.push(Message::user(user), 40);
-            ctx.history.push(Message::assistant(assistant), 40);
+            ctx.history.push(CoreMessage::user(user), 40);
+            ctx.history.push(CoreMessage::assistant(assistant), 40);
         }
 
         let result = compactor.compress(&mut ctx, 160, MAX, 1, &engine());
@@ -845,10 +849,10 @@ mod tests {
     fn utility_selector_deducts_fixed_context_before_budgeting_history() {
         let compactor = CollapseCompactor;
         let mut ctx = ContextPartitions::new(&config());
-        ctx.system.push(Message::system("fixed"), 600);
+        ctx.system.push(CoreMessage::system("fixed"), 600);
         for index in 0..4 {
             ctx.history
-                .push(Message::user(format!("unit {index}")), 100);
+                .push(CoreMessage::user(format!("unit {index}")), 100);
         }
 
         let result = compactor.compress(&mut ctx, 700, MAX, 1, &engine());
@@ -860,16 +864,16 @@ mod tests {
     #[test]
     fn rule_summarizer_formats_correctly() {
         use crate::context::summarizer::RuleSummarizer;
-        use crate::types::message::{Content, Message, Role};
+        use crate::types::message::{Content, CoreMessage, Role};
         let summarizer = RuleSummarizer;
         let mut messages = vec![];
-        messages.push(Message {
+        messages.push(CoreMessage {
             role: Role::User,
             content: Content::Text("hello".to_string()),
             tool_calls: vec![],
             token_count: Some(5),
         });
-        messages.push(Message {
+        messages.push(CoreMessage {
             role: Role::Assistant,
             content: Content::Text("world".to_string()),
             tool_calls: vec![],
@@ -896,7 +900,7 @@ mod tests {
             is_error: false,
             durable_content: None,
         }];
-        let msg = Message {
+        let msg = CoreMessage {
             role: Role::Tool,
             content: Content::Parts(parts),
             tool_calls: vec![],
@@ -920,7 +924,7 @@ mod tests {
         let compactor = AutoCompactor;
         let mut ctx = ContextPartitions::new(&config());
         for i in 0..10 {
-            ctx.history.push(Message::user(format!("msg {i}")), 10);
+            ctx.history.push(CoreMessage::user(format!("msg {i}")), 10);
         }
         let result = compactor.compress(&mut ctx, 0, MAX, 2, &engine());
         assert!(result.tokens_saved > 0);
@@ -945,9 +949,9 @@ mod tests {
     fn plan_drop_oldest_respects_target_and_preserve_floor() {
         // Pure selection helper (W1-1 collapse): drop the fewest oldest messages to reach target,
         // never below the preserve floor. This is the decision the cache-aware planner reuses.
-        let msgs: Vec<Message> = (0..8)
+        let msgs: Vec<CoreMessage> = (0..8)
             .map(|i| {
-                let mut m = Message::user(format!("m{i}"));
+                let mut m = CoreMessage::user(format!("m{i}"));
                 m.token_count = Some(50);
                 m
             })
@@ -962,24 +966,24 @@ mod tests {
 
     #[test]
     fn collapse_never_splits_a_tool_transaction() {
-        let mut call = Message::assistant("calling");
+        let mut call = CoreMessage::assistant("calling");
         call.tool_calls.push(crate::types::message::ToolCall {
             id: "call-1".into(),
             name: "read".into(),
             arguments: serde_json::json!({}),
         });
         let messages = vec![
-            Message::user("question"),
+            CoreMessage::user("question"),
             call,
-            Message::tool(vec![ContentPart::ToolResult {
+            CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: "call-1".into(),
                 output: "ok".into(),
                 is_error: false,
                 durable_content: None,
             }]),
-            Message::assistant("answer"),
-            Message::user("next"),
-            Message::assistant("done"),
+            CoreMessage::assistant("answer"),
+            CoreMessage::user("next"),
+            CoreMessage::assistant("done"),
         ]
         .into_iter()
         .map(|mut message| {
@@ -995,18 +999,18 @@ mod tests {
     fn auto_compactor_preserves_the_latest_complete_tool_unit() {
         let compactor = AutoCompactor;
         let mut ctx = ContextPartitions::new(&config());
-        ctx.history.push(Message::user("old"), 10);
-        ctx.history.push(Message::assistant("old answer"), 10);
-        let mut call = Message::assistant("calling");
+        ctx.history.push(CoreMessage::user("old"), 10);
+        ctx.history.push(CoreMessage::assistant("old answer"), 10);
+        let mut call = CoreMessage::assistant("calling");
         call.tool_calls.push(crate::types::message::ToolCall {
             id: "call-1".into(),
             name: "read".into(),
             arguments: serde_json::json!({}),
         });
-        ctx.history.push(Message::user("question"), 10);
+        ctx.history.push(CoreMessage::user("question"), 10);
         ctx.history.push(call, 10);
         ctx.history.push(
-            Message::tool(vec![ContentPart::ToolResult {
+            CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: "call-1".into(),
                 output: "ok".into(),
                 is_error: false,
@@ -1014,7 +1018,7 @@ mod tests {
             }]),
             10,
         );
-        ctx.history.push(Message::assistant("answer"), 10);
+        ctx.history.push(CoreMessage::assistant("answer"), 10);
 
         compactor.compress(&mut ctx, 0, MAX, 1, &engine());
 
@@ -1089,10 +1093,10 @@ mod tests {
         let cfg = config();
         let mut ctx = ContextPartitions::new(&cfg);
         // Oversized text turns (trigger Snip / Collapse / Auto).
-        ctx.history.push(Message::user("u0 ".repeat(120)), 300);
-        ctx.history.push(Message::assistant("a0 ".repeat(120)), 300);
+        ctx.history.push(CoreMessage::user("u0 ".repeat(120)), 300);
+        ctx.history.push(CoreMessage::assistant("a0 ".repeat(120)), 300);
         // Tool-result message (trigger Micro).
-        ctx.history.messages.push(Message {
+        ctx.history.messages.push(CoreMessage {
             role: Role::Tool,
             content: Content::Parts(vec![ContentPart::ToolResult {
                 call_id: CompactString::new("call_1"),
@@ -1105,9 +1109,9 @@ mod tests {
             token_count: Some(400),
         });
         ctx.history.token_count += 400;
-        ctx.history.push(Message::user("u1 ".repeat(120)), 300);
-        ctx.history.push(Message::assistant("a1 ".repeat(120)), 300);
-        ctx.history.messages.push(Message {
+        ctx.history.push(CoreMessage::user("u1 ".repeat(120)), 300);
+        ctx.history.push(CoreMessage::assistant("a1 ".repeat(120)), 300);
+        ctx.history.messages.push(CoreMessage {
             role: Role::Tool,
             content: Content::Parts(vec![ContentPart::ToolResult {
                 call_id: CompactString::new("call_2"),
@@ -1234,7 +1238,7 @@ mod tests {
         };
         let pipeline = CompressionPipeline::new(&cfg);
         let mut ctx = ContextPartitions::new(&cfg);
-        ctx.history.push(Message::user("a".repeat(3600)), 900);
+        ctx.history.push(CoreMessage::user("a".repeat(3600)), 900);
 
         let (saved, summary, archived, _cache_at) =
             pipeline.compress(&mut ctx, PressureAction::AutoCompact, 1_000, 500, &engine());
@@ -1279,16 +1283,16 @@ mod tests {
     /// Build a pseudo-random but structurally valid transcript: a run of transactions, each either a
     /// plain user/assistant exchange or a tool transaction (assistant tool_calls → all results →
     /// optional trailing answer), with a per-message token weight so compression actually fires.
-    fn random_valid_history(rng: &mut Lcg, call_seq: &mut usize) -> Vec<(Message, u32)> {
+    fn random_valid_history(rng: &mut Lcg, call_seq: &mut usize) -> Vec<(CoreMessage, u32)> {
         use crate::types::message::{ContentPart, ToolCall};
-        let mut out: Vec<(Message, u32)> = Vec::new();
+        let mut out: Vec<(CoreMessage, u32)> = Vec::new();
         let transactions = 3 + rng.below(10) as usize;
         let weight = |rng: &mut Lcg| 10 + rng.below(300) as u32;
         for _ in 0..transactions {
             if rng.below(10) < 6 {
                 // Tool transaction.
                 if rng.below(2) == 0 {
-                    out.push((Message::user(format!("ask {}", call_seq)), weight(rng)));
+                    out.push((CoreMessage::user(format!("ask {}", call_seq)), weight(rng)));
                 }
                 let n_calls = 1 + rng.below(3) as usize;
                 let ids: Vec<String> = (0..n_calls)
@@ -1297,7 +1301,7 @@ mod tests {
                         format!("call-{call_seq}")
                     })
                     .collect();
-                let mut assistant = Message::assistant("working");
+                let mut assistant = CoreMessage::assistant("working");
                 for id in &ids {
                     assistant.tool_calls.push(ToolCall {
                         id: id.clone().into(),
@@ -1310,7 +1314,7 @@ mod tests {
                 if rng.below(2) == 0 {
                     for id in &ids {
                         out.push((
-                            Message::tool(vec![ContentPart::ToolResult {
+                            CoreMessage::tool(vec![ContentPart::ToolResult {
                                 call_id: id.clone().into(),
                                 output: "ok ".repeat(20),
                                 is_error: false,
@@ -1329,14 +1333,14 @@ mod tests {
                             durable_content: None,
                         })
                         .collect();
-                    out.push((Message::tool(parts), weight(rng)));
+                    out.push((CoreMessage::tool(parts), weight(rng)));
                 }
                 if rng.below(2) == 0 {
-                    out.push((Message::assistant("done"), weight(rng)));
+                    out.push((CoreMessage::assistant("done"), weight(rng)));
                 }
             } else {
-                out.push((Message::user(format!("plain {}", call_seq)), weight(rng)));
-                out.push((Message::assistant("reply"), weight(rng)));
+                out.push((CoreMessage::user(format!("plain {}", call_seq)), weight(rng)));
+                out.push((CoreMessage::assistant("reply"), weight(rng)));
             }
         }
         out
@@ -1359,7 +1363,7 @@ mod tests {
         for seed in 0..250u64 {
             let mut rng = Lcg(seed.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(1));
             let history = random_valid_history(&mut rng, &mut call_seq);
-            let messages: Vec<Message> = history.iter().map(|(m, _)| m.clone()).collect();
+            let messages: Vec<CoreMessage> = history.iter().map(|(m, _)| m.clone()).collect();
             assert!(
                 strict_tool_pairing_is_valid(&messages),
                 "generator must emit valid transcripts (seed {seed})"

@@ -641,7 +641,7 @@ pub struct ContextVmState {
     pub task_state: LogicalTaskState,
     pub partition_tokens: PartitionTokenState,
     pub history_len: u32,
-    /// Message-count boundary projected as `frozen_prefix_len` on future provider effects.
+    /// CoreMessage-count boundary projected as `frozen_prefix_len` on future provider effects.
     #[serde(default)]
     pub frozen_history_len: u32,
     pub last_activity_ms: WireU64,
@@ -661,6 +661,11 @@ pub enum MessagePartition {
 }
 
 /// One stored message, projected (§12.1, adjudication §5q-2).
+///
+/// This is the durable representation of the **CanonicalMessageState** concept (0.2.67):
+/// the concept is the L1 semantic authority for messages; this DTO is merely its current
+/// storage vehicle. The two are deliberately decoupled so a future distributed persistence
+/// is not locked to the checkpoint DTO's shape.
 ///
 /// This is the *source* the renderer reads, not the rendered result: no prompt assembly, no
 /// residency projection, no salience footer. A restore rebuilds the partitions from these and then

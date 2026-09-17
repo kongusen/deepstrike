@@ -1,3 +1,7 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use super::*;
 
 impl CanonicalOperationDriver {
@@ -320,7 +324,7 @@ impl CanonicalOperationDriver {
     pub(super) fn project_message(
         &self,
         partition: MessagePartition,
-        message: &Message,
+        message: &CoreMessage,
     ) -> StoredMessageState {
         StoredMessageState {
             partition,
@@ -346,7 +350,7 @@ impl CanonicalOperationDriver {
     /// and one that says `PagedOut` left under pressure and lives with the host now. Either way the
     /// checkpoint carries the reference and the digest that verifies a page-in — putting the bytes
     /// back would re-create exactly the round trip §7.10 exists to delete.
-    pub(super) fn project_body(&self, message: &Message) -> StoredMessageBody {
+    pub(super) fn project_body(&self, message: &CoreMessage) -> StoredMessageBody {
         // External/paged-out tool results must retain their reference form. Their text projection
         // is represented as a `DurableToolResult`, but choosing that form first
         // would discard the handle digest and make the body unreachable after restore.

@@ -1,3 +1,7 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
+// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
+#![allow(deprecated)]
+
 use async_trait::async_trait;
 use deepstrike_core::types::message::ToolSchema;
 use futures::future::BoxFuture;

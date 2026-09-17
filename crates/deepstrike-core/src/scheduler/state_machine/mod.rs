@@ -1,3 +1,7 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use compact_str::CompactString;
@@ -18,7 +22,7 @@ use crate::types::result::SubAgentResult;
 pub use crate::runtime::kernel::KernelObservation;
 use crate::runtime::session::RollbackReason;
 use crate::types::message::{
-    Content, ContentPart, Message, ToolCall, ToolErrorKind, ToolResult, ToolSchema,
+    Content, ContentPart, CoreMessage, ToolCall, ToolErrorKind, ToolResult, ToolSchema,
 };
 use crate::types::milestone::MilestoneCheckResult;
 use crate::types::result::{LoopResult, TerminationReason};
@@ -75,7 +79,7 @@ pub enum LoopPhase {
 #[derive(Debug)]
 pub enum LoopEvent {
     LLMResponse {
-        message: Message,
+        message: CoreMessage,
     },
     ToolResults {
         results: Vec<ToolResult>,
@@ -134,7 +138,7 @@ pub enum LoopAction {
         turn: u32,
         action: crate::runtime::kernel::KernelPressureAction,
         summary: Option<String>,
-        archived: Vec<Message>,
+        archived: Vec<CoreMessage>,
         tier: String,
     },
     Done {
@@ -180,7 +184,7 @@ pub(super) enum PendingHostEffect {
         turn: u32,
         action: crate::runtime::kernel::KernelPressureAction,
         summary: Option<String>,
-        archived: Vec<Message>,
+        archived: Vec<CoreMessage>,
         tier: String,
     },
 }
@@ -430,7 +434,7 @@ mod signal;
 mod workflow;
 
 impl LoopStateMachine {
-    fn message_tokens(&self, message: &Message) -> u32 {
+    fn message_tokens(&self, message: &CoreMessage) -> u32 {
         message
             .token_count
             .unwrap_or_else(|| self.ctx.engine.count_message(message))
@@ -991,7 +995,7 @@ impl LoopStateMachine {
     ///
     /// Call **before** `start()` when resuming a conversation. Sets the baseline
     /// so `drain_new_messages()` returns only the messages from the current run.
-    pub fn preload_history(&mut self, messages: Vec<Message>) {
+    pub fn preload_history(&mut self, messages: Vec<CoreMessage>) {
         for msg in messages {
             let tokens = self.message_tokens(&msg);
             self.ctx.push_history(msg, tokens);
@@ -1042,7 +1046,7 @@ impl LoopStateMachine {
     ///
     /// Call after `LoopAction::Done` to get the complete turn transcript
     /// for persistence to a SessionStore.
-    pub fn drain_new_messages(&self) -> Vec<Message> {
+    pub fn drain_new_messages(&self) -> Vec<CoreMessage> {
         let history = &self.ctx.partitions.history.messages;
         let start = self.session_history_baseline.min(history.len());
         history[start..].to_vec()
@@ -1117,7 +1121,7 @@ impl LoopStateMachine {
         // Estimate tokens (1 token ≈ 4 chars) with a minimum of 1 so the renderer
         // does not skip this message (it skips zero-token entries).
         let user_tokens = self.ctx.engine.count(&user_msg).max(1);
-        self.ctx.push_history(Message::user(user_msg), user_tokens);
+        self.ctx.push_history(CoreMessage::user(user_msg), user_tokens);
         self.phase = LoopPhase::Reason;
         // Root task (seeded `Ready` in `new()`) becomes `Running`; `emit_call_llm` sets it.
         self.emit_call_llm()
@@ -1356,7 +1360,7 @@ impl LoopStateMachine {
                     .iter()
                     .find_map(|result| self.rollback_reason_for_tool_result(result))
                 {
-                    let note = Message::user(super::rollback::build_rollback_note(
+                    let note = CoreMessage::user(super::rollback::build_rollback_note(
                         &reason,
                         self.ctx.config.verbose_control_notes,
                     ));
@@ -1387,7 +1391,7 @@ impl LoopStateMachine {
                         is_error: r.is_error,
                         durable_content: r.durable_content.clone(),
                     }];
-                    let tool_msg = Message::tool(parts);
+                    let tool_msg = CoreMessage::tool(parts);
                     let tokens = r
                         .token_count
                         .unwrap_or_else(|| self.ctx.engine.count_message(&tool_msg));
@@ -1561,7 +1565,7 @@ impl LoopStateMachine {
                     }
                 }
                 let reason = RollbackReason::Timeout;
-                let note = Message::user(super::rollback::build_rollback_note(
+                let note = CoreMessage::user(super::rollback::build_rollback_note(
                     &reason,
                     self.ctx.config.verbose_control_notes,
                 ));
@@ -1730,7 +1734,7 @@ impl LoopStateMachine {
     /// Close a kernel-handled tool call's transcript pair with a synthetic result so
     /// providers always see call → result.
     fn push_synthetic_tool_result(&mut self, call_id: &str, output: &str, is_error: bool) {
-        let msg = Message::tool(vec![crate::types::message::ContentPart::ToolResult {
+        let msg = CoreMessage::tool(vec![crate::types::message::ContentPart::ToolResult {
             call_id: call_id.into(),
             output: output.to_string(),
             is_error,
@@ -1743,7 +1747,7 @@ impl LoopStateMachine {
     fn terminate(
         &mut self,
         termination: TerminationReason,
-        final_message: Option<Message>,
+        final_message: Option<CoreMessage>,
     ) -> LoopAction {
         // Commit the final response into history so subsequent session restores
         // include the complete transcript: user → [tool turns] → final assistant.

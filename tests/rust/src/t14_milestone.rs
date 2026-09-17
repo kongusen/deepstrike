@@ -21,7 +21,7 @@ fn default_sm() -> LoopStateMachine {
 
 fn text_response() -> LoopEvent {
     LoopEvent::LLMResponse {
-        message: Message {
+        message: CoreMessage {
             role: Role::Assistant,
             content: Content::Text("done".into()),
             tool_calls: vec![],
@@ -32,7 +32,7 @@ fn text_response() -> LoopEvent {
 
 fn tool_response(call_id: &str) -> LoopEvent {
     LoopEvent::LLMResponse {
-        message: Message {
+        message: CoreMessage {
             role: Role::Assistant,
             content: Content::Text(String::new()),
             tool_calls: vec![ToolCall {

@@ -1,3 +1,7 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 #[cfg(test)]
 use super::fault::stable_hash;
 use super::partitions::ContextPartitions;
@@ -5,7 +9,7 @@ use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
 use super::units::{strict_tool_pairing_is_valid, unit_boundaries};
 use crate::mm::handle::{HandleTable, Residency};
-use crate::types::message::{Content, ContentPart, Message, Role};
+use crate::types::message::{Content, ContentPart, CoreMessage, Role};
 use serde::{Deserialize, Serialize};
 
 /// Structured render output aligned with LLM API slots.
@@ -39,11 +43,11 @@ pub struct InternalRenderedContext {
     /// Knowledge (memory retrievals, skill definitions, artifacts). Anthropic system[1] with cache_control.
     pub system_knowledge: String,
     /// History turns only — the stable, cacheable message prefix.
-    pub turns: Vec<Message>,
+    pub turns: Vec<CoreMessage>,
     /// Volatile State turn (task_state + signals), rebuilt every call. Rendered
     /// after the cacheable history. `None` when there is no task state or signals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_turn: Option<Message>,
+    pub state_turn: Option<CoreMessage>,
     /// P1-E: number of leading `turns` that form the **frozen prefix** — byte-stable until the
     /// next compaction. Providers that place explicit cache breakpoints (Anthropic) pin one *deep*
     /// breakpoint at this boundary (a long-lived cache that survives many turns and is immune to
@@ -120,7 +124,7 @@ impl PrefixFingerprint {
 /// through serde so every content variant and tool-call argument is covered with a
 /// deterministic field order.
 #[cfg(test)]
-fn hash_turn(msg: &Message) -> u64 {
+fn hash_turn(msg: &CoreMessage) -> u64 {
     let material =
         serde_json::to_vec(&(&msg.role, &msg.content, &msg.tool_calls)).unwrap_or_default();
     stable_hash(&material)
@@ -230,7 +234,7 @@ fn salience_footer(ts: &TaskState) -> Option<String> {
 /// Build the State turn (the volatile tail): task_state + signals + a recency focus footer +
 /// "Proceed." anchor. The footer sits last (just before "Proceed.") so the current goal/step/
 /// directive land in the prompt's highest-attention position (P1-F).
-fn build_state_turn(partitions: &ContextPartitions) -> Option<Message> {
+fn build_state_turn(partitions: &ContextPartitions) -> Option<CoreMessage> {
     let task = partitions.task_state.format_compact();
     if task.is_empty() && partitions.signals.is_empty() {
         return None;
@@ -247,14 +251,14 @@ fn build_state_turn(partitions: &ContextPartitions) -> Option<Message> {
         parts.push(footer);
     }
     let body = parts.join("\n\n");
-    Some(Message::user(format!("{body}\n\nProceed.")))
+    Some(CoreMessage::user(format!("{body}\n\nProceed.")))
 }
 
 /// Ensure turns start with a user message.
 /// After AutoCompact the preserved tail may be all assistant/tool — insert an anchor.
-fn normalize_turn_prefix(turns: &mut Vec<Message>) {
+fn normalize_turn_prefix(turns: &mut Vec<CoreMessage>) {
     if !turns.is_empty() && matches!(turns[0].role, Role::Assistant | Role::Tool) {
-        turns.insert(0, Message::user("[context resumed]"));
+        turns.insert(0, CoreMessage::user("[context resumed]"));
     }
 }
 
@@ -303,7 +307,7 @@ const NARRATION_COLLAPSE_MIN_CHARS: usize = 40;
 /// left intact; the original full text stays in `partitions.history`, so the projection reverses if
 /// the flag is turned off. `None` when the message isn't a collapsible narration turn or the flag is
 /// off. Caller restricts this to messages already past the protected recent window.
-fn project_assistant_narration(msg: &Message, enabled: bool) -> Option<Message> {
+fn project_assistant_narration(msg: &CoreMessage, enabled: bool) -> Option<CoreMessage> {
     if !enabled || msg.role != Role::Assistant || msg.tool_calls.is_empty() {
         return None;
     }
@@ -321,7 +325,7 @@ fn project_assistant_narration(msg: &Message, enabled: bool) -> Option<Message> 
 
 /// If any tool-result body is not resident in working context (`Collapsed` or `PagedOut`), return
 /// a projected copy with those parts previewed; `None` if nothing is projected.
-fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
+fn project_message(msg: &CoreMessage, handles: &HandleTable) -> Option<CoreMessage> {
     let Content::Parts(parts) = &msg.content else {
         return None;
     };
@@ -523,7 +527,7 @@ mod tests {
     use crate::context::partitions::ContextPartitions;
     use crate::context::task_state::{PlanStep, TaskState};
     use crate::context::token_engine::ContextTokenEngine;
-    use crate::types::message::{Message, Role};
+    use crate::types::message::{CoreMessage, Role};
 
     fn engine() -> ContextTokenEngine {
         ContextTokenEngine::char_approx()
@@ -535,7 +539,7 @@ mod tests {
     #[test]
     fn system_stable_contains_system_partition() {
         let mut c = ctx();
-        c.system.push(Message::system("You are helpful."), 10);
+        c.system.push(CoreMessage::system("You are helpful."), 10);
         let rc = render(&c, 10_000, &engine(), 4);
         assert!(rc.system_stable.contains("You are helpful."));
         assert!(rc.system_text.contains("You are helpful."));
@@ -544,7 +548,7 @@ mod tests {
     #[test]
     fn system_knowledge_contains_knowledge_partition() {
         let mut c = ctx();
-        c.knowledge.push(Message::system("skill: debug"), 10);
+        c.knowledge.push(CoreMessage::system("skill: debug"), 10);
         let rc = render(&c, 10_000, &engine(), 4);
         assert!(rc.system_knowledge.contains("skill: debug"));
         assert!(rc.system_text.contains("skill: debug"));
@@ -615,8 +619,8 @@ mod tests {
             goal: "g".to_string(),
             ..Default::default()
         };
-        c.history.push(Message::user("step 1"), 5);
-        c.history.push(Message::assistant("done"), 5);
+        c.history.push(CoreMessage::user("step 1"), 5);
+        c.history.push(CoreMessage::assistant("done"), 5);
         let rc = render(&c, 10_000, &engine(), 4);
         // turns is history only; state lives in state_turn.
         assert!(
@@ -636,7 +640,7 @@ mod tests {
     #[test]
     fn all_assistant_tool_history_gets_anchor_user_turn() {
         let mut c = ctx();
-        c.history.push(Message::assistant("reply"), 5);
+        c.history.push(CoreMessage::assistant("reply"), 5);
         let rc = render(&c, 10_000, &engine(), 4);
         assert_eq!(rc.turns[0].role, Role::User);
     }
@@ -644,8 +648,8 @@ mod tests {
     #[test]
     fn zero_token_messages_skipped() {
         let mut c = ctx();
-        c.history.push(Message::user("zero"), 0);
-        c.history.push(Message::user("real"), 5);
+        c.history.push(CoreMessage::user("zero"), 0);
+        c.history.push(CoreMessage::user("real"), 5);
         let rc = render(&c, 10_000, &engine(), 4);
         // Only "real" in history turns (state turn absent — no task_state)
         assert!(rc.turns.iter().any(|m| m.content.as_text() == Some("real")));
@@ -659,7 +663,7 @@ mod tests {
         let mut c = ctx();
         let long = "DATA ".repeat(200); // 1000 bytes
         c.history.push(
-            Message::tool(vec![ContentPart::ToolResult {
+            CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: "c1".into(),
                 output: long.clone(),
                 is_error: false,
@@ -708,7 +712,7 @@ mod tests {
         let mut c = ctx();
         let long = "ARCHIVED ".repeat(200);
         c.history.push(
-            Message::tool(vec![ContentPart::ToolResult {
+            CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: "c-paged".into(),
                 output: long,
                 is_error: false,
@@ -744,7 +748,7 @@ mod tests {
         let mut c = ctx();
         let body = "RESIDENT BODY ".repeat(20);
         c.history.push(
-            Message::tool(vec![ContentPart::ToolResult {
+            CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: "c2".into(),
                 output: body.clone(),
                 is_error: false,
@@ -931,14 +935,14 @@ mod tests {
     #[test]
     fn prefix_fingerprint_is_stable_when_appending_history() {
         let mut c = ctx();
-        c.system.push(Message::system("rules"), 5);
-        c.knowledge.push(Message::system("skill: debug"), 5);
-        c.history.push(Message::user("turn A"), 5);
-        c.history.push(Message::assistant("turn B"), 5);
+        c.system.push(CoreMessage::system("rules"), 5);
+        c.knowledge.push(CoreMessage::system("skill: debug"), 5);
+        c.history.push(CoreMessage::user("turn A"), 5);
+        c.history.push(CoreMessage::assistant("turn B"), 5);
         let fp1 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
         // Append a new turn — the existing prefix must stay byte-identical.
-        c.history.push(Message::user("turn C"), 5);
+        c.history.push(CoreMessage::user("turn C"), 5);
         let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
         assert!(
@@ -958,7 +962,7 @@ mod tests {
         // Same history, different task_state/signals → the cacheable prefix is
         // identical (state lives in the uncached tail, out of `turns`).
         let mut c = ctx();
-        c.history.push(Message::user("turn A"), 5);
+        c.history.push(CoreMessage::user("turn A"), 5);
         c.task_state = TaskState {
             goal: "first goal".to_string(),
             ..Default::default()
@@ -981,12 +985,12 @@ mod tests {
     #[test]
     fn prefix_fingerprint_detects_system_drift() {
         let mut c = ctx();
-        c.system.push(Message::system("original rules"), 5);
-        c.history.push(Message::user("turn A"), 5);
+        c.system.push(CoreMessage::system("original rules"), 5);
+        c.history.push(CoreMessage::user("turn A"), 5);
         let fp1 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
         c.system.messages.clear();
-        c.system.push(Message::system("updated rules"), 5);
+        c.system.push(CoreMessage::system("updated rules"), 5);
         let fp2 = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
         assert_ne!(fp1.system_stable_hash, fp2.system_stable_hash);
@@ -1001,10 +1005,10 @@ mod tests {
         use crate::mm::handle::{Handle, HandleKind, HandleTable, Residency};
 
         let mut c = ctx();
-        c.history.push(Message::user("start"), 5);
+        c.history.push(CoreMessage::user("start"), 5);
         let long = "DATA ".repeat(200);
         c.history.push(
-            Message::tool(vec![ContentPart::ToolResult {
+            CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: "c1".into(),
                 output: long,
                 is_error: false,
@@ -1012,7 +1016,7 @@ mod tests {
             }]),
             250,
         );
-        c.history.push(Message::user("recent"), 5);
+        c.history.push(CoreMessage::user("recent"), 5);
 
         let resident = render(&c, 100_000, &engine(), 4).prefix_fingerprint();
 
@@ -1036,8 +1040,8 @@ mod tests {
 
     // ── Method 1: assistant-narration collapse ─────────────────────────────
 
-    fn assistant_with_call(text: &str) -> Message {
-        let mut m = Message::assistant(text);
+    fn assistant_with_call(text: &str) -> CoreMessage {
+        let mut m = CoreMessage::assistant(text);
         m.tool_calls = vec![crate::types::message::ToolCall {
             id: "c1".into(),
             name: "module_read".into(),
@@ -1052,7 +1056,7 @@ mod tests {
         // Oldest = a long preamble + a tool call; then enough recent turns to push it past the window.
         c.history.push(assistant_with_call(&"好的，我来将 §4.4 的 Mermaid 部署架构图重新构建为 SVG 版本。先找到当前 Mermaid 模块的位置。".repeat(1)), 60);
         c.history.push(
-            Message::tool(vec![ContentPart::ToolResult {
+            CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: "c1".into(),
                 output: "located".into(),
                 is_error: false,
@@ -1061,7 +1065,7 @@ mod tests {
             2,
         );
         for i in 0..5 {
-            c.history.push(Message::user(format!("recent {i}")), 5);
+            c.history.push(CoreMessage::user(format!("recent {i}")), 5);
         }
 
         // collapse ON (preserve window = 4, so the oldest narration turn is past it)
@@ -1114,7 +1118,7 @@ mod tests {
             60,
         );
         c.history.push(
-            Message::tool(vec![ContentPart::ToolResult {
+            CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: "c1".into(),
                 output: "located".into(),
                 is_error: false,
@@ -1122,7 +1126,7 @@ mod tests {
             }]),
             2,
         );
-        c.history.push(Message::user("ok"), 5);
+        c.history.push(CoreMessage::user("ok"), 5);
         let rc = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true);
         assert!(
             rc.turns.iter().any(|m| m
@@ -1139,11 +1143,11 @@ mod tests {
         let mut c = ctx();
         // A pure final answer (no tool calls) is substantive — must survive even when old.
         c.history.push(
-            Message::assistant("这是给用户的最终结论，包含实质内容，不应被折叠掉以免丢信息。"),
+            CoreMessage::assistant("这是给用户的最终结论，包含实质内容，不应被折叠掉以免丢信息。"),
             40,
         );
         for i in 0..5 {
-            c.history.push(Message::user(format!("r{i}")), 5);
+            c.history.push(CoreMessage::user(format!("r{i}")), 5);
         }
         let rc = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, true);
         assert!(
@@ -1161,10 +1165,10 @@ mod tests {
         // The cost made visible: collapsing rewrites that one turn in place → the prefix hash drifts
         // at its position (one-time, as it ages past the window), but earlier turns stay reusable.
         let mut c = ctx();
-        c.history.push(Message::user("start"), 5);
+        c.history.push(CoreMessage::user("start"), 5);
         c.history.push(assistant_with_call(&"好的，我来将 §4.4 重新构建为 SVG 版本。先找到 Mermaid 模块的确切位置再读取其内容。".to_string()), 60);
         c.history.push(
-            Message::tool(vec![ContentPart::ToolResult {
+            CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: "c1".into(),
                 output: "located".into(),
                 is_error: false,
@@ -1173,7 +1177,7 @@ mod tests {
             2,
         );
         for i in 0..4 {
-            c.history.push(Message::user(format!("recent {i}")), 5);
+            c.history.push(CoreMessage::user(format!("recent {i}")), 5);
         }
 
         let verbatim = render_projected(&c, 100_000, &engine(), 4, &HandleTable::new(), 0, false)
@@ -1192,8 +1196,8 @@ mod tests {
     #[test]
     fn protected_recent_messages_kept_whole_over_budget() {
         let mut c = ctx();
-        c.history.push(Message::user("first message"), 5);
-        c.history.push(Message::user("a".repeat(1000)), 250);
+        c.history.push(CoreMessage::user("first message"), 5);
+        c.history.push(CoreMessage::user("a".repeat(1000)), 250);
         // Two protected context units are kept whole regardless of the 10-token budget.
         let rc = render(&c, 10, &engine(), 2);
         assert!(rc.turns.iter().any(|m| {
@@ -1207,18 +1211,18 @@ mod tests {
     #[test]
     fn render_drops_or_keeps_tool_transactions_as_complete_units() {
         let mut c = ctx();
-        c.history.push(Message::user("old"), 10);
-        c.history.push(Message::assistant("old answer"), 10);
-        let mut call = Message::assistant("calling");
+        c.history.push(CoreMessage::user("old"), 10);
+        c.history.push(CoreMessage::assistant("old answer"), 10);
+        let mut call = CoreMessage::assistant("calling");
         call.tool_calls.push(crate::types::message::ToolCall {
             id: "call-1".into(),
             name: "read".into(),
             arguments: serde_json::json!({}),
         });
-        c.history.push(Message::user("question"), 10);
+        c.history.push(CoreMessage::user("question"), 10);
         c.history.push(call, 10);
         c.history.push(
-            Message::tool(vec![crate::types::message::ContentPart::ToolResult {
+            CoreMessage::tool(vec![crate::types::message::ContentPart::ToolResult {
                 call_id: "call-1".into(),
                 output: "ok".into(),
                 is_error: false,
@@ -1226,7 +1230,7 @@ mod tests {
             }]),
             10,
         );
-        c.history.push(Message::assistant("answer"), 10);
+        c.history.push(CoreMessage::assistant("answer"), 10);
 
         let rc = render(&c, 25, &engine(), 1);
 
@@ -1240,8 +1244,8 @@ mod tests {
         // P0-B1: an unprotected, over-budget Text boundary message is dropped whole — never
         // mid-truncated — so no budget-dependent fragment lands in the cached prefix.
         let mut c = ctx();
-        c.history.push(Message::user("a".repeat(1000)), 250); // oldest, oversized
-        c.history.push(Message::user("recent"), 2); // newest, fits
+        c.history.push(CoreMessage::user("a".repeat(1000)), 250); // oldest, oversized
+        c.history.push(CoreMessage::user("recent"), 2); // newest, fits
         let rc = render(&c, 5, &engine(), 0); // nothing protected
         assert_eq!(rc.turns.len(), 1, "only the fitting newest turn survives");
         assert_eq!(rc.turns[0].content.as_text(), Some("recent"));
@@ -1262,7 +1266,7 @@ mod tests {
             goal: "keep the state".to_string(),
             ..Default::default()
         };
-        c.history.push(Message::user("x".repeat(120)), 30);
+        c.history.push(CoreMessage::user("x".repeat(120)), 30);
         let state_tokens = engine().count_message(&build_state_turn(&c).expect("state"));
 
         let rc = render(&c, state_tokens + 5, &engine(), 0);
@@ -1277,7 +1281,7 @@ mod tests {
     #[test]
     fn protected_tail_overflow_is_reported_instead_of_hidden() {
         let mut c = ctx();
-        c.history.push(Message::user("x".repeat(400)), 100);
+        c.history.push(CoreMessage::user("x".repeat(400)), 100);
 
         let rc = render(&c, 10, &engine(), 2);
 
@@ -1291,7 +1295,7 @@ mod tests {
     #[test]
     fn fixed_context_overflow_is_reported_with_actual_token_count() {
         let mut c = ctx();
-        c.system.push(Message::system("x".repeat(400)), 100);
+        c.system.push(CoreMessage::system("x".repeat(400)), 100);
 
         let rc = render(&c, 10, &engine(), 0);
 

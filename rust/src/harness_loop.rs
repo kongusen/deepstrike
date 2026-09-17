@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::harness::eval::SkillCandidate;
 use deepstrike_core::orchestration::workflow::WorkflowNode;
-use deepstrike_core::types::message::{Message, Role};
+use deepstrike_core::types::message::{CoreMessage, Role};
 use futures::{Stream, StreamExt};
 
 use crate::harness::{Criterion, Verdict};
@@ -761,7 +761,7 @@ fn is_run_error(status: &str) -> bool {
     )
 }
 
-fn rendered_context_from_messages(messages: Vec<Message>) -> InternalRenderedContext {
+fn rendered_context_from_messages(messages: Vec<CoreMessage>) -> InternalRenderedContext {
     let mut system_parts = Vec::new();
     let mut turns = Vec::new();
     for message in messages {

@@ -10,7 +10,7 @@ use deepstrike_core::harness::eval::{
     EvalResult, build_eval_messages as core_build_eval_messages,
     parse_verdict as core_parse_verdict, verdict_output_schema as core_verdict_output_schema,
 };
-use deepstrike_core::types::message::{Content, Message, Role};
+use deepstrike_core::types::message::{Content, CoreMessage, Role};
 use futures::StreamExt;
 
 use crate::Result;
@@ -23,7 +23,7 @@ pub use deepstrike_core::harness::eval::Criterion;
 pub type Verdict = EvalResult;
 
 /// Build the kernel's eval prompt for (goal, criteria, result). Pure — does not call an LLM.
-pub fn build_eval_messages(goal: &str, criteria: &[Criterion], result: &str) -> Vec<Message> {
+pub fn build_eval_messages(goal: &str, criteria: &[Criterion], result: &str) -> Vec<CoreMessage> {
     core_build_eval_messages(goal, criteria, result, 1, false)
 }
 
@@ -55,7 +55,7 @@ pub async fn judge(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    let turns: Vec<Message> = msgs
+    let turns: Vec<CoreMessage> = msgs
         .into_iter()
         .filter(|m| m.role != Role::System)
         .collect();

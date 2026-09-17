@@ -1,6 +1,10 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use crate::context::text::truncate_with_suffix;
 use crate::runtime::session::{ProviderReplay, SessionEvent};
-use crate::types::message::{Content, ContentPart, Message, Role, ToolCall};
+use crate::types::message::{Content, ContentPart, CoreMessage, Role, ToolCall};
 
 /// Sanitize text for recovery paths: ensure valid UTF-8 and apply an optional
 /// byte cap derived from the caller's context config. When `max_bytes` is 0
@@ -24,7 +28,7 @@ fn estimate_token_count(text: &str) -> u32 {
     (text.chars().count() as u32 / 4).max(1)
 }
 
-fn normalize_assistant_message_with_cap(message: &mut Message, max_bytes: usize) {
+fn normalize_assistant_message_with_cap(message: &mut CoreMessage, max_bytes: usize) {
     if message.token_count.is_none() {
         message.token_count = Some(estimate_token_count(
             message.content.as_text().unwrap_or(""),
@@ -39,12 +43,12 @@ fn normalize_assistant_message_with_cap(message: &mut Message, max_bytes: usize)
 ///
 /// Provider-neutral: the stored `provider_replay` envelope is left untouched.
 /// The core never synthesizes a protocol-specific replay shape.
-pub fn repair_llm_completed(message: &mut Message, provider_replay: &mut Option<ProviderReplay>) {
+pub fn repair_llm_completed(message: &mut CoreMessage, provider_replay: &mut Option<ProviderReplay>) {
     repair_llm_completed_with_cap(message, provider_replay, 0);
 }
 
 pub fn repair_llm_completed_with_cap(
-    message: &mut Message,
+    message: &mut CoreMessage,
     _provider_replay: &mut Option<ProviderReplay>,
     max_bytes: usize,
 ) {
@@ -74,7 +78,7 @@ pub fn repair_events_with_cap(events: Vec<SessionEvent>, max_bytes: usize) -> Ve
 }
 
 /// Pending tool calls after the last assistant turn in preloaded history.
-pub fn pending_tool_calls_from_messages(messages: &[Message]) -> Vec<ToolCall> {
+pub fn pending_tool_calls_from_messages(messages: &[CoreMessage]) -> Vec<ToolCall> {
     let Some(assistant_idx) = messages
         .iter()
         .rposition(|m| m.role == Role::Assistant && !m.tool_calls.is_empty())
@@ -112,9 +116,9 @@ pub fn reconstruct_messages_with_fallback<F>(
     _session_id: &str,
     max_bytes: usize,
     mut load_archive: F,
-) -> Vec<Message>
+) -> Vec<CoreMessage>
 where
-    F: FnMut(&str) -> Result<Vec<Message>, crate::context::fault::ContextFault>,
+    F: FnMut(&str) -> Result<Vec<CoreMessage>, crate::context::fault::ContextFault>,
 {
     let mut messages = Vec::new();
     for (event_index, event) in events.iter().enumerate() {
@@ -153,7 +157,7 @@ where
                     parts.extend(attachments.iter().cloned());
                     Content::Parts(parts)
                 };
-                messages.push(Message {
+                messages.push(CoreMessage {
                     role: Role::User,
                     content,
                     tool_calls: vec![],
@@ -173,7 +177,7 @@ where
                         Content::Text(t) => sanitize_recovery_text_bounded(t, max_bytes),
                         Content::Parts(_) => String::new(),
                     };
-                    messages.push(Message {
+                    messages.push(CoreMessage {
                         role: Role::Tool,
                         content: Content::Parts(vec![ContentPart::ToolResult {
                             call_id: r.call_id.clone(),
@@ -200,7 +204,7 @@ where
                 if !page_out_will_supply_archive {
                     if let Some(sum) = summary {
                         let system_text = format!("[Compressed context: turn {}]\n{}", turn, sum);
-                        messages.push(Message {
+                        messages.push(CoreMessage {
                             role: Role::System,
                             content: Content::Text(system_text),
                             tool_calls: vec![],
@@ -225,7 +229,7 @@ where
                 }
                 Err(_) => {
                     if let Some(summary) = summary {
-                        messages.push(Message {
+                        messages.push(CoreMessage {
                             role: Role::System,
                             content: Content::Text(format!(
                                 "[Compressed context: turn {}]\n{}",
@@ -256,7 +260,7 @@ mod tests {
 
     #[test]
     fn repair_does_not_synthesize_provider_replay_for_tool_turns() {
-        let mut message = Message {
+        let mut message = CoreMessage {
             role: Role::Assistant,
             content: Content::Text("checking".into()),
             tool_calls: vec![ToolCall {
@@ -270,13 +274,13 @@ mod tests {
         repair_llm_completed(&mut message, &mut replay);
         // Provider-neutral: no fabricated native_blocks.
         assert!(replay.is_none());
-        // Message is still normalized (token count backfilled).
+        // CoreMessage is still normalized (token count backfilled).
         assert!(message.token_count.is_some());
     }
 
     #[test]
     fn repair_passes_stored_replay_through() {
-        let mut message = Message {
+        let mut message = CoreMessage {
             role: Role::Assistant,
             content: Content::Text("x".into()),
             tool_calls: vec![],
@@ -434,7 +438,7 @@ mod tests {
 
         let messages = reconstruct_messages_with_fallback(&events, "s1", 1024, |reference| {
             assert_eq!(reference, "archive://turn-2");
-            Ok(vec![Message::user("restored archive")])
+            Ok(vec![CoreMessage::user("restored archive")])
         });
 
         assert_eq!(messages.len(), 1);

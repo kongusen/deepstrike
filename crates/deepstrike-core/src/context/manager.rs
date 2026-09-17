@@ -10,7 +10,7 @@ use super::task_state::{TaskState, TaskUpdate};
 use super::token_engine::ContextTokenEngine;
 use crate::mm::handle::{Handle, HandleId, HandleKind, HandleTable, Residency};
 use crate::types::capability::{Capability, CapabilityKind, CapabilityManifest};
-use crate::types::message::{Content, ContentPart, Message, ToolSchema};
+use crate::types::message::{Content, ContentPart, CoreMessage, ToolSchema};
 use crate::types::skill::SkillMetadata;
 use compact_str::CompactString;
 
@@ -383,7 +383,7 @@ impl ContextManager {
     pub fn compress(
         &mut self,
         action: PressureAction,
-    ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
+    ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
         self.compress_with_time(action, None)
     }
 
@@ -391,12 +391,12 @@ impl ContextManager {
         &mut self,
         action: PressureAction,
         now_ms: Option<u64>,
-    ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
+    ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
         let target = self.config.target_tokens(self.max_tokens);
         self.compress_with_target(action, target, now_ms)
     }
 
-    pub fn force_compress(&mut self) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
+    pub fn force_compress(&mut self) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
         self.compress_with_target(PressureAction::AutoCompact, 0, None)
     }
 
@@ -411,7 +411,7 @@ impl ContextManager {
         action: PressureAction,
         target_tokens: u32,
         now_ms: Option<u64>,
-    ) -> (u32, Option<String>, Vec<Message>, Option<usize>) {
+    ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
         let result = self.compression.compress(
             &mut self.partitions,
             action,
@@ -499,7 +499,7 @@ impl ContextManager {
 
     // ── History / Knowledge ───────────────────────────────────────────────────
 
-    pub fn push_history(&mut self, msg: Message, tokens: u32) {
+    pub fn push_history(&mut self, msg: CoreMessage, tokens: u32) {
         self.knowledge_reference_step = self.knowledge_reference_step.saturating_add(1);
         self.partitions
             .knowledge
@@ -563,7 +563,7 @@ impl ContextManager {
     }
 
     /// Push content into the Knowledge slot (memory retrievals, skill defs, artifacts).
-    pub fn push_knowledge(&mut self, msg: Message, tokens: u32) {
+    pub fn push_knowledge(&mut self, msg: CoreMessage, tokens: u32) {
         self.partitions.knowledge.push(msg, tokens);
     }
 
@@ -573,7 +573,7 @@ impl ContextManager {
     pub fn push_knowledge_entry(
         &mut self,
         key: Option<CompactString>,
-        msg: Message,
+        msg: CoreMessage,
         tokens: u32,
         pinned: bool,
     ) {
@@ -1006,7 +1006,7 @@ impl ContextManager {
 mod tests {
     use super::*;
     use crate::context::task_state::PlanStep;
-    use crate::types::message::Message;
+    use crate::types::message::CoreMessage;
     use crate::types::skill::SkillMetadata;
 
     #[test]
@@ -1068,9 +1068,9 @@ mod tests {
     fn manager_renew_advances_sprint_and_keeps_goal() {
         let mut mgr = ContextManager::new(1_000);
         mgr.init_task("test goal".to_string(), vec![]);
-        mgr.partitions.system.push(Message::system("rules"), 10);
+        mgr.partitions.system.push(CoreMessage::system("rules"), 10);
         for i in 0..10 {
-            mgr.push_history(Message::user(format!("msg {i}")), 50);
+            mgr.push_history(CoreMessage::user(format!("msg {i}")), 50);
         }
         mgr.renew();
         assert_eq!(mgr.partitions.task_state.goal, "test goal");
@@ -1080,9 +1080,9 @@ mod tests {
     #[test]
     fn compress_only_touches_history() {
         let mut mgr = ContextManager::new(1_000);
-        mgr.push_knowledge(Message::system("knowledge content"), 100);
+        mgr.push_knowledge(CoreMessage::system("knowledge content"), 100);
         for _ in 0..30 {
-            mgr.push_history(Message::user("history msg"), 50);
+            mgr.push_history(CoreMessage::user("history msg"), 50);
         }
         let knowledge_before = mgr.partitions.knowledge.token_count;
         let history_before = mgr.partitions.history.token_count;
@@ -1121,7 +1121,7 @@ mod tests {
             ..Default::default()
         });
         for _ in 0..10 {
-            mgr.push_history(Message::user("filler"), 50);
+            mgr.push_history(CoreMessage::user("filler"), 50);
         }
         mgr.compress(PressureAction::AutoCompact);
         assert_eq!(mgr.partitions.task_state.goal, "survive compression");
@@ -1180,7 +1180,7 @@ mod tests {
         let mut mgr = ContextManager::new(1_000);
         for i in 0..40 {
             mgr.push_history(
-                Message::user(format!("turn {i}: {}", "ctx ".repeat(40))),
+                CoreMessage::user(format!("turn {i}: {}", "ctx ".repeat(40))),
                 200,
             );
         }
@@ -1327,7 +1327,7 @@ mod tests {
     fn update_collapse_mode_collapses_old_tool_results_under_pressure() {
         let mut mgr = ContextManager::new(1_000);
         for i in 0..10 {
-            let m = Message::tool(vec![ContentPart::ToolResult {
+            let m = CoreMessage::tool(vec![ContentPart::ToolResult {
                 call_id: format!("c{i}").into(),
                 output: "x".repeat(40),
                 is_error: false,
@@ -1374,7 +1374,7 @@ mod tests {
         // Pre-compaction: no frozen region yet → providers use the rolling-pair fallback.
         for i in 0..30 {
             mgr.push_history(
-                Message::user(format!("turn {i}: {}", "ctx ".repeat(30))),
+                CoreMessage::user(format!("turn {i}: {}", "ctx ".repeat(30))),
                 150,
             );
         }
@@ -1393,13 +1393,13 @@ mod tests {
         );
 
         // As turns are appended, the deep boundary holds fixed while the tail grows.
-        mgr.push_history(Message::user("new 1"), 5);
+        mgr.push_history(CoreMessage::user("new 1"), 5);
         let f1 = mgr
             .render()
             .frozen_prefix_len
             .expect("frozen region exists once the tail grows");
-        mgr.push_history(Message::assistant("reply 1"), 5);
-        mgr.push_history(Message::user("new 2"), 5);
+        mgr.push_history(CoreMessage::assistant("reply 1"), 5);
+        mgr.push_history(CoreMessage::user("new 2"), 5);
         let rc = mgr.render();
         let f2 = rc.frozen_prefix_len.expect("frozen region holds");
         assert_eq!(
@@ -1418,7 +1418,7 @@ mod tests {
         // is preserved through a prefix-safe one (cache_at = None) — the deep cache survives.
         let mut mgr = ContextManager::new(10_000);
         for i in 0..5 {
-            mgr.push_history(Message::user(format!("m{i}")), 5);
+            mgr.push_history(CoreMessage::user(format!("m{i}")), 5);
         }
         mgr.frozen_history_len = 3; // pretend a prior compaction anchored the deep cache here
 
@@ -1466,7 +1466,7 @@ mod tests {
     #[test]
     fn push_history_indexes_tool_results_as_resident_handles() {
         let mut mgr = ContextManager::new(10_000);
-        let msg = Message::tool(vec![ContentPart::ToolResult {
+        let msg = CoreMessage::tool(vec![ContentPart::ToolResult {
             call_id: "call_1".into(),
             output: "the tool output".to_string(),
             is_error: false,
@@ -1480,14 +1480,14 @@ mod tests {
             Some(&Residency::Resident)
         );
         // A plain text turn allocates no handle.
-        mgr.push_history(Message::user("hello"), 5);
+        mgr.push_history(CoreMessage::user("hello"), 5);
         assert_eq!(mgr.handles.all().len(), 1);
     }
 
     // ── W1-3: handle-table GC (prune orphaned handles + bounded recompute) ──
 
-    fn tool_result_msg(call_id: &str, output: &str) -> Message {
-        Message::tool(vec![ContentPart::ToolResult {
+    fn tool_result_msg(call_id: &str, output: &str) -> CoreMessage {
+        CoreMessage::tool(vec![ContentPart::ToolResult {
             call_id: call_id.into(),
             output: output.to_string(),
             is_error: false,
@@ -1573,10 +1573,10 @@ mod tests {
         // max_tokens 100 × default ratio 0.25 ⇒ budget 25. Four 10-token entries (40 used):
         // two evictable, one pinned, one skill pin.
         let mut mgr = ContextManager::new(100);
-        mgr.push_knowledge(Message::system("oldest unkeyed"), 10);
-        mgr.push_knowledge_entry(Some("a".into()), Message::system("keyed"), 10, false);
-        mgr.push_knowledge_entry(Some("p".into()), Message::system("pinned"), 10, true);
-        mgr.push_knowledge_entry(Some("skill:x".into()), Message::system("skill"), 10, false);
+        mgr.push_knowledge(CoreMessage::system("oldest unkeyed"), 10);
+        mgr.push_knowledge_entry(Some("a".into()), CoreMessage::system("keyed"), 10, false);
+        mgr.push_knowledge_entry(Some("p".into()), CoreMessage::system("pinned"), 10, true);
+        mgr.push_knowledge_entry(Some("skill:x".into()), CoreMessage::system("skill"), 10, false);
 
         let warn = mgr.enforce_knowledge_budget();
         assert_eq!(warn, Some((40, 25)));
@@ -1601,10 +1601,10 @@ mod tests {
     #[test]
     fn knowledge_budget_warning_stands_when_only_exempt_weight_remains() {
         let mut mgr = ContextManager::new(100);
-        mgr.push_knowledge_entry(Some("p".into()), Message::system("pinned heavy"), 30, true);
+        mgr.push_knowledge_entry(Some("p".into()), CoreMessage::system("pinned heavy"), 30, true);
         mgr.push_knowledge_entry(
             Some("skill:x".into()),
-            Message::system("skill heavy"),
+            CoreMessage::system("skill heavy"),
             30,
             false,
         );
@@ -1625,21 +1625,21 @@ mod tests {
         let mut mgr = ContextManager::new(100);
         mgr.push_knowledge_entry(
             Some("project:orchid".into()),
-            Message::system("ORCHID uses the Atlas storage engine"),
+            CoreMessage::system("ORCHID uses the Atlas storage engine"),
             10,
             false,
         );
         // A committed history input is the deterministic usage fact.
-        mgr.push_history(Message::user("For project:orchid keep using Atlas"), 5);
+        mgr.push_history(CoreMessage::user("For project:orchid keep using Atlas"), 5);
         mgr.push_knowledge_entry(
             Some("project:new".into()),
-            Message::system("unrelated fresh material"),
+            CoreMessage::system("unrelated fresh material"),
             10,
             false,
         );
         mgr.push_knowledge_entry(
             Some("project:other".into()),
-            Message::system("another unused reference"),
+            CoreMessage::system("another unused reference"),
             10,
             false,
         );
@@ -1664,7 +1664,7 @@ mod tests {
     fn knowledge_budget_ratio_zero_disables() {
         let mut mgr = ContextManager::new(100);
         mgr.config.knowledge_budget_ratio = 0.0;
-        mgr.push_knowledge(Message::system("huge"), 90);
+        mgr.push_knowledge(CoreMessage::system("huge"), 90);
         assert_eq!(mgr.enforce_knowledge_budget(), None);
         assert!(!mgr.partitions.knowledge.entries[0].evict_at_boundary);
     }
@@ -1687,7 +1687,7 @@ mod tests {
         // merges long identical-byte runs into a handful of tokens (~30, well under budget) —
         // that was calibrated to the old default, not to the overflow behavior under test.
         mgr.partitions.system.push(
-            Message::system(
+            CoreMessage::system(
                 "System policy directive number seven requires strict adherence. ".repeat(10),
             ),
             60,

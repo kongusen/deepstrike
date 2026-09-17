@@ -61,7 +61,7 @@ fn text_only_response_terminates_with_completed() {
     let mut sm = default_sm();
     sm.start(RuntimeTask::new("Say hello"));
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("Hello!"),
+        message: CoreMessage::assistant("Hello!"),
     });
     match action {
         LoopAction::Done { result } => {
@@ -78,7 +78,7 @@ fn tool_calls_emit_execute_tools() {
     let mut sm = default_sm();
     sm.start(RuntimeTask::new("Calculate"));
 
-    let msg = Message {
+    let msg = CoreMessage {
         role: Role::Assistant,
         content: Content::Text(String::new()),
         tool_calls: vec![ToolCall {
@@ -105,7 +105,7 @@ fn tool_results_advance_turn_and_emit_call_llm() {
     let mut sm = default_sm();
     sm.start(RuntimeTask::new("test"));
 
-    let msg = Message {
+    let msg = CoreMessage {
         role: Role::Assistant,
         content: Content::Text(String::new()),
         tool_calls: vec![ToolCall {
@@ -151,7 +151,7 @@ fn max_turns_triggers_pending_termination_then_done() {
     }
 
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("summary"),
+        message: CoreMessage::assistant("summary"),
     });
     match action {
         LoopAction::Done { result } => {
@@ -190,7 +190,7 @@ fn recoverable_tool_error_does_not_rollback() {
     sm.start(RuntimeTask::new("test"));
 
     sm.feed(LoopEvent::LLMResponse {
-        message: Message {
+        message: CoreMessage {
             role: Role::Assistant,
             content: Content::Text(String::new()),
             tool_calls: vec![ToolCall {
@@ -237,7 +237,7 @@ fn fatal_tool_error_commits_with_visible_reason() {
     sm.start(RuntimeTask::new("test"));
 
     sm.feed(LoopEvent::LLMResponse {
-        message: Message {
+        message: CoreMessage {
             role: Role::Assistant,
             content: Content::Text(String::new()),
             tool_calls: vec![ToolCall {
@@ -504,7 +504,7 @@ fn compression_emits_compressed_observation() {
     sm.start(RuntimeTask::new("test"));
     for i in 0..10 {
         sm.ctx
-            .push_history(Message::user(format!("filler message {i}")), 50);
+            .push_history(CoreMessage::user(format!("filler message {i}")), 50);
     }
     sm.feed(LoopEvent::ToolResults { results: vec![] });
     let obs = sm.take_observations();
@@ -522,7 +522,7 @@ fn full_tool_cycle_then_text_completes() {
     sm.start(RuntimeTask::new("Add 1+2"));
 
     // LLM calls a tool
-    let msg = Message {
+    let msg = CoreMessage {
         role: Role::Assistant,
         content: Content::Text(String::new()),
         tool_calls: vec![ToolCall {
@@ -551,7 +551,7 @@ fn full_tool_cycle_then_text_completes() {
 
     // LLM responds with text → done
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("The answer is 3"),
+        message: CoreMessage::assistant("The answer is 3"),
     });
     match action {
         LoopAction::Done { result } => {

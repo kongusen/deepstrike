@@ -44,6 +44,11 @@
 //!   engine had already moved, and the driver fails closed with a poison fault that names the only
 //!   legal recovery — rebuild from the journal (§8.3).
 
+
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -130,7 +135,7 @@ use crate::types::agent::{
 use crate::types::durable_content::{
     DurableContent, DurableContentBlock, DurableSource, DurableToolResult,
 };
-use crate::types::message::{Content, ContentPart, Message, Role, ToolErrorKind, ToolResult};
+use crate::types::message::{Content, ContentPart, CoreMessage, Role, ToolErrorKind, ToolResult};
 use crate::types::result::{
     LoopResult, PaceAction as CorePaceAction, SubAgentResult, TerminationReason,
 };
@@ -306,7 +311,7 @@ fn role_from_label(label: &str) -> Option<Role> {
 /// the text parts beside it would drop content a restore could never get back. Those travel as
 /// [`StoredMessageBody::Structured`] instead.
 #[allow(clippy::type_complexity)]
-fn message_body_parts(message: &Message) -> Option<(String, Option<String>, bool)> {
+fn message_body_parts(message: &CoreMessage) -> Option<(String, Option<String>, bool)> {
     match &message.content {
         Content::Text(text) => Some((text.clone(), None, false)),
         Content::Parts(parts) => {
@@ -1282,7 +1287,7 @@ fn restore_message(
     role: &str,
     body: &StoredMessageBody,
     tool_calls: &[LogicalToolCall],
-) -> Result<Message, KernelFault> {
+) -> Result<CoreMessage, KernelFault> {
     let role = role_from_label(role)
         .ok_or_else(|| incompatible(format!("the checkpoint carries message role {role:?}")))?;
     let content = match body {
@@ -1323,7 +1328,7 @@ fn restore_message(
             }
         }
     };
-    Ok(Message {
+    Ok(CoreMessage {
         role,
         content,
         tool_calls: tool_calls
@@ -2310,8 +2315,8 @@ fn live_policy_label(patch: &super::command::LivePolicyPatch) -> &'static str {
     }
 }
 
-fn logical_message(message: &super::root::LogicalMessage) -> Message {
-    Message {
+fn logical_message(message: &super::root::LogicalMessage) -> CoreMessage {
+    CoreMessage {
         role: core_role_of(message.role),
         content: Content::Text(message.content.clone()),
         tool_calls: Vec::new(),
@@ -2349,7 +2354,7 @@ fn rendered_context(
     }
 }
 
-fn provider_message(message: &Message) -> ProviderMessage {
+fn provider_message(message: &CoreMessage) -> ProviderMessage {
     let (content, tool_call_id) = match &message.content {
         Content::Parts(parts) => match parts.as_slice() {
             [
@@ -2409,7 +2414,7 @@ fn sub_agent_result(completed: &ChildCompleted) -> SubAgentResult {
                 .result
                 .output
                 .as_ref()
-                .map(|text| Message::assistant(text.clone())),
+                .map(|text| CoreMessage::assistant(text.clone())),
             turns_used: completed
                 .result
                 .usage
@@ -2625,8 +2630,8 @@ fn ipc_messages_outcome(messages: &[crate::scheduler::mailbox::MailboxMessage]) 
 }
 
 /// Wire → semantic projections for the resolution half.
-fn core_provider_message(message: &ProviderMessage) -> Result<Message, KernelFault> {
-    Ok(Message {
+fn core_provider_message(message: &ProviderMessage) -> Result<CoreMessage, KernelFault> {
+    Ok(CoreMessage {
         role: core_role_of(message.role),
         content: Content::Text(message.content.clone()),
         tool_calls: message.tool_calls.iter().map(core_tool_call).collect(),

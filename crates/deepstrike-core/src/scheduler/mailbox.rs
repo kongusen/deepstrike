@@ -2,9 +2,9 @@
 //! many-to-one/one-to-many [`Channel`] (spc_006-04). Additive-only in this card: the message
 //! shape only, no send/receive, no wiring onto [`super::tcb::Tcb`].
 //!
-//! Naming note: spc_006 §3 names this struct `Message`, but `crate::types::message::Message`
+//! Naming note: spc_006 §3 names this struct `CoreMessage`, but `crate::types::message::CoreMessage`
 //! (the LLM conversation message) already owns that name and is glob-imported (`use super::*`)
-//! into `scheduler::state_machine::tests` — a second unqualified `Message` there would force
+//! into `scheduler::state_machine::tests` — a second unqualified `CoreMessage` there would force
 //! every reference in this module's own integration tests to be fully qualified. `MailboxMessage`
 //! avoids the collision while staying unambiguous about what it is.
 

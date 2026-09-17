@@ -1,5 +1,10 @@
 //! Deterministic value-aware selection over indivisible context units.
 
+
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -7,7 +12,7 @@ use std::ops::Range;
 use super::token_engine::ContextTokenEngine;
 use super::units::unit_boundaries;
 use crate::lexical::{overlap_count, terms};
-use crate::types::message::{Content, ContentPart, Message};
+use crate::types::message::{Content, ContentPart, CoreMessage};
 
 pub struct UtilitySelectionContext<'a> {
     pub goal: &'a str,
@@ -46,7 +51,7 @@ pub struct UtilityArchivePlan {
 /// callers can then escalate pressure honestly instead of silently deleting the
 /// evidence required to continue the task.
 pub fn plan_utility_archive(
-    messages: &[Message],
+    messages: &[CoreMessage],
     total_tokens: u32,
     target_tokens: u32,
     preserve_recent_units: usize,
@@ -194,7 +199,7 @@ fn compare_density(left: &UtilityUnitScore, right: &UtilityUnitScore) -> Orderin
         .then_with(|| left.range.start.cmp(&right.range.start))
 }
 
-fn unit_text(messages: &[Message]) -> String {
+fn unit_text(messages: &[CoreMessage]) -> String {
     let mut text = String::new();
     let mut first_part = true;
     for message in messages {
@@ -260,7 +265,7 @@ fn directive_dependency(text: &str, directive: &str) -> bool {
     terms(text).intersection(&directive_terms).count() >= threshold
 }
 
-fn has_unresolved(messages: &[Message], folded_text: &str) -> bool {
+fn has_unresolved(messages: &[CoreMessage], folded_text: &str) -> bool {
     let mut opened = BTreeSet::new();
     let mut resolved = BTreeSet::new();
     for message in messages {
@@ -297,7 +302,7 @@ fn has_unresolved(messages: &[Message], folded_text: &str) -> bool {
         )
 }
 
-fn is_error_or_decision(messages: &[Message], folded_text: &str) -> bool {
+fn is_error_or_decision(messages: &[CoreMessage], folded_text: &str) -> bool {
     messages.iter().any(|message| {
         matches!(&message.content, Content::Parts(parts) if parts.iter().any(|part| matches!(part, ContentPart::ToolResult { is_error: true, .. })))
     }) || marker_folded(
@@ -313,7 +318,7 @@ fn marker_folded(folded_text: &str, markers: &[&str]) -> bool {
     markers.iter().any(|marker| folded_text.contains(marker))
 }
 
-fn unit_referenced_later(messages: &[Message], text: &str, later: &[String]) -> bool {
+fn unit_referenced_later(messages: &[CoreMessage], text: &str, later: &[String]) -> bool {
     let mut references = messages
         .iter()
         .flat_map(|message| message.tool_calls.iter().map(|call| call.id.to_string()))
@@ -339,20 +344,20 @@ mod tests {
 
     #[test]
     fn unit_text_preserves_empty_part_separators() {
-        let messages = vec![Message::user(""), Message::user("next")];
+        let messages = vec![CoreMessage::user(""), CoreMessage::user("next")];
         assert_eq!(unit_text(&messages), "\nnext");
     }
 
     #[test]
     fn unresolved_tool_unit_is_mandatory() {
-        let mut call = Message::assistant("working");
+        let mut call = CoreMessage::assistant("working");
         call.tool_calls.push(ToolCall {
             id: "call-1".into(),
             name: "read".into(),
             arguments: serde_json::json!({"path": "/work/a"}),
         });
         call.token_count = Some(20);
-        let mut recent = Message::user("recent");
+        let mut recent = CoreMessage::user("recent");
         recent.token_count = Some(20);
         let messages = vec![call, recent];
         let plan = plan_utility_archive(
@@ -378,11 +383,11 @@ mod tests {
         // Under the old per-character CJK vocabulary, any Chinese unit sharing two
         // common characters (中/文/回…) with an active directive was marked mandatory,
         // so compression could never archive unrelated Chinese history.
-        let mut unrelated = Message::assistant("我们在文中回顾了天气");
+        let mut unrelated = CoreMessage::assistant("我们在文中回顾了天气");
         unrelated.token_count = Some(30);
-        let mut on_topic = Message::user("已按要求保持中文回答");
+        let mut on_topic = CoreMessage::user("已按要求保持中文回答");
         on_topic.token_count = Some(30);
-        let mut recent = Message::user("recent");
+        let mut recent = CoreMessage::user("recent");
         recent.token_count = Some(10);
         let messages = vec![unrelated, on_topic, recent];
         let plan = plan_utility_archive(
@@ -410,14 +415,14 @@ mod tests {
 
     #[test]
     fn preserved_ref_keeps_complete_tool_unit() {
-        let mut call = Message::assistant("read artifact");
+        let mut call = CoreMessage::assistant("read artifact");
         call.tool_calls.push(ToolCall {
             id: "call-keep".into(),
             name: "read".into(),
             arguments: serde_json::json!({}),
         });
         call.token_count = Some(20);
-        let mut result = Message::tool(vec![ContentPart::ToolResult {
+        let mut result = CoreMessage::tool(vec![ContentPart::ToolResult {
             call_id: "call-keep".into(),
             output: "artifact".into(),
             is_error: false,

@@ -95,7 +95,7 @@ mod tests {
     use crate::context::config::ContextConfig;
     use crate::context::partitions::ContextPartitions;
     use crate::context::token_engine::ContextTokenEngine;
-    use crate::types::message::Message;
+    use crate::types::message::CoreMessage;
 
     fn engine() -> ContextTokenEngine {
         ContextTokenEngine::char_approx()
@@ -144,7 +144,7 @@ mod tests {
         let monitor = PressureMonitor::new(1_000, cfg.clone());
         let mut ctx = ContextPartitions::new(&cfg);
         let baseline = ctx.total_tokens(&engine()) as f64;
-        ctx.history.push(Message::user("test"), 500);
+        ctx.history.push(CoreMessage::user("test"), 500);
         let rho = monitor.pressure(&ctx, &engine(), None);
         let expected = (baseline + 500.0) / 1_000.0;
         assert!((rho - expected).abs() < f64::EPSILON);

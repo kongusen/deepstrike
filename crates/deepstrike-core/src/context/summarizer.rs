@@ -1,8 +1,12 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use std::sync::OnceLock;
 
 use crate::context::pressure::PressureAction;
 use crate::context::token_engine::ContextTokenEngine;
-use crate::types::message::{Content, ContentPart, Message};
+use crate::types::message::{Content, ContentPart, CoreMessage};
 
 /// Deterministic six-slot summariser used before archived units page out.
 pub struct RuleSummarizer;
@@ -19,7 +23,7 @@ impl RuleSummarizer {
     /// `max_tokens`. Slot order is the deterministic truncation priority.
     pub fn summarize(
         &self,
-        messages: &[Message],
+        messages: &[CoreMessage],
         action: PressureAction,
         max_tokens: u32,
     ) -> String {
@@ -308,7 +312,7 @@ mod tests {
     fn summarize_does_not_panic_on_cjk_boundary() {
         let long_cjk = "规范".repeat(100);
         assert!(!long_cjk.is_char_boundary(200));
-        let msg = Message::assistant(format!("必须遵守约束：{long_cjk}"));
+        let msg = CoreMessage::assistant(format!("必须遵守约束：{long_cjk}"));
         let out = RuleSummarizer.summarize(&[msg], PressureAction::AutoCompact, 1_000);
         assert!(out.contains("规范"));
         assert!(out.contains("constraints:"));
@@ -316,7 +320,7 @@ mod tests {
 
     #[test]
     fn emits_six_structured_slots_from_rules_tools_and_errors() {
-        let mut call = Message::assistant(
+        let mut call = CoreMessage::assistant(
             "DECISION: choose parser B. Must preserve schema. Open question: retry limit? Next: run tests.",
         );
         call.tool_calls.push(ToolCall {
@@ -324,7 +328,7 @@ mod tests {
             name: "write_file".into(),
             arguments: serde_json::json!({"path": "/work/report.json"}),
         });
-        let result = Message::tool(vec![ContentPart::ToolResult {
+        let result = CoreMessage::tool(vec![ContentPart::ToolResult {
             call_id: "call-1".into(),
             output: "ERROR: write failed; artifact /work/report.json".into(),
             is_error: true,
@@ -347,7 +351,7 @@ mod tests {
 
     #[test]
     fn max_tokens_is_a_real_hard_upper_bound() {
-        let message = Message::assistant(
+        let message = CoreMessage::assistant(
             "DECISION: keep this. Must preserve that. Next: run many tests. ERROR: prior attempt failed."
                 .repeat(20),
         );

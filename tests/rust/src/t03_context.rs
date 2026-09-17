@@ -2,7 +2,7 @@
 
 use deepstrike_core::context::manager::ContextManager;
 use deepstrike_core::context::pressure::PressureAction;
-use deepstrike_core::types::message::Message;
+use deepstrike_core::types::message::CoreMessage;
 use deepstrike_core::types::skill::SkillMetadata;
 
 // ─── Construction ───────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ fn empty_context_has_zero_pressure() {
 fn pressure_increases_with_history() {
     let mut mgr = ContextManager::new(1000);
     for i in 0..20 {
-        mgr.push_history(Message::user(format!("msg {i}")), 50);
+        mgr.push_history(CoreMessage::user(format!("msg {i}")), 50);
     }
     assert!(mgr.rho() > 0.5);
 }
@@ -40,7 +40,7 @@ fn pressure_increases_with_history() {
 fn compress_reduces_history_token_count() {
     let mut mgr = ContextManager::new(500);
     for i in 0..20 {
-        mgr.push_history(Message::user(format!("history message number {i}")), 40);
+        mgr.push_history(CoreMessage::user(format!("history message number {i}")), 40);
     }
     let before = mgr.partitions.history.token_count;
     mgr.compress(PressureAction::AutoCompact);
@@ -50,9 +50,9 @@ fn compress_reduces_history_token_count() {
 #[test]
 fn compress_does_not_touch_knowledge_partition() {
     let mut mgr = ContextManager::new(500);
-    mgr.push_knowledge(Message::user("important knowledge"), 100);
+    mgr.push_knowledge(CoreMessage::user("important knowledge"), 100);
     for _ in 0..10 {
-        mgr.push_history(Message::user("filler"), 50);
+        mgr.push_history(CoreMessage::user("filler"), 50);
     }
     let knowledge_before = mgr.partitions.knowledge.token_count;
     mgr.compress(PressureAction::AutoCompact);
@@ -88,9 +88,9 @@ fn render_includes_system_and_history() {
     let mut mgr = ContextManager::new(10_000);
     mgr.partitions
         .system
-        .push(Message::system("You are helpful."), 10);
-    mgr.push_history(Message::user("Hello"), 5);
-    mgr.push_history(Message::assistant("Hi!"), 5);
+        .push(CoreMessage::system("You are helpful."), 10);
+    mgr.push_history(CoreMessage::user("Hello"), 5);
+    mgr.push_history(CoreMessage::assistant("Hi!"), 5);
 
     let rendered = mgr.render();
     assert!(rendered.system_text.contains("You are helpful"));
@@ -109,9 +109,9 @@ fn render_includes_system_and_history() {
 fn renew_advances_sprint_and_preserves_goal() {
     let mut mgr = ContextManager::new(500);
     mgr.partitions.task_state.goal = "test goal".to_string();
-    mgr.partitions.system.push(Message::system("rules"), 10);
+    mgr.partitions.system.push(CoreMessage::system("rules"), 10);
     for i in 0..10 {
-        mgr.push_history(Message::user(format!("msg {i}")), 50);
+        mgr.push_history(CoreMessage::user(format!("msg {i}")), 50);
     }
     assert_eq!(mgr.sprint, 0);
     mgr.renew();
@@ -195,14 +195,14 @@ fn toggle_memory_on_off() {
 fn push_history_updates_token_count() {
     let mut mgr = ContextManager::new(10_000);
     assert_eq!(mgr.partitions.history.token_count, 0);
-    mgr.push_history(Message::user("hello"), 50);
+    mgr.push_history(CoreMessage::user("hello"), 50);
     assert_eq!(mgr.partitions.history.token_count, 50);
 }
 
 #[test]
 fn push_knowledge_updates_token_count() {
     let mut mgr = ContextManager::new(10_000);
-    mgr.push_knowledge(Message::user("fact"), 30);
+    mgr.push_knowledge(CoreMessage::user("fact"), 30);
     assert_eq!(mgr.partitions.knowledge.token_count, 30);
 }
 
@@ -277,7 +277,7 @@ fn reconstruct_messages_with_fallback_success_and_degrade() {
 
     let messages = reconstruct_messages_with_fallback(&events, "s1", 1000, |ref_str| {
         if ref_str == "archive/success.jsonl" {
-            Ok(vec![Message::user("Inside archive message")])
+            Ok(vec![CoreMessage::user("Inside archive message")])
         } else {
             Err(ContextFault::MissingArchive {
                 session_id: "s1".to_string(),

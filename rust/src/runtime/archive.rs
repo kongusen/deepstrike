@@ -1,4 +1,4 @@
-use deepstrike_core::types::message::Message;
+use deepstrike_core::types::message::CoreMessage;
 use std::error::Error;
 use std::fs::{self, File};
 use std::io::Write;
@@ -9,10 +9,10 @@ pub trait ArchiveStore: Send + Sync {
         &self,
         session_id: &str,
         seq: u64,
-        messages: &[Message],
+        messages: &[CoreMessage],
     ) -> Result<String, Box<dyn Error + Send + Sync>>;
 
-    fn read(&self, archive_ref: &str) -> Result<Vec<Message>, Box<dyn Error + Send + Sync>>;
+    fn read(&self, archive_ref: &str) -> Result<Vec<CoreMessage>, Box<dyn Error + Send + Sync>>;
 }
 
 pub struct NullArchiveStore;
@@ -22,12 +22,12 @@ impl ArchiveStore for NullArchiveStore {
         &self,
         _session_id: &str,
         _seq: u64,
-        _messages: &[Message],
+        _messages: &[CoreMessage],
     ) -> Result<String, Box<dyn Error + Send + Sync>> {
         Ok(String::new())
     }
 
-    fn read(&self, _archive_ref: &str) -> Result<Vec<Message>, Box<dyn Error + Send + Sync>> {
+    fn read(&self, _archive_ref: &str) -> Result<Vec<CoreMessage>, Box<dyn Error + Send + Sync>> {
         Err(Box::new(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "NullArchiveStore does not store archives",
@@ -50,7 +50,7 @@ impl ArchiveStore for FileArchiveStore {
         &self,
         session_id: &str,
         seq: u64,
-        messages: &[Message],
+        messages: &[CoreMessage],
     ) -> Result<String, Box<dyn Error + Send + Sync>> {
         let dir = self.root.join(session_id);
         fs::create_dir_all(&dir)?;
@@ -65,7 +65,7 @@ impl ArchiveStore for FileArchiveStore {
         Ok(file_path.to_string_lossy().to_string())
     }
 
-    fn read(&self, archive_ref: &str) -> Result<Vec<Message>, Box<dyn Error + Send + Sync>> {
+    fn read(&self, archive_ref: &str) -> Result<Vec<CoreMessage>, Box<dyn Error + Send + Sync>> {
         let file = File::open(archive_ref)?;
         let reader = std::io::BufReader::new(file);
         let mut messages = Vec::new();
@@ -75,7 +75,7 @@ impl ArchiveStore for FileArchiveStore {
             if line.trim().is_empty() {
                 continue;
             }
-            let msg: Message = serde_json::from_str(&line)?;
+            let msg: CoreMessage = serde_json::from_str(&line)?;
             messages.push(msg);
         }
         Ok(messages)

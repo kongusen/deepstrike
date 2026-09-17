@@ -1,3 +1,7 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
+// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
+#![allow(deprecated)]
+
 use deepstrike_core::runtime::session::{ProviderReplay, SessionEvent};
 use deepstrike_core::types::message::ToolCall;
 
@@ -51,7 +55,7 @@ mod tests {
     use async_trait::async_trait;
     use deepstrike_core::context::renderer::InternalRenderedContext;
     use deepstrike_core::runtime::session::SessionEvent;
-    use deepstrike_core::types::message::{Content, Message, Role, ToolSchema};
+    use deepstrike_core::types::message::{Content, CoreMessage, Role, ToolSchema};
     use futures::{Stream, stream};
     use std::sync::Mutex;
 
@@ -104,7 +108,7 @@ mod tests {
                 seq: 0,
                 event: SessionEvent::LlmCompleted {
                     turn: 0,
-                    message: Message {
+                    message: CoreMessage {
                         role: Role::Assistant,
                         content: Content::Text("without replay".into()),
                         tool_calls: vec![],
@@ -117,7 +121,7 @@ mod tests {
                 seq: 1,
                 event: SessionEvent::LlmCompleted {
                     turn: 1,
-                    message: Message {
+                    message: CoreMessage {
                         role: Role::Assistant,
                         content: Content::Text("with replay".into()),
                         tool_calls: vec![],

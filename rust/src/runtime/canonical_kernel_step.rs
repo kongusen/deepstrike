@@ -143,7 +143,7 @@ impl CanonicalKernelHost {
         self.kernel.lock().unwrap().local_subagents_spawned() as usize
     }
 
-    pub fn new_messages(&self) -> Vec<deepstrike_core::types::message::Message> {
+    pub fn new_messages(&self) -> Vec<deepstrike_core::types::message::CoreMessage> {
         self.kernel.lock().unwrap().new_messages()
     }
 

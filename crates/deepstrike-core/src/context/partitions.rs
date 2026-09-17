@@ -1,13 +1,17 @@
+// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
+// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
+#![allow(deprecated)]
+
 use super::config::ContextConfig;
 use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
 use crate::mm::value::{RetentionFeatures, RetentionKind, deterministic_retention_score};
-use crate::types::message::Message;
+use crate::types::message::CoreMessage;
 
 /// A single context partition — a named bucket of messages with a token counter.
 #[derive(Debug, Clone)]
 pub struct Partition {
-    pub messages: Vec<Message>,
+    pub messages: Vec<CoreMessage>,
     pub token_count: u32,
 }
 
@@ -19,7 +23,7 @@ impl Partition {
         }
     }
 
-    pub fn push(&mut self, mut msg: Message, token_count: u32) {
+    pub fn push(&mut self, mut msg: CoreMessage, token_count: u32) {
         msg.token_count = Some(token_count);
         self.token_count += token_count;
         self.messages.push(msg);
@@ -54,7 +58,7 @@ impl Default for Partition {
 pub struct KnowledgeEntry {
     /// `None` appends an unkeyed entry. Keyed entries upsert.
     pub key: Option<compact_str::CompactString>,
-    pub message: Message,
+    pub message: CoreMessage,
     pub tokens: u32,
     /// Host-pinned ⇒ never budget-evicted (K2). Skill pins are NOT host-pinned (K3 governs them).
     pub pinned: bool,
@@ -64,7 +68,7 @@ pub struct KnowledgeEntry {
     pub evict_at_boundary: bool,
     /// Deferred upsert: a same-key push mid-generation stages its replacement here instead of
     /// rewriting rendered bytes; applied by [`KnowledgePartition::sweep_at_boundary`].
-    pub pending: Option<Box<(Message, u32)>>,
+    pub pending: Option<Box<(CoreMessage, u32)>>,
     /// Deterministic evidence that later input actually referenced this entry.
     pub use_count: u64,
     pub last_used_step: Option<u64>,
@@ -94,7 +98,7 @@ impl KnowledgePartition {
     }
 
     /// Unkeyed immediate append — exactly `push_entry(None, msg, tokens, false)`.
-    pub fn push(&mut self, msg: Message, token_count: u32) {
+    pub fn push(&mut self, msg: CoreMessage, token_count: u32) {
         self.push_entry(None, msg, token_count, false);
     }
 
@@ -104,7 +108,7 @@ impl KnowledgePartition {
     pub fn push_entry(
         &mut self,
         key: Option<compact_str::CompactString>,
-        mut msg: Message,
+        mut msg: CoreMessage,
         tokens: u32,
         pinned: bool,
     ) {
@@ -133,7 +137,7 @@ impl KnowledgePartition {
     /// Record references from a journal-derived history message. This is deliberately driven by
     /// committed input, never by render-time wall clocks. Exact keyed references always count;
     /// otherwise two shared content terms (one for a one-term entry) are required.
-    pub fn observe_references(&mut self, message: &Message, step: u64) {
+    pub fn observe_references(&mut self, message: &CoreMessage, step: u64) {
         let text = searchable_message_text(message);
         let input_terms = lexical_terms(&text);
         if text.is_empty() || input_terms.is_empty() {
@@ -226,7 +230,7 @@ impl KnowledgePartition {
     }
 
     /// The rendered messages, in entry order (renderer / snapshot surface).
-    pub fn messages(&self) -> impl Iterator<Item = &Message> {
+    pub fn messages(&self) -> impl Iterator<Item = &CoreMessage> {
         self.entries.iter().map(|e| &e.message)
     }
 
@@ -255,7 +259,7 @@ fn retention_kind(key: Option<&str>) -> RetentionKind {
     }
 }
 
-fn searchable_message_text(message: &Message) -> String {
+fn searchable_message_text(message: &CoreMessage) -> String {
     let mut values = Vec::new();
     match &message.content {
         crate::types::message::Content::Text(text) => values.push(text.clone()),
@@ -385,7 +389,7 @@ mod tests {
     use super::*;
     use crate::context::config::ContextConfig;
     use crate::context::token_engine::ContextTokenEngine;
-    use crate::types::message::Message;
+    use crate::types::message::CoreMessage;
 
     fn engine() -> ContextTokenEngine {
         ContextTokenEngine::char_approx()
@@ -395,8 +399,8 @@ mod tests {
     fn push_updates_token_count() {
         let mut ctx = ContextPartitions::new(&ContextConfig::default());
         let base = ctx.total_tokens(&engine());
-        ctx.system.push(Message::system("rules"), 10);
-        ctx.history.push(Message::user("hello"), 5);
+        ctx.system.push(CoreMessage::system("rules"), 10);
+        ctx.history.push(CoreMessage::user("hello"), 5);
         assert_eq!(ctx.total_tokens(&engine()), base + 15);
     }
 
@@ -420,7 +424,7 @@ mod tests {
     fn knowledge_tokens_included_in_total() {
         let mut ctx = ContextPartitions::new(&ContextConfig::default());
         let before = ctx.total_tokens(&engine());
-        ctx.knowledge.push(Message::system("skill: debug"), 20);
+        ctx.knowledge.push(CoreMessage::system("skill: debug"), 20);
         assert_eq!(ctx.total_tokens(&engine()), before + 20);
     }
 
@@ -435,8 +439,8 @@ mod tests {
     #[test]
     fn keyed_upsert_defers_to_boundary() {
         let mut p = KnowledgePartition::new();
-        p.push_entry(Some("ref".into()), Message::system("original"), 10, false);
-        p.push_entry(Some("ref".into()), Message::system("updated"), 12, false);
+        p.push_entry(Some("ref".into()), CoreMessage::system("original"), 10, false);
+        p.push_entry(Some("ref".into()), CoreMessage::system("updated"), 12, false);
         // Mid-generation: still ONE entry rendering the ORIGINAL bytes (system[1] untouched).
         assert_eq!(p.len(), 1);
         assert_eq!(text_of(&p), vec!["original"]);
@@ -455,7 +459,7 @@ mod tests {
     #[test]
     fn remove_marks_then_sweep_drops() {
         let mut p = KnowledgePartition::new();
-        p.push_entry(Some("ref".into()), Message::system("pinned ref"), 8, false);
+        p.push_entry(Some("ref".into()), CoreMessage::system("pinned ref"), 8, false);
         assert!(p.remove("ref"));
         // Still rendered until the boundary (no mid-generation byte rewrite).
         assert_eq!(p.len(), 1);
@@ -472,7 +476,7 @@ mod tests {
     #[test]
     fn remove_unknown_key_errs_open() {
         let mut p = KnowledgePartition::new();
-        p.push(Message::system("unkeyed"), 5);
+        p.push(CoreMessage::system("unkeyed"), 5);
         assert!(!p.remove("missing"));
         assert!(!p.sweep_at_boundary().changed);
         assert_eq!(p.len(), 1);
@@ -481,11 +485,11 @@ mod tests {
     #[test]
     fn same_key_push_after_remove_revives_entry() {
         let mut p = KnowledgePartition::new();
-        p.push_entry(Some("ref".into()), Message::system("older"), 5, false);
+        p.push_entry(Some("ref".into()), CoreMessage::system("older"), 5, false);
         p.remove("ref");
         // Re-pushing the key means the entry is wanted again — the eviction mark clears and the
         // fresh content lands as a deferred upsert.
-        p.push_entry(Some("ref".into()), Message::system("newer"), 6, false);
+        p.push_entry(Some("ref".into()), CoreMessage::system("newer"), 6, false);
         let sweep = p.sweep_at_boundary();
         assert!(sweep.removed_keys.is_empty());
         assert_eq!(text_of(&p), vec!["newer"]);
@@ -494,8 +498,8 @@ mod tests {
     #[test]
     fn fresh_keys_and_unkeyed_append_immediately() {
         let mut p = KnowledgePartition::new();
-        p.push(Message::system("existing"), 3);
-        p.push_entry(Some("a".into()), Message::system("fresh"), 4, true);
+        p.push(CoreMessage::system("existing"), 3);
+        p.push_entry(Some("a".into()), CoreMessage::system("fresh"), 4, true);
         // Appends are visible right away (cache-cheap direction: prefix only extends).
         assert_eq!(text_of(&p), vec!["existing", "fresh"]);
         assert_eq!(p.token_count, 7);
@@ -507,18 +511,18 @@ mod tests {
         let mut p = KnowledgePartition::new();
         p.push_entry(
             Some("project:orchid".into()),
-            Message::system("Atlas storage engine for ORCHID"),
+            CoreMessage::system("Atlas storage engine for ORCHID"),
             8,
             false,
         );
         p.push_entry(
             Some("reference:unrelated".into()),
-            Message::system("Mercury deployment guide"),
+            CoreMessage::system("Mercury deployment guide"),
             8,
             false,
         );
 
-        p.observe_references(&Message::assistant("Use project:orchid and Atlas"), 7);
+        p.observe_references(&CoreMessage::assistant("Use project:orchid and Atlas"), 7);
 
         assert_eq!(p.entries[0].use_count, 1);
         assert_eq!(p.entries[0].last_used_step, Some(7));

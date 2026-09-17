@@ -78,8 +78,8 @@ fn fixed_context_overflow_fails_closed_before_provider_call() {
 fn resume_after_preload_runs_pending_tools_before_llm() {
     let mut sm = sm();
     sm.preload_history(vec![
-        Message::user("goal"),
-        Message {
+        CoreMessage::user("goal"),
+        CoreMessage {
             role: Role::Assistant,
             content: Content::Text("checking".into()),
             tool_calls: vec![ToolCall {
@@ -109,8 +109,8 @@ fn resume_after_preload_does_not_page_in_pending_memory() {
     let mut sm = sm();
     sm.ctx.set_memory_enabled(true);
     sm.preload_history(vec![
-        Message::user("goal"),
-        Message {
+        CoreMessage::user("goal"),
+        CoreMessage {
             role: Role::Assistant,
             content: Content::Text("recall".into()),
             tool_calls: vec![ToolCall {
@@ -142,8 +142,8 @@ fn resume_after_preload_does_not_page_in_pending_memory() {
 fn resume_after_preload_emits_call_llm_without_duplicate_user() {
     let mut sm = sm();
     sm.preload_history(vec![
-        Message::user("prior goal"),
-        Message::assistant("partial"),
+        CoreMessage::user("prior goal"),
+        CoreMessage::assistant("partial"),
     ]);
     let history_len = sm.ctx.partitions.history.messages.len();
     let action = sm.resume_after_preload();
@@ -170,7 +170,7 @@ fn llm_response_without_tools_terminates_and_saves_to_history() {
     let mut sm = sm();
     sm.start(RuntimeTask::new("Say hello"));
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("Hello!"),
+        message: CoreMessage::assistant("Hello!"),
     });
     assert!(matches!(action, LoopAction::Done { .. }));
     assert!(sm.is_terminal());
@@ -632,7 +632,7 @@ fn signal_is_consumed_after_provider_commit_and_does_not_survive_renewal() {
     );
 
     sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("acknowledged"),
+        message: CoreMessage::assistant("acknowledged"),
     });
 
     for _ in 0..2 {
@@ -685,7 +685,7 @@ fn max_turns_emits_final_toolless_call_then_terminates() {
 
     // The LLM responds with text → terminates with MaxTurns
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("final summary"),
+        message: CoreMessage::assistant("final summary"),
     });
     match action {
         LoopAction::Done { result } => {
@@ -1249,8 +1249,8 @@ fn call(id: &str, name: &str) -> ToolCall {
     }
 }
 
-fn assistant_calling(calls: Vec<ToolCall>) -> Message {
-    Message {
+fn assistant_calling(calls: Vec<ToolCall>) -> CoreMessage {
+    CoreMessage {
         role: Role::Assistant,
         content: Content::Text(String::new()),
         tool_calls: calls,
@@ -1625,7 +1625,7 @@ fn compression_emits_observation() {
     sm.start(RuntimeTask::new("test"));
     for i in 0..10 {
         sm.ctx
-            .push_history(Message::user(format!("filler {i}")), 50);
+            .push_history(CoreMessage::user(format!("filler {i}")), 50);
     }
     sm.feed(LoopEvent::ToolResults { results: vec![] });
     let obs = sm.take_observations();
@@ -1652,7 +1652,7 @@ fn renewal_emits_observation_when_pressure_extreme() {
         sm.ctx
             .partitions
             .system
-            .push(Message::system(format!("constraint {i}")), 10);
+            .push(CoreMessage::system(format!("constraint {i}")), 10);
     }
     sm.feed(LoopEvent::ToolResults { results: vec![] });
     let obs = sm.take_observations();
@@ -1672,7 +1672,7 @@ fn force_compact_emits_page_out_when_archived() {
     sm.start(RuntimeTask::new("test"));
     for i in 0..10 {
         sm.ctx
-            .push_history(Message::user(format!("filler {i}")), 50);
+            .push_history(CoreMessage::user(format!("filler {i}")), 50);
     }
     assert!(sm.force_compact());
     let obs = sm.take_observations();
@@ -1697,7 +1697,7 @@ fn knowledge_remove_sweeps_at_compaction_boundary_and_observes() {
     });
     sm.start(RuntimeTask::new("test"));
     sm.ctx
-        .push_knowledge_entry(Some("ref".into()), Message::system("REFDOC"), 5, false);
+        .push_knowledge_entry(Some("ref".into()), CoreMessage::system("REFDOC"), 5, false);
     sm.ctx.remove_knowledge("ref");
     assert!(
         sm.ctx.render().system_knowledge.contains("REFDOC"),
@@ -1706,7 +1706,7 @@ fn knowledge_remove_sweeps_at_compaction_boundary_and_observes() {
 
     for i in 0..10 {
         sm.ctx
-            .push_history(Message::user(format!("filler {i}")), 50);
+            .push_history(CoreMessage::user(format!("filler {i}")), 50);
     }
     assert!(sm.force_compact());
     assert!(
@@ -1731,9 +1731,9 @@ fn knowledge_upsert_applies_at_renewal_boundary() {
     });
     sm.start(RuntimeTask::new("test"));
     sm.ctx
-        .push_knowledge_entry(Some("ref".into()), Message::system("original"), 5, false);
+        .push_knowledge_entry(Some("ref".into()), CoreMessage::system("original"), 5, false);
     sm.ctx
-        .push_knowledge_entry(Some("ref".into()), Message::system("updated"), 5, false);
+        .push_knowledge_entry(Some("ref".into()), CoreMessage::system("updated"), 5, false);
     assert!(sm.ctx.render().system_knowledge.contains("original"));
 
     sm.ctx.renew();
@@ -1758,7 +1758,7 @@ fn compactible_machine() -> LoopStateMachine {
     sm.start(RuntimeTask::new("test"));
     for i in 0..10 {
         sm.ctx
-            .push_history(Message::user(format!("filler {i}")), 50);
+            .push_history(CoreMessage::user(format!("filler {i}")), 50);
     }
     sm
 }
@@ -1831,7 +1831,7 @@ fn recovery_attempts_reset_on_successful_response() {
     assert_eq!(sm.recovery_attempts, 1);
     // A response that fits resets the ladder (mirrors the per-turn SDK guard reset).
     sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("recovered"),
+        message: CoreMessage::assistant("recovered"),
     });
     assert_eq!(sm.recovery_attempts, 0);
 }
@@ -1865,13 +1865,13 @@ fn truncated_response_continues_then_resets() {
     // Cut off at the output cap with no tool call ⇒ keep the partial and re-call (don't finish).
     sm.set_output_truncated(true);
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("partial..."),
+        message: CoreMessage::assistant("partial..."),
     });
     assert!(matches!(action, LoopAction::CallLLM { .. }));
     assert_eq!(sm.output_recovery_attempts, 1);
     // A clean finish (no stop_reason) terminates normally AND resets the ladder.
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("...the rest. done"),
+        message: CoreMessage::assistant("...the rest. done"),
     });
     match action {
         LoopAction::Done { result } => assert_eq!(result.termination, TerminationReason::Completed),
@@ -1888,13 +1888,13 @@ fn truncation_recovery_is_bounded() {
     for _ in 0..3 {
         sm.set_output_truncated(true);
         let action = sm.feed(LoopEvent::LLMResponse {
-            message: Message::assistant("more"),
+            message: CoreMessage::assistant("more"),
         });
         assert!(matches!(action, LoopAction::CallLLM { .. }));
     }
     sm.set_output_truncated(true);
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("more"),
+        message: CoreMessage::assistant("more"),
     });
     match action {
         LoopAction::Done { result } => assert_eq!(result.termination, TerminationReason::Completed),
@@ -1909,7 +1909,7 @@ fn no_stop_reason_terminates_normally() {
     let mut sm = sm();
     sm.start(RuntimeTask::new("answer"));
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("the answer"),
+        message: CoreMessage::assistant("the answer"),
     });
     assert!(matches!(action, LoopAction::Done { .. }));
     assert_eq!(sm.output_recovery_attempts, 0);
@@ -1931,7 +1931,7 @@ fn autocompact_pages_out_to_semantic_tier_for_llm_summary() {
     sm.start(RuntimeTask::new("test"));
     for i in 0..10 {
         sm.ctx
-            .push_history(Message::user(format!("filler {i}")), 50);
+            .push_history(CoreMessage::user(format!("filler {i}")), 50);
     }
     assert!(sm.force_compact()); // force_compact runs an AutoCompact pass
     let semantic_pageout = matches!(
@@ -1954,7 +1954,7 @@ fn memory_tool_proposal_does_not_page_in() {
     let mut sm = sm();
     sm.ctx.set_memory_enabled(true);
     sm.start(RuntimeTask::new("test"));
-    let mut msg = Message::assistant("");
+    let mut msg = CoreMessage::assistant("");
     msg.tool_calls.push(ToolCall {
         id: compact_str::CompactString::new("m1"),
         name: compact_str::CompactString::new("memory"),
@@ -1992,8 +1992,8 @@ fn preload_history_and_drain_new_messages() {
 
     // Simulate restoring a prior session with one exchange
     let prior = vec![
-        Message::user("Hello from last time"),
-        Message::assistant("Hi! I remember."),
+        CoreMessage::user("Hello from last time"),
+        CoreMessage::assistant("Hi! I remember."),
     ];
     sm.preload_history(prior.clone());
     assert_eq!(sm.ctx.partitions.history.messages.len(), 2);
@@ -2030,7 +2030,7 @@ fn tool_result_content_parts_preserved_as_json() {
     sm.start(RuntimeTask::new("test"));
 
     // Simulate an LLM tool call
-    let mut msg = Message::assistant("");
+    let mut msg = CoreMessage::assistant("");
     msg.tool_calls.push(crate::types::message::ToolCall {
         id: CompactString::new("c1"),
         name: CompactString::new("my_tool"),
@@ -2113,7 +2113,7 @@ fn milestone_pass_advances_phase_and_emits_observation() {
 
     // Simulate LLM returning text-only → EvaluateMilestone
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("plan drafted"),
+        message: CoreMessage::assistant("plan drafted"),
     });
     assert!(
         matches!(action, LoopAction::EvaluateMilestone { ref phase_id, .. } if phase_id == "plan"),
@@ -2146,7 +2146,7 @@ fn milestone_fail_blocks_phase_and_emits_observation() {
     sm.start(RuntimeTask::new("do the thing"));
 
     sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("bad plan"),
+        message: CoreMessage::assistant("bad plan"),
     });
 
     let action = sm.feed(LoopEvent::MilestoneResult {
@@ -2187,7 +2187,7 @@ fn milestone_unlocks_capabilities_on_advance() {
     );
 
     sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("done"),
+        message: CoreMessage::assistant("done"),
     });
     sm.feed(LoopEvent::MilestoneResult {
         result: crate::types::milestone::MilestoneCheckResult::pass("phase-a"),
@@ -2229,7 +2229,7 @@ fn all_phases_complete_terminates_run() {
     sm.start(RuntimeTask::new("single milestone run"));
 
     sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("ready"),
+        message: CoreMessage::assistant("ready"),
     });
     let done = sm.feed(LoopEvent::MilestoneResult {
         result: crate::types::milestone::MilestoneCheckResult::pass("only-phase"),
@@ -2249,7 +2249,7 @@ fn no_contract_terminates_normally() {
     sm.start(RuntimeTask::new("simple task"));
 
     let action = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("answer"),
+        message: CoreMessage::assistant("answer"),
     });
     assert!(
         matches!(action, LoopAction::Done { .. }),
@@ -2389,7 +2389,7 @@ fn gov_call(id: &str, name: &str) -> ToolCall {
 fn governance_deny_commits_error_result_without_rollback() {
     let mut sm = sm_with_deny_rule();
     sm.start(RuntimeTask::new("fix the bug"));
-    let mut msg = Message::assistant("");
+    let mut msg = CoreMessage::assistant("");
     msg.tool_calls.push(gov_call("call_w", "write_file"));
     let history_before = sm.ctx.partitions.history.messages.len();
 
@@ -2430,7 +2430,7 @@ fn governance_deny_commits_error_result_without_rollback() {
 fn governance_deny_executes_allowed_siblings() {
     let mut sm = sm_with_deny_rule();
     sm.start(RuntimeTask::new("fix the bug"));
-    let mut msg = Message::assistant("");
+    let mut msg = CoreMessage::assistant("");
     msg.tool_calls.push(gov_call("call_r", "read_file"));
     msg.tool_calls.push(gov_call("call_w", "write_file"));
 
@@ -2494,7 +2494,7 @@ fn sm_with_ask_user_rule() -> LoopStateMachine {
 fn ask_user_enters_suspended_without_execute_tools() {
     let mut sm = sm_with_ask_user_rule();
     sm.start(RuntimeTask::new("test"));
-    let mut msg = Message::assistant("");
+    let mut msg = CoreMessage::assistant("");
     msg.tool_calls.push(ToolCall {
         id: compact_str::CompactString::new("call_a"),
         name: compact_str::CompactString::new("sensitive.read"),
@@ -2518,7 +2518,7 @@ fn ask_user_enters_suspended_without_execute_tools() {
 fn resume_approved_emits_execute_tools() {
     let mut sm = sm_with_ask_user_rule();
     sm.start(RuntimeTask::new("test"));
-    let mut msg = Message::assistant("");
+    let mut msg = CoreMessage::assistant("");
     msg.tool_calls.push(ToolCall {
         id: compact_str::CompactString::new("call_a"),
         name: compact_str::CompactString::new("sensitive.read"),
@@ -2543,7 +2543,7 @@ fn resume_approved_emits_execute_tools() {
 fn resume_all_denied_reprompts_without_execute() {
     let mut sm = sm_with_ask_user_rule();
     sm.start(RuntimeTask::new("test"));
-    let mut msg = Message::assistant("");
+    let mut msg = CoreMessage::assistant("");
     msg.tool_calls.push(ToolCall {
         id: compact_str::CompactString::new("call_a"),
         name: compact_str::CompactString::new("sensitive.read"),
@@ -2583,7 +2583,7 @@ fn spawn_sub_agent_suspends_until_completed() {
         agent_id: compact_str::CompactString::new("child"),
         result: LoopResult {
             termination: TerminationReason::Completed,
-            final_message: Some(Message::assistant("ok")),
+            final_message: Some(CoreMessage::assistant("ok")),
             turns_used: 1,
             total_tokens_used: 1,
             loop_continue: None,
@@ -2621,7 +2621,7 @@ fn budget_exceeded_observation_on_max_turns() {
         KernelObservation::BudgetExceeded { budget, .. } if budget == "max_turns"
     )));
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("final"),
+        message: CoreMessage::assistant("final"),
     });
     assert!(matches!(done, LoopAction::Done { .. }));
 }
@@ -2655,7 +2655,7 @@ fn lifecycle_running_after_start() {
 fn lifecycle_suspended_on_ask_user_with_approval_wait() {
     let mut sm = sm_with_ask_user_rule();
     sm.start(RuntimeTask::new("test"));
-    let mut msg = Message::assistant("");
+    let mut msg = CoreMessage::assistant("");
     msg.tool_calls.push(ToolCall {
         id: compact_str::CompactString::new("call_a"),
         name: compact_str::CompactString::new("sensitive.read"),
@@ -2697,7 +2697,7 @@ fn lifecycle_terminal_is_done_with_no_wait() {
     let mut sm = sm();
     sm.start(RuntimeTask::new("hi"));
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("final answer"),
+        message: CoreMessage::assistant("final answer"),
     });
     assert!(matches!(done, LoopAction::Done { .. }));
     assert!(sm.is_terminal());
@@ -2709,7 +2709,7 @@ fn lifecycle_terminal_is_done_with_no_wait() {
 fn lifecycle_running_again_after_resume_from_suspend() {
     let mut sm = sm_with_ask_user_rule();
     sm.start(RuntimeTask::new("test"));
-    let mut msg = Message::assistant("");
+    let mut msg = CoreMessage::assistant("");
     msg.tool_calls.push(ToolCall {
         id: compact_str::CompactString::new("call_a"),
         name: compact_str::CompactString::new("sensitive.read"),
@@ -2760,7 +2760,7 @@ fn budget_exceeded_observation_on_token_budget() {
         KernelObservation::BudgetExceeded { budget, .. } if budget == "token_budget"
     )));
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("final"),
+        message: CoreMessage::assistant("final"),
     });
     assert!(matches!(
         done,
@@ -2788,7 +2788,7 @@ fn budget_exceeded_observation_on_wall_time() {
         KernelObservation::BudgetExceeded { budget, .. } if budget == "wall_time"
     )));
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("final"),
+        message: CoreMessage::assistant("final"),
     });
     assert!(matches!(
         done,
@@ -2837,7 +2837,7 @@ fn agent_process_view_shape_is_pinned_across_spawn_and_join() {
                 agent_id: compact_str::CompactString::new("child"),
                 result: LoopResult {
                     termination: TerminationReason::Completed,
-                    final_message: Some(Message::assistant("done")),
+                    final_message: Some(CoreMessage::assistant("done")),
                     turns_used: 2,
                     total_tokens_used: 42,
                     loop_continue: None,
@@ -3106,7 +3106,7 @@ fn task_table_tracks_sub_agent_lifecycle() {
                 agent_id: compact_str::CompactString::new("child"),
                 result: LoopResult {
                     termination: TerminationReason::Completed,
-                    final_message: Some(Message::assistant("ok")),
+                    final_message: Some(CoreMessage::assistant("ok")),
                     turns_used: 1,
                     total_tokens_used: 1,
                     loop_continue: None,
@@ -3134,7 +3134,7 @@ fn wf_completed(agent_id: &str) -> crate::types::result::SubAgentResult {
         agent_id: compact_str::CompactString::new(agent_id),
         result: LoopResult {
             termination: TerminationReason::Completed,
-            final_message: Some(Message::assistant("ok")),
+            final_message: Some(CoreMessage::assistant("ok")),
             turns_used: 1,
             total_tokens_used: 1,
             loop_continue: None,
@@ -5191,7 +5191,7 @@ fn milestone_retry_loop_is_bounded_by_the_token_budget() {
     let mut budget_fired = false;
     for _ in 0..100 {
         let action = machine.feed(LoopEvent::LLMResponse {
-            message: Message {
+            message: CoreMessage {
                 role: Role::Assistant,
                 content: Content::Text("done, please check".into()),
                 tool_calls: vec![],
@@ -5229,7 +5229,7 @@ fn milestone_retry_loop_is_bounded_by_the_token_budget() {
 
     // The final-report turn ends the run with the budget termination.
     let done = machine.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("out of budget: verify phase still failing"),
+        message: CoreMessage::assistant("out of budget: verify phase still failing"),
     });
     match done {
         LoopAction::Done { result } => {
@@ -5242,8 +5242,8 @@ fn milestone_retry_loop_is_bounded_by_the_token_budget() {
 // ── O6: RepeatFuse — the hard rungs above the 2c soft STOP ────────────────────────────────
 
 /// An assistant turn proposing exactly one tool call.
-fn fuse_tool_turn(name: &str, args: serde_json::Value) -> Message {
-    Message {
+fn fuse_tool_turn(name: &str, args: serde_json::Value) -> CoreMessage {
+    CoreMessage {
         role: Role::Assistant,
         content: Content::Text("".into()),
         tool_calls: vec![ToolCall {
@@ -5468,7 +5468,7 @@ fn repeat_fuse_escalates_to_no_progress_termination() {
         )));
     // …then the run terminates NoProgress on the model's text response.
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("stuck: title already set"),
+        message: CoreMessage::assistant("stuck: title already set"),
     });
     match done {
         LoopAction::Done { result } => {
@@ -5509,7 +5509,7 @@ fn criteria_gate_injects_one_self_check_before_completed() {
 
     // First finish attempt: gate fires — one more turn, with the check in signals.
     let a = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("done, I think"),
+        message: CoreMessage::assistant("done, I think"),
     });
     assert!(
         matches!(a, LoopAction::CallLLM { .. }),
@@ -5533,7 +5533,7 @@ fn criteria_gate_injects_one_self_check_before_completed() {
 
     // Second finish attempt: gate already fired — run completes normally.
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("verified: all criteria met"),
+        message: CoreMessage::assistant("verified: all criteria met"),
     });
     match done {
         LoopAction::Done { result } => assert_eq!(result.termination, TerminationReason::Completed),
@@ -5546,7 +5546,7 @@ fn criteria_gate_is_a_noop_without_criteria() {
     let mut sm = sm();
     sm.start(RuntimeTask::new("say hello"));
     let a = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("hello"),
+        message: CoreMessage::assistant("hello"),
     });
     assert!(
         matches!(a, LoopAction::Done { .. }),
@@ -5567,7 +5567,7 @@ fn criteria_gate_can_be_disabled() {
     task.criteria = vec!["c1".into()];
     sm.start(task);
     let a = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("done"),
+        message: CoreMessage::assistant("done"),
     });
     assert!(matches!(a, LoopAction::Done { .. }));
 }
@@ -5587,7 +5587,7 @@ fn loop_sm(spec: crate::types::agent::LoopRoundSpec) -> LoopStateMachine {
     sm
 }
 
-fn pace_turn(next: &str, delay_ms: Option<u64>) -> Message {
+fn pace_turn(next: &str, delay_ms: Option<u64>) -> CoreMessage {
     let mut args = serde_json::json!({ "next": next, "reason": "round done" });
     if let Some(d) = delay_ms {
         args["delay_ms"] = serde_json::json!(d);
@@ -5622,7 +5622,7 @@ fn pace_with_sibling_tool_calls_leaves_no_orphan_pairs() {
     // their transcript pairs (an assistant tool_use with no tool_result is invalid on several
     // vendors' wire formats).
     let mut sm = loop_sm(crate::types::agent::LoopRoundSpec::default());
-    let message = Message {
+    let message = CoreMessage {
         role: Role::Assistant,
         content: Content::Text("".into()),
         tool_calls: vec![
@@ -5686,7 +5686,7 @@ fn pace_sleep_is_clamped_and_records_coercion() {
         "an allowed pace strips tools for the final report turn"
     );
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("round report"),
+        message: CoreMessage::assistant("round report"),
     });
     match done {
         LoopAction::Done { result } => {
@@ -5720,7 +5720,7 @@ fn pace_continue_coerced_to_stop_at_max_rounds() {
         message: pace_turn("continue", None),
     });
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("report"),
+        message: CoreMessage::assistant("report"),
     });
     match done {
         LoopAction::Done { result } => {
@@ -5829,7 +5829,7 @@ fn pace_stop_routes_through_criteria_gate_then_honors_the_redecision() {
         message: pace_turn("stop", None),
     });
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("final"),
+        message: CoreMessage::assistant("final"),
     });
     match done {
         LoopAction::Done { result } => {
@@ -5846,7 +5846,7 @@ fn round_without_pace_call_falls_back_to_default_action() {
     // Goal loop (default): stop.
     let mut sm = loop_sm(crate::types::agent::LoopRoundSpec::default());
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("all done"),
+        message: CoreMessage::assistant("all done"),
     });
     match done {
         LoopAction::Done { result } => {
@@ -5862,7 +5862,7 @@ fn round_without_pace_call_falls_back_to_default_action() {
         ..Default::default()
     });
     let done = sm.feed(LoopEvent::LLMResponse {
-        message: Message::assistant("tick done"),
+        message: CoreMessage::assistant("tick done"),
     });
     match done {
         LoopAction::Done { result } => {
@@ -6399,7 +6399,7 @@ fn spc_005_05_child_completion_returns_unused_tokens_to_the_parents_remaining_po
         agent_id: compact_str::CompactString::new("child"),
         result: LoopResult {
             termination: TerminationReason::Completed,
-            final_message: Some(Message::assistant("ok")),
+            final_message: Some(CoreMessage::assistant("ok")),
             turns_used: 1,
             total_tokens_used: 300,
             loop_continue: None,
@@ -6477,7 +6477,7 @@ fn spc_005_05_multiple_children_return_budget_independently() {
         agent_id: compact_str::CompactString::new(agent_id),
         result: LoopResult {
             termination: TerminationReason::Completed,
-            final_message: Some(Message::assistant("ok")),
+            final_message: Some(CoreMessage::assistant("ok")),
             turns_used: 1,
             total_tokens_used: used,
             loop_continue: None,
@@ -6684,7 +6684,7 @@ fn spc_005_06_three_layer_grant_invariant_operation_to_a_to_a1_a2() {
         agent_id: compact_str::CompactString::new("a1"),
         result: LoopResult {
             termination: TerminationReason::Completed,
-            final_message: Some(Message::assistant("done")),
+            final_message: Some(CoreMessage::assistant("done")),
             turns_used: 1,
             total_tokens_used: 20,
             loop_continue: None,

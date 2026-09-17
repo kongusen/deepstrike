@@ -57,7 +57,7 @@ use deepstrike_core::scheduler::tcb::TaskLifecycle;
 use deepstrike_core::signals::router::SignalRouter as RustSignalRouter;
 use deepstrike_core::types::agent::AgentIdentity;
 use deepstrike_core::types::message::{
-    Content, ContentPart, Message as RustMessage, Role, ToolCall as RustToolCall,
+    Content, ContentPart, CoreMessage as RustMessage, Role, ToolCall as RustToolCall,
 };
 use deepstrike_core::types::policy::{
     GovernanceVerdict as RustGovernanceVerdict, SignalDisposition as RustSignalDisposition,
@@ -323,6 +323,9 @@ impl ContentPartObj {
         }
     }
 
+    /// .. deprecated:: 0.2.67
+    ///    Inline base64 leaves in 0.2.68 (DEL-3); carry media via durable-content
+    ///    `source` (`file_id`/`object`/`url`) — the provider adapter materialises bytes at L0.
     #[staticmethod]
     #[pyo3(signature = (data, media_type, detail=None))]
     fn image_base64(data: String, media_type: String, detail: Option<String>) -> Self {
@@ -342,6 +345,9 @@ impl ContentPartObj {
         }
     }
 
+    /// .. deprecated:: 0.2.67
+    ///    Inline base64 leaves in 0.2.68 (DEL-3); carry media via durable-content
+    ///    `source` (`file_id`/`object`/`url`) — the provider adapter materialises bytes at L0.
     #[staticmethod]
     fn audio(data: String, media_type: String) -> Self {
         Self {
@@ -367,6 +373,10 @@ impl ContentPartObj {
 
 #[pyclass]
 #[derive(Clone)]
+/// .. deprecated:: 0.2.67 (field `token_count`, DEL-1)
+///    `token_count` is projection-only during the migration window and is removed in
+///    0.2.68; the kernel recomputes via its token engine, hosts should keep counts in a
+///    TokenMeasurement-style side table keyed by content fingerprint.
 struct Message {
     #[pyo3(get, set)]
     role: String,
@@ -556,6 +566,9 @@ impl ToolCall {
 
 #[pyclass]
 #[derive(Clone)]
+/// .. deprecated:: 0.2.67 (field `token_count`, DEL-1)
+///    `token_count` is projection-only during the migration window and is removed in
+///    0.2.68; the kernel recomputes via its token engine.
 struct ToolResult {
     #[pyo3(get, set)]
     call_id: String,

@@ -10,12 +10,17 @@
 //! - `output_tokens` is taken from `message.token_count` when present; else `chars/4`.
 //! - `cache_read_input_tokens` / `cache_creation_input_tokens` emitted as 0.
 
+
+// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
+// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
+#![allow(deprecated)]
+
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::runtime::session::ProviderReplay;
-use deepstrike_core::types::message::{Content, ContentPart, Message, ToolCall, ToolSchema};
+use deepstrike_core::types::message::{Content, ContentPart, CoreMessage, ToolCall, ToolSchema};
 use futures::Stream;
 
 use crate::Result;
@@ -45,18 +50,18 @@ fn default_tokenizer(text: &str) -> u32 {
 
 /// LLMProvider that dequeues recorded assistant messages instead of calling an API.
 pub struct ReplayProvider {
-    messages: Vec<Message>,
+    messages: Vec<CoreMessage>,
     cursor: Mutex<usize>,
     tokenizer: Box<dyn Fn(&str) -> u32 + Send + Sync>,
     wrap: bool,
 }
 
 impl ReplayProvider {
-    pub fn new(messages: Vec<Message>) -> Self {
+    pub fn new(messages: Vec<CoreMessage>) -> Self {
         Self::with_opts(messages, ReplayProviderOpts::default())
     }
 
-    pub fn with_opts(messages: Vec<Message>, opts: ReplayProviderOpts) -> Self {
+    pub fn with_opts(messages: Vec<CoreMessage>, opts: ReplayProviderOpts) -> Self {
         Self {
             messages,
             cursor: Mutex::new(0),
@@ -80,7 +85,7 @@ impl ReplayProvider {
         *self.cursor.lock().unwrap() = 0;
     }
 
-    fn pull(&self) -> Result<Message> {
+    fn pull(&self) -> Result<CoreMessage> {
         let mut c = self.cursor.lock().unwrap();
         if *c >= self.messages.len() {
             if self.wrap && !self.messages.is_empty() {
@@ -136,7 +141,7 @@ fn render_context_to_text(context: &InternalRenderedContext, tools: &[ToolSchema
     parts.join("\n")
 }
 
-fn message_text(m: &Message) -> Option<String> {
+fn message_text(m: &CoreMessage) -> Option<String> {
     match &m.content {
         Content::Text(s) if !s.is_empty() => Some(s.clone()),
         Content::Parts(parts) => {

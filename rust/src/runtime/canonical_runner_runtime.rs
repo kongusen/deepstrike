@@ -3,6 +3,11 @@
 //! Host events are lowered to wire inputs, committed through [`CanonicalKernelHost`], and projected
 //! back to the [`HostAction`] / [`KernelObservation`] shapes the runner matches.
 
+
+// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
+// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
+#![allow(deprecated)]
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -26,7 +31,7 @@ use deepstrike_core::runtime::kernel::wire::CancellationReason;
 use deepstrike_core::runtime::kernel::{
     KernelObservation, KernelPressureAction, PublishedEffectRef,
 };
-use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolSchema};
+use deepstrike_core::types::message::{Content, CoreMessage, Role, ToolCall, ToolSchema};
 use deepstrike_core::types::milestone::{MilestoneContract, MilestoneVerifier};
 use deepstrike_core::types::result::{LoopResult, PaceAction, PaceDecision, TerminationReason};
 use serde_json::{Map, Value, json};
@@ -205,7 +210,7 @@ impl CanonicalRunnerRuntime {
         std::mem::take(&mut self.observations)
     }
 
-    pub fn drain_new_messages(&mut self) -> Vec<Message> {
+    pub fn drain_new_messages(&mut self) -> Vec<CoreMessage> {
         self.host.new_messages()
     }
 
@@ -1835,7 +1840,7 @@ fn protocol_action_from_wire(
                 unreachable!("archive_page_out effect must project to archive action");
             };
             let archived =
-                serde_json::from_str::<Vec<Message>>(&archive.payload.content).unwrap_or_default();
+                serde_json::from_str::<Vec<CoreMessage>>(&archive.payload.content).unwrap_or_default();
             let compressed = observations.iter().find_map(|obs| match obs {
                 KernelObservation::Compressed {
                     action, summary, ..
@@ -2040,8 +2045,8 @@ fn rendered_context_from_wire(
 
 fn message_from_wire_provider(
     message: &deepstrike_core::runtime::kernel::wire::ProviderMessage,
-) -> Result<Message> {
-    Ok(Message {
+) -> Result<CoreMessage> {
+    Ok(CoreMessage {
         role: match message.role {
             deepstrike_core::runtime::kernel::wire::MessageRole::System => Role::System,
             deepstrike_core::runtime::kernel::wire::MessageRole::User => Role::User,
@@ -2629,8 +2634,8 @@ mod tests {
             context: &deepstrike_core::context::renderer::InternalRenderedContext,
             _tools: &[deepstrike_core::types::message::ToolSchema],
             _extensions: Option<&serde_json::Value>,
-        ) -> crate::Result<deepstrike_core::types::message::Message> {
-            use deepstrike_core::types::message::{Content, Message, Role, ToolCall};
+        ) -> crate::Result<deepstrike_core::types::message::CoreMessage> {
+            use deepstrike_core::types::message::{Content, CoreMessage, Role, ToolCall};
             let has_tool_result = context.turns.iter().any(|message| message.role == Role::Tool);
             let (content, tool_calls) = if has_tool_result {
                 (RESTART_FINAL_TEXT.to_string(), vec![])
@@ -2644,7 +2649,7 @@ mod tests {
                     }],
                 )
             };
-            Ok(Message {
+            Ok(CoreMessage {
                 role: Role::Assistant,
                 content: Content::Text(content),
                 tool_calls,
