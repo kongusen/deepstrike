@@ -14,7 +14,9 @@ pub mod tools;
 mod tests;
 
 pub use deepstrike_core::context::measurement::{MeasurementConfidence, MeasurementSource};
-pub use deepstrike_core::context::renderer::RenderedContext;
+// F3 (0.2.66): the core-internal render type is `InternalRenderedContext`; the SDK-visible
+// name stays `RenderedContext` (API stability — this re-export is the crate's public surface).
+pub use deepstrike_core::context::renderer::InternalRenderedContext as RenderedContext;
 pub use deepstrike_core::governance::permission::PermissionAction;
 pub use deepstrike_core::governance::quota::ResourceQuota;
 // Session entropy (heartbeat watch source): the kernel emits `entropy_sample` /

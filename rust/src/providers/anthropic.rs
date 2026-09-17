@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::runtime::session::ProviderReplay;
 use deepstrike_core::types::message::{Content, ContentPart, Role, ToolCall, ToolSchema};
 use futures::{Stream, StreamExt};
@@ -56,7 +56,7 @@ impl AnthropicProvider {
 
     fn context_to_anthropic(
         &self,
-        context: &RenderedContext,
+        context: &InternalRenderedContext,
         strategy: CacheBreakpointStrategy,
     ) -> Result<(Option<Value>, Vec<Value>)> {
         let native = self.native_assistant_blocks.lock().unwrap();
@@ -115,7 +115,7 @@ fn content_to_anthropic(content: &Content) -> Result<Value> {
 }
 
 fn context_to_anthropic(
-    context: &RenderedContext,
+    context: &InternalRenderedContext,
     strategy: CacheBreakpointStrategy,
     native_replay: impl Fn(&str, &[ToolCall]) -> Option<Vec<Value>>,
 ) -> Result<(Option<Value>, Vec<Value>)> {
@@ -276,7 +276,7 @@ fn tools_to_anthropic(
 /// Structured system blocks with cache_control when the kernel partitioned the
 /// prompt (system_stable / system_knowledge); else the flat system_text string
 /// (no breakpoint), or None.
-fn build_system(context: &RenderedContext, strategy: CacheBreakpointStrategy) -> Option<Value> {
+fn build_system(context: &InternalRenderedContext, strategy: CacheBreakpointStrategy) -> Option<Value> {
     if context.system_stable.is_empty() && context.system_knowledge.is_empty() {
         return if context.system_text.is_empty() {
             None
@@ -319,7 +319,7 @@ fn apply_message_cache_control(msgs: &mut [Value], strategy: CacheBreakpointStra
     }
     let last = msgs.len() - 1;
     let mut targets = vec![last];
-    // Rust SDK currently has no `frozen_prefix_len` field on RenderedContext; only the rolling
+    // Rust SDK currently has no `frozen_prefix_len` field on InternalRenderedContext; only the rolling
     // fallback applies, and only under Default strategy (FrozenPrefix degrades to last-message only).
     if strategy.use_rolling_fallback() {
         let mut i = last;
@@ -451,7 +451,7 @@ impl LLMProvider for AnthropicProvider {
 
     async fn stream(
         &self,
-        context: &RenderedContext,
+        context: &InternalRenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&Value>,
         _state: Option<&super::ProviderRunState>,
@@ -726,7 +726,7 @@ mod tests {
 
     #[test]
     fn context_replays_tool_calls_and_results_as_blocks() {
-        let context = RenderedContext {
+        let context = InternalRenderedContext {
             system_text: "system rules".into(),
             system_stable: "system rules".into(),
             system_knowledge: String::new(),
@@ -799,7 +799,7 @@ mod tests {
 
     #[test]
     fn budget_guard_passes_for_partitioned_system_with_tools() {
-        let context = RenderedContext {
+        let context = InternalRenderedContext {
             system_text: "rules\nknowledge".into(),
             system_stable: "rules".into(),
             system_knowledge: "knowledge".into(),
@@ -817,7 +817,7 @@ mod tests {
     #[test]
     fn state_turn_rendered_after_history_without_cache_control() {
         // History is the cacheable prefix; the volatile state turn is the tail.
-        let context = RenderedContext {
+        let context = InternalRenderedContext {
             system_text: String::new(),
             system_stable: String::new(),
             system_knowledge: String::new(),

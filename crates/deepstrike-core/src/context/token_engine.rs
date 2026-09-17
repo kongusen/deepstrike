@@ -127,10 +127,11 @@ impl ContextTokenEngine {
         match part {
             ContentPart::Text { text } => self.count(text),
             ContentPart::ToolResult { output, .. } => self.count(output),
-            // Image/Audio: modality heuristic from ContentPart::estimate_tokens — never
-            // treat base64/url payloads as UTF-8 text (that blind-spots compression ρ).
+            // Image/Audio: modality heuristic (0.2.66 DEL-2 — the heuristic lives here,
+            // in the engine, not on ContentPart) — never treat base64/url payloads as
+            // UTF-8 text (that blind-spots compression ρ).
             ContentPart::Image { .. } | ContentPart::Audio { .. } => {
-                part.estimate_tokens().unwrap_or(1)
+                modality_estimate_tokens(part).unwrap_or(1)
             }
         }
     }
@@ -153,6 +154,29 @@ impl ContextTokenEngine {
             }
             Content::Parts(_) => msg.clone(),
         }
+    }
+}
+
+/// Modality-aware token estimate for Image/Audio parts (0.2.66 DEL-2: moved here from
+/// `ContentPart::estimate_tokens`, which is deleted — the engine holds the heuristic,
+/// `ContentPart` stays pure semantics). Returns `None` for text-bearing parts that must
+/// go through a real [`TokenCounter`].
+///
+/// Image: OpenAI-vision-style tile heuristic (`low=85`, `auto/default=255`, `high=680`).
+/// Audio: `max(1, floor(decoded_bytes / 1600))` where `decoded_bytes ≈ base64_len * 3/4`.
+/// Never treat base64 payloads as UTF-8 text for counting.
+fn modality_estimate_tokens(part: &ContentPart) -> Option<u32> {
+    match part {
+        ContentPart::Image { detail, .. } => Some(match detail.as_deref() {
+            Some("low") => 85,
+            Some("high") => 680,
+            _ => 255,
+        }),
+        ContentPart::Audio { data, .. } => {
+            let decoded_bytes = (data.len() as u64).saturating_mul(3) / 4;
+            Some((decoded_bytes / 1600).max(1) as u32)
+        }
+        ContentPart::Text { .. } | ContentPart::ToolResult { .. } => None,
     }
 }
 

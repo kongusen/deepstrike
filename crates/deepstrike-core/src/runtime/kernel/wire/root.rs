@@ -296,6 +296,9 @@ pub struct WorkflowSpec {
     pub nodes: Vec<WorkflowNode>,
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): THIS side is
+/// the ABI authority; the pre-ABI twin is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowNode {
@@ -352,6 +355,9 @@ pub enum MessageRole {
     Tool,
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): THIS side is
+/// the ABI authority; the pre-ABI twin is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 /// One knowledge-partition entry. `key` gives it identity (upsert semantics); `pinned` exempts it
 /// from the knowledge budget sweep.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

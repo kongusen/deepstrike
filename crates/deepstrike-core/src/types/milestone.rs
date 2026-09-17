@@ -157,6 +157,9 @@ impl MilestoneContract {
     }
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): the wire
+/// version is the ABI authority; this is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 /// Outcome of evaluating the acceptance criteria for the current milestone phase.
 ///
 /// Created by a verifier (external LLM call, machine check, or explicit user

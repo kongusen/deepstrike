@@ -103,6 +103,9 @@ pub enum NodeKind {
     Reduce { reducer: String },
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): the wire
+/// version is the ABI authority; this is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 /// One node in a workflow DAG: a task plus the contract its agent runs under.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowNode {
@@ -318,6 +321,9 @@ fn role_defaults(role: AgentRole) -> (AgentIsolation, ContextInheritance) {
     }
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): the wire
+/// version is the ABI authority; this is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 /// A declarative workflow DAG.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkflowSpec {

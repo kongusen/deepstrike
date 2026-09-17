@@ -2695,7 +2695,7 @@ impl RuntimeRunner {
             None => "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.".to_string(),
         };
 
-        let context = deepstrike_core::context::renderer::RenderedContext {
+        let context = deepstrike_core::context::renderer::InternalRenderedContext {
             system_text,
             system_stable: String::new(),
             system_knowledge: String::new(),
@@ -2930,7 +2930,7 @@ fn next_archived_seq_start(events: Option<&[SessionEntry]>) -> u64 {
 
 fn rendered_context_from_messages(
     messages: Vec<Message>,
-) -> deepstrike_core::context::renderer::RenderedContext {
+) -> deepstrike_core::context::renderer::InternalRenderedContext {
     let mut system_parts = Vec::new();
     let mut turns = Vec::new();
     for message in messages {
@@ -2943,7 +2943,7 @@ fn rendered_context_from_messages(
         }
     }
     let system_text = system_parts.join("\n\n");
-    deepstrike_core::context::renderer::RenderedContext {
+    deepstrike_core::context::renderer::InternalRenderedContext {
         system_text: system_text.clone(),
         system_stable: system_text,
         system_knowledge: String::new(),

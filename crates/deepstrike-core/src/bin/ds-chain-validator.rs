@@ -215,9 +215,9 @@ fn read_session_log(path: &Path, streams: &mut Vec<Vec<Vec<u8>>>) -> Result<usiz
             .map_err(|error| format!("cannot read directory {}: {error}", path.display()))?
             .filter_map(|entry| entry.ok().map(|entry| entry.path()))
             .filter(|entry| {
-                entry.extension().is_some_and(|extension| {
-                    extension == "json" || extension == "jsonl"
-                })
+                entry
+                    .extension()
+                    .is_some_and(|extension| extension == "json" || extension == "jsonl")
             })
             .collect();
         entries.sort();

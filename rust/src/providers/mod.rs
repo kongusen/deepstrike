@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use compact_str::CompactString;
-use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::runtime::session::ProviderReplay;
 use deepstrike_core::types::message::{Content, Message, Role, ToolCall, ToolSchema};
 use futures::{Stream, StreamExt};
@@ -107,7 +107,7 @@ pub trait LLMProvider: Send + Sync {
     /// Non-streaming completion — default collects from `stream`.
     async fn complete(
         &self,
-        context: &RenderedContext,
+        context: &InternalRenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&serde_json::Value>,
     ) -> crate::Result<Message> {
@@ -117,7 +117,7 @@ pub trait LLMProvider: Send + Sync {
 
     async fn stream(
         &self,
-        context: &RenderedContext,
+        context: &InternalRenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&serde_json::Value>,
         state: Option<&ProviderRunState>,

@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::harness::eval::SkillCandidate;
 use deepstrike_core::orchestration::workflow::WorkflowNode;
 use deepstrike_core::types::message::{Message, Role};
@@ -761,7 +761,7 @@ fn is_run_error(status: &str) -> bool {
     )
 }
 
-fn rendered_context_from_messages(messages: Vec<Message>) -> RenderedContext {
+fn rendered_context_from_messages(messages: Vec<Message>) -> InternalRenderedContext {
     let mut system_parts = Vec::new();
     let mut turns = Vec::new();
     for message in messages {
@@ -774,7 +774,7 @@ fn rendered_context_from_messages(messages: Vec<Message>) -> RenderedContext {
         }
     }
     let system_text = system_parts.join("\n\n");
-    RenderedContext {
+    InternalRenderedContext {
         system_text: system_text.clone(),
         system_stable: system_text,
         system_knowledge: String::new(),

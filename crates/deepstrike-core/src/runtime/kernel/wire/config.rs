@@ -186,6 +186,8 @@ pub struct RepeatFusePolicy {
     pub terminate_after: Option<u32>,
 }
 
+/// F5 special note (registered in `crate::projection_pairs`, 0.2.66):异名 projection
+/// pair with internal `EntropyWatchConfig`; THIS side is the ABI authority.
 /// Entropy watch. The three historical `f64` knobs are fixed-point ppm (§7.1.1, §13.3): a
 /// threshold that differs by one ULP between languages is a different kernel decision.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -237,6 +239,9 @@ pub const MAX_SCHEDULER_WEIGHT: u32 = 1_000_000_000;
 // resource quota / budget grant
 // ---------------------------------------------------------------------------------------------
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): THIS side is
+/// the ABI authority; the pre-ABI twin is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 /// Declarative caps enforced at the syscall trap. Absent axis ⇒ uncapped, which is a value.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -449,6 +454,9 @@ pub struct SkillMetadata {
     pub estimated_tokens: Option<u32>,
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): THIS side is
+/// the ABI authority; the pre-ABI twin is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 /// One verification contract: an ordered cascade of phases the operation must pass in sequence.
 ///
 /// **A skeleton, deliberately.** The kernel owns exactly two things about a contract — the order

@@ -268,7 +268,10 @@ pub fn validate_journal<B: AsRef<[u8]>>(blobs: &[B]) -> ValidationReport {
 /// is one session-log file's events **in append order** — unlike journal blobs, event order
 /// within a stream is meaningful (a `run_started` delimits the run its following attempts
 /// belong to). Streams never cross-join: fingerprint and route-stability checks are per-stream.
-pub fn validate_with_session_log<J, S>(journal_blobs: &[J], session_streams: &[Vec<S>]) -> ValidationReport
+pub fn validate_with_session_log<J, S>(
+    journal_blobs: &[J],
+    session_streams: &[Vec<S>],
+) -> ValidationReport
 where
     J: AsRef<[u8]>,
     S: AsRef<[u8]>,
@@ -312,12 +315,9 @@ where
     }
 
     let session_plane_provided = !session_streams.is_empty();
-    let session_events = session_plane_provided
-        .then(|| streams.iter().map(|stream| stream.events.len()).sum());
-    let unparseable_events = streams
-        .iter()
-        .map(|stream| stream.unparseable_events)
-        .sum();
+    let session_events =
+        session_plane_provided.then(|| streams.iter().map(|stream| stream.events.len()).sum());
+    let unparseable_events = streams.iter().map(|stream| stream.unparseable_events).sum();
 
     // C6/C8 join the planes.
     let cross_checks = if session_plane_provided {
@@ -382,7 +382,10 @@ fn validate_journal_plane<B: AsRef<[u8]>>(
             .map(str::to_string)
             .unwrap_or_else(|| UNATTRIBUTED_SEGMENT.to_string());
         if let Hop::Complete(record) = &hop {
-            complete.entry(key.clone()).or_default().push(record.clone());
+            complete
+                .entry(key.clone())
+                .or_default()
+                .push(record.clone());
         }
         segments.entry(key).or_default().push(hop);
     }
@@ -640,13 +643,13 @@ fn check_c6(streams: &[SessionStream], outcomes: &[SegmentOutcome]) -> Vec<RuleR
 
                     // C6.3
                     match (route_id.as_deref(), baseline) {
-                        (Some(route), Some(pinned)) if route != pinned => routes.violation(
-                            format!(
+                        (Some(route), Some(pinned)) if route != pinned => {
+                            routes.violation(format!(
                                 "stream #{index}: attempt {label} ran on route {route} inside \
                                  a run pinned to {pinned} — an in-run route change is a \
                                  violation (Q3)"
-                            ),
-                        ),
+                            ))
+                        }
                         (Some(_), Some(_)) => routes.checked += 1,
                         // No pinned run, or the attempt lacks a route: unverifiable.
                         _ => routes.unverifiable += 1,
@@ -663,7 +666,11 @@ fn check_c6(streams: &[SessionStream], outcomes: &[SegmentOutcome]) -> Vec<RuleR
             total_attempts,
             "attempt↔journal effect correspondence",
         ),
-        fingerprints.report("C6.2", total_attempts, "attempt fingerprint↔prompt_measured join"),
+        fingerprints.report(
+            "C6.2",
+            total_attempts,
+            "attempt fingerprint↔prompt_measured join",
+        ),
         routes.report("C6.3", total_attempts, "in-run route stability"),
     ]
 }
@@ -720,10 +727,7 @@ impl ClauseAccumulator {
             return RuleReport {
                 rule,
                 verdict: Verdict::Degraded,
-                detail: format!(
-                    "{} attempt(s) verified for {what}; {detail}",
-                    self.checked
-                ),
+                detail: format!("{} attempt(s) verified for {what}; {detail}", self.checked),
             };
         }
         RuleReport {
@@ -1026,7 +1030,11 @@ fn validate_segment(operation_id: &str, mut hops: Vec<Hop>) -> SegmentOutcome {
                     .pending_effects()
                     .map(|effect| effect.effect_id.as_str().to_string()),
             );
-            let max_step = hops.iter().filter_map(|hop| hop.step_seq()).max().unwrap_or(0);
+            let max_step = hops
+                .iter()
+                .filter_map(|hop| hop.step_seq())
+                .max()
+                .unwrap_or(0);
             Some(SegmentEffects {
                 max_step,
                 published,
@@ -1084,7 +1092,9 @@ enum ResolutionFact {
 /// The effect a record's ResolveEffect input settles and how, if it is one — the
 /// journal-direct resolution facts (the same read C4 makes, with the outcome kept).
 fn resolution_of(hop: &Hop) -> Option<(String, ResolutionFact)> {
-    let Hop::Complete(record) = hop else { return None };
+    let Hop::Complete(record) = hop else {
+        return None;
+    };
     let input = record.normalized_input().ok()?;
     let NormalizedPayload::ResolveEffect(resolve) = &input.input else {
         return None;
@@ -1951,17 +1961,29 @@ mod tests {
     };
     use crate::runtime::kernel::wire::driver::CanonicalOperationDriver;
     use crate::runtime::kernel::wire::effect::{
-        EffectKindTag, EffectSucceeded, ProviderCompleted, ProviderContextOverflow,
-        ProviderMessage, ProviderOutcome, ProviderSuccess, TaskLaunchOutcome, TaskLaunchStarted,
-        TaskLaunchStatus, TasksSpawnedSuccess, ToolCall,
+        EffectKindTag,
+        EffectSucceeded,
+        ProviderCompleted,
+        ProviderContextOverflow,
+        ProviderMessage,
+        ProviderOutcome,
+        ProviderSuccess,
+        TaskLaunchOutcome,
+        TaskLaunchStarted,
+        TaskLaunchStatus,
+        TasksSpawnedSuccess,
+        // F5 alias discipline (0.2.66): wire-side imports of dual-family types name the
+        // authority direction — the wire version is the ABI authority.
+        ToolCall as WireToolCall,
     };
     use crate::runtime::kernel::wire::envelope::{
         ConfigureOperation, KernelInput, ResolveEffect, StartOperation, WireEnvelope,
     };
     use crate::runtime::kernel::wire::record::{KernelRecord, NormalizedInput};
     use crate::runtime::kernel::wire::root::{
-        InitialContext, LogicalAgentSpec, LogicalMessage, LogicalTask, MessageRole,
-        RootAgentEntry, RootEntry, RootWorkflowEntry, WorkflowNode, WorkflowSpec,
+        InitialContext, LogicalAgentSpec, LogicalMessage, LogicalTask, MessageRole, RootAgentEntry,
+        RootEntry, RootWorkflowEntry, WorkflowNode as WireWorkflowNode,
+        WorkflowSpec as WireWorkflowSpec,
     };
     use crate::runtime::kernel::wire::scalar::{
         AttemptId, BoundedJson, CallId, EffectId, InputId, NodeId, OperationId, TaskId, WireU64,
@@ -2063,16 +2085,16 @@ mod tests {
             1_700_000_001_000,
             KernelInput::StartOperation(StartOperation {
                 entry: RootEntry::Workflow(RootWorkflowEntry {
-                    spec: WorkflowSpec {
+                    spec: WireWorkflowSpec {
                         name: "brief".to_string(),
                         nodes: vec![
-                            WorkflowNode {
+                            WireWorkflowNode {
                                 node_id: NodeId::new("collect").unwrap(),
                                 task: LogicalTask::new("collect the sources"),
                                 depends_on: vec![],
                                 run_spec: Some(LogicalAgentSpec::new("collect the sources")),
                             },
-                            WorkflowNode {
+                            WireWorkflowNode {
                                 node_id: NodeId::new("write").unwrap(),
                                 task: LogicalTask::new("write the brief"),
                                 depends_on: vec![NodeId::new("collect").unwrap()],
@@ -2126,7 +2148,7 @@ mod tests {
                                 role: MessageRole::Assistant,
                                 content: "done".to_string(),
                                 tool_calls: if with_tool_call {
-                                    vec![ToolCall {
+                                    vec![WireToolCall {
                                         call_id: CallId::new("call-1").unwrap(),
                                         name: "read_file".to_string(),
                                         arguments: BoundedJson::new(json!({})).unwrap(),
@@ -2654,7 +2676,10 @@ mod tests {
             Some(EvidenceEvent::Other),
             "unknown kinds are parseable but ignored — the vocabulary evolves"
         );
-        assert_eq!(classify_session_event(&kindless), Some(EvidenceEvent::Other));
+        assert_eq!(
+            classify_session_event(&kindless),
+            Some(EvidenceEvent::Other)
+        );
         assert_eq!(
             classify_session_event(b"not json"),
             None,
@@ -2704,7 +2729,10 @@ mod tests {
             );
         }
         assert!(
-            !report.deferred.iter().any(|line| line.starts_with("c6.") || line.starts_with("c8.")),
+            !report
+                .deferred
+                .iter()
+                .any(|line| line.starts_with("c6.") || line.starts_with("c8.")),
             "C6/C8 are implemented — the interim scope notes are gone"
         );
         assert_eq!(report.exit_code(), 0);
@@ -2717,7 +2745,11 @@ mod tests {
         let report = validate_journal(&blobs(&chain));
         assert_eq!(report.session_events, None);
         assert_eq!(report.unparseable_events, 0);
-        assert_eq!(report.deferred.len(), 2, "batch-1 deferred scope is unchanged");
+        assert_eq!(
+            report.deferred.len(),
+            2,
+            "batch-1 deferred scope is unchanged"
+        );
         assert_eq!(report.exit_code(), 0);
     }
 
@@ -2727,7 +2759,10 @@ mod tests {
         let chain = live_chain(&[configure_envelope(&op), agent_start_envelope(&op)]);
         let report = validate_with_session_log(&blobs(&chain), &[Vec::<Vec<u8>>::new()]);
         assert_eq!(report.session_events, Some(0));
-        assert!(!report.has_violations(), "an empty log proves nothing either way");
+        assert!(
+            !report.has_violations(),
+            "an empty log proves nothing either way"
+        );
         assert_eq!(report.exit_code(), 2);
     }
 
@@ -2800,7 +2835,11 @@ mod tests {
             "{}",
             cross(&report, "C6.1").detail
         );
-        assert_eq!(report.exit_code(), 1, "the forged attempt turns the run red");
+        assert_eq!(
+            report.exit_code(),
+            1,
+            "the forged attempt turns the run red"
+        );
     }
 
     #[test]
@@ -2908,7 +2947,9 @@ mod tests {
         let report = validate_with_session_log(&blobs(&chain), &[stream]);
         assert_eq!(cross(&report, "C6.3").verdict, Verdict::Fail);
         assert!(
-            cross(&report, "C6.3").detail.contains("in-run route change"),
+            cross(&report, "C6.3")
+                .detail
+                .contains("in-run route change"),
             "{}",
             cross(&report, "C6.3").detail
         );
@@ -3012,7 +3053,9 @@ mod tests {
             cross(&report, "C8").detail
         );
         assert!(
-            cross(&report, "C8").detail.contains("1 retried invocation(s)"),
+            cross(&report, "C8")
+                .detail
+                .contains("1 retried invocation(s)"),
             "{}",
             cross(&report, "C8").detail
         );
@@ -3039,7 +3082,9 @@ mod tests {
         let report = validate_with_session_log(&blobs(&chain), &[stream]);
         assert_eq!(cross(&report, "C8").verdict, Verdict::Fail);
         assert!(
-            cross(&report, "C8").detail.contains("closes its invocation"),
+            cross(&report, "C8")
+                .detail
+                .contains("closes its invocation"),
             "{}",
             cross(&report, "C8").detail
         );
@@ -3058,7 +3103,9 @@ mod tests {
         let report = validate_with_session_log(&blobs(&chain), &[stream]);
         assert_eq!(cross(&report, "C8").verdict, Verdict::Fail);
         assert!(
-            cross(&report, "C8").detail.contains("does not follow the chain head"),
+            cross(&report, "C8")
+                .detail
+                .contains("does not follow the chain head"),
             "{}",
             cross(&report, "C8").detail
         );

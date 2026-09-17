@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::types::message::{Content, ContentPart, Role, ToolSchema};
 use futures::{Stream, StreamExt};
 use reqwest::Client;
@@ -129,7 +129,7 @@ fn content_to_openai(content: &Content) -> Value {
     }
 }
 
-fn context_to_openai(context: &RenderedContext) -> Vec<Value> {
+fn context_to_openai(context: &InternalRenderedContext) -> Vec<Value> {
     let mut messages = Vec::new();
     if !context.system_text.is_empty() {
         messages.push(json!({ "role": "system", "content": context.system_text }));
@@ -320,7 +320,7 @@ impl LLMProvider for OpenAIProvider {
 
     async fn stream(
         &self,
-        context: &RenderedContext,
+        context: &InternalRenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&Value>,
         _state: Option<&super::ProviderRunState>,
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn context_replays_tool_calls_and_results_natively() {
-        let context = RenderedContext {
+        let context = InternalRenderedContext {
             system_text: "system rules".into(),
             system_stable: "system rules".into(),
             system_knowledge: String::new(),
@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn state_turn_appended_as_latest_turn() {
-        let context = RenderedContext {
+        let context = InternalRenderedContext {
             system_text: "sys".into(),
             system_stable: "sys".into(),
             system_knowledge: String::new(),

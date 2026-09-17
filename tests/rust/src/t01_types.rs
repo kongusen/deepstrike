@@ -48,7 +48,6 @@ fn tool_message_with_result_parts() {
 fn content_text_as_text() {
     let c = Content::Text("abc".into());
     assert_eq!(c.as_text(), Some("abc"));
-    assert_eq!(c.text_len(), 3);
 }
 
 #[test]
@@ -57,10 +56,13 @@ fn content_parts_as_text_returns_none() {
     assert!(c.as_text().is_none());
 }
 
+/// 0.2.66 DEL-2: the text-length/estimate heuristics moved off `Content` into the token
+/// engine (`ContextTokenEngine::count_message` is the counting authority).
 #[test]
-fn content_parts_text_len_sums_parts() {
-    let c = Content::Parts(vec![ContentPart::text("hello"), ContentPart::text("world")]);
-    assert_eq!(c.text_len(), 10);
+fn content_parts_count_sums_parts_via_engine() {
+    let e = deepstrike_core::context::token_engine::ContextTokenEngine::char_approx();
+    let msg = Message::user_multimodal(vec![ContentPart::text("hello"), ContentPart::text("world")]);
+    assert_eq!(e.count_message(&msg), 2); // char/4 per part, min 1
 }
 
 // ─── ContentPart constructors ───────────────────────────────────────────────
@@ -260,24 +262,28 @@ fn agent_identity_sub_agent() {
 
 // ─── Image detail token estimates ───────────────────────────────────────────
 
+/// 0.2.66 DEL-2: the modality heuristic lives in the token engine now (low=85 / auto=255 /
+/// high=680); the old `Content::text_len` ×4-scaled figures (340/2720) died with it.
 #[test]
 fn image_low_detail_token_estimate() {
-    let c = Content::Parts(vec![ContentPart::Image {
+    let e = deepstrike_core::context::token_engine::ContextTokenEngine::char_approx();
+    let msg = Message::user_multimodal(vec![ContentPart::Image {
         url: Some("https://example.com/img.png".into()),
         data: None,
         media_type: None,
         detail: Some("low".into()),
     }]);
-    assert_eq!(c.text_len(), 340);
+    assert_eq!(e.count_message(&msg), 85);
 }
 
 #[test]
 fn image_high_detail_token_estimate() {
-    let c = Content::Parts(vec![ContentPart::Image {
+    let e = deepstrike_core::context::token_engine::ContextTokenEngine::char_approx();
+    let msg = Message::user_multimodal(vec![ContentPart::Image {
         url: Some("https://example.com/img.png".into()),
         data: None,
         media_type: None,
         detail: Some("high".into()),
     }]);
-    assert_eq!(c.text_len(), 2720);
+    assert_eq!(e.count_message(&msg), 680);
 }

@@ -33,6 +33,8 @@ pub mod memory;
 pub mod mm;
 pub mod orchestration;
 pub mod proc;
+#[cfg(test)]
+mod projection_pairs;
 pub mod runtime;
 pub mod scheduler;
 pub mod signals;

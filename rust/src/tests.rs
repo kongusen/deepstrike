@@ -497,7 +497,7 @@ mod tests {
 
         async fn stream(
             &self,
-            _context: &deepstrike_core::context::renderer::RenderedContext,
+            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
             _tools: &[deepstrike_core::types::message::ToolSchema],
             _extensions: Option<&serde_json::Value>,
             state: Option<&crate::providers::ProviderRunState>,
@@ -615,7 +615,7 @@ mod tests {
     impl crate::providers::LLMProvider for MetricsProvider {
         async fn stream(
             &self,
-            _context: &deepstrike_core::context::renderer::RenderedContext,
+            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
             _tools: &[deepstrike_core::types::message::ToolSchema],
             _extensions: Option<&serde_json::Value>,
             _state: Option<&crate::providers::ProviderRunState>,
@@ -730,7 +730,7 @@ mod tests {
     impl crate::providers::LLMProvider for GatingProvider {
         async fn stream(
             &self,
-            _context: &deepstrike_core::context::renderer::RenderedContext,
+            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
             _tools: &[deepstrike_core::types::message::ToolSchema],
             _extensions: Option<&serde_json::Value>,
             _state: Option<&crate::providers::ProviderRunState>,
@@ -855,7 +855,7 @@ mod tests {
     impl crate::providers::LLMProvider for TooLongThenOkProvider {
         async fn stream(
             &self,
-            _context: &deepstrike_core::context::renderer::RenderedContext,
+            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
             _tools: &[deepstrike_core::types::message::ToolSchema],
             _extensions: Option<&serde_json::Value>,
             _state: Option<&crate::providers::ProviderRunState>,
@@ -1032,7 +1032,7 @@ mod tests {
         impl LLMProvider for FakeProvider {
             async fn complete(
                 &self,
-                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _context: &deepstrike_core::context::renderer::InternalRenderedContext,
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
             ) -> crate::Result<Message> {
@@ -1059,7 +1059,7 @@ mod tests {
             }
             async fn stream(
                 &self,
-                context: &deepstrike_core::context::renderer::RenderedContext,
+                context: &deepstrike_core::context::renderer::InternalRenderedContext,
                 tools: &[deepstrike_core::types::message::ToolSchema],
                 extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,
@@ -1191,7 +1191,7 @@ mod tests {
         impl LLMProvider for FakeProvider {
             async fn stream(
                 &self,
-                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _context: &deepstrike_core::context::renderer::InternalRenderedContext,
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,
@@ -1281,7 +1281,7 @@ mod tests {
         impl LLMProvider for FakeProvider {
             async fn stream(
                 &self,
-                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _context: &deepstrike_core::context::renderer::InternalRenderedContext,
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,
@@ -1374,7 +1374,7 @@ mod tests {
         impl LLMProvider for FakeProvider {
             async fn stream(
                 &self,
-                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _context: &deepstrike_core::context::renderer::InternalRenderedContext,
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,
@@ -1509,7 +1509,7 @@ mod tests {
     impl crate::providers::LLMProvider for MockLLMProvider {
         async fn stream(
             &self,
-            _context: &deepstrike_core::context::renderer::RenderedContext,
+            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
             _tools: &[deepstrike_core::types::message::ToolSchema],
             _extensions: Option<&serde_json::Value>,
             _state: Option<&crate::providers::ProviderRunState>,
@@ -2336,7 +2336,7 @@ mod tests {
         impl LLMProvider for FakeProvider {
             async fn stream(
                 &self,
-                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _context: &deepstrike_core::context::renderer::InternalRenderedContext,
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,
@@ -2441,7 +2441,7 @@ mod tests {
         impl LLMProvider for MidStreamFailProvider {
             async fn stream(
                 &self,
-                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _context: &deepstrike_core::context::renderer::InternalRenderedContext,
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,
@@ -2563,7 +2563,7 @@ mod tests {
         impl LLMProvider for FakeProvider {
             async fn stream(
                 &self,
-                _context: &deepstrike_core::context::renderer::RenderedContext,
+                _context: &deepstrike_core::context::renderer::InternalRenderedContext,
                 _tools: &[deepstrike_core::types::message::ToolSchema],
                 _extensions: Option<&serde_json::Value>,
                 _state: Option<&crate::providers::ProviderRunState>,

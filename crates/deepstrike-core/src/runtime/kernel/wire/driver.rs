@@ -1685,12 +1685,11 @@ fn root_task_id() -> TaskId {
 /// choosing — so the kernel never saw a `ProviderTool` causation at all. Here the names are the
 /// kernel's, the arguments are decoded by the kernel, and the caller comes from the pending call.
 ///
-/// SPEC-ISSUE: `SyscallRequest::RequestMemoryWrite` has no entry here because core advertises no
-/// model-facing memory *write* surface — `memory` is a search tool, and long-term writes are
-/// extracted host-side today (§22.13's 现状定位). Its only caller channel is therefore a child's
-/// `parent_requests`. §7.6 lists the request without saying which tool reaches it, so either the
-/// kernel's meta-tool set gains a write surface or the spec should state that memory writes are a
-/// child→parent request only.
+/// F15 ruling (0.2.66, user-adjudicated — resolves the §7.6 SPEC-ISSUE): `RequestMemoryWrite`
+/// has no entry here **by design** — the kernel gains no model-facing memory *write* surface.
+/// `memory` is a search tool, long-term writes are extracted host-side (§22.13's 现状定位), and
+/// the syscall's only caller channel is a child's `parent_requests` (child→parent only). If a
+/// spec revision ever proposes a write surface, it must overturn this ruling explicitly.
 pub const SYSCALL_TOOL_NAMES: &[&str] = &[
     "start_workflow",
     "submit_workflow_nodes",
@@ -2338,7 +2337,9 @@ fn wire_role_of(role: Role) -> MessageRole {
     }
 }
 
-fn rendered_context(context: &crate::context::renderer::RenderedContext) -> WireRenderedContext {
+fn rendered_context(
+    context: &crate::context::renderer::InternalRenderedContext,
+) -> WireRenderedContext {
     WireRenderedContext {
         system_stable: context.system_stable.clone(),
         system_knowledge: context.system_knowledge.clone(),

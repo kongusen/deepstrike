@@ -8,7 +8,7 @@ use super::policy::SchedulerBudget;
 use super::tcb::{DurableWaitSet, TaskLifecycle, TaskTable, Tcb, WaitSet};
 use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
-use crate::context::renderer::RenderedContext;
+use crate::context::renderer::InternalRenderedContext;
 use crate::governance::pipeline::GovernancePipeline;
 use crate::governance::repeat_fuse::RepeatFuseConfig;
 use crate::signals::router::SignalRouter;
@@ -101,7 +101,7 @@ pub enum LoopAction {
     /// `context.turns`       → provider messages array (strictly alternating).
     /// `tools`               → tool schemas (skill / memory / knowledge / user tools).
     CallLLM {
-        context: RenderedContext,
+        context: InternalRenderedContext,
         tools: Vec<ToolSchema>,
     },
     ExecuteTools {
@@ -1814,7 +1814,7 @@ impl LoopStateMachine {
         LoopAction::Done { result }
     }
 
-    /// Build the `CallLLM` action with a structured `RenderedContext`.
+    /// Build the `CallLLM` action with a structured `InternalRenderedContext`.
     /// Meta-tools (skill / memory / knowledge) are appended to the tool list
     /// when configured. When `pending_termination` is set, tools are stripped
     /// to force a plain-text response before the loop terminates.
@@ -1998,7 +1998,7 @@ impl LoopStateMachine {
     /// dispatch arms against exactly what the model was shown this turn) and returns the action.
     fn call_llm_action(
         &mut self,
-        context: crate::context::renderer::RenderedContext,
+        context: crate::context::renderer::InternalRenderedContext,
         tools: Vec<ToolSchema>,
     ) -> LoopAction {
         self.exposed_tool_names = Some(tools.iter().map(|tool| tool.name.clone()).collect());

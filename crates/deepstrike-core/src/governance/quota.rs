@@ -11,6 +11,9 @@
 
 use serde::{Deserialize, Serialize};
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): the wire
+/// version is the ABI authority; this is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 /// Opt-in resource limits. An unset field imposes no limit; an unset `ResourceQuota` (the default,
 /// when [`crate::scheduler::state_machine::LoopStateMachine::set_resource_quota`] is never called)
 /// preserves the pre-M2 behavior of unconditional `Allow` for spawn / memory syscalls.

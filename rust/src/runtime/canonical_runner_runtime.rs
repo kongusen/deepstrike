@@ -17,7 +17,7 @@ use crate::runtime::canonical_kernel_step::CanonicalKernelHost;
 use crate::runtime::kernel_journal::KernelJournal;
 use crate::{Error, Result};
 use compact_str::CompactString;
-use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::mm::memory::{
     MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecord, MemoryScope,
     MemoryTrustLevel,
@@ -2009,7 +2009,7 @@ fn map_termination(
 
 fn rendered_context_from_wire(
     context: &deepstrike_core::runtime::kernel::wire::RenderedContext,
-) -> Result<RenderedContext> {
+) -> Result<InternalRenderedContext> {
     let turns = context
         .turns
         .iter()
@@ -2027,7 +2027,7 @@ fn rendered_context_from_wire(
     } else {
         format!("{}\n\n{}", context.system_stable, context.system_knowledge)
     };
-    Ok(RenderedContext {
+    Ok(InternalRenderedContext {
         system_text,
         system_stable: context.system_stable.clone(),
         system_knowledge: context.system_knowledge.clone(),
@@ -2626,7 +2626,7 @@ mod tests {
     impl crate::providers::LLMProvider for PingThenFinishProvider {
         async fn complete(
             &self,
-            context: &deepstrike_core::context::renderer::RenderedContext,
+            context: &deepstrike_core::context::renderer::InternalRenderedContext,
             _tools: &[deepstrike_core::types::message::ToolSchema],
             _extensions: Option<&serde_json::Value>,
         ) -> crate::Result<deepstrike_core::types::message::Message> {
@@ -2654,7 +2654,7 @@ mod tests {
 
         async fn stream(
             &self,
-            context: &deepstrike_core::context::renderer::RenderedContext,
+            context: &deepstrike_core::context::renderer::InternalRenderedContext,
             tools: &[deepstrike_core::types::message::ToolSchema],
             extensions: Option<&serde_json::Value>,
             _state: Option<&crate::providers::ProviderRunState>,

@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use super::message::Message;
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): the wire
+/// version is the ABI authority; this is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminationReason {
@@ -44,6 +47,9 @@ impl TerminationReason {
     }
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): the wire
+/// version is the ABI authority; this is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 /// What the loop agent proposed to do after this round (`pace` meta-tool verb).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

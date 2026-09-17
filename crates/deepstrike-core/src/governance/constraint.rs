@@ -1,6 +1,8 @@
 use crate::types::message::ToolCall;
 use crate::types::policy::GovernanceVerdict;
 
+/// F5 special note (registered in `crate::projection_pairs`, 0.2.66): no wire twin —
+/// a single vocabulary, deliberately NOT a projection pair. Do not pair it by name.
 /// A parameter constraint for tool arguments.
 ///
 /// **Scope**: built-in rules cover the structural validation cases

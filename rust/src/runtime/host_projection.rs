@@ -4,7 +4,7 @@
 //! envelope and planned step remain the only ABI; this projection only gives the Rust runner an
 //! ergonomic exhaustive match over work it must execute.
 
-use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::mm::memory::{MemoryQuery, MemoryRecord};
 use deepstrike_core::orchestration::workflow::{WorkflowBudget, WorkflowSpawnInfo};
 use deepstrike_core::runtime::kernel::KernelPressureAction;
@@ -25,7 +25,7 @@ pub(crate) struct HostAction {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum HostEffect {
     CallProvider {
-        context: RenderedContext,
+        context: InternalRenderedContext,
         tools: Vec<ToolSchema>,
     },
     ExecuteTool {

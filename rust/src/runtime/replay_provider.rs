@@ -13,7 +13,7 @@
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::runtime::session::ProviderReplay;
 use deepstrike_core::types::message::{Content, ContentPart, Message, ToolCall, ToolSchema};
 use futures::Stream;
@@ -98,12 +98,12 @@ impl ReplayProvider {
         Ok(msg)
     }
 
-    fn estimate_input_tokens(&self, context: &RenderedContext, tools: &[ToolSchema]) -> u32 {
+    fn estimate_input_tokens(&self, context: &InternalRenderedContext, tools: &[ToolSchema]) -> u32 {
         (self.tokenizer)(&render_context_to_text(context, tools))
     }
 }
 
-fn render_context_to_text(context: &RenderedContext, tools: &[ToolSchema]) -> String {
+fn render_context_to_text(context: &InternalRenderedContext, tools: &[ToolSchema]) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !context.system_text.is_empty() {
         parts.push(context.system_text.clone());
@@ -183,7 +183,7 @@ impl LLMProvider for ReplayProvider {
 
     async fn stream(
         &self,
-        context: &RenderedContext,
+        context: &InternalRenderedContext,
         tools: &[ToolSchema],
         _extensions: Option<&serde_json::Value>,
         _state: Option<&ProviderRunState>,

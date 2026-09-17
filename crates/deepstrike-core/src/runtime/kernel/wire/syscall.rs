@@ -24,6 +24,9 @@ pub enum SyscallRequest {
     /// The model's task update. Distinct from `HostCommand::UpdateTask` precisely because the
     /// two have different authority.
     UpdateTask(UpdateTaskRequest),
+    /// F15 ruling (0.2.66): child→parent only. Deliberately NO model-facing meta-tool reaches
+    /// this variant (`SYSCALL_TOOL_NAMES` has no write surface) — the only legal caller channel
+    /// is a child's `parent_requests`. See the SYSCALL_TOOL_NAMES doc in wire/driver.rs.
     RequestMemoryWrite(RequestMemoryWriteRequest),
     RequestMemoryQuery(RequestMemoryQueryRequest),
     SendMessage(SendMessageRequest),

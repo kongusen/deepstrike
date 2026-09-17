@@ -5,7 +5,7 @@
 //! that just want "does this result meet the criteria?" without standing up
 //! `AttemptLoop`.
 
-use deepstrike_core::context::renderer::RenderedContext;
+use deepstrike_core::context::renderer::InternalRenderedContext;
 use deepstrike_core::harness::eval::{
     EvalResult, build_eval_messages as core_build_eval_messages,
     parse_verdict as core_parse_verdict, verdict_output_schema as core_verdict_output_schema,
@@ -59,7 +59,7 @@ pub async fn judge(
         .into_iter()
         .filter(|m| m.role != Role::System)
         .collect();
-    let ctx = RenderedContext {
+    let ctx = InternalRenderedContext {
         system_text,
         system_stable: String::new(),
         system_knowledge: String::new(),

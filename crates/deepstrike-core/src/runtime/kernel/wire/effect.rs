@@ -503,6 +503,9 @@ pub struct ToolSchema {
     pub parameters: BoundedJson,
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): THIS side is
+/// the ABI authority; the pre-ABI twin is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolCall {
@@ -1123,6 +1126,9 @@ pub struct MilestoneEvaluatedSuccess {
     pub result: MilestoneCheckResult,
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): THIS side is
+/// the ABI authority; the pre-ABI twin is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 /// A milestone verdict. Note what is *not* here: an `error` field. Milestone execution failures
 /// travel the same [`HostEffectFailure`] path as every other effect (B7) instead of being folded
 /// into the verdict, so "the verifier could not run" and "the verifier said no" stay distinct.

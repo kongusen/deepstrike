@@ -78,6 +78,9 @@ pub enum ToolErrorKind {
     UserInterrupt,
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): the wire
+/// version is the ABI authority; this is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: CompactString,
@@ -113,27 +116,6 @@ pub struct ToolSchema {
 }
 
 impl ContentPart {
-    /// Modality-aware token estimate for Image/Audio. Returns `None` for text-bearing
-    /// parts that must go through a [`crate::context::token_engine::TokenCounter`].
-    ///
-    /// Image: OpenAI-vision-style tile heuristic (`low=85`, `auto/default=255`, `high=680`).
-    /// Audio: `max(1, floor(decoded_bytes / 1600))` where `decoded_bytes ≈ base64_len * 3/4`.
-    /// Never treat base64 payloads as UTF-8 text for counting.
-    pub fn estimate_tokens(&self) -> Option<u32> {
-        match self {
-            ContentPart::Image { detail, .. } => Some(match detail.as_deref() {
-                Some("low") => 85,
-                Some("high") => 680,
-                _ => 255,
-            }),
-            ContentPart::Audio { data, .. } => {
-                let decoded_bytes = (data.len() as u64).saturating_mul(3) / 4;
-                Some((decoded_bytes / 1600).max(1) as u32)
-            }
-            ContentPart::Text { .. } | ContentPart::ToolResult { .. } => None,
-        }
-    }
-
     pub fn text(text: impl Into<String>) -> Self {
         ContentPart::Text { text: text.into() }
     }
@@ -182,24 +164,6 @@ impl Content {
         match self {
             Content::Text(s) => Some(s),
             _ => None,
-        }
-    }
-
-    /// Byte/char proxy length. Image/Audio use `estimate_tokens() * 4` so the
-    /// 4-chars≈1-token convention stays aligned with [`ContentPart::estimate_tokens`].
-    pub fn text_len(&self) -> usize {
-        match self {
-            Content::Text(s) => s.len(),
-            Content::Parts(parts) => parts
-                .iter()
-                .map(|p| match p {
-                    ContentPart::Text { text } => text.len(),
-                    ContentPart::ToolResult { output, .. } => output.len(),
-                    ContentPart::Image { .. } | ContentPart::Audio { .. } => {
-                        p.estimate_tokens().unwrap_or(1) as usize * 4
-                    }
-                })
-                .sum(),
         }
     }
 }

@@ -25,6 +25,9 @@ pub const ENTROPY_WINDOW_TURNS: usize = 8;
 /// reads as fully disordered (1.0) on that axis.
 const ROLLBACK_SATURATION: f64 = 3.0;
 
+/// F5 special note (registered in `crate::projection_pairs`, 0.2.66):异名 projection
+/// pair with wire `EntropyWatchPolicy` (the ABI authority); conversion lives in the
+/// syscall/config projection.
 /// Opt-in threshold watch over the per-turn entropy score (③). When the score crosses
 /// `threshold` the kernel emits an `EntropyAlert` observation — at most once per crossing
 /// (hysteresis re-arm) and never more often than `cooldown_turns`. With `notify_model`

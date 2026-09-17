@@ -3,7 +3,7 @@ use super::config::{ContextConfig, PromptBudgetConfig};
 use super::partitions::ContextPartitions;
 use super::policy::ContextPolicy;
 use super::pressure::{PressureAction, PressureMonitor};
-use super::renderer::RenderedContext;
+use super::renderer::InternalRenderedContext;
 use super::renewal::RenewalPolicy;
 use super::skill_catalog::SkillCatalog;
 use super::task_state::{TaskState, TaskUpdate};
@@ -485,7 +485,7 @@ impl ContextManager {
             .saturating_sub(self.prompt_budget.reserved_tokens())
     }
 
-    pub fn render(&self) -> RenderedContext {
+    pub fn render(&self) -> InternalRenderedContext {
         super::renderer::render_projected(
             &self.partitions,
             self.available_input_tokens(),

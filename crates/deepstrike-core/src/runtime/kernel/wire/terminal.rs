@@ -103,6 +103,9 @@ pub struct PaceDecision {
     pub coerced_from: Option<String>,
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): THIS side is
+/// the ABI authority; the pre-ABI twin is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PaceAction {
@@ -111,6 +114,9 @@ pub enum PaceAction {
     Stop,
 }
 
+/// F5 projection pair (registered in `crate::projection_pairs`, 0.2.66): THIS side is
+/// the ABI authority; the pre-ABI twin is the richer internal semantic vocabulary. The
+/// only legal crossing is the driver's exhaustive conversion.
 /// Why the loop stopped.
 ///
 /// `user_abort` and a generic `error` are deliberately absent: a cancellation is a

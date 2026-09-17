@@ -24,8 +24,14 @@ use serde::{Deserialize, Serialize};
 /// providers handle both shapes.
 ///
 /// system_text = system_stable + system_knowledge (for OpenAI which has one system slot).
+///
+/// F3 projection-pair registration (0.2.66): the wire版 `RenderedContext`
+/// (runtime/kernel/wire/effect.rs) is the ABI authority; this internal render is the
+/// runtime-phase representation. The only legal crossing is the driver's exhaustive
+/// projection (`wire/driver.rs::rendered_context`). The `Internal` prefix IS the ruling —
+/// host-facing bindings keep the wire name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RenderedContext {
+pub struct InternalRenderedContext {
     /// Identity + Knowledge combined — for providers with a single system slot (OpenAI).
     pub system_text: String,
     /// Identity only (system partition). Anthropic system[0] with cache_control.
@@ -121,7 +127,7 @@ fn hash_turn(msg: &Message) -> u64 {
 }
 
 #[cfg(test)]
-impl RenderedContext {
+impl InternalRenderedContext {
     /// Compute the [`PrefixFingerprint`] for this render. See its docs for the
     /// cache-reuse contract it certifies.
     pub(crate) fn prefix_fingerprint(&self) -> PrefixFingerprint {
@@ -354,7 +360,7 @@ fn project_message(msg: &Message, handles: &HandleTable) -> Option<Message> {
     }
 }
 
-/// Render the context into a `RenderedContext` suitable for a provider API call.
+/// Render the context into a `InternalRenderedContext` suitable for a provider API call.
 ///
 /// Equivalent to [`render_projected`] with an empty handle table (no Layer-4 projection) and no
 /// frozen-prefix boundary (`frozen_history_len = 0` → `frozen_prefix_len` is always `None`).
@@ -365,7 +371,7 @@ pub(crate) fn render(
     budget: u32,
     engine: &ContextTokenEngine,
     preserve_recent_units: usize,
-) -> RenderedContext {
+) -> InternalRenderedContext {
     // The convenience wrapper renders history verbatim (no narration collapse) — callers that want
     // Method-1 collapse drive `render_projected` with the flag (the kernel passes it from config).
     render_projected(
@@ -396,7 +402,7 @@ pub fn render_projected(
     handles: &HandleTable,
     frozen_history_len: usize,
     collapse_narration: bool,
-) -> RenderedContext {
+) -> InternalRenderedContext {
     let system_stable = build_system_stable(partitions);
     let system_knowledge = build_system_knowledge(partitions);
     let system_text = [system_stable.as_str(), system_knowledge.as_str()]
@@ -499,7 +505,7 @@ pub fn render_projected(
         None
     };
 
-    RenderedContext {
+    InternalRenderedContext {
         system_text,
         system_stable,
         system_knowledge,

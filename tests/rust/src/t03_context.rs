@@ -77,7 +77,9 @@ fn render_empty_context_returns_structured_context() {
             || rendered
                 .turns
                 .iter()
-                .all(|m| m.content.text_len() < usize::MAX)
+                .all(|m| deepstrike_core::context::token_engine::ContextTokenEngine::char_approx()
+                    .count_message(m)
+                    < u32::MAX)
     );
 }
 

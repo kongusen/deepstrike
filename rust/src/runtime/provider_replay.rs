@@ -49,7 +49,7 @@ mod tests {
     use super::*;
     use crate::providers::{LLMProvider, ProviderRunState, StreamEvent};
     use async_trait::async_trait;
-    use deepstrike_core::context::renderer::RenderedContext;
+    use deepstrike_core::context::renderer::InternalRenderedContext;
     use deepstrike_core::runtime::session::SessionEvent;
     use deepstrike_core::types::message::{Content, Message, Role, ToolSchema};
     use futures::{Stream, stream};
@@ -76,7 +76,7 @@ mod tests {
 
         async fn stream(
             &self,
-            _context: &RenderedContext,
+            _context: &InternalRenderedContext,
             _tools: &[ToolSchema],
             _extensions: Option<&serde_json::Value>,
             _state: Option<&ProviderRunState>,
