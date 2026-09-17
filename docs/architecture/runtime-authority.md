@@ -69,6 +69,7 @@ code_refs:
 | **跨 operation 组预算** | Host GroupLedger（node/src/runtime/run-group.ts） | **单向委托边**（D4） |
 | Context VM 状态 | kernel | projection → render |
 | Memory record 内容 | Host MemoryRecordStore | receipt → kernel MemoryPersistReceipt |
+| Memory 写入通道（RequestMemoryWrite） | **kernel 不设 model-facing 写面**（F15 裁决，0.2.66：child→parent only——唯一 caller 通道 = 子进程 `parent_requests`） | proposal → host 裁量落库 |
 | StopReason 词表 | kernel 受控（`Other` 不透传 vendor 原文） | mirror → host 映射输入 |
 
 ### L4 · Evidence / Persistence

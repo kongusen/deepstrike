@@ -57,7 +57,7 @@ L4 · Durable Truth       Journal = State Truth / Checkpoint = State Snapshot /
 | **A6 Machine-Enforced Constitution** | 任何架构规则最终必须表现为 fixture / validator / compile-time exhaustive match / CI gate |
 
 > **Deduplicate authority, not representation.**
-> 可以为不同 purpose 存在不同 representation，但只能有一个语义 authority，且转换边界必须显式、穷尽、可测试。四个双生类型族（TerminationReason / PaceAction / ToolCall / ResourceQuota）即此原则的实例：wire 版 = ABI 权威，内部版 = 语义词表更富的 projection，唯一合法出入 = driver 的穷尽转换函数。
+> 可以为不同 purpose 存在不同 representation，但只能有一个语义 authority，且转换边界必须显式、穷尽、可测试。pre-ABI 与 wire 的双生类型族（TerminationReason / PaceAction / ToolCall / ResourceQuota 等 8 族，另含异名对 EntropyWatchConfig↔EntropyWatchPolicy）即此原则的实例：wire 版 = ABI 权威，内部版 = 语义词表更富的 projection，唯一合法出入 = driver 的穷尽转换函数。全表已登记（0.2.66，`deepstrike-core::projection_pairs`：登记表 + 别名纪律 CI 门禁——wire 模块外裸 import 双生类型即测试红）。
 
 ## 非权威表示的六种合法形态（A2 词表）
 

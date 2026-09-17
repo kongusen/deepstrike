@@ -57,7 +57,7 @@ Every spec and PR passes these first:
 | **A6 Machine-Enforced Constitution** | Every architectural rule ends as a fixture / validator / compile-time exhaustive match / CI gate |
 
 > **Deduplicate authority, not representation.**
-> Different representations may exist for different purposes, but there is exactly one semantic authority, and conversion boundaries must be explicit, exhaustive, and tested. The four twin type families (TerminationReason / PaceAction / ToolCall / ResourceQuota) are this principle in practice: the wire version is the ABI authority; the internal version is a richer-vocabulary projection; the only legal crossing is the driver's exhaustive conversion functions.
+> Different representations may exist for different purposes, but there is exactly one semantic authority, and conversion boundaries must be explicit, exhaustive, and tested. The twin type families spanning pre-ABI and wire (TerminationReason / PaceAction / ToolCall / ResourceQuota and 4 more, plus the differently-named pair EntropyWatchConfig↔EntropyWatchPolicy) are this principle in practice: the wire version is the ABI authority; the internal version is a richer-vocabulary projection; the only legal crossing is the driver's exhaustive conversion functions. All families are registered (0.2.66, `deepstrike-core::projection_pairs`: a registry table plus an alias-discipline CI gate — a bare import of a twin type outside the wire module fails the test suite).
 
 ## Six Legal Forms of Non-Authoritative Representation (A2 vocabulary)
 

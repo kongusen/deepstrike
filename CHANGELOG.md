@@ -6,6 +6,70 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.66] - 2026-09-17
+
+Safe cleanup: every P8 deletion-list item that does **not** require breaking a
+public contract (batch 1 + the F15/DEL-5 ruling), executed in the last
+non-breaking window before the 0.2.67/0.2.68 deprecation-and-deletion pair.
+**No breaking changes; Kernel ABI unchanged; host-facing bindings unchanged.**
+
+### Changed — DEL-2: token heuristics归位 to the token engine
+
+- The Image/Audio token heuristic (vision `detail` tiers low=85 / auto=255 /
+  high=680; audio ≈ decoded-bytes/1600) moved from `ContentPart` into
+  `ContextTokenEngine` (`count_part` → `modality_estimate_tokens`): the engine
+  holds the estimate, the content part stays pure semantics. One authority for
+  counting, the destination P8 named.
+- `ContentPart::estimate_tokens` and the dead `Content::text_len` are deleted
+  (adjudicated one-step deletion: no SDK mirror of either exists, so the
+  core-crate surface narrows without any SDK-visible break). The conformance
+  suite's image-estimate tests now pin the engine (85/680), not the old ×4-
+  scaled figures.
+
+### Changed — F3: the internal render type is `InternalRenderedContext`
+
+- `context/renderer.rs`'s `RenderedContext` is renamed
+  `InternalRenderedContext` — the wire version (`wire/effect.rs`) is the ABI
+  authority, and the internal type now says so in its own name. The rust SDK
+  keeps its public `RenderedContext` name via an alias re-export (same type),
+  so its API surface is byte-identical; node/python/wasm bindings never
+  projected this type and are untouched.
+
+### Added — F5: projection-pair registry + alias-discipline gate
+
+- P8's §1 ruling is now machine-checked: the pre-ABI/wire twin type families
+  are **registered projection pairs** (one authority — the wire/ABI version —
+  plus a richer internal vocabulary plus an exhaustive driver conversion),
+  not dual authorities. `deepstrike-core::projection_pairs` (test-only module)
+  registers all families: TerminationReason, PaceAction/PaceDecision,
+  ToolCall/ToolResult/ToolSchema, ResourceQuota, KnowledgeEntry,
+  MilestoneCheckResult, VerificationContract, WorkflowNode/WorkflowSpec, the
+  F3 render pair — plus two special notes (ParamConstraint is single-family;
+  EntropyWatchConfig↔EntropyWatchPolicy is a differently-named pair).
+- **Alias discipline gate**: any `use` of a wire twin type outside the wire
+  module must carry a direction alias (`ToolCall as WireToolCall`); a bare
+  import fails the test suite (CI-red, not postmortem-discovered). Legacy
+  imports backfilled.
+- All 20 definition sites carry registration comments naming their side and
+  the conversion seam; the constitution docs (zh/en) record the full
+  registration, replacing the "four families" survey wording.
+
+### Added — F15/DEL-5: memory-write-surface ruling, in writing
+
+- Adjudicated **child→parent only**: the kernel gains no model-facing memory
+  write surface; `RequestMemoryWrite`'s only caller channel is a child's
+  `parent_requests`. The `SYSCALL_TOOL_NAMES` doc comment now states the
+  ruling (replacing the open SPEC-ISSUE question) and the syscall variant is
+  annotated; the runtime-authority doc's L3 table records it. Zero behavior
+  change.
+
+### Verified — DEL-6/F9: session-event vocabulary acceptance
+
+- The 49-kind session-event manifest fixture (delivered 0.2.63 via P7-S4)
+  re-verified: node and python vocabularies remain in lockstep with the
+  canonical manifest under the conformance gate (188 green). P8 closure-table
+  rows F5/F9 closed.
+
 ## [0.2.65] - 2026-09-17
 
 ### Added — crash-point matrix (durable recovery closure, S0)

@@ -69,6 +69,7 @@ Kernel-side IDs are all branded strings (crates/deepstrike-core/src/runtime/kern
 | **Cross-operation group budget** | Host GroupLedger (node/src/runtime/run-group.ts) | **one-way delegation edge** (D4) |
 | Context VM state | kernel | projection → render |
 | Memory record content | Host MemoryRecordStore | receipt → kernel MemoryPersistReceipt |
+| Memory write channel (RequestMemoryWrite) | **no model-facing write surface in the kernel** (F15 ruling, 0.2.66: child→parent only — the only caller channel is a child's `parent_requests`) | proposal → host decides and persists |
 | StopReason vocabulary | kernel-controlled (`Other` never passes vendor text through) | mirror → host mapping input |
 
 ### L4 · Evidence / Persistence
