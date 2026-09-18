@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/core-linux-x64-musl",
-  "version": "0.2.66",
+  "version": "0.2.67",
   "cpu": [
     "x64"
   ],
