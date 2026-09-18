@@ -480,7 +480,6 @@ class OpenAIProvider(ReasoningReplayMixin):
                 return Message(
                     role="assistant",
                     content=content,
-                    token_count=resp.usage.total_tokens if resp.usage else None,
                     tool_calls=tool_calls or None,
                 )
             except Exception as exc:

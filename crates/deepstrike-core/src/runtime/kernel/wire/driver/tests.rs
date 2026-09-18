@@ -9941,8 +9941,9 @@ fn structured_checkpoint_body_uses_durable_content_and_restores_media() {
             text: "caption".into(),
         },
         ContentPart::Image {
-            url: None,
-            data: Some("aW1hZ2U=".into()),
+            source: DurableSource::Base64 {
+                data: "aW1hZ2U=".into(),
+            },
             media_type: Some("image/png".into()),
             detail: Some("low".into()),
         },

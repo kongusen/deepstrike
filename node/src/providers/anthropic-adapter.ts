@@ -408,13 +408,11 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
       }
     }
     if (hasTextualToolCall(content, decodeInput.input)) throw textualToolCallError()
-    const usage = this.normalizeUsage(raw.usage)
     const blocks = raw.content as Array<Record<string, unknown>> | undefined
     return {
       message: {
         role: "assistant",
         content,
-        ...(usage ? { tokenCount: usage.outputTokens } : {}),
         toolCalls,
       },
       ...(blocks?.length ? { replay: { protocol: "anthropic-messages" as const, native_blocks: blocks } } : {}),

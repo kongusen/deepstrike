@@ -1,7 +1,7 @@
 {
   "description": "Configure → atomic agent root start (spec 6, 7.4). Two accepted inputs reach the first provider call: the genesis record freezes the resolved configuration, and the start record's step carries the immutable root kind, the initial execution focus and the one CallProvider effect the transition published.",
   "genesis_digest": "sha256:37cf7f256f73de5de61d898c1a8cb1ce41cfb282bac269e7a4a5d72def45635e",
-  "head_digest": "sha256:1eb12dd9b9d738d9c1eb6a0b42e3f76598f5febbc4e61b08f29c560b6d335a5f",
+  "head_digest": "sha256:f6c6a27b102f78eb7db4237cd7d53834c1e0976d6fdda47e525072478605ccd4",
   "links": [
     {
       "envelope": {
@@ -84,8 +84,8 @@
         "input_id": "in-start",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:37cf7f256f73de5de61d898c1a8cb1ce41cfb282bac269e7a4a5d72def45635e",
-        "record_digest": "sha256:1eb12dd9b9d738d9c1eb6a0b42e3f76598f5febbc4e61b08f29c560b6d335a5f",
-        "step_digest": "sha256:f052a2f6733c066891d8542d5b3cca8e68ada6f1a75fcf6e093afd1e08a8977c",
+        "record_digest": "sha256:f6c6a27b102f78eb7db4237cd7d53834c1e0976d6fdda47e525072478605ccd4",
+        "step_digest": "sha256:e10b550fc2b20e463b59484b9367c49385a2c0c65bc77578af1d9a1e0d2ad95d",
         "step_seq": "1"
       },
       "step": {
@@ -102,8 +102,7 @@
                   "turns": [
                     {
                       "content": "Proceed with the task described in [TASK STATE].",
-                      "role": "user",
-                      "tokens": 11
+                      "role": "user"
                     }
                   ]
                 },

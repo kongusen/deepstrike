@@ -36,6 +36,6 @@ def test_build_llm_completed_always_has_tool_calls():
   assert event["tool_calls"] == []
 
 
-def test_normalize_llm_completed_estimates_tokens():
+def test_normalize_llm_completed_does_not_synthesize_tokens():
   event = normalize_llm_completed({"kind": "llm_completed", "turn": 0, "content": "hello"})
-  assert event["token_count"] >= 1
+  assert "token_count" not in event

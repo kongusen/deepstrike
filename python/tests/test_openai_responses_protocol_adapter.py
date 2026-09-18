@@ -62,7 +62,7 @@ def test_adapter_decodes_complete_response_and_validates_usage() -> None:
     }, _input())
 
     assert message.content == "done"
-    assert message.token_count == 4
+    assert getattr(message, "token_count", None) is None
     assert [(call.id, call.name, call.arguments) for call in message.tool_calls] == [
         ("call_1", "lookup", '{"q": "x"}'),
     ]

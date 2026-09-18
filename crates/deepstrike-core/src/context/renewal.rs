@@ -1,7 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use super::config::ContextConfig;
 use super::partitions::ContextPartitions;
 use super::pressure::PressureMonitor;
@@ -32,7 +28,12 @@ impl RenewalPolicy {
     /// Perform renewal: carry system + knowledge + task_state into new sprint.
     /// History is reset; only the last `carryover_tokens` worth of turns are kept.
     /// Signals are cleared (they are per-turn ephemeral).
-    pub fn renew(&self, partitions: &ContextPartitions, max_tokens: u32) -> ContextPartitions {
+    pub fn renew(
+        &self,
+        partitions: &ContextPartitions,
+        max_tokens: u32,
+        engine: &ContextTokenEngine,
+    ) -> ContextPartitions {
         let config = ContextConfig {
             carryover_ratio: self.carryover_ratio,
             renewal_threshold: self.renewal_threshold,
@@ -41,10 +42,11 @@ impl RenewalPolicy {
         let mut renewed = ContextPartitions::new(&config);
 
         // Identity and Knowledge slots carry over unchanged.
-        for msg in &partitions.system.messages {
-            renewed
-                .system
-                .push(msg.clone(), msg.token_count.unwrap_or(0));
+        for (index, msg) in partitions.system.messages.iter().enumerate() {
+            renewed.system.push(
+                msg.clone(),
+                partitions.system.measured_tokens(index, engine),
+            );
         }
         // Cloned wholesale (not re-pushed message-by-message) so entry identity — keys, pins,
         // pending upserts, boundary-eviction marks — survives renewal; the caller sweeps right
@@ -63,9 +65,10 @@ impl RenewalPolicy {
             .history
             .messages
             .iter()
+            .enumerate()
             .rev()
-            .take_while(|msg| {
-                let t = msg.token_count.unwrap_or(0);
+            .take_while(|(index, _msg)| {
+                let t = partitions.history.measured_tokens(*index, engine);
                 if t <= remaining {
                     remaining = remaining.saturating_sub(t);
                     true
@@ -73,11 +76,15 @@ impl RenewalPolicy {
                     false
                 }
             })
-            .cloned()
+            .map(|(index, msg)| {
+                (
+                    msg.clone(),
+                    partitions.history.measured_tokens(index, engine),
+                )
+            })
             .collect();
         carried.reverse();
-        for msg in carried {
-            let t = msg.token_count.unwrap_or(0);
+        for (msg, t) in carried {
             renewed.history.push(msg, t);
         }
 
@@ -112,7 +119,8 @@ mod tests {
         let mut ctx = ContextPartitions::new(&cfg);
         ctx.system.push(CoreMessage::system("rules"), 10);
         ctx.knowledge.push(CoreMessage::system("skill: debug"), 20);
-        let renewed = make_policy(0.05).renew(&ctx, 1_000);
+        let engine = ContextTokenEngine::fallback_estimator();
+        let renewed = make_policy(0.05).renew(&ctx, 1_000, &engine);
         assert_eq!(renewed.system.len(), 1);
         assert_eq!(renewed.knowledge.len(), 1);
     }
@@ -122,7 +130,8 @@ mod tests {
         let cfg = ContextConfig::default();
         let mut ctx = ContextPartitions::new(&cfg);
         ctx.signals.push("[ROLLBACK] failed".to_string());
-        let renewed = make_policy(0.05).renew(&ctx, 1_000);
+        let engine = ContextTokenEngine::fallback_estimator();
+        let renewed = make_policy(0.05).renew(&ctx, 1_000, &engine);
         assert!(renewed.signals.is_empty());
     }
 
@@ -133,7 +142,8 @@ mod tests {
         for i in 0..10 {
             ctx.history.push(CoreMessage::user(format!("msg {i}")), 100);
         }
-        let renewed = make_policy(0.05).renew(&ctx, 1_000);
+        let engine = ContextTokenEngine::fallback_estimator();
+        let renewed = make_policy(0.05).renew(&ctx, 1_000, &engine);
         assert!(renewed.history.token_count <= 100);
     }
 
@@ -146,7 +156,8 @@ mod tests {
             scratchpad: "temp data".to_string(),
             ..Default::default()
         };
-        let renewed = make_policy(0.05).renew(&ctx, 1_000);
+        let engine = ContextTokenEngine::fallback_estimator();
+        let renewed = make_policy(0.05).renew(&ctx, 1_000, &engine);
         assert_eq!(renewed.task_state.goal, "build");
         assert!(renewed.task_state.scratchpad.is_empty());
     }

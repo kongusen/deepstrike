@@ -1,7 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 #[cfg(test)]
 use super::fault::stable_hash;
 use super::partitions::ContextPartitions;
@@ -319,7 +315,6 @@ fn project_assistant_narration(msg: &CoreMessage, enabled: bool) -> Option<CoreM
     }
     let mut projected = msg.clone();
     projected.content = Content::Text(NARRATION_STUB.to_string());
-    projected.token_count = None; // recomputed against the smaller stub
     Some(projected)
 }
 
@@ -357,7 +352,6 @@ fn project_message(msg: &CoreMessage, handles: &HandleTable) -> Option<CoreMessa
     if changed {
         let mut projected = msg.clone();
         projected.content = Content::Parts(new_parts);
-        projected.token_count = None; // recomputed against the smaller projected body
         Some(projected)
     } else {
         None
@@ -441,19 +435,20 @@ pub fn render_projected(
         let is_protected = unit_index >= protected_from;
         let unit_start = kept_messages_rev.len();
         let mut tokens = 0u32;
-        for msg in &partitions.history.messages[unit.clone()] {
-            let effective = project_message(msg, handles)
-                .or_else(|| {
-                    if is_protected {
-                        None
-                    } else {
-                        project_assistant_narration(msg, collapse_narration)
-                    }
-                })
-                .unwrap_or_else(|| msg.clone());
-            tokens += effective
-                .token_count
-                .unwrap_or_else(|| engine.count_message(&effective));
+        for message_index in unit.clone() {
+            let msg = &partitions.history.messages[message_index];
+            let projected = project_message(msg, handles).or_else(|| {
+                if is_protected {
+                    None
+                } else {
+                    project_assistant_narration(msg, collapse_narration)
+                }
+            });
+            let effective = projected.clone().unwrap_or_else(|| msg.clone());
+            tokens += projected
+                .as_ref()
+                .map(|_| engine.count_message(&effective))
+                .unwrap_or_else(|| partitions.history.measured_tokens(message_index, engine));
             kept_messages_rev.push(effective);
         }
         if tokens == 0 {

@@ -10,7 +10,6 @@ export class WorkingMemory {
 export interface SessionMessage {
   role: "system" | "user" | "assistant" | "tool"
   content: string
-  tokenCount?: number
   toolCalls?: Array<{ id: string; name: string; arguments: string }>
 }
 

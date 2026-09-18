@@ -48,7 +48,7 @@ def test_adapter_decodes_complete_response_without_transport_state() -> None:
     message = GeminiAdapter("gemini-2.0-flash").decode_complete(response, _input())
 
     assert message.content == "Checking."
-    assert message.token_count == 12
+    assert getattr(message, "token_count", None) is None
     assert [(call.id, call.name, call.arguments) for call in message.tool_calls] == [
         ("lookup", "lookup", '{"q": "x"}'),
     ]

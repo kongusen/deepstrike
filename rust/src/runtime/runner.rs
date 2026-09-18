@@ -1,7 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
-// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
-#![allow(deprecated)]
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
@@ -1496,7 +1492,6 @@ impl RuntimeRunner {
                             role: deepstrike_core::types::message::Role::Assistant,
                             content: deepstrike_core::types::message::Content::Text(final_text.clone()),
                             tool_calls: final_tool_calls.clone(),
-                            token_count: if turn_tokens > 0 { Some(turn_tokens) } else { None },
                         };
 
                         self.opts.provider.commit_stream_replay(&final_text, &final_tool_calls);
@@ -1869,7 +1864,6 @@ impl RuntimeRunner {
                                 is_error: false,
                                 is_fatal: false,
                                 error_kind: None,
-                                token_count: None,
                             });
                             yield RunEvent::ToolResult {
                                 call_id: call.id.to_string(),
@@ -1899,7 +1893,6 @@ impl RuntimeRunner {
                                             is_error,
                                             is_fatal,
                                             error_kind,
-                                            token_count: None,
                                         });
                                     }
                                     RunEvent::ToolArgumentRepaired { call_id, name, original_arguments, repaired_arguments } => {
@@ -2674,7 +2667,10 @@ impl RuntimeRunner {
         let _ = self.write_memory(request, None, Some(agent_id)).await;
     }
 
-    async fn summarize_for_long_term_memory(&self, archived: &[CoreMessage]) -> crate::Result<String> {
+    async fn summarize_for_long_term_memory(
+        &self,
+        archived: &[CoreMessage],
+    ) -> crate::Result<String> {
         let transcript = archived
             .iter()
             .map(|m| {
@@ -2707,7 +2703,6 @@ impl RuntimeRunner {
                 role: deepstrike_core::types::message::Role::User,
                 content: deepstrike_core::types::message::Content::Text(transcript.clone()),
                 tool_calls: vec![],
-                token_count: None,
             }],
             state_turn: None,
             frozen_prefix_len: None,

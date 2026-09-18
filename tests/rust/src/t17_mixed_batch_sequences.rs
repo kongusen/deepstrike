@@ -55,11 +55,11 @@ use deepstrike_core::runtime::kernel::wire::driver::{
     CanonicalOperationDriver, PlannedStep, SYSCALL_TOOL_NAMES,
 };
 use deepstrike_core::runtime::kernel::wire::effect::{
-    EffectKindTag, EffectOutcome, EffectSuccess, EffectSucceeded, InlineToolResult,
+    EffectKindTag, EffectOutcome, EffectSucceeded, EffectSuccess, InlineToolResult,
     MemoryAccessBinding, MemoryCapabilities, MemoryQueriedSuccess, MemoryRecall, MemoryRecordRef,
     ProviderCompleted, ProviderMessage, ProviderOutcome, ProviderSuccess, ToolCall as WireToolCall,
-    ToolResult as WireToolResult, ToolResultDisposition, ToolResultPayload as WireToolResultPayload,
-    ToolSchema as WireToolSchema, ToolsSuccess,
+    ToolResult as WireToolResult, ToolResultDisposition,
+    ToolResultPayload as WireToolResultPayload, ToolSchema as WireToolSchema, ToolsSuccess,
 };
 use deepstrike_core::runtime::kernel::wire::envelope::{
     ConfigureOperation, KernelInput, ResolveEffect, StartOperation, WireEnvelope,
@@ -349,10 +349,9 @@ fn validate_fixture_shape(file_name: &str, fixture: &Value) {
     let object = fixture
         .as_object()
         .unwrap_or_else(|| panic!("{file_name}: fixture must be an object"));
-    let expected: BTreeSet<&str> =
-        ["id", "kind", "title", "semantics", "provenance", "steps"]
-            .into_iter()
-            .collect();
+    let expected: BTreeSet<&str> = ["id", "kind", "title", "semantics", "provenance", "steps"]
+        .into_iter()
+        .collect();
     let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
     assert_eq!(
         actual, expected,
@@ -382,7 +381,10 @@ fn validate_fixture_shape(file_name: &str, fixture: &Value) {
             ["input", "expect"].into_iter().collect(),
             "{path}: step keys must be exactly input + expect"
         );
-        assert!(step["input"].is_object(), "{path}: input must be an envelope");
+        assert!(
+            step["input"].is_object(),
+            "{path}: input must be an envelope"
+        );
         let expect_keys: BTreeSet<&str> = step["expect"]
             .as_object()
             .unwrap_or_else(|| panic!("{path}: expect must be an object"))
@@ -391,8 +393,11 @@ fn validate_fixture_shape(file_name: &str, fixture: &Value) {
             .collect();
         assert!(
             expect_keys.contains("published_kinds")
-                && expect_keys
-                    .is_subset(&["published_kinds", "withheld_kinds", "rederived"].into_iter().collect()),
+                && expect_keys.is_subset(
+                    &["published_kinds", "withheld_kinds", "rederived"]
+                        .into_iter()
+                        .collect()
+                ),
             "{path}: expect requires published_kinds and admits only withheld_kinds/rederived"
         );
     }
@@ -431,7 +436,10 @@ fn replay_fixture(file_name: &str) {
         let published = published_kinds(&committed);
 
         let expect = &step["expect"];
-        let expected = expect_string_array(&expect["published_kinds"], &format!("{path} expect.published_kinds"));
+        let expected = expect_string_array(
+            &expect["published_kinds"],
+            &format!("{path} expect.published_kinds"),
+        );
         assert_eq!(
             published, expected,
             "{path}: publication must match the pinned order"
@@ -558,7 +566,10 @@ fn mixed_batch_scenario() -> Vec<Value> {
             tools_succeeded("call-2", "kpi: 12%"),
         );
         runtime.submit(&settle_tools);
-        steps.push((settle_tools, json!({ "published_kinds": ["call_provider"] })));
+        steps.push((
+            settle_tools,
+            json!({ "published_kinds": ["call_provider"] }),
+        ));
 
         steps
     })
@@ -586,7 +597,11 @@ fn control_plane_scenario() -> Vec<Value> {
             &provider_effect,
             vec![
                 tool_call("call-1", "skill", json!({"name": "debug"})),
-                tool_call("call-2", "update_plan", json!({"progress": "sources listed"})),
+                tool_call(
+                    "call-2",
+                    "update_plan",
+                    json!({"progress": "sources listed"}),
+                ),
             ],
         );
         runtime.submit(&control);

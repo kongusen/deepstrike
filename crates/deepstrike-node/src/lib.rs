@@ -69,17 +69,76 @@ use deepstrike_core::types::signal::{
 
 #[napi(object)]
 #[derive(Clone)]
+pub struct MediaSourceObj {
+    pub kind: String,
+    pub url: Option<String>,
+    pub data: Option<String>,
+    pub id: Option<String>,
+    pub handle: Option<String>,
+    pub owner: Option<String>,
+    pub payload_ref: Option<String>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
 pub struct ContentPartObj {
     /// `"text"` | `"image"` | `"audio"` | `"tool_result"`
     pub r#type: String,
     pub text: Option<String>,
-    pub url: Option<String>,
-    pub data: Option<String>,
+    pub source: Option<MediaSourceObj>,
     pub media_type: Option<String>,
     pub detail: Option<String>,
     pub call_id: Option<String>,
     pub output: Option<String>,
     pub is_error: Option<bool>,
+}
+
+fn source_from_rust(
+    source: &deepstrike_core::types::durable_content::DurableSource,
+) -> MediaSourceObj {
+    use deepstrike_core::types::durable_content::DurableSource;
+    match source {
+        DurableSource::Url { url } => MediaSourceObj {
+            kind: "url".into(),
+            url: Some(url.clone()),
+            data: None,
+            id: None,
+            handle: None,
+            owner: None,
+            payload_ref: None,
+        },
+        DurableSource::Base64 { data } => MediaSourceObj {
+            kind: "base64".into(),
+            url: None,
+            data: Some(data.clone()),
+            id: None,
+            handle: None,
+            owner: None,
+            payload_ref: None,
+        },
+        DurableSource::FileId { id, .. } => MediaSourceObj {
+            kind: "fileId".into(),
+            url: None,
+            data: None,
+            id: Some(id.clone()),
+            handle: None,
+            owner: None,
+            payload_ref: None,
+        },
+        DurableSource::Object {
+            handle,
+            owner,
+            payload_ref,
+        } => MediaSourceObj {
+            kind: "object".into(),
+            url: None,
+            data: None,
+            id: None,
+            handle: Some(handle.clone()),
+            owner: Some(owner.clone()),
+            payload_ref: Some(payload_ref.clone()),
+        },
+    }
 }
 
 #[napi(object)]
@@ -91,9 +150,6 @@ pub struct Message {
     pub content: String,
     /// Structured multimodal content parts. When present, takes precedence over `content`.
     pub content_parts: Option<Vec<ContentPartObj>>,
-    /// Deprecated since 0.2.67, removed in 0.2.68 (DEL-1): projection-only during the
-    /// migration window — the kernel recomputes via its token engine.
-    pub token_count: Option<u32>,
     pub tool_calls: Vec<ToolCall>,
 }
 
@@ -114,9 +170,6 @@ pub struct ToolResult {
     pub is_error: bool,
     pub is_fatal: Option<bool>,
     pub error_kind: Option<String>,
-    /// Deprecated since 0.2.67, removed in 0.2.68 (DEL-1): projection-only during the
-    /// migration window — the kernel recomputes via its token engine.
-    pub token_count: Option<u32>,
 }
 
 #[napi(object)]
@@ -335,8 +388,7 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
         ContentPart::Text { text } => ContentPartObj {
             r#type: "text".into(),
             text: Some(text.clone()),
-            url: None,
-            data: None,
+            source: None,
             media_type: None,
             detail: None,
             call_id: None,
@@ -344,26 +396,23 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             is_error: None,
         },
         ContentPart::Image {
-            url,
-            data,
+            source,
             media_type,
             detail,
         } => ContentPartObj {
             r#type: "image".into(),
             text: None,
-            url: url.clone(),
-            data: data.clone(),
+            source: Some(source_from_rust(source)),
             media_type: media_type.clone(),
             detail: detail.clone(),
             call_id: None,
             output: None,
             is_error: None,
         },
-        ContentPart::Audio { data, media_type } => ContentPartObj {
+        ContentPart::Audio { source, media_type } => ContentPartObj {
             r#type: "audio".into(),
             text: None,
-            url: None,
-            data: Some(data.clone()),
+            source: Some(source_from_rust(source)),
             media_type: Some(media_type.clone()),
             detail: None,
             call_id: None,
@@ -378,8 +427,7 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
         } => ContentPartObj {
             r#type: "tool_result".into(),
             text: None,
-            url: None,
-            data: None,
+            source: None,
             media_type: None,
             detail: None,
             call_id: Some(call_id.to_string()),
@@ -409,7 +457,6 @@ fn message_from_rust(m: &RustMessage) -> Message {
         role: role_to_str(m.role).to_string(),
         content,
         content_parts,
-        token_count: m.token_count,
         tool_calls: m.tool_calls.iter().map(tool_call_from_rust).collect(),
     }
 }
@@ -924,4 +971,3 @@ pub fn parse_verdict(content: String) -> Verdict {
 pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
     rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
-

@@ -7,14 +7,7 @@ export interface TextPart {
 
 export interface ImagePart {
   type: "image"
-  /** Remote image URL (mutually exclusive with `data`). */
-  url?: string
-  /** Raw base64-encoded image bytes (mutually exclusive with `url`).
-   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-3). Carry media via
-   * `ContentBlockImage`/`MediaSource` (`fileId`/`object`/`url`) instead; the provider
-   * adapter materialises bytes at the wire boundary. */
-  data?: string
-  /** MIME type, e.g. `"image/png"`. Required when `data` is set. */
+  source: MediaSource
   mediaType?: string
   /** OpenAI vision detail level. */
   detail?: "auto" | "low" | "high"
@@ -22,12 +15,7 @@ export interface ImagePart {
 
 export interface AudioPart {
   type: "audio"
-  /** Raw base64-encoded audio bytes.
-   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-3). Carry media via
-   * `ContentBlockAudio`/`MediaSource` (`fileId`/`object`/`url`) instead; the provider
-   * adapter materialises bytes at the wire boundary. */
-  data: string
-  /** MIME type, e.g. `"audio/wav"`. */
+  source: MediaSource
   mediaType: string
 }
 
@@ -46,8 +34,8 @@ export type ContentPart = TextPart | ImagePart | AudioPart | ToolResultPart
 /**
  * spc_011-B-05: canonical multimodal content, additive alongside `ContentPart` during the
  * migration. `ContentBlockImage`/`ContentBlockAudio`/etc.
- * are distinctly named (not reusing `ImagePart`/`AudioPart`) since those names are already taken
- * by `ContentPart`'s variants with a different shape (`url?/data?` inline vs `source: MediaSource`).
+ * are distinctly named (not reusing `ImagePart`/`AudioPart`) because they are tool-output blocks
+ * with provider options and a durable `source` mirror.
  */
 export type MediaSource =
   | { kind: "url"; url: string }
@@ -83,11 +71,6 @@ export interface Message {
   content: string
   /** Structured multimodal content. When present, takes precedence over `content` for provider calls. */
   contentParts?: ContentPart[]
-  /** Cached or provider-reported token count.
-   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-1). Projection only during the
-   * migration window — the kernel recomputes via its token engine; hosts should keep
-   * counts in a TokenMeasurement-style side table keyed by content fingerprint. */
-  tokenCount?: number
   toolCalls?: ToolCall[]
 }
 
@@ -111,11 +94,6 @@ export interface ToolResult {
   isError: boolean
   isFatal?: boolean
   errorKind?: ToolErrorKind
-  /** Cached or provider-reported token count.
-   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-1). Projection only during the
-   * migration window — the kernel recomputes via its token engine; hosts should keep
-   * counts in a TokenMeasurement-style side table keyed by content fingerprint. */
-  tokenCount?: number
   /** spc_012-N-01: same additive contract as `ToolResultPart.contentParts` (see there). */
   contentParts?: ToolOutputBlock[]
 }

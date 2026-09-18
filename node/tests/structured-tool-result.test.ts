@@ -53,7 +53,7 @@ describe("mcpResultToToolOutput (spc_012-N-02)", () => {
     const out = mcpResultToToolOutput({
       content: [
         { type: "text", text: "here is the screenshot" },
-        { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+        { type: "image", source: { kind: "base64", data: "aGVsbG8=" }, mimeType: "image/png" },
       ],
       isError: false,
     })

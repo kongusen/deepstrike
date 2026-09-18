@@ -494,8 +494,8 @@ class RuntimeRunner:
     parts (matched by call_id) before it goes to the provider. Copy-on-write: returns
     `context` unchanged when nothing matches, so the common all-text path is untouched.
     Structured parts are plain Python `StructuredToolResultPart` shims (duck-typed against
-    the pyo3 ContentPartObj) — the pyo3 binding deliberately gained no new field
-    (spc_012-R-07 premise correction)."""
+    the pyo3 ContentPartObj); media sources use the explicit source_kind/source_data mirror.
+    """
     if not overlay:
       return context
 
@@ -528,7 +528,6 @@ class RuntimeRunner:
       return RenderedMessage(
         role=msg.role,
         content=msg.content,
-        token_count=getattr(msg, "token_count", None),
         tool_calls=list(getattr(msg, "tool_calls", None) or []),
         content_parts=new_parts,
       )
@@ -2537,7 +2536,6 @@ class RuntimeRunner:
           canonical_tool_calls = leased
         assistant_message = Message(
           role="assistant", content=final_text, tool_calls=canonical_tool_calls,
-          token_count=turn_output_tokens or turn_tokens or None,
         )
         # P4 §2: assemble the measurement from the exact numbers that cross the boundary today
         # (input/output turn counters), enriched with the raw provider frame's cache split and
@@ -2626,8 +2624,8 @@ class RuntimeRunner:
         await self._opts.session_log.append(session_id, build_llm_completed_event(
           turn=runtime.turn(),
           content=final_text,
-          tool_calls=final_tool_calls,
           token_count=turn_output_tokens or turn_tokens or None,
+          tool_calls=final_tool_calls,
           provider_replay=provider_replay,
           effect_id=provider_effect_id,
           invocation_id=invocation_id,
@@ -2898,7 +2896,6 @@ class RuntimeRunner:
             "is_error": r.is_error,
             "is_fatal": getattr(r, "is_fatal", False),
             "error_kind": getattr(r, "error_kind", None),
-            "token_count": r.token_count,
             "content": {"blocks": durable_blocks_by_call.get(
               r.call_id,
               [{"type": "text", "text": r.output}],
@@ -3438,6 +3435,10 @@ def _normalize_attachment_parts(parts: list[dict]) -> list[dict]:
       p["is_error"] = p.pop("isError")
     elif "isError" in p:
       p.pop("isError", None)
+    if "source" not in p and "data" in p:
+      p["source"] = {"kind": "base64", "data": p.pop("data")}
+    if "source" not in p and p.get("url"):
+      p["source"] = {"kind": "url", "url": p["url"]}
     normalized.append(p)
   return normalized
 
@@ -3533,18 +3534,19 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
         parts = [ContentPartObj(type="text", text=user_text)] if user_text else []
         for a in _normalize_attachment_parts(raw_attachments):
           parts.append(ContentPartObj(
-            type=a.get("type", "text"), text=a.get("text"), url=a.get("url"), data=a.get("data"),
+            type=a.get("type", "text"), text=a.get("text"),
+            url=(a.get("source") or {}).get("url") if (a.get("source") or {}).get("kind") == "url" else None,
+            source_kind=(a.get("source") or {}).get("kind"),
+            source_data=(a.get("source") or {}).get("data") or (a.get("source") or {}).get("handle"),
             media_type=a.get("media_type"), detail=a.get("detail"),
             call_id=a.get("call_id"), output=a.get("output"), is_error=a.get("is_error"),
           ))
         messages.append(Message(
           role="user", content=user_text, tool_calls=[], content_parts=parts,
-          token_count=max(1, len(user_text) // 4),
         ))
       else:
         messages.append(Message(
           role="user", content=user_text, tool_calls=[],
-          token_count=max(1, len(user_text) // 4),
         ))
     elif kind == "compressed":
       summary = e.get("summary")
@@ -3554,7 +3556,6 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
           role="system",
           content=system_text,
           tool_calls=[],
-          token_count=max(1, len(system_text) // 4),
         ))
     elif kind == "llm_completed":
       content = sanitize_replay_text(e.get("content", ""), max_bytes)
@@ -3562,7 +3563,6 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
         role="assistant",
         content=content,
         tool_calls=e.get("tool_calls", []),
-        token_count=e.get("token_count"),
       ))
     elif kind == "tool_completed":
       for r in e.get("results", []):
@@ -3607,18 +3607,19 @@ async def _replay_messages_async(
         parts = [ContentPartObj(type="text", text=user_text)] if user_text else []
         for a in _normalize_attachment_parts(raw_attachments):
           parts.append(ContentPartObj(
-            type=a.get("type", "text"), text=a.get("text"), url=a.get("url"), data=a.get("data"),
+            type=a.get("type", "text"), text=a.get("text"),
+            url=(a.get("source") or {}).get("url") if (a.get("source") or {}).get("kind") == "url" else None,
+            source_kind=(a.get("source") or {}).get("kind"),
+            source_data=(a.get("source") or {}).get("data") or (a.get("source") or {}).get("handle"),
             media_type=a.get("media_type"), detail=a.get("detail"),
             call_id=a.get("call_id"), output=a.get("output"), is_error=a.get("is_error"),
           ))
         messages.append(Message(
           role="user", content=user_text, tool_calls=[], content_parts=parts,
-          token_count=max(1, len(user_text) // 4),
         ))
       else:
         messages.append(Message(
           role="user", content=user_text, tool_calls=[],
-          token_count=max(1, len(user_text) // 4),
         ))
     elif kind == "compressed":
       # A committed page-out transaction is replayed from its archive event below. The compressed
@@ -3632,7 +3633,6 @@ async def _replay_messages_async(
           role="system",
           content=system_text,
           tool_calls=[],
-          token_count=max(1, len(system_text) // 4),
         ))
     elif kind == "page_out" and e.get("archive_ref") and load_archive:
       loaded_successfully = False
@@ -3644,7 +3644,6 @@ async def _replay_messages_async(
             role=msg.role,
             content=content,
             tool_calls=msg.tool_calls,
-            token_count=msg.token_count,
             content_parts=msg.content_parts,
           ))
         loaded_successfully = True
@@ -3658,7 +3657,6 @@ async def _replay_messages_async(
             role="system",
             content=system_text,
             tool_calls=[],
-            token_count=max(1, len(system_text) // 4),
           ))
     elif kind == "llm_completed":
       content = sanitize_replay_text(e.get("content", ""), max_bytes)
@@ -3666,7 +3664,6 @@ async def _replay_messages_async(
         role="assistant",
         content=content,
         tool_calls=e.get("tool_calls", []),
-        token_count=e.get("token_count"),
       ))
     elif kind == "tool_completed":
       for r in e.get("results", []):
@@ -3842,9 +3839,8 @@ def _to_kernel_message(message: object) -> Message:
     return message
   role = getattr(message, "role", "user")
   content = getattr(message, "content", "")
-  token_count = getattr(message, "token_count", None)
   tool_calls = getattr(message, "tool_calls", None) or []
-  return Message(role=role, content=content, token_count=token_count, tool_calls=tool_calls)
+  return Message(role=role, content=content, tool_calls=tool_calls)
 
 
 def _memory_record_from_mapping(value: dict[str, Any]) -> "MemoryRecord":

@@ -137,7 +137,7 @@ repaired = repair_events_for_recovery(events, max_bytes=100_000)
 `repair_events_for_recovery` retains its historical name as an offline log-repair helper; it neither emits canonical inputs nor restores a kernel. It:
 
 - sanitizes `llm_completed.content`
-- backfills `token_count`
+- derives runtime token views only when explicitly requested; repair never writes a `token_count` field back into messages
 - preserves original `provider_replay`
 - never synthesizes provider-specific replay shapes
 

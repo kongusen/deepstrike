@@ -328,9 +328,6 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
     const message: Message = {
       role: "assistant",
       content,
-      ...(usage ? {
-        tokenCount: numberField(usage, "completion_tokens") ?? numberField(usage, "total_tokens"),
-      } : {}),
       toolCalls,
     }
     const replay = replayForTurn(dialect, "complete", input.input.resolved.identity.modelId, content, toolCalls, {

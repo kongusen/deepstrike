@@ -3,11 +3,6 @@
 //! The differential runner owns fixture validation and comparison. This binary only projects
 //! shared fixture inputs through public Rust SDK/Core types and emits one JSON envelope.
 
-
-// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
-// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
-#![allow(deprecated)]
-
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -386,7 +381,6 @@ fn project_session_event(input: &Value) -> Result<Value, AdapterError> {
             is_error,
             is_fatal: false,
             error_kind: None,
-            token_count: None,
         }],
     };
     let SessionEvent::ToolCompleted { results, .. } = event else {

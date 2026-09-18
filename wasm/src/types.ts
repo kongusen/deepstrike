@@ -5,13 +5,7 @@ import type { WorkflowNodeSpec } from "./runtime/types/agent.js"
 export interface ContentPart {
   type: "text" | "image" | "audio" | "tool_result"
   text?: string
-  /** Remote image URL (mutually exclusive with `data`). */
-  url?: string
-  /** Raw base64-encoded bytes (image/audio).
-   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-3). Carry media via
-   * `ToolOutputBlock`/`MediaSource` (`fileId`/`object`/`url`) instead; the provider
-   * adapter materialises bytes at the wire boundary. */
-  data?: string
+  source?: MediaSource
   /** MIME type, e.g. `"image/png"`. */
   mediaType?: string
   /** OpenAI vision detail level. */
@@ -33,11 +27,6 @@ export type ToolOutputBlock =
 export interface Message {
   role: "system" | "user" | "assistant" | "tool"
   content: string
-  /** Cached or provider-reported token count.
-   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-1). Projection only during the
-   * migration window — the kernel recomputes via its token engine; hosts should keep
-   * counts in a TokenMeasurement-style side table keyed by content fingerprint. */
-  tokenCount?: number
   toolCalls?: ToolCall[]
   /** Multimodal parts (text + image/audio). When present, providers render these
    *  instead of the plain `content` string. */
@@ -64,11 +53,6 @@ export interface ToolResult {
   isError: boolean
   isFatal?: boolean
   errorKind?: ToolErrorKind
-  /** Cached or provider-reported token count.
-   * @deprecated Since 0.2.67, removed in 0.2.68 (DEL-1). Projection only during the
-   * migration window — the kernel recomputes via its token engine; hosts should keep
-   * counts in a TokenMeasurement-style side table keyed by content fingerprint. */
-  tokenCount?: number
   contentParts?: ToolOutputBlock[]
 }
 

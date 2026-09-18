@@ -31,8 +31,7 @@ try {
     baseURL: baseURL ?? "(default)",
     elapsed_ms: Math.round(performance.now() - t0),
     content: msg.content?.slice(0, 100),
-    tokenCount: msg.tokenCount,
-    note: "xiaoai.plus reachable; no extra HTTP proxy needed if this passes",
+    note: "provider usage is emitted through the usage/evidence plane; public Message has no token projection",
   }, null, 2))
 } catch (err) {
   console.log(JSON.stringify({

@@ -100,7 +100,6 @@ describe("SPC-013 A-03 Gemini ProtocolAdapter lifecycle", () => {
       message: {
         role: "assistant",
         content: "Checking.",
-        tokenCount: 25,
         toolCalls: [{
           id: "get_weather",
           name: "get_weather",

@@ -69,7 +69,7 @@ maybe("real-model multimodal (image attachment)", () => {
       maxTurns: 2,
     })
 
-    const attachments: ContentPart[] = [{ type: "image", data: b64, mediaType: "image/png" }]
+    const attachments: ContentPart[] = [{ type: "image", source: { kind: "base64", data: b64 }, mediaType: "image/png" }]
     const text = (await collectText(
       runner.run({
         sessionId: `mm-${Date.now()}`,
@@ -105,7 +105,7 @@ maybe("real-model multimodal (image attachment)", () => {
       run_id: "crashed-run",
       goal,
       criteria: [],
-      attachments: [{ type: "image", data: b64, mediaType: "image/png" }],
+      attachments: [{ type: "image", source: { kind: "base64", data: b64 }, mediaType: "image/png" }],
     })
 
     // Fresh runner, same log → the resume path rebuilds history from events. Before the fix this

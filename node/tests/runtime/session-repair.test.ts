@@ -13,7 +13,7 @@ describe("session-repair", () => {
       content: "hi",
     } as Parameters<typeof normalizeLlmCompleted>[0])
     expect(out.tool_calls).toEqual([])
-    expect(out.token_count).toBeGreaterThan(0)
+    expect(out.token_count).toBeUndefined()
   })
 
   it("does NOT synthesize provider_replay during repair (provider-neutral)", () => {

@@ -138,7 +138,7 @@ repaired = repair_events_for_recovery(events, max_bytes=100_000)
 `repair_events_for_recovery` 是保留历史名称的离线日志 repair helper，不会生成 canonical input 或恢复 kernel。它会：
 
 - sanitize `llm_completed.content`
-- backfill `token_count`
+- recompute runtime token projections only when a caller explicitly requests a derived view; repair never writes a `token_count` field back into messages
 - 保留原始 `provider_replay`
 - 不合成 provider-specific replay shape
 

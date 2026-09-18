@@ -7,7 +7,7 @@ session-repair reasoning-content cache (does NOT skip LLM calls).
 
 Cost-accounting under replay:
 - inputTokens estimated from the rendered context this call carries (NOT recorded).
-- outputTokens taken from msg.token_count when present; else chars / 4.
+- outputTokens estimated from the replayed assistant content.
 - cacheReadInputTokens / cacheCreationInputTokens emitted as 0 — replay has no real
   cache state.
 """
@@ -140,9 +140,6 @@ class ReplayProvider(LLMProvider):
         tool_calls = getattr(msg, "toolCalls", None) or getattr(msg, "tool_calls", None)
         if tool_calls:
             out["toolCalls"] = tool_calls
-        token_count = getattr(msg, "tokenCount", None) or getattr(msg, "token_count", None)
-        if token_count is not None:
-            out["tokenCount"] = token_count
         return out  # type: ignore[return-value]
 
     async def stream(  # type: ignore[override]
@@ -154,9 +151,8 @@ class ReplayProvider(LLMProvider):
     ) -> AsyncIterator[StreamEvent]:
         msg = self._pull()
         content = getattr(msg, "content", None) or (msg.get("content") if isinstance(msg, dict) else "") or ""
-        token_count = getattr(msg, "tokenCount", None) or (msg.get("tokenCount") if isinstance(msg, dict) else None)
         input_tokens = self._tokenizer(_render_context_to_text(context, tools))
-        output_tokens = token_count if token_count is not None else self._tokenizer(content)
+        output_tokens = self._tokenizer(content)
 
         yield {  # type: ignore[misc]
             "type": "usage",

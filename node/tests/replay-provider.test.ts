@@ -24,7 +24,6 @@ describe("ReplayProvider", () => {
       role: "assistant",
       content: "I will call read_file.",
       toolCalls: [{ id: "c1", name: "read_file", arguments: JSON.stringify({ path: "src/x.ts" }) }],
-      tokenCount: 42,
     }
     const provider = new ReplayProvider([msg])
     const events = await collect(provider)
@@ -32,7 +31,7 @@ describe("ReplayProvider", () => {
     expect(events.map(e => e.type)).toEqual(["usage", "text_delta", "tool_call"])
 
     const usage = events[0] as UsageEvent
-    expect(usage.outputTokens).toBe(42)
+    expect(usage.outputTokens).toBe(Math.ceil("I will call read_file.".length / 4))
     expect(usage.inputTokens).toBe(0) // empty ctx + no tools → 0 tokens
     expect(usage.cacheReadInputTokens).toBe(0)
 
@@ -165,7 +164,6 @@ describe("extractRecordedMessages", () => {
           kind: "llm_completed",
           turn: 1,
           content: "hello",
-          tokenCount: 5,
           toolCalls: [{ id: "c1", name: "tool_a", arguments: '{"a":1}' }],
         } as unknown as SessionEvent,
       },
@@ -183,7 +181,6 @@ describe("extractRecordedMessages", () => {
     expect(messages.length).toBe(2)
     expect(messages[0].content).toBe("hello")
     expect(messages[0].toolCalls?.[0].name).toBe("tool_a")
-    expect(messages[0].tokenCount).toBe(5)
     expect(messages[1].content).toBe("follow-up")
     expect(messages[1].toolCalls).toBeUndefined()
   })
@@ -228,9 +225,7 @@ describe("extractRecordedMessages", () => {
     expect(messages.length).toBe(2)
     expect(messages[0].toolCalls?.length).toBe(1)
     expect(messages[0].toolCalls?.[0].name).toBe("skill")
-    expect(messages[0].tokenCount).toBe(12)
     expect(messages[1].toolCalls?.length).toBe(2)
-    expect(messages[1].tokenCount).toBe(30)
   })
 
   it("normalises non-string tool-call arguments to JSON strings", () => {

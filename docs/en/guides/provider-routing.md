@@ -195,7 +195,7 @@ Token accounting has three value families whose semantics are not interchangeabl
 
 | Field | Sole meaning |
 |------|----------|
-| `Message.token_count` / `tokenCount` | the message's own footprint once it enters history; assistant messages take provider output tokens only — never this turn's input/total |
+| `ContextTokenEngine` / `TokenMeasurement` | runtime budgeting uses kernel recomputation or a host measurement table; provider input/output counts remain usage/attempt evidence |
 | `ProviderUsage.inputTokens` | the provider-visible full prompt token count (the authority for billing and observation) |
 | `PromptMeasurement.inputTokens` | a pre-send measurement or estimate of the same wire plan; it feeds pre-send budgeting only and never impersonates billing facts |
 

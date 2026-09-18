@@ -29,15 +29,15 @@ function openaiAudioFormat(mediaType: string | undefined): string {
 function openAIPartsContent(parts: ContentPart[]): Array<Record<string, unknown>> {
   return parts.map(p => {
     if (p.type === "image") {
-      const url = p.data ? `data:${p.mediaType ?? "image/png"};base64,${p.data}` : (p.url ?? "")
+      const url = p.source?.kind === "base64" ? `data:${p.mediaType ?? "image/png"};base64,${p.source.data}` : p.source?.kind === "url" ? p.source.url : ""
       return { type: "image_url", image_url: { url, ...(p.detail ? { detail: p.detail } : {}) } }
     }
     if (p.type === "audio") {
       // OpenAI audio has no URL form — a part without base64 data cannot be sent.
-      if (!p.data) throw new UnsupportedModalityError("audio (no data)", "openai")
+      if (p.source?.kind !== "base64") throw new UnsupportedModalityError("audio (no durable base64 source)", "openai")
       return {
         type: "input_audio",
-        input_audio: { data: p.data, format: openaiAudioFormat(p.mediaType) },
+        input_audio: { data: p.source.data, format: openaiAudioFormat(p.mediaType) },
       }
     }
     return { type: "text", text: p.text ?? p.output ?? "" }
@@ -48,9 +48,9 @@ function openAIPartsContent(parts: ContentPart[]): Array<Record<string, unknown>
 function anthropicPartsContent(parts: ContentPart[]): Array<Record<string, unknown>> {
   return parts.map(p => {
     if (p.type === "image") {
-      const source = p.data
-        ? { type: "base64", media_type: p.mediaType ?? "image/png", data: p.data }
-        : { type: "url", url: p.url ?? "" }
+      const source = p.source?.kind === "base64"
+        ? { type: "base64", media_type: p.mediaType ?? "image/png", data: p.source.data }
+        : { type: "url", url: p.source?.kind === "url" ? p.source.url : "" }
       return { type: "image", source }
     }
     if (p.type === "audio") {
@@ -148,16 +148,14 @@ export async function collectStreamMessage(
 ): Promise<Message> {
   let content = ""
   const toolCalls: Message["toolCalls"] = []
-  let outputTokens: number | undefined
   for await (const evt of stream) {
     if (evt.type === "text_delta" && evt.delta) content += evt.delta
     else if (evt.type === "tool_call" && evt.id && evt.name) {
       toolCalls.push({ id: evt.id, name: evt.name, arguments: JSON.stringify(evt.arguments ?? {}) })
     } else if (evt.type === "usage") {
-      outputTokens = (evt as { outputTokens?: number; totalTokens?: number }).outputTokens ?? (evt as { totalTokens?: number }).totalTokens
     }
   }
-  return { role: "assistant", content, ...(outputTokens ? { tokenCount: outputTokens } : {}), ...(toolCalls.length ? { toolCalls } : {}) }
+  return { role: "assistant", content, ...(toolCalls.length ? { toolCalls } : {}) }
 }
 
 export { assistantReplayKey }

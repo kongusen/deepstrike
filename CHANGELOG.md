@@ -6,6 +6,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Removed — 0.2.68 DEL-1 runtime language convergence
+
+- Removed `CoreMessage.token_count` and `ToolResult.token_count`, including the Rust, Node,
+  WASM, Python and pyo3 public mirrors and provider adapter writes.
+- Context accounting now uses `ContextTokenEngine` or the host `TokenMeasurement` side table;
+  scheduler tool settlement accepts independent wire measurements. Provider usage remains on the
+  usage/attempt/session evidence plane.
+- The pyo3 `Message` and `ToolResult` constructor signatures are breaking changes. Session and
+  wire token fields remain evidence fields and are not runtime message projections.
+- Removed inline `ContentPart::Image.data` / `Audio.data`, the `image_base64`,
+  `image_base64_with_detail`, and `audio` constructors, and the matching Node, WASM and pyo3
+  mirrors. Media now enters the canonical content model through `DurableSource`; provider adapters
+  materialize URL or durable source bytes at the wire boundary. `DurableSource::Base64` remains a
+  valid explicit source and wire-level `data` fields remain evidence/transport fields.
+
 ## [0.2.67] - 2026-09-18
 
 Semantic migration: three concept landings (CanonicalMessageState ↔ DTO
@@ -19,9 +34,9 @@ Deletions land in 0.2.68.
 - `types::Message` is renamed `CoreMessage` (0.2.67, ruling Q1): the name now
   says what the role registry says — it is the internal runtime form,
   distinct from the L1 durable authority (`StoredMessageState`) and the wire
-  boundary forms (`LogicalMessage` / `ProviderMessage`). A public alias
-  `pub use CoreMessage as Message` keeps the 0.2.x surface byte-identical for
-  the migration window; the alias is removed in 0.2.68 (DEL-4).
+  boundary forms (`LogicalMessage` / `ProviderMessage`). The 0.2.67 migration aliases
+  kept the 0.2.x surface byte-identical for
+  the migration window; both core aliases are removed in 0.2.68 (DEL-4).
 - The rust SDK follows the same rename internally; node/python/wasm binding
   mirror names (`Message`) are unchanged.
 - `StoredMessageState`'s doc now records the decoupling ruling:

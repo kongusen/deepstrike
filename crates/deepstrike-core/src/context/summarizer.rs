@@ -1,9 +1,6 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use std::sync::OnceLock;
 
+use crate::context::measurement::TokenMeasurement;
 use crate::context::pressure::PressureAction;
 use crate::context::token_engine::ContextTokenEngine;
 use crate::types::message::{Content, ContentPart, CoreMessage};
@@ -24,6 +21,7 @@ impl RuleSummarizer {
     pub fn summarize(
         &self,
         messages: &[CoreMessage],
+        measurements: &[TokenMeasurement],
         action: PressureAction,
         max_tokens: u32,
     ) -> String {
@@ -35,9 +33,11 @@ impl RuleSummarizer {
         let engine = SUMMARY_ENGINE.get_or_init(ContextTokenEngine::fallback_estimator);
         let archived_tokens = messages
             .iter()
-            .map(|message| {
-                message
-                    .token_count
+            .enumerate()
+            .map(|(index, message)| {
+                measurements
+                    .get(index)
+                    .map(|measurement| measurement.tokens)
                     .unwrap_or_else(|| engine.count_message(message))
             })
             .sum::<u32>();
@@ -69,8 +69,10 @@ impl RuleSummarizer {
                                 }
                                 classify_text(output, &mut slots);
                             }
-                            ContentPart::Image { url, .. } => {
-                                if let Some(url) = url {
+                            ContentPart::Image { source, .. } => {
+                                if let crate::types::durable_content::DurableSource::Url { url } =
+                                    source
+                                {
                                     push_unique(&mut slots.artifacts, url.clone());
                                 }
                             }
@@ -313,7 +315,7 @@ mod tests {
         let long_cjk = "规范".repeat(100);
         assert!(!long_cjk.is_char_boundary(200));
         let msg = CoreMessage::assistant(format!("必须遵守约束：{long_cjk}"));
-        let out = RuleSummarizer.summarize(&[msg], PressureAction::AutoCompact, 1_000);
+        let out = RuleSummarizer.summarize(&[msg], &[], PressureAction::AutoCompact, 1_000);
         assert!(out.contains("规范"));
         assert!(out.contains("constraints:"));
     }
@@ -334,7 +336,8 @@ mod tests {
             is_error: true,
             durable_content: None,
         }]);
-        let out = RuleSummarizer.summarize(&[call, result], PressureAction::ContextCollapse, 1_000);
+        let out =
+            RuleSummarizer.summarize(&[call, result], &[], PressureAction::ContextCollapse, 1_000);
         for slot in [
             "constraints:",
             "decisions:",
@@ -358,6 +361,7 @@ mod tests {
         for max_tokens in [1, 4, 8, 16, 32] {
             let out = RuleSummarizer.summarize(
                 std::slice::from_ref(&message),
+                &[],
                 PressureAction::AutoCompact,
                 max_tokens,
             );
@@ -367,7 +371,7 @@ mod tests {
             );
         }
         assert_eq!(
-            RuleSummarizer.summarize(&[message], PressureAction::AutoCompact, 0),
+            RuleSummarizer.summarize(&[message], &[], PressureAction::AutoCompact, 0),
             ""
         );
     }

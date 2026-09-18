@@ -33,7 +33,7 @@ from .base import (
 from .stop_reason import canonicalize_stop_reason
 from .usage import normalize_usage
 from .protocol_adapter import AdapterOutput, ProtocolResponseError
-from deepstrike.types.content import CanonicalAdapterInput, normalize_canonical_adapter_input
+from deepstrike.types.content import CanonicalAdapterInput, media_source, normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +90,8 @@ def _message_content(message: Message) -> Any:
         if part.type == "text":
             content.append({"type": "input_text", "text": part.text})
         elif part.type == "image":
-            # Default the MIME type (like every other serializer) so a data-only image is
-            # not silently dropped; only a part with neither url nor data yields None.
-            if part.data:
-                image_url = f"data:{part.media_type or 'image/png'};base64,{part.data}"
-            else:
-                image_url = part.url
+            source = media_source(part)
+            image_url = source["url"] if source["kind"] == "url" else f"data:{part.media_type or 'image/png'};base64,{source['data']}" if source["kind"] == "base64" else None
             if image_url:
                 content.append({
                     "type": "input_image",
@@ -277,10 +273,7 @@ class OpenAIResponsesAdapter:
         ])
         usage = self._get(raw, "usage")
         self.normalize_usage(usage)
-        token_count = self._number(usage, "output_tokens") if usage is not None else None
-        if token_count is None and usage is not None:
-            token_count = self._number(usage, "total_tokens")
-        return Message(role="assistant", content=decoded["content"], tool_calls=decoded["tool_calls"] or None, token_count=token_count)
+        return Message(role="assistant", content=decoded["content"], tool_calls=decoded["tool_calls"] or None)
 
     def create_stream_state(
         self,

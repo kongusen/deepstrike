@@ -87,7 +87,6 @@ fn resume_after_preload_runs_pending_tools_before_llm() {
                 name: compact_str::CompactString::new("ping"),
                 arguments: serde_json::json!({}),
             }],
-            token_count: Some(5),
         },
     ]);
     match sm.resume_after_preload() {
@@ -118,7 +117,6 @@ fn resume_after_preload_does_not_page_in_pending_memory() {
                 name: compact_str::CompactString::new("memory"),
                 arguments: serde_json::json!({ "query": "archived", "top_k": 3 }),
             }],
-            token_count: Some(5),
         },
     ]);
     let action = sm.resume_after_preload();
@@ -1254,7 +1252,6 @@ fn assistant_calling(calls: Vec<ToolCall>) -> CoreMessage {
         role: Role::Assistant,
         content: Content::Text(String::new()),
         tool_calls: calls,
-        token_count: Some(3),
     }
 }
 
@@ -1308,7 +1305,6 @@ fn unexposed_tool_call_is_denied_while_exposed_sibling_executes() {
             is_error: false,
             is_fatal: false,
             error_kind: None,
-            token_count: None,
         }],
     });
     assert!(
@@ -1364,7 +1360,6 @@ fn dispatch_denial_survives_a_sibling_approval_suspend() {
             is_error: false,
             is_fatal: false,
             error_kind: None,
-            token_count: None,
         }],
     });
     assert!(
@@ -1436,7 +1431,6 @@ fn dispatch_denial_is_not_resurrected_by_the_memory_continuation() {
             is_error: false,
             is_fatal: false,
             error_kind: None,
-            token_count: None,
         }],
     });
     assert_eq!(
@@ -1492,7 +1486,6 @@ fn governance_denial_is_not_resurrected_by_the_memory_continuation() {
             is_error: false,
             is_fatal: false,
             error_kind: None,
-            token_count: None,
         }],
     });
     assert_eq!(
@@ -1730,8 +1723,12 @@ fn knowledge_upsert_applies_at_renewal_boundary() {
         ..SchedulerBudget::default()
     });
     sm.start(RuntimeTask::new("test"));
-    sm.ctx
-        .push_knowledge_entry(Some("ref".into()), CoreMessage::system("original"), 5, false);
+    sm.ctx.push_knowledge_entry(
+        Some("ref".into()),
+        CoreMessage::system("original"),
+        5,
+        false,
+    );
     sm.ctx
         .push_knowledge_entry(Some("ref".into()), CoreMessage::system("updated"), 5, false);
     assert!(sm.ctx.render().system_knowledge.contains("original"));
@@ -2050,7 +2047,6 @@ fn tool_result_content_parts_preserved_as_json() {
             is_error: false,
             is_fatal: false,
             error_kind: None,
-            token_count: None,
         }],
     });
 
@@ -2451,7 +2447,6 @@ fn governance_deny_executes_allowed_siblings() {
             is_error: false,
             is_fatal: false,
             error_kind: None,
-            token_count: Some(3),
         }],
     });
     assert!(matches!(next, LoopAction::CallLLM { .. }));
@@ -2733,6 +2728,7 @@ fn lifecycle_running_again_after_resume_from_suspend() {
 
 #[test]
 fn budget_exceeded_observation_on_token_budget() {
+    use crate::context::measurement::ToolMeasurement;
     use crate::types::result::TerminationReason;
     let mut sm = LoopStateMachine::new(SchedulerBudget {
         max_tokens: 128_000,
@@ -2741,18 +2737,18 @@ fn budget_exceeded_observation_on_token_budget() {
     });
     sm.start(RuntimeTask::new("test"));
     sm.take_observations();
-    // A tool result whose token_count pushes cumulative usage over the budget.
-    let action = sm.feed(LoopEvent::ToolResults {
-        results: vec![ToolResult {
+    // Host accounting evidence is supplied independently from the public tool result mirror.
+    let action = sm.feed_tool_results_with_measurements(
+        vec![ToolResult {
             call_id: compact_str::CompactString::new("c"),
             output: Content::Text("x".into()),
             durable_content: None,
             is_error: false,
             is_fatal: false,
             error_kind: None,
-            token_count: Some(20),
         }],
-    });
+        [ToolMeasurement::new("c", 11)],
+    );
     assert!(matches!(action, LoopAction::CallLLM { tools, .. } if tools.is_empty()));
     let obs = sm.take_observations();
     assert!(obs.iter().any(|o| matches!(
@@ -2766,6 +2762,51 @@ fn budget_exceeded_observation_on_token_budget() {
         done,
         LoopAction::Done { result } if result.termination == TerminationReason::TokenBudget
     ));
+}
+
+#[test]
+fn tool_measurement_is_consumed_once_and_unmatched_evidence_does_not_leak() {
+    use crate::context::measurement::ToolMeasurement;
+    let mut sm = sm();
+    sm.start(RuntimeTask::new("test"));
+    let result = ToolResult {
+        call_id: "measured".into(),
+        output: Content::Text("output".into()),
+        durable_content: None,
+        is_error: false,
+        is_fatal: false,
+        error_kind: None,
+    };
+    sm.feed_tool_results_with_measurements(
+        vec![result.clone()],
+        [
+            ToolMeasurement::new("measured", 37),
+            ToolMeasurement::new("later", 99),
+        ],
+    );
+    assert_eq!(sm.total_tokens, 37);
+    assert!(sm.pending_tool_measurements.is_empty());
+    let mut later = result.clone();
+    later.call_id = "later".into();
+    sm.feed(LoopEvent::ToolResults {
+        results: vec![result, later],
+    });
+    assert_eq!(
+        sm.total_tokens, 37,
+        "missing evidence must not fabricate or reuse usage"
+    );
+    let history = &sm.ctx.partitions.history;
+    assert_eq!(history.measurements[1].tokens, 37);
+    assert_eq!(
+        history.measurements[2].tokens,
+        sm.ctx.engine.count_message(&history.messages[2])
+    );
+    assert!(
+        serde_json::to_value(&history.messages[1])
+            .unwrap()
+            .get("token_count")
+            .is_none()
+    );
 }
 
 #[test]
@@ -3030,7 +3071,6 @@ fn large_tool_result_continues_inline_without_a_host_persistence_effect() {
             is_error: false,
             is_fatal: false,
             error_kind: None,
-            token_count: None,
         }],
     });
 
@@ -5117,7 +5157,6 @@ fn fatal_tool_error_commits_as_visible_error_result() {
             is_error: true,
             is_fatal: true,
             error_kind: Some(ToolErrorKind::Fatal),
-            token_count: None,
         }],
     });
     assert!(matches!(action, LoopAction::CallLLM { .. }));
@@ -5195,7 +5234,6 @@ fn milestone_retry_loop_is_bounded_by_the_token_budget() {
                 role: Role::Assistant,
                 content: Content::Text("done, please check".into()),
                 tool_calls: vec![],
-                token_count: Some(60),
             },
         });
         let action = match action {
@@ -5251,7 +5289,6 @@ fn fuse_tool_turn(name: &str, args: serde_json::Value) -> CoreMessage {
             name: compact_str::CompactString::new(name),
             arguments: args,
         }],
-        token_count: Some(3),
     }
 }
 
@@ -5263,7 +5300,6 @@ fn fuse_tool_result() -> ToolResult {
         is_error: false,
         is_fatal: false,
         error_kind: None,
-        token_count: Some(2),
     }
 }
 
@@ -5637,7 +5673,6 @@ fn pace_with_sibling_tool_calls_leaves_no_orphan_pairs() {
                 arguments: serde_json::json!({"next": "stop", "reason": "round done"}),
             },
         ],
-        token_count: Some(5),
     };
     let action = sm.feed(LoopEvent::LLMResponse { message });
     assert!(

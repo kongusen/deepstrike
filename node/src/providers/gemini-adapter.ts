@@ -242,15 +242,10 @@ export class GeminiAdapter implements ProtocolAdapter<
 
   decodeComplete(raw: GenerateContentResponse, _input: AdapterDecodeInput): { message: Message } {
     const decoded = decodeParts(raw)
-    const usage = this.normalizeUsage(raw.usageMetadata)
-    const rawUsage = raw.usageMetadata as unknown as Record<string, unknown> | undefined
-    const tokenCount = usage?.outputTokens
-      ?? (rawUsage ? numberField(rawUsage, "totalTokenCount") : undefined)
     return {
       message: {
         role: "assistant",
         content: decoded.content,
-        ...(tokenCount !== undefined ? { tokenCount } : {}),
         toolCalls: decoded.toolCalls,
       },
     }

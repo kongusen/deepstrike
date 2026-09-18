@@ -2,7 +2,6 @@
   "message": {
     "content": "The weather is sunny.",
     "role": "assistant",
-    "tokenCount": 9,
     "toolCalls": []
   },
   "replay": null,

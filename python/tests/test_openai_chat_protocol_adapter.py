@@ -70,7 +70,7 @@ def test_adapter_decodes_minimax_complete_replay_and_rejects_malformed_usage() -
     }, _input("minimax", "MiniMax-M3"), OPENAI_CHAT_DIALECTS["minimax"])
 
     assert decoded.message.content == "answer"
-    assert decoded.message.token_count == 4
+    assert getattr(decoded.message, "token_count", None) is None
     assert decoded.replay == {
         "provider": "minimax", "protocol": "openai-chat", "model": "MiniMax-M3",
         "reasoning_content": "plan", "reasoning_details": {"trace": "x"},

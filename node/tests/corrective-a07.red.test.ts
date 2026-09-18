@@ -71,7 +71,6 @@ describe("SPC-013 A-07 OpenAI Chat WireDialect", () => {
       message: {
         role: "assistant",
         content: "done",
-        tokenCount: 4,
         toolCalls: [{ id: "call_1", name: "lookup", arguments: "{}" }],
       },
       replay: {

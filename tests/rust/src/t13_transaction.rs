@@ -48,7 +48,6 @@ fn make_llm_response_with_tool_call(call_id: &str, tool_name: &str) -> LoopEvent
                 name: CompactString::new(tool_name),
                 arguments: serde_json::json!({}),
             }],
-            token_count: None,
         },
     }
 }
@@ -71,7 +70,6 @@ fn recoverable_error_preserves_history() {
             is_error: true,
             is_fatal: false,
             error_kind: Some(ToolErrorKind::Recoverable),
-            token_count: None,
         }],
     });
 
@@ -99,7 +97,6 @@ fn none_error_kind_also_does_not_rollback() {
             is_error: false,
             is_fatal: false,
             error_kind: None,
-            token_count: None,
         }],
     });
 
@@ -129,7 +126,6 @@ fn fatal_error_kind_commits_as_visible_error_result() {
             is_error: true,
             is_fatal: false,
             error_kind: Some(ToolErrorKind::Fatal),
-            token_count: None,
         }],
     });
 
@@ -161,7 +157,6 @@ fn is_fatal_flag_commits_without_rollback() {
             is_error: true,
             is_fatal: true,
             error_kind: None,
-            token_count: None,
         }],
     });
 
@@ -205,7 +200,6 @@ fn checkpoint_history_len_matches_actual_history() {
             is_error: false,
             is_fatal: false,
             error_kind: None,
-            token_count: None,
         }],
     });
 
@@ -244,7 +238,6 @@ fn replay_truncates_to_checkpoint_on_rollback() {
                     name: CompactString::new("write_file"),
                     arguments: serde_json::json!({}),
                 }],
-                token_count: None,
             },
             provider_replay: None,
         },
@@ -294,7 +287,6 @@ fn replay_without_rollback_keeps_full_history() {
                     name: CompactString::new("read_file"),
                     arguments: serde_json::json!({}),
                 }],
-                token_count: None,
             },
             provider_replay: None,
         },

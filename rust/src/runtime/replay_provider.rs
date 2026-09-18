@@ -7,13 +7,8 @@
 //!
 //! Cost-accounting under replay:
 //! - `input_tokens` is ESTIMATED from the rendered context (NOT a recorded value).
-//! - `output_tokens` is taken from `message.token_count` when present; else `chars/4`.
+//! - `output_tokens` is estimated from the replayed message body with the provider tokenizer.
 //! - `cache_read_input_tokens` / `cache_creation_input_tokens` emitted as 0.
-
-
-// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
-// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
-#![allow(deprecated)]
 
 use std::sync::Mutex;
 
@@ -103,7 +98,11 @@ impl ReplayProvider {
         Ok(msg)
     }
 
-    fn estimate_input_tokens(&self, context: &InternalRenderedContext, tools: &[ToolSchema]) -> u32 {
+    fn estimate_input_tokens(
+        &self,
+        context: &InternalRenderedContext,
+        tools: &[ToolSchema],
+    ) -> u32 {
         (self.tokenizer)(&render_context_to_text(context, tools))
     }
 }
@@ -195,10 +194,8 @@ impl LLMProvider for ReplayProvider {
     ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
         let msg = self.pull()?;
         let input_tokens = self.estimate_input_tokens(context, tools);
-        let output_tokens = msg.token_count.unwrap_or_else(|| {
-            let content = message_text(&msg).unwrap_or_default();
-            (self.tokenizer)(&content)
-        });
+        let content = message_text(&msg).unwrap_or_default();
+        let output_tokens = (self.tokenizer)(&content);
 
         let mut events: Vec<Result<StreamEvent>> = Vec::new();
         events.push(Ok(StreamEvent::Usage {

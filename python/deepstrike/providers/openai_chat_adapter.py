@@ -242,9 +242,6 @@ class OpenAIChatAdapter:
                 tool_calls.append(normalized)
         usage = _get(raw, "usage")
         self.normalize_usage(usage)
-        token_count = _number(usage, "completion_tokens") if usage is not None else None
-        if token_count is None and usage is not None:
-            token_count = _number(usage, "total_tokens")
         replay = self._replay_for_turn(
             dialect, "complete", input.resolved.model_id if input.resolved else self._model, content, tool_calls,
             _get(choice, "reasoning_content") or "", _get(choice, "reasoning_details"),
@@ -253,7 +250,7 @@ class OpenAIChatAdapter:
             }} for call in native_calls],
         )
         return OpenAIChatDecodeResult(
-            message=Message(role="assistant", content=content, tool_calls=tool_calls or None, token_count=token_count),
+            message=Message(role="assistant", content=content, tool_calls=tool_calls or None),
             replay=replay,
         )
 

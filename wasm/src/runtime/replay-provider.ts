@@ -16,8 +16,7 @@
  *   - `inputTokens` is ESTIMATED from the rendered context this call carries (NOT a recorded value
  *     from the original run). That's the point of replay-for-benchmarking: prompt may differ across
  *     variants, response is pinned, so a cost Δ purely reflects the prompt change.
- *   - `outputTokens` is taken from `message.tokenCount` when present; otherwise estimated from
- *     `message.content.length / 4`.
+ *   - `outputTokens` is estimated from `message.content.length / 4`.
  *   - `cacheReadInputTokens` / `cacheCreationInputTokens` are emitted as 0 — replay has no real
  *     cache state. Mechanisms whose Δ depends on cache behavior must validate with a live A/B too.
  *
@@ -109,7 +108,6 @@ export class ReplayProvider implements LLMProvider {
       role: "assistant",
       content: msg.content,
       ...(msg.toolCalls ? { toolCalls: msg.toolCalls } : {}),
-      ...(msg.tokenCount !== undefined ? { tokenCount: msg.tokenCount } : {}),
     }
   }
 
@@ -122,8 +120,7 @@ export class ReplayProvider implements LLMProvider {
   ): AsyncIterable<StreamEvent> {
     const msg = this.pull()
     const inputTokens = this.estimateInputTokens(context, tools)
-    const outputTokens =
-      msg.tokenCount !== undefined ? msg.tokenCount : this.tokenizer(msg.content || "")
+    const outputTokens = this.tokenizer(msg.content || "")
 
     const usage: UsageEvent = {
       type: "usage",

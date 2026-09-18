@@ -32,14 +32,31 @@ use deepstrike_core::types::signal::{
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi, from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
+pub struct MediaSourceObj {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_ref: Option<String>,
+}
+
+#[derive(Tsify, Clone, Serialize, Deserialize)]
+#[tsify(into_wasm_abi, from_wasm_abi)]
+#[serde(rename_all = "camelCase")]
 pub struct ContentPartObj {
     pub r#type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data: Option<String>,
+    pub source: Option<MediaSourceObj>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -52,6 +69,54 @@ pub struct ContentPartObj {
     pub is_error: Option<bool>,
 }
 
+fn source_from_rust(
+    source: &deepstrike_core::types::durable_content::DurableSource,
+) -> MediaSourceObj {
+    use deepstrike_core::types::durable_content::DurableSource;
+    match source {
+        DurableSource::Url { url } => MediaSourceObj {
+            kind: "url".into(),
+            url: Some(url.clone()),
+            data: None,
+            id: None,
+            handle: None,
+            owner: None,
+            payload_ref: None,
+        },
+        DurableSource::Base64 { data } => MediaSourceObj {
+            kind: "base64".into(),
+            url: None,
+            data: Some(data.clone()),
+            id: None,
+            handle: None,
+            owner: None,
+            payload_ref: None,
+        },
+        DurableSource::FileId { id, .. } => MediaSourceObj {
+            kind: "fileId".into(),
+            url: None,
+            data: None,
+            id: Some(id.clone()),
+            handle: None,
+            owner: None,
+            payload_ref: None,
+        },
+        DurableSource::Object {
+            handle,
+            owner,
+            payload_ref,
+        } => MediaSourceObj {
+            kind: "object".into(),
+            url: None,
+            data: None,
+            id: None,
+            handle: Some(handle.clone()),
+            owner: Some(owner.clone()),
+            payload_ref: Some(payload_ref.clone()),
+        },
+    }
+}
+
 #[derive(Tsify, Clone, Serialize, Deserialize)]
 #[tsify(into_wasm_abi, from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
@@ -60,10 +125,6 @@ pub struct Message {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_parts: Option<Vec<ContentPartObj>>,
-    /// Deprecated since 0.2.67, removed in 0.2.68 (DEL-1): projection-only during the
-    /// migration window — the kernel recomputes via its token engine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_count: Option<u32>,
     #[serde(default)]
     pub tool_calls: Vec<ToolCall>,
 }
@@ -89,10 +150,6 @@ pub struct ToolResult {
     pub is_fatal: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
-    /// Deprecated since 0.2.67, removed in 0.2.68 (DEL-1): projection-only during the
-    /// migration window — the kernel recomputes via its token engine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token_count: Option<u32>,
 }
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]
@@ -367,8 +424,7 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
         ContentPart::Text { text } => ContentPartObj {
             r#type: "text".into(),
             text: Some(text.clone()),
-            url: None,
-            data: None,
+            source: None,
             media_type: None,
             detail: None,
             call_id: None,
@@ -376,26 +432,23 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             is_error: None,
         },
         ContentPart::Image {
-            url,
-            data,
+            source,
             media_type,
             detail,
         } => ContentPartObj {
             r#type: "image".into(),
             text: None,
-            url: url.clone(),
-            data: data.clone(),
+            source: Some(source_from_rust(source)),
             media_type: media_type.clone(),
             detail: detail.clone(),
             call_id: None,
             output: None,
             is_error: None,
         },
-        ContentPart::Audio { data, media_type } => ContentPartObj {
+        ContentPart::Audio { source, media_type } => ContentPartObj {
             r#type: "audio".into(),
             text: None,
-            url: None,
-            data: Some(data.clone()),
+            source: Some(source_from_rust(source)),
             media_type: Some(media_type.clone()),
             detail: None,
             call_id: None,
@@ -410,8 +463,7 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
         } => ContentPartObj {
             r#type: "tool_result".into(),
             text: None,
-            url: None,
-            data: None,
+            source: None,
             media_type: None,
             detail: None,
             call_id: Some(call_id.to_string()),
@@ -441,7 +493,6 @@ fn message_from_rust(m: &RustMessage) -> Message {
         role: role_to_str(m.role).to_string(),
         content,
         content_parts,
-        token_count: m.token_count,
         tool_calls: m.tool_calls.iter().map(tool_call_from_rust).collect(),
     }
 }

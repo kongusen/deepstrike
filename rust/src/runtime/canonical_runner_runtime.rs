@@ -3,11 +3,6 @@
 //! Host events are lowered to wire inputs, committed through [`CanonicalKernelHost`], and projected
 //! back to the [`HostAction`] / [`KernelObservation`] shapes the runner matches.
 
-
-// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
-// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
-#![allow(deprecated)]
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -1839,8 +1834,8 @@ fn protocol_action_from_wire(
             else {
                 unreachable!("archive_page_out effect must project to archive action");
             };
-            let archived =
-                serde_json::from_str::<Vec<CoreMessage>>(&archive.payload.content).unwrap_or_default();
+            let archived = serde_json::from_str::<Vec<CoreMessage>>(&archive.payload.content)
+                .unwrap_or_default();
             let compressed = observations.iter().find_map(|obs| match obs {
                 KernelObservation::Compressed {
                     action, summary, ..
@@ -2063,7 +2058,6 @@ fn message_from_wire_provider(
                 arguments: call.arguments.get().clone(),
             })
             .collect(),
-        token_count: message.tokens,
     })
 }
 
@@ -2636,7 +2630,10 @@ mod tests {
             _extensions: Option<&serde_json::Value>,
         ) -> crate::Result<deepstrike_core::types::message::CoreMessage> {
             use deepstrike_core::types::message::{Content, CoreMessage, Role, ToolCall};
-            let has_tool_result = context.turns.iter().any(|message| message.role == Role::Tool);
+            let has_tool_result = context
+                .turns
+                .iter()
+                .any(|message| message.role == Role::Tool);
             let (content, tool_calls) = if has_tool_result {
                 (RESTART_FINAL_TEXT.to_string(), vec![])
             } else {
@@ -2653,7 +2650,6 @@ mod tests {
                 role: Role::Assistant,
                 content: Content::Text(content),
                 tool_calls,
-                token_count: None,
             })
         }
 
@@ -2664,7 +2660,11 @@ mod tests {
             extensions: Option<&serde_json::Value>,
             _state: Option<&crate::providers::ProviderRunState>,
         ) -> crate::Result<
-            Box<dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>> + Send + Unpin>,
+            Box<
+                dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>>
+                    + Send
+                    + Unpin,
+            >,
         > {
             use crate::providers::StreamEvent;
             use deepstrike_core::types::message::Content;
@@ -2679,7 +2679,9 @@ mod tests {
             }
             if message.tool_calls.is_empty() {
                 if let Content::Text(text) = &message.content {
-                    events.push(Ok(StreamEvent::TextDelta { delta: text.clone() }));
+                    events.push(Ok(StreamEvent::TextDelta {
+                        delta: text.clone(),
+                    }));
                 }
             }
             events.push(Ok(StreamEvent::Done));
@@ -2701,7 +2703,9 @@ mod tests {
         dir
     }
 
-    fn ping_tool(executions: std::sync::Arc<std::sync::atomic::AtomicU32>) -> crate::tools::RegisteredTool {
+    fn ping_tool(
+        executions: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) -> crate::tools::RegisteredTool {
         crate::tools::RegisteredTool::text(
             "ping",
             "Ping",
@@ -2788,9 +2792,7 @@ mod tests {
     }
 
     /// Seed the session identity so the wake finds the operation the manual drive committed.
-    async fn seed_run_started(
-        log: &std::sync::Arc<dyn crate::runtime::session_log::SessionLog>,
-    ) {
+    async fn seed_run_started(log: &std::sync::Arc<dyn crate::runtime::session_log::SessionLog>) {
         log.append(
             RESTART_SESSION,
             deepstrike_core::runtime::session::SessionEvent::RunStarted {

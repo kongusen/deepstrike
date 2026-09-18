@@ -30,7 +30,6 @@ fn text_response() -> LoopEvent {
             role: Role::Assistant,
             content: Content::Text("done".into()),
             tool_calls: vec![],
-            token_count: None,
         },
     }
 }

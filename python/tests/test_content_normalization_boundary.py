@@ -106,7 +106,7 @@ def test_known_runtime_rejects_explicitly_unsupported_audio_before_serialization
     context = RenderedContext(turns=[Message(
         role="user",
         content="",
-        content_parts=[ContentPartObj("audio", data="YWJj", media_type="audio/wav")],
+        content_parts=[ContentPartObj("audio", source_kind="base64", source_data="YWJj", media_type="audio/wav")],
     )])
 
     with pytest.raises(ContentValidationError, match="audio is explicitly unsupported"):
@@ -118,7 +118,7 @@ def test_unknown_runtime_keeps_audio_fail_open_at_canonical_boundary() -> None:
     context = RenderedContext(turns=[Message(
         role="user",
         content="",
-        content_parts=[ContentPartObj("audio", data="YWJj", media_type="audio/wav")],
+        content_parts=[ContentPartObj("audio", source_kind="base64", source_data="YWJj", media_type="audio/wav")],
     )])
 
     canonical = normalize_canonical_adapter_input(context, [], resolved=runtime)

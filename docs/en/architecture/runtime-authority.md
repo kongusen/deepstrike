@@ -1,7 +1,7 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
-  rust: [KernelInput, KernelEffect, BudgetLedger, TaskId, ResourceQuota, Message]
+  rust: [KernelInput, KernelEffect, BudgetLedger, TaskId, ResourceQuota, CoreMessage]
   python: [RuntimeRunner]
 ---
 

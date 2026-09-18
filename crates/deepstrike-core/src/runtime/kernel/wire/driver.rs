@@ -43,12 +43,6 @@
 //!   `plan` without an intervening `note_committed` means the previous plan was discarded while the
 //!   engine had already moved, and the driver fails closed with a poison fault that names the only
 //!   legal recovery — rebuild from the journal (§8.3).
-
-
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
@@ -384,23 +378,18 @@ fn content_part_to_durable(part: &ContentPart) -> Result<DurableContentBlock, St
         ContentPart::ToolResult { .. } => Err(
             "a structured message cannot embed a tool result; durable tool results use their separate envelope".into(),
         ),
-        ContentPart::Image { url, data, media_type, detail } => {
-            let source = match (url, data) {
-                (Some(url), None) => DurableSource::Url { url: url.clone() },
-                (None, Some(data)) => DurableSource::Base64 { data: data.clone() },
-                _ => return Err("image must have exactly one durable url or base64 source".into()),
-            };
+        ContentPart::Image { source, media_type, detail } => {
             let provider_options = detail
                 .as_ref()
                 .map(|detail| serde_json::json!({ "detail": detail }));
             Ok(DurableContentBlock::Image {
-                source,
+                source: source.clone(),
                 media_type: media_type.clone(),
                 provider_options,
             })
         }
-        ContentPart::Audio { data, media_type } => Ok(DurableContentBlock::Audio {
-            source: DurableSource::Base64 { data: data.clone() },
+        ContentPart::Audio { source, media_type } => Ok(DurableContentBlock::Audio {
+            source: source.clone(),
             media_type: Some(media_type.clone()),
             provider_options: None,
         }),
@@ -527,8 +516,7 @@ fn durable_block_to_content_part(block: &DurableContentBlock) -> Result<ContentP
             provider_options,
         } => match source {
             DurableSource::Url { url } => Ok(ContentPart::Image {
-                url: Some(url.clone()),
-                data: None,
+                source: DurableSource::Url { url: url.clone() },
                 media_type: media_type.clone(),
                 detail: provider_options
                     .as_ref()
@@ -537,8 +525,7 @@ fn durable_block_to_content_part(block: &DurableContentBlock) -> Result<ContentP
                     .map(str::to_string),
             }),
             DurableSource::Base64 { data } => Ok(ContentPart::Image {
-                url: None,
-                data: Some(data.clone()),
+                source: DurableSource::Base64 { data: data.clone() },
                 media_type: media_type.clone(),
                 detail: provider_options
                     .as_ref()
@@ -553,7 +540,7 @@ fn durable_block_to_content_part(block: &DurableContentBlock) -> Result<ContentP
             media_type,
             ..
         } => Ok(ContentPart::Audio {
-            data: data.clone(),
+            source: DurableSource::Base64 { data: data.clone() },
             media_type: media_type
                 .clone()
                 .ok_or_else(|| "audio durable block requires media_type".to_string())?,
@@ -1346,7 +1333,6 @@ fn restore_message(
                 })
             })
             .collect::<Result<Vec<_>, KernelFault>>()?,
-        token_count: None,
     })
 }
 
@@ -2320,7 +2306,6 @@ fn logical_message(message: &super::root::LogicalMessage) -> CoreMessage {
         role: core_role_of(message.role),
         content: Content::Text(message.content.clone()),
         tool_calls: Vec::new(),
-        token_count: message.tokens,
     }
 }
 
@@ -2379,7 +2364,7 @@ fn provider_message(message: &CoreMessage) -> ProviderMessage {
             .filter_map(|call| wire_tool_call(call).ok())
             .collect(),
         tool_call_id: tool_call_id.and_then(|call_id| super::scalar::CallId::new(call_id).ok()),
-        tokens: message.token_count,
+        tokens: None,
     }
 }
 
@@ -2635,7 +2620,6 @@ fn core_provider_message(message: &ProviderMessage) -> Result<CoreMessage, Kerne
         role: core_role_of(message.role),
         content: Content::Text(message.content.clone()),
         tool_calls: message.tool_calls.iter().map(core_tool_call).collect(),
-        token_count: message.tokens,
     })
 }
 
@@ -2704,7 +2688,6 @@ fn core_tool_result(payload: &WireToolResultPayload) -> ToolResult {
             is_error,
             is_fatal: disposition.is_fatal(),
             error_kind,
-            token_count: inline.result.tokens,
         },
         WireToolResultPayload::External(external) => ToolResult {
             call_id: external.call_id.as_str().into(),
@@ -2713,7 +2696,6 @@ fn core_tool_result(payload: &WireToolResultPayload) -> ToolResult {
             is_error,
             is_fatal: disposition.is_fatal(),
             error_kind,
-            token_count: None,
         },
     }
 }

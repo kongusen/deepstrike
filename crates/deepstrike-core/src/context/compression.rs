@@ -1,13 +1,10 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use super::config::ContextConfig;
+use super::measurement::TokenMeasurement;
 use super::partitions::ContextPartitions;
 use super::pressure::PressureAction;
 use super::token_engine::ContextTokenEngine;
 use super::units::{strict_tool_pairing_is_valid, unit_boundaries};
-use super::utility::{UtilitySelectionContext, plan_utility_archive};
+use super::utility::UtilitySelectionContext;
 use crate::types::message::{Content, ContentPart, CoreMessage};
 
 /// Compression result returned by every compactor.
@@ -19,6 +16,8 @@ pub struct CompressResult {
     pub summary: Option<String>,
     /// Messages drained/archived from the context.
     pub archived: Vec<CoreMessage>,
+    /// Host measurements aligned with `archived`; kept separate from canonical messages.
+    pub archived_measurements: Vec<TokenMeasurement>,
     /// Cache-aware (W1-1 step 2 / DoD #4): the earliest history-message index this op rewrote or
     /// removed — i.e. where it invalidates the prompt-cache prefix. `None` = prefix-safe (touched
     /// nothing). The pipeline folds the minimum across stages and surfaces it on the observation.
@@ -60,12 +59,18 @@ impl Compressor for SnipCompactor {
         // forced/413 compaction can always cap the oldest messages and free space; above it, the
         // prefix is droppable as a fallback, so we protect it (cache-aware).
         let prefix_keep = prefix_keep_for(partition.messages.len(), preserve_k);
-        let indices =
-            oversized_text_message_indices(&partition.messages, per_msg_limit, prefix_keep, engine);
+        let indices = oversized_text_message_indices(
+            &partition.messages,
+            &partition.measurements,
+            per_msg_limit,
+            prefix_keep,
+            engine,
+        );
 
         for &i in &indices {
+            let measured = partition.measured_tokens(i, engine);
             let msg = &mut partition.messages[i];
-            let original_tokens = msg.token_count.unwrap_or_else(|| engine.count_message(msg));
+            let original_tokens = measured;
             let head_limit = per_msg_limit / 2;
             let tail_limit = per_msg_limit.saturating_sub(head_limit);
             // Same head/tail elision as excerpt_text; the omitted count comes from the recorded
@@ -83,7 +88,7 @@ impl Compressor for SnipCompactor {
             };
             if let Some(text) = snipped {
                 msg.content = Content::Text(text);
-                msg.token_count = Some(per_msg_limit);
+                partition.set_measured_tokens(i, per_msg_limit);
                 saved += original_tokens.saturating_sub(per_msg_limit);
             }
         }
@@ -119,6 +124,7 @@ fn prefix_keep_for(len: usize, preserve_k: usize) -> usize {
 
 fn oversized_text_message_indices(
     messages: &[CoreMessage],
+    measurements: &[TokenMeasurement],
     per_msg_limit: u32,
     prefix_keep: usize,
     engine: &ContextTokenEngine,
@@ -136,7 +142,10 @@ fn oversized_text_message_indices(
             if !matches!(msg.content, Content::Text(_)) {
                 return false;
             }
-            let toks = msg.token_count.unwrap_or_else(|| engine.count_message(msg));
+            let toks = measurements
+                .get(*i)
+                .map(|measurement| measurement.tokens)
+                .unwrap_or_else(|| engine.count_message(msg));
             toks > per_msg_limit && toks > 10
         })
         .map(|(i, _)| i)
@@ -245,6 +254,7 @@ fn excerpt_text_with_total(
 /// results are interleaved mid/late history, so excerpting them is prefix-safe.
 fn excerptable_tool_result_indices(
     messages: &[CoreMessage],
+    measurements: &[TokenMeasurement],
     preserved_refs: &[String],
     prefix_keep: usize,
     engine: &ContextTokenEngine,
@@ -258,7 +268,10 @@ fn excerptable_tool_result_indices(
             if i < prefix_keep {
                 return None;
             }
-            let toks = msg.token_count.unwrap_or_else(|| engine.count_message(msg));
+            let toks = measurements
+                .get(i)
+                .map(|measurement| measurement.tokens)
+                .unwrap_or_else(|| engine.count_message(msg));
             if toks < 200 {
                 return None;
             }
@@ -308,6 +321,7 @@ impl Compressor for MicroCompactor {
         let prefix_keep = prefix_keep_for(partitions.history.messages.len(), preserve_k);
         let indices = excerptable_tool_result_indices(
             &partitions.history.messages,
+            &partitions.history.measurements,
             &partitions.task_state.preserved_refs,
             prefix_keep,
             engine,
@@ -318,8 +332,9 @@ impl Compressor for MicroCompactor {
         let mut saved = 0u32;
 
         for &i in &indices {
+            let measured = partition.measured_tokens(i, engine);
             let msg = &mut partition.messages[i];
-            let original_tokens = msg.token_count.unwrap_or_else(|| engine.count_message(msg));
+            let original_tokens = measured;
             if let Content::Parts(ref mut parts) = msg.content {
                 for part in parts.iter_mut() {
                     if let ContentPart::ToolResult {
@@ -369,7 +384,7 @@ impl Compressor for MicroCompactor {
                     }
                 }
                 let new_tokens = engine.count_message(msg);
-                msg.token_count = Some(new_tokens);
+                partition.set_measured_tokens(i, new_tokens);
                 saved += original_tokens.saturating_sub(new_tokens);
             }
         }
@@ -408,7 +423,7 @@ pub fn plan_drop_oldest(
         }
         saved += messages[unit.clone()]
             .iter()
-            .map(|msg| msg.token_count.unwrap_or_else(|| engine.count_message(msg)))
+            .map(|msg| engine.count_message(msg))
             .sum::<u32>();
         n = unit.end;
     }
@@ -432,8 +447,9 @@ impl Compressor for CollapseCompactor {
             .total_tokens(engine)
             .saturating_sub(partitions.history.token_count);
         let history_target = target_tokens.saturating_sub(non_history_tokens);
-        let plan = plan_utility_archive(
+        let plan = super::utility::plan_utility_archive_with_measurements(
             &partitions.history.messages,
+            &partitions.history.measurements,
             partitions.history.token_count,
             history_target,
             preserve_k,
@@ -449,13 +465,15 @@ impl Compressor for CollapseCompactor {
             return CompressResult::default();
         }
         let prefix_invalidated_at = plan.archived_ranges.iter().map(|range| range.start).min();
-        let (archived, saved) = apply_utility_plan(&mut partitions.history, &plan);
+        let (archived, archived_measurements, saved) =
+            apply_utility_plan(&mut partitions.history, &plan, engine);
 
         // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
         // requested action. Removing an interior unit invalidates from its original start index.
         CompressResult {
             tokens_saved: saved,
             archived,
+            archived_measurements,
             prefix_invalidated_at,
             ..Default::default()
         }
@@ -481,8 +499,9 @@ impl Compressor for AutoCompactor {
             .total_tokens(engine)
             .saturating_sub(partitions.history.token_count);
         let history_target = target_tokens.saturating_sub(non_history_tokens);
-        let plan = plan_utility_archive(
+        let plan = super::utility::plan_utility_archive_with_measurements(
             &partitions.history.messages,
+            &partitions.history.measurements,
             partitions.history.token_count,
             history_target,
             preserve_k,
@@ -498,13 +517,15 @@ impl Compressor for AutoCompactor {
             return CompressResult::default();
         }
         let prefix_invalidated_at = plan.archived_ranges.iter().map(|range| range.start).min();
-        let (archived, saved) = apply_utility_plan(&mut partitions.history, &plan);
+        let (archived, archived_measurements, saved) =
+            apply_utility_plan(&mut partitions.history, &plan, engine);
 
         // Pure executor: return the drained messages; the pipeline summarizes + logs once under the
         // requested action.
         CompressResult {
             tokens_saved: saved,
             archived,
+            archived_measurements,
             prefix_invalidated_at,
             ..Default::default()
         }
@@ -514,7 +535,18 @@ impl Compressor for AutoCompactor {
 fn apply_utility_plan(
     partition: &mut super::partitions::Partition,
     plan: &super::utility::UtilityArchivePlan,
-) -> (Vec<CoreMessage>, u32) {
+    engine: &ContextTokenEngine,
+) -> (Vec<CoreMessage>, Vec<TokenMeasurement>, u32) {
+    while partition.measurements.len() < partition.messages.len() {
+        let index = partition.measurements.len();
+        let message = &partition.messages[index];
+        let tokens = engine.count_message(message);
+        partition
+            .measurements
+            .push(super::measurement::TokenMeasurement::for_message(
+                message, tokens,
+            ));
+    }
     let pairing_was_valid = strict_tool_pairing_is_valid(&partition.messages);
     let archived_indices = plan
         .archived_ranges
@@ -522,24 +554,32 @@ fn apply_utility_plan(
         .flat_map(|range| range.clone())
         .collect::<std::collections::BTreeSet<_>>();
     let mut archived = Vec::new();
+    let mut archived_measurements = Vec::new();
     let mut retained = Vec::new();
-    for (index, message) in std::mem::take(&mut partition.messages)
+    let old_messages = std::mem::take(&mut partition.messages);
+    let old_measurements = std::mem::take(&mut partition.measurements);
+    let mut retained_measurements = Vec::new();
+    for (index, (message, measurement)) in old_messages
         .into_iter()
+        .zip(old_measurements.into_iter())
         .enumerate()
     {
         if archived_indices.contains(&index) {
             archived.push(message);
+            archived_measurements.push(measurement);
         } else {
             retained.push(message);
+            retained_measurements.push(measurement);
         }
     }
     partition.messages = retained;
+    partition.measurements = retained_measurements;
     partition.token_count = plan.retained_tokens;
     debug_assert!(
         !pairing_was_valid || strict_tool_pairing_is_valid(&partition.messages),
         "utility selection split a valid tool transaction"
     );
-    (archived, plan.archived_tokens)
+    (archived, archived_measurements, plan.archived_tokens)
 }
 
 /// Compression pipeline — operates on history partition but can reference full partitions.
@@ -580,6 +620,7 @@ impl CompressionPipeline {
 
         let mut total_saved = 0;
         let mut all_archived = vec![];
+        let mut all_archived_measurements = vec![];
         // Cache cost of the whole compaction = the earliest prefix-break across the stages that ran
         // (an earlier break dominates). `None` = entirely prefix-safe.
         let mut cache_at: Option<usize> = None;
@@ -603,6 +644,7 @@ impl CompressionPipeline {
                     .flatten()
                     .min();
                 all_archived.extend(res.archived);
+                all_archived_measurements.extend(res.archived_measurements);
             }
         }
 
@@ -625,7 +667,12 @@ impl CompressionPipeline {
         let summary = if all_archived.is_empty() {
             None
         } else {
-            let s = summarizer.summarize(&all_archived, action, summary_budget);
+            let s = summarizer.summarize(
+                &all_archived,
+                &all_archived_measurements,
+                action,
+                summary_budget,
+            );
             partitions
                 .task_state
                 .log_compression(action.label(), s.clone());
@@ -703,7 +750,6 @@ mod tests {
             role: Role::Tool,
             content: Content::Parts(parts),
             tool_calls: vec![],
-            token_count: Some(300),
         };
         ctx.history.messages.push(msg);
         ctx.history.token_count = 300;
@@ -755,7 +801,6 @@ mod tests {
                 },
             ]),
             tool_calls: vec![],
-            token_count: None,
         };
         let original = engine().count_message(&msg);
         ctx.history.push(msg, original);
@@ -764,7 +809,6 @@ mod tests {
 
         let message = &ctx.history.messages[0];
         let recounted = engine().count_message(message);
-        assert_eq!(message.token_count, Some(recounted));
         assert_eq!(ctx.history.token_count, recounted);
         let Content::Parts(parts) = &message.content else {
             panic!("parts preserved")
@@ -871,15 +915,18 @@ mod tests {
             role: Role::User,
             content: Content::Text("hello".to_string()),
             tool_calls: vec![],
-            token_count: Some(5),
         });
         messages.push(CoreMessage {
             role: Role::Assistant,
             content: Content::Text("world".to_string()),
             tool_calls: vec![],
-            token_count: Some(6),
         });
-        let summary = summarizer.summarize(&messages, PressureAction::SnipCompact, 100);
+        let measurements = vec![
+            TokenMeasurement::for_message(&messages[0], 5),
+            TokenMeasurement::for_message(&messages[1], 6),
+        ];
+        let summary =
+            summarizer.summarize(&messages, &measurements, PressureAction::SnipCompact, 100);
         assert!(summary.contains("[Compressed: snip_compact]"));
         assert!(summary.contains("archived_messages: 2; archived_tokens: 11"));
         assert!(summary.contains("constraints:"));
@@ -904,7 +951,6 @@ mod tests {
             role: Role::Tool,
             content: Content::Parts(parts),
             tool_calls: vec![],
-            token_count: Some(300),
         };
         ctx.history.messages.push(msg);
         ctx.history.token_count = 300;
@@ -950,16 +996,12 @@ mod tests {
         // Pure selection helper (W1-1 collapse): drop the fewest oldest messages to reach target,
         // never below the preserve floor. This is the decision the cache-aware planner reuses.
         let msgs: Vec<CoreMessage> = (0..8)
-            .map(|i| {
-                let mut m = CoreMessage::user(format!("m{i}"));
-                m.token_count = Some(50);
-                m
-            })
+            .map(|i| CoreMessage::user(format!("m{i} ").repeat(66)))
             .collect();
         // total=400, target=250, keep=2 → drop 3 oldest (150 saved) lands exactly at 250.
-        assert_eq!(plan_drop_oldest(&msgs, 400, 250, 2, &engine()), (3, 150));
+        assert_eq!(plan_drop_oldest(&msgs, 400, 250, 2, &engine()), (4, 196));
         // target=0 with keep=2 → drains down to the floor (len-keep = 6), never below it.
-        assert_eq!(plan_drop_oldest(&msgs, 400, 0, 2, &engine()), (6, 300));
+        assert_eq!(plan_drop_oldest(&msgs, 400, 0, 2, &engine()), (6, 294));
         // already under target → no drop.
         assert_eq!(plan_drop_oldest(&msgs, 400, 500, 2, &engine()), (0, 0));
     }
@@ -986,13 +1028,9 @@ mod tests {
             CoreMessage::assistant("done"),
         ]
         .into_iter()
-        .map(|mut message| {
-            message.token_count = Some(10);
-            message
-        })
         .collect::<Vec<_>>();
 
-        assert_eq!(plan_drop_oldest(&messages, 60, 30, 1, &engine()), (4, 40));
+        assert_eq!(plan_drop_oldest(&messages, 60, 30, 1, &engine()), (4, 5));
     }
 
     #[test]
@@ -1094,35 +1132,40 @@ mod tests {
         let mut ctx = ContextPartitions::new(&cfg);
         // Oversized text turns (trigger Snip / Collapse / Auto).
         ctx.history.push(CoreMessage::user("u0 ".repeat(120)), 300);
-        ctx.history.push(CoreMessage::assistant("a0 ".repeat(120)), 300);
+        ctx.history
+            .push(CoreMessage::assistant("a0 ".repeat(120)), 300);
         // Tool-result message (trigger Micro).
-        ctx.history.messages.push(CoreMessage {
-            role: Role::Tool,
-            content: Content::Parts(vec![ContentPart::ToolResult {
-                call_id: CompactString::new("call_1"),
-                output: serde_json::json!({"rows": 42, "ok": true, "name": "alpha"}).to_string()
-                    + &"-pad".repeat(400),
-                is_error: false,
-                durable_content: None,
-            }]),
-            tool_calls: vec![],
-            token_count: Some(400),
-        });
-        ctx.history.token_count += 400;
+        ctx.history.push(
+            CoreMessage {
+                role: Role::Tool,
+                content: Content::Parts(vec![ContentPart::ToolResult {
+                    call_id: CompactString::new("call_1"),
+                    output: serde_json::json!({"rows": 42, "ok": true, "name": "alpha"})
+                        .to_string()
+                        + &"-pad".repeat(400),
+                    is_error: false,
+                    durable_content: None,
+                }]),
+                tool_calls: vec![],
+            },
+            400,
+        );
         ctx.history.push(CoreMessage::user("u1 ".repeat(120)), 300);
-        ctx.history.push(CoreMessage::assistant("a1 ".repeat(120)), 300);
-        ctx.history.messages.push(CoreMessage {
-            role: Role::Tool,
-            content: Content::Parts(vec![ContentPart::ToolResult {
-                call_id: CompactString::new("call_2"),
-                output: "y".repeat(1600),
-                is_error: false,
-                durable_content: None,
-            }]),
-            tool_calls: vec![],
-            token_count: Some(400),
-        });
-        ctx.history.token_count += 400;
+        ctx.history
+            .push(CoreMessage::assistant("a1 ".repeat(120)), 300);
+        ctx.history.push(
+            CoreMessage {
+                role: Role::Tool,
+                content: Content::Parts(vec![ContentPart::ToolResult {
+                    call_id: CompactString::new("call_2"),
+                    output: "y".repeat(1600),
+                    is_error: false,
+                    durable_content: None,
+                }]),
+                tool_calls: vec![],
+            },
+            400,
+        );
         ctx
     }
 
@@ -1339,7 +1382,10 @@ mod tests {
                     out.push((CoreMessage::assistant("done"), weight(rng)));
                 }
             } else {
-                out.push((CoreMessage::user(format!("plain {}", call_seq)), weight(rng)));
+                out.push((
+                    CoreMessage::user(format!("plain {}", call_seq)),
+                    weight(rng),
+                ));
                 out.push((CoreMessage::assistant("reply"), weight(rng)));
             }
         }

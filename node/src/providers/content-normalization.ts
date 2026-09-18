@@ -47,7 +47,6 @@ export interface CanonicalMessage {
   /** `blocks` remains authoritative; this only preserves an observable wire-shape distinction. */
   readonly contentForm?: "text" | "blocks"
   readonly toolCalls?: readonly ToolCall[]
-  readonly tokenCount?: number
   readonly providerReplay?: ProviderReplay
 }
 
@@ -229,14 +228,9 @@ function normalizeMessage(
     : message.contentParts.map(part => {
         if (part.type === "text") return { type: "text", text: part.text }
         if (part.type === "image") {
-          if ((part.url === undefined) === (part.data === undefined)) {
-            throw new ContentValidationError("image requires exactly one of url or data")
-          }
           return {
             type: "image",
-            source: part.data !== undefined
-              ? { kind: "base64", data: part.data }
-              : { kind: "url", url: part.url! },
+            source: part.source,
             ...(part.mediaType ? { mediaType: part.mediaType } : {}),
             ...(part.detail ? { providerOptions: { openai_detail: part.detail } } : {}),
           } satisfies ToolOutputBlock
@@ -244,7 +238,7 @@ function normalizeMessage(
         if (part.type === "audio") {
           return {
             type: "audio",
-            source: { kind: "base64", data: part.data },
+            source: part.source,
             mediaType: part.mediaType,
           } satisfies ToolOutputBlock
         }
@@ -255,7 +249,6 @@ function normalizeMessage(
     blocks,
     contentForm: message.contentParts === undefined ? "text" : "blocks",
     ...(message.toolCalls ? { toolCalls: message.toolCalls } : {}),
-    ...(message.tokenCount !== undefined ? { tokenCount: message.tokenCount } : {}),
     ...(providerReplay ? { providerReplay } : {}),
   }
 }

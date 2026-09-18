@@ -222,7 +222,6 @@ describe("SPC-013 A-05 Anthropic Messages ProtocolAdapter", () => {
       message: {
         role: "assistant",
         content: "done",
-        tokenCount: 4,
         toolCalls: [{
           id: "call_2",
           name: "lookup",

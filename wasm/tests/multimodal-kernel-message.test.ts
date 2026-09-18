@@ -14,7 +14,7 @@ describe("messageToKernelMessage multimodal serialization", () => {
       content: "describe this",
       contentParts: [
         { type: "text", text: "describe this" },
-        { type: "image", data: "QUJD", mediaType: "image/png", detail: "low" },
+        { type: "image", source: { kind: "base64", data: "QUJD" }, mediaType: "image/png", detail: "low" },
       ],
       toolCalls: [],
     }
@@ -23,7 +23,7 @@ describe("messageToKernelMessage multimodal serialization", () => {
     const parts = out.content as Array<Record<string, unknown>>
     const img = parts.find(p => p.type === "image")
     expect(img).toBeDefined()
-    expect(img!.data).toBe("QUJD")
+    expect(img!.source).toEqual({ kind: "base64", data: "QUJD" })
     expect(img!.media_type).toBe("image/png")
     expect(img!.detail).toBe("low")
     expect(parts.some(p => p.type === "text" && p.text === "describe this")).toBe(true)
@@ -33,12 +33,12 @@ describe("messageToKernelMessage multimodal serialization", () => {
     const msg: Message = {
       role: "user",
       content: "",
-      contentParts: [{ type: "audio", data: "AAAA", mediaType: "audio/wav" }],
+      contentParts: [{ type: "audio", source: { kind: "base64", data: "AAAA" }, mediaType: "audio/wav" }],
       toolCalls: [],
     }
     const parts = messageToKernelMessage(msg).content as Array<Record<string, unknown>>
     const audio = parts.find(p => p.type === "audio")
-    expect(audio).toEqual({ type: "audio", data: "AAAA", media_type: "audio/wav" })
+    expect(audio).toEqual({ type: "audio", source: { kind: "base64", data: "AAAA" }, media_type: "audio/wav" })
   })
 })
 
@@ -58,7 +58,7 @@ describe("attachment seeding is idempotent per session (runner)", () => {
 
   it("a same-session retry neither re-records nor re-seeds identical attachments", async () => {
     kernelEvents.length = 0
-    const attachments: ContentPart[] = [{ type: "image", data: "iVBORw0KGgo=", mediaType: "image/png" }]
+    const attachments: ContentPart[] = [{ type: "image", source: { kind: "base64", data: "iVBORw0KGgo=" }, mediaType: "image/png" }]
     const sessionLog = new InMemorySessionLog()
     const runner = new RuntimeRunner({
       provider: textOnlyProvider,
@@ -93,8 +93,8 @@ describe("attachment seeding is idempotent per session (runner)", () => {
       maxTokens: 2048,
       maxTurns: 6,
     })
-    const imageA: ContentPart[] = [{ type: "image", data: "AAAA", mediaType: "image/png" }]
-    const imageB: ContentPart[] = [{ type: "image", data: "BBBB", mediaType: "image/png" }]
+    const imageA: ContentPart[] = [{ type: "image", source: { kind: "base64", data: "AAAA" }, mediaType: "image/png" }]
+    const imageB: ContentPart[] = [{ type: "image", source: { kind: "base64", data: "BBBB" }, mediaType: "image/png" }]
 
     for await (const _e of runner.run({ sessionId: "two", goal: "first", attachments: imageA })) { /* drain */ }
     for await (const _e of runner.run({ sessionId: "two", goal: "second", attachments: imageB })) { /* drain */ }

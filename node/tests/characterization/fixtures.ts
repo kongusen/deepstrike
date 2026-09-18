@@ -43,7 +43,7 @@ export const CHARACTERIZATION_CONTEXT: RenderedContext = {
       toolCalls: [],
       contentParts: [
         { type: "text", text: "Here is a photo I took." },
-        { type: "image", data: "aGVsbG8=", mediaType: "image/png" },
+        { type: "image", source: { kind: "base64", data: "aGVsbG8=" }, mediaType: "image/png" },
       ],
     },
     {

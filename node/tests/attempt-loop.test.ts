@@ -155,7 +155,7 @@ describe("AttemptLoop", () => {
   })
 
   it("forwards attachments to every attempt (same-session carry)", async () => {
-    const attachments = [{ type: "image" as const, data: "iVBORw0KGgo=", mediaType: "image/png" }]
+    const attachments = [{ type: "image" as const, source: { kind: "base64" as const, data: "iVBORw0KGgo=" }, mediaType: "image/png" }]
     const { runner, runs } = scriptedRunner([
       { text: "first", status: "completed", turns: 1, tokens: 1 },
       { text: "second", status: "completed", turns: 1, tokens: 1 },
@@ -175,7 +175,7 @@ describe("AttemptLoop", () => {
   })
 
   it("re-seeds attachments on fresh-session retries (the silent-loss case)", async () => {
-    const attachments = [{ type: "image" as const, data: "iVBORw0KGgo=", mediaType: "image/png" }]
+    const attachments = [{ type: "image" as const, source: { kind: "base64" as const, data: "iVBORw0KGgo=" }, mediaType: "image/png" }]
     const { runner, runs } = scriptedRunner([
       { text: "first", status: "completed", turns: 1, tokens: 1 },
       { text: "second", status: "completed", turns: 1, tokens: 1 },

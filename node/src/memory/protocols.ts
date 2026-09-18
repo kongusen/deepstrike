@@ -6,7 +6,6 @@ export interface SessionMessage {
   content: string
   /** Structured multimodal parts. Preserved for round-trip fidelity (e.g. tool result messages). */
   contentParts?: ContentPart[]
-  tokenCount?: number
   toolCalls?: Array<{ id: string; name: string; arguments: string }>
 }
 

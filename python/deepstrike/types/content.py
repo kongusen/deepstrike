@@ -1,9 +1,8 @@
 """Canonical structured tool content for the pure-Python runtime.
 
-Mirrors the Node TS-only design (spc_012-N-01): the pyo3 `ContentPartObj` binding
-deliberately gained no new field (spc_012-R-07 premise correction — that binding only
-serves the kernel-JSON conversion path, which is text-only by design). Structured tool
-output therefore lives on this pure-Python shim, duck-typed against `ContentPartObj`.
+Mirrors the Node structured content design (spc_012-N-01): the pyo3 `ContentPartObj` binding
+carries an explicit durable source mirror for media. Structured tool output still lives on
+this pure-Python shim, duck-typed against `ContentPartObj`.
 The runner carries non-durable blocks only in an operation-scoped overlay, so reusing
 the Runner cannot leak blocks across sessions.
 
@@ -113,13 +112,35 @@ def normalize_tool_result(
   return CanonicalToolResult(call_id, tuple(content_parts), is_error)
 
 
+def media_source(part: Any) -> dict[str, Any]:
+  """Return the explicit DurableSource mirror carried by a Python ContentPartObj."""
+  kind = getattr(part, "source_kind", None)
+  if kind == "base64":
+    data = getattr(part, "source_data", None)
+    _require_non_empty(data, f"{getattr(part, 'type', 'media')} base64 source")
+    return {"kind": "base64", "data": data}
+  if kind == "url" or (kind is None and getattr(part, "url", None)):
+    url = getattr(part, "url", None)
+    _require_non_empty(url, f"{getattr(part, 'type', 'media')} URL source")
+    return {"kind": "url", "url": url}
+  if kind == "fileId":
+    file_id = getattr(part, "file_id", None)
+    _require_non_empty(file_id, f"{getattr(part, 'type', 'media')} fileId source")
+    return {"kind": "fileId", "id": file_id}
+  if kind == "object":
+    handle = getattr(part, "source_data", None)
+    _require_non_empty(handle, f"{getattr(part, 'type', 'media')} object source")
+    return {"kind": "object", "handle": handle}
+  raise ContentValidationError(f"{getattr(part, 'type', 'media')} source is required")
+
+
 def _validate_media_part(part: Any) -> None:
-  kind = getattr(part, "type", "unknown")
-  data = getattr(part, "data", None)
-  url = getattr(part, "url", None)
-  if bool(data) == bool(url):
-    raise ContentValidationError(f"{kind} source must contain exactly one of data or url")
-  _require_non_empty(data if data else url, f"{kind} source")
+  source = media_source(part)
+  if source["kind"] == "base64":
+    try:
+      base64.b64decode(source["data"], validate=True)
+    except (binascii.Error, ValueError) as exc:
+      raise ContentValidationError(f"{getattr(part, 'type', 'media')} base64 data is not valid base64") from exc
 
 
 def _validate_file_part(part: Any, resolved: "ResolvedProviderRuntime | None") -> None:
@@ -217,7 +238,7 @@ def validate_rendered_message(
       _validate_media_part(part)
       if resolved is not None:
         require_content_disposition(resolved.protocol, kind, "message")
-      _reject_unsupported_capability(resolved, kind, "base64" if getattr(part, "data", None) else "url")
+      _reject_unsupported_capability(resolved, kind, media_source(part)["kind"])
     elif kind == "file":
       if resolved is not None:
         require_content_disposition(resolved.protocol, kind, "message")
@@ -286,8 +307,5 @@ class RenderedMessage:
   isinstance-strict on turns."""
   role: str = "user"
   content: str = ""
-  # Deprecated since 0.2.67, removed in 0.2.68 (DEL-1): projection-only during the
-  # migration window — the kernel recomputes via its token engine.
-  token_count: int | None = None
   tool_calls: list | None = None
   content_parts: list | None = None

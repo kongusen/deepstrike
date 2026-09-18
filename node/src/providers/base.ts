@@ -133,10 +133,9 @@ export function toAnthropicContent(msg: Message): string | Array<Record<string, 
   return msg.contentParts.map(p => {
     if (p.type === "text") return { type: "text", text: p.text }
     if (p.type === "image") {
-      if (p.data) {
-        return { type: "image", source: { type: "base64", media_type: p.mediaType ?? "image/png", data: p.data } }
-      }
-      return { type: "image", source: { type: "url", url: p.url } }
+      if (p.source.kind === "base64") return { type: "image", source: { type: "base64", media_type: p.mediaType ?? "image/png", data: p.source.data } }
+      if (p.source.kind === "url") return { type: "image", source: { type: "url", url: p.source.url } }
+      return { type: "text", text: "[image]" }
     }
     if (p.type === "audio") {
       throw new UnsupportedModalityError("audio", "anthropic")
@@ -256,11 +255,12 @@ export function toOpenAIContent(msg: Message): string | Array<Record<string, unk
   return msg.contentParts.map(p => {
     if (p.type === "text") return { type: "text", text: p.text }
     if (p.type === "image") {
-      const url = p.data ? `data:${p.mediaType ?? "image/png"};base64,${p.data}` : p.url!
+      const url = p.source.kind === "base64" ? `data:${p.mediaType ?? "image/png"};base64,${p.source.data}` : p.source.kind === "url" ? p.source.url : ""
       return { type: "image_url", image_url: { url, ...(p.detail ? { detail: p.detail } : {}) } }
     }
     if (p.type === "audio") {
-      return { type: "input_audio", input_audio: { data: p.data, format: openaiAudioFormat(p.mediaType) } }
+      if (p.source.kind !== "base64") return { type: "text", text: "[audio]" }
+      return { type: "input_audio", input_audio: { data: p.source.data, format: openaiAudioFormat(p.mediaType) } }
     }
     if (p.type === "tool_result") {
       return { type: "text", text: p.output }

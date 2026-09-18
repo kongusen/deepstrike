@@ -1,10 +1,5 @@
 //! Syscall trap + governance gate impl for [`super::LoopStateMachine`].
 
-
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use std::collections::HashMap;
 
 use super::super::tcb::{ApprovalId, TaskLifecycle, WaitCondition, WaitMode, WaitSet};
@@ -508,7 +503,6 @@ impl LoopStateMachine {
                 is_error: true,
                 is_fatal: false,
                 error_kind: Some(ToolErrorKind::GovernanceDenied),
-                token_count: None,
             });
         }
         if allowed.is_empty() {
@@ -559,7 +553,6 @@ impl LoopStateMachine {
                 is_error: true,
                 is_fatal: false,
                 error_kind: Some(ToolErrorKind::GovernanceDenied),
-                token_count: None,
             });
         }
         let remaining: Vec<ToolCall> = if denied_ids.is_empty() {
@@ -684,7 +677,6 @@ impl LoopStateMachine {
                         is_error: true,
                         is_fatal: false,
                         error_kind: Some(ToolErrorKind::GovernanceDenied),
-                        token_count: None,
                     });
                 }
             } else {
@@ -762,7 +754,6 @@ fn fuse_denied_results(calls: &[ToolCall], count: u32) -> Vec<ToolResult> {
             is_error: true,
             is_fatal: false,
             error_kind: None,
-            token_count: None,
         })
         .collect()
 }

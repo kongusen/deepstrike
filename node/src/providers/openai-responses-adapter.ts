@@ -247,15 +247,11 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
       ? raw.usage as Record<string, unknown>
       : undefined
     if (usage) this.normalizeUsage(usage)
-    const tokenCount = usage
-      ? numberField(usage, "output_tokens") ?? numberField(usage, "total_tokens")
-      : undefined
     return {
       message: {
         role: "assistant",
         content: decoded.content,
         toolCalls: decoded.toolCalls,
-        ...(tokenCount !== undefined ? { tokenCount } : {}),
       },
     }
   }

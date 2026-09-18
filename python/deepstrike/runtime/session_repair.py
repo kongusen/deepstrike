@@ -7,14 +7,11 @@ from deepstrike._kernel import ToolCall
 from deepstrike.runtime.replay_sanitize import sanitize_replay_text
 
 
-def _estimate_token_count(text: str) -> int:
-  return max(1, len(text) // 4)
-
 
 def normalize_llm_completed(event: dict[str, Any], max_bytes: int | None = None) -> dict[str, Any]:
   """Normalize a persisted llm_completed event for recovery.
 
-  Content is sanitized and token_count backfilled, but the stored
+  Content is sanitized while any existing token_count remains raw evidence, but the stored
   ``provider_replay`` envelope is passed through verbatim. This layer is
   provider-neutral and never synthesizes protocol-specific replay shapes
   (e.g. Anthropic ``native_blocks``); canonical replay seeding for a given
@@ -28,7 +25,7 @@ def normalize_llm_completed(event: dict[str, Any], max_bytes: int | None = None)
     "turn": event["turn"],
     "content": content,
     "tool_calls": tool_calls,
-    "token_count": event.get("token_count") or _estimate_token_count(content),
+    **({"token_count": event["token_count"]} if event.get("token_count") is not None else {}),
   }
   if provider_replay:
     out["provider_replay"] = provider_replay
@@ -123,7 +120,6 @@ def build_workflow_node_completed_event(
         {"id": c.id, "name": c.name, "arguments": _safe_tool_arguments(c.arguments)}
         for c in (getattr(output, "tool_calls", None) or [])
       ],
-      **({"token_count": output.token_count} if getattr(output, "token_count", None) is not None else {}),
     }
   return event
 

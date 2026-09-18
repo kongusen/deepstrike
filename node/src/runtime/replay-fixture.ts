@@ -17,8 +17,8 @@ import type { SessionEvent } from "./session-log.js"
  * one Message per event. Pass the result directly to `new ReplayProvider(messages)`.
  *
  * Accepts both wire shapes the SDK uses interchangeably:
- *   - in-memory: `{ toolCalls, tokenCount, providerReplay }` (camelCase)
- *   - serialised session-log: `{ tool_calls, token_count, provider_replay }` (snake_case)
+ *   - in-memory: `{ toolCalls, providerReplay }` (camelCase)
+ *   - serialised session-log: `{ tool_calls, token_count, provider_replay }` (snake_case; token_count is wire evidence)
  *
  * @param events Session events, in original order. Accepts both `{ event, seq }` (the shape
  *               `SessionLog.read()` returns) and a bare `SessionEvent[]`.
@@ -32,14 +32,12 @@ export function extractRecordedMessages(
     if (event.kind !== "llm_completed") continue
     const e = event as unknown as Record<string, unknown>
     const tcRaw = (e.toolCalls ?? e.tool_calls) as unknown[] | undefined
-    const tokenCount = (e.tokenCount ?? e.token_count) as number | undefined
     out.push({
       role: "assistant",
       content: typeof e.content === "string" ? e.content : "",
       ...(Array.isArray(tcRaw) && tcRaw.length > 0
         ? { toolCalls: normalizeToolCalls(tcRaw as ToolCall[]) }
         : {}),
-      ...(tokenCount !== undefined ? { tokenCount } : {}),
     })
   }
   return out

@@ -9,7 +9,7 @@ describe("multimodal image input", () => {
     content: "",
     contentParts: [
       { type: "text", text: "What is in this image?" },
-      { type: "image", data: "iVBORw0KGgo=", mediaType: "image/png" },
+      { type: "image", source: { kind: "base64", data: "iVBORw0KGgo=" }, mediaType: "image/png" },
     ],
   }
 
@@ -23,7 +23,7 @@ describe("multimodal image input", () => {
 
   it("Gemini renders a URL image as fileData", () => {
     const contents = buildContents([
-      { role: "user", content: "", contentParts: [{ type: "image", url: "https://x/y.png", mediaType: "image/png" }] },
+      { role: "user", content: "", contentParts: [{ type: "image", source: { kind: "url", url: "https://x/y.png" }, mediaType: "image/png" }] },
     ])
     const parts = contents[0].parts as any[]
     expect(parts.find(p => p.fileData).fileData).toEqual({ mimeType: "image/png", fileUri: "https://x/y.png" })
@@ -54,7 +54,7 @@ describe("attachment seeding is idempotent per session (runner)", () => {
     }
   }
 
-  const image = (data: string): ContentPart => ({ type: "image", data, mediaType: "image/png" })
+  const image = (data: string): ContentPart => ({ type: "image", source: { kind: "base64", data }, mediaType: "image/png" })
 
   function countImageParts(ctx: RenderedContext): number {
     return ctx.turns.reduce(
@@ -102,7 +102,7 @@ describe("multimodal audio map-or-reject", () => {
     content: "",
     contentParts: [
       { type: "text", text: "transcribe" },
-      { type: "audio", data: "AAAA", mediaType: "audio/wav" },
+      { type: "audio", source: { kind: "base64", data: "AAAA" }, mediaType: "audio/wav" },
     ],
   }
 

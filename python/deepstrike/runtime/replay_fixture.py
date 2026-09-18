@@ -3,9 +3,8 @@
 Python port of node/src/runtime/replay-fixture.ts. Walks `llm_completed` events from a
 session log and returns the ordered list of assistant Messages.
 
-Accepts both wire shapes the SDK uses interchangeably:
-- camelCase in-memory: `toolCalls`, `tokenCount`
-- snake_case on-disk:  `tool_calls`, `token_count`
+Accepts both camelCase and snake_case tool-call wire shapes. Token usage remains session evidence;
+the returned public Message mirror carries no token projection.
 """
 from __future__ import annotations
 
@@ -41,12 +40,9 @@ def extract_recorded_messages(events: Iterable[Any]) -> list[Message]:
             if not isinstance(args, str):
                 args = json.dumps(args)
             normalized_tc.append({"id": tc_id, "name": name, "arguments": args})
-        token_count = _g("tokenCount") or _g("token_count")
 
         msg: dict[str, Any] = {"role": "assistant", "content": content}
         if normalized_tc:
             msg["toolCalls"] = normalized_tc
-        if token_count is not None:
-            msg["tokenCount"] = token_count
         out.append(msg)  # type: ignore[arg-type]
     return out

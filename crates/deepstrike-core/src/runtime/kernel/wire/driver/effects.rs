@@ -1,7 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use super::*;
 
 impl CanonicalOperationDriver {
@@ -68,7 +64,18 @@ impl CanonicalOperationDriver {
                 let mut results: Vec<ToolResult> =
                     tools.results.iter().map(core_tool_result).collect();
                 results.extend(self.close_out_fatal_batch(&tools.results)?);
-                let mut action = self.engine_mut()?.feed(LoopEvent::ToolResults { results });
+                let measurements = tools.results.iter().filter_map(|payload| match payload {
+                    WireToolResultPayload::Inline(inline) => inline.result.tokens.map(|tokens| {
+                        crate::context::measurement::ToolMeasurement::new(
+                            inline.call_id.as_str(),
+                            tokens,
+                        )
+                    }),
+                    WireToolResultPayload::External(_) => None,
+                });
+                let mut action = self
+                    .engine_mut()?
+                    .feed_tool_results_with_measurements(results, measurements);
                 self.record_external_payloads(&tools.results)?;
                 self.engine_mut()?.refresh_call_llm_action(&mut action);
                 self.continue_after(context, action, root_kind)
@@ -278,7 +285,6 @@ impl CanonicalOperationDriver {
                 is_error: true,
                 is_fatal: false,
                 error_kind: Some(ToolErrorKind::Fatal),
-                token_count: None,
             })
             .collect())
     }
@@ -329,7 +335,6 @@ impl CanonicalOperationDriver {
                         is_error: true,
                         is_fatal: false,
                         error_kind: Some(ToolErrorKind::Fatal),
-                        token_count: None,
                     })
                     .collect();
                 let action = engine.feed(LoopEvent::ToolResults { results });

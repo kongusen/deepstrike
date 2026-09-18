@@ -192,7 +192,7 @@ Token 计量有三类数值，语义不可互换：
 
 | 字段 | 唯一语义 |
 |------|----------|
-| `Message.token_count` / `tokenCount` | 该消息自身进入历史后的 footprint；assistant 消息只取 provider output tokens，绝不写入本轮 input/total |
+| `ContextTokenEngine` / `TokenMeasurement` | 运行期预算分别使用内核重算或 host 侧测量表；provider 真实 input/output 计数只进入 usage/attempt evidence |
 | `ProviderUsage.inputTokens` | provider-visible 完整 prompt token 数（计费与观测的权威值） |
 | `PromptMeasurement.inputTokens` | 发送前对同一 wire plan 的测量或估算，只参与发送前预算，不冒充计费事实 |
 

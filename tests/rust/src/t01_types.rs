@@ -65,7 +65,8 @@ fn content_parts_as_text_returns_none() {
 #[test]
 fn content_parts_count_sums_parts_via_engine() {
     let e = deepstrike_core::context::token_engine::ContextTokenEngine::char_approx();
-    let msg = CoreMessage::user_multimodal(vec![ContentPart::text("hello"), ContentPart::text("world")]);
+    let msg =
+        CoreMessage::user_multimodal(vec![ContentPart::text("hello"), ContentPart::text("world")]);
     assert_eq!(e.count_message(&msg), 2); // char/4 per part, min 1
 }
 
@@ -81,32 +82,13 @@ fn content_part_text_constructor() {
 fn content_part_image_url_constructor() {
     let p = ContentPart::image_url("https://img.png");
     match p {
-        ContentPart::Image { url, data, .. } => {
-            assert_eq!(url.as_deref(), Some("https://img.png"));
-            assert!(data.is_none());
+        ContentPart::Image { source, .. } => {
+            assert!(
+                matches!(source, deepstrike_core::types::durable_content::DurableSource::Url { url } if url == "https://img.png")
+            );
         }
         _ => panic!("expected Image"),
     }
-}
-
-#[test]
-fn content_part_image_base64_constructor() {
-    let p = ContentPart::image_base64("abc123", "image/png");
-    match p {
-        ContentPart::Image {
-            data, media_type, ..
-        } => {
-            assert_eq!(data.as_deref(), Some("abc123"));
-            assert_eq!(media_type.as_deref(), Some("image/png"));
-        }
-        _ => panic!("expected Image"),
-    }
-}
-
-#[test]
-fn content_part_audio_constructor() {
-    let p = ContentPart::audio("base64data", "audio/wav");
-    assert!(matches!(p, ContentPart::Audio { .. }));
 }
 
 // ─── Multimodal message ─────────────────────────────────────────────────────
@@ -147,11 +129,9 @@ fn tool_result_fields() {
         is_error: false,
         is_fatal: false,
         error_kind: None,
-        token_count: Some(5),
     };
     assert_eq!(tr.output.as_text(), Some("3"));
     assert!(!tr.is_error);
-    assert_eq!(tr.token_count, Some(5));
 }
 
 #[test]
@@ -272,8 +252,9 @@ fn agent_identity_sub_agent() {
 fn image_low_detail_token_estimate() {
     let e = deepstrike_core::context::token_engine::ContextTokenEngine::char_approx();
     let msg = CoreMessage::user_multimodal(vec![ContentPart::Image {
-        url: Some("https://example.com/img.png".into()),
-        data: None,
+        source: deepstrike_core::types::durable_content::DurableSource::Url {
+            url: "https://example.com/img.png".into(),
+        },
         media_type: None,
         detail: Some("low".into()),
     }]);
@@ -284,8 +265,9 @@ fn image_low_detail_token_estimate() {
 fn image_high_detail_token_estimate() {
     let e = deepstrike_core::context::token_engine::ContextTokenEngine::char_approx();
     let msg = CoreMessage::user_multimodal(vec![ContentPart::Image {
-        url: Some("https://example.com/img.png".into()),
-        data: None,
+        source: deepstrike_core::types::durable_content::DurableSource::Url {
+            url: "https://example.com/img.png".into(),
+        },
         media_type: None,
         detail: Some("high".into()),
     }]);

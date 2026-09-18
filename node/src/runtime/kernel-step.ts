@@ -6,6 +6,7 @@ import type {
   ToolCall,
   ToolResult,
   ToolSchema,
+  MediaSource,
 } from "../types.js"
 import type { SkillMetadata } from "../skills/loader.js"
 import type { RollbackReason } from "./session-log.js"
@@ -270,9 +271,6 @@ export function messageToKernelMessage(message: Message): Record<string, unknown
       arguments: tryParseJson(tc.arguments) ?? {},
     })),
   }
-  if (message.tokenCount !== undefined) {
-    out.token_count = message.tokenCount
-  }
   if (message.contentParts && message.contentParts.length > 0) {
     out.content = message.contentParts.map(part => {
       if (part.type === "text") return { type: "text", text: part.text }
@@ -287,14 +285,13 @@ export function messageToKernelMessage(message: Message): Record<string, unknown
       if (part.type === "image") {
         return {
           type: "image",
-          url: part.url,
-          data: part.data,
+          source: part.source,
           media_type: part.mediaType,
           detail: part.detail,
         }
       }
       if (part.type === "audio") {
-        return { type: "audio", data: part.data, media_type: part.mediaType }
+        return { type: "audio", source: part.source, media_type: part.mediaType }
       }
       return { type: "text", text: message.content }
     })
@@ -305,12 +302,12 @@ export function messageToKernelMessage(message: Message): Record<string, unknown
 }
 
 export function toolResultToKernel(result: ToolResult): Record<string, unknown> {
+  // Usage evidence enters through the host event contract; content alone cannot establish usage.
   const out: Record<string, unknown> = {
     call_id: result.callId,
     output: result.output,
     is_error: result.isError,
     is_fatal: result.isFatal ?? false,
-    token_count: result.tokenCount ?? null,
   }
   if (result.errorKind !== undefined) {
     out.error_kind = result.errorKind
@@ -416,9 +413,6 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): Message {
       arguments: JSON.stringify(tc.arguments ?? {}),
     })),
   }
-  if (typeof (raw.tokens ?? raw.token_count) === "number") {
-    message.tokenCount = Number(raw.tokens ?? raw.token_count)
-  }
   if (structuredContent) {
     message.contentParts = structuredContent
       .filter((part): part is Record<string, unknown> => typeof part === "object" && part !== null)
@@ -437,8 +431,7 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): Message {
         if (part.type === "image") {
           return {
             type: "image",
-            url: part.url as string | undefined,
-            data: part.data as string | undefined,
+            source: part.source as MediaSource,
             mediaType: part.media_type as string | undefined,
             detail: part.detail as "auto" | "low" | "high" | undefined,
           }
@@ -446,7 +439,7 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): Message {
         if (part.type === "audio") {
           return {
             type: "audio",
-            data: String(part.data ?? ""),
+            source: part.source as MediaSource,
             mediaType: String(part.media_type ?? "audio/wav"),
           }
         }

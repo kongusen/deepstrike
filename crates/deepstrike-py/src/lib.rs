@@ -232,8 +232,12 @@ struct ContentPartObj {
     text: Option<String>,
     #[pyo3(get, set)]
     url: Option<String>,
+    /// Durable source discriminator for non-URL media (`base64`, `fileId`, or `object`).
     #[pyo3(get, set)]
-    data: Option<String>,
+    source_kind: Option<String>,
+    /// Durable base64 payload when `source_kind == "base64"`.
+    #[pyo3(get, set)]
+    source_data: Option<String>,
     #[pyo3(get, set)]
     media_type: Option<String>,
     #[pyo3(get, set)]
@@ -255,12 +259,13 @@ struct ContentPartObj {
 #[pymethods]
 impl ContentPartObj {
     #[new]
-    #[pyo3(signature = (r#type, text=None, url=None, data=None, media_type=None, detail=None, call_id=None, output=None, is_error=None, file_id=None, provider_id=None, endpoint_id=None))]
+    #[pyo3(signature = (r#type, text=None, url=None, source_kind=None, source_data=None, media_type=None, detail=None, call_id=None, output=None, is_error=None, file_id=None, provider_id=None, endpoint_id=None))]
     fn new(
         r#type: String,
         text: Option<String>,
         url: Option<String>,
-        data: Option<String>,
+        source_kind: Option<String>,
+        source_data: Option<String>,
         media_type: Option<String>,
         detail: Option<String>,
         call_id: Option<String>,
@@ -274,7 +279,8 @@ impl ContentPartObj {
             r#type,
             text,
             url,
-            data,
+            source_kind,
+            source_data,
             media_type,
             detail,
             call_id,
@@ -292,7 +298,8 @@ impl ContentPartObj {
             r#type: "text".into(),
             text: Some(text),
             url: None,
-            data: None,
+            source_kind: None,
+            source_data: None,
             media_type: None,
             detail: None,
             call_id: None,
@@ -311,52 +318,10 @@ impl ContentPartObj {
             r#type: "image".into(),
             text: None,
             url: Some(url),
-            data: None,
+            source_kind: Some("url".into()),
+            source_data: None,
             media_type: None,
             detail,
-            call_id: None,
-            output: None,
-            is_error: None,
-            file_id: None,
-            provider_id: None,
-            endpoint_id: None,
-        }
-    }
-
-    /// .. deprecated:: 0.2.67
-    ///    Inline base64 leaves in 0.2.68 (DEL-3); carry media via durable-content
-    ///    `source` (`file_id`/`object`/`url`) — the provider adapter materialises bytes at L0.
-    #[staticmethod]
-    #[pyo3(signature = (data, media_type, detail=None))]
-    fn image_base64(data: String, media_type: String, detail: Option<String>) -> Self {
-        Self {
-            r#type: "image".into(),
-            text: None,
-            url: None,
-            data: Some(data),
-            media_type: Some(media_type),
-            detail,
-            call_id: None,
-            output: None,
-            is_error: None,
-            file_id: None,
-            provider_id: None,
-            endpoint_id: None,
-        }
-    }
-
-    /// .. deprecated:: 0.2.67
-    ///    Inline base64 leaves in 0.2.68 (DEL-3); carry media via durable-content
-    ///    `source` (`file_id`/`object`/`url`) — the provider adapter materialises bytes at L0.
-    #[staticmethod]
-    fn audio(data: String, media_type: String) -> Self {
-        Self {
-            r#type: "audio".into(),
-            text: None,
-            url: None,
-            data: Some(data),
-            media_type: Some(media_type),
-            detail: None,
             call_id: None,
             output: None,
             is_error: None,
@@ -373,10 +338,6 @@ impl ContentPartObj {
 
 #[pyclass]
 #[derive(Clone)]
-/// .. deprecated:: 0.2.67 (field `token_count`, DEL-1)
-///    `token_count` is projection-only during the migration window and is removed in
-///    0.2.68; the kernel recomputes via its token engine, hosts should keep counts in a
-///    TokenMeasurement-style side table keyed by content fingerprint.
 struct Message {
     #[pyo3(get, set)]
     role: String,
@@ -384,8 +345,6 @@ struct Message {
     content: String,
     #[pyo3(get, set)]
     content_parts: Option<Vec<ContentPartObj>>,
-    #[pyo3(get, set)]
-    token_count: Option<u32>,
     #[pyo3(get)]
     tool_calls: Vec<ToolCall>,
 }
@@ -393,11 +352,10 @@ struct Message {
 #[pymethods]
 impl Message {
     #[new]
-    #[pyo3(signature = (role, content, token_count = None, tool_calls = None, content_parts = None))]
+    #[pyo3(signature = (role, content, tool_calls = None, content_parts = None))]
     fn new(
         role: String,
         content: String,
-        token_count: Option<u32>,
         tool_calls: Option<Vec<ToolCall>>,
         content_parts: Option<Vec<ContentPartObj>>,
     ) -> Self {
@@ -405,7 +363,6 @@ impl Message {
             role,
             content,
             content_parts,
-            token_count,
             tool_calls: tool_calls.unwrap_or_default(),
         }
     }
@@ -416,8 +373,8 @@ impl Message {
             None => String::new(),
         };
         format!(
-            "Message(role={:?}, content={:?}, tokens={:?}{})",
-            self.role, self.content, self.token_count, parts_info
+            "Message(role={:?}, content={:?}{})",
+            self.role, self.content, parts_info
         )
     }
 }
@@ -428,7 +385,8 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             r#type: "text".into(),
             text: Some(text.clone()),
             url: None,
-            data: None,
+            source_kind: None,
+            source_data: None,
             media_type: None,
             detail: None,
             call_id: None,
@@ -439,37 +397,122 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             endpoint_id: None,
         },
         ContentPart::Image {
-            url,
-            data,
+            source,
             media_type,
             detail,
         } => ContentPartObj {
             r#type: "image".into(),
             text: None,
-            url: url.clone(),
-            data: data.clone(),
+            url: match source {
+                deepstrike_core::types::durable_content::DurableSource::Url { url } => {
+                    Some(url.clone())
+                }
+                _ => None,
+            },
+            source_kind: Some(
+                match source {
+                    deepstrike_core::types::durable_content::DurableSource::Url { .. } => "url",
+                    deepstrike_core::types::durable_content::DurableSource::Base64 { .. } => {
+                        "base64"
+                    }
+                    deepstrike_core::types::durable_content::DurableSource::FileId { .. } => {
+                        "fileId"
+                    }
+                    deepstrike_core::types::durable_content::DurableSource::Object { .. } => {
+                        "object"
+                    }
+                }
+                .into(),
+            ),
+            source_data: match source {
+                deepstrike_core::types::durable_content::DurableSource::Base64 { data } => {
+                    Some(data.clone())
+                }
+                deepstrike_core::types::durable_content::DurableSource::Object {
+                    handle, ..
+                } => Some(handle.clone()),
+                _ => None,
+            },
             media_type: media_type.clone(),
             detail: detail.clone(),
             call_id: None,
             output: None,
             is_error: None,
-            file_id: None,
-            provider_id: None,
-            endpoint_id: None,
+            file_id: match source {
+                deepstrike_core::types::durable_content::DurableSource::FileId { id, .. } => {
+                    Some(id.clone())
+                }
+                _ => None,
+            },
+            provider_id: match source {
+                deepstrike_core::types::durable_content::DurableSource::FileId {
+                    affinity, ..
+                } => Some(affinity.provider_id.clone()),
+                _ => None,
+            },
+            endpoint_id: match source {
+                deepstrike_core::types::durable_content::DurableSource::FileId {
+                    affinity, ..
+                } => Some(affinity.endpoint_id.clone()),
+                _ => None,
+            },
         },
-        ContentPart::Audio { data, media_type } => ContentPartObj {
+        ContentPart::Audio { source, media_type } => ContentPartObj {
             r#type: "audio".into(),
             text: None,
-            url: None,
-            data: Some(data.clone()),
+            url: match source {
+                deepstrike_core::types::durable_content::DurableSource::Url { url } => {
+                    Some(url.clone())
+                }
+                _ => None,
+            },
+            source_kind: Some(
+                match source {
+                    deepstrike_core::types::durable_content::DurableSource::Url { .. } => "url",
+                    deepstrike_core::types::durable_content::DurableSource::Base64 { .. } => {
+                        "base64"
+                    }
+                    deepstrike_core::types::durable_content::DurableSource::FileId { .. } => {
+                        "fileId"
+                    }
+                    deepstrike_core::types::durable_content::DurableSource::Object { .. } => {
+                        "object"
+                    }
+                }
+                .into(),
+            ),
+            source_data: match source {
+                deepstrike_core::types::durable_content::DurableSource::Base64 { data } => {
+                    Some(data.clone())
+                }
+                deepstrike_core::types::durable_content::DurableSource::Object {
+                    handle, ..
+                } => Some(handle.clone()),
+                _ => None,
+            },
             media_type: Some(media_type.clone()),
             detail: None,
             call_id: None,
             output: None,
             is_error: None,
-            file_id: None,
-            provider_id: None,
-            endpoint_id: None,
+            file_id: match source {
+                deepstrike_core::types::durable_content::DurableSource::FileId { id, .. } => {
+                    Some(id.clone())
+                }
+                _ => None,
+            },
+            provider_id: match source {
+                deepstrike_core::types::durable_content::DurableSource::FileId {
+                    affinity, ..
+                } => Some(affinity.provider_id.clone()),
+                _ => None,
+            },
+            endpoint_id: match source {
+                deepstrike_core::types::durable_content::DurableSource::FileId {
+                    affinity, ..
+                } => Some(affinity.endpoint_id.clone()),
+                _ => None,
+            },
         },
         ContentPart::ToolResult {
             call_id,
@@ -480,7 +523,8 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
             r#type: "tool_result".into(),
             text: None,
             url: None,
-            data: None,
+            source_kind: None,
+            source_data: None,
             media_type: None,
             detail: None,
             call_id: Some(call_id.to_string()),
@@ -520,7 +564,6 @@ impl Message {
             role: role.to_string(),
             content,
             content_parts,
-            token_count: msg.token_count,
             tool_calls: msg.tool_calls.iter().map(ToolCall::from_rust).collect(),
         }
     }
@@ -566,9 +609,6 @@ impl ToolCall {
 
 #[pyclass]
 #[derive(Clone)]
-/// .. deprecated:: 0.2.67 (field `token_count`, DEL-1)
-///    `token_count` is projection-only during the migration window and is removed in
-///    0.2.68; the kernel recomputes via its token engine.
 struct ToolResult {
     #[pyo3(get, set)]
     call_id: String,
@@ -580,19 +620,16 @@ struct ToolResult {
     is_fatal: bool,
     #[pyo3(get, set)]
     error_kind: Option<String>,
-    #[pyo3(get, set)]
-    token_count: Option<u32>,
 }
 
 #[pymethods]
 impl ToolResult {
     #[new]
-    #[pyo3(signature = (call_id, output, is_error = false, token_count = None, is_fatal = false, error_kind = None))]
+    #[pyo3(signature = (call_id, output, is_error = false, is_fatal = false, error_kind = None))]
     fn new(
         call_id: String,
         output: String,
         is_error: bool,
-        token_count: Option<u32>,
         is_fatal: bool,
         error_kind: Option<String>,
     ) -> Self {
@@ -602,7 +639,6 @@ impl ToolResult {
             is_error,
             is_fatal,
             error_kind,
-            token_count,
         }
     }
 }

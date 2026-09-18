@@ -47,7 +47,7 @@ describe("AttemptLoop", () => {
   })
 
   it("forwards attachments into every attempt's body context", async () => {
-    const attachments = [{ type: "image" as const, data: "QUJD", mediaType: "image/png" }]
+    const attachments = [{ type: "image" as const, source: { kind: "base64" as const, data: "QUJD" }, mediaType: "image/png" }]
     const contexts: AttemptBodyContext[] = []
     const body: AttemptBody = {
       async *run(context): AsyncIterable<AttemptBodyEvent> {

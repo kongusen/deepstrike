@@ -4,6 +4,7 @@ import type {
   ToolCall,
   ToolResult,
   ToolSchema,
+  MediaSource,
 } from "../types.js"
 import type { RollbackReason } from "./session-log.js"
 
@@ -248,9 +249,6 @@ export function messageToKernelMessage(message: Message): Record<string, unknown
       arguments: tryParseJson(tc.arguments) ?? {},
     })),
   }
-  if (message.tokenCount !== undefined) {
-    out.token_count = message.tokenCount
-  }
   // Multimodal: serialize typed content parts to the kernel `Content::Parts` shape when present
   // (image/audio must survive the reconstruction→preload path, not just live ingress).
   if (message.contentParts && message.contentParts.length > 0) {
@@ -260,10 +258,10 @@ export function messageToKernelMessage(message: Message): Record<string, unknown
         return { type: "tool_result", call_id: part.callId, output: part.output, is_error: part.isError }
       }
       if (part.type === "image") {
-        return { type: "image", url: part.url, data: part.data, media_type: part.mediaType, detail: part.detail }
+        return { type: "image", source: part.source, media_type: part.mediaType, detail: part.detail }
       }
       if (part.type === "audio") {
-        return { type: "audio", data: part.data, media_type: part.mediaType }
+        return { type: "audio", source: part.source, media_type: part.mediaType }
       }
       return { type: "text", text: message.content }
     })
@@ -274,12 +272,12 @@ export function messageToKernelMessage(message: Message): Record<string, unknown
 }
 
 export function toolResultToKernel(result: ToolResult): Record<string, unknown> {
+  // Usage evidence enters through the host event contract; content alone cannot establish usage.
   const out: Record<string, unknown> = {
     call_id: result.callId,
     output: result.output,
     is_error: result.isError,
     is_fatal: result.isFatal ?? false,
-    token_count: result.tokenCount ?? null,
   }
   if (result.errorKind !== undefined) {
     out.error_kind = result.errorKind
@@ -340,9 +338,6 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): Message {
       arguments: JSON.stringify(tc.arguments ?? {}),
     })),
   }
-  if (typeof raw.token_count === "number") {
-    message.tokenCount = raw.token_count
-  }
   if (typeof content === "string") {
     const parts = decodeCanonicalContentParts(content)
     if (parts) {
@@ -363,8 +358,7 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): Message {
           case "image":
             contentParts.push({
             type: "image" as const,
-            ...(part.url ? { url: String(part.url) } : {}),
-            ...(part.data ? { data: String(part.data) } : {}),
+            ...(part.source ? { source: part.source as MediaSource } : {}),
             ...(part.media_type ? { mediaType: String(part.media_type) } : {}),
             ...(part.detail === "auto" || part.detail === "low" || part.detail === "high"
               ? { detail: part.detail }
@@ -374,7 +368,7 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): Message {
           case "audio":
             contentParts.push({
             type: "audio" as const,
-            data: String(part.data ?? ""),
+            source: part.source as MediaSource | undefined,
             ...(part.media_type ? { mediaType: String(part.media_type) } : {}),
             })
             break

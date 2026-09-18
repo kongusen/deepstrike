@@ -65,4 +65,5 @@ sequenceDiagram
 - [Session 与恢复](/guides/session-replay-and-recovery)
 - [实现参考](./overview)
 - [Kernel ABI 参考](./kernel-abi)
+- [Runtime Language 运行时语言](./runtime-language) — 0.2.68 normative glossary
 - 运行时数据宪法：[数据模型总纲](./runtime-data-model) · [Authority 矩阵与身份](./runtime-authority) · [持久契约](./runtime-persistence) · [因果链与链验证器](./runtime-causality)

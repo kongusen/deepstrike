@@ -10,6 +10,7 @@ from .replay import ReasoningReplayMixin
 from .vendor_profiles import QWEN_POLICIES as _QWEN_POLICIES
 from .stop_reason import canonicalize_stop_reason
 from .usage import normalize_usage
+from deepstrike.types.content import media_source
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +102,11 @@ class _QwenProvider(ReasoningReplayMixin):
                 if ptype == "text":
                     parts.append({"text": p.text})
                 elif ptype == "image":
-                    data = getattr(p, "data", None)
-                    if data:
-                        parts.append({"image": f"data:{getattr(p, 'media_type', None) or 'image/png'};base64,{data}"})
-                    elif getattr(p, "url", None):
-                        parts.append({"image": p.url})
+                    source = media_source(p)
+                    if source["kind"] == "url":
+                        parts.append({"image": source["url"]})
+                    elif source["kind"] == "base64":
+                        parts.append({"image": f"data:{getattr(p, 'media_type', None) or 'image/png'};base64,{source['data']}"})
                 elif ptype == "audio":
                     raise UnsupportedModalityError("audio", "qwen")
             if not parts and turn.content:
@@ -157,7 +158,6 @@ class _QwenProvider(ReasoningReplayMixin):
                 return Message(
                     role="assistant",
                     content=self._mm_text(choice.content),
-                    token_count=getattr(resp.usage, "total_tokens", None) if resp.usage else None,
                     tool_calls=tool_calls or None,
                 )
             except Exception as exc:
@@ -246,7 +246,6 @@ class _QwenProvider(ReasoningReplayMixin):
                 return Message(
                     role="assistant",
                     content=content,
-                    token_count=resp.usage.total_tokens if resp.usage else None,
                     tool_calls=tool_calls or None,
                 )
             except Exception as exc:

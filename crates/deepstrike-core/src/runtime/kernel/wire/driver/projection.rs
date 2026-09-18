@@ -1,7 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use super::*;
 
 impl CanonicalOperationDriver {
@@ -298,14 +294,23 @@ impl CanonicalOperationDriver {
                 .system
                 .messages
                 .iter()
-                .map(|message| self.project_message(MessagePartition::System, message))
-                .chain(
-                    ctx.partitions
-                        .history
-                        .messages
-                        .iter()
-                        .map(|message| self.project_message(MessagePartition::History, message)),
-                )
+                .enumerate()
+                .map(|(index, message)| {
+                    self.project_message(
+                        MessagePartition::System,
+                        message,
+                        ctx.partitions.system.measured_tokens(index, &ctx.engine),
+                    )
+                })
+                .chain(ctx.partitions.history.messages.iter().enumerate().map(
+                    |(index, message)| {
+                        self.project_message(
+                            MessagePartition::History,
+                            message,
+                            ctx.partitions.history.measured_tokens(index, &ctx.engine),
+                        )
+                    },
+                ))
                 .collect(),
             task_state: project_task_state(&ctx.partitions.task_state),
             partition_tokens: PartitionTokenState {
@@ -325,6 +330,7 @@ impl CanonicalOperationDriver {
         &self,
         partition: MessagePartition,
         message: &CoreMessage,
+        tokens: u32,
     ) -> StoredMessageState {
         StoredMessageState {
             partition,
@@ -339,7 +345,7 @@ impl CanonicalOperationDriver {
                     arguments: call.arguments.to_string(),
                 })
                 .collect(),
-            tokens: message.token_count.unwrap_or(0),
+            tokens,
         }
     }
 

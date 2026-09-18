@@ -1,14 +1,11 @@
 //! Deterministic value-aware selection over indivisible context units.
 
-
 // DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+use super::measurement::TokenMeasurement;
 use super::token_engine::ContextTokenEngine;
 use super::units::unit_boundaries;
 use crate::lexical::{overlap_count, terms};
@@ -58,6 +55,29 @@ pub fn plan_utility_archive(
     engine: &ContextTokenEngine,
     context: &UtilitySelectionContext<'_>,
 ) -> UtilityArchivePlan {
+    plan_utility_archive_with_measurements(
+        messages,
+        &[],
+        total_tokens,
+        target_tokens,
+        preserve_recent_units,
+        engine,
+        context,
+    )
+}
+
+/// Measurement-aware planner entry point used by context partitions. The parallel slice is
+/// host-owned evidence aligned with `messages`; an empty or short slice falls back to the
+/// deprecated dual-write field during the migration window.
+pub fn plan_utility_archive_with_measurements(
+    messages: &[CoreMessage],
+    measurements: &[TokenMeasurement],
+    total_tokens: u32,
+    target_tokens: u32,
+    preserve_recent_units: usize,
+    engine: &ContextTokenEngine,
+    context: &UtilitySelectionContext<'_>,
+) -> UtilityArchivePlan {
     let ranges = unit_boundaries(messages);
     if ranges.is_empty() {
         return UtilityArchivePlan::default();
@@ -82,12 +102,16 @@ pub fn plan_utility_archive(
         let slice = &messages[range.clone()];
         let text = &unit_texts[index];
         let folded_text = text.to_lowercase();
-        let tokens = slice
-            .iter()
-            .map(|message| {
-                message
-                    .token_count
-                    .unwrap_or_else(|| engine.count_message(message))
+        let tokens = range
+            .clone()
+            .map(|message_index| {
+                measurements
+                    .get(message_index)
+                    .map(|measurement| measurement.tokens)
+                    .unwrap_or_else(|| {
+                        let message = &messages[message_index];
+                        engine.count_message(message)
+                    })
             })
             .sum::<u32>();
         let goal_overlap = if goal_terms.is_empty() {
@@ -218,10 +242,13 @@ fn unit_text(messages: &[CoreMessage]) -> String {
                             text.push(' ');
                             text.push_str(output);
                         }
-                        ContentPart::Image { url, .. } => append_unit_part(
+                        ContentPart::Image { source, .. } => append_unit_part(
                             &mut text,
                             &mut first_part,
-                            url.as_deref().unwrap_or_default(),
+                            match source {
+                                crate::types::durable_content::DurableSource::Url { url } => url,
+                                _ => "[image]",
+                            },
                         ),
                         ContentPart::Audio { .. } => {
                             append_unit_part(&mut text, &mut first_part, "audio")
@@ -356,16 +383,15 @@ mod tests {
             name: "read".into(),
             arguments: serde_json::json!({"path": "/work/a"}),
         });
-        call.token_count = Some(20);
         let mut recent = CoreMessage::user("recent");
-        recent.token_count = Some(20);
         let messages = vec![call, recent];
+        let engine = ContextTokenEngine::char_approx();
         let plan = plan_utility_archive(
             &messages,
             40,
             20,
             1,
-            &ContextTokenEngine::char_approx(),
+            &engine,
             &UtilitySelectionContext {
                 goal: "",
                 criteria: &[],
@@ -375,7 +401,7 @@ mod tests {
         );
         assert!(plan.scores[0].mandatory);
         assert!(plan.scores[0].has_unresolved);
-        assert_eq!(plan.retained_tokens, 40);
+        assert_eq!(plan.retained_tokens, 2);
     }
 
     #[test]
@@ -384,11 +410,8 @@ mod tests {
         // common characters (中/文/回…) with an active directive was marked mandatory,
         // so compression could never archive unrelated Chinese history.
         let mut unrelated = CoreMessage::assistant("我们在文中回顾了天气");
-        unrelated.token_count = Some(30);
         let mut on_topic = CoreMessage::user("已按要求保持中文回答");
-        on_topic.token_count = Some(30);
         let mut recent = CoreMessage::user("recent");
-        recent.token_count = Some(10);
         let messages = vec![unrelated, on_topic, recent];
         let plan = plan_utility_archive(
             &messages,
@@ -421,14 +444,12 @@ mod tests {
             name: "read".into(),
             arguments: serde_json::json!({}),
         });
-        call.token_count = Some(20);
         let mut result = CoreMessage::tool(vec![ContentPart::ToolResult {
             call_id: "call-keep".into(),
             output: "artifact".into(),
             is_error: false,
             durable_content: None,
         }]);
-        result.token_count = Some(20);
         let messages = vec![call, result];
         let plan = plan_utility_archive(
             &messages,
@@ -445,5 +466,27 @@ mod tests {
         );
         assert!(plan.scores[0].mandatory);
         assert_eq!(plan.archived_ranges, Vec::<Range<usize>>::new());
+    }
+
+    #[test]
+    fn measurement_aware_planner_ignores_stale_message_projection() {
+        let mut message = CoreMessage::user("short");
+        let engine = ContextTokenEngine::char_approx();
+        let measurements = vec![TokenMeasurement::for_message(&message, 2)];
+        let plan = plan_utility_archive_with_measurements(
+            &[message],
+            &measurements,
+            2,
+            1,
+            0,
+            &engine,
+            &UtilitySelectionContext {
+                goal: "",
+                criteria: &[],
+                preserved_refs: &[],
+                active_directives: &[],
+            },
+        );
+        assert_eq!(plan.scores[0].tokens, 2);
     }
 }

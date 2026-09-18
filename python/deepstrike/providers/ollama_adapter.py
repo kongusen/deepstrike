@@ -12,7 +12,7 @@ from deepstrike.providers.protocol_adapter import AdapterOutput, ProtocolRespons
 from deepstrike.providers.stop_reason import canonicalize_stop_reason
 from deepstrike.providers.stream import TextDelta, ToolCallEvent, UsageEvent
 from deepstrike.providers.usage import ProviderUsage
-from deepstrike.types.content import CanonicalAdapterInput, normalize_tool_result, project_tool_output_to_text
+from deepstrike.types.content import CanonicalAdapterInput, media_source, normalize_tool_result, project_tool_output_to_text
 
 
 def _number(raw: dict, field: str) -> int | None:
@@ -86,7 +86,7 @@ class OllamaAdapter:
             parts = getattr(message, "content_parts", None) or []
             if any(part.type == "audio" for part in parts):
                 raise UnsupportedModalityError("audio", "ollama")
-            images = [part.data for part in parts if part.type == "image" and part.data]
+            images = [media_source(part)["data"] for part in parts if part.type == "image" and media_source(part)["kind"] == "base64"]
             tool_results = [part for part in parts if part.type == "tool_result"]
             if tool_results:
                 part = tool_results[0]
@@ -121,7 +121,7 @@ class OllamaAdapter:
             normalized = normalize_tool_call(call.get("id", ""), function.get("name", ""), function.get("arguments", {}))
             if normalized:
                 tool_calls.append(normalized)
-        return Message(role="assistant", content=message.get("content") or "", token_count=0, tool_calls=tool_calls or None)
+        return Message(role="assistant", content=message.get("content") or "", tool_calls=tool_calls or None)
 
     def create_stream_state(self, input: CanonicalAdapterInput) -> OllamaStreamState:
         return OllamaStreamState()

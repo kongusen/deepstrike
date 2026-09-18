@@ -86,7 +86,6 @@ fn tool_calls_emit_execute_tools() {
             name: CompactString::new("add"),
             arguments: serde_json::json!({"x": 1, "y": 2}),
         }],
-        token_count: None,
     };
 
     let action = sm.feed(LoopEvent::LLMResponse { message: msg });
@@ -113,7 +112,6 @@ fn tool_results_advance_turn_and_emit_call_llm() {
             name: CompactString::new("add"),
             arguments: serde_json::json!({}),
         }],
-        token_count: None,
     };
     sm.feed(LoopEvent::LLMResponse { message: msg });
 
@@ -124,7 +122,6 @@ fn tool_results_advance_turn_and_emit_call_llm() {
         is_error: false,
         is_fatal: false,
         error_kind: None,
-        token_count: None,
     }];
     let action = sm.feed(LoopEvent::ToolResults { results });
     assert!(matches!(action, LoopAction::CallLLM { .. }));
@@ -198,7 +195,6 @@ fn recoverable_tool_error_does_not_rollback() {
                 name: CompactString::new("write_file"),
                 arguments: serde_json::json!({}),
             }],
-            token_count: None,
         },
     });
 
@@ -210,7 +206,6 @@ fn recoverable_tool_error_does_not_rollback() {
             is_error: true,
             is_fatal: false,
             error_kind: Some(ToolErrorKind::Recoverable),
-            token_count: None,
         }],
     });
 
@@ -245,7 +240,6 @@ fn fatal_tool_error_commits_with_visible_reason() {
                 name: CompactString::new("write_file"),
                 arguments: serde_json::json!({}),
             }],
-            token_count: None,
         },
     });
     assert_eq!(sm.ctx.partitions.history.messages.len(), 2);
@@ -258,7 +252,6 @@ fn fatal_tool_error_commits_with_visible_reason() {
             is_error: true,
             is_fatal: false,
             error_kind: Some(ToolErrorKind::Fatal),
-            token_count: None,
         }],
     });
 
@@ -530,7 +523,6 @@ fn full_tool_cycle_then_text_completes() {
             name: CompactString::new("add"),
             arguments: serde_json::json!({"x": 1, "y": 2}),
         }],
-        token_count: Some(10),
     };
     let action = sm.feed(LoopEvent::LLMResponse { message: msg });
     assert!(matches!(action, LoopAction::ExecuteTools { .. }));
@@ -543,7 +535,6 @@ fn full_tool_cycle_then_text_completes() {
         is_error: false,
         is_fatal: false,
         error_kind: None,
-        token_count: Some(5),
     }];
     let action = sm.feed(LoopEvent::ToolResults { results });
     assert!(matches!(action, LoopAction::CallLLM { .. }));

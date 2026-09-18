@@ -25,6 +25,54 @@ pub enum MeasurementSource {
     Postflight,
     /// No tokenizer ran at all; this is a coarse guess with a generous safety margin.
     Heuristic,
+    /// A host supplied measurement tied to a canonical object fingerprint.
+    HostProvided,
+}
+
+/// Host-side token evidence for one canonical runtime object. This is deliberately separate from
+/// `CoreMessage`: a measurement may be refreshed or invalidated without changing semantics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenMeasurement {
+    pub fingerprint: String,
+    pub tokens: u32,
+    pub source: MeasurementSource,
+    pub confidence: MeasurementConfidence,
+}
+
+impl TokenMeasurement {
+    pub fn for_message(message: &crate::types::message::CoreMessage, tokens: u32) -> Self {
+        use sha2::{Digest as _, Sha256};
+        let digest = Sha256::digest(serde_json::to_vec(message).expect("message is serializable"));
+        let hex = digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        Self {
+            fingerprint: format!("sha256:{hex}"),
+            tokens,
+            source: MeasurementSource::HostProvided,
+            confidence: MeasurementConfidence::HighConfidence,
+        }
+    }
+}
+
+/// Host-owned accounting fact for one completed tool call. It is an input to settlement and
+/// context accounting, never a field on the runtime `ToolResult` message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolMeasurement {
+    pub call_id: String,
+    pub tokens: u32,
+}
+
+impl ToolMeasurement {
+    pub fn new(call_id: impl Into<String>, tokens: u32) -> Self {
+        Self {
+            call_id: call_id.into(),
+            tokens,
+        }
+    }
 }
 
 /// How much to trust `PromptMeasurement.input_tokens` when deciding whether to compress. Kept
@@ -105,5 +153,13 @@ mod tests {
             result.is_err(),
             "deny_unknown_fields must reject stray keys"
         );
+    }
+
+    #[test]
+    fn tool_measurement_is_independent_from_tool_result_state() {
+        let measurement = ToolMeasurement::new("call-1", 42);
+        let json = serde_json::to_string(&measurement).unwrap();
+        let decoded: ToolMeasurement = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, measurement);
     }
 }

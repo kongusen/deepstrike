@@ -13,6 +13,7 @@ import { operationAbortSignal } from "./reliability.js"
 export interface McpContentBlock {
   type: string
   text?: string
+  source?: { kind?: string; url?: string; data?: string; id?: string; handle?: string; owner?: string; payloadRef?: string }
   data?: string
   mimeType?: string
 }
@@ -45,10 +46,16 @@ export function mcpResultToToolOutput(result: {
   const contentParts: ToolOutputBlock[] = blocks.map(c => {
     if (c.type === "text") return { type: "text", text: c.text ?? "" }
     if (c.type === "image") {
-      return { type: "image", source: { kind: "base64", data: c.data ?? "" }, mediaType: c.mimeType }
+      const source = c.source?.kind === "url" && c.source.url
+        ? { kind: "url" as const, url: c.source.url }
+        : { kind: "base64" as const, data: c.source?.data ?? c.data ?? "" }
+      return { type: "image", source, mediaType: c.mimeType }
     }
     if (c.type === "audio") {
-      return { type: "audio", source: { kind: "base64", data: c.data ?? "" }, mediaType: c.mimeType ?? "audio/wav" }
+      const source = c.source?.kind === "url" && c.source.url
+        ? { kind: "url" as const, url: c.source.url }
+        : { kind: "base64" as const, data: c.source?.data ?? c.data ?? "" }
+      return { type: "audio", source, mediaType: c.mimeType ?? "audio/wav" }
     }
     return { type: "text", text: JSON.stringify(c) }
   })

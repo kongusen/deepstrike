@@ -1,8 +1,5 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use super::config::ContextConfig;
+use super::measurement::TokenMeasurement;
 use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
 use crate::mm::value::{RetentionFeatures, RetentionKind, deterministic_retention_score};
@@ -12,6 +9,8 @@ use crate::types::message::CoreMessage;
 #[derive(Debug, Clone)]
 pub struct Partition {
     pub messages: Vec<CoreMessage>,
+    /// Host-side measurements aligned with `messages`; not part of canonical message state.
+    pub measurements: Vec<TokenMeasurement>,
     pub token_count: u32,
 }
 
@@ -19,19 +18,45 @@ impl Partition {
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
+            measurements: Vec::new(),
             token_count: 0,
         }
     }
 
-    pub fn push(&mut self, mut msg: CoreMessage, token_count: u32) {
-        msg.token_count = Some(token_count);
+    pub fn push(&mut self, msg: CoreMessage, token_count: u32) {
+        let measurement = TokenMeasurement::for_message(&msg, token_count);
         self.token_count += token_count;
         self.messages.push(msg);
+        self.measurements.push(measurement);
     }
 
     pub fn clear(&mut self) {
         self.messages.clear();
+        self.measurements.clear();
         self.token_count = 0;
+    }
+
+    pub fn measured_tokens(&self, index: usize, engine: &ContextTokenEngine) -> u32 {
+        self.measurements
+            .get(index)
+            .map(|m| m.tokens)
+            .unwrap_or_else(|| {
+                self.messages
+                    .get(index)
+                    .map(|m| engine.count_message(m))
+                    .unwrap_or(0)
+            })
+    }
+
+    pub fn set_measured_tokens(&mut self, index: usize, tokens: u32) {
+        if let Some(message) = self.messages.get(index) {
+            let measurement = TokenMeasurement::for_message(message, tokens);
+            if let Some(slot) = self.measurements.get_mut(index) {
+                *slot = measurement;
+            } else {
+                self.measurements.push(measurement);
+            }
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -108,11 +133,10 @@ impl KnowledgePartition {
     pub fn push_entry(
         &mut self,
         key: Option<compact_str::CompactString>,
-        mut msg: CoreMessage,
+        msg: CoreMessage,
         tokens: u32,
         pinned: bool,
     ) {
-        msg.token_count = Some(tokens);
         if let Some(ref k) = key {
             if let Some(entry) = self.entries.iter_mut().find(|e| e.key.as_ref() == Some(k)) {
                 entry.pending = Some(Box::new((msg, tokens)));
@@ -270,9 +294,10 @@ fn searchable_message_text(message: &CoreMessage) -> String {
                     crate::types::message::ContentPart::ToolResult { output, .. } => {
                         values.push(output.clone())
                     }
-                    crate::types::message::ContentPart::Image { url: Some(url), .. } => {
-                        values.push(url.clone())
-                    }
+                    crate::types::message::ContentPart::Image {
+                        source: crate::types::durable_content::DurableSource::Url { url },
+                        ..
+                    } => values.push(url.clone()),
                     _ => {}
                 }
             }
@@ -439,8 +464,18 @@ mod tests {
     #[test]
     fn keyed_upsert_defers_to_boundary() {
         let mut p = KnowledgePartition::new();
-        p.push_entry(Some("ref".into()), CoreMessage::system("original"), 10, false);
-        p.push_entry(Some("ref".into()), CoreMessage::system("updated"), 12, false);
+        p.push_entry(
+            Some("ref".into()),
+            CoreMessage::system("original"),
+            10,
+            false,
+        );
+        p.push_entry(
+            Some("ref".into()),
+            CoreMessage::system("updated"),
+            12,
+            false,
+        );
         // Mid-generation: still ONE entry rendering the ORIGINAL bytes (system[1] untouched).
         assert_eq!(p.len(), 1);
         assert_eq!(text_of(&p), vec!["original"]);
@@ -459,7 +494,12 @@ mod tests {
     #[test]
     fn remove_marks_then_sweep_drops() {
         let mut p = KnowledgePartition::new();
-        p.push_entry(Some("ref".into()), CoreMessage::system("pinned ref"), 8, false);
+        p.push_entry(
+            Some("ref".into()),
+            CoreMessage::system("pinned ref"),
+            8,
+            false,
+        );
         assert!(p.remove("ref"));
         // Still rendered until the boundary (no mid-generation byte rewrite).
         assert_eq!(p.len(), 1);

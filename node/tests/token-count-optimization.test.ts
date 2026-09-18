@@ -13,7 +13,7 @@ const mockContext: RenderedContext = {
 
 describe("Token Count Optimization", () => {
   describe("AnthropicProvider", () => {
-    it("reports assistant message tokenCount using only output tokens in complete()", async () => {
+    it("keeps usage evidence off the Message returned by complete()", async () => {
       const provider = new AnthropicProvider({ apiKey: "test-key" })
       ;(provider as any).client = {
         messages: {
@@ -24,7 +24,7 @@ describe("Token Count Optimization", () => {
         },
       }
       const message = await provider.complete(mockContext, [])
-      expect(message.tokenCount).toBe(20)
+      expect((message as { tokenCount?: number }).tokenCount).toBeUndefined()
     })
 
     it("yields detailed usage events in stream()", async () => {
@@ -102,7 +102,7 @@ describe("Token Count Optimization", () => {
   })
 
   describe("OpenAIProvider", () => {
-    it("reports assistant message tokenCount using completion_tokens in complete()", async () => {
+    it("keeps usage evidence off the Message returned by complete()", async () => {
       const provider = new OpenAIChatProvider({ apiKey: "test-key" })
       ;(provider as any).client = {
         chat: {
@@ -115,7 +115,7 @@ describe("Token Count Optimization", () => {
         },
       }
       const message = await provider.complete(mockContext, [])
-      expect(message.tokenCount).toBe(15)
+      expect((message as { tokenCount?: number }).tokenCount).toBeUndefined()
     })
 
     it("yields detailed usage events in stream()", async () => {
@@ -153,7 +153,7 @@ describe("Token Count Optimization", () => {
   })
 
   describe("GeminiProvider", () => {
-    it("reports assistant message tokenCount using candidatesTokenCount in complete()", async () => {
+    it("keeps usage evidence off the Message returned by complete()", async () => {
       const provider = new GeminiProvider("test-key")
       ;(provider as any).genAI = {
         getGenerativeModel: () => ({
@@ -166,7 +166,7 @@ describe("Token Count Optimization", () => {
         }),
       }
       const message = await provider.complete(mockContext, [])
-      expect(message.tokenCount).toBe(25)
+      expect((message as { tokenCount?: number }).tokenCount).toBeUndefined()
     })
 
     it("yields detailed usage events in stream()", async () => {
@@ -201,7 +201,7 @@ describe("Token Count Optimization", () => {
   })
 
   describe("OpenAIResponsesProvider", () => {
-    it("reports assistant message tokenCount using output_tokens in complete()", async () => {
+    it("keeps usage evidence off the Message returned by complete()", async () => {
       const provider = new OpenAIResponsesProvider("test-key")
       ;(provider as any).client = {
         responses: {
@@ -212,7 +212,7 @@ describe("Token Count Optimization", () => {
         },
       }
       const message = await provider.complete(mockContext, [])
-      expect(message.tokenCount).toBe(30)
+      expect((message as { tokenCount?: number }).tokenCount).toBeUndefined()
     })
 
     it("yields detailed usage events in stream()", async () => {

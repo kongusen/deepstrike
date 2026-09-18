@@ -1,7 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
-// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
-#![allow(deprecated)]
-
 use deepstrike_core::runtime::repair::{
     reconstruct_messages_with_fallback, repair_events_with_cap,
 };
@@ -154,7 +150,6 @@ mod tests {
                         role: Role::Assistant,
                         content: Content::Text("pong".into()),
                         tool_calls: vec![],
-                        token_count: None,
                     },
                     provider_replay: None,
                 },
@@ -180,7 +175,6 @@ mod tests {
                     is_error: false,
                     is_fatal: false,
                     error_kind: None,
-                    token_count: None,
                 }],
             },
         }];

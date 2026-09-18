@@ -92,7 +92,6 @@ describe("SPC-013 A-06 OpenAI Responses ProtocolAdapter", () => {
         role: "assistant",
         content: "done",
         toolCalls: [{ id: "call_2", name: "lookup", arguments: '{"city":"Paris"}' }],
-        tokenCount: 4,
       },
     })
   })

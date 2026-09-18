@@ -462,7 +462,9 @@ impl ContextManager {
     }
 
     pub fn renew(&mut self) {
-        self.partitions = self.renewal.renew(&self.partitions, self.max_tokens);
+        self.partitions = self
+            .renewal
+            .renew(&self.partitions, self.max_tokens, &self.engine);
         self.sprint += 1;
         // History was rebuilt wholesale — drop handles anchored to messages it no longer carries,
         // and start a fresh collapse generation (P0-C) since the whole prefix changed.
@@ -1576,7 +1578,12 @@ mod tests {
         mgr.push_knowledge(CoreMessage::system("oldest unkeyed"), 10);
         mgr.push_knowledge_entry(Some("a".into()), CoreMessage::system("keyed"), 10, false);
         mgr.push_knowledge_entry(Some("p".into()), CoreMessage::system("pinned"), 10, true);
-        mgr.push_knowledge_entry(Some("skill:x".into()), CoreMessage::system("skill"), 10, false);
+        mgr.push_knowledge_entry(
+            Some("skill:x".into()),
+            CoreMessage::system("skill"),
+            10,
+            false,
+        );
 
         let warn = mgr.enforce_knowledge_budget();
         assert_eq!(warn, Some((40, 25)));
@@ -1601,7 +1608,12 @@ mod tests {
     #[test]
     fn knowledge_budget_warning_stands_when_only_exempt_weight_remains() {
         let mut mgr = ContextManager::new(100);
-        mgr.push_knowledge_entry(Some("p".into()), CoreMessage::system("pinned heavy"), 30, true);
+        mgr.push_knowledge_entry(
+            Some("p".into()),
+            CoreMessage::system("pinned heavy"),
+            30,
+            true,
+        );
         mgr.push_knowledge_entry(
             Some("skill:x".into()),
             CoreMessage::system("skill heavy"),

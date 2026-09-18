@@ -25,7 +25,6 @@ fn text_response() -> LoopEvent {
             role: Role::Assistant,
             content: Content::Text("done".into()),
             tool_calls: vec![],
-            token_count: None,
         },
     }
 }
@@ -40,7 +39,6 @@ fn tool_response(call_id: &str) -> LoopEvent {
                 name: CompactString::new("some_tool"),
                 arguments: serde_json::json!({}),
             }],
-            token_count: None,
         },
     }
 }

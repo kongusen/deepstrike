@@ -1,7 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use crate::context::text::truncate_with_suffix;
 use crate::runtime::session::{ProviderReplay, SessionEvent};
 use crate::types::message::{Content, ContentPart, CoreMessage, Role, ToolCall};
@@ -23,17 +19,7 @@ pub fn sanitize_recovery_text_bounded(text: &str, max_bytes: usize) -> String {
     text.to_owned()
 }
 
-fn estimate_token_count(text: &str) -> u32 {
-    // Char count / 4 approximation — more accurate than byte count for CJK.
-    (text.chars().count() as u32 / 4).max(1)
-}
-
 fn normalize_assistant_message_with_cap(message: &mut CoreMessage, max_bytes: usize) {
-    if message.token_count.is_none() {
-        message.token_count = Some(estimate_token_count(
-            message.content.as_text().unwrap_or(""),
-        ));
-    }
     if let Content::Text(text) = &mut message.content {
         *text = sanitize_recovery_text_bounded(text, max_bytes);
     }
@@ -43,7 +29,10 @@ fn normalize_assistant_message_with_cap(message: &mut CoreMessage, max_bytes: us
 ///
 /// Provider-neutral: the stored `provider_replay` envelope is left untouched.
 /// The core never synthesizes a protocol-specific replay shape.
-pub fn repair_llm_completed(message: &mut CoreMessage, provider_replay: &mut Option<ProviderReplay>) {
+pub fn repair_llm_completed(
+    message: &mut CoreMessage,
+    provider_replay: &mut Option<ProviderReplay>,
+) {
     repair_llm_completed_with_cap(message, provider_replay, 0);
 }
 
@@ -161,7 +150,6 @@ where
                     role: Role::User,
                     content,
                     tool_calls: vec![],
-                    token_count: None,
                 });
             }
             SessionEvent::LlmCompleted { message, .. } => {
@@ -186,7 +174,6 @@ where
                             durable_content: r.durable_content.clone(),
                         }]),
                         tool_calls: vec![],
-                        token_count: r.token_count,
                     });
                 }
             }
@@ -208,7 +195,6 @@ where
                             role: Role::System,
                             content: Content::Text(system_text),
                             tool_calls: vec![],
-                            token_count: None,
                         });
                     }
                 }
@@ -236,7 +222,6 @@ where
                                 turn, summary
                             )),
                             tool_calls: vec![],
-                            token_count: None,
                         });
                     }
                 }
@@ -268,14 +253,12 @@ mod tests {
                 name: CompactString::new("ping"),
                 arguments: serde_json::json!({}),
             }],
-            token_count: None,
         };
         let mut replay: Option<ProviderReplay> = None;
         repair_llm_completed(&mut message, &mut replay);
         // Provider-neutral: no fabricated native_blocks.
         assert!(replay.is_none());
-        // CoreMessage is still normalized (token count backfilled).
-        assert!(message.token_count.is_some());
+        assert_eq!(message.content.as_text(), Some("checking"));
     }
 
     #[test]
@@ -284,7 +267,6 @@ mod tests {
             role: Role::Assistant,
             content: Content::Text("x".into()),
             tool_calls: vec![],
-            token_count: Some(1),
         };
         let mut replay = Some(ProviderReplay {
             protocol: "openai-chat".into(),
@@ -393,7 +375,13 @@ mod tests {
             criteria: vec![],
             agent_id: None,
             system_prompt: None,
-            attachments: vec![ContentPart::image_base64("QUJD", "image/png")],
+            attachments: vec![ContentPart::Image {
+                source: crate::types::durable_content::DurableSource::Base64 {
+                    data: "QUJD".into(),
+                },
+                media_type: Some("image/png".into()),
+                detail: None,
+            }],
         }];
         let messages = reconstruct_messages_with_fallback(&events, "s1", 0, |_| {
             Err(crate::context::fault::ContextFault::MissingArchive {
@@ -409,7 +397,7 @@ mod tests {
         assert!(
             parts
                 .iter()
-                .any(|p| matches!(p, ContentPart::Image { data: Some(d), .. } if d == "QUJD"))
+                .any(|p| matches!(p, ContentPart::Image { source: crate::types::durable_content::DurableSource::Base64 { data: d }, .. } if d == "QUJD"))
         );
     }
 

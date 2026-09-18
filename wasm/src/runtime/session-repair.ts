@@ -5,13 +5,9 @@ import { sanitizeReplayText } from "./replay-sanitize.js"
 
 export { REPLAY_CONTENT_MAX_BYTES as RECOVERY_CONTENT_MAX_BYTES } from "./replay-sanitize.js"
 
-function estimateTokenCount(text: string): number {
-  return Math.max(1, Math.ceil(text.length / 4))
-}
-
 /**
  * Normalize a persisted llm_completed event for recovery. Content is sanitized
- * and token_count backfilled, but the stored `provider_replay` envelope is
+ * and any existing token_count remains raw evidence, but the stored `provider_replay` envelope is
  * passed through verbatim — this layer is provider-neutral and never
  * synthesizes protocol-specific replay shapes. Canonical replay seeding is the
  * responsibility of the target provider's `seedProviderReplay`.
@@ -28,7 +24,7 @@ export function normalizeLlmCompleted(
     turn: event.turn,
     content,
     tool_calls: toolCalls,
-    token_count: event.token_count ?? estimateTokenCount(content),
+    ...(event.token_count !== undefined ? { token_count: event.token_count } : {}),
     ...(providerReplay ? { provider_replay: providerReplay } : {}),
     // P4 §3: the evidence-plane fields ride along verbatim — recovery never reads them
     // (SessionLog is evidence, not authority), so normalize must neither synthesize nor drop them.

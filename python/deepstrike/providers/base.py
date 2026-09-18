@@ -12,6 +12,7 @@ from deepstrike.types.content import (
     normalize_tool_result,
     project_tool_output_to_text,
     validate_rendered_message,
+    media_source,
 )
 
 logger = logging.getLogger(__name__)
@@ -168,10 +169,13 @@ def to_anthropic_content(msg: Message) -> str | list[dict]:
         if p.type == "text":
             parts.append({"type": "text", "text": p.text or ""})
         elif p.type == "image":
-            if p.data:
-                parts.append({"type": "image", "source": {"type": "base64", "media_type": p.media_type or "image/png", "data": p.data}})
-            elif p.url:
-                parts.append({"type": "image", "source": {"type": "url", "url": p.url}})
+            source = media_source(p)
+            if source["kind"] == "url":
+                parts.append({"type": "image", "source": {"type": "url", "url": source["url"]}})
+            elif source["kind"] == "base64":
+                parts.append({"type": "image", "source": {"type": "base64", "media_type": p.media_type or "image/png", "data": source["data"]}})
+            else:
+                parts.append({"type": "text", "text": "[image]"})
         elif p.type == "audio":
             raise UnsupportedModalityError("audio", "anthropic")
         elif p.type == "tool_result":
@@ -207,18 +211,20 @@ def to_openai_content(msg: Message) -> str | list[dict]:
         if p.type == "text":
             parts.append({"type": "text", "text": p.text or ""})
         elif p.type == "image":
-            if p.data:
-                url = f"data:{p.media_type or 'image/png'};base64,{p.data}"
-            else:
-                url = p.url or ""
+            source = media_source(p)
+            url = source["url"] if source["kind"] == "url" else f"data:{p.media_type or 'image/png'};base64,{source['data']}" if source["kind"] == "base64" else ""
             image_url: dict = {"url": url}
             if p.detail:
                 image_url["detail"] = p.detail
             parts.append({"type": "image_url", "image_url": image_url})
         elif p.type == "audio":
-            parts.append(
-                {"type": "input_audio", "input_audio": {"data": p.data, "format": _openai_audio_format(p.media_type)}}
-            )
+            source = media_source(p)
+            if source["kind"] != "base64":
+                raise UnsupportedModalityError("audio", "openai")
+            parts.append({"type": "input_audio", "input_audio": {
+                "data": source["data"],
+                "format": _openai_audio_format(p.media_type),
+            }})
         elif p.type == "tool_result":
             parts.append({"type": "text", "text": p.output or ""})
     return parts or msg.content

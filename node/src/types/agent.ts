@@ -251,7 +251,6 @@ export function subAgentResultToKernel(result: SubAgentResult): Record<string, u
               name: tc.name,
               arguments: safeParseToolArgs(tc.arguments),
             })),
-            ...(finalMessage.tokenCount !== undefined ? { token_count: finalMessage.tokenCount } : {}),
           }
         : null,
       turns_used: result.result.turnsUsed,
@@ -387,7 +386,6 @@ export interface KernelWorkflowNodeOutcome {
     role: Message["role"]
     content: string
     tool_calls?: Array<{ id: string; name: string; arguments?: Record<string, unknown> }>
-    token_count?: number
   }
 }
 
@@ -428,7 +426,6 @@ export function workflowNodeOutcomeFromKernel(raw: KernelWorkflowNodeOutcome): W
               name: call.name,
               arguments: JSON.stringify(call.arguments ?? {}),
             })),
-            ...(output.token_count != null ? { tokenCount: output.token_count } : {}),
           },
         }
       : {}),

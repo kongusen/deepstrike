@@ -9,7 +9,7 @@ import type { Message } from "../src/types.js"
  */
 describe("spc_001-05: runAgent() facade regression", () => {
   it("runs a minimal goal against a provider and returns its text, unaffected by the new Agent class", async () => {
-    const msg: Message = { role: "assistant", content: "done", tokenCount: 4 }
+    const msg: Message = { role: "assistant", content: "done" }
     const provider = new ReplayProvider([msg])
 
     const result = await runAgent({ provider, goal: "say done" })
@@ -18,7 +18,7 @@ describe("spc_001-05: runAgent() facade regression", () => {
   })
 
   it("still accepts RunAgentOptions with only the required fields (provider, goal)", async () => {
-    const provider = new ReplayProvider([{ role: "assistant", content: "ok", tokenCount: 2 }])
+    const provider = new ReplayProvider([{ role: "assistant", content: "ok" }])
     await expect(runAgent({ provider, goal: "ok" })).resolves.toBe("ok")
   })
 })

@@ -1,7 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
-// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
-#![allow(deprecated)]
-
 use deepstrike_core::runtime::session::{ProviderReplay, SessionEvent};
 use deepstrike_core::types::message::ToolCall;
 
@@ -112,7 +108,6 @@ mod tests {
                         role: Role::Assistant,
                         content: Content::Text("without replay".into()),
                         tool_calls: vec![],
-                        token_count: None,
                     },
                     provider_replay: None,
                 },
@@ -125,7 +120,6 @@ mod tests {
                         role: Role::Assistant,
                         content: Content::Text("with replay".into()),
                         tool_calls: vec![],
-                        token_count: None,
                     },
                     provider_replay: Some(replay.clone()),
                 },

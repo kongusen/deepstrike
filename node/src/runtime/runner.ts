@@ -2546,7 +2546,6 @@ export class RuntimeRunner {
           role: "assistant",
           content: finalText,
           toolCalls: canonicalToolCalls,
-          tokenCount: turnOutputTokens || turnTokens || undefined,
         }
         // P4 §2: assemble the measurement from the exact numbers that cross the boundary today
         // (inputTokens/outputTokens turn counters), enriched with the raw provider frame's cache
@@ -3010,7 +3009,6 @@ export class RuntimeRunner {
             call_id: r.callId,
             output: r.output,
             is_error: r.isError,
-            token_count: r.tokenCount,
             content: { blocks: toolOutputBlocksToDurable(
               r.contentParts?.length ? r.contentParts : [{ type: "text", text: r.output }],
             ) as Record<string, unknown>[] },
@@ -3235,7 +3233,6 @@ export class RuntimeRunner {
         role: m.role,
         content: m.content,
         contentParts: m.contentParts,
-        tokenCount: m.tokenCount,
         toolCalls: m.toolCalls?.length ? m.toolCalls : undefined,
       }))
       if (newMsgs.length > 0) {
@@ -3566,13 +3563,12 @@ function attachmentsToKernelMessage(parts: ContentPart[]): Record<string, unknow
     if (p.type === "image") {
       return {
         type: "image",
-        ...(p.url ? { url: p.url } : {}),
-        ...(p.data ? { data: p.data } : {}),
+        source: p.source,
         ...(p.mediaType ? { media_type: p.mediaType } : {}),
         ...(p.detail ? { detail: p.detail } : {}),
       }
     }
-    if (p.type === "audio") return { type: "audio", data: p.data, media_type: p.mediaType }
+    if (p.type === "audio") return { type: "audio", source: p.source, media_type: p.mediaType }
     if (p.type === "text") return { type: "text", text: p.text }
     return { type: "text", text: "" }
   })
@@ -3636,7 +3632,6 @@ export function pairOrphanToolCalls(messages: Message[]): Message[] {
         content: "",
         toolCalls: [],
         contentParts: [{ type: "tool_result", callId: c.id, output: `[${c.name} handled by kernel]`, isError: false }],
-        tokenCount: 1,
       })
     }
   }
@@ -3668,7 +3663,6 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
         content: userText,
         ...(contentParts ? { contentParts } : {}),
         toolCalls: [],
-        tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
     } else if (e.kind === "compressed") {
       const summary = upgradedSummaries.get(seq) ?? e.summary
@@ -3678,7 +3672,6 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
           role: "system",
           content: systemText,
           toolCalls: [],
-          tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
         })
       }
     } else if (e.kind === "llm_completed") {
@@ -3686,7 +3679,6 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
         role: "assistant",
         content: sanitizeReplayText(e.content, maxBytes),
         toolCalls: e.tool_calls ?? [],
-        tokenCount: e.token_count,
       })
     } else if (e.kind === "tool_completed") {
       for (const r of e.results) {
@@ -3700,7 +3692,6 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
           content: "",
           toolCalls: [],
           contentParts: [{ type: "tool_result", callId: durable.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: durable.is_error, ...(durable.blocks.length ? { contentParts: durableBlocksToToolOutput(durable.blocks) } : {}) }],
-          tokenCount: r.token_count,
         })
       }
     } else if (e.kind === "rollbacked") {
@@ -3742,7 +3733,6 @@ export async function replayMessagesAsync(
         content: userText,
         ...(contentParts ? { contentParts } : {}),
         toolCalls: [],
-        tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
     } else if (e.kind === "compressed") {
       const pageOutWillSupplyArchive = events.slice(eventIndex + 1).some(({ event }) =>
@@ -3759,7 +3749,6 @@ export async function replayMessagesAsync(
             role: "system",
             content: systemText,
             toolCalls: [],
-            tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
           })
         }
       }
@@ -3771,7 +3760,6 @@ export async function replayMessagesAsync(
               role: msg.role,
               content: sanitizeReplayText(msg.content, maxBytes),
               toolCalls: msg.toolCalls ?? [],
-              tokenCount: msg.tokenCount,
             })
           }
       } catch {
@@ -3781,7 +3769,6 @@ export async function replayMessagesAsync(
               role: "system",
               content: systemText,
               toolCalls: [],
-              tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
             })
           }
       }
@@ -3790,7 +3777,6 @@ export async function replayMessagesAsync(
         role: "assistant",
         content: sanitizeReplayText(e.content, maxBytes),
         toolCalls: e.tool_calls ?? [],
-        tokenCount: e.token_count,
       })
     } else if (e.kind === "tool_completed") {
       for (const r of e.results) {
@@ -3804,7 +3790,6 @@ export async function replayMessagesAsync(
           content: "",
           toolCalls: [],
           contentParts: [{ type: "tool_result", callId: durable.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: durable.is_error, ...(durable.blocks.length ? { contentParts: durableBlocksToToolOutput(durable.blocks) } : {}) }],
-          tokenCount: r.token_count,
         })
       }
     } else if (e.kind === "rollbacked") {

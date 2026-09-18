@@ -267,7 +267,6 @@ def _json_value(value: Any) -> Any:
       "role": value.role,
       "content": _json_value(value.content),
       "tool_calls": _json_value(value.tool_calls),
-      "token_count": value.token_count,
       "content_parts": _json_value(value.content_parts),
     }
   if type(value).__module__ == "builtins" and type(value).__name__ == "ToolSchema":
@@ -277,7 +276,7 @@ def _json_value(value: Any) -> Any:
   if type(value).__module__ == "builtins" and type(value).__name__ == "ContentPartObj":
     result = {"type": value.type}
     for key in (
-      "text", "url", "data", "media_type", "detail", "call_id", "output", "is_error",
+      "text", "url", "source_kind", "source_data", "media_type", "detail", "call_id", "output", "is_error",
       "file_id", "provider_id", "endpoint_id",
     ):
       item = getattr(value, key)

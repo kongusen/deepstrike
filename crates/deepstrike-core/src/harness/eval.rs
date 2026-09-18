@@ -16,10 +16,6 @@
 //! "loop-the-worker-then-verify-with-a-structured-verdict" shape is the `gen_eval` template. Both
 //! reuse these primitives, so the verdict shape stays consistent across the two paths.
 
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use crate::types::message::{Content, CoreMessage, Role};
 
 // ---------------------------------------------------------------------------
@@ -165,7 +161,6 @@ pub fn build_eval_messages(
              \"details\":{details_schema}{skill_instruction}}}"
         )),
         tool_calls: vec![],
-        token_count: None,
     };
 
     let user = CoreMessage {
@@ -174,7 +169,6 @@ pub fn build_eval_messages(
             "## Goal\n{goal}\n\n## Criteria\n{criteria_text}\n\n## Agent Output (attempt {attempt})\n{result}"
         )),
         tool_calls: vec![],
-        token_count: None,
     };
 
     vec![system, user]

@@ -1,7 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): dual-write construction of the
-// deprecated `token_count` projection field (always `None` here); removed with DEL-1.
-#![allow(deprecated)]
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -968,7 +964,6 @@ mod tests {
                             "prior answer ".repeat(400),
                         ),
                         tool_calls: vec![],
-                        token_count: None,
                     },
                     provider_replay: None,
                 },
@@ -1050,14 +1045,12 @@ mod tests {
                             name: compact_str::CompactString::new("fail_tool"),
                             arguments: serde_json::json!({}),
                         }],
-                        token_count: None,
                     })
                 } else {
                     Ok(CoreMessage {
                         role: Role::Assistant,
                         content: Content::Text("Recovered".into()),
                         tool_calls: vec![],
-                        token_count: None,
                     })
                 }
             }

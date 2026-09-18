@@ -194,8 +194,7 @@ class AnthropicMessagesAdapter:
         ):
             raise _textual_tool_call_error()
         usage = self.normalize_usage(_get(raw, "usage"))
-        token_count = usage.input_tokens + usage.output_tokens if usage else None
-        message = Message(role="assistant", content=content, token_count=token_count, tool_calls=calls or None)
+        message = Message(role="assistant", content=content, tool_calls=calls or None)
         return message, ({"native_blocks": native_blocks} if native_blocks else None)
 
     def create_stream_state(self, input: CanonicalAdapterInput, cache_slots: dict[str, bool] | None = None) -> AnthropicStreamState:

@@ -12,7 +12,7 @@ from deepstrike.providers.protocol_adapter import AdapterOutput, ProtocolRespons
 from deepstrike.providers.stop_reason import canonicalize_stop_reason
 from deepstrike.providers.stream import TextDelta, ToolCallEvent, UsageEvent
 from deepstrike.providers.usage import ProviderUsage
-from deepstrike.types.content import CanonicalAdapterInput, normalize_tool_result, project_tool_output_to_text
+from deepstrike.types.content import CanonicalAdapterInput, media_source, normalize_tool_result, project_tool_output_to_text
 
 
 def _get(value: Any, name: str) -> Any:
@@ -91,12 +91,13 @@ class GeminiAdapter:
                         parts.append({"text": part.text})
                     elif part.type in {"image", "audio"}:
                         media_type = part.media_type or ("image/png" if part.type == "image" else "audio/wav")
-                        if getattr(part, "data", None):
-                            parts.append({"inline_data": {"mime_type": media_type, "data": part.data}})
-                        elif getattr(part, "url", None):
-                            parts.append({"file_data": {"mime_type": media_type, "file_uri": part.url}})
-                        elif part.type == "audio":
-                            raise UnsupportedModalityError("audio", "gemini")
+                        source = media_source(part)
+                        if source["kind"] == "url":
+                            parts.append({"file_data": {"mime_type": media_type, "file_uri": source["url"]}})
+                        elif source["kind"] == "base64":
+                            parts.append({"inline_data": {"mime_type": media_type, "data": source["data"]}})
+                        else:
+                            raise UnsupportedModalityError(part.type, "gemini")
                     elif part.type != "tool_result":
                         raise UnsupportedModalityError(getattr(part, "type", "unknown"), "gemini")
             elif msg.content:
@@ -171,7 +172,7 @@ class GeminiAdapter:
                         tool_calls.append(normalized)
         usage = _get(raw, "usage_metadata")
         total = _usage_number(usage, "total_token_count") if usage is not None else None
-        return Message(role="assistant", content=content, token_count=total, tool_calls=tool_calls or None)
+        return Message(role="assistant", content=content, tool_calls=tool_calls or None)
 
     def create_stream_state(self, input: CanonicalAdapterInput) -> GeminiStreamState:
         return GeminiStreamState()

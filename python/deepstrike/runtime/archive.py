@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Protocol
 from deepstrike._kernel import Message, ToolCall, ContentPartObj
+from deepstrike.types.content import media_source
 
 class ArchiveStore(Protocol):
     async def write(self, session_id: str, seq: int, messages: list[Message]) -> str: ...
@@ -39,11 +40,11 @@ class FileArchiveStore:
             if content_parts is not None:
                 parts_json = []
                 for p in content_parts:
+                    source = media_source(p) if getattr(p, "type", None) in {"image", "audio"} else None
                     parts_json.append({
                         "type": p.type,
                         "text": getattr(p, "text", None),
-                        "url": getattr(p, "url", None),
-                        "data": getattr(p, "data", None),
+                        "source": source,
                         "media_type": getattr(p, "media_type", None),
                         "detail": getattr(p, "detail", None),
                         "call_id": getattr(p, "call_id", None),
@@ -57,7 +58,6 @@ class FileArchiveStore:
                 "role": msg.role,
                 "content": msg.content,
                 "tool_calls": tc_list,
-                "token_count": msg.token_count,
                 "content_parts": parts_json,
             }, ensure_ascii=False))
             
@@ -88,11 +88,13 @@ class FileArchiveStore:
                 if content_parts is not None:
                     parts_list = []
                     for p in content_parts:
+                        source = p.get("source") or {}
                         part = ContentPartObj(
                             type=p["type"],
                             text=p.get("text"),
-                            url=p.get("url"),
-                            data=p.get("data"),
+                            url=source.get("url") if source.get("kind") == "url" else None,
+                            source_kind=source.get("kind"),
+                            source_data=source.get("data") or source.get("handle"),
                             media_type=p.get("media_type"),
                             detail=p.get("detail"),
                             call_id=p.get("call_id"),
@@ -108,7 +110,6 @@ class FileArchiveStore:
                     role=data["role"],
                     content=data["content"],
                     tool_calls=tc_list,
-                    token_count=data.get("token_count"),
                     content_parts=parts_list,
                 ))
         return messages

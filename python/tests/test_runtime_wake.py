@@ -140,7 +140,7 @@ async def test_provider_usage_keeps_prompt_tokens_out_of_assistant_history(monke
   ]
 
   assert len(provider_results) == 1
-  assert provider_results[0]["message"]["token_count"] == 40
+  assert "token_count" not in provider_results[0]["message"]
   assert provider_results[0]["observed_input_tokens"] == 1000
   assert provider_results[0]["observed_output_tokens"] == 40
   assert len(completed) == 1

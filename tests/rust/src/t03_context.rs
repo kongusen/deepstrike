@@ -74,12 +74,11 @@ fn render_empty_context_returns_structured_context() {
     assert!(rendered.system_text.is_empty());
     assert!(
         rendered.turns.is_empty()
-            || rendered
-                .turns
-                .iter()
-                .all(|m| deepstrike_core::context::token_engine::ContextTokenEngine::char_approx()
+            || rendered.turns.iter().all(|m| {
+                deepstrike_core::context::token_engine::ContextTokenEngine::char_approx()
                     .count_message(m)
-                    < u32::MAX)
+                    < u32::MAX
+            })
     );
 }
 

@@ -61,7 +61,7 @@ def test_adapter_decodes_complete_response_and_returns_native_replay() -> None:
     ), _input())
 
     assert message.content == "done"
-    assert message.token_count == 14
+    assert getattr(message, "token_count", None) is None
     assert [(call.id, call.name, call.arguments) for call in message.tool_calls] == [
         ("call_2", "lookup", '{"q": "y"}'),
     ]

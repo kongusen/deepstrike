@@ -14,7 +14,7 @@ def _img_msg() -> Message:
         content="",
         content_parts=[
             ContentPartObj("text", text="What is in this image?"),
-            ContentPartObj("image", data="iVBORw0KGgo=", media_type="image/png"),
+            ContentPartObj("image", source_kind="base64", source_data="iVBORw0KGgo=", media_type="image/png"),
         ],
     )
 
@@ -25,7 +25,7 @@ def _audio_msg() -> Message:
         content="",
         content_parts=[
             ContentPartObj("text", text="transcribe"),
-            ContentPartObj("audio", data="AAAA", media_type="audio/wav"),
+            ContentPartObj("audio", source_kind="base64", source_data="AAAA", media_type="audio/wav"),
         ],
     )
 

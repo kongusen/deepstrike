@@ -1,7 +1,4 @@
 // DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use std::sync::Arc;
 
 use crate::types::message::{Content, ContentPart, CoreMessage};
@@ -150,7 +147,6 @@ impl ContextTokenEngine {
                 if kept.len() < t.len() {
                     let mut m = msg.clone();
                     m.content = Content::Text(format!("{}… [truncated]", kept));
-                    m.token_count = Some(max_tokens);
                     m
                 } else {
                     msg.clone()
@@ -176,8 +172,12 @@ fn modality_estimate_tokens(part: &ContentPart) -> Option<u32> {
             Some("high") => 680,
             _ => 255,
         }),
-        ContentPart::Audio { data, .. } => {
-            let decoded_bytes = (data.len() as u64).saturating_mul(3) / 4;
+        ContentPart::Audio { source, .. } => {
+            let data_len = match source {
+                crate::types::durable_content::DurableSource::Base64 { data } => data.len(),
+                _ => 0,
+            };
+            let decoded_bytes = (data_len as u64).saturating_mul(3) / 4;
             Some((decoded_bytes / 1600).max(1) as u32)
         }
         ContentPart::Text { .. } | ContentPart::ToolResult { .. } => None,
@@ -259,17 +259,16 @@ mod tests {
     #[test]
     fn count_image_uses_detail_heuristic_not_one() {
         let e = engine();
-        let low = CoreMessage::user_multimodal(vec![ContentPart::image_base64_with_detail(
-            "abc",
-            "image/png",
-            "low",
-        )]);
-        let auto = CoreMessage::user_multimodal(vec![ContentPart::image_base64("abc", "image/png")]);
-        let high = CoreMessage::user_multimodal(vec![ContentPart::image_base64_with_detail(
-            "abc",
-            "image/png",
-            "high",
-        )]);
+        let image = |detail: Option<&str>| ContentPart::Image {
+            source: crate::types::durable_content::DurableSource::Base64 {
+                data: "YWJj".into(),
+            },
+            media_type: Some("image/png".into()),
+            detail: detail.map(str::to_string),
+        };
+        let low = CoreMessage::user_multimodal(vec![image(Some("low"))]);
+        let auto = CoreMessage::user_multimodal(vec![image(None)]);
+        let high = CoreMessage::user_multimodal(vec![image(Some("high"))]);
         assert_eq!(e.count_message(&low), 85);
         assert_eq!(e.count_message(&auto), 255);
         assert_eq!(e.count_message(&high), 680);
@@ -341,8 +340,12 @@ mod tests {
     fn count_audio_uses_decoded_byte_heuristic_not_base64_text() {
         let e = engine();
         // 6400 base64 chars → ~4800 decoded bytes → 4800/1600 = 3 tokens
-        let audio =
-            CoreMessage::user_multimodal(vec![ContentPart::audio("A".repeat(6400), "audio/wav")]);
+        let audio = CoreMessage::user_multimodal(vec![ContentPart::Audio {
+            source: crate::types::durable_content::DurableSource::Base64 {
+                data: "A".repeat(6400),
+            },
+            media_type: "audio/wav".into(),
+        }]);
         assert_eq!(e.count_message(&audio), 3);
         // Must not explode to thousands the way counting base64 as text would.
         assert!(e.count_message(&audio) < 100);

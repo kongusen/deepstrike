@@ -17,7 +17,7 @@ from deepstrike.providers.stream import TextDelta, UsageEvent
 def _img_ctx():
     return RenderedContext(turns=[Message(role="user", content="", content_parts=[
         ContentPartObj("text", text="what is this?"),
-        ContentPartObj("image", data="BASE64", media_type="image/png"),
+        ContentPartObj("image", source_kind="base64", source_data="QkFTRTY0", media_type="image/png"),
     ])])
 
 
@@ -57,7 +57,7 @@ def test_build_mm_messages_format():
     user = qwen(api_key="k")._build_mm_messages(_img_ctx())[-1]
     assert user["role"] == "user"
     assert {"text": "what is this?"} in user["content"]
-    assert {"image": "data:image/png;base64,BASE64"} in user["content"]
+    assert {"image": "data:image/png;base64,QkFTRTY0"} in user["content"]
 
 
 @pytest.mark.asyncio

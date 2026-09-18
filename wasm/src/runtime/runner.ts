@@ -1277,7 +1277,6 @@ export class RuntimeRunner {
           role: "assistant",
           content: finalText,
           toolCalls: finalToolCalls,
-          tokenCount: turnOutputTokens || turnTokens || undefined,
         }
         // P4 §2: assemble the measurement from the exact numbers that cross the boundary today
         // (input/output turn counters + the cache split). An invalid frame degrades to no
@@ -1327,7 +1326,6 @@ export class RuntimeRunner {
         await this.opts.sessionLog.append(sessionId, buildLlmCompletedEvent({
           turn: runtime.turn(),
           content: finalText,
-          tokenCount: turnOutputTokens || turnTokens || undefined,
           toolCalls: finalToolCalls,
           providerReplay,
           effectId: providerEffectId,
@@ -1604,7 +1602,6 @@ export class RuntimeRunner {
             call_id: r.callId,
             output: r.output,
             is_error: r.isError,
-            token_count: r.tokenCount,
             content: { blocks: toolOutputBlocksToDurable(
               r.contentParts?.length ? r.contentParts : [{ type: "text", text: r.output }],
             ) as Record<string, unknown>[] },
@@ -1780,7 +1777,6 @@ export class RuntimeRunner {
       const newMsgs = runtime.drainNewMessages().map(m => ({
         role: m.role,
         content: m.content,
-        tokenCount: m.tokenCount,
         toolCalls: m.toolCalls?.length ? m.toolCalls : undefined,
       }))
       if (newMsgs.length > 0) {
@@ -2489,7 +2485,6 @@ export async function replayMessages(
         content: userText,
         ...(contentParts ? { contentParts } : {}),
         toolCalls: [],
-        tokenCount: Math.max(1, Math.ceil(userText.length / 4)),
       })
     } else if (e.kind === "compressed") {
       if (archivedTurns.has(e.turn)) continue
@@ -2500,7 +2495,6 @@ export async function replayMessages(
           role: "system",
           content: systemText,
           toolCalls: [],
-          tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
         })
       }
     } else if (e.kind === "page_out" && e.archive_ref && archiveStore?.read) {
@@ -2515,7 +2509,6 @@ export async function replayMessages(
           const systemText = `[Compressed context: turn ${e.turn}]\n${e.summary}`
           messages.push({
             role: "system", content: systemText, toolCalls: [],
-            tokenCount: Math.max(1, Math.ceil(systemText.length / 4)),
           })
         }
       }
@@ -2524,7 +2517,6 @@ export async function replayMessages(
         role: "assistant",
         content: sanitizeReplayText(e.content, maxBytes),
         toolCalls: e.tool_calls ?? [],
-        tokenCount: e.token_count,
       })
     } else if (e.kind === "tool_completed") {
       for (const r of e.results) {
@@ -2538,7 +2530,6 @@ export async function replayMessages(
           content: "",
           toolCalls: [],
           contentParts: [{ type: "tool_result", callId: durable.call_id, output: sanitizeReplayText(r.output, maxBytes), isError: durable.is_error, ...(durable.blocks.length ? { contentParts: durableBlocksToToolOutput(durable.blocks) } : {}) }],
-          tokenCount: r.token_count,
         })
       }
     } else if (e.kind === "rollbacked") {
@@ -2645,13 +2636,12 @@ function attachmentsToKernelMessage(parts: import("../types.js").ContentPart[]):
     if (p.type === "image") {
       return {
         type: "image",
-        ...(p.url ? { url: p.url } : {}),
-        ...(p.data ? { data: p.data } : {}),
+        ...(p.source ? { source: p.source } : {}),
         ...(p.mediaType ? { media_type: p.mediaType } : {}),
         ...(p.detail ? { detail: p.detail } : {}),
       }
     }
-    if (p.type === "audio") return { type: "audio", data: p.data, media_type: p.mediaType }
+    if (p.type === "audio") return { type: "audio", source: p.source, media_type: p.mediaType }
     if (p.type === "text") return { type: "text", text: p.text }
     return { type: "text", text: "" }
   })

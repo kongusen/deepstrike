@@ -85,12 +85,12 @@ def tool_schema_to_kernel(schema: ToolSchema) -> dict[str, Any]:
 
 
 def tool_result_to_kernel(result: ToolResult) -> dict[str, Any]:
+  # Usage evidence enters through the host event contract; content alone cannot establish usage.
   out = {
     "call_id": result.call_id,
     "output": result.output,
     "is_error": result.is_error,
     "is_fatal": getattr(result, "is_fatal", False),
-    "token_count": result.token_count,
   }
   error_kind = getattr(result, "error_kind", None)
   if error_kind is not None:
@@ -141,8 +141,6 @@ def message_to_kernel(message: Message) -> dict[str, Any]:
       for c in (message.tool_calls or [])
     ],
   }
-  if message.token_count is not None:
-    out["token_count"] = message.token_count
   if message.content_parts:
     parts = []
     for part in message.content_parts:
@@ -158,15 +156,14 @@ def message_to_kernel(message: Message) -> dict[str, Any]:
       elif part.type == "image":
         parts.append({
           "type": "image",
-          "url": part.url,
-          "data": part.data,
+          "source": getattr(part, "source", None),
           "media_type": part.media_type,
           "detail": part.detail,
         })
       elif part.type == "audio":
         parts.append({
           "type": "audio",
-          "data": part.data or "",
+          "source": getattr(part, "source", None),
           "media_type": part.media_type or "audio/wav",
         })
       elif part.type == "file":
@@ -213,17 +210,21 @@ def _content_parts_from_kernel(parts: list[dict[str, Any]]) -> list[ContentPartO
         is_error=bool(part.get("is_error")),
       ))
     elif kind == "image":
+      source = part.get("source") or {}
       out.append(ContentPartObj(
         type="image",
-        url=part.get("url"),
-        data=part.get("data"),
+        url=source.get("url") if source.get("kind") == "url" else None,
+        source_kind=source.get("kind"),
+        source_data=source.get("data") or source.get("handle"),
         media_type=part.get("media_type"),
         detail=part.get("detail"),
       ))
     elif kind == "audio":
+      source = part.get("source") or {}
       out.append(ContentPartObj(
         type="audio",
-        data=str(part.get("data") or ""),
+        source_kind=source.get("kind"),
+        source_data=source.get("data") or source.get("handle"),
         media_type=str(part.get("media_type") or "audio/wav"),
       ))
   return out
@@ -257,7 +258,6 @@ def _message_from_kernel(raw: dict[str, Any]) -> Message:
   return Message(
     role=str(raw.get("role") or "user"),
     content=text,
-    token_count=raw.get("token_count") if raw.get("token_count") is not None else raw.get("tokens"),
     tool_calls=[
       ToolCall(
         id=str(c.get("id") or c.get("call_id") or ""),

@@ -84,8 +84,7 @@ fn content_part_to_openai(part: &ContentPart) -> Value {
     match part {
         ContentPart::Text { text } => json!({ "type": "text", "text": text }),
         ContentPart::Image {
-            url: Some(url),
-            data: None,
+            source: deepstrike_core::types::durable_content::DurableSource::Url { url },
             detail,
             ..
         } => {
@@ -96,7 +95,7 @@ fn content_part_to_openai(part: &ContentPart) -> Value {
             json!({ "type": "image_url", "image_url": image_url })
         }
         ContentPart::Image {
-            data: Some(data),
+            source: deepstrike_core::types::durable_content::DurableSource::Base64 { data },
             media_type,
             detail,
             ..
@@ -110,9 +109,13 @@ fn content_part_to_openai(part: &ContentPart) -> Value {
             json!({ "type": "image_url", "image_url": image_url })
         }
         ContentPart::Image { .. } => json!({ "type": "text", "text": "" }),
-        ContentPart::Audio { data, media_type } => {
+        ContentPart::Audio {
+            source: deepstrike_core::types::durable_content::DurableSource::Base64 { data },
+            media_type,
+        } => {
             json!({ "type": "input_audio", "input_audio": { "data": data, "format": openai_audio_format(media_type) } })
         }
+        ContentPart::Audio { .. } => json!({ "type": "text", "text": "" }),
         ContentPart::ToolResult { output, .. } => {
             json!({ "type": "text", "text": output })
         }
@@ -528,7 +531,6 @@ mod tests {
                         name: CompactString::new("get_weather"),
                         arguments: json!({ "city": "Shanghai" }),
                     }],
-                    token_count: None,
                 },
                 CoreMessage::tool(vec![ContentPart::ToolResult {
                     call_id: CompactString::new("call_1"),

@@ -1,7 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
-// deprecated `token_count` projection fields under the dual-write policy; do not add new uses.
-#![allow(deprecated)]
-
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use compact_str::CompactString;
@@ -12,6 +8,7 @@ use super::policy::SchedulerBudget;
 use super::tcb::{DurableWaitSet, TaskLifecycle, TaskTable, Tcb, WaitSet};
 use crate::AgentRunSpec;
 use crate::context::manager::ContextManager;
+use crate::context::measurement::ToolMeasurement;
 use crate::context::renderer::InternalRenderedContext;
 use crate::governance::pipeline::GovernancePipeline;
 use crate::governance::repeat_fuse::RepeatFuseConfig;
@@ -375,6 +372,9 @@ pub struct LoopStateMachine {
     pub(super) suspend_state: Option<SuspendState>,
     /// Denied tool results to merge into the next `ToolResults` feed after resume.
     pub(super) pending_denied_results: Vec<ToolResult>,
+    /// Host-provided tool accounting keyed by call id. Measurements stay outside canonical
+    /// `ToolResult` state and are consumed exactly once at the tool-result boundary.
+    pub(super) pending_tool_measurements: HashMap<CompactString, u32>,
     /// W0: an in-flight workflow DAG, when one is loaded. The kernel spawns its ready nodes as
     /// gated batches (each through `evaluate_syscall(Syscall::Spawn)`) and advances on
     /// completions. `None` (default) preserves the single-spawn `spawn_sub_agent` behavior.
@@ -435,9 +435,7 @@ mod workflow;
 
 impl LoopStateMachine {
     fn message_tokens(&self, message: &CoreMessage) -> u32 {
-        message
-            .token_count
-            .unwrap_or_else(|| self.ctx.engine.count_message(message))
+        self.ctx.engine.count_message(message)
     }
 
     pub fn new(policy: SchedulerBudget) -> Self {
@@ -482,6 +480,7 @@ impl LoopStateMachine {
             last_now_ms: None,
             suspend_state: None,
             pending_denied_results: Vec::new(),
+            pending_tool_measurements: HashMap::new(),
             workflow: None,
             root_workflow: false,
             pending_workflow_spawn: None,
@@ -497,6 +496,24 @@ impl LoopStateMachine {
             entropy: EntropyTracker::default(),
             entropy_watch: EntropyWatchConfig::default(),
         }
+    }
+
+    /// Feed external tool results with host-owned accounting evidence. The evidence is consumed
+    /// exactly once by the ordinary `ToolResults` transition and never becomes canonical message
+    /// state.
+    pub fn feed_tool_results_with_measurements(
+        &mut self,
+        results: Vec<ToolResult>,
+        measurements: impl IntoIterator<Item = ToolMeasurement>,
+    ) -> LoopAction {
+        self.pending_tool_measurements.extend(
+            measurements
+                .into_iter()
+                .map(|measurement| (CompactString::from(measurement.call_id), measurement.tokens)),
+        );
+        let action = self.feed(LoopEvent::ToolResults { results });
+        self.pending_tool_measurements.clear();
+        action
     }
 
     /// O4: enable/disable the turn-end criteria gate (default enabled; no-op without criteria).
@@ -1121,7 +1138,8 @@ impl LoopStateMachine {
         // Estimate tokens (1 token ≈ 4 chars) with a minimum of 1 so the renderer
         // does not skip this message (it skips zero-token entries).
         let user_tokens = self.ctx.engine.count(&user_msg).max(1);
-        self.ctx.push_history(CoreMessage::user(user_msg), user_tokens);
+        self.ctx
+            .push_history(CoreMessage::user(user_msg), user_tokens);
         self.phase = LoopPhase::Reason;
         // Root task (seeded `Ready` in `new()`) becomes `Running`; `emit_call_llm` sets it.
         self.emit_call_llm()
@@ -1378,7 +1396,8 @@ impl LoopStateMachine {
                 let errored_results = results.iter().filter(|r| r.is_error).count() as u32;
                 let total_results = results.len() as u32;
                 for r in &results {
-                    self.total_tokens += r.token_count.unwrap_or(0) as u64;
+                    let measured_tokens = self.pending_tool_measurements.remove(&r.call_id);
+                    self.total_tokens += u64::from(measured_tokens.unwrap_or(0));
                     // Preserve Content::Parts (structured / multimodal tool output).
                     // Parts are serialised to JSON so the text can be restored faithfully.
                     let output = match &r.output {
@@ -1392,9 +1411,8 @@ impl LoopStateMachine {
                         durable_content: r.durable_content.clone(),
                     }];
                     let tool_msg = CoreMessage::tool(parts);
-                    let tokens = r
-                        .token_count
-                        .unwrap_or_else(|| self.ctx.engine.count_message(&tool_msg));
+                    let tokens =
+                        measured_tokens.unwrap_or_else(|| self.ctx.engine.count_message(&tool_msg));
                     self.ctx.push_history(tool_msg, tokens);
                 }
                 self.turn += 1;
@@ -1558,7 +1576,6 @@ impl LoopStateMachine {
                                 is_error: true,
                                 is_fatal: false,
                                 error_kind: Some(ToolErrorKind::Timeout),
-                                token_count: None,
                             })
                             .collect();
                         return self.feed(LoopEvent::ToolResults { results });
