@@ -42,7 +42,7 @@ echo "    Working tree clean ✓"
 
 # ── 3. Pre-flight: HEAD must be on origin/main (skipped if network unreachable) ──
 if git fetch origin main --quiet 2>/dev/null; then
-  if ! git merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+  if ! git merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
     echo "Error: HEAD is not an ancestor of origin/main." >&2
     echo "       Push your commits first, or verify you are on the right branch." >&2
     exit 1
