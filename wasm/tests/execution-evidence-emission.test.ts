@@ -21,11 +21,11 @@ import {
   providerAttemptToRecord,
   tryNormalizeProviderUsage,
 } from "../src/runtime/execution-evidence.js"
-import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
 
 /** Answers turn 1 with a usage frame + text, then ends the run. */
 const oneTurnProvider = (): LLMProvider => ({
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     throw new Error("not implemented")
   },
   async *stream(): AsyncIterable<StreamEvent> {
@@ -35,7 +35,7 @@ const oneTurnProvider = (): LLMProvider => ({
 })
 
 const failingProvider = (): LLMProvider => ({
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     throw new Error("not implemented")
   },
   async *stream(): AsyncIterable<StreamEvent> {
@@ -46,7 +46,7 @@ const failingProvider = (): LLMProvider => ({
 
 /** A native-exact measurement far over budget → rejected before any transport. */
 const oversizedPromptProvider = (): LLMProvider => ({
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     throw new Error("not implemented")
   },
   async countTokens() {
@@ -58,7 +58,7 @@ const oversizedPromptProvider = (): LLMProvider => ({
 })
 
 const longStreamProvider = (): LLMProvider => ({
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     throw new Error("not implemented")
   },
   async *stream(): AsyncIterable<StreamEvent> {

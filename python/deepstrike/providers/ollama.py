@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 from typing import AsyncIterator
 import httpx
-from deepstrike._kernel import Message, ToolSchema
+from deepstrike._kernel import ProviderMessage, ToolSchema
 from .stream import StreamEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy
 from .ollama_adapter import OllamaAdapter
@@ -53,7 +53,7 @@ class OllamaProvider:
         body["stream"] = stream
         return body
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ProviderMessage:
         if self._circuit.is_open():
             raise Exception("Circuit breaker open")
 

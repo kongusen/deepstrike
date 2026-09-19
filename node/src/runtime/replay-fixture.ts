@@ -7,14 +7,14 @@
  * the LLM produced". No new on-disk format.
  */
 
-import type { Message, ToolCall } from "../types.js"
+import type { ProviderMessage, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
 
 /**
  * Extract the ordered list of assistant Messages from a recorded session log.
  *
  * Walks `llm_completed` events (which is what the runner appends for every LLM call) and produces
- * one Message per event. Pass the result directly to `new ReplayProvider(messages)`.
+ * one ProviderMessage per event. Pass the result directly to `new ReplayProvider(messages)`.
  *
  * Accepts both wire shapes the SDK uses interchangeably:
  *   - in-memory: `{ toolCalls, providerReplay }` (camelCase)
@@ -25,8 +25,8 @@ import type { SessionEvent } from "./session-log.js"
  */
 export function extractRecordedMessages(
   events: Array<{ event: SessionEvent } | SessionEvent>,
-): Message[] {
-  const out: Message[] = []
+): ProviderMessage[] {
+  const out: ProviderMessage[] = []
   for (const entry of events) {
     const event: SessionEvent = isWrapped(entry) ? entry.event : entry
     if (event.kind !== "llm_completed") continue

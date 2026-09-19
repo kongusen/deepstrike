@@ -1,5 +1,5 @@
 import type {
-  ToolCall, ToolResult, ToolSchema, StreamEvent, ToolSuspendEvent, ToolResultEvent, ToolAuditFailedEvent,
+  ToolCall, ToolExecutionResult, ToolSchema, StreamEvent, ToolSuspendEvent, ToolResultEvent, ToolAuditFailedEvent,
   PermissionRequestEvent, ToolDeniedEvent, PermissionResponse, PermissionResolvedEvent,
 } from "../types.js"
 import type { RegisteredTool, ToolExecContext } from "../tools/index.js"
@@ -34,7 +34,7 @@ export interface ExecutionPlane {
   /**
    * Execute a batch of calls. Yields StreamEvents during execution.
    * Guarantees exactly one `tool_result` event per call in `calls`.
-   * The runner collects those events to build ToolResult[] for the kernel.
+   * The runner collects those events to build ToolExecutionResult[] for the kernel.
    */
   executeAll(calls: ToolCall[], ctx: RunContext): AsyncIterable<StreamEvent>
 }
@@ -102,8 +102,8 @@ export class LocalExecutionPlane implements ExecutionPlane {
     if (regularCalls.length > 0) {
       type Task = {
         call: ToolCall
-        gen: AsyncGenerator<StreamEvent, ToolResult>
-        pending: Promise<IteratorResult<StreamEvent, ToolResult>>
+        gen: AsyncGenerator<StreamEvent, ToolExecutionResult>
+        pending: Promise<IteratorResult<StreamEvent, ToolExecutionResult>>
       }
       const active: Task[] = regularCalls.map(call => {
         const gen = this.executeSingle(call, ctx)
@@ -135,7 +135,7 @@ export class LocalExecutionPlane implements ExecutionPlane {
     }
   }
 
-  private async *executeSingle(call: ToolCall, ctx: RunContext): AsyncGenerator<StreamEvent, ToolResult> {
+  private async *executeSingle(call: ToolCall, ctx: RunContext): AsyncGenerator<StreamEvent, ToolExecutionResult> {
     const registered = this.tools.get(call.name)
     if (!registered) return { callId: call.id, output: `unknown tool: ${call.name}`, isError: true }
     // `audit` failure buffer is hoisted above the try-block so the catch path can flush any

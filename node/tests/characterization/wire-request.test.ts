@@ -1,7 +1,7 @@
 /**
  * spc_013-A-00: wire-request characterization — for each of the five generation protocols,
  * capture the EXACT request body `complete()` sends (SDK client stubbed, zero network) and
- * the EXACT decoded `Message` it returns for a fixed vendor response.
+ * the EXACT decoded `ProviderMessage` it returns for a fixed vendor response.
  *
  * Card 013-A-02..06 (ProtocolAdapter extraction) must reproduce every byte of these goldens
  * (INV-013-01). Two CN vendors are included (deepseek via Anthropic-compatible wire, qwen via
@@ -13,7 +13,7 @@ import { OpenAIResponsesProvider } from "../../src/providers/openai-responses.js
 import { GeminiProvider } from "../../src/providers/gemini.js"
 import { OllamaProvider } from "../../src/providers/ollama.js"
 import { createProvider } from "../../src/providers/catalog.js"
-import type { LLMProvider, Message } from "../../src/types.js"
+import type { LLMProvider, ProviderMessage } from "../../src/types.js"
 import { CHARACTERIZATION_CONTEXT as CTX, CHARACTERIZATION_TOOLS as TOOLS, USAGE } from "./fixtures.js"
 import { expectGolden } from "./golden.js"
 
@@ -177,7 +177,7 @@ describe("spc_013-A-00 characterization: wire request bodies + complete decode",
     try {
       const captured: { req?: unknown } = {}
       stubOllama(captured)
-      const message: Message = await provider.complete(CTX, TOOLS)
+      const message: ProviderMessage = await provider.complete(CTX, TOOLS)
       expectGolden("wire-ollama", { request: captured.req ?? null, message, replay: null })
     } finally {
       globalThis.fetch = original

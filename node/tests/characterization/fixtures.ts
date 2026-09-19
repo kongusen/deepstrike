@@ -10,7 +10,7 @@
  *
  * NO RANDOM DATA — every byte here is fixed (DoD: fixture 可复现).
  */
-import type { Message, RenderedContext, ToolSchema } from "../../src/types.js"
+import type { ProviderMessage, RenderedContext, ToolSchema } from "../../src/types.js"
 
 export const CHARACTERIZATION_TOOLS: ToolSchema[] = [
   {
@@ -66,7 +66,7 @@ export const CHARACTERIZATION_CONTEXT: RenderedContext = {
         ],
       }],
     },
-  ] as Message[],
+  ] as ProviderMessage[],
 }
 
 /** Fixed usage figures so usage normalization (spc_011-C-07) is locked too. */

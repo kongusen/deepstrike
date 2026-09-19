@@ -26,7 +26,7 @@
 
 import type {
   LLMProvider,
-  Message,
+  ProviderMessage,
   ProviderDescriptor,
   ProviderRunState,
   RenderedContext,
@@ -67,7 +67,7 @@ const DEFAULT_DESCRIPTOR: ProviderDescriptor = {
 
 export class ReplayProvider implements LLMProvider {
   private cursor = 0
-  private readonly messages: ReadonlyArray<Message>
+  private readonly messages: ReadonlyArray<ProviderMessage>
   private readonly tokenizer: (text: string) => number
   private readonly _descriptor: ProviderDescriptor
   private readonly wrap: boolean
@@ -76,7 +76,7 @@ export class ReplayProvider implements LLMProvider {
    * @param messages Ordered list of assistant messages to replay (one per LLM call).
    * @param opts Optional tokenizer / descriptor / wrap-around behavior.
    */
-  constructor(messages: ReadonlyArray<Message>, opts: ReplayProviderOpts = {}) {
+  constructor(messages: ReadonlyArray<ProviderMessage>, opts: ReplayProviderOpts = {}) {
     this.messages = messages
     this.tokenizer = opts.tokenizer ?? defaultTokenizer
     this._descriptor = opts.descriptor ?? DEFAULT_DESCRIPTOR
@@ -102,7 +102,7 @@ export class ReplayProvider implements LLMProvider {
     this.cursor = 0
   }
 
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
     const msg = this.pull()
     return {
       role: "assistant",
@@ -150,7 +150,7 @@ export class ReplayProvider implements LLMProvider {
     }
   }
 
-  private pull(): Message {
+  private pull(): ProviderMessage {
     if (this.cursor >= this.messages.length) {
       if (this.wrap && this.messages.length > 0) {
         this.cursor = 0

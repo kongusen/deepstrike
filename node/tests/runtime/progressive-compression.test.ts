@@ -1,7 +1,7 @@
 import { createRunner } from "./helpers.js"
 import { collectText } from "../../src/runtime/runner.js"
 import { tool } from "../../src/tools/index.js"
-import type { LLMProvider, RenderedContext, StreamEvent, ToolSchema, Message } from "../../src/types.js"
+import type { LLMProvider, RenderedContext, StreamEvent, ToolSchema, ProviderMessage } from "../../src/types.js"
 
 // Captures what the provider sees in context on each call
 function trackingProvider(
@@ -10,7 +10,7 @@ function trackingProvider(
   const calls: RenderedContext[] = []
   return {
     calls,
-    async complete(_ctx: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+    async complete(_ctx: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
       return { role: "assistant", content: "", toolCalls: [] }
     },
     async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
@@ -219,7 +219,7 @@ describe("Reactive compact — 413 triggers force_compact and run recovers", () 
   it("does not resurrect a pending run from SessionLog presentation rows", async () => {
     let callCount = 0
     const provider: LLMProvider = {
-      async complete(_ctx: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+      async complete(_ctx: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(_context: RenderedContext): AsyncIterable<StreamEvent> {

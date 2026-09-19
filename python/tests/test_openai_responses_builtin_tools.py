@@ -9,9 +9,9 @@ import pytest
 
 from deepstrike.providers.openai_responses import OpenAIResponsesProvider
 from deepstrike.providers.base import RenderedContext
-from deepstrike._kernel import Message, ToolSchema
+from deepstrike._kernel import ProviderMessage, ToolSchema
 
-CTX = RenderedContext(turns=[Message(role="user", content="latest news?")])
+CTX = RenderedContext(turns=[ProviderMessage(role="user", content="latest news?")])
 
 
 def _tool(name="f"):

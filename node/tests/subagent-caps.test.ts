@@ -13,14 +13,14 @@ import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
 import { tool } from "../src/tools/index.js"
 import { agentIdentitySub, type AgentRunSpec } from "../src/types/agent.js"
-import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import type { RuntimeOptions } from "../src/runtime/runner.js"
 
 /** Never stops calling tools — only an external cap can end its run. Args vary per call so the
  *  kernel repeat fuse (O6) reads it as real iteration, not a stall. */
 class LoopingProvider implements LLMProvider {
   calls = 0
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
   async *stream(): AsyncIterable<StreamEvent> {

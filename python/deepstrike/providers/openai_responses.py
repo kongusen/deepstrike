@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, AsyncIterator
 from openai import AsyncOpenAI
-from deepstrike._kernel import Message, ToolCall, ToolSchema
+from deepstrike._kernel import ProviderMessage, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent, UsageEvent
 from .base import (
     RetryConfig,
@@ -79,7 +79,7 @@ class OpenAIResponsesStreamState:
     function_calls: dict[int, dict] = field(default_factory=dict)
 
 
-def _message_content(message: Message) -> Any:
+def _message_content(message: ProviderMessage) -> Any:
     """Responses-native content for a message: a plain string when it has no parts, else a list of
     ``input_text``/``input_image`` blocks (mirrors the Node adapter)."""
     parts = getattr(message, "content_parts", None)
@@ -165,7 +165,7 @@ class OpenAIResponsesAdapter:
 
         return input_items
 
-    def _append_message(self, input_items: list[dict], message: Message) -> None:
+    def _append_message(self, input_items: list[dict], message: ProviderMessage) -> None:
         if message.role == "assistant" and getattr(message, "tool_calls", None):
             if message.content or getattr(message, "content_parts", None):
                 input_items.append({"role": "assistant", "content": _message_content(message)})
@@ -265,7 +265,7 @@ class OpenAIResponsesAdapter:
             self._number(output_details, "reasoning_tokens")
         return normalize_usage(raw)
 
-    def decode_complete(self, raw: Any, input: CanonicalAdapterInput) -> Message:
+    def decode_complete(self, raw: Any, input: CanonicalAdapterInput) -> ProviderMessage:
         output = self._get(raw, "output") or []
         decoded = self.decode_output([
             item if isinstance(item, dict) else item.model_dump() if hasattr(item, "model_dump") else item
@@ -273,7 +273,7 @@ class OpenAIResponsesAdapter:
         ])
         usage = self._get(raw, "usage")
         self.normalize_usage(usage)
-        return Message(role="assistant", content=decoded["content"], tool_calls=decoded["tool_calls"] or None)
+        return ProviderMessage(role="assistant", content=decoded["content"], tool_calls=decoded["tool_calls"] or None)
 
     def create_stream_state(
         self,
@@ -413,7 +413,7 @@ class OpenAIResponsesProvider:
             resolved=getattr(self, "_resolved_runtime", None),
         )
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ProviderMessage:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 

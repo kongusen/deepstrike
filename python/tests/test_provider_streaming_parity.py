@@ -5,7 +5,7 @@ from deepstrike.providers.openai import OpenAIProvider
 from deepstrike.providers.gemini import GeminiProvider
 from deepstrike.providers.ollama import OllamaProvider
 from deepstrike.providers.base import RenderedContext
-from deepstrike._kernel import Message
+from deepstrike._kernel import ProviderMessage
 from deepstrike.providers.stream import TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 
 
@@ -39,7 +39,7 @@ async def test_openai_flushes_tool_calls_when_stream_ends_without_tool_finish_re
     class FakeClient: chat = FakeChat()
     provider._client = FakeClient()
 
-    gen = provider.stream(RenderedContext(turns=[Message(role="user", content="hi")]), [])
+    gen = provider.stream(RenderedContext(turns=[ProviderMessage(role="user", content="hi")]), [])
     events = [event async for event in gen]
     assert any(isinstance(e, ToolCallEvent) and e.name == "lookup" and e.arguments == {"q": "x"} for e in events)
 
@@ -79,7 +79,7 @@ async def test_openai_skips_streaming_choices_without_delta(monkeypatch):
     class FakeClient: chat = FakeChat()
     provider._client = FakeClient()
 
-    gen = provider.stream(RenderedContext(turns=[Message(role="user", content="hi")]), [])
+    gen = provider.stream(RenderedContext(turns=[ProviderMessage(role="user", content="hi")]), [])
     events = [event async for event in gen]
 
     assert [(type(e), e.delta) for e in events] == [
@@ -114,7 +114,7 @@ async def test_gemini_keeps_duplicate_function_names_distinct(monkeypatch):
         aio = FakeAio()
     provider._client = FakeClient()
 
-    gen = provider.stream(RenderedContext(turns=[Message(role="user", content="hi")]), [])
+    gen = provider.stream(RenderedContext(turns=[ProviderMessage(role="user", content="hi")]), [])
     events = [event async for event in gen]
     tool_events = [e for e in events if isinstance(e, ToolCallEvent)]
     assert [(e.id, e.arguments) for e in tool_events] == [("call_1", {"q": "a"}), ("call_2", {"q": "b"})]
@@ -139,7 +139,7 @@ async def test_ollama_provider_preserves_unterminated_final_ndjson_record(monkey
     ollama_module = importlib.import_module("deepstrike.providers.ollama")
     monkeypatch.setattr(ollama_module.httpx, "AsyncClient", lambda: FakeClient())
 
-    events = [event async for event in provider.stream(RenderedContext(turns=[Message(role="user", content="hi")]), [])]
+    events = [event async for event in provider.stream(RenderedContext(turns=[ProviderMessage(role="user", content="hi")]), [])]
 
     assert TextDelta(delta="tail") in events
     assert any(isinstance(event, UsageEvent) and event.stop_reason == "end_turn" for event in events)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from deepstrike._kernel import Message
+from deepstrike._kernel import ProviderMessage
 from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord, MemoryScope, SessionData
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
@@ -20,7 +20,7 @@ async def extract_session_memories(provider: Any, session: SessionData, scope: M
             system_prompt,
             "Extract durable, reusable facts from this completed session. Return only JSON; do not include transient progress or guesses.",
         ])),
-        turns=[Message(
+        turns=[ProviderMessage(
             role="user",
             content=(transcript + '\n\nReturn {"memories":[{"name":"stable-kebab-key",'
                      '"kind":"user|feedback|project|reference","content":"fact",'

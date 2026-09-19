@@ -4,10 +4,10 @@ import { CanonicalRunnerRuntime } from "../../src/runtime/canonical-kernel-step.
 import { RuntimeRunner, collectText } from "../../src/runtime/runner.js"
 import { InMemorySessionLog } from "../../src/runtime/session-log.js"
 import { tool } from "../../src/tools/index.js"
-import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../../src/types.js"
 
 class FinishAfterToolProvider implements LLMProvider {
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
 

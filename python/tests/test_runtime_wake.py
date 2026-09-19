@@ -1,7 +1,7 @@
 import pytest
 import deepstrike.runtime.runner as runtime_runner_module
 
-from deepstrike._kernel import ToolCall, ToolResult
+from deepstrike._kernel import ToolCall, ToolExecutionResult
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.provider_error import ProviderError
 from deepstrike.providers.stream import TextDelta, ToolCallEvent, UsageEvent
@@ -54,7 +54,7 @@ async def test_wake_continues_after_tool_completed():
   await session_log.append(session_id, {
     "kind": "tool_completed",
     "turn": 0,
-    "results": [ToolResult(call_id="call_ping", output="pong", is_error=False)],
+    "results": [ToolExecutionResult(call_id="call_ping", output="pong", is_error=False)],
   })
 
   plane = LocalExecutionPlane()

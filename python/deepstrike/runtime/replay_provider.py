@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Callable, Sequence
 
-from deepstrike._kernel import Message, ToolSchema  # type: ignore
+from deepstrike._kernel import ProviderMessage, ToolSchema  # type: ignore
 from deepstrike.providers.base import (
     LLMProvider,  # type: ignore[attr-defined]
     ProviderDescriptor,
@@ -97,8 +97,8 @@ def _render_context_to_text(context: RenderedContext, tools: Sequence[ToolSchema
 class ReplayProvider(LLMProvider):
     """LLMProvider that dequeues recorded assistant messages instead of calling an API."""
 
-    def __init__(self, messages: Sequence[Message], opts: ReplayProviderOpts | None = None) -> None:
-        self._messages: tuple[Message, ...] = tuple(messages)
+    def __init__(self, messages: Sequence[ProviderMessage], opts: ReplayProviderOpts | None = None) -> None:
+        self._messages: tuple[ProviderMessage, ...] = tuple(messages)
         opts = opts or ReplayProviderOpts()
         self._tokenizer = opts.tokenizer or _default_tokenizer
         self._descriptor = opts.descriptor or _DEFAULT_DESCRIPTOR
@@ -117,7 +117,7 @@ class ReplayProvider(LLMProvider):
     def reset(self) -> None:
         self._cursor = 0
 
-    def _pull(self) -> Message:
+    def _pull(self) -> ProviderMessage:
         if self._cursor >= len(self._messages):
             if self._wrap and self._messages:
                 self._cursor = 0
@@ -134,7 +134,7 @@ class ReplayProvider(LLMProvider):
         context: RenderedContext,
         tools: list[ToolSchema],
         extensions: dict | None = None,
-    ) -> Message:
+    ) -> ProviderMessage:
         msg = self._pull()
         out: dict[str, Any] = {"role": "assistant", "content": getattr(msg, "content", "") or ""}
         tool_calls = getattr(msg, "toolCalls", None) or getattr(msg, "tool_calls", None)

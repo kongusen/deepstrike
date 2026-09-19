@@ -6,7 +6,7 @@ import { FileSessionLog } from "../../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import { AnthropicProvider } from "../../src/providers/anthropic.js"
 import { tool } from "../../src/tools/index.js"
-import type { RenderedContext, StreamEvent, ToolSchema, Message } from "../../src/types.js"
+import type { RenderedContext, StreamEvent, ToolSchema, ProviderMessage } from "../../src/types.js"
 
 class CapturingAnthropicProvider extends AnthropicProvider {
   streamCalls = 0

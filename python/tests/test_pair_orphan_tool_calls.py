@@ -9,21 +9,21 @@ genuinely pending tail tool_call (wake/recovery) must stay unpaired so wake exec
 """
 from __future__ import annotations
 
-from deepstrike._kernel import Message, ContentPartObj, ToolCall
+from deepstrike._kernel import ProviderMessage, ContentPartObj, ToolCall
 from deepstrike.runtime.runner import _pair_orphan_tool_calls
 
 
-def _user(text: str) -> Message:
-    return Message(role="user", content=text, tool_calls=[])
+def _user(text: str) -> ProviderMessage:
+    return ProviderMessage(role="user", content=text, tool_calls=[])
 
 
-def _asst(content: str, calls: list[tuple[str, str]]) -> Message:
-    return Message(role="assistant", content=content,
+def _asst(content: str, calls: list[tuple[str, str]]) -> ProviderMessage:
+    return ProviderMessage(role="assistant", content=content,
                    tool_calls=[ToolCall(id=i, name=n, arguments="{}") for i, n in calls])
 
 
-def _tool(call_id: str) -> Message:
-    return Message(role="tool", content="", tool_calls=[],
+def _tool(call_id: str) -> ProviderMessage:
+    return ProviderMessage(role="tool", content="", tool_calls=[],
                    content_parts=[ContentPartObj(type="tool_result", call_id=call_id, output="ok", is_error=False)])
 
 

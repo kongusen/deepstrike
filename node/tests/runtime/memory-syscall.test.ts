@@ -1,7 +1,7 @@
 import { RuntimeRunner } from "../../src/runtime/runner.js"
 import { InMemorySessionLog } from "../../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
-import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
+import type { LLMProvider, ProviderMessage, StreamEvent } from "../../src/types.js"
 import type { MemoryStore, MemoryRecall, MemoryRecord } from "../../src/memory/protocols.js"
 
 const scope = { tenant_id: "agent-memory", namespace: "runtime-tests" }
@@ -13,7 +13,7 @@ const memory = (name: string, content: string): MemoryRecord => ({
 })
 
 const provider: LLMProvider = {
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     return { role: "assistant", content: "", toolCalls: [] }
   },
   async *stream(): AsyncIterable<StreamEvent> {},

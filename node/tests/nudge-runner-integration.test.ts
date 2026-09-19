@@ -7,13 +7,13 @@
  * The control proves the promised zero-behavior-difference: a run with no matching nudge yields a
  * session event stream byte-identical to the no-nudges baseline and injects no signal.
  */
-import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import type { SessionEvent } from "../src/runtime/session-log.js"
 import { createRunner, tool } from "./runtime/helpers.js"
 
 class CapturingProvider implements LLMProvider {
   readonly calls: RenderedContext[] = []
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
   async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {

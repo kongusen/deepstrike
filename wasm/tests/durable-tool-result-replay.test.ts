@@ -2,7 +2,7 @@ import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { replayMessages } from "../src/runtime/runner.js"
 import { toolOutputBlocksToDurable } from "../src/runtime/durable-content.js"
 
-describe("015-07 durable structured ToolResult replay", () => {
+describe("015-07 durable structured ToolExecutionResult replay", () => {
   it("restores canonical durable blocks and rejects text-only persisted results", async () => {
     const log = new InMemorySessionLog()
     await log.append("s", { kind: "tool_completed", turn: 1, results: [{

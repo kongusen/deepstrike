@@ -8,7 +8,7 @@ from deepstrike import (
     LocalExecutionPlane,
     RuntimeOptions,
 )
-from deepstrike.providers.base import Message
+from deepstrike.providers.base import ProviderMessage
 from deepstrike.providers.stream import TextDelta
 from deepstrike.runtime.sub_agent_orchestrator import (
     SubAgentRunContext,
@@ -28,7 +28,7 @@ class _RecordingProvider:
         self.calls: list[list[str]] = []
 
     async def complete(self, context, tools, extensions=None):
-        return Message(role="assistant", content="done")
+        return ProviderMessage(role="assistant", content="done")
 
     async def stream(self, context, tools, extensions=None, state=None):
         self.calls.append([t.name for t in tools])

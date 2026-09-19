@@ -12,7 +12,7 @@ import { ProtocolResponseError } from "../src/providers/protocol-adapter.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
 import { RuntimeRunner } from "../src/runtime/runner.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
-import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
 
 const fixture = JSON.parse(readFileSync(join(
   process.cwd(), "../tests/fixtures/provider-textual-tool-call/canonical.json",
@@ -287,7 +287,7 @@ describe("SPC-022 Anthropic textual tool call rejection", () => {
   it("reaches Runner recovery without persisting a false llm completion or provider body", async () => {
     const cause = new Error(`untrusted:${DSML}`)
     class TextualToolCallProvider implements LLMProvider {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         throw new Error("unused")
       }
       // eslint-disable-next-line require-yield

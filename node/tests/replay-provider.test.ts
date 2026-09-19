@@ -1,6 +1,6 @@
 import { ReplayProvider } from "../src/runtime/replay-provider.js"
 import { extractRecordedMessages } from "../src/runtime/replay-fixture.js"
-import type { Message, RenderedContext, ToolSchema, UsageEvent, TextDelta, ToolCallEvent } from "../src/types.js"
+import type { ProviderMessage, RenderedContext, ToolSchema, UsageEvent, TextDelta, ToolCallEvent } from "../src/types.js"
 import type { SessionEvent } from "../src/runtime/session-log.js"
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ async function collect(provider: ReplayProvider, ctx: RenderedContext = emptyCtx
 
 describe("ReplayProvider", () => {
   it("emits usage + text_delta + tool_call for a recorded message", async () => {
-    const msg: Message = {
+    const msg: ProviderMessage = {
       role: "assistant",
       content: "I will call read_file.",
       toolCalls: [{ id: "c1", name: "read_file", arguments: JSON.stringify({ path: "src/x.ts" }) }],
@@ -64,7 +64,7 @@ describe("ReplayProvider", () => {
   })
 
   it("advances cursor across calls", async () => {
-    const msgs: Message[] = [
+    const msgs: ProviderMessage[] = [
       { role: "assistant", content: "first" },
       { role: "assistant", content: "second" },
       { role: "assistant", content: "third" },
@@ -121,8 +121,8 @@ describe("ReplayProvider", () => {
     expect((events[1] as TextDelta).delta).toBe("one")
   })
 
-  it("complete() returns the same Message that stream() would emit", async () => {
-    const msg: Message = {
+  it("complete() returns the same ProviderMessage that stream() would emit", async () => {
+    const msg: ProviderMessage = {
       role: "assistant",
       content: "answer",
       toolCalls: [{ id: "c", name: "noop", arguments: "{}" }],
@@ -247,7 +247,7 @@ describe("extractRecordedMessages", () => {
 
 describe("ReplayProvider round-trip", () => {
   it("returns the recorded text/toolCalls across two independent replays", async () => {
-    const msgs: Message[] = [
+    const msgs: ProviderMessage[] = [
       { role: "assistant", content: "step 1", toolCalls: [{ id: "1", name: "a", arguments: "{}" }] },
       { role: "assistant", content: "step 2", toolCalls: [{ id: "2", name: "b", arguments: '{"x":1}' }] },
       { role: "assistant", content: "done" },

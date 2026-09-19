@@ -1,8 +1,8 @@
 import type {
-  Message,
+  ProviderMessage,
   RenderedContext,
   ToolCall,
-  ToolResult,
+  ToolExecutionResult,
   ToolSchema,
   MediaSource,
 } from "../types.js"
@@ -77,7 +77,7 @@ export interface KernelLoopResult {
   termination: string
   turnsUsed: number
   totalTokensUsed: number
-  finalMessage?: Message
+  finalMessage?: ProviderMessage
   /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */
   paceDecision?: PaceDecision
 }
@@ -93,7 +93,7 @@ export type KernelRunnerAction =
   | {
       kind: "archive_page_out"
       effectId: string
-      archived: Message[]
+      archived: ProviderMessage[]
       handleId?: string
       payload?: {
         content: string
@@ -240,7 +240,7 @@ export function skillMetadataToKernel(skill: SkillMetadata): Record<string, unkn
   return out
 }
 
-export function messageToKernelMessage(message: Message): Record<string, unknown> {
+export function messageToKernelMessage(message: ProviderMessage): Record<string, unknown> {
   const out: Record<string, unknown> = {
     role: message.role,
     tool_calls: (message.toolCalls ?? []).map(tc => ({
@@ -271,7 +271,7 @@ export function messageToKernelMessage(message: Message): Record<string, unknown
   return out
 }
 
-export function toolResultToKernel(result: ToolResult): Record<string, unknown> {
+export function toolResultToKernel(result: ToolExecutionResult): Record<string, unknown> {
   // Usage evidence enters through the host event contract; content alone cannot establish usage.
   const out: Record<string, unknown> = {
     call_id: result.callId,
@@ -318,10 +318,10 @@ export function capabilityMarker(kind: string, id: string, description: string):
   return { id, kind, description }
 }
 
-export function kernelMessageToSdk(raw: Record<string, unknown>): Message {
+export function kernelMessageToSdk(raw: Record<string, unknown>): ProviderMessage {
   const content = raw.content
-  const message: Message = {
-    role: raw.role as Message["role"],
+  const message: ProviderMessage = {
+    role: raw.role as ProviderMessage["role"],
     content: typeof content === "string"
       ? content
       : Array.isArray(content)
@@ -341,7 +341,7 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): Message {
   if (typeof content === "string") {
     const parts = decodeCanonicalContentParts(content)
     if (parts) {
-      const contentParts: NonNullable<Message["contentParts"]> = []
+      const contentParts: NonNullable<ProviderMessage["contentParts"]> = []
       for (const part of parts) {
         switch (part.type) {
           case "text":

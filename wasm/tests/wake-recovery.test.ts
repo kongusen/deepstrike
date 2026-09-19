@@ -2,13 +2,13 @@
  * SessionLog-only wake must fail closed under canonical ABI v4 (Node wake-recovery parity).
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
-import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
 import { collectText } from "../src/runtime/index.js"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
 const provider: LLMProvider = {
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   },
   async *stream(): AsyncIterable<StreamEvent> {
@@ -78,7 +78,7 @@ describe("RuntimeRunner wake recovery (wasm)", () => {
       isTerminal: () => terminal,
       recoveryContentBytes: () => 32_768,
       preservedRefs: () => [] as string[],
-      drainNewMessages: () => [] as Message[],
+      drainNewMessages: () => [] as ProviderMessage[],
       drainHostObservations: () => observations.splice(0) as never,
       async restore() {},
       resumeAction: () => terminal

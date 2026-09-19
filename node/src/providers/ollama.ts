@@ -1,4 +1,4 @@
-import type { Message, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, ProviderTransportTelemetry } from "../types.js"
+import type { ProviderMessage, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, ProviderTransportTelemetry } from "../types.js"
 import {
   normalizeCanonicalAdapterInput,
   type CanonicalAdapterInput,
@@ -78,7 +78,7 @@ export class OllamaProvider implements LLMProvider {
     return normalizeCanonicalAdapterInput({ context, tools, resolved, extensions })
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ProviderMessage> {
     try {
       const input = this.adapterInput(context, tools, extensions)
       const body = { ...this.adapter.buildRequest(input), stream: false }

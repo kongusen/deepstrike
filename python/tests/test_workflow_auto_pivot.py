@@ -10,7 +10,7 @@ from deepstrike import (
     InMemorySessionLog,
     LocalExecutionPlane,
     LoopResult,
-    Message,
+    ProviderMessage,
     RuntimeOptions,
     RuntimeRunner,
     SubAgentResult,
@@ -30,7 +30,7 @@ class AuthoringProvider:
         self.contexts: list[RenderedContext] = []
 
     async def complete(self, context, tools, extensions=None):
-        return Message(role="assistant", content="unused")
+        return ProviderMessage(role="assistant", content="unused")
 
     async def stream(self, context, tools, extensions=None, state=None):
         self.contexts.append(context)

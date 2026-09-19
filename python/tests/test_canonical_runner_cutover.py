@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepstrike._kernel import Message
+from deepstrike._kernel import ProviderMessage
 from deepstrike.kernel.canonical import CanonicalKernel
 from deepstrike.providers.stream import TextDelta
 from deepstrike.runtime.canonical_kernel_step import CanonicalRunnerRuntime
@@ -224,7 +224,7 @@ async def test_restores_pending_workflow_spawn_from_journal_without_session_reco
                 agent_id=context.spec.identity.agent_id,
                 result=LoopResult(
                     termination="completed",
-                    final_message=Message(role="assistant", content="done"),
+                    final_message=ProviderMessage(role="assistant", content="done"),
                     turns_used=1,
                     total_tokens_used=1,
                 ),

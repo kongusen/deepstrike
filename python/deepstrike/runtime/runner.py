@@ -15,11 +15,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 from deepstrike._kernel import (
   ContentPartObj,
-  Message,
+  ProviderMessage,
   SignalRouter,
   SkillMetadata,
   ToolCall,
-  ToolResult,
+  ToolExecutionResult,
   TaskUpdate,
 )
 from deepstrike.providers.base import LLMProvider, RenderedContext
@@ -1091,7 +1091,7 @@ class RuntimeRunner:
 
     def _run_reduce_node(raw: dict) -> Any:
       from deepstrike.runtime.reducers import resolve_reducer
-      from deepstrike._kernel import Message
+      from deepstrike._kernel import ProviderMessage
 
       def _result(content: str, termination: str) -> Any:
         return SubAgentResult(
@@ -1100,7 +1100,7 @@ class RuntimeRunner:
             termination=termination,
             turns_used=0,
             total_tokens_used=0,
-            final_message=Message(role="assistant", content=content),
+            final_message=ProviderMessage(role="assistant", content=content),
           ),
         )
 
@@ -1229,14 +1229,14 @@ class RuntimeRunner:
       reason = (
         f"output_schema validation failed after {max_attempts} attempts: " + "; ".join(last_errors)
       )
-      from deepstrike._kernel import Message
+      from deepstrike._kernel import ProviderMessage
       return SubAgentResult(
         agent_id=last.agent_id,
         result=LoopResult(
           termination="error",
           turns_used=last.result.turns_used,
           total_tokens_used=last.result.total_tokens_used,
-          final_message=Message(role="assistant", content=reason),
+          final_message=ProviderMessage(role="assistant", content=reason),
         ),
         submitted_nodes=getattr(last, "submitted_nodes", []),
       )
@@ -2534,7 +2534,7 @@ class RuntimeRunner:
             except Exception:
               leased.append(call)
           canonical_tool_calls = leased
-        assistant_message = Message(
+        assistant_message = ProviderMessage(
           role="assistant", content=final_text, tool_calls=canonical_tool_calls,
         )
         # P4 §2: assemble the measurement from the exact numbers that cross the boundary today
@@ -2749,7 +2749,7 @@ class RuntimeRunner:
           on_tool_suspend=self._opts.on_tool_suspend,
           on_permission_request=self._opts.on_permission_request,
         )
-        tool_results: list[ToolResult] = []
+        tool_results: list[ToolExecutionResult] = []
         durable_blocks_by_call: dict[str, list[dict]] = {}
         # Syscall tools are consumed by core from the provider result. If one reaches this host
         # effect projection, the canonical boundary has drifted and must fail closed.
@@ -2766,7 +2766,7 @@ class RuntimeRunner:
             "kind": "update_task",
             "update": task_update_to_kernel(update),
           })
-          result = ToolResult(call_id=call.id, output="success", is_error=False)
+          result = ToolExecutionResult(call_id=call.id, output="success", is_error=False)
           tool_results.append(result)
           yield ToolResultEvent(call_id=call.id, content="success", is_error=False)
 
@@ -2799,7 +2799,7 @@ class RuntimeRunner:
                 "call_id": call.id, "tool_name": call.name, "reason": reason,
               })
               out = f"blocked by host hook: {reason}"
-              blocked = ToolResult(call_id=call.id, output=out, is_error=True)
+              blocked = ToolExecutionResult(call_id=call.id, output=out, is_error=True)
               if hasattr(blocked, "error_kind"):
                 blocked.error_kind = "governance_denied"
               tool_results.append(blocked)
@@ -2812,7 +2812,7 @@ class RuntimeRunner:
           async for evt in self._plane.execute_all(executable_calls, run_ctx):
             yield evt
             if isinstance(evt, ToolResultEvent):
-              result = ToolResult(call_id=evt.call_id, output=evt.content, is_error=evt.is_error)
+              result = ToolExecutionResult(call_id=evt.call_id, output=evt.content, is_error=evt.is_error)
               if hasattr(result, "is_fatal"):
                 result.is_fatal = getattr(evt, "is_fatal", False)
               if hasattr(result, "error_kind"):
@@ -3360,7 +3360,7 @@ class RuntimeRunner:
       "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
     ]))
     context = RenderedContext(system_text=system_text, turns=[
-      Message(role="user", content=transcript, tool_calls=[]),
+      ProviderMessage(role="user", content=transcript, tool_calls=[]),
     ])
     text = ""
     create_state = getattr(provider, "create_run_state", None)
@@ -3443,7 +3443,7 @@ def _normalize_attachment_parts(parts: list[dict]) -> list[dict]:
   return normalized
 
 
-def _pair_orphan_tool_calls(messages: list[Message]) -> list[Message]:
+def _pair_orphan_tool_calls(messages: list[ProviderMessage]) -> list[ProviderMessage]:
   """Kernel-consumed meta-tools (e.g. ``pace``) are answered by a synthetic tool result the kernel
   keeps in its OWN history but never emits as a ``tool_completed`` session event (they never reach
   the execution plane). On replay that leaves an assistant ``tool_call`` with no following tool
@@ -3458,7 +3458,7 @@ def _pair_orphan_tool_calls(messages: list[Message]) -> list[Message]:
   def _attr(o: Any, key: str) -> Any:
     return o.get(key) if isinstance(o, dict) else getattr(o, key, None)
 
-  out: list[Message] = []
+  out: list[ProviderMessage] = []
   n = len(messages)
   for i, m in enumerate(messages):
     out.append(m)
@@ -3481,11 +3481,11 @@ def _pair_orphan_tool_calls(messages: list[Message]) -> list[Message]:
         type="tool_result", call_id=cid,
         output=f"[{_attr(c, 'name')} handled by kernel]", is_error=False,
       )
-      out.append(Message(role="tool", content="", tool_calls=[], content_parts=[part]))
+      out.append(ProviderMessage(role="tool", content="", tool_calls=[], content_parts=[part]))
   return out
 
 
-def _replay_tool_result_message(result: dict[str, Any], max_bytes: int | None = None) -> Message:
+def _replay_tool_result_message(result: dict[str, Any], max_bytes: int | None = None) -> ProviderMessage:
   """Decode persisted tool-result content before projecting it into provider carriers."""
   output_raw = result.get("output", "")
   if not isinstance(output_raw, str):
@@ -3509,14 +3509,14 @@ def _replay_tool_result_message(result: dict[str, Any], max_bytes: int | None = 
         is_error=durable["is_error"], content_parts=blocks,
       )],
     )
-  return Message(role="tool", content="", tool_calls=[], content_parts=[ContentPartObj(
+  return ProviderMessage(role="tool", content="", tool_calls=[], content_parts=[ContentPartObj(
     type="tool_result", call_id=durable["call_id"], output=output,
     is_error=durable["is_error"],
   )])
 
 
-def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -> list[Message]:
-  messages: list[Message] = []
+def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -> list[ProviderMessage]:
+  messages: list[ProviderMessage] = []
   for entry in events:
     e = entry.event
     kind = e.get("kind")
@@ -3541,25 +3541,25 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
             media_type=a.get("media_type"), detail=a.get("detail"),
             call_id=a.get("call_id"), output=a.get("output"), is_error=a.get("is_error"),
           ))
-        messages.append(Message(
+        messages.append(ProviderMessage(
           role="user", content=user_text, tool_calls=[], content_parts=parts,
         ))
       else:
-        messages.append(Message(
+        messages.append(ProviderMessage(
           role="user", content=user_text, tool_calls=[],
         ))
     elif kind == "compressed":
       summary = e.get("summary")
       if summary:
         system_text = f"[Compressed context: turn {e.get('turn', 0)}]\n{summary}"
-        messages.append(Message(
+        messages.append(ProviderMessage(
           role="system",
           content=system_text,
           tool_calls=[],
         ))
     elif kind == "llm_completed":
       content = sanitize_replay_text(e.get("content", ""), max_bytes)
-      messages.append(Message(
+      messages.append(ProviderMessage(
         role="assistant",
         content=content,
         tool_calls=e.get("tool_calls", []),
@@ -3580,9 +3580,9 @@ def _replay_messages(events: list[SessionEntry], max_bytes: int | None = None) -
 async def _replay_messages_async(
   events: list[SessionEntry],
   max_bytes: int | None = None,
-  load_archive: Callable[[str], Awaitable[list[Message]]] | None = None,
-) -> list[Message]:
-  messages: list[Message] = []
+  load_archive: Callable[[str], Awaitable[list[ProviderMessage]]] | None = None,
+) -> list[ProviderMessage]:
+  messages: list[ProviderMessage] = []
   archived_turns = {
     int(entry.event.get("turn") or 0)
     for entry in events
@@ -3614,11 +3614,11 @@ async def _replay_messages_async(
             media_type=a.get("media_type"), detail=a.get("detail"),
             call_id=a.get("call_id"), output=a.get("output"), is_error=a.get("is_error"),
           ))
-        messages.append(Message(
+        messages.append(ProviderMessage(
           role="user", content=user_text, tool_calls=[], content_parts=parts,
         ))
       else:
-        messages.append(Message(
+        messages.append(ProviderMessage(
           role="user", content=user_text, tool_calls=[],
         ))
     elif kind == "compressed":
@@ -3629,7 +3629,7 @@ async def _replay_messages_async(
       summary = e.get("summary")
       if summary:
         system_text = f"[Compressed context: turn {e.get('turn', 0)}]\n{summary}"
-        messages.append(Message(
+        messages.append(ProviderMessage(
           role="system",
           content=system_text,
           tool_calls=[],
@@ -3640,7 +3640,7 @@ async def _replay_messages_async(
         archived_msgs = await load_archive(str(e["archive_ref"]))
         for msg in archived_msgs:
           content = sanitize_replay_text(msg.content, max_bytes)
-          messages.append(Message(
+          messages.append(ProviderMessage(
             role=msg.role,
             content=content,
             tool_calls=msg.tool_calls,
@@ -3653,14 +3653,14 @@ async def _replay_messages_async(
         summary = e.get("summary")
         if summary:
           system_text = f"[Compressed context: turn {e.get('turn', 0)}]\n{summary}"
-          messages.append(Message(
+          messages.append(ProviderMessage(
             role="system",
             content=system_text,
             tool_calls=[],
           ))
     elif kind == "llm_completed":
       content = sanitize_replay_text(e.get("content", ""), max_bytes)
-      messages.append(Message(
+      messages.append(ProviderMessage(
         role="assistant",
         content=content,
         tool_calls=e.get("tool_calls", []),
@@ -3834,13 +3834,13 @@ def _prompt_budget_to_kernel(
   }
 
 
-def _to_kernel_message(message: object) -> Message:
-  if isinstance(message, Message):
+def _to_kernel_message(message: object) -> ProviderMessage:
+  if isinstance(message, ProviderMessage):
     return message
   role = getattr(message, "role", "user")
   content = getattr(message, "content", "")
   tool_calls = getattr(message, "tool_calls", None) or []
-  return Message(role=role, content=content, tool_calls=tool_calls)
+  return ProviderMessage(role=role, content=content, tool_calls=tool_calls)
 
 
 def _memory_record_from_mapping(value: dict[str, Any]) -> "MemoryRecord":

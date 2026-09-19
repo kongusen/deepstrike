@@ -1,4 +1,4 @@
-import type { Message, ProviderReplay, ProviderWireEvidence, ToolCall } from "../types.js"
+import type { ProviderMessage, ProviderReplay, ProviderWireEvidence, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
 import type { WorkflowNodeStatus } from "../types/agent.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
@@ -96,7 +96,7 @@ export function buildWorkflowNodeCompletedEvent(input: {
   classifyBranch?: string
   tournamentWinner?: string
   loopContinue?: boolean
-  output?: Message
+  output?: ProviderMessage
 }): Extract<SessionEvent, { kind: "workflow_node_completed" }> {
   return {
     kind: "workflow_node_completed",

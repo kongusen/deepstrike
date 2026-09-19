@@ -11,9 +11,9 @@ import pytest
 
 from deepstrike.providers.factories import qwen
 from deepstrike.providers.base import RenderedContext
-from deepstrike._kernel import Message
+from deepstrike._kernel import ProviderMessage
 
-CTX = RenderedContext(turns=[Message(role="user", content="latest qwen news?")])
+CTX = RenderedContext(turns=[ProviderMessage(role="user", content="latest qwen news?")])
 
 
 class _FakeGen:

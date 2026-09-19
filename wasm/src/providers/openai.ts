@@ -1,4 +1,4 @@
-import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, Message, ProviderDescriptor } from "../types.js"
+import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, ProviderMessage, ProviderDescriptor } from "../types.js"
 import { collectStreamMessage, toOpenAIMessages } from "./base.js"
 
 const DEEPSEEK_REASONERS = new Set(["deepseek-reasoner", "deepseek-r1"])
@@ -65,7 +65,7 @@ export class OpenAIProvider implements LLMProvider {
     return tools.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: JSON.parse(t.parameters) } }))
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ProviderMessage> {
     return collectStreamMessage(this.stream(context, tools, extensions))
   }
 

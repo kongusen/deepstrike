@@ -336,7 +336,7 @@ impl ContentPartObj {
 
 #[pyclass]
 #[derive(Clone)]
-struct Message {
+struct ProviderMessage {
     #[pyo3(get, set)]
     role: String,
     #[pyo3(get, set)]
@@ -348,7 +348,7 @@ struct Message {
 }
 
 #[pymethods]
-impl Message {
+impl ProviderMessage {
     #[new]
     #[pyo3(signature = (role, content, tool_calls = None, content_parts = None))]
     fn new(
@@ -371,7 +371,7 @@ impl Message {
             None => String::new(),
         };
         format!(
-            "Message(role={:?}, content={:?}{})",
+            "ProviderMessage(role={:?}, content={:?}{})",
             self.role, self.content, parts_info
         )
     }
@@ -535,7 +535,7 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
     }
 }
 
-impl Message {
+impl ProviderMessage {
     fn from_rust(msg: &RustMessage) -> Self {
         let role = match msg.role {
             Role::System => "system",
@@ -607,7 +607,7 @@ impl ToolCall {
 
 #[pyclass]
 #[derive(Clone)]
-struct ToolResult {
+struct ToolExecutionResult {
     #[pyo3(get, set)]
     call_id: String,
     #[pyo3(get, set)]
@@ -621,7 +621,7 @@ struct ToolResult {
 }
 
 #[pymethods]
-impl ToolResult {
+impl ToolExecutionResult {
     #[new]
     #[pyo3(signature = (call_id, output, is_error = false, is_fatal = false, error_kind = None))]
     fn new(
@@ -728,7 +728,7 @@ struct LoopResult {
     #[pyo3(get)]
     termination: String,
     #[pyo3(get)]
-    final_message: Option<Message>,
+    final_message: Option<ProviderMessage>,
     #[pyo3(get)]
     turns_used: u32,
     #[pyo3(get)]
@@ -841,10 +841,10 @@ struct RenderedContext {
     system_knowledge: String,
     /// History turns only — the stable, cacheable message prefix.
     #[pyo3(get)]
-    turns: Vec<Message>,
+    turns: Vec<ProviderMessage>,
     /// Volatile State turn (task_state + signals), rendered after the cacheable history.
     #[pyo3(get)]
-    state_turn: Option<Message>,
+    state_turn: Option<ProviderMessage>,
     /// P1-E: count of leading `turns` forming the frozen prefix (byte-stable until the next
     /// compaction). Providers pin a deep cache breakpoint here; absent ⇒ rolling-pair fallback.
     #[pyo3(get)]
@@ -1396,7 +1396,7 @@ struct SessionData {
     #[pyo3(get, set)]
     agent_id: String,
     #[pyo3(get, set)]
-    messages: Vec<Message>,
+    messages: Vec<ProviderMessage>,
     /// JSON-encoded metadata blob.
     #[pyo3(get, set)]
     metadata: String,
@@ -1413,7 +1413,7 @@ impl SessionData {
     fn new(
         session_id: String,
         agent_id: String,
-        messages: Vec<Message>,
+        messages: Vec<ProviderMessage>,
         metadata: String,
         created_at_ms: f64,
         updated_at_ms: f64,
@@ -1693,7 +1693,7 @@ fn build_eval_messages(
     result: String,
     attempt: u32,
     extract_skill_on_pass: bool,
-) -> Vec<Message> {
+) -> Vec<ProviderMessage> {
     let rust_criteria = criteria_from_py(criteria);
     rust_build_eval_messages(
         &goal,
@@ -1703,7 +1703,7 @@ fn build_eval_messages(
         extract_skill_on_pass,
     )
     .iter()
-    .map(Message::from_rust)
+    .map(ProviderMessage::from_rust)
     .collect()
 }
 
@@ -1753,9 +1753,9 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     // POD types
     m.add_class::<ContentPartObj>()?;
-    m.add_class::<Message>()?;
+    m.add_class::<ProviderMessage>()?;
     m.add_class::<ToolCall>()?;
-    m.add_class::<ToolResult>()?;
+    m.add_class::<ToolExecutionResult>()?;
     m.add_class::<ToolSchema>()?;
     m.add_class::<RuntimeTask>()?;
     m.add_class::<LoopPolicy>()?;

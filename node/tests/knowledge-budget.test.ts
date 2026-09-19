@@ -7,7 +7,7 @@
  */
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
-import type { LLMProvider, Message, RenderedContext, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent } from "../src/types.js"
 
 const EVICTABLE = "OLD_UNPINNED_REFERENCE_"
 const PINNED = "PINNED_CRITICAL_REFERENCE"
@@ -18,7 +18,7 @@ describe("knowledge budget (K2)", () => {
     let finalKnowledge = ""
 
     const provider: LLMProvider = {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
@@ -65,7 +65,7 @@ describe("knowledge budget (K2)", () => {
     let finalKnowledge = ""
 
     const provider: LLMProvider = {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {

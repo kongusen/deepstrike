@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from deepstrike._kernel import Message, ToolSchema
+from deepstrike._kernel import ProviderMessage, ToolSchema
 from deepstrike.providers.base import RenderedContext, UnsupportedModalityError
 from deepstrike.providers.protocol_adapter import AdapterOutput, ProtocolResponseError
 from deepstrike.providers.stop_reason import canonicalize_stop_reason
@@ -53,7 +53,7 @@ class GeminiAdapter:
     def __init__(self, model: str):
         self._model = model
 
-    def build_contents(self, turns: list[Message]) -> list[dict]:
+    def build_contents(self, turns: list[ProviderMessage]) -> list[dict]:
         contents: list[dict] = []
         for msg in turns:
             if msg.role == "tool":
@@ -153,7 +153,7 @@ class GeminiAdapter:
     def _function_call(part: Any) -> Any:
         return _get(part, "function_call")
 
-    def decode_complete(self, raw: Any, input: CanonicalAdapterInput) -> Message:
+    def decode_complete(self, raw: Any, input: CanonicalAdapterInput) -> ProviderMessage:
         content = ""
         tool_calls = []
         for part in self._response_parts(raw):
@@ -172,7 +172,7 @@ class GeminiAdapter:
                         tool_calls.append(normalized)
         usage = _get(raw, "usage_metadata")
         total = _usage_number(usage, "total_token_count") if usage is not None else None
-        return Message(role="assistant", content=content, tool_calls=tool_calls or None)
+        return ProviderMessage(role="assistant", content=content, tool_calls=tool_calls or None)
 
     def create_stream_state(self, input: CanonicalAdapterInput) -> GeminiStreamState:
         return GeminiStreamState()

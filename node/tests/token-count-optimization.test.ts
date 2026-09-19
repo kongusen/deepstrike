@@ -13,7 +13,7 @@ const mockContext: RenderedContext = {
 
 describe("Token Count Optimization", () => {
   describe("AnthropicProvider", () => {
-    it("keeps usage evidence off the Message returned by complete()", async () => {
+    it("keeps usage evidence off the ProviderMessage returned by complete()", async () => {
       const provider = new AnthropicProvider({ apiKey: "test-key" })
       ;(provider as any).client = {
         messages: {
@@ -102,7 +102,7 @@ describe("Token Count Optimization", () => {
   })
 
   describe("OpenAIProvider", () => {
-    it("keeps usage evidence off the Message returned by complete()", async () => {
+    it("keeps usage evidence off the ProviderMessage returned by complete()", async () => {
       const provider = new OpenAIChatProvider({ apiKey: "test-key" })
       ;(provider as any).client = {
         chat: {
@@ -153,7 +153,7 @@ describe("Token Count Optimization", () => {
   })
 
   describe("GeminiProvider", () => {
-    it("keeps usage evidence off the Message returned by complete()", async () => {
+    it("keeps usage evidence off the ProviderMessage returned by complete()", async () => {
       const provider = new GeminiProvider("test-key")
       ;(provider as any).genAI = {
         getGenerativeModel: () => ({
@@ -201,7 +201,7 @@ describe("Token Count Optimization", () => {
   })
 
   describe("OpenAIResponsesProvider", () => {
-    it("keeps usage evidence off the Message returned by complete()", async () => {
+    it("keeps usage evidence off the ProviderMessage returned by complete()", async () => {
       const provider = new OpenAIResponsesProvider("test-key")
       ;(provider as any).client = {
         responses: {

@@ -9,7 +9,7 @@ import * as os from "os"
 import * as path from "path"
 import { PayloadStore } from "../src/runtime/payload-store.js"
 import { createRunner, tool } from "./runtime/helpers.js"
-import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 describe("read_result meta-tool", () => {
   let storageDir: string
@@ -31,7 +31,7 @@ describe("read_result meta-tool", () => {
     let callCount = 0
 
     const provider: LLMProvider = {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(_context: RenderedContext, tools: ToolSchema[]): AsyncIterable<StreamEvent> {

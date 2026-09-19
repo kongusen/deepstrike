@@ -11,7 +11,7 @@ import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import type { RegisteredTool } from "../../src/tools/index.js"
 import type {
   LLMProvider,
-  Message,
+  ProviderMessage,
   RenderedContext,
   StreamEvent,
   ToolSchema,
@@ -84,7 +84,7 @@ export class MetricCapturingProvider implements LLMProvider {
 
   constructor(private inner: LLMProvider) {}
 
-  async complete(ctx: RenderedContext, tools: ToolSchema[]): Promise<Message> {
+  async complete(ctx: RenderedContext, tools: ToolSchema[]): Promise<ProviderMessage> {
     return this.inner.complete(ctx, tools)
   }
 

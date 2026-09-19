@@ -4,7 +4,7 @@ import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import { tool } from "../../src/tools/index.js"
 import type {
   LLMProvider,
-  Message,
+  ProviderMessage,
   RenderedContext,
   StreamEvent,
   ToolSchema,
@@ -58,7 +58,7 @@ class ScriptedProvider implements LLMProvider {
     private readonly opts: { emitUsage?: boolean } = {},
   ) {}
 
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
     return { role: "assistant", content: "", toolCalls: [] }
   }
 
@@ -465,7 +465,7 @@ describe("E2E mechanism contract tests", () => {
       // ── Phase 0: large assistant text + tiny fill to build toward snip zone ──
       // Each turn adds: asst(1200 chars=300t) + fill-result(60 chars=15t) = 315t.
       // Snip fires at rho>0.70 (2800t). From baseline ≈10t: (2800-10)/315 ≈ 9 turns.
-      // snip_per_msg = 0.05*4000 = 200t. Message(300t) > 200t → SnipCompact truncates it.
+      // snip_per_msg = 0.05*4000 = 200t. ProviderMessage(300t) > 200t → SnipCompact truncates it.
       // After truncation: 9*100t savings → partition drops to ≈1945t, rho=0.486.
       return [
         { type: "text_delta", delta: fillText(1200) },

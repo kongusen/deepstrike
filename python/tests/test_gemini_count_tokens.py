@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepstrike._kernel import Message, ToolSchema
+from deepstrike._kernel import ProviderMessage, ToolSchema
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.gemini import GeminiProvider
 
@@ -12,7 +12,7 @@ async def test_gemini_count_tokens_reuses_generation_request_plan() -> None:
     provider = GeminiProvider("test", model="gemini-2.5-pro")
     context = RenderedContext(
         system_text="system",
-        turns=[Message(role="user", content="hello")],
+        turns=[ProviderMessage(role="user", content="hello")],
     )
     tools = [ToolSchema(name="lookup", description="Lookup", parameters='{"type":"object"}')]
     captured: dict = {}

@@ -1,4 +1,4 @@
-import type { ToolChunk, ToolSchema, ToolResult } from "../types.js"
+import type { ToolChunk, ToolSchema, ToolExecutionResult } from "../types.js"
 import { formatToolError } from "./errors.js"
 import type { OperationContext } from "../runtime/reliability.js"
 
@@ -288,7 +288,7 @@ function validateValue(
 export async function executeTools(
   calls: { id: string; name: string; arguments: string }[],
   registry: Map<string, RegisteredTool>,
-): Promise<ToolResult[]> {
+): Promise<ToolExecutionResult[]> {
   return Promise.all(calls.map(async c => {
     const t = registry.get(c.name)
     if (!t) return { callId: c.id, output: `unknown tool: ${c.name}`, isError: true }

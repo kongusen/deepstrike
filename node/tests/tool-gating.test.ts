@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
-import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 /** Flatten everything the model can read out of a rendered context into one searchable string. */
 function contextText(ctx: RenderedContext): string {
@@ -18,7 +18,7 @@ function contextText(ctx: RenderedContext): string {
  */
 function toolCapturingProvider(captured: { tools: string[] }): LLMProvider {
   return {
-    async complete(_ctx: RenderedContext, tools: ToolSchema[]): Promise<Message> {
+    async complete(_ctx: RenderedContext, tools: ToolSchema[]): Promise<ProviderMessage> {
       captured.tools = tools.map(t => t.name)
       return { role: "assistant", content: "done" }
     },
@@ -97,7 +97,7 @@ describe("P0 exposure baseline (baselineToolIds)", () => {
     let call = 0
     const record = (tools: ToolSchema[]) => perTurn.push(tools.map(t => t.name))
     return {
-      async complete(_ctx, tools: ToolSchema[]): Promise<Message> {
+      async complete(_ctx, tools: ToolSchema[]): Promise<ProviderMessage> {
         record(tools)
         return { role: "assistant", content: "done" }
       },
@@ -193,7 +193,7 @@ describe("fail-closed dispatch", () => {
   function unexposedCallProvider(contexts: string[]): LLMProvider {
     let call = 0
     return {
-      async complete(ctx: RenderedContext): Promise<Message> {
+      async complete(ctx: RenderedContext): Promise<ProviderMessage> {
         contexts.push(contextText(ctx))
         return { role: "assistant", content: "done" }
       },

@@ -1,5 +1,5 @@
 import type {
-  LLMProvider, Message, ToolCall, ToolResult, ToolSchema, ContentPart,
+  LLMProvider, ProviderMessage, ToolCall, ToolExecutionResult, ToolSchema, ContentPart,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
@@ -221,8 +221,8 @@ interface InboundSignalDelivery {
 }
 
 export interface ArchiveStore {
-  write(sessionId: string, startSeq: number, messages: Message[]): Promise<string | undefined>
-  read?(archiveRef: string): Promise<Message[]>
+  write(sessionId: string, startSeq: number, messages: ProviderMessage[]): Promise<string | undefined>
+  read?(archiveRef: string): Promise<ProviderMessage[]>
 }
 
 /** P0-C tool-gating telemetry: per-LLM-turn metrics, emitted via `RuntimeOptions.onTurnMetrics`.
@@ -730,7 +730,7 @@ export class RuntimeRunner {
    *  K1: `opts.key` gives the entry identity — a same-key push upserts (applied at the next
    *  compaction/renewal boundary) instead of appending a duplicate. `opts.pinned` exempts the
    *  entry from the knowledge-budget sweep. */
-  async pushKnowledge(message: Message, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
+  async pushKnowledge(message: ProviderMessage, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
     if (!this.activeKernel) return
     await this.commitKernelApply(this.activeKernel, this.pendingObservations, {
       kind: "add_knowledge_message",
@@ -1273,7 +1273,7 @@ export class RuntimeRunner {
           break
         }
 
-        const assistantMessage: Message = {
+        const assistantMessage: ProviderMessage = {
           role: "assistant",
           content: finalText,
           toolCalls: finalToolCalls,
@@ -1473,7 +1473,7 @@ export class RuntimeRunner {
           onPermissionRequest: this.opts.onPermissionRequest,
         }
 
-        const toolResults: ToolResult[] = []
+        const toolResults: ToolExecutionResult[] = []
         // Syscall tools are consumed by core from the provider result and must never escape as host
         // tool effects. Keep an explicit invariant check below so a projection drift fails closed.
         const submitCalls = allCalls.filter(c => c.name === "submit_workflow_nodes" || c.name === "start_workflow")
@@ -2390,7 +2390,7 @@ export class RuntimeRunner {
     } catch { /* errs-open */ }
   }
 
-  private async archiveSemanticPageOut(archived: Message[], action?: string): Promise<void> {
+  private async archiveSemanticPageOut(archived: ProviderMessage[], action?: string): Promise<void> {
     if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     try {
       const summary = this.opts.memorySummarizer
@@ -2417,7 +2417,7 @@ export class RuntimeRunner {
 
 async function summarizeForLongTermMemory(
   provider: LLMProvider,
-  archived: Message[],
+  archived: ProviderMessage[],
   systemPrompt?: string,
 ): Promise<string> {
   const transcript = archived
@@ -2458,14 +2458,14 @@ export async function replayMessages(
   events: Array<{ seq: number; event: SessionEvent }>,
   maxBytes?: number,
   archiveStore?: ArchiveStore,
-): Promise<Message[]> {
+): Promise<ProviderMessage[]> {
   // Build upgraded-summary index: compressed_seq -> upgraded summary
   const upgradedSummaries = new Map<number, string>()
   for (const { event: e } of events) {
     if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
   }
 
-  const messages: Message[] = []
+  const messages: ProviderMessage[] = []
   const archivedTurns = new Set(events.flatMap(({ event }) =>
     event.kind === "page_out" && event.archive_ref && archiveStore?.read ? [event.turn] : [],
   ))

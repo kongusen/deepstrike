@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike._kernel import ContentPartObj, Message, ToolCall
+from deepstrike._kernel import ContentPartObj, ProviderMessage, ToolCall
 from deepstrike.providers.anthropic import AnthropicProvider
 from deepstrike.providers.base import RenderedContext, to_anthropic_messages
 from deepstrike.providers.openai import OpenAIProvider
@@ -85,8 +85,8 @@ def test_anthropic_native_replay_hook():
     ],
   })
   turns = [
-    Message(role="user", content="hi"),
-    Message(role="assistant", content="checking", tool_calls=[ToolCall("call_1", "lookup", '{"q":"x"}')]),
+    ProviderMessage(role="user", content="hi"),
+    ProviderMessage(role="assistant", content="checking", tool_calls=[ToolCall("call_1", "lookup", '{"q":"x"}')]),
   ]
   replayed = to_anthropic_messages(
     turns,
@@ -103,8 +103,8 @@ def test_openai_reasoning_replay_roundtrip():
   })
   context = RenderedContext(
     turns=[
-      Message(role="assistant", content="done", tool_calls=[ToolCall("call_1", "lookup", "{}")]),
-      Message(role="tool", content="", content_parts=[
+      ProviderMessage(role="assistant", content="done", tool_calls=[ToolCall("call_1", "lookup", "{}")]),
+      ProviderMessage(role="tool", content="", content_parts=[
         ContentPartObj("tool_result", call_id="call_1", output="pong", is_error=False),
       ]),
     ],
@@ -185,17 +185,17 @@ def test_thinking_tag_stream_extractor():
 
 def test_gemini_tool_response_name_resolution():
   from deepstrike.providers import GeminiProvider
-  from deepstrike._kernel import Message, ContentPartObj, ToolCall
+  from deepstrike._kernel import ProviderMessage, ContentPartObj, ToolCall
 
   provider = GeminiProvider(api_key="test-key")
   turns = [
-    Message(role="user", content="call the function"),
-    Message(
+    ProviderMessage(role="user", content="call the function"),
+    ProviderMessage(
       role="assistant",
       content="",
       tool_calls=[ToolCall(id="call_123", name="my_actual_tool", arguments="{}")]
     ),
-    Message(
+    ProviderMessage(
       role="tool",
       content="",
       content_parts=[

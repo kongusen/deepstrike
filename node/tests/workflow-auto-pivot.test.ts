@@ -9,13 +9,13 @@ import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
 import { tool } from "../src/tools/index.js"
 import { startWorkflowTool } from "../src/types/agent.js"
-import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 /** Emits a `start_workflow` tool call on turn 1, then plain text (terminates) afterwards. */
 class AuthoringProvider implements LLMProvider {
   turn = 0
   readonly contexts: RenderedContext[] = []
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     return { role: "assistant", content: "", toolCalls: [] }
   }
   async *stream(context: RenderedContext, _tools: ToolSchema[]): AsyncIterable<StreamEvent> {

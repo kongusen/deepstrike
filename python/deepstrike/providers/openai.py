@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 import httpx
 from openai import AsyncOpenAI
-from deepstrike._kernel import Message, ToolCall, ToolSchema
+from deepstrike._kernel import ProviderMessage, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ToolCallEvent, ThinkingDelta, UsageEvent
 from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, stable_prompt_cache_key, to_openai_message_params, ThinkingTagStreamExtractor, wire_request_extensions
 from .replay import ReasoningReplayMixin, assistant_replay_key
@@ -222,7 +222,7 @@ class OpenAIProvider(ReasoningReplayMixin):
             return
         if reasoning.native_tool_calls:
             envelope["tool_calls"] = reasoning.native_tool_calls
-        self.remember_replay_fields(Message(role="assistant", content=content, tool_calls=tool_calls or None), envelope)
+        self.remember_replay_fields(ProviderMessage(role="assistant", content=content, tool_calls=tool_calls or None), envelope)
 
     def assess_replayability(self, context: RenderedContext, extensions: dict | None = None) -> dict:
         """Pre-flight query: would this history validate against this provider with
@@ -380,7 +380,7 @@ class OpenAIProvider(ReasoningReplayMixin):
         context: RenderedContext,
         tools: list[ToolSchema],
         extensions: dict | None,
-    ) -> Message:
+    ) -> ProviderMessage:
         adapter_input = self._canonical_input(context, tools, extensions)
         plan = self._adapter.build_request(adapter_input, self._wire_dialect, self._replay_for_assistant)
         last_exc = None
@@ -418,7 +418,7 @@ class OpenAIProvider(ReasoningReplayMixin):
             output = self._adapter.push_stream_chunk(chunk, stream_state)
             if output.replay:
                 self.remember_replay_fields(
-                    Message(role="assistant", content=stream_state.accumulated_content,
+                    ProviderMessage(role="assistant", content=stream_state.accumulated_content,
                             tool_calls=self._adapter._final_tool_calls(stream_state.tool_call_buffers) or None),
                     output.replay,
                 )
@@ -427,14 +427,14 @@ class OpenAIProvider(ReasoningReplayMixin):
         output = self._adapter.finish_stream(stream_state)
         if output.replay:
             self.remember_replay_fields(
-                Message(role="assistant", content=stream_state.accumulated_content,
+                ProviderMessage(role="assistant", content=stream_state.accumulated_content,
                         tool_calls=self._adapter._final_tool_calls(stream_state.tool_call_buffers) or None),
                 output.replay,
             )
         for event in output.events:
             yield event
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> Message:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ProviderMessage:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
@@ -477,7 +477,7 @@ class OpenAIProvider(ReasoningReplayMixin):
                     ],
                 ))
 
-                return Message(
+                return ProviderMessage(
                     role="assistant",
                     content=content,
                     tool_calls=tool_calls or None,

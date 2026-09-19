@@ -8,7 +8,7 @@
 //! ```typescript
 //! import {
 //!   ContextEngine, LoopStateMachine, RuntimeTask, LoopPolicy,
-//!   Message, ToolCall, ToolResult, ToolSchema,
+//!   ProviderMessage, ToolCall, ToolExecutionResult, ToolSchema,
 //!   SkillMetadata,
 //! } from '@deepstrike/core'
 //!
@@ -142,7 +142,7 @@ fn source_from_rust(
 
 #[napi(object)]
 #[derive(Clone)]
-pub struct Message {
+pub struct ProviderMessage {
     pub role: String,
     /// Plain-text content. When `content_parts` is present, this holds only the
     /// concatenated text projection.
@@ -163,7 +163,7 @@ pub struct ToolCall {
 
 #[napi(object)]
 #[derive(Clone)]
-pub struct ToolResult {
+pub struct ToolExecutionResult {
     pub call_id: String,
     pub output: String,
     pub is_error: bool,
@@ -215,7 +215,7 @@ pub struct VerificationContract {
 #[derive(Clone)]
 pub struct LoopResult {
     pub termination: String,
-    pub final_message: Option<Message>,
+    pub final_message: Option<ProviderMessage>,
     pub turns_used: u32,
     pub total_tokens_used: BigInt,
 }
@@ -436,7 +436,7 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
     }
 }
 
-fn message_from_rust(m: &RustMessage) -> Message {
+fn message_from_rust(m: &RustMessage) -> ProviderMessage {
     let (content, content_parts) = match &m.content {
         Content::Text(s) => (s.clone(), None),
         Content::Parts(parts) => {
@@ -452,7 +452,7 @@ fn message_from_rust(m: &RustMessage) -> Message {
             (text_only, Some(objs))
         }
     };
-    Message {
+    ProviderMessage {
         role: role_to_str(m.role).to_string(),
         content,
         content_parts,
@@ -915,7 +915,7 @@ pub fn build_eval_messages(
     result: String,
     attempt: u32,
     extract_skill_on_pass: bool,
-) -> Vec<Message> {
+) -> Vec<ProviderMessage> {
     let rust_criteria: Vec<RustCriterion> = criteria
         .into_iter()
         .map(|c| RustCriterion {

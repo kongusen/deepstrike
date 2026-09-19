@@ -1,5 +1,5 @@
 import type {
-  Message,
+  ProviderMessage,
   ProviderReplay,
   ProviderRunState,
   ProviderUsage,
@@ -50,7 +50,7 @@ export interface ProtocolAdapter<
 
   buildRequest(input: CanonicalAdapterInput): TRequest
   decodeComplete(raw: TCompleteResponse, input: AdapterDecodeInput): {
-    message: Message
+    message: ProviderMessage
     replay?: ProviderReplay
   }
 

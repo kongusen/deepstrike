@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk"
 import type {
   CacheBreakpointStrategy,
   LLMProvider,
-  Message,
+  ProviderMessage,
   PromptMeasurement,
   ProviderDescriptor,
   ProviderReplay,
@@ -127,12 +127,12 @@ export class AnthropicProvider implements LLMProvider {
     this.resolvedRuntime = resolved
   }
 
-  peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
+  peekProviderReplay(message: Pick<ProviderMessage, "content" | "toolCalls">): ProviderReplay | undefined {
     const blocks = this.nativeAssistantBlocks.get(assistantReplayKey(message))
     return blocks?.length ? { protocol: "anthropic-messages", native_blocks: blocks } : undefined
   }
 
-  seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
+  seedProviderReplay(message: Pick<ProviderMessage, "content" | "toolCalls">, replay: ProviderReplay): void {
     if (replay.protocol === "anthropic-messages" && replay.native_blocks?.length) {
       this.nativeAssistantBlocks.set(assistantReplayKey(message), replay.native_blocks)
     }
@@ -189,7 +189,7 @@ export class AnthropicProvider implements LLMProvider {
     context: RenderedContext,
     tools: ToolSchema[],
     extensions?: Record<string, unknown>,
-  ): Promise<Message> {
+  ): Promise<ProviderMessage> {
     const provider = this.providerName()
     if (this.circuit.isOpen()) throw circuitOpenError(provider)
     let input: CanonicalAdapterInput
@@ -322,7 +322,7 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   private rememberNativeBlocks(
-    message: Pick<Message, "content" | "toolCalls">,
+    message: Pick<ProviderMessage, "content" | "toolCalls">,
     blocks: Array<Record<string, unknown>>,
   ): void {
     if (!blocks.length) return

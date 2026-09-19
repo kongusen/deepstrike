@@ -1,7 +1,7 @@
 import { collectText } from "../src/runtime/runner.js"
 import { createRunner } from "./runtime/helpers.js"
 import { tool } from "../src/tools/index.js"
-import type { AsyncSummarizer, LLMProvider, Message, StreamEvent } from "../src/types.js"
+import type { AsyncSummarizer, LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
 
 describe("AsyncSummarizer — summary_upgraded written and preferred on replay", () => {
   it("fires background upgrade after compression and uses upgraded summary on wake", async () => {
@@ -9,7 +9,7 @@ describe("AsyncSummarizer — summary_upgraded written and preferred on replay",
     const upgradedSummaryText = "LLM-upgraded: agent used fill tool 8 times to populate data"
 
     const asyncSummarizer: AsyncSummarizer = {
-      async summarize(_archived: Message[], _action: string): Promise<string> {
+      async summarize(_archived: ProviderMessage[], _action: string): Promise<string> {
         summarizerCalled = true
         return upgradedSummaryText
       },
@@ -17,7 +17,7 @@ describe("AsyncSummarizer — summary_upgraded written and preferred on replay",
 
     let callCount = 0
     const provider: LLMProvider = {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -60,7 +60,7 @@ describe("AsyncSummarizer — summary_upgraded written and preferred on replay",
 
     let callCount = 0
     const provider: LLMProvider = {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {

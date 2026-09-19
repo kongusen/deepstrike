@@ -1,4 +1,4 @@
-import type { ContentPart, Message, ProviderDescriptor, ProviderReplay, RenderedContext, ReplayabilityAssessment } from "../types.js"
+import type { ContentPart, ProviderMessage, ProviderDescriptor, ProviderReplay, RenderedContext, ReplayabilityAssessment } from "../types.js"
 
 export type { ReplayabilityAssessment }
 
@@ -27,7 +27,7 @@ export interface OpenAIChatReplayValidationOptions {
    * rather than fail outright.
    */
   degradeMissingReasoning?: boolean
-  replayForAssistant?: (message: Pick<Message, "content" | "toolCalls">) => ProviderReplay | Record<string, unknown> | undefined
+  replayForAssistant?: (message: Pick<ProviderMessage, "content" | "toolCalls">) => ProviderReplay | Record<string, unknown> | undefined
 }
 
 export function validateOpenAIChatReplay(
@@ -50,7 +50,7 @@ export function validateOpenAIChatReplay(
  * skip the candidate — before sending.
  */
 export function assessReasoningReplay(
-  turns: Message[],
+  turns: ProviderMessage[],
   options: Pick<OpenAIChatReplayValidationOptions, "replayForAssistant">,
 ): ReplayabilityAssessment {
   const offendingCallIds: string[] = []
@@ -77,12 +77,12 @@ function reasoningReplayError(
   )
 }
 
-function toolResultParts(message: Message): Array<Extract<ContentPart, { type: "tool_result" }>> {
+function toolResultParts(message: ProviderMessage): Array<Extract<ContentPart, { type: "tool_result" }>> {
   return (message.contentParts ?? [])
     .filter((part): part is Extract<ContentPart, { type: "tool_result" }> => part.type === "tool_result")
 }
 
-function validateStrictToolResultPairing(turns: Message[]): void {
+function validateStrictToolResultPairing(turns: ProviderMessage[]): void {
   let pendingIds: Set<string> | undefined
   let completedIds = new Set<string>()
 

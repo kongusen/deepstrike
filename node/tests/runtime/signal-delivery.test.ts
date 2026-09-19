@@ -5,7 +5,7 @@ import {
 } from "../../src/index.js"
 import type {
   LLMProvider,
-  Message,
+  ProviderMessage,
   RenderedContext,
   RuntimeSignal,
   SignalClaim,
@@ -16,7 +16,7 @@ import type {
 } from "../../src/index.js"
 
 class TextProvider implements LLMProvider {
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     return { role: "assistant", content: "done", toolCalls: [] }
   }
   async *stream(_context: RenderedContext, _tools: ToolSchema[]): AsyncIterable<StreamEvent> {

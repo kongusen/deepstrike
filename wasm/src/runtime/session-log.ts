@@ -135,7 +135,7 @@ export type SessionEvent =
       classify_branch?: string
       tournament_winner?: string
       loop_continue?: boolean
-      output?: import("../types.js").Message
+      output?: import("../types.js").ProviderMessage
     }
   | {
       kind: "workflow_nodes_submitted"

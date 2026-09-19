@@ -11,7 +11,7 @@ from deepstrike import (
     InMemorySessionLog,
     LocalExecutionPlane,
     LoopResult,
-    Message,
+    ProviderMessage,
     RuntimeOptions,
     RuntimeRunner,
     RuntimeSignal,
@@ -36,7 +36,7 @@ class _Stub:
         return SubAgentResult(
             agent_id=ctx.spec.identity.agent_id,
             result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1,
-                              final_message=Message(role="assistant", content="ok")),
+                              final_message=ProviderMessage(role="assistant", content="ok")),
         )
 
 

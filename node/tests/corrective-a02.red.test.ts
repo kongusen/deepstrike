@@ -10,7 +10,7 @@ import {
 import { resolveEffectiveModelCapabilities } from "../src/providers/model-registry.js"
 import { resolveProviderRuntime } from "../src/providers/catalog.js"
 import type {
-  LLMProvider, Message, RenderedContext, StreamEvent, ToolCall, ToolOutputBlock, ToolResultEvent, ToolSchema,
+  LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolCall, ToolOutputBlock, ToolResultEvent, ToolSchema,
 } from "../src/types.js"
 
 class ReusedCallIdPlane implements ExecutionPlane {
@@ -43,7 +43,7 @@ class ReusedCallIdPlane implements ExecutionPlane {
 class TwoSessionProvider implements LLMProvider {
   readonly contexts: RenderedContext[] = []
   private calls = 0
-  async complete(): Promise<Message> { return { role: "assistant", content: "done" } }
+  async complete(): Promise<ProviderMessage> { return { role: "assistant", content: "done" } }
   async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
     this.contexts.push(context)
     this.calls += 1
@@ -168,7 +168,7 @@ describe("spc_013-A-02: canonical content and operation overlay", () => {
     expect(() => toAnthropicMessages(structuredToolContext().turns)).toThrow(/projection|conflict/i)
   })
 
-  it("rejects nested ToolResult blocks", () => {
+  it("rejects nested ToolExecutionResult blocks", () => {
     expect(() => toAnthropicMessages(structuredToolContext(true).turns)).toThrow(/nested|tool.result/i)
   })
 
@@ -232,7 +232,7 @@ describe("spc_013-A-02: canonical content and operation overlay", () => {
     })
     context.turns[0].contentParts![0] = {
       ...(context.turns[0].contentParts![0] as Extract<
-        NonNullable<Message["contentParts"]>[number],
+        NonNullable<ProviderMessage["contentParts"]>[number],
         { type: "tool_result" }
       >),
       contentParts: [{

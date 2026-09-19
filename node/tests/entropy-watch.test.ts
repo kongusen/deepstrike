@@ -4,7 +4,7 @@
  * `entropyWatch` threshold alert (`entropy_alert`), both mirrored into the session log.
  * `runner.latestEntropy()` is the pull companion for supervisors outside the stream.
  */
-import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import type { EntropyAlertEvent, EntropySampleEvent } from "../src/types.js"
 import { createRunner, tool } from "./runtime/helpers.js"
 
@@ -12,7 +12,7 @@ import { createRunner, tool } from "./runtime/helpers.js"
 class LoopingProvider implements LLMProvider {
   private turns = 0
   constructor(private readonly toolTurns: number) {}
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
   async *stream(_context: RenderedContext): AsyncIterable<StreamEvent> {

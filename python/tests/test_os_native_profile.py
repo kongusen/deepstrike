@@ -3,7 +3,7 @@ import pytest
 from deepstrike import (
     InMemorySessionLog,
     LocalExecutionPlane,
-    Message,
+    ProviderMessage,
     RuntimeOptions,
     RuntimeRunner,
     collect_text,
@@ -27,8 +27,8 @@ class _StaticProvider:
         self._tool_once = tool_once
         self._n = 0
 
-    async def complete(self) -> Message:
-        return Message(role="assistant", content="done", tool_calls=[])
+    async def complete(self) -> ProviderMessage:
+        return ProviderMessage(role="assistant", content="done", tool_calls=[])
 
     async def stream(self, context, tools, extensions=None, state=None):
         self._n += 1

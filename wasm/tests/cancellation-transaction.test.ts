@@ -5,14 +5,14 @@ import {
   LocalExecutionPlane,
   RuntimeRunner,
 } from "../src/runtime/index.js"
-import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
 
 describe("kernel cancellation transaction", () => {
   it.each(["user", "deadline", "lease_lost", "host_shutdown"] as const)(
     "commits the %s reason with its pending provider call",
     async reason => {
       const provider: LLMProvider = {
-        async complete(): Promise<Message> {
+        async complete(): Promise<ProviderMessage> {
           return { role: "assistant", content: "", toolCalls: [] }
         },
         async *stream(): AsyncIterable<StreamEvent> {
@@ -42,7 +42,7 @@ describe("kernel cancellation transaction", () => {
     let receivedSignal: AbortSignal | undefined
     let providerClosed = false
     const provider: LLMProvider = {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(_context, _tools, _extensions, _state, signal): AsyncIterable<StreamEvent> {
@@ -83,7 +83,7 @@ describe("kernel cancellation transaction", () => {
     let resumedProviderCalls = 0
     const restarted = new RuntimeRunner({
       provider: {
-        async complete(): Promise<Message> {
+        async complete(): Promise<ProviderMessage> {
           resumedProviderCalls += 1
           return { role: "assistant", content: "unexpected", toolCalls: [] }
         },

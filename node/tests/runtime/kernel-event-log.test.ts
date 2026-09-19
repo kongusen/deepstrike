@@ -1,7 +1,7 @@
 import { categoryForKind, kernelObservationToSessionEvent } from "../../src/runtime/kernel-event-log.js"
 import { createRunner, tool } from "./helpers.js"
 import { collectText } from "../../src/runtime/runner.js"
-import type { LLMProvider, Message, StreamEvent } from "../../src/types.js"
+import type { LLMProvider, ProviderMessage, StreamEvent } from "../../src/types.js"
 
 describe("kernel event log (Phase 5)", () => {
   it("maps observation kinds to OS categories", () => {
@@ -57,7 +57,7 @@ describe("kernel event log (Phase 5)", () => {
   it("governance suspend logs syscall/sched kernel events", async () => {
     let providerCalls = 0
     const provider: LLMProvider = {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {

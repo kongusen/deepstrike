@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from deepstrike._kernel import (  # type: ignore
-    Message,
+    ProviderMessage,
     build_eval_messages as _kernel_build_eval_messages,
     parse_verdict as _kernel_parse_verdict,
     verdict_output_schema as _kernel_verdict_output_schema,
@@ -45,7 +45,7 @@ class Verdict:
     details: list[VerdictDetail] = field(default_factory=list)
 
 
-def build_eval_messages(goal: str, criteria: list[Criterion], result: str) -> list[Message]:
+def build_eval_messages(goal: str, criteria: list[Criterion], result: str) -> list[ProviderMessage]:
     """Render the kernel's eval prompt for (goal, criteria, result)."""
     native_criteria = [
         {"text": c.text, "required": c.required, **({"weight": c.weight} if c.weight is not None else {})}

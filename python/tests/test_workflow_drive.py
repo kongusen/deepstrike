@@ -308,7 +308,7 @@ def _g3_runner(orch, *, attempts=2):
 
 @pytest.mark.asyncio
 async def test_g3_run_workflow_accepts_conforming_output_first_attempt():
-    from deepstrike._kernel import Message
+    from deepstrike._kernel import ProviderMessage
 
     class _Orch:
         def __init__(self):
@@ -319,7 +319,7 @@ async def test_g3_run_workflow_accepts_conforming_output_first_attempt():
             return SubAgentResult(
                 agent_id=ctx.spec.identity.agent_id,
                 result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1,
-                                  final_message=Message(role="assistant", content='{"verdict":"pass"}')),
+                                  final_message=ProviderMessage(role="assistant", content='{"verdict":"pass"}')),
             )
 
     orch = _Orch()
@@ -333,7 +333,7 @@ async def test_g3_run_workflow_accepts_conforming_output_first_attempt():
 
 @pytest.mark.asyncio
 async def test_g3_run_workflow_retries_once_then_accepts():
-    from deepstrike._kernel import Message
+    from deepstrike._kernel import ProviderMessage
 
     class _Orch:
         def __init__(self):
@@ -347,7 +347,7 @@ async def test_g3_run_workflow_retries_once_then_accepts():
             return SubAgentResult(
                 agent_id=ctx.spec.identity.agent_id,
                 result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1,
-                                  final_message=Message(role="assistant", content=content)),
+                                  final_message=ProviderMessage(role="assistant", content=content)),
             )
 
     orch = _Orch()
@@ -361,7 +361,7 @@ async def test_g3_run_workflow_retries_once_then_accepts():
 
 @pytest.mark.asyncio
 async def test_g3_run_workflow_fails_node_when_never_conforms():
-    from deepstrike._kernel import Message
+    from deepstrike._kernel import ProviderMessage
 
     class _Orch:
         def __init__(self):
@@ -372,7 +372,7 @@ async def test_g3_run_workflow_fails_node_when_never_conforms():
             return SubAgentResult(
                 agent_id=ctx.spec.identity.agent_id,
                 result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1,
-                                  final_message=Message(role="assistant", content="never valid")),
+                                  final_message=ProviderMessage(role="assistant", content="never valid")),
             )
 
     orch = _Orch()
@@ -385,7 +385,7 @@ async def test_g3_run_workflow_fails_node_when_never_conforms():
 
 @pytest.mark.asyncio
 async def test_g3_run_workflow_uses_configured_attempt_bound():
-    from deepstrike._kernel import Message
+    from deepstrike._kernel import ProviderMessage
 
     class _Orch:
         def __init__(self):
@@ -396,7 +396,7 @@ async def test_g3_run_workflow_uses_configured_attempt_bound():
             return SubAgentResult(
                 agent_id=ctx.spec.identity.agent_id,
                 result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1,
-                                  final_message=Message(role="assistant", content="never valid")),
+                                  final_message=ProviderMessage(role="assistant", content="never valid")),
             )
 
     orch = _Orch()
@@ -433,7 +433,7 @@ def test_g4_workflow_budget_note_formats_and_omits():
 
 @pytest.mark.asyncio
 async def test_g4_run_workflow_surfaces_budget_into_node_goal():
-    from deepstrike._kernel import Message
+    from deepstrike._kernel import ProviderMessage
 
     class _Orch:
         def __init__(self):
@@ -444,7 +444,7 @@ async def test_g4_run_workflow_surfaces_budget_into_node_goal():
             return SubAgentResult(
                 agent_id=ctx.spec.identity.agent_id,
                 result=LoopResult(termination="completed", turns_used=1, total_tokens_used=1,
-                                  final_message=Message(role="assistant", content="ok")),
+                                  final_message=ProviderMessage(role="assistant", content="ok")),
             )
 
     orch = _Orch()

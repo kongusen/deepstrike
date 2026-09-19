@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from deepstrike._kernel import ContentPartObj, Message, TaskUpdate, ToolCall, ToolResult, ToolSchema
+from deepstrike._kernel import ContentPartObj, ProviderMessage, TaskUpdate, ToolCall, ToolExecutionResult, ToolSchema
 from deepstrike.providers.base import ContextBudgetOverflow, RenderedContext
 
 
@@ -61,7 +61,7 @@ class KernelRunnerAction:
   original_size: int | None = None
   preview_size: int | None = None
   turn: int | None = None
-  archived: list[Message] | None = None
+  archived: list[ProviderMessage] | None = None
   tier: str | None = None
   handle_id: str | None = None
   payload_ref: str | None = None
@@ -84,7 +84,7 @@ def tool_schema_to_kernel(schema: ToolSchema) -> dict[str, Any]:
   }
 
 
-def tool_result_to_kernel(result: ToolResult) -> dict[str, Any]:
+def tool_result_to_kernel(result: ToolExecutionResult) -> dict[str, Any]:
   # Usage evidence enters through the host event contract; content alone cannot establish usage.
   out = {
     "call_id": result.call_id,
@@ -133,7 +133,7 @@ def skill_metadata_to_kernel(skill: Any) -> dict[str, Any]:
   return out
 
 
-def message_to_kernel(message: Message) -> dict[str, Any]:
+def message_to_kernel(message: ProviderMessage) -> dict[str, Any]:
   out: dict[str, Any] = {
     "role": message.role,
     "tool_calls": [
@@ -230,7 +230,7 @@ def _content_parts_from_kernel(parts: list[dict[str, Any]]) -> list[ContentPartO
   return out
 
 
-def _message_from_kernel(raw: dict[str, Any]) -> Message:
+def _message_from_kernel(raw: dict[str, Any]) -> ProviderMessage:
   content = raw.get("content", "")
   canonical_parts = decode_canonical_content_parts(content) if isinstance(content, str) else None
   structured = canonical_parts if canonical_parts is not None else (content if isinstance(content, list) else None)
@@ -255,7 +255,7 @@ def _message_from_kernel(raw: dict[str, Any]) -> Message:
       output=text,
       is_error=False,
     )]
-  return Message(
+  return ProviderMessage(
     role=str(raw.get("role") or "user"),
     content=text,
     tool_calls=[

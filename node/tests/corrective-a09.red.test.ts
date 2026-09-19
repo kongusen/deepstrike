@@ -8,7 +8,7 @@ import type { CanonicalAdapterInput } from "../src/providers/content-normalizati
 import { RuntimeRunner } from "../src/runtime/runner.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
-import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
 
 const canonicalInput = {
   context: { systemText: "", turns: [] },
@@ -166,7 +166,7 @@ describe("SPC-013 A-09 canonical stop reasons", () => {
   it("never lets rawStopReason override the canonical runner value", async () => {
     class ConflictingRawProvider implements LLMProvider {
       calls = 0
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       }
       async *stream(): AsyncIterable<StreamEvent> {

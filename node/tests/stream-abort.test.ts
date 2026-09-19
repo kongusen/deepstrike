@@ -6,11 +6,11 @@
 import { RuntimeRunner } from "../src/runtime/runner.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
-import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 class LongStreamProvider implements LLMProvider {
   received: AbortSignal | undefined
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     return { role: "assistant", content: "", toolCalls: [] }
   }
   async *stream(_c: RenderedContext, _t: ToolSchema[], _e?: Record<string, unknown>, _s?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {

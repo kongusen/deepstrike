@@ -1,11 +1,11 @@
-import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import { collectText } from "../src/runtime/runner.js"
 import { createRunner } from "./runtime/helpers.js"
 
 class CapturingProvider implements LLMProvider {
   readonly calls: RenderedContext[] = []
 
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
 

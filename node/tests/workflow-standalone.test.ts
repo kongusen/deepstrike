@@ -7,7 +7,7 @@
  * Uses a stub orchestrator so no LLM is needed — the focus is the bootstrap / teardown / resume wiring.
  */
 import { RuntimeRunner, InMemorySessionLog, InMemoryGroupBudgetStore, runFanout } from "../src/index.js"
-import type { LLMProvider, Message, SessionEvent, StreamEvent, WorkflowSpec } from "../src/index.js"
+import type { LLMProvider, ProviderMessage, SessionEvent, StreamEvent, WorkflowSpec } from "../src/index.js"
 
 function stubOrchestrator(onCall?: () => void) {
   return {
@@ -33,7 +33,7 @@ const fanoutSpec: WorkflowSpec = {
 describe("runWorkflow bootstraps standalone (no active parent run)", () => {
   it("runFanout executes the public system-only/full template instead of returning empty success", async () => {
     const provider: LLMProvider = {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "facade-output", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {

@@ -7,13 +7,13 @@ import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import { tool } from "../../src/tools/index.js"
 import { ProviderError } from "../../src/providers/provider-error.js"
 import { createRunner } from "./helpers.js"
-import type { LLMProvider, RenderedContext, StreamEvent, ToolSchema, Message } from "../../src/types.js"
+import type { LLMProvider, RenderedContext, StreamEvent, ToolSchema, ProviderMessage } from "../../src/types.js"
 
 /** Emits a tool call only when history has no tool results yet. */
 class ResumeAwareProvider implements LLMProvider {
   streamCalls = 0
 
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
 
@@ -361,10 +361,10 @@ describe("RuntimeRunner wake recovery", () => {
 })
 
 describe("pairOrphanToolCalls (kernel meta-tool replay pairing)", () => {
-  const asst = (content: string, calls: Array<{ id: string; name: string }>): Message => ({
+  const asst = (content: string, calls: Array<{ id: string; name: string }>): ProviderMessage => ({
     role: "assistant", content, toolCalls: calls.map(c => ({ ...c, arguments: "{}" })),
   })
-  const toolMsg = (callId: string): Message => ({
+  const toolMsg = (callId: string): ProviderMessage => ({
     role: "tool", content: "", toolCalls: [],
     contentParts: [{ type: "tool_result", callId, output: "ok", isError: false }],
   })
@@ -388,7 +388,7 @@ describe("pairOrphanToolCalls (kernel meta-tool replay pairing)", () => {
     const { pairOrphanToolCalls } = await import("../../src/runtime/runner.js")
     // The run stopped right after emitting a real tool_call — nothing follows. Wake must execute it,
     // so it must NOT be pre-answered by a synthetic result.
-    const input: Message[] = [
+    const input: ProviderMessage[] = [
       { role: "user", content: "go", toolCalls: [] },
       asst("", [{ id: "call_ping", name: "ping" }]),
     ]

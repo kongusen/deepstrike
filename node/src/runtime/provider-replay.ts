@@ -1,4 +1,4 @@
-import type { LLMProvider, Message, ProviderDescriptor, ProviderReplay, RenderedContext, ReplayabilityAssessment, ToolCall } from "../types.js"
+import type { LLMProvider, ProviderMessage, ProviderDescriptor, ProviderReplay, RenderedContext, ReplayabilityAssessment, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
 
 export class ProviderReplayProtocolMismatchError extends Error {
@@ -28,7 +28,7 @@ function sortObjectKeys(val: any): any {
   return result
 }
 
-export function assistantReplayKey(message: Pick<Message, "content" | "toolCalls">): string {
+export function assistantReplayKey(message: Pick<ProviderMessage, "content" | "toolCalls">): string {
   const toolCalls = (message.toolCalls ?? []).map(tc => {
     let normalizedArgs = tc.arguments
     try {

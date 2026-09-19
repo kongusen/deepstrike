@@ -1,4 +1,4 @@
-from deepstrike._kernel import ContentPartObj, Message, ToolCall
+from deepstrike._kernel import ContentPartObj, ProviderMessage, ToolCall
 from deepstrike.providers.base import (
     RenderedContext,
     to_anthropic_messages,
@@ -10,13 +10,13 @@ def _context() -> RenderedContext:
     return RenderedContext(
         system_text="system rules",
         turns=[
-            Message(role="user", content="What is the weather?"),
-            Message(
+            ProviderMessage(role="user", content="What is the weather?"),
+            ProviderMessage(
                 role="assistant",
                 content="I'll check.",
                 tool_calls=[ToolCall("call_1", "get_weather", '{"city":"Shanghai"}')],
             ),
-            Message(
+            ProviderMessage(
                 role="tool",
                 content="",
                 content_parts=[
@@ -86,8 +86,8 @@ def test_anthropic_context_replays_tool_calls_and_results_as_blocks():
 def test_openai_appends_state_turn_as_latest():
     ctx = RenderedContext(
         system_text="sys",
-        turns=[Message(role="user", content="history msg")],
-        state_turn=Message(role="user", content="[TASK STATE] goal: g\n\nProceed."),
+        turns=[ProviderMessage(role="user", content="history msg")],
+        state_turn=ProviderMessage(role="user", content="[TASK STATE] goal: g\n\nProceed."),
     )
     msgs = to_openai_message_params(ctx)
     # [system][history][state] — history is the stable cacheable prefix, state last.
@@ -102,10 +102,10 @@ def test_anthropic_appends_state_turn_after_cached_history():
     ctx = RenderedContext(
         system_text="",
         turns=[
-            Message(role="user", content="earlier question"),
-            Message(role="assistant", content="earlier answer"),
+            ProviderMessage(role="user", content="earlier question"),
+            ProviderMessage(role="assistant", content="earlier answer"),
         ],
-        state_turn=Message(role="user", content="[TASK STATE] goal: g\n\nProceed."),
+        state_turn=ProviderMessage(role="user", content="[TASK STATE] goal: g\n\nProceed."),
     )
     msgs = AnthropicProvider("test-key")._build_messages(ctx.turns, ctx.state_turn)
     # history (2) + state (1) appended last
@@ -127,11 +127,11 @@ def test_anthropic_pins_deep_breakpoint_at_frozen_boundary():
         system_text="rules",
         system_stable="rules",
         turns=[
-            Message(role="user", content="t0 frozen"),
-            Message(role="assistant", content="t1 frozen"),
-            Message(role="user", content="t2 hot"),
-            Message(role="assistant", content="t3 hot"),
-            Message(role="user", content="t4 hot tail"),
+            ProviderMessage(role="user", content="t0 frozen"),
+            ProviderMessage(role="assistant", content="t1 frozen"),
+            ProviderMessage(role="user", content="t2 hot"),
+            ProviderMessage(role="assistant", content="t3 hot"),
+            ProviderMessage(role="user", content="t4 hot tail"),
         ],
         frozen_prefix_len=2,
     )
@@ -156,9 +156,9 @@ def test_anthropic_falls_back_to_rolling_pair_without_frozen_len():
         system_text="rules",
         system_stable="rules",
         turns=[
-            Message(role="user", content="a"),
-            Message(role="assistant", content="b"),
-            Message(role="user", content="c"),
+            ProviderMessage(role="user", content="a"),
+            ProviderMessage(role="assistant", content="b"),
+            ProviderMessage(role="user", content="c"),
         ],
     )
 

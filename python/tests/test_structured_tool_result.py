@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
-from deepstrike._kernel import Message
+from deepstrike._kernel import ProviderMessage
 from deepstrike.providers.base import RenderedContext, to_anthropic_messages
 from deepstrike.providers.stream import ToolResultEvent
 from deepstrike.runtime.mcp_proxy_plane import mcp_result_to_tool_output
@@ -128,7 +128,7 @@ class _CapturingProvider:
         self._calls = 0
 
     async def complete(self, context, tools, extensions=None):
-        return Message(role="assistant", content="done", tool_calls=[])
+        return ProviderMessage(role="assistant", content="done", tool_calls=[])
 
     async def stream(self, context, tools, extensions=None, state=None, signal=None):
         from deepstrike.providers.stream import TextDelta, ToolCallEvent

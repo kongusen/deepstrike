@@ -4,7 +4,7 @@ import { dependencyOutputsNote } from "../src/runtime/workflow-control-flow.js"
 import { createRunner, tool } from "./runtime/helpers.js"
 import { ReactiveSession } from "../src/runtime/reactive-session.js"
 import { InMemoryGroupBudgetStore } from "../src/runtime/run-group.js"
-import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
 
 describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", () => {
   it("workflowNodeSpecToKernel emits max_turns/max_wall_ms and workflowNodeToSpec maps them back", () => {
@@ -44,7 +44,7 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
   function nodeProvider(): LLMProvider {
     let call = 0
     return {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -91,7 +91,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
   function pacingLoopProvider(verbs: string[]): LLMProvider {
     let call = 0
     return {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -122,7 +122,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
 
   it("also rejects a silent loop before starting its child", async () => {
     const silent: LLMProvider = {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {

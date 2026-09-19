@@ -1,8 +1,8 @@
 // ─── Durable memory and session-extraction types ────────────────────────────
-import type { Message, ContentPart } from "../types.js"
+import type { ProviderMessage, ContentPart } from "../types.js"
 
 export interface SessionMessage {
-  role: Message["role"]
+  role: ProviderMessage["role"]
   content: string
   /** Structured multimodal parts. Preserved for round-trip fidelity (e.g. tool result messages). */
   contentParts?: ContentPart[]

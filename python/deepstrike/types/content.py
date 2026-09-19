@@ -296,14 +296,14 @@ class StructuredToolResultPart:
 
 @dataclass
 class RenderedMessage:
-  """Duck-typed stand-in for the pyo3 `_kernel.Message` on the provider-facing rendered
-  path. The pyo3 Message constructor enforces `ContentPartObj` parts, so a structured
+  """Duck-typed stand-in for the pyo3 `_kernel.ProviderMessage` on the provider-facing rendered
+  path. The pyo3 ProviderMessage constructor enforces `ContentPartObj` parts, so a structured
   tool_result part (a pure-Python `StructuredToolResultPart`) cannot be embedded in one;
   the runner's operation-scoped overlay attachment
   therefore swaps affected messages for this plain carrier. Provider serializers
   (`providers/base.py` `to_anthropic_messages`/`to_openai_message_params`, gemini/ollama
   equivalents) are all attribute-based (`getattr`/`msg.role`/...), never
-  `isinstance(msg, Message)` — duck-typing is sufficient and no provider is
+  `isinstance(msg, ProviderMessage)` — duck-typing is sufficient and no provider is
   isinstance-strict on turns."""
   role: str = "user"
   content: str = ""

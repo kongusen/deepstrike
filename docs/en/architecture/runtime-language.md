@@ -1,6 +1,6 @@
 # DeepStrike Runtime Language
 
-This glossary is normative for 0.2.68. It names what data means, who owns it, how it crosses a
+This glossary is normative for 0.2.70. It names what data means, who owns it, how it crosses a
 boundary, and how it becomes durable history. The paired Chinese page is
 [运行时语言](../../architecture/runtime-language.md).
 
@@ -33,7 +33,10 @@ The complete boundary sequence is `Intent → Decision → encode → Execution 
 | **Mirror** | An ABI or SDK serialization mapping. A mirror cannot add semantic authority. |
 
 `CoreMessage` is an Internal runtime representation. `ProviderMessage` is Kernel Wire. Provider
-JSON is Provider Wire. `StoredMessageState` and checkpoint DTOs are Durable representations.
+JSON is Provider Wire. The SDK `ProviderMessage` and `ToolExecutionResult` types are mirrors of
+the provider boundary; they are not core authorities. `StoredMessageState` and checkpoint DTOs
+are Durable representations. `ToolMeasurement` is host-owned measurement evidence keyed by a
+tool call, never a field on the runtime result.
 
 ## Provider boundary
 
@@ -70,18 +73,16 @@ Settlement`. SessionLog records the evidence; it is not recovery authority.
 Every new runtime object should document its Domain, Authority, Durability, Identity, Causation,
 and Replay behavior before it crosses a layer boundary.
 
-## 0.2.69 Verifiable Runtime
+## 0.2.70 Evolution Runtime
 
-0.2.69 adds the Framework Verifiable Runtime Foundation. The host-side `deepstrike` command surface
-is only one adapter:
+Evolution follows one authority chain:
 
 ```text
-deepstrike inspect <operation>
-deepstrike verify <operation>
-deepstrike replay <operation>
-deepstrike fork <operation> --at <step>
+ArtifactVersion → EvolutionProposal → EvaluationRun / EvaluationFact
+→ PromotionDecision → ArtifactSet activation → Verifiable Operation
 ```
 
-The framework accepts an adapter-owned evidence bundle, delegates C1–C8 to the chain validator, and
-never creates a second semantic authority or invokes a live provider. See
-[ADR-009](../../decisions/009-framework-verifiable-runtime).
+Artifact bytes and evolution records remain host-owned. The kernel stores only verified content
+digests and the activation binding required for replay. ABI v4 rejects earlier journal, checkpoint,
+report, and evolution formats; it does not negotiate or migrate them. See the
+[Evolution Runtime](./evolution-runtime) architecture page and [ADR-010](../../decisions/010-evolution-runtime-hard-cut).

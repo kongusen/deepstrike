@@ -1,6 +1,6 @@
 # DeepStrike Runtime Language
 
-This glossary is normative for 0.2.68. It names what data means, who owns it, how it crosses a
+This glossary is normative for 0.2.70. It names what data means, who owns it, how it crosses a
 boundary, and how it becomes durable history. The paired English page is
 [Runtime Language](../en/architecture/runtime-language.md).
 
@@ -33,7 +33,10 @@ The complete boundary sequence is `Intent → Decision → encode → Execution 
 | **Mirror** | An ABI or SDK serialization mapping. A mirror cannot add semantic authority. |
 
 `CoreMessage` is an Internal runtime representation. `ProviderMessage` is Kernel Wire. Provider
-JSON is Provider Wire. `StoredMessageState` and checkpoint DTOs are Durable representations.
+JSON is Provider Wire. The SDK `ProviderMessage` and `ToolExecutionResult` types are mirrors of
+the provider boundary; they are not core authorities. `StoredMessageState` and checkpoint DTOs
+are Durable representations. `ToolMeasurement` is host-owned Measurement evidence keyed by a
+tool call, never a field on the runtime result.
 
 ## Provider boundary
 
@@ -69,3 +72,17 @@ Settlement`. SessionLog records the evidence; it is not recovery authority.
 
 Every new runtime object should document its Domain, Authority, Durability, Identity, Causation,
 and Replay behavior before it crosses a layer boundary.
+
+## 0.2.70 Evolution Runtime
+
+Evolution follows one authority chain:
+
+```text
+ArtifactVersion → EvolutionProposal → EvaluationRun / EvaluationFact
+→ PromotionDecision → ArtifactSet activation → Verifiable Operation
+```
+
+Artifact bytes and evolution records remain host-owned. The kernel stores only verified content
+digests and the activation binding required for replay. ABI v4 rejects earlier journal, checkpoint,
+report, and evolution formats; it does not negotiate or migrate them. See the
+[Evolution Runtime](./evolution-runtime) architecture page and [ADR-010](../decisions/010-evolution-runtime-hard-cut).

@@ -1,4 +1,4 @@
-/** SPC-013 A-02: legal tool output blocks exclude nested ToolResult values. */
+/** SPC-013 A-02: legal tool output blocks exclude nested ToolExecutionResult values. */
 import type { ContentBlock, MediaSource } from "../src/types.js"
 
 describe("ContentBlock (spc_011-B-05)", () => {

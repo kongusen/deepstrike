@@ -1,4 +1,4 @@
-from deepstrike._kernel import ContentPartObj, Message
+from deepstrike._kernel import ContentPartObj, ProviderMessage
 from deepstrike.providers.gemini import GeminiProvider
 from deepstrike.providers.base import (
     UnsupportedModalityError,
@@ -8,8 +8,8 @@ from deepstrike.providers.base import (
 import pytest
 
 
-def _img_msg() -> Message:
-    return Message(
+def _img_msg() -> ProviderMessage:
+    return ProviderMessage(
         role="user",
         content="",
         content_parts=[
@@ -19,8 +19,8 @@ def _img_msg() -> Message:
     )
 
 
-def _audio_msg() -> Message:
-    return Message(
+def _audio_msg() -> ProviderMessage:
+    return ProviderMessage(
         role="user",
         content="",
         content_parts=[
@@ -40,7 +40,7 @@ def test_gemini_renders_image_inline_data():
 
 
 def test_gemini_renders_url_image_file_data():
-    msg = Message(role="user", content="", content_parts=[
+    msg = ProviderMessage(role="user", content="", content_parts=[
         ContentPartObj("image", url="https://x/y.png", media_type="image/png"),
     ])
     parts = GeminiProvider("k")._build_contents([msg])[0]["parts"]

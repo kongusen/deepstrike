@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, TypedDict
 
-from deepstrike._kernel import ToolCall, ToolResult
+from deepstrike._kernel import ToolCall, ToolExecutionResult
 from deepstrike.runtime.durable_content import decode_durable_content
 from deepstrike.runtime.kernel_event_log import (
     primitive_for_kind,
@@ -87,7 +87,7 @@ class ToolRequestedEvent(TypedDict, total=False):
 class ToolCompletedEvent(TypedDict, total=False):
     kind: Literal["tool_completed"]
     turn: int
-    results: list[ToolResult | dict[str, Any]]
+    results: list[ToolExecutionResult | dict[str, Any]]
     effect_id: str
 
 

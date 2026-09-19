@@ -1,6 +1,6 @@
 import { RuntimeRunner, collectText, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import { kernelEvents } from "@deepstrike/wasm-kernel"
-import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
 
 /**
  * WASM lowering for the exposure baseline (`baselineToolIds` → `run_spec.exposure_baseline`).
@@ -12,7 +12,7 @@ import type { LLMProvider, Message, StreamEvent } from "../src/types.js"
  * a real value, not an "unset" sentinel).
  */
 const echoProvider: LLMProvider = {
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     return { role: "assistant", content: "ok", toolCalls: [] }
   },
   async *stream(): AsyncIterable<StreamEvent> {

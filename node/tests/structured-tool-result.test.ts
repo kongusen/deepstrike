@@ -1,5 +1,5 @@
-/** Legacy ToolResult carriers remain accepted, then normalize to canonical blocks at the boundary. */
-import type { ContentBlock, Message, ToolResult, ToolResultPart } from "../src/types.js"
+/** Legacy ToolExecutionResult carriers remain accepted, then normalize to canonical blocks at the boundary. */
+import type { ContentBlock, ProviderMessage, ToolExecutionResult, ToolResultPart } from "../src/types.js"
 import { mcpResultToToolOutput } from "../src/runtime/mcp-proxy-plane.js"
 import { toAnthropicMessages } from "../src/providers/base.js"
 
@@ -30,8 +30,8 @@ describe("structured tool result field (spc_012-N-01)", () => {
     expect(part.contentParts).toBeUndefined()
   })
 
-  it("ToolResult (the standalone tool-execution result carrier) accepts the same optional field", () => {
-    const result: ToolResult = {
+  it("ToolExecutionResult (the standalone tool-execution result carrier) accepts the same optional field", () => {
+    const result: ToolExecutionResult = {
       callId: "call_3",
       output: "sunny",
       isError: false,
@@ -97,7 +97,7 @@ describe("mcpResultToToolOutput (spc_012-N-02)", () => {
  * protocol natively supports image blocks inside tool_result), not the flattened text projection.
  */
 describe("toAnthropicMessages structured tool_result (spc_012-N-03)", () => {
-  const toolMessage = (contentParts?: ContentBlock[]): Message => ({
+  const toolMessage = (contentParts?: ContentBlock[]): ProviderMessage => ({
     role: "tool",
     content: "weather: sunny\n[image]",
     toolCalls: [],
@@ -148,7 +148,7 @@ import { RuntimeRunner } from "../src/runtime/runner.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import type { ExecutionPlane } from "../src/runtime/execution-plane.js"
 import type {
-  LLMProvider, Message, RenderedContext, StreamEvent, ToolCall, ToolResultEvent, ToolSchema,
+  LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolCall, ToolResultEvent, ToolSchema,
 } from "../src/types.js"
 
 class MultimodalToolPlane implements ExecutionPlane {
@@ -183,7 +183,7 @@ class CapturingProvider implements LLMProvider {
   readonly contexts: RenderedContext[] = []
   private callCount = 0
 
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     return { role: "assistant", content: "done", toolCalls: [] }
   }
 

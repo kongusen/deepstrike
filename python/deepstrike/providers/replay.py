@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from deepstrike._kernel import Message, ToolCall
+from deepstrike._kernel import ProviderMessage, ToolCall
 
 from .base import RenderedContext
 from .replay_validator import DEGRADED_REASONING_PLACEHOLDER, assess_reasoning_replay
@@ -64,7 +64,7 @@ class ReasoningReplayMixin:
     def _init_replay_store(self) -> None:
         self._replay_fields = {}
 
-    def remember_replay_fields(self, message: Message, fields: dict[str, Any]) -> None:
+    def remember_replay_fields(self, message: ProviderMessage, fields: dict[str, Any]) -> None:
         self._replay_fields[assistant_replay_key(message.content, message.tool_calls or [])] = {
             "protocol": "openai-chat",
             **fields,
@@ -81,7 +81,7 @@ class ReasoningReplayMixin:
             "reasoning_content" in replay or "reasoning_details" in replay
         ):
             self.remember_replay_fields(
-                Message(role="assistant", content=content, tool_calls=tool_calls or None),
+                ProviderMessage(role="assistant", content=content, tool_calls=tool_calls or None),
                 dict(replay),
             )
 
@@ -135,6 +135,6 @@ class ReasoningReplayMixin:
     ) -> None:
         if tool_calls or reasoning_content:
             self.remember_replay_fields(
-                Message(role="assistant", content=content, tool_calls=tool_calls),
+                ProviderMessage(role="assistant", content=content, tool_calls=tool_calls),
                 {"protocol": "openai-chat", "reasoning_content": reasoning_content},
             )

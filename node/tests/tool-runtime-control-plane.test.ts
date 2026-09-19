@@ -1,11 +1,11 @@
 import { streamingTool, tool } from "../src/tools/index.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
-import type { LLMProvider, Message, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import { createRunner } from "./runtime/helpers.js"
 
 class MultiToolProvider implements LLMProvider {
   private callCount = 0
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
   async *stream(): AsyncIterable<StreamEvent> {

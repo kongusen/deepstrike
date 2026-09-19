@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from dataclasses import replace
 
-from deepstrike._kernel import ContentPartObj, Message, ToolSchema
+from deepstrike._kernel import ContentPartObj, ProviderMessage, ToolSchema
 from deepstrike.providers.base import RenderedContext, to_openai_message_params
 from deepstrike.providers.model_registry import ModelDescriptor, model_registry, resolve_effective_capabilities
 from deepstrike.providers.openai_responses import OpenAIResponsesAdapter
@@ -24,7 +24,7 @@ def _tools() -> list[ToolSchema]:
 
 
 def test_normalizer_returns_a_single_adapter_input_without_mutating_caller_fields() -> None:
-    context = RenderedContext(turns=[Message(role="user", content="hello")])
+    context = RenderedContext(turns=[ProviderMessage(role="user", content="hello")])
     extensions = {"temperature": 0.2}
 
     canonical = normalize_canonical_adapter_input(context, _tools(), extensions=extensions)
@@ -55,7 +55,7 @@ def test_normalizer_rejects_nested_tool_result_before_provider_serialization() -
     ContentPartObj("audio", media_type="audio/wav"),
 ])
 def test_openai_serialization_rejects_media_without_a_source(part: ContentPartObj) -> None:
-    context = RenderedContext(turns=[Message(role="user", content="", content_parts=[part])])
+    context = RenderedContext(turns=[ProviderMessage(role="user", content="", content_parts=[part])])
 
     with pytest.raises(ContentValidationError, match="source"):
         to_openai_message_params(context)
@@ -76,7 +76,7 @@ def test_normalizer_rejects_conflicting_tool_result_projection() -> None:
 
 
 def test_responses_adapter_uses_the_same_media_validation_boundary() -> None:
-    context = RenderedContext(turns=[Message(
+    context = RenderedContext(turns=[ProviderMessage(
         role="user",
         content="",
         content_parts=[ContentPartObj("image", media_type="image/png")],
@@ -103,7 +103,7 @@ def test_known_runtime_rejects_explicitly_unsupported_audio_before_serialization
         model=model,
         effective_capabilities=resolve_effective_capabilities(model, "openai.chat"),
     )
-    context = RenderedContext(turns=[Message(
+    context = RenderedContext(turns=[ProviderMessage(
         role="user",
         content="",
         content_parts=[ContentPartObj("audio", source_kind="base64", source_data="YWJj", media_type="audio/wav")],
@@ -115,7 +115,7 @@ def test_known_runtime_rejects_explicitly_unsupported_audio_before_serialization
 
 def test_unknown_runtime_keeps_audio_fail_open_at_canonical_boundary() -> None:
     runtime = model_registry.resolve_provider_runtime("openai", "unregistered-model")
-    context = RenderedContext(turns=[Message(
+    context = RenderedContext(turns=[ProviderMessage(
         role="user",
         content="",
         content_parts=[ContentPartObj("audio", source_kind="base64", source_data="YWJj", media_type="audio/wav")],
@@ -146,7 +146,7 @@ def test_runtime_preflight_recursively_rejects_unsupported_tool_result_audio_sou
 
 def test_factory_attaches_runtime_and_provider_entry_uses_it_for_source_preflight() -> None:
     provider = create_provider("openai", api_key="key", model="unregistered-model")
-    context = RenderedContext(turns=[Message(
+    context = RenderedContext(turns=[ProviderMessage(
         role="user",
         content="",
         content_parts=[ContentPartObj("audio", url="https://example.test/input.wav", media_type="audio/wav")],
@@ -215,7 +215,7 @@ def test_pyo3_file_carrier_enforces_affinity_serializes_to_responses_and_refuses
     runtime = model_registry.resolve_provider_runtime(
         "openai", "gpt-5.5", endpoint_id="openai.responses",
     )
-    message = Message(role="user", content="", content_parts=[ContentPartObj(
+    message = ProviderMessage(role="user", content="", content_parts=[ContentPartObj(
         "file",
         file_id="file_1",
         provider_id="openai",
@@ -236,7 +236,7 @@ def test_pyo3_file_carrier_enforces_affinity_serializes_to_responses_and_refuses
 @pytest.mark.asyncio
 async def test_file_carrier_survives_python_archive_round_trip(tmp_path) -> None:
     archive = FileArchiveStore(tmp_path)
-    message = Message(role="user", content="", content_parts=[ContentPartObj(
+    message = ProviderMessage(role="user", content="", content_parts=[ContentPartObj(
         "file",
         file_id="file_1",
         provider_id="openai",

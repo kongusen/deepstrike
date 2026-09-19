@@ -1,4 +1,4 @@
-import type { ToolSchema, ToolResult } from "../types.js"
+import type { ToolSchema, ToolExecutionResult } from "../types.js"
 import { formatToolError } from "./errors.js"
 
 /** M3/G4: the runtime context a tool may read when executing (carries the working directory). A
@@ -44,7 +44,7 @@ export function tool(
 export async function executeTools(
   calls: { id: string; name: string; arguments: string }[],
   registry: Map<string, RegisteredTool>,
-): Promise<ToolResult[]> {
+): Promise<ToolExecutionResult[]> {
   return Promise.all(calls.map(async c => {
     const t = registry.get(c.name)
     if (!t) return { callId: c.id, output: `unknown tool: ${c.name}`, isError: true }

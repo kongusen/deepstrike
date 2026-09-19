@@ -4,12 +4,12 @@
 // pins that image/audio parts now serialize to the kernel Content::Parts shape.
 import { messageToKernelMessage } from "../src/runtime/kernel-step.js"
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
-import type { ContentPart, LLMProvider, Message, StreamEvent } from "../src/types.js"
+import type { ContentPart, LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
 import { kernelEvents } from "@deepstrike/wasm-kernel"
 
 describe("messageToKernelMessage multimodal serialization", () => {
   it("serializes image content parts to the kernel shape, not just the text string", () => {
-    const msg: Message = {
+    const msg: ProviderMessage = {
       role: "user",
       content: "describe this",
       contentParts: [
@@ -30,7 +30,7 @@ describe("messageToKernelMessage multimodal serialization", () => {
   })
 
   it("serializes audio content parts", () => {
-    const msg: Message = {
+    const msg: ProviderMessage = {
       role: "user",
       content: "",
       contentParts: [{ type: "audio", source: { kind: "base64", data: "AAAA" }, mediaType: "audio/wav" }],
@@ -48,7 +48,7 @@ describe("messageToKernelMessage multimodal serialization", () => {
 // are emitted once per session for identical attachments, not once per run.
 describe("attachment seeding is idempotent per session (runner)", () => {
   const textOnlyProvider: LLMProvider = {
-    async complete(): Promise<Message> {
+    async complete(): Promise<ProviderMessage> {
       return { role: "assistant", content: "unused", toolCalls: [] }
     },
     async *stream(): AsyncIterable<StreamEvent> {

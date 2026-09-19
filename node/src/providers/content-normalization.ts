@@ -1,7 +1,7 @@
 import type {
   ContentPart,
   MediaSource,
-  Message,
+  ProviderMessage,
   RenderedContext,
   ToolOutputBlock,
   ToolResultPart,
@@ -42,7 +42,7 @@ export interface CanonicalToolResult {
 export type CanonicalMessageBlock = ToolOutputBlock | CanonicalToolResult
 
 export interface CanonicalMessage {
-  readonly role: Message["role"]
+  readonly role: ProviderMessage["role"]
   readonly blocks: readonly CanonicalMessageBlock[]
   /** `blocks` remains authoritative; this only preserves an observable wire-shape distinction. */
   readonly contentForm?: "text" | "blocks"
@@ -145,9 +145,9 @@ export function normalizeToolResultPart(part: ToolResultPart): CanonicalToolResu
 }
 
 function attachMessage(
-  message: Message,
+  message: ProviderMessage,
   overlay: ReadonlyMap<string, readonly ToolOutputBlock[]>,
-): Message {
+): ProviderMessage {
   const needs = message.contentParts?.some(
     part => part.type === "tool_result" && part.contentParts === undefined && overlay.has(part.callId),
   )
@@ -219,8 +219,8 @@ function validateFileAffinity(
 }
 
 function normalizeMessage(
-  message: Message,
-  replayForMessage?: (message: Message) => ProviderReplay | undefined,
+  message: ProviderMessage,
+  replayForMessage?: (message: ProviderMessage) => ProviderReplay | undefined,
 ): CanonicalMessage {
   const providerReplay = replayForMessage?.(message)
   const blocks: CanonicalMessageBlock[] = message.contentParts === undefined
@@ -255,7 +255,7 @@ function normalizeMessage(
 
 export function normalizeCanonicalContext(
   context: RenderedContext,
-  replayForMessage?: (message: Message) => ProviderReplay | undefined,
+  replayForMessage?: (message: ProviderMessage) => ProviderReplay | undefined,
 ): CanonicalRenderedContext {
   return {
     systemText: context.systemText,
@@ -306,7 +306,7 @@ export function normalizeCanonicalAdapterInput(input: {
   tools: readonly ToolSchema[]
   resolved: ResolvedProviderRuntime<unknown>
   extensions?: Readonly<Record<string, unknown>>
-  replayForMessage?: (message: Message) => ProviderReplay | undefined
+  replayForMessage?: (message: ProviderMessage) => ProviderReplay | undefined
 }): CanonicalAdapterInput {
   const canonical: CanonicalAdapterInput = {
     context: normalizeCanonicalContext(input.context, input.replayForMessage),

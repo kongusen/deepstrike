@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from deepstrike._kernel import Message, ToolSchema
+from deepstrike._kernel import ProviderMessage, ToolSchema
 from deepstrike.providers.base import UnsupportedModalityError, normalize_tool_call
 from deepstrike.providers.protocol_adapter import AdapterOutput, ProtocolResponseError
 from deepstrike.providers.stop_reason import canonicalize_stop_reason
@@ -113,7 +113,7 @@ class OllamaAdapter:
     def _model_from_context(input: CanonicalAdapterInput) -> str:
         return str(input.extensions.get("model") or "")
 
-    def decode_complete(self, raw: dict, input: CanonicalAdapterInput) -> Message:
+    def decode_complete(self, raw: dict, input: CanonicalAdapterInput) -> ProviderMessage:
         message = raw.get("message") or {}
         tool_calls = []
         for call in message.get("tool_calls") or []:
@@ -121,7 +121,7 @@ class OllamaAdapter:
             normalized = normalize_tool_call(call.get("id", ""), function.get("name", ""), function.get("arguments", {}))
             if normalized:
                 tool_calls.append(normalized)
-        return Message(role="assistant", content=message.get("content") or "", tool_calls=tool_calls or None)
+        return ProviderMessage(role="assistant", content=message.get("content") or "", tool_calls=tool_calls or None)
 
     def create_stream_state(self, input: CanonicalAdapterInput) -> OllamaStreamState:
         return OllamaStreamState()

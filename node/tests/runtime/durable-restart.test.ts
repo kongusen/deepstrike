@@ -12,7 +12,7 @@ import { RuntimeRunner, collectText } from "../../src/runtime/runner.js"
 import { FileSessionLog } from "../../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import { tool } from "../../src/tools/index.js"
-import type { LLMProvider, RenderedContext, StreamEvent, ToolSchema, Message } from "../../src/types.js"
+import type { LLMProvider, RenderedContext, StreamEvent, ToolSchema, ProviderMessage } from "../../src/types.js"
 
 /**
  * Durable restart recovery — the whole durable path against a **file-backed** journal
@@ -38,7 +38,7 @@ const FINAL_TEXT = "restart-equivalent-finish"
 
 /** Streams the ping tool call until history holds a tool result, then the final text. */
 class PingThenFinishProvider implements LLMProvider {
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<Message> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
 

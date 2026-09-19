@@ -7,7 +7,7 @@
  */
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
-import type { LLMProvider, Message, RenderedContext, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent } from "../src/types.js"
 
 const ORIGINAL = "KEYED_REF_CONTENT_ORIGINAL"
 const UPDATED = "KEYED_REF_CONTENT_UPDATED"
@@ -20,7 +20,7 @@ describe("keyed knowledge entries (K1)", () => {
     let finalKnowledge = ""
 
     const provider: LLMProvider = {
-      async complete(): Promise<Message> {
+      async complete(): Promise<ProviderMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {

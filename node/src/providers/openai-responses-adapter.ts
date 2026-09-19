@@ -1,5 +1,5 @@
 import type {
-  Message,
+  ProviderMessage,
   ProviderUsage,
   RenderedContext,
   StreamEvent,
@@ -241,7 +241,7 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
     }
   }
 
-  decodeComplete(raw: Record<string, any>, _input: AdapterDecodeInput): { message: Message } {
+  decodeComplete(raw: Record<string, any>, _input: AdapterDecodeInput): { message: ProviderMessage } {
     const decoded = decodeOutput(raw.output ?? [])
     const usage = raw.usage && typeof raw.usage === "object"
       ? raw.usage as Record<string, unknown>

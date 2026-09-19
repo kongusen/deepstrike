@@ -262,7 +262,7 @@ def _transport_only_key(key: str) -> bool:
 def _json_value(value: Any) -> Any:
   # pyo3 Kernel DTOs deliberately expose attributes without a Python ``__dict__``.
   # Read their public wire fields explicitly instead of asking dataclasses.asdict to deepcopy them.
-  if type(value).__module__ == "builtins" and type(value).__name__ == "Message":
+  if type(value).__module__ == "builtins" and type(value).__name__ == "ProviderMessage":
     return {
       "role": value.role,
       "content": _json_value(value.content),

@@ -76,7 +76,7 @@ declare module "@deepstrike/wasm-kernel" {
   }
 
   // Eval / harness quality gate (0.5.0 fold: free functions, was the EvalPipeline class).
-  export function buildEvalMessages(goal: string, criteria: unknown[], result: string, attempt: number, extractSkillOnPass: boolean): import("./types.js").Message[]
+  export function buildEvalMessages(goal: string, criteria: unknown[], result: string, attempt: number, extractSkillOnPass: boolean): import("./types.js").ProviderMessage[]
   export function parseVerdict(content: string): { passed: boolean; overallScore: number; feedback: string; details: unknown[]; skillCandidate?: unknown }
   export function verdictOutputSchema(extractSkillOnPass: boolean): string
   export function verifiableOperationJson(request: string): string

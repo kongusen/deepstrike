@@ -26,14 +26,14 @@ import {
   type GroupBudgetReservation,
   type RunGroup,
 } from "../src/index.js"
-import type { LLMProvider, Message, RenderedContext, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ProviderMessage, RenderedContext, ToolSchema } from "../src/types.js"
 import { tool } from "../src/tools/index.js"
 import { spawnStandalone } from "../src/runtime/sub-agent-orchestrator.js"
 
 /** Records the tool names it is handed on every LLM call, then completes the turn with plain text. */
 class RecordingProvider implements LLMProvider {
   readonly calls: string[][] = []
-  async complete(): Promise<Message> {
+  async complete(): Promise<ProviderMessage> {
     return { role: "assistant", content: "done", toolCalls: [] }
   }
   async *stream(_ctx: RenderedContext, tools: ToolSchema[]): AsyncIterable<StreamEvent> {

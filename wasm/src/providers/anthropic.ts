@@ -1,4 +1,4 @@
-import type { CacheBreakpointStrategy, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, Message, ProviderDescriptor, ProviderReplay } from "../types.js"
+import type { CacheBreakpointStrategy, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, ProviderMessage, ProviderDescriptor, ProviderReplay } from "../types.js"
 import { assistantReplayKey, collectStreamMessage, toAnthropicMessages } from "./base.js"
 
 /** Anthropic accepts at most this many cache_control breakpoints per request. */
@@ -154,18 +154,18 @@ export class AnthropicProvider implements LLMProvider {
     }
   }
 
-  peekProviderReplay(message: Pick<Message, "content" | "toolCalls">): ProviderReplay | undefined {
+  peekProviderReplay(message: Pick<ProviderMessage, "content" | "toolCalls">): ProviderReplay | undefined {
     const blocks = this.nativeAssistantBlocks.get(assistantReplayKey(message))
     return blocks?.length ? { protocol: "anthropic-messages", native_blocks: blocks } : undefined
   }
 
-  seedProviderReplay(message: Pick<Message, "content" | "toolCalls">, replay: ProviderReplay): void {
+  seedProviderReplay(message: Pick<ProviderMessage, "content" | "toolCalls">, replay: ProviderReplay): void {
     if (replay.protocol === "anthropic-messages" && replay.native_blocks?.length) {
       this.nativeAssistantBlocks.set(assistantReplayKey(message), replay.native_blocks)
     }
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ProviderMessage> {
     return collectStreamMessage(this.stream(context, tools, extensions))
   }
 
@@ -323,7 +323,7 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   private rememberNativeBlocks(
-    message: Pick<Message, "content" | "toolCalls">,
+    message: Pick<ProviderMessage, "content" | "toolCalls">,
     blocks: Array<Record<string, unknown>>,
   ): void {
     if (!blocks.length) return

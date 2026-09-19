@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepstrike._kernel import Message, ToolSchema
+from deepstrike._kernel import ProviderMessage, ToolSchema
 from deepstrike.providers.anthropic_adapter import (
     ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER,
     AnthropicMessagesAdapter,
@@ -27,7 +27,7 @@ def _input(extensions: dict | None = None):
             system_text="stable\n\nknowledge",
             system_stable="stable",
             system_knowledge="knowledge",
-            turns=[Message(role="user", content="hi")],
+            turns=[ProviderMessage(role="user", content="hi")],
         ),
         [ToolSchema(name="lookup", description="Lookup", parameters='{"type":"object"}')],
         extensions=extensions,
@@ -219,7 +219,7 @@ async def test_custom_anthropic_base_url_defaults_to_reject_and_policy_stays_off
     provider._client.messages.create = create
     with pytest.raises(ProtocolResponseError) as error:
         await provider.complete(
-            RenderedContext(system_text="", turns=[Message(role="user", content="hi")]),
+            RenderedContext(system_text="", turns=[ProviderMessage(role="user", content="hi")]),
             [ToolSchema(name="lookup", description="Lookup", parameters='{"type":"object"}')],
         )
     assert error.value.provider_code == "textual_tool_call"
@@ -238,7 +238,7 @@ async def test_official_anthropic_provider_defaults_textual_policy_to_off() -> N
 
     provider._client.messages.create = create
     message = await provider.complete(
-        RenderedContext(system_text="", turns=[Message(role="user", content="hi")]),
+        RenderedContext(system_text="", turns=[ProviderMessage(role="user", content="hi")]),
         [ToolSchema(name="lookup", description="Lookup", parameters='{"type":"object"}')],
     )
     assert message.content == DSML

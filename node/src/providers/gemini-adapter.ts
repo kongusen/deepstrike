@@ -8,7 +8,7 @@ import type {
 } from "@google/generative-ai"
 
 import type {
-  Message,
+  ProviderMessage,
   ProviderUsage,
   StreamEvent,
   TextDelta,
@@ -240,7 +240,7 @@ export class GeminiAdapter implements ProtocolAdapter<
     }
   }
 
-  decodeComplete(raw: GenerateContentResponse, _input: AdapterDecodeInput): { message: Message } {
+  decodeComplete(raw: GenerateContentResponse, _input: AdapterDecodeInput): { message: ProviderMessage } {
     const decoded = decodeParts(raw)
     return {
       message: {

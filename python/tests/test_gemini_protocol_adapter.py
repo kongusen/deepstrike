@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepstrike._kernel import Message, ToolSchema
+from deepstrike._kernel import ProviderMessage, ToolSchema
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.gemini_adapter import GeminiAdapter
 from deepstrike.providers.model_registry import model_registry
@@ -16,7 +16,7 @@ from deepstrike.types.content import normalize_canonical_adapter_input
 def _input(extensions: dict | None = None):
     runtime = model_registry.resolve_provider_runtime("gemini", "gemini-2.0-flash")
     return normalize_canonical_adapter_input(
-        RenderedContext(turns=[Message(role="user", content="hello")], system_text="system"),
+        RenderedContext(turns=[ProviderMessage(role="user", content="hello")], system_text="system"),
         [ToolSchema(name="lookup", description="Lookup", parameters="{}")],
         extensions=extensions,
         resolved=runtime,

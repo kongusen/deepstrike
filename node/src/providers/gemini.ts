@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI, type Content, type RequestOptions } from "@google/generative-ai"
-import type { Message, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, PromptMeasurement, ProviderTransportTelemetry } from "../types.js"
+import type { ProviderMessage, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, PromptMeasurement, ProviderTransportTelemetry } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
 import { CircuitBreaker } from "./base.js"
 import { endpointProfiles } from "./endpoints.js"
@@ -15,7 +15,7 @@ type ResolvedGeminiRuntime = CanonicalAdapterInput["resolved"]
 
 const GEMINI_BASE = (endpointProfiles as Record<string, { baseURL: string }>)["gemini.google"].baseURL
 
-export function buildContents(turns: Message[]): Content[] {
+export function buildContents(turns: ProviderMessage[]): Content[] {
   return canonicalGeminiContents(normalizeCanonicalContext({ systemText: "", turns }))
 }
 
@@ -112,7 +112,7 @@ export class GeminiProvider implements LLMProvider {
     })
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<Message> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ProviderMessage> {
     if (this.circuit.isOpen()) throw circuitOpenError("gemini")
     let input: CanonicalAdapterInput
     let plan: ReturnType<GeminiAdapter["buildRequest"]>

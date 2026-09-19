@@ -6,7 +6,7 @@ import pytest
 from deepstrike.providers.openai_responses import OpenAIResponsesProvider
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta, ToolCallEvent, UsageEvent
-from deepstrike._kernel import ContentPartObj, Message, ToolCall
+from deepstrike._kernel import ContentPartObj, ProviderMessage, ToolCall
 
 
 def _ev(type_, **kw):
@@ -45,13 +45,13 @@ async def test_continues_with_previous_response_id_and_sends_only_the_uncovered_
 
     provider._client = SimpleNamespace(responses=FakeResponses())
 
-    first_ctx = RenderedContext(system_text="system rules", turns=[Message(role="user", content="Find weather")])
+    first_ctx = RenderedContext(system_text="system rules", turns=[ProviderMessage(role="user", content="Find weather")])
     first_events = [e async for e in provider.stream(first_ctx, [], None, state)]
 
     second_ctx = RenderedContext(system_text="system rules", turns=[
-        Message(role="user", content="Find weather"),
-        Message(role="assistant", content="", tool_calls=[ToolCall(id="call_1", name="lookup", arguments='{"city":"Shanghai"}')]),
-        Message(role="tool", content="", content_parts=[ContentPartObj("tool_result", call_id="call_1", output="sunny", is_error=False)]),
+        ProviderMessage(role="user", content="Find weather"),
+        ProviderMessage(role="assistant", content="", tool_calls=[ToolCall(id="call_1", name="lookup", arguments='{"city":"Shanghai"}')]),
+        ProviderMessage(role="tool", content="", content_parts=[ContentPartObj("tool_result", call_id="call_1", output="sunny", is_error=False)]),
     ])
     second_events = [e async for e in provider.stream(second_ctx, [], None, state)]
 
@@ -90,9 +90,9 @@ async def test_degrades_to_full_resend_when_no_previous_response_id():
     provider._client = SimpleNamespace(responses=FakeResponses())
 
     ctx = RenderedContext(turns=[
-        Message(role="user", content="a"),
-        Message(role="assistant", content="b"),
-        Message(role="user", content="c"),
+        ProviderMessage(role="user", content="a"),
+        ProviderMessage(role="assistant", content="b"),
+        ProviderMessage(role="user", content="c"),
     ])
     # state with covered_message_count but no previous_response_id ⇒ full history.
     _ = [e async for e in provider.stream(ctx, [], None, {"covered_message_count": 2})]

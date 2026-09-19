@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from deepstrike._kernel import ToolCall, ToolResult, ToolSchema
+from deepstrike._kernel import ToolCall, ToolExecutionResult, ToolSchema
 from deepstrike.providers.stream import (
   PermissionRequestEvent,
   PermissionResolvedEvent,
