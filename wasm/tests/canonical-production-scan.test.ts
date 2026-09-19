@@ -9,7 +9,7 @@ const forbidden = [
   /\bkernelMaybeAction\(/,
   /\bnew\s+KernelRuntime\b/,
   /start_run|load_workflow|complete_run|ABI[-_ ]?v[12]/i,
-  /CANONICAL_KERNEL_ABI_VERSION\s*=\s*3|["']abi_version["']\s*:\s*3/,
+  /KERNEL_ABI_VERSION|["']abi_version["']\s*:\s*3/,
   /kernel-transaction-log|appendKernelGenesis|compareAndAppendKernelTransaction/,
   /submitWorkflowNodesToKernel|submitWorkflowToKernel|\bbootstrapWorkflow\b/,
   /skill_activated/,

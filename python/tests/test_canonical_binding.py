@@ -19,8 +19,9 @@ FIXTURE = json.loads(
 
 
 def test_canonical_binding_passes_through_core_record_bytes_and_digest() -> None:
-  assert _kernel.KERNEL_ABI_VERSION == 4
-  assert kernel_facade.KERNEL_ABI_VERSION == 4
+  assert not hasattr(_kernel, "KERNEL_ABI_VERSION")
+  assert _kernel.ABI == 4
+  assert kernel_facade.ABI == 4
   kernel = CanonicalKernel()
   prepared = kernel.prepare(json.dumps(FIXTURE["links"][0]["envelope"], separators=(",", ":")))
   assert isinstance(prepared, CanonicalPrepared)

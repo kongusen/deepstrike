@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 from typing import Literal, TypeAlias, TypeVar
 
-from deepstrike._kernel import KERNEL_ABI_VERSION, _CanonicalKernel as _NativeCanonicalKernel
+from deepstrike._kernel import ABI, _CanonicalKernel as _NativeCanonicalKernel
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +220,7 @@ def _project_error(error: ValueError) -> CanonicalKernelError:
 
 
 __all__ = [
-  "KERNEL_ABI_VERSION",
+  "ABI",
   "CanonicalKernel",
   "CanonicalKernelError",
   "CanonicalPrepared",

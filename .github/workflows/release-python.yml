@@ -124,10 +124,10 @@ jobs:
           python -c "
           import deepstrike
           from deepstrike import Governance
-          from deepstrike.kernel import CanonicalKernel, KERNEL_ABI_VERSION
+          from deepstrike.kernel import ABI, CanonicalKernel
           assert Governance().evaluate('x', '{}').kind == 'allow'
           kernel = CanonicalKernel()
-          assert KERNEL_ABI_VERSION == 3
+          assert ABI == 4
           assert kernel.lifecycle() == 'created'
           "
 

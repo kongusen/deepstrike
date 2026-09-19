@@ -136,6 +136,26 @@ export type {
   VerifiableReport,
   VerifiableOperationJson,
 } from "./runtime/verifiable-report.js"
+export { createEvolutionRuntimeAdapter, createNativeEvolutionRuntimeAdapter, EvolutionRuntime } from "./runtime/evolution.js"
+export type {
+  ActivationBinding,
+  ArtifactKind,
+  ArtifactManifest,
+  ArtifactRef,
+  ArtifactSet,
+  ArtifactVersion,
+  EvaluationFact,
+  EvaluationGate,
+  EvaluationMetric,
+  EvaluationRun,
+  EvolutionBundle,
+  EvolutionProposal,
+  EvolutionReport,
+  EvolutionVerdict,
+  EvolutionViolation,
+  PromotionDecision,
+  PromotionOutcome,
+} from "./runtime/evolution.js"
 
 export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 

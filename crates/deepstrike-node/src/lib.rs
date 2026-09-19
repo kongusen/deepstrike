@@ -978,3 +978,10 @@ pub fn verifiable_operation_json(request: String) -> Result<String> {
     deepstrike_core::runtime::verifiable::operation_json(&request)
         .map_err(|error| Error::from_reason(error))
 }
+
+/// Framework Evolution Runtime bridge. Rust core remains the single E1–E8 validation authority.
+#[napi]
+pub fn evolution_validate_json(request: String) -> Result<String> {
+    deepstrike_core::evolution::validate_evolution_json(&request)
+        .map_err(|error| Error::from_reason(error))
+}

@@ -24,7 +24,7 @@ FORBIDDEN = (
     '"complete_run"',
     "ABI-v1",
     "ABI-v2",
-    "CANONICAL_KERNEL_ABI_VERSION = 3",
+    "KERNEL_ABI_VERSION",
     "kernel_transaction_log",
     "append_kernel_genesis",
     "compare_and_append_kernel_transaction",

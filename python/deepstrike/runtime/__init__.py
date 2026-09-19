@@ -137,6 +137,14 @@ from deepstrike.runtime.credential_vault import (
 )
 from deepstrike.runtime.process_sandbox_plane import ProcessSandboxPlane
 from deepstrike.runtime.mcp_proxy_plane import McpProxyPlane, McpServerConfig
+from deepstrike.runtime.evolution import (
+  EVOLUTION_REPORT_SCHEMA,
+  EvolutionReport,
+  EvolutionRuntime,
+  EvolutionRuntimeAdapter,
+  create_evolution_runtime_adapter,
+  create_native_evolution_runtime_adapter,
+)
 from deepstrike.runtime.remote_vpc_plane import RemoteVpcPlane
 from deepstrike.runtime.filtered_plane import FilteredExecutionPlane
 from deepstrike.runtime.sub_agent_orchestrator import SubAgentOrchestrator, spawn_standalone, default_sub_agent_orchestrator
@@ -326,6 +334,12 @@ __all__ = [
   "ProcessSandboxPlane",
   "McpProxyPlane",
   "McpServerConfig",
+  "EVOLUTION_REPORT_SCHEMA",
+  "EvolutionReport",
+  "EvolutionRuntime",
+  "EvolutionRuntimeAdapter",
+  "create_evolution_runtime_adapter",
+  "create_native_evolution_runtime_adapter",
   "RemoteVpcPlane",
   "SubAgentOrchestrator",
   "spawn_standalone",

@@ -36,7 +36,7 @@ artifact set takes effect at a new operation boundary.
 The core owns canonical bytes, digest checks, evolution validation, activation binding, and
 replay semantics. SDKs and CLI adapters load bytes, call the core contract, and present reports.
 
-The release raises `KERNEL_ABI_VERSION` to 4 and rejects earlier journal, checkpoint, report, and
+The release uses one ABI identity and rejects earlier journal, checkpoint, report, and
 evolution formats. There is no version negotiation, shape-based format detection, compatibility
 wrapper, or runtime migration path. Deployments that need old operations remain on 0.2.69.
 

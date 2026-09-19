@@ -17,7 +17,7 @@ from deepstrike._kernel import (
     SkillCandidate,
 )
 from deepstrike.kernel.canonical import (
-    KERNEL_ABI_VERSION,
+    ABI,
     CanonicalCheckpoint,
     CanonicalCommit,
     CanonicalKernel,
@@ -34,7 +34,7 @@ __all__ = [
     "RuntimeTask",
     "LoopPolicy",
     "LoopResult",
-    "KERNEL_ABI_VERSION",
+    "ABI",
     "CanonicalKernel",
     "CanonicalKernelError",
     "CanonicalLifecycle",

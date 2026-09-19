@@ -1037,6 +1037,13 @@ pub fn verifiable_operation_json(request: String) -> Result<String, JsValue> {
         .map_err(|error| JsValue::from_str(&error))
 }
 
+/// Framework Evolution Runtime bridge. Rust core remains the single E1–E8 validation authority.
+#[wasm_bindgen(js_name = evolutionValidateJson)]
+pub fn evolution_validate_json(request: String) -> Result<String, JsValue> {
+    deepstrike_core::evolution::validate_evolution_json(&request)
+        .map_err(|error| JsValue::from_str(&error))
+}
+
 // ────────────────────────────── Durable-memory wire values ──────────────────────────────────────
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]

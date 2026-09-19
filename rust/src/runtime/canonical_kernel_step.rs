@@ -517,6 +517,9 @@ mod tests {
                 json!({
                     "kind": "configure_operation",
                     "config": {
+                        "artifact_set_binding": {
+                            "artifact_set_digest": "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
+                        },
                         "host_effect_support": { "supported": ["call_provider"] }
                     }
                 }),

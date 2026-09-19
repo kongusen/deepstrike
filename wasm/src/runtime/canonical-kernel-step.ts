@@ -1231,7 +1231,7 @@ export class CanonicalRunnerRuntime {
         input = { kind: "host_control", command: this.canonicalCapabilityCommand(asObject(event.command)) }
         break
       case "add_history_message":
-        throw new Error("running ABI v4 operations accept history only through effects or external events")
+        throw new Error("running ABI operations accept history only through effects or external events")
       default:
         throw new Error(`WASM host fact has no canonical ABI input: ${String(event.kind)}`)
     }

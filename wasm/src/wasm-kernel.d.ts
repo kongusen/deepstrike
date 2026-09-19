@@ -80,4 +80,5 @@ declare module "@deepstrike/wasm-kernel" {
   export function parseVerdict(content: string): { passed: boolean; overallScore: number; feedback: string; details: unknown[]; skillCandidate?: unknown }
   export function verdictOutputSchema(extractSkillOnPass: boolean): string
   export function verifiableOperationJson(request: string): string
+  export function evolutionValidateJson(request: string): string
 }

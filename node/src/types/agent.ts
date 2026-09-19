@@ -482,7 +482,7 @@ export interface WorkflowBudget {
   tokens_used?: number
   tokens_max?: number
   tokens_remaining?: number
-  /** Canonical ABI v4 publishes immutable caps rather than a host-authored remaining snapshot. */
+  /** Canonical ABI publishes immutable caps rather than a host-authored remaining snapshot. */
   max_total_tokens?: string | number
   max_turns?: number
   max_concurrency?: number

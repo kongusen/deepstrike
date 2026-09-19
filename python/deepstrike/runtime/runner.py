@@ -556,7 +556,7 @@ class RuntimeRunner:
     return journal
 
   def create_canonical_runtime(self, run_id: str) -> CanonicalRunnerRuntime:
-    """Create the ABI-v4 runtime with the run-stable canonical operation identity."""
+    """Create the ABI runtime with the run-stable canonical operation identity."""
     async def persist_payload(call_id: str, content: str, preview_bytes: int) -> dict[str, Any]:
       digest = f"sha256:{hashlib.sha256(content.encode()).hexdigest()}"
       payload_ref = f"payload:{digest[len('sha256:'):len('sha256:') + 32]}"
@@ -1399,7 +1399,7 @@ class RuntimeRunner:
         stable_id = re.sub(r"-i\d+$", "", result.agent_id)
         if stable_id != result.agent_id:
           outputs[stable_id] = out_text
-        # ABI v4: child-authored DAG additions ride on ChildCompleted.parent_requests.
+        # ABI: child-authored DAG additions ride on ChildCompleted.parent_requests.
         # Admission is independent of the completion fact; only an admitted request emits
         # workflow_nodes_submitted.
         observation_start = len(self._pending_observations)
@@ -3087,7 +3087,7 @@ class RuntimeRunner:
     ))
 
     if group_budget_scope is not None and not group_budget_scope.closed:
-      # ABI v4: settle from the terminal report when the kernel did not emit budget_usage_reported
+      # ABI: settle from the terminal report when the kernel did not emit budget_usage_reported
       # (mirrors Node). Loop rounds charge exactly one vehicle round when loop_round is configured.
       await self._settle_group_budget(
         group_budget_scope,
@@ -3205,7 +3205,7 @@ class RuntimeRunner:
   async def _apply_host_memory_recall_lifecycle(
     self, hits: list[Any], agent_id: str,
   ) -> None:
-    """Host-side recall + promotion (ABI v4 — mirrors Node ``applyHostMemoryRecallLifecycle``)."""
+    """Host-side recall + promotion (ABI — mirrors Node ``applyHostMemoryRecallLifecycle``)."""
     if not hits or not self._opts.memory_store:
       return
     from deepstrike.memory.protocols import MemoryRecallLifecycle

@@ -204,7 +204,7 @@ export async function spawnStandalone(
   contextInput?: string,
 ): Promise<SubAgentResult> {
   if (spec.tokenBudget !== undefined || spec.maxTurns !== undefined || spec.maxWallMs !== undefined) {
-    throw new Error("spawnStandalone cannot represent per-node resource caps under canonical ABI v4")
+    throw new Error("spawnStandalone cannot represent per-node resource caps under canonical ABI")
   }
   const { RuntimeRunner } = await import("./runner.js")
   let captured: SubAgentResult | undefined

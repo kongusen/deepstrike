@@ -176,6 +176,7 @@ interface KernelModule {
   parseVerdict(content: string): Verdict
   verdictOutputSchema(extractSkillOnPass: boolean): string
   verifiableOperationJson(request: string): string
+  evolutionValidateJson(request: string): string
 }
 
 const cjsRequire = createRequire(import.meta.url)

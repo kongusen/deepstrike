@@ -98,7 +98,7 @@ export function canonicalUnsupportedEffectResolution(
   }
 }
 
-/** The only ABI-v4 planned-step → Node host-action projection. */
+/** The only ABI planned-step → Node host-action projection. */
 
 function canonicalDoneFromTerminal(terminal: Record<string, unknown>): KernelRunnerAction {
   const usage = asObject(terminal.usage)
@@ -1247,7 +1247,7 @@ export class CanonicalRunnerRuntime {
         input = { kind: "host_control", command: this.canonicalCapabilityCommand(asObject(event.command)) }
         break
       case "add_history_message":
-        throw new Error("running ABI v4 operations accept history only through effects or external events")
+        throw new Error("running ABI operations accept history only through effects or external events")
       default:
         throw new Error(`Node host fact has no canonical ABI input: ${String(event.kind)}`)
     }

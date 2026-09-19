@@ -716,7 +716,7 @@ class CanonicalRunnerRuntime:
       return await self._commit({"kind": "host_control", "command": self._capability_command(_object(event.get("command")))})
     if kind == "add_history_message":
       raise CanonicalKernelRejectedError("unsupported_host_event",
-                                         "running ABI v4 operations accept history only through effects or external events")
+                                         "running ABI operations accept history only through effects or external events")
     if kind == "cancel_operation":
       action = await self._commit({"kind": "host_control", "command": {
         "kind": "cancel", "reason": event.get("reason") or "user",

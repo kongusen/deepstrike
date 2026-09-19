@@ -157,6 +157,12 @@ export type {
   MemoryQuery, MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
 } from "./memory/index.js"
 export type { KnowledgeSource } from "./knowledge/index.js"
+export { createEvolutionRuntimeAdapter, createNativeEvolutionRuntimeAdapter, EvolutionRuntime } from "./runtime/evolution.js"
+export type {
+  ActivationBinding, ArtifactKind, ArtifactManifest, ArtifactRef, ArtifactSet, ArtifactVersion,
+  EvaluationFact, EvaluationGate, EvaluationMetric, EvaluationRun, EvolutionBundle,
+  EvolutionProposal, EvolutionReport, EvolutionVerdict, PromotionDecision, PromotionOutcome,
+} from "./runtime/evolution.js"
 export {
   AttemptLoop, RuntimeAttemptBody, VerdictFnJudge, LlmEvalJudge, HybridJudge,
   continueSession, freshWithFeedback, freshWithDigest,

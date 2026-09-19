@@ -10,8 +10,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Added the Framework Verifiable Runtime Evolution flow: content-addressed artifact versions and
   sets, proposals, evaluation evidence, promotion decisions, and activation bindings.
-- Raised the kernel ABI to v4 and bound every new operation genesis to an immutable artifact-set
-  digest; artifact bytes remain host-owned.
+- Established one canonical kernel ABI and bound every new operation genesis to an immutable
+  artifact-set digest; artifact bytes remain host-owned.
 - Replaced the verifiable report and fork contracts with `verifiable-report/v2` and
   `verifiable-fork/v2`, with framework-owned inspect, verify, replay, and read-only fork views.
 - Added fail-closed E1–E8 evolution validation and removed the `ds-chain-validator` entry point.

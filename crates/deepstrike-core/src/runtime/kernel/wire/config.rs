@@ -83,7 +83,7 @@ fn require_le_u32(
 #[serde(deny_unknown_fields)]
 pub struct OperationConfig {
     /// The host-owned artifact identity this operation must execute against. This is required at
-    /// resolution time; `None` exists only so an omitted legacy payload fails closed instead of
+    /// resolution time; `None` exists only so an omitted input fails closed instead of
     /// silently selecting a binary default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_set_binding: Option<ArtifactSetBinding>,

@@ -1743,14 +1743,17 @@ fn verifiable_operation_json(request: String) -> PyResult<String> {
     deepstrike_core::runtime::verifiable::operation_json(&request).map_err(PyValueError::new_err)
 }
 
+/// Framework Evolution Runtime bridge. Rust core remains the single E1–E8 validation authority.
+#[pyfunction]
+fn evolution_validate_json(request: String) -> PyResult<String> {
+    deepstrike_core::evolution::validate_evolution_json(&request).map_err(PyValueError::new_err)
+}
+
 // ──────────────────────────────────────── module registration ─────────────────────────────────
 
 #[pymodule]
 fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add(
-        "KERNEL_ABI_VERSION",
-        deepstrike_core::runtime::kernel::wire::KERNEL_ABI_VERSION,
-    )?;
+    m.add("ABI", deepstrike_core::runtime::kernel::wire::ABI)?;
     // POD types
     m.add_class::<ContentPartObj>()?;
     m.add_class::<ProviderMessage>()?;
@@ -1787,6 +1790,7 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_verdict, m)?)?;
     m.add_function(wrap_pyfunction!(verdict_output_schema, m)?)?;
     m.add_function(wrap_pyfunction!(verifiable_operation_json, m)?)?;
+    m.add_function(wrap_pyfunction!(evolution_validate_json, m)?)?;
     Ok(())
 }
 

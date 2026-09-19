@@ -13,6 +13,17 @@ use thiserror::Error;
 pub const EVOLUTION_SCHEMA: &str = "evolution/v1";
 pub const EVOLUTION_REPORT_SCHEMA: &str = "evolution-report/v1";
 
+/// Validate one host-owned evolution bundle through the canonical JSON bridge.
+///
+/// The bridge is deliberately thin: hosts own artifact/evidence storage, while this function
+/// remains the only semantic implementation of E1–E8 for language bindings.
+pub fn validate_evolution_json(request: &str) -> Result<String, String> {
+    let bundle: EvolutionBundle = serde_json::from_str(request)
+        .map_err(|error| format!("invalid evolution bundle: {error}"))?;
+    serde_json::to_string(&validate_evolution(&bundle))
+        .map_err(|error| format!("could not encode evolution report: {error}"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ContentDigest(String);
@@ -422,7 +433,7 @@ impl ActivationBinding {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvolutionBundle {
     pub artifacts: Vec<ArtifactVersion>,
     pub artifact_sets: Vec<ArtifactSet>,
@@ -971,5 +982,19 @@ mod tests {
                 .iter()
                 .any(|violation| violation.code == "E7")
         );
+    }
+
+    #[test]
+    fn json_bridge_returns_the_canonical_report() {
+        let report = validate_evolution_json(
+            r#"{"artifacts":[],"artifact_sets":[],"proposals":[],"evaluations":[],"facts":[],"decisions":[],"activations":[]}"#,
+        )
+        .expect("valid evolution bundle");
+        let value: serde_json::Value = serde_json::from_str(&report).expect("report json");
+        assert_eq!(value["schema"], EVOLUTION_REPORT_SCHEMA);
+        assert_eq!(value["verdict"], "pass");
+
+        let error = validate_evolution_json("[]").expect_err("non-object request must fail");
+        assert!(error.contains("invalid evolution bundle"));
     }
 }

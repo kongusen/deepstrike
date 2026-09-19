@@ -83,6 +83,6 @@ ArtifactVersion → EvolutionProposal → EvaluationRun / EvaluationFact
 ```
 
 Artifact bytes and evolution records remain host-owned. The kernel stores only verified content
-digests and the activation binding required for replay. ABI v4 rejects earlier journal, checkpoint,
+digests and the activation binding required for replay. The single ABI rejects earlier journal, checkpoint,
 report, and evolution formats; it does not negotiate or migrate them. See the
 [Evolution Runtime](./evolution-runtime) architecture page and [ADR-010](../decisions/010-evolution-runtime-hard-cut).

@@ -793,7 +793,7 @@ impl CanonicalRunnerRuntime {
                 .await
             }
             "add_history_message" => Err(Error::Other(
-                "unsupported_host_event: running ABI v4 operations accept history only through effects or external events".into(),
+                "unsupported_host_event: running ABI operations accept history only through effects or external events".into(),
             )),
             "cancel_operation" => {
                 let reason = event
