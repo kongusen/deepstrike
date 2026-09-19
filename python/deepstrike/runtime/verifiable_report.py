@@ -1,4 +1,4 @@
-"""Framework-facing API and report ABI for the Rust 0.2.69 verifiable runtime."""
+"""Framework-facing API and report ABI for the Rust 0.2.70 verifiable runtime."""
 
 from dataclasses import dataclass
 import json

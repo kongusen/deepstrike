@@ -362,7 +362,7 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
     return "other"
   }
 
-  // Published compatibility helpers retained while internally routing through canonical input.
+  // Framework adapter primitives used by the canonical request path.
   buildTools(tools: readonly ToolSchema[]): Array<Record<string, unknown>> {
     return tools.map(tool => ({
       type: "function",

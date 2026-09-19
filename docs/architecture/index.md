@@ -67,5 +67,5 @@ sequenceDiagram
 - [Kernel ABI 参考](./kernel-abi)
 - [Runtime Language 运行时语言](./runtime-language) — 0.2.68 normative glossary
 - 运行时数据宪法：[数据模型总纲](./runtime-data-model) · [Authority 矩阵与身份](./runtime-authority) · [持久契约](./runtime-persistence) · [因果链与链验证器](./runtime-causality)
-- 0.2.69 Framework Verifiable Runtime Foundation：[Verifiable Runtime](./verifiable-runtime) · [ADR-009](../decisions/009-framework-verifiable-runtime)
+- Framework Verifiable Runtime Foundation（0.2.69 foundation carried into 0.2.70）：[Verifiable Runtime](./verifiable-runtime) · [ADR-009](../decisions/009-framework-verifiable-runtime)
 - 0.2.70 Evolution Runtime：[Evolution Runtime](./evolution-runtime) · [ADR-010](../decisions/010-evolution-runtime-hard-cut)

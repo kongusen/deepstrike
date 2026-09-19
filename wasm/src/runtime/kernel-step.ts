@@ -24,7 +24,7 @@ interface SkillMetadata {
   effort?: number
   estimatedTokens?: number
   /** P1-B tool gating: tool ids this skill needs; when active the kernel narrows the toolset to
-   *  `stable-core ∪ allowedTools`. Absent ⇒ no narrowing (back-compat). */
+   *  `stable-core ∪ allowedTools`. Absent ⇒ no narrowing. */
   allowedTools?: string[]
 }
 

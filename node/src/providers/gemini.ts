@@ -70,8 +70,8 @@ export class GeminiProvider implements LLMProvider {
     extensions?: Record<string, unknown>,
   ): CanonicalAdapterInput {
     if (!this.resolvedRuntime) {
-      // Direct class construction is a published compatibility path. A-07 replaces it with
-      // injected runtime profiles; until then this local descriptor contains no Registry lookup.
+      // Direct construction uses a local resolved profile when no registry binding was injected;
+      // this descriptor intentionally performs no Registry lookup.
       const resolved = {
         identity: {
           providerId: "gemini",

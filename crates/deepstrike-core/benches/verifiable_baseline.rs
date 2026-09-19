@@ -1,4 +1,4 @@
-//! 0.2.69 performance baseline for the host-side verifiable report path.
+//! Performance baseline for the host-side verifiable report path.
 
 use std::hint::black_box;
 use std::time::Instant;

@@ -6,7 +6,7 @@ import {
   VerifiableOperation,
 } from "../src/runtime/verifiable-report.js"
 
-describe("0.2.69 verifiable report mirror", () => {
+describe("verifiable report mirror", () => {
   test("uses the Rust report and fork schema names", () => {
     expect(VERIFIABLE_REPORT_SCHEMA).toBe("verifiable-report/v2")
     expect(VERIFIABLE_FORK_SCHEMA).toBe("verifiable-fork/v2")

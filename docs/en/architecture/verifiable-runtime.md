@@ -1,6 +1,6 @@
-# 0.2.69 Framework Verifiable Runtime Foundation
+# Framework Verifiable Runtime Foundation
 
-0.2.69 is centered on a storage-neutral `VerifiableOperation`. A filesystem, database, object-store,
+0.2.70 continues the storage-neutral `VerifiableOperation` foundation. A filesystem, database, object-store,
 or browser adapter assembles an `EvidenceBundle` and calls the same framework operations:
 
 ```text
@@ -34,8 +34,9 @@ is the only command entry point.
 
 `replay` uses recorded evidence only and never invokes a live provider. `fork` writes only a
 read-only manifest containing the parent operation, boundary step, and parent digest. It does not
-write the Kernel Journal, mutate a Checkpoint, or become recovery authority. Evolution objects and
-content-addressed ArtifactVersion remain deferred to 0.2.70+.
+write the Kernel Journal, mutate a Checkpoint, or become recovery authority. Evolution objects,
+content-addressed ArtifactVersion, and promotion validation are defined by the [Evolution Runtime](./evolution-runtime),
+with the artifact-set binding fixed at operation genesis.
 
 The baseline command is `cargo bench -p deepstrike-core --bench verifiable_baseline`; it measures
 inspect and C1–C8 validation cost on a fixed record chain.

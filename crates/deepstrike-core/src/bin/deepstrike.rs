@@ -1,4 +1,4 @@
-//! 0.2.69 host-side Verifiable Runtime command surface.
+//! 0.2.70 host-side Verifiable Runtime command surface.
 
 #[path = "support/evidence_io.rs"]
 mod evidence_io;

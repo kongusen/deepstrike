@@ -1,4 +1,4 @@
-//! Framework-first 0.2.69 verifiable-runtime contracts.
+//! Framework-first 0.2.70 verifiable-runtime contracts.
 //!
 //! The types in this module are deliberately storage-neutral.  They accept evidence bytes that
 //! have already been obtained by a host, SDK, or durable-store adapter; they never open a path,

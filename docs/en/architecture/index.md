@@ -66,6 +66,6 @@ Remote tools, MCP servers, queues, and sandboxes can be connected by the applica
 - [Implementation reference](./overview)
 - [Kernel ABI reference](./kernel-abi)
 - [Runtime Language](./runtime-language) — 0.2.68 normative glossary
-- [Verifiable Runtime](./verifiable-runtime) — 0.2.69 Framework Verifiable Runtime Foundation; CLI adapter and inspect, verify, replay, and fork operations
+- [Verifiable Runtime](./verifiable-runtime) — Framework foundation from 0.2.69, carried into 0.2.70; CLI adapter and inspect, verify, replay, and fork operations
 - [Evolution Runtime](./evolution-runtime) — 0.2.70 hard cut for artifact lineage, evaluation evidence, promotion, and activation binding
 - Runtime data constitution: [Data model](./runtime-data-model) · [Authority & identity](./runtime-authority) · [Persistence contract](./runtime-persistence) · [Causality & chain validator](./runtime-causality)

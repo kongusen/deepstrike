@@ -1,6 +1,6 @@
-# 0.2.69 Framework Verifiable Runtime Foundation
+# Framework Verifiable Runtime Foundation
 
-0.2.69 的核心是 Framework Verifiable Runtime Foundation。它为已经落盘的执行历史提供一个
+0.2.70 延续 Framework Verifiable Runtime Foundation。它为已经落盘的执行历史提供一个
 与存储无关的框架对象 `VerifiableOperation`。文件系统、数据库、对象存储和浏览器内存都可以
 先由宿主适配器组装 `EvidenceBundle`，再调用同一组框架操作。
 
@@ -34,7 +34,8 @@ JSON 输出固定为 `verifiable-report/v2`，退出码固定为 `0` 通过、`1
 
 `replay` 只使用已记录的证据，绝不会调用真实 Provider。`fork` 只写入包含父操作、边界
 步骤和父记录 digest 的只读 manifest，不写 Kernel Journal、不修改 Checkpoint，也不成为
-恢复权威。Evolution 对象和内容寻址 ArtifactVersion 延后到 0.2.70+。
+恢复权威。Evolution 对象、内容寻址 ArtifactVersion 和 promotion 验证由 [Evolution Runtime](./evolution-runtime)
+提供，并在 operation genesis 固定 artifact set binding。
 
 性能基线使用 `cargo bench -p deepstrike-core --bench verifiable_baseline` 捕获，基线测量的是
 固定记录链上的 inspect 查询与 C1–C8 验证开销。

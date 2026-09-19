@@ -67,8 +67,8 @@ pub fn plan_utility_archive(
 }
 
 /// Measurement-aware planner entry point used by context partitions. The parallel slice is
-/// host-owned evidence aligned with `messages`; an empty or short slice falls back to the
-/// deprecated dual-write field during the migration window.
+/// host-owned evidence aligned with `messages`; an empty or short slice falls back to deterministic
+/// engine recomputation for the missing entries.
 pub fn plan_utility_archive_with_measurements(
     messages: &[CoreMessage],
     measurements: &[TokenMeasurement],
