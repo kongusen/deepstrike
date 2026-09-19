@@ -6,28 +6,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added — 0.2.69 Verifiable Runtime
+### Added — 0.2.70 Evolution Runtime hard cut
 
-- Added the Framework Verifiable Runtime Foundation: storage-neutral `EvidenceBundle`, typed
-  `VerifiableOperation`, verification/replay options, and read-only `ForkPlan` in Rust core.
-- Added the host-side `deepstrike inspect`, `verify`, `replay`, and read-only `fork` adapter;
-  `ds-chain-validator` remains the compatible low-level validator.
-- Added the frozen `verifiable-report/v1` and `verifiable-fork/v1` host report contracts with
-  stable exit codes for pass, proven contradiction, insufficient evidence, and usage errors.
-- Added offline replay divergence reporting, fork-boundary validation, a performance baseline, and
-  callable framework-operation mirrors for Node, Python, and WASM.
-- Added one Rust-core JSON bridge for native SDK adapters; SDKs do not duplicate C1–C8 validation.
-- No Kernel ABI or durable authority was added; Evolution objects remain planned for 0.2.70+.
+- Added the Framework Verifiable Runtime Evolution flow: content-addressed artifact versions and
+  sets, proposals, evaluation evidence, promotion decisions, and activation bindings.
+- Raised the kernel ABI to v4 and bound every new operation genesis to an immutable artifact-set
+  digest; artifact bytes remain host-owned.
+- Replaced the verifiable report and fork contracts with `verifiable-report/v2` and
+  `verifiable-fork/v2`, with framework-owned inspect, verify, replay, and read-only fork views.
+- Added fail-closed E1–E8 evolution validation and removed the `ds-chain-validator` entry point.
+- Added the Rust-core JSON bridge and framework mirrors for Node, Python, and WASM without a
+  second validation authority.
+
+### Removed — 0.2.70 compatibility and projection surfaces
+
+- Removed the verifiable compatibility free functions, the `ds-chain-validator` binary, and the
+  old report schema contracts.
+- Removed the wire `ToolResult.tokens` projection. Scheduler settlement now consumes independent
+  `ToolsSuccess.measurements` keyed by tool call id; provider usage remains host evidence.
+- Runtime message accounting uses `ContextTokenEngine` or the host `TokenMeasurement` side table;
+  SDK mirrors no longer carry message token projections.
 
 ### Removed — 0.2.68 DEL-1 runtime language convergence
 
-- Removed `CoreMessage.token_count` and `ToolResult.token_count`, including the Rust, Node,
-  WASM, Python and pyo3 public mirrors and provider adapter writes.
-- Context accounting now uses `ContextTokenEngine` or the host `TokenMeasurement` side table;
-  scheduler tool settlement accepts independent wire measurements. Provider usage remains on the
-  usage/attempt/session evidence plane.
-- The pyo3 `Message` and `ToolResult` constructor signatures are breaking changes. Session and
-  wire token fields remain evidence fields and are not runtime message projections.
 - Removed inline `ContentPart::Image.data` / `Audio.data`, the `image_base64`,
   `image_base64_with_detail`, and `audio` constructors, and the matching Node, WASM and pyo3
   mirrors. Media now enters the canonical content model through `DurableSource`; provider adapters
