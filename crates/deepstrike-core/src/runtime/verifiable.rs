@@ -324,7 +324,7 @@ pub struct VerifyReport {
     pub validation: ValidationReport,
 }
 
-pub fn verify_operation<J, S, C>(
+fn verify_operation<J, S, C>(
     operation_id: &str,
     journal_blobs: &[J],
     session_streams: &[Vec<S>],
@@ -371,7 +371,7 @@ where
     }
 }
 
-pub fn inspect_operation<J, S, C>(
+fn inspect_operation<J, S, C>(
     operation_id: &str,
     journal_blobs: &[J],
     session_streams: &[Vec<S>],
@@ -404,7 +404,7 @@ where
     }
 }
 
-pub fn replay_operation<J, S, C>(
+fn replay_operation<J, S, C>(
     operation_id: &str,
     journal_blobs: &[J],
     session_streams: &[Vec<S>],
@@ -476,31 +476,7 @@ where
     }
 }
 
-pub fn fork_operation<J, S, C>(
-    operation_id: &str,
-    journal_blobs: &[J],
-    session_streams: &[Vec<S>],
-    checkpoint_blobs: &[C],
-    strict: bool,
-    at_step: u64,
-) -> Result<ForkManifest, String>
-where
-    J: AsRef<[u8]>,
-    S: AsRef<[u8]>,
-    C: AsRef<[u8]>,
-{
-    Ok(prepare_fork(
-        operation_id,
-        journal_blobs,
-        session_streams,
-        checkpoint_blobs,
-        strict,
-        at_step,
-    )?
-    .manifest())
-}
-
-pub fn prepare_fork<J, S, C>(
+fn prepare_fork<J, S, C>(
     operation_id: &str,
     journal_blobs: &[J],
     session_streams: &[Vec<S>],
