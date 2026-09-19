@@ -301,9 +301,9 @@ fn tools_succeeded(call_id: &str, output: &str) -> EffectSuccess {
                 durable_content: None,
                 is_error: false,
                 disposition: ToolResultDisposition::Recoverable,
-                tokens: None,
             },
         })],
+        measurements: Vec::new(),
     })
 }
 
