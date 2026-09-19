@@ -118,7 +118,7 @@ SessionLog 证据流支持审计、Provider Replay 与 OS Snapshot；canonical c
 
 ### Profile 与 Snapshot
 
-OS Profile 配置策略，OS Snapshot 服务可观测性，canonical Kernel Checkpoint 恢复执行，ContextSnapshot 只恢复上下文。
+OS Profile 配置策略，OS Snapshot 服务可观测性，canonical Kernel Checkpoint 恢复执行，ContextState 标识语义输入；Context 的恢复由 Kernel Checkpoint 承担。
 
 ![Profile 与 Snapshot](/snapshots_mechanisms.svg)
 

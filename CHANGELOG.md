@@ -20,8 +20,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added the Rust-core JSON bridge and framework mirrors for Node, Python, and WASM without a
   second validation authority.
 - Added verifiable `EvaluationContextBinding` records for each evaluated operation, binding the
-  context policy, input snapshot, rendered snapshot, prompt measurement, and optional cache prefix
-  to host evidence.
+  `ContextExecutionInput` identity plus ContextState, ContextPlan, rendered snapshot, prompt
+  measurement, provider route, and optional cache prefix to host evidence.
+- Added two-stage Context preparation: the kernel freezes `ContextCandidate` into the mandatory
+  `CallProviderEffect` field, binding state, selection, policy, and the wire context/tool projection.
+  The host resolves route and preflight measurement, then delegates to the shared Rust
+  `prepare_context_dispatch` core/JSON boundary to finalize `ContextPlan` and `ContextExecutionInput`.
+- Added `context_prepared` session evidence persisted before provider I/O, including the finalized
+  input and component evidence. Kernel replay reproduces the candidate through normal step digests;
+  hosts can rebind recorded facts for input comparison. Evaluation binding validation checks
+  integrity and evidence coverage; it does not automatically replay every provider attempt.
+- Preserved Context generation, measurement provenance, pending knowledge, and optimization
+  metadata across checkpoint restore, with semantic digests independent of resident payload form.
+- Bound host request fingerprints to frozen provider material, including native replay and
+  continuation state; count and dispatch reuse the same prepared request. Custom adapters declare
+  their fingerprint scope. Session evidence defaults to in-memory retention; durable audit requires
+  a durable host log.
+
+### Breaking changes — execution and recovery contracts
+
+- Upgrade the Rust kernel and all SDK bindings together. The new required Context candidate and
+  durable optimization evidence change effect, record, and checkpoint digests; old checkpoints and
+  journals are not a supported recovery input for 0.2.70. Start new operations on this version.
+- Custom providers with hidden encoding state must implement request preparation so counting and
+  dispatch consume the same frozen material. The default adapter-input scope requires JSON state
+  and does not certify provider-private encoding state.
 
 ### Removed — 0.2.70 compatibility and projection surfaces
 

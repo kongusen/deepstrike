@@ -675,7 +675,7 @@ add("session_replay_mechanisms.svg", {
 
 add("snapshots_mechanisms.svg", {
   title: "DeepStrike OS profiles, snapshots, and checkpoints",
-  desc: "OS Profile configures validated runtime policy; OS Snapshot folds SessionLog observations; the canonical Kernel Checkpoint restores execution; ContextSnapshot restores context partitions only.",
+  desc: "OS Profile configures validated runtime policy; OS Snapshot folds SessionLog observations; the canonical Kernel Checkpoint restores execution; ContextState identifies semantic inputs; its bodies are restored through Kernel Checkpoint.",
   eyebrow: "PROFILES · SNAPSHOTS · CHECKPOINTS",
   headline: "Configuration, observability, and recovery are different artifacts.",
   subtitle: "PROFILE ≠ OS SNAPSHOT ≠ KERNEL CHECKPOINT",
@@ -690,7 +690,7 @@ add("snapshots_mechanisms.svg", {
     ${section(306, "After or during the run", "CHOOSE THE ARTIFACT FOR THE QUESTION YOU ARE ASKING")}
     ${card({ x: 48, y: 326, w: 344, h: 146, title: "OS Snapshot · observe", body: ["Folded from SessionLog events", "Processes · budget · signals · paging", "Permissions · memory counters", "Cannot restore execution"], accent: true })}
     ${card({ x: 428, y: 326, w: 344, h: 146, title: "Kernel Checkpoint · restore", body: ["Opaque logical state by owner", "Bounded journal tail", "state + tail digests", "Candidate · install · ack"] })}
-    ${card({ x: 808, y: 326, w: 344, h: 146, title: "ContextSnapshot · context only", body: ["Four context partitions", "Token and cache metadata", "Partial restore surface", "Not process / workflow recovery"] })}
+    ${card({ x: 808, y: 326, w: 344, h: 146, title: "ContextState · input identity", body: ["Ordered semantic entries", "Content digests + generation", "Input identity, not a restore", "Recovered via checkpoint"] })}
 
     ${section(520, "Dashboard fold", "OS SNAPSHOT MAKES KERNEL PRIMITIVES OPERATIONALLY VISIBLE")}
     ${rect(48, 540, 1104, 104, "panel-strong", 7)}

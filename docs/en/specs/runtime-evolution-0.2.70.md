@@ -69,10 +69,10 @@ invalid.
 
 An evaluation run binds a proposal, baseline and candidate artifact sets, evaluator manifest,
 dataset/fixture digest, operation IDs, one `EvaluationContextBinding` per operation, and evidence
-references. A context binding covers the resolved context policy, canonical input snapshot, rendered
-snapshot, prompt measurement, and optional cache prefix. Facts contain normalized metrics, required gate
-outcomes, regression comparisons, and replay verdicts. Raw context bytes, provider usage, and wire
-evidence stay on the host evidence plane.
+references. A context binding covers the `ContextExecutionInput` identity, ContextState, resolved
+policy, admitted ContextPlan, rendered snapshot, prompt measurement, provider route, and optional
+cache prefix. Facts contain normalized metrics, required gate outcomes, regression comparisons, and
+replay verdicts. Raw context bytes, provider usage, and wire evidence stay on the host evidence plane.
 
 ### PromotionDecision
 

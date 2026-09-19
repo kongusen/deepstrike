@@ -1,7 +1,7 @@
 
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
   <title id="title">DeepStrike OS profiles, snapshots, and checkpoints</title>
-  <desc id="desc">OS Profile configures validated runtime policy; OS Snapshot folds SessionLog observations; the canonical Kernel Checkpoint restores execution; ContextSnapshot restores context partitions only.</desc>
+  <desc id="desc">OS Profile configures validated runtime policy; OS Snapshot folds SessionLog observations; the canonical Kernel Checkpoint restores execution; ContextState identifies semantic inputs; its bodies are restored through Kernel Checkpoint.</desc>
   <defs>
     <marker id="arrow-ivory" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="7" markerHeight="7" orient="auto">
       <path d="M0 1 10 5 0 9Z" fill="#F7F3EA"/>
@@ -109,11 +109,11 @@
   <g>
     <rect x="808" y="326" width="344" height="146" rx="6" class="panel"/>
 
-    <text x="826" y="355" class="card-title" text-anchor="start">ContextSnapshot · context only</text>
-    <text x="826" y="379" class="card-text" text-anchor="start">Four context partitions</text>
-<text x="826" y="397" class="card-text" text-anchor="start">Token and cache metadata</text>
-<text x="826" y="415" class="card-text" text-anchor="start">Partial restore surface</text>
-<text x="826" y="433" class="card-text" text-anchor="start">Not process / workflow recovery</text>
+    <text x="826" y="355" class="card-title" text-anchor="start">ContextState · input identity</text>
+    <text x="826" y="379" class="card-text" text-anchor="start">Ordered semantic entries</text>
+<text x="826" y="397" class="card-text" text-anchor="start">Content digests + generation</text>
+<text x="826" y="415" class="card-text" text-anchor="start">Input identity, not a restore</text>
+<text x="826" y="433" class="card-text" text-anchor="start">Recovered via checkpoint</text>
 
   </g>
 

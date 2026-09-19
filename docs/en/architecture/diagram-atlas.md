@@ -118,7 +118,7 @@ The SessionLog evidence stream supports audit, provider replay, and OS snapshots
 
 ### Profiles and snapshots
 
-An OS Profile configures policy, an OS Snapshot supports observability, a canonical Kernel Checkpoint restores execution, and a ContextSnapshot restores context only.
+An OS Profile configures policy, an OS Snapshot supports observability, a canonical Kernel Checkpoint restores execution, and ContextState identifies semantic input; Context recovery is owned by the Kernel Checkpoint.
 
 ![Profiles and snapshots](/snapshots_mechanisms.svg)
 

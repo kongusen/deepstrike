@@ -128,7 +128,7 @@ This verifies runtime events carry correct `category` and `primitive`, useful be
 |------|---------|------------------------|
 | OS Snapshot | observed summary folded from SessionLog | no |
 | Kernel Checkpoint | opaque logical state, digests, and a bounded journal tail | yes, for exact wake / replay |
-| ContextSnapshot | context partition snapshot | partially, for context restore |
+| ContextState | semantic Context entries and content identities | no; partitions and optimization metadata are restored by Kernel Checkpoint |
 
 `OS Snapshot` is for humans and monitoring. `Kernel Checkpoint` is for runtime recovery. It neither serializes private state-machine structs nor stores the complete accepted-input history or a derived planned step; it stores logical state by transition/P1/P2/P3 owner and verifies state/tail digests. Applications manage it through candidate -> persist -> covered-head CAS install -> ack, then restore only the bounded tail and journal records after the checkpoint.
 

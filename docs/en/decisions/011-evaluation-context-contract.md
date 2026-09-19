@@ -21,10 +21,11 @@ the Runtime Language. The missing piece is a compact binding in the evaluation g
 ## Decision
 
 Add `EvaluationContextBinding` to the canonical Rust Evolution contract and require one binding for every
-`EvaluationRun.operation_ids` entry. Its digest covers `operation_id`, resolved context policy digest,
-input snapshot digest, rendered snapshot digest, prompt measurement digest, and an optional cache-prefix
-digest. The validator requires every bound digest to appear in `evidence_refs`, checks binding integrity,
-and rejects unknown or unbound operations.
+`EvaluationRun.operation_ids` entry. Its digest covers `operation_id`, the `ContextExecutionInput`
+digest, ContextState, resolved policy, admitted plan, rendered snapshot, prompt measurement, provider
+route, and an optional cache-prefix digest. The validator requires every bound digest to appear in
+`evidence_refs`, checks binding integrity, and rejects unknown or unbound operations. The two-stage
+Context preparation boundary is defined by [ADR-012](./012-verifiable-context-system.md).
 
 Context bytes stay host-owned evidence. Rendered context remains a projection, and token/provider usage
 remains measurement evidence; neither becomes a second kernel authority. Node, Python, and WASM expose

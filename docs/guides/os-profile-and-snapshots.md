@@ -128,7 +128,7 @@ assert session_log_has_required_categories(events)
 |------|------|----------------|
 | OS Snapshot | 从 SessionLog 折叠出的观测摘要 | 否 |
 | Kernel Checkpoint | opaque logical state、digest 与 bounded journal tail | 是，服务精确 wake / replay |
-| ContextSnapshot | Context 分区快照 | 部分，服务 context restore |
+| ContextState | Context 语义条目与内容身份 | 否，分区及优化元数据由 Kernel Checkpoint 恢复 |
 
 `OS Snapshot` 面向人和监控系统，`Kernel Checkpoint` 面向运行恢复。checkpoint 不序列化私有 state-machine struct，也不保存完整 accepted-input 历史或派生的 planned step；它按 transition/P1/P2/P3 owner 保存 logical state，并用 state/tail digest 校验。应用通过 candidate -> 持久化 -> covered-head CAS install -> ack 协议管理 checkpoint，恢复时只回放 bounded tail 和 checkpoint 之后的 journal records。
 
