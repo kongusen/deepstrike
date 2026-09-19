@@ -1,3 +1,5 @@
+import { requestSnapshot } from "./prepared-request.js"
+import type { PreparedProviderRequest, ProviderRunState as PreparedRunState } from "../types.js"
 import { GoogleGenerativeAI, type Content, type RequestOptions } from "@google/generative-ai"
 import type { ProviderMessage, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, PromptMeasurement, ProviderTransportTelemetry } from "../types.js"
 import { withServerRuntimeGuard } from "../runtime/server.js"
@@ -142,10 +144,22 @@ export class GeminiProvider implements LLMProvider {
     throw classifyProviderError("gemini", lastErr)
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  prepareRequest(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState): PreparedProviderRequest {
+    const input = this.adapterInput(context, tools, extensions)
+    const plan = requestSnapshot(this.adapter.buildRequest(input))
+    return {
+      scope: "encoded_body", request: requestSnapshot(plan), state: requestSnapshot(state ?? null),
+      stream: signal => this.streamPlan(input, plan),
+      countTokens: () => this.countPlan(plan),
+    }
+  }
+
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+    yield* this.prepareRequest(context, tools, extensions, state).stream(signal)
+  }
+
+  private async *streamPlan(input: CanonicalAdapterInput, plan: ReturnType<GeminiAdapter["buildRequest"]>): AsyncIterable<StreamEvent> {
     try {
-      const input = this.adapterInput(context, tools, extensions)
-      const plan = this.adapter.buildRequest(input)
       const m = this.genAI.getGenerativeModel(plan.modelParams, this.requestOptions)
       const result = await m.generateContentStream(plan.request)
       const state = this.adapter.createStreamState({ input })
@@ -170,9 +184,12 @@ export class GeminiProvider implements LLMProvider {
    * the sent request never diverge.
    */
   async countTokens(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<PromptMeasurement> {
-    const plan = this.adapter.buildRequest(this.adapterInput(context, tools, extensions))
+    return this.countPlan(this.adapter.buildRequest(this.adapterInput(context, tools, extensions)))
+  }
+
+  private async countPlan(plan: ReturnType<GeminiAdapter["buildRequest"]>): Promise<PromptMeasurement> {
     const m = this.genAI.getGenerativeModel(plan.modelParams, this.requestOptions)
-    const resp = await m.countTokens(plan.request)
+    const resp = await m.countTokens(requestSnapshot(plan.request))
     return {
       inputTokens: resp.totalTokens,
       source: { kind: "native", provider: "gemini" },

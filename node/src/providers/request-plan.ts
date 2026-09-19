@@ -11,6 +11,7 @@ export interface ProviderRequestEndpoint {
 
 /** One provider-visible request, deliberately excluding credentials and transport-only retries. */
 export interface ProviderRequestPlan {
+  execution?: { scope: "encoded_body" | "adapter_input"; request: unknown; state: unknown }
   providerId: string
   modelId: string
   endpoint: ProviderRequestEndpoint
@@ -73,6 +74,7 @@ export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "fing
     context: clone(input.context),
     tools: clone(input.tools),
     options,
+    ...(input.execution ? { execution: clone(input.execution) } : {}),
   }
   const stablePrefix = {
     providerId: plan.providerId,
@@ -102,6 +104,7 @@ export function createProviderRequestPlanForProvider(
   context: RenderedContext,
   tools: ToolSchema[],
   options?: Record<string, unknown>,
+  execution?: ProviderRequestPlan["execution"],
 ): ProviderRequestPlan {
   const descriptor = provider.descriptor?.() ?? { provider: "unknown", protocol: "unknown", model: "unknown" }
   const identity = provider.requestPlanIdentity?.()
@@ -115,7 +118,7 @@ export function createProviderRequestPlanForProvider(
     },
     context,
     tools,
-    options,
+    options, execution,
   })
 }
 
@@ -126,6 +129,7 @@ export function createProviderRequestPlanForProvider(
  * never a copy.
  */
 export interface ResolvedProviderRoute {
+  request_fingerprint_scope?: "encoded_body" | "adapter_input"
   routeId: string
   provider: string
   protocol: GenerationProtocol
@@ -292,7 +296,7 @@ export function priceProviderUsage(
   return { source: "snapshot", currency: snapshot.currency, amount, pricingVersion: snapshot.version }
 }
 
-function materialOptions(options: Record<string, unknown>): Record<string, unknown> {
+export function materialOptions(options: Record<string, unknown>): Record<string, unknown> {
   return sanitizeMaterialValue(options) as Record<string, unknown>
 }
 

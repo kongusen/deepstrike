@@ -1,3 +1,4 @@
+import type { ContextPrepared } from "./context.js"
 import type { ProviderReplay, ProviderWireEvidence, ToolCall, ToolErrorKind } from "../types.js"
 import type { MemoryRecall, MemoryScope } from "../memory/index.js"
 import type { KernelPrimitive } from "./kernel-event-log.js"
@@ -40,6 +41,7 @@ export type SessionEvent =
   // P3-S2 + P4-S1: effect_id (G4) + invocation_id + wire_evidence (D1). The wire evidence bundle
   // is the sole persisted carrier for provider replay state.
   | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
+  | { kind: "context_prepared"; turn: number; effect_id: string; preparation: ContextPrepared }
   | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement; effect_id?: string }
   // P4-S1 (G1): one record per provider attempt — the full P4 §1.2 payload.
   | ({ kind: "provider_attempt" } & ProviderAttemptRecord)
@@ -202,6 +204,7 @@ export const SESSION_EVENT_KINDS = [
   "run_started",
   "llm_completed",
   "prompt_measured",
+  "context_prepared",
   "provider_attempt",
   "tool_requested",
   "tool_completed",

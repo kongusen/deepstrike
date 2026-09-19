@@ -19,6 +19,7 @@ FIXTURES_ROOT = (ROOT / "tests" / "fixtures").resolve()
 
 try:
   from deepstrike import (
+    create_native_context_preparation_adapter,
     InMemorySessionLog,
     SESSION_EVENT_KINDS,
     decode_canonical_content_parts,
@@ -40,6 +41,7 @@ except ModuleNotFoundError as error:
     raise
   sys.path.insert(0, str(ROOT / "python"))
   from deepstrike import (
+    create_native_context_preparation_adapter,
     InMemorySessionLog,
     SESSION_EVENT_KINDS,
     decode_canonical_content_parts,
@@ -146,6 +148,14 @@ def project_attempt_record(record: dict[str, Any]) -> dict[str, Any]:
 def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
   input_value = fixture.get("input", {})
   domain = fixture["domain"]
+  if domain == "context_execution":
+    adapter = create_native_context_preparation_adapter()
+    prepared = adapter.prepare(input_value["request"])
+    return {
+      "input_digest": prepared["execution_input"]["input_digest"],
+      "plan_digest": prepared["plan"]["plan_id"],
+      "verified": adapter.verify(input_value["request"]["effect"], prepared),
+    }
   if domain == "agent_ir":
     source = json.loads(fixture_path_for(input_value.get("fixture")).read_text(encoding="utf-8"))
     lowered = lower_agent(normalize_agent(source))
@@ -166,6 +176,7 @@ def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
       context=source["context"],
       tools=source["tools"],
       options=source.get("options"),
+      execution=source.get("execution"),
     )
     return {"fingerprint": plan.fingerprint}
 

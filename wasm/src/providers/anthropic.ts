@@ -1,3 +1,5 @@
+import { requestSnapshot } from "./prepared-request.js"
+import type { PreparedProviderRequest, ProviderRunState } from "../types.js"
 import type { CacheBreakpointStrategy, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, ProviderMessage, ProviderDescriptor, ProviderReplay } from "../types.js"
 import { assistantReplayKey, collectStreamMessage, toAnthropicMessages } from "./base.js"
 
@@ -169,7 +171,7 @@ export class AnthropicProvider implements LLMProvider {
     return collectStreamMessage(this.stream(context, tools, extensions))
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+  prepareRequest(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: ProviderRunState): PreparedProviderRequest {
     const strategy = resolveCacheBreakpointStrategy(extensions)
     const emitOnSystemBlocks = strategy === "default" || strategy === "system-only"
     const cc = { type: "ephemeral" as const }
@@ -213,6 +215,18 @@ export class AnthropicProvider implements LLMProvider {
       body.thinking = { type: "enabled", budget_tokens: 8000 }
     }
 
+    const frozenBody = requestSnapshot(body)
+    return {
+      scope: "encoded_body", request: requestSnapshot(frozenBody), state: requestSnapshot(state ?? null),
+      stream: signal => this.streamBody(frozenBody, slotBp, signal),
+    }
+  }
+
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+    yield* this.prepareRequest(context, tools, extensions, state).stream(signal)
+  }
+
+  private async *streamBody(body: Record<string, unknown>, slotBp: ReturnType<typeof countCacheControlSlots>, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {

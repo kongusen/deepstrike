@@ -61,6 +61,13 @@ class PromptMeasuredEvent(TypedDict, total=False):
     effect_id: str
 
 
+class ContextPreparedEvent(TypedDict):
+    kind: Literal["context_prepared"]
+    turn: int
+    effect_id: str
+    preparation: dict[str, Any]
+
+
 class ProviderAttemptEvent(TypedDict, total=False):
     kind: Literal["provider_attempt"]
     effect_id: str
@@ -444,6 +451,7 @@ SessionEvent = (
     RunStartedEvent
     | LlmCompletedEvent
     | PromptMeasuredEvent
+    | ContextPreparedEvent
     | ProviderAttemptEvent
     | ToolRequestedEvent
     | ToolCompletedEvent
@@ -502,6 +510,7 @@ SESSION_EVENT_KINDS: tuple[str, ...] = (
     "run_started",
     "llm_completed",
     "prompt_measured",
+    "context_prepared",
     "provider_attempt",
     "tool_requested",
     "tool_completed",

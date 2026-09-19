@@ -236,7 +236,17 @@ export interface ProviderTransportTelemetry {
   responseId?: string
 }
 
+/** Frozen host request; scope distinguishes encoded body from a custom adapter input. */
+export interface PreparedProviderRequest {
+  readonly scope: "encoded_body" | "adapter_input"
+  readonly request: unknown
+  readonly state: unknown
+  stream(signal?: AbortSignal): AsyncIterable<StreamEvent>
+  countTokens?(): Promise<PromptMeasurement>
+}
+
 export interface LLMProvider {
+  prepareRequest?(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: ProviderRunState): PreparedProviderRequest
   createRunState?(): ProviderRunState
   runtimePolicy?(): { maxTurns?: number; timeoutMs?: number }
   descriptor?(): ProviderDescriptor
@@ -249,7 +259,7 @@ export interface LLMProvider {
   seedProviderReplay?(message: Pick<ProviderMessage, "content" | "toolCalls">, replay: ProviderReplay): void
   /** P4-S1 mirror: transport facts of the most recent execution (host evidence only, B7). */
   peekTransportTelemetry?(): ProviderTransportTelemetry | undefined
-  countTokens?(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<PromptMeasurement>
+  countTokens?(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: ProviderRunState): Promise<PromptMeasurement>
   complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ProviderMessage>
   stream(
     context: RenderedContext,

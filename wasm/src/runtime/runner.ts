@@ -1,3 +1,5 @@
+import { prepareProviderRequest } from "../providers/prepared-request.js"
+import { createNativeContextPreparationAdapter } from "./context.js"
 import type {
   LLMProvider, ProviderMessage, ToolCall, ToolExecutionResult, ToolSchema, ContentPart,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
@@ -1117,12 +1119,15 @@ export class RuntimeRunner {
         let turnCacheReadBySlot: { system?: number; tools?: number; messages?: number } | undefined
         let turnStopReason: string | undefined
 
-        const providerPlan = createProviderRequestPlanForProvider(this.opts.provider, context, tools, ext)
+        const preparedRequest = prepareProviderRequest(this.opts.provider, context, tools, ext, providerState)
+        const providerPlan = createProviderRequestPlanForProvider(this.opts.provider, context, tools, ext, {
+          scope: preparedRequest.scope, request: preparedRequest.request, state: preparedRequest.state,
+        })
         let promptMeasurement = measurementForPlan(providerPlan, recordedMeasurements.get(providerPlan.fingerprint))
         if (!promptMeasurement && !context.budgetOverflow) {
           try {
-            const counted = this.opts.provider.countTokens
-              ? await withTimeout(this.opts.provider.countTokens(context, tools, Object.keys(ext).length ? ext : undefined), 5_000)
+            const counted = preparedRequest.countTokens
+              ? await withTimeout(preparedRequest.countTokens(), 5_000)
               : undefined
             promptMeasurement = recordPromptMeasurement(providerPlan, counted ?? {
               inputTokens: estimateProviderPromptTokens(context, tools),
@@ -1172,9 +1177,21 @@ export class RuntimeRunner {
           continue
         }
 
+        if (!promptMeasurement) throw new Error("context preparation requires prompt measurement")
+        const contextAdapter = await createNativeContextPreparationAdapter()
+        const preparation = contextAdapter.prepare({
+          effect: action.contextEffect,
+          request_fingerprint: providerPlan.fingerprint,
+          provider_route: { ...this.providerRoute, request_fingerprint_scope: preparedRequest.scope },
+          prompt_measurement: promptMeasurement,
+        })
+        await this.opts.sessionLog.append(sessionId, {
+          kind: "context_prepared", turn: runtime.turn(), effect_id: providerEffectId, preparation,
+        })
+
         const abortSignal = this.abortController?.signal
         try {
-          for await (const evt of this.opts.provider.stream(context, tools, Object.keys(ext).length ? ext : undefined, providerState, abortSignal)) {
+          for await (const evt of preparedRequest.stream(abortSignal)) {
             // #2-B-ii: a preempting interrupt fires abortController — stop consuming the live stream.
             if (abortSignal?.aborted) break
             if (evt.type === "usage") {

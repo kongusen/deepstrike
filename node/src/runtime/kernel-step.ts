@@ -57,7 +57,7 @@ export type MilestoneVerifierKind =
   | { kind: "external_command"; cmd: string }
 
 export type KernelRunnerAction =
-  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[] }
+  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[]; contextEffect: Record<string, unknown> }
   | { kind: "execute_tool"; effectId: string; calls: ToolCall[] }
   | {
       kind: "request_approval"

@@ -536,7 +536,17 @@ export interface RuntimePolicy {
   timeoutMs?: number
 }
 
+/** Frozen host request; scope distinguishes encoded body from a custom adapter input. */
+export interface PreparedProviderRequest {
+  readonly scope: "encoded_body" | "adapter_input"
+  readonly request: unknown
+  readonly state: unknown
+  stream(signal?: AbortSignal): AsyncIterable<StreamEvent>
+  countTokens?(): Promise<PromptMeasurement>
+}
+
 export interface LLMProvider {
+  prepareRequest?(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: ProviderRunState): PreparedProviderRequest
   createRunState?(): ProviderRunState
   descriptor?(): ProviderDescriptor
   /**

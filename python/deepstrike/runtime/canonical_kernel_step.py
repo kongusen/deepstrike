@@ -329,6 +329,7 @@ def _action_from_core_step(planned_step: dict[str, Any]) -> KernelRunnerAction |
     return KernelRunnerAction(
       kind="call_provider", effect_id=effect_id,
       context=_context_from_kernel(_object(effect.get("context"))),
+      context_effect={key: value for key, value in effect.items() if key != "kind"},
       tools=[ToolSchema(str(t.get("name") or ""), str(t.get("description") or ""), json.dumps(t.get("parameters") or {}))
              for t in effect.get("tools") or [] if isinstance(t, dict)],
     )

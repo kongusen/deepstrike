@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import {
+  createNativeContextPreparationAdapter,
   createProviderRequestPlan,
   decodeDurableToolResult,
   decodeDurableContent,
@@ -60,6 +61,15 @@ async function inputFixturePath(relativePath) {
 async function canonicalFor(fixture) {
   const input = fixture.input ?? {}
   switch (fixture.domain) {
+    case "context_execution": {
+      const adapter = createNativeContextPreparationAdapter()
+      const prepared = adapter.prepare(input.request)
+      return {
+        input_digest: prepared.execution_input.input_digest,
+        plan_digest: prepared.plan.plan_id,
+        verified: adapter.verify(input.request.effect, prepared),
+      }
+    }
     case "agent_ir": {
       const source = JSON.parse(await readFile(await inputFixturePath(input.fixture), "utf8"))
       const lowered = lowerAgent(normalizeAgent(source))

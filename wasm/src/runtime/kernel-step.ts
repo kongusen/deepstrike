@@ -83,7 +83,7 @@ export interface KernelLoopResult {
 }
 
 export type KernelRunnerAction =
-  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[] }
+  | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[]; contextEffect: Record<string, unknown> }
   | { kind: "execute_tool"; effectId: string; calls: ToolCall[] }
   | { kind: "request_approval"; effectId: string; requests: Array<{ callId: string; tool: string; arguments: string; reason: string }> }
   | { kind: "spawn_workflow"; effectId: string; nodes: Array<Record<string, unknown>>; budget?: Record<string, unknown> }

@@ -33,6 +33,7 @@ class ProviderRequestPlan:
   options: dict[str, Any]
   fingerprint: str
   stable_prefix_fingerprint: str
+  execution: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ def estimate_provider_prompt_tokens(context: Any, tools: list[Any] | tuple[Any, 
 def create_provider_request_plan(
   *, provider_id: str, model_id: str, endpoint: ProviderRequestEndpoint,
   context: Any, tools: list[Any] | tuple[Any, ...], options: dict[str, Any] | None = None,
+  execution: Any | None = None,
 ) -> ProviderRequestPlan:
   material = _material_options(options or {})
   context_value = _json_value(context)
@@ -100,6 +102,8 @@ def create_provider_request_plan(
     "endpoint": endpoint_value, "context": context_value,
     "tools": tools_value, "options": material,
   }
+  if execution is not None:
+    value["execution"] = _json_value(execution)
   fingerprint = "sha256:" + sha256(_canonical_json(value).encode()).hexdigest()
   stable_prefix = {
     "providerId": provider_id,
@@ -115,6 +119,7 @@ def create_provider_request_plan(
     endpoint=ProviderRequestEndpoint(endpoint.id, endpoint.protocol, _safe_endpoint(endpoint.base_url)),
     context=_json_value(context), tools=tuple(_json_value(tool) for tool in tools),
     options=material, fingerprint=fingerprint, stable_prefix_fingerprint=stable_prefix_fingerprint,
+    execution=_json_value(execution) if execution is not None else None,
   )
 
 

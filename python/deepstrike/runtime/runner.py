@@ -23,6 +23,8 @@ from deepstrike._kernel import (
   TaskUpdate,
 )
 from deepstrike.providers.base import LLMProvider, RenderedContext
+from deepstrike.runtime.context import create_native_context_preparation_adapter
+from deepstrike.providers.prepared_request import prepare_provider_request
 from deepstrike.providers.request_plan import (
   create_provider_request_plan,
   estimate_provider_prompt_tokens,
@@ -2275,6 +2277,7 @@ class RuntimeRunner:
         identity_fn = getattr(self._opts.provider, "request_plan_identity", None) or getattr(self._opts.provider, "requestPlanIdentity", None)
         identity = identity_fn() if callable(identity_fn) else {}
         endpoint_identity = identity.get("endpoint", {}) if isinstance(identity, dict) else {}
+        prepared_request = prepare_provider_request(self._opts.provider, context, turn_tools, ext or None, provider_state)
         provider_plan = create_provider_request_plan(
           provider_id=(identity.get("providerId") or identity.get("provider_id") or getattr(descriptor, "provider", "unknown"))
             if isinstance(identity, dict) else getattr(descriptor, "provider", "unknown"),
@@ -2285,13 +2288,13 @@ class RuntimeRunner:
             endpoint_identity.get("protocol") or getattr(descriptor, "protocol", "unknown"),
             endpoint_identity.get("baseURL") or endpoint_identity.get("base_url") or "",
           ),
-          context=context, tools=turn_tools, options=ext,
+          context=context, tools=turn_tools, options=ext, execution=prepared_request.evidence(),
         )
         prompt_measurement = measurement_for_plan(provider_plan, recorded_measurements.get(provider_plan.fingerprint))
         if prompt_measurement is None and not context.budget_overflow:
           try:
-            count_tokens = getattr(self._opts.provider, "count_tokens", None)
-            counted = await asyncio.wait_for(count_tokens(context, turn_tools, extensions=ext or None), 5.0) if callable(count_tokens) else None
+            count_tokens = prepared_request.count_tokens
+            counted = await asyncio.wait_for(count_tokens(), 5.0) if callable(count_tokens) else None
             prompt_measurement = record_prompt_measurement(
               provider_plan,
               input_tokens=getattr(counted, "input_tokens", 0) if counted is not None else estimate_provider_prompt_tokens(context, turn_tools),
@@ -2348,10 +2351,25 @@ class RuntimeRunner:
           })
           self._provider_retry_pending = getattr(action, "kind", None) == "call_provider"
           continue
+        if prompt_measurement is None or action.context_effect is None:
+          raise RuntimeError("context preparation requires candidate and prompt measurement")
+        preparation = create_native_context_preparation_adapter().prepare({
+          "effect": action.context_effect,
+          "request_fingerprint": provider_plan.fingerprint,
+          "provider_route": {**route_to_record(self._provider_route), "request_fingerprint_scope": prepared_request.scope},
+          "prompt_measurement": {
+            "requestFingerprint": prompt_measurement.request_fingerprint,
+            "inputTokens": prompt_measurement.input_tokens,
+            "source": prompt_measurement.source,
+            "confidence": prompt_measurement.confidence,
+          },
+        })
+        await self._opts.session_log.append(session_id, {
+          "kind": "context_prepared", "turn": runtime.turn(),
+          "effect_id": provider_effect_id, "preparation": preparation,
+        })
         try:
-          async for evt in self._opts.provider.stream(
-            context, turn_tools, extensions=ext if ext else None, state=provider_state,
-          ):
+          async for evt in prepared_request.stream():
             # #2-B-ii: a preempting interrupt() stops consuming the live stream immediately; breaking
             # the `async for` closes the provider's async generator → its httpx context exits → the
             # socket aborts. (Workflow preemption uses task.cancel(), which raises CancelledError here

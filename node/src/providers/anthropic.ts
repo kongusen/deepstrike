@@ -1,3 +1,5 @@
+import { requestSnapshot } from "./prepared-request.js"
+import type { PreparedProviderRequest, ProviderRunState as PreparedRunState } from "../types.js"
 import Anthropic from "@anthropic-ai/sdk"
 import type {
   CacheBreakpointStrategy,
@@ -229,20 +231,23 @@ export class AnthropicProvider implements LLMProvider {
     tools: ToolSchema[],
     extensions?: Record<string, unknown>,
   ): Promise<PromptMeasurement> {
+    return this.countPlan(this.buildPlan(context, tools, extensions).plan)
+  }
+
+  private async countPlan(plan: AnthropicRequestPlan): Promise<PromptMeasurement> {
     const enabled = this.resolvedRuntime
       ? this.resolvedRuntime.effectiveCapabilities.nativeTokenCounting.state === "supported"
       : this.providerName() === "anthropic" && this.directNativeTokenCounting
     if (!enabled) {
       throw new Error(`Native token counting is unavailable on ${this.providerName()} Anthropic-compatible endpoint`)
     }
-    const { plan } = this.buildPlan(context, tools, extensions)
     const { model, system, messages, tools: requestTools } = plan.params
-    const response = await this.client.messages.countTokens({
+    const response = await this.client.messages.countTokens(requestSnapshot({
       model,
       ...(system ? { system } : {}),
       messages,
       ...(requestTools ? { tools: requestTools } : {}),
-    } as unknown as Anthropic.MessageCountTokensParams)
+    }) as unknown as Anthropic.MessageCountTokensParams)
     return {
       inputTokens: response.input_tokens,
       source: { kind: "native", provider: "anthropic" },
@@ -250,16 +255,24 @@ export class AnthropicProvider implements LLMProvider {
     }
   }
 
-  async *stream(
-    context: RenderedContext,
-    tools: ToolSchema[],
-    extensions?: Record<string, unknown>,
-    _state?: ProviderRunState,
-    signal?: AbortSignal,
-  ): AsyncIterable<StreamEvent> {
+  prepareRequest(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState): PreparedProviderRequest {
+    const { input, plan: built } = this.buildPlan(context, tools, extensions)
+    const plan = requestSnapshot(built)
+    plan.params.stream = true
+    return {
+      scope: "encoded_body", request: requestSnapshot({ body: plan.params, transport: plan.transport }), state: requestSnapshot(state ?? null),
+      stream: signal => this.streamPlan(input, plan, signal),
+      countTokens: () => this.countPlan(plan),
+    }
+  }
+
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+    yield* this.prepareRequest(context, tools, extensions, state).stream(signal)
+  }
+
+  private async *streamPlan(input: CanonicalAdapterInput, plan: AnthropicRequestPlan, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const provider = this.providerName()
     try {
-      const { input, plan } = this.buildPlan(context, tools, extensions)
       const state = this.adapter.createStreamState({ input })
       this.lastTelemetry = { rungs: 1 }
       for await (const chunk of this.streamMessage(plan.params, plan.transport, signal)) {

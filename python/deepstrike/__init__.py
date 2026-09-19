@@ -107,6 +107,12 @@ from deepstrike.runtime import (
     ReplayOptions,
     assert_verifiable_report_schema,
     EVOLUTION_REPORT_SCHEMA,
+    ContextEntryRef,
+    ContextExecutionInput,
+    ContextPlan,
+    ContextPreparationRequest,
+    ContextSelection,
+    ContextState,
     EvaluationContextBinding,
     EvaluationRun,
     EvolutionReport,
@@ -218,7 +224,15 @@ from deepstrike.collaboration import (
     HandoffArtifact, HandoffBus, ContractOutcomeInput,
     CreatorVerifierMode, OrchestrationMode, CreatorVerifierMetrics,
 )
+from deepstrike.runtime.context import (
+  ContextPrepared, ContextProviderPreparationRequest, ContextPreparationAdapter,
+  create_context_preparation_adapter, create_native_context_preparation_adapter,
+)
+
 __all__ = [
+  "ContextPrepared", "ContextProviderPreparationRequest", "ContextPreparationAdapter",
+  "create_context_preparation_adapter", "create_native_context_preparation_adapter",
+
     # ── Start here: canonical entry points ──
     "run_agent",
     "run_fanout",
@@ -322,7 +336,7 @@ __all__ = [
     "VerifyOptions",
     "ReplayOptions",
     "assert_verifiable_report_schema",
-    "EVOLUTION_REPORT_SCHEMA", "EvaluationContextBinding", "EvaluationRun", "EvolutionReport", "EvolutionRuntime", "EvolutionRuntimeAdapter", "EvolutionStore",
+    "EVOLUTION_REPORT_SCHEMA", "ContextEntryRef", "ContextExecutionInput", "ContextPlan", "ContextPreparationRequest", "ContextSelection", "ContextState", "EvaluationContextBinding", "EvaluationRun", "EvolutionReport", "EvolutionRuntime", "EvolutionRuntimeAdapter", "EvolutionStore",
     "create_evolution_runtime_adapter", "create_native_evolution_runtime_adapter",
     "ObserverErrorHandler",
     "ObserverFailure",

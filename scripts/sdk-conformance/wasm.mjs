@@ -37,6 +37,15 @@ try {
 
 async function project(value) {
   switch (value.domain) {
+    case "context_execution": {
+      const adapter = await sdk.createNativeContextPreparationAdapter()
+      const prepared = adapter.prepare(value.input.request)
+      return {
+        input_digest: prepared.execution_input.input_digest,
+        plan_digest: prepared.plan.plan_id,
+        verified: adapter.verify(value.input.request.effect, prepared),
+      }
+    }
     case "agent_ir": {
       const raw = readReferenced(value.input.fixture)
       const spec = sdk.lowerAgent(sdk.normalizeAgent(raw))

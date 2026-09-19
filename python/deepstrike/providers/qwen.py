@@ -1,4 +1,6 @@
 from __future__ import annotations
+from copy import deepcopy
+from .prepared_request import PreparedProviderRequest
 import json
 import logging
 from typing import AsyncIterator
@@ -168,11 +170,11 @@ class _QwenProvider(ReasoningReplayMixin):
                     await asyncio.sleep(self._retry.base_delay * (2 ** attempt))
         raise last_exc or RuntimeError("Complete failed")
 
-    async def _stream_mm(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None) -> AsyncIterator[StreamEvent]:
+    async def _stream_mm_prepared(self, kwargs):
         if self._mm_generation is None:
             raise RuntimeError("Qwen multimodal needs a dashscope build with MultiModalConversation")
         last_usage = None
-        stream = await self._mm_generation.call(**self._mm_call_kwargs(context, tools, extensions, stream=True))
+        stream = await self._mm_generation.call(**deepcopy(kwargs))
         async for chunk in stream:
             if chunk.status_code != HTTPStatus.OK:
                 continue
@@ -259,11 +261,14 @@ class _QwenProvider(ReasoningReplayMixin):
         raise last_exc or RuntimeError("Complete failed")
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
-        if self._has_image_input(context):
-            async for evt in self._stream_mm(context, tools, extensions):
-                yield evt
-            return
+        async for event in self.prepare_request(context, tools, extensions, state).stream():
+            yield event
 
+    def prepare_request(self, context, tools, extensions=None, state=None):
+        if self._has_image_input(context):
+            kwargs = deepcopy(self._mm_call_kwargs(context, tools, extensions, stream=True))
+            return PreparedProviderRequest("encoded_body", deepcopy(kwargs), deepcopy(state),
+                lambda: self._stream_mm_prepared(kwargs))
         msgs = self._build_messages(context)
         tool_defs = self._build_tools(tools)
 
@@ -287,6 +292,11 @@ class _QwenProvider(ReasoningReplayMixin):
             if ext.get("search_options") is not None:
                 kwargs["search_options"] = ext["search_options"]
 
+        kwargs = deepcopy(kwargs)
+        return PreparedProviderRequest("encoded_body", deepcopy(kwargs), deepcopy(state),
+            lambda: self._stream_text_prepared(kwargs))
+
+    async def _stream_text_prepared(self, kwargs):
         tool_call_bufs: dict[int, dict] = {}
         emitted_tool_call_indexes: set[int] = set()
         reasoning_content = ""
@@ -295,7 +305,7 @@ class _QwenProvider(ReasoningReplayMixin):
         last_usage = None
         finish_reason_seen: str | None = None
 
-        stream = await self._generation.call(**kwargs)
+        stream = await self._generation.call(**deepcopy(kwargs))
         async for chunk in stream:
             if chunk.status_code != HTTPStatus.OK:
                 continue

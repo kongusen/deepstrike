@@ -1,4 +1,6 @@
 from __future__ import annotations
+from copy import deepcopy
+from .prepared_request import PreparedProviderRequest
 import logging
 from typing import AsyncIterator
 import httpx
@@ -87,13 +89,17 @@ class OllamaProvider:
         raise last_exc or Exception("Complete failed")
 
     def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
-        return self._stream_gen(context, tools, extensions)
+        return self.prepare_request(context, tools, extensions, state).stream()
 
-    async def _stream_gen(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> AsyncIterator[StreamEvent]:
-        canonical = normalize_canonical_adapter_input(
-            context, tools, extensions=extensions,
-            resolved=getattr(self, "_resolved_runtime", None),
-        )
+    def prepare_request(self, context, tools, extensions=None, state=None):
+        canonical = normalize_canonical_adapter_input(context, tools, extensions=extensions,
+            resolved=getattr(self, "_resolved_runtime", None))
+        body = deepcopy(self._adapter.build_request(canonical))
+        body["stream"] = True
+        return PreparedProviderRequest("encoded_body", deepcopy(body), deepcopy(state),
+            lambda: self._stream_prepared(canonical, body))
+
+    async def _stream_prepared(self, canonical, body):
         state = self._adapter.create_stream_state(canonical)
         decoder = self._adapter.create_ndjson_decoder()
 
@@ -101,7 +107,7 @@ class OllamaProvider:
             async with client.stream(
                 "POST",
                 f"{self._base_url}/api/chat",
-                json=self._build_body(context, tools, stream=True, extensions=extensions),
+                json=deepcopy(body),
                 timeout=120,
             ) as resp:
                 resp.raise_for_status()

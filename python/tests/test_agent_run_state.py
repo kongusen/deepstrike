@@ -11,6 +11,7 @@ from deepstrike.tools.registry import tool
 class StatefulTestProvider:
     def __init__(self) -> None:
         self.states: list[ProviderRunState | None] = []
+        self.completed_turns = []
         self._call_count = 0
 
     def create_run_state(self) -> ProviderRunState:
@@ -20,7 +21,10 @@ class StatefulTestProvider:
         raise NotImplementedError
 
     async def stream(self, context: RenderedContext, tools, extensions=None, state=None):
+        if state is not None:
+            state["completed_turns"] = state.get("completed_turns", 0) + 1
         self.states.append(state)
+        self.completed_turns.append(state["completed_turns"])
         self._call_count += 1
         if self._call_count == 1:
             yield ToolCallEvent(id="call_1", name="ping", arguments={})
@@ -51,3 +55,4 @@ async def test_agent_threads_provider_run_state_through_turns():
 
     assert len(provider.states) == 2
     assert provider.states[0] is provider.states[1]
+    assert provider.completed_turns == [1, 2]

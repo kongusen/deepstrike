@@ -1,4 +1,6 @@
 from __future__ import annotations
+from copy import deepcopy
+from .prepared_request import PreparedProviderRequest
 import json
 import logging
 from types import SimpleNamespace
@@ -169,17 +171,16 @@ class AnthropicProvider:
         )
 
     async def count_tokens(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None):
+        return await self.prepare_request(context, tools, extensions).count_tokens()
+
+    async def _count_prepared(self, plan):
         runtime = getattr(self, "_resolved_runtime", None)
-        enabled = (
-            runtime.effective_capabilities.native_token_counting.state == "supported"
-            if runtime is not None
-            else self._direct_native_token_counting
-        )
+        enabled = (runtime.effective_capabilities.native_token_counting.state == "supported"
+                   if runtime is not None else self._direct_native_token_counting)
         if not enabled:
             raise RuntimeError("Native token counting is unavailable on this Anthropic-compatible endpoint")
-        _canonical, plan = self._build_request_plan(context, tools, extensions)
         params = {
-            key: plan.params[key]
+            key: deepcopy(plan.params[key])
             for key in ("model", "system", "messages", "tools")
             if key in plan.params
         }
@@ -216,9 +217,18 @@ class AnthropicProvider:
         raise last_exc or RuntimeError("Complete failed")
 
     async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
+        async for event in self.prepare_request(context, tools, extensions, state).stream():
+            yield event
+
+    def prepare_request(self, context, tools, extensions=None, state=None):
         canonical, plan = self._build_request_plan(context, tools, extensions)
+        plan = deepcopy(plan)
+        return PreparedProviderRequest("encoded_body", deepcopy(plan.params), deepcopy(state),
+            lambda: self._stream_prepared(canonical, plan), lambda: self._count_prepared(plan))
+
+    async def _stream_prepared(self, canonical, plan):
         stream_state = self._adapter.create_stream_state(canonical, plan.cache_slots)
-        async with self._client.messages.stream(**plan.params) as stream:
+        async with self._client.messages.stream(**deepcopy(plan.params)) as stream:
             async for event in stream:
                 for output in self._adapter.push_stream_chunk(event, stream_state).events:
                     yield output

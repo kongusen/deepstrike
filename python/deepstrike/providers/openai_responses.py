@@ -11,6 +11,8 @@ The continuation state lives in the provider-owned, opaque :data:`ProviderRunSta
 threads across turns — keys ``previous_response_id`` and ``covered_message_count``.
 """
 from __future__ import annotations
+from copy import deepcopy
+from .prepared_request import PreparedProviderRequest
 import json
 import logging
 from dataclasses import dataclass, field
@@ -441,24 +443,16 @@ class OpenAIResponsesProvider:
         extensions: dict | None = None,
         state: ProviderRunState | None = None,
     ):
-        """spc_024-05: native preflight via the official Responses input-token count endpoint.
+        return await self.prepare_request(context, tools, extensions, state).count_tokens()
 
-        Counts the exact create request plan (stateful ``previous_response_id`` continuation
-        included), projected onto the count endpoint's accepted params. Native measurement
-        belongs to the verified official endpoint, not the wire protocol."""
+    async def _count_prepared(self, plan):
         runtime = getattr(self, "_resolved_runtime", None)
-        enabled = (
-            runtime.effective_capabilities.native_token_counting.state == "supported"
-            if runtime is not None
-            else self._direct_native_token_counting
-        )
+        enabled = (runtime.effective_capabilities.native_token_counting.state == "supported"
+                   if runtime is not None else self._direct_native_token_counting)
         input_tokens = getattr(self._client.responses, "input_tokens", None)
         if not enabled or not hasattr(input_tokens, "count"):
             raise RuntimeError("Native token counting is unavailable on this OpenAI-compatible endpoint")
-        run_state = self._as_run_state(state)
-        adapter_input = self._canonical_input(context, tools, extensions)
-        plan = self._responses.build_request(adapter_input, run_state)
-        params = {key: plan.params[key] for key in _COUNT_PARAM_KEYS if key in plan.params}
+        params = {key: deepcopy(plan.params[key]) for key in _COUNT_PARAM_KEYS if key in plan.params}
         response = await input_tokens.count(**params)
         return SimpleNamespace(
             input_tokens=response.input_tokens,
@@ -473,20 +467,33 @@ class OpenAIResponsesProvider:
         extensions: dict | None = None,
         state: ProviderRunState | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        run_state = self._as_run_state(state)
+        async for event in self.prepare_request(context, tools, extensions, state).stream():
+            yield event
+
+    def prepare_request(self, context, tools, extensions=None, state=None):
+        run_state = self._as_run_state(deepcopy(state))
         adapter_input = self._canonical_input(context, tools, extensions)
-        plan = self._responses.build_request(adapter_input, run_state)
-        stream = await self._client.responses.create(**{**plan.params, "stream": True})
+        plan = deepcopy(self._responses.build_request(adapter_input, run_state))
+        params = {**plan.params, "stream": True}
+        return PreparedProviderRequest("encoded_body", deepcopy(params), deepcopy(run_state),
+            lambda: self._stream_prepared(adapter_input, plan, run_state, state), lambda: self._count_prepared(plan))
+
+    async def _stream_prepared(self, adapter_input, plan, run_state, target_state):
+        stream = await self._client.responses.create(**{**deepcopy(plan.params), "stream": True})
         stream_state = self._responses.create_stream_state(adapter_input, run_state)
 
         async for evt in stream:
             output = self._responses.push_stream_chunk(evt, stream_state)
             if output.run_state_patch:
                 run_state.update(output.run_state_patch)
+                if target_state is not None:
+                    target_state.update(output.run_state_patch)
             for event in output.events:
                 yield event
         output = self._responses.finish_stream(stream_state)
         if output.run_state_patch:
             run_state.update(output.run_state_patch)
+            if target_state is not None:
+                target_state.update(output.run_state_patch)
         for event in output.events:
             yield event

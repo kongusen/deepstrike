@@ -1,3 +1,5 @@
+import { requestSnapshot } from "./prepared-request.js"
+import type { PreparedProviderRequest, ProviderRunState as PreparedRunState } from "../types.js"
 import OpenAI from "openai"
 import type {
   LLMProvider,
@@ -164,6 +166,10 @@ export class OpenAIResponsesProvider implements LLMProvider {
     extensions?: Record<string, unknown>,
     state?: ProviderRunState,
   ): Promise<PromptMeasurement> {
+    return this.countPlan(this.responses.buildRequest(this.adapterInput(context, tools, extensions), this.asRunState(state)))
+  }
+
+  private async countPlan(plan: ReturnType<OpenAIResponsesAdapter["buildRequest"]>): Promise<PromptMeasurement> {
     const enabled = this.resolvedRuntime
       ? this.resolvedRuntime.effectiveCapabilities.nativeTokenCounting.state === "supported"
       : this.directNativeTokenCounting
@@ -171,15 +177,13 @@ export class OpenAIResponsesProvider implements LLMProvider {
     if (!enabled || typeof inputTokens?.count !== "function") {
       throw new Error("Native token counting is unavailable on this OpenAI-compatible endpoint")
     }
-    const input = this.adapterInput(context, tools, extensions)
-    const plan = this.responses.buildRequest(input, this.asRunState(state))
     const body = Object.fromEntries(
       INPUT_TOKEN_COUNT_PARAM_KEYS
         .filter(key => key in plan.params)
         .map(key => [key, plan.params[key]]),
     )
     const response = await inputTokens.count(
-      body as unknown as Parameters<typeof inputTokens.count>[0],
+      requestSnapshot(body) as unknown as Parameters<typeof inputTokens.count>[0],
     )
     return {
       inputTokens: response.input_tokens,
@@ -188,17 +192,24 @@ export class OpenAIResponsesProvider implements LLMProvider {
     }
   }
 
-  async *stream(
-    context: RenderedContext,
-    tools: ToolSchema[],
-    extensions?: Record<string, unknown>,
-    state?: ProviderRunState,
-    signal?: AbortSignal,
-  ): AsyncIterable<StreamEvent> {
+  prepareRequest(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState): PreparedProviderRequest {
+    const runState = requestSnapshot(this.asRunState(state))
+    const input = this.adapterInput(context, tools, extensions)
+    const plan = requestSnapshot(this.responses.buildRequest(input, runState))
+    plan.params.stream = true
+    return {
+      scope: "encoded_body", request: requestSnapshot(plan.params), state: requestSnapshot(state ?? null),
+      stream: signal => this.streamPlan(input, plan, runState, state, signal),
+      countTokens: () => this.countPlan(plan),
+    }
+  }
+
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+    yield* this.prepareRequest(context, tools, extensions, state).stream(signal)
+  }
+
+  private async *streamPlan(input: CanonicalAdapterInput, plan: ReturnType<OpenAIResponsesAdapter["buildRequest"]>, runState: OpenAIResponsesRunState, state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     try {
-      const runState = this.asRunState(state)
-      const input = this.adapterInput(context, tools, extensions)
-      const plan = this.responses.buildRequest(input, runState)
       const streamState = this.responses.createStreamState({ input }, runState)
       const stream = await this.client.responses.create(
         { ...plan.params, stream: true } as unknown as OpenAI.Responses.ResponseCreateParamsStreaming,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Any, Callable, Mapping, Protocol, TypedDict
+from typing import Any, Callable, Mapping, Protocol, TypedDict, Literal
 
 EVOLUTION_REPORT_SCHEMA = "evolution-report/v1"
 EvolutionValidateJson = Callable[[str], str]
@@ -13,21 +13,102 @@ EvolutionValidateJson = Callable[[str], str]
 EvolutionBundle = Mapping[str, Any]
 
 
-class EvaluationContextBinding(TypedDict, total=False):
+class _EvaluationContextBindingRequired(TypedDict):
   """SDK mirror for the context evidence binding checked by the Rust core.
 
-  The canonical payload requires ``digest``, ``operation_id``, ``context_policy``,
-  ``input_snapshot``, ``rendered_snapshot``, and ``prompt_measurement``. ``cache_prefix``
-  is optional and, when present, must also be listed in ``evidence_refs``.
+  The canonical payload requires ``digest``, ``operation_id``, ``execution_input``,
+  ``context_state``, ``context_policy``, ``context_plan``, ``rendered_snapshot``,
+  ``prompt_measurement``, and ``provider_route``. ``cache_prefix`` is optional and, when
+  present, must also be listed in ``evidence_refs``.
   """
 
   digest: str
   operation_id: str
+  execution_input: str
+  context_state: str
   context_policy: str
-  input_snapshot: str
+  context_plan: str
   rendered_snapshot: str
   prompt_measurement: str
+  provider_route: str
+
+
+class EvaluationContextBinding(_EvaluationContextBindingRequired, total=False):
+  """Canonical required evidence identities plus an optional cache evidence reference."""
+
   cache_prefix: str
+
+
+class ContextEntryRef(TypedDict):
+  entry_id: str
+  content_digest: str
+  source: Literal["system", "knowledge", "history", "state", "signal"]
+  ordinal: int
+
+
+class ContextState(TypedDict):
+  schema: Literal["context/v1"]
+  generation: int
+  system: list[ContextEntryRef]
+  knowledge: list[ContextEntryRef]
+  history: list[ContextEntryRef]
+  state: list[ContextEntryRef]
+  task_state: str
+  signals: list[str]
+  digest: str
+
+
+class ContextSelection(TypedDict):
+  entry_id: str
+  action: Literal["include", "excerpt", "collapse", "page_out", "omit"]
+  reason: str
+
+
+class CachePrefixBoundary(TypedDict):
+  digest: str
+  entries: int
+
+
+class ContextPlan(TypedDict):
+  schema: Literal["context/v1"]
+  plan_id: str
+  operation_id: str
+  step_id: str
+  state_digest: str
+  state_generation: int
+  runtime_inputs: str
+  policy_digest: str
+  provider_profile_digest: str
+  measurement_fingerprints: list[str]
+  selections: list[ContextSelection]
+  input_budget_tokens: int
+  projected_tokens: int
+  pressure_ppm: int
+  cache_prefix: CachePrefixBoundary | None
+
+
+class ContextExecutionInput(TypedDict):
+  schema: Literal["context/v1"]
+  input_digest: str
+  operation_id: str
+  step_id: str
+  input_sequence: int
+  state_digest: str
+  policy_digest: str
+  plan_digest: str
+  rendered_snapshot: str
+  prompt_measurement: str
+  provider_route: str
+  cache_prefix: CachePrefixBoundary | None
+
+
+class ContextPreparationRequest(TypedDict):
+  operation_id: str
+  step_id: str
+  input_sequence: int
+  policy_digest: str
+  prompt_measurement: str
+  provider_route: str
 
 
 class EvaluationRun(TypedDict):

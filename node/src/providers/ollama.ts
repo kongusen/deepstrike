@@ -1,3 +1,5 @@
+import { requestSnapshot } from "./prepared-request.js"
+import type { PreparedProviderRequest, ProviderRunState as PreparedRunState } from "../types.js"
 import type { ProviderMessage, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, ProviderTransportTelemetry } from "../types.js"
 import {
   normalizeCanonicalAdapterInput,
@@ -96,10 +98,23 @@ export class OllamaProvider implements LLMProvider {
     }
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): AsyncIterable<StreamEvent> {
+  prepareRequest(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState): PreparedProviderRequest {
+    const input = this.adapterInput(context, tools, extensions)
+    const plan = requestSnapshot({ ...this.adapter.buildRequest(input), stream: true })
+    return {
+      scope: "encoded_body", request: requestSnapshot(plan), state: requestSnapshot(state ?? null),
+      stream: signal => this.streamPlan(input, plan),
+
+    }
+  }
+
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+    yield* this.prepareRequest(context, tools, extensions, state).stream(signal)
+  }
+
+  private async *streamPlan(input: CanonicalAdapterInput, plan: ReturnType<OllamaAdapter["buildRequest"]>): AsyncIterable<StreamEvent> {
     try {
-      const input = this.adapterInput(context, tools, extensions)
-      const body = { ...this.adapter.buildRequest(input), stream: true }
+      const body = plan
       this.lastTelemetry = { rungs: 1 }
       const resp = await fetch(`${this.baseUrl}/api/chat`, {
         method: "POST",

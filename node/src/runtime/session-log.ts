@@ -1,3 +1,4 @@
+import type { ContextPrepared } from "./context.js"
 import { createReadStream } from "node:fs"
 import type { KernelPrimitive } from "./kernel-event-log.js"
 import { access, mkdir, open as openFile } from "node:fs/promises"
@@ -28,6 +29,7 @@ export type SessionEvent =
   // P3-S2 + P4-S1: `effect_id` (G4) + `invocation_id` (P4 §3) join this evidence projection to
   // the journal effect chain; `wire_evidence` (D1) is the sole ProviderWireEvidence bundle.
   | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
+  | { kind: "context_prepared"; turn: number; effect_id: string; preparation: ContextPrepared }
   | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement; effect_id?: string }
   // P4-S1 (G1): one record per provider attempt — the full P4 §1.2 payload. The kernel-minted
   // effect_id joins this host evidence to the journal effect chain 1:1 (C6); step_seq NEVER
@@ -206,6 +208,7 @@ export const SESSION_EVENT_KINDS = [
   "run_started",
   "llm_completed",
   "prompt_measured",
+  "context_prepared",
   "provider_attempt",
   "tool_requested",
   "tool_completed",

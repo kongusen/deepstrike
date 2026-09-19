@@ -160,6 +160,7 @@ export type { KnowledgeSource } from "./knowledge/index.js"
 export { createEvolutionRuntimeAdapter, createNativeEvolutionRuntimeAdapter, EvolutionRuntime } from "./runtime/evolution.js"
 export type {
   ActivationBinding, ArtifactKind, ArtifactManifest, ArtifactRef, ArtifactSet, ArtifactVersion,
+  ContextEntryRef, ContextEntrySource, ContextExecutionInput, ContextPlan, ContextPlanAction, ContextPreparationRequest, ContextSelection, ContextState,
   EvaluationContextBinding, EvaluationFact, EvaluationGate, EvaluationMetric, EvaluationRun, EvolutionBundle,
   EvolutionProposal, EvolutionReport, EvolutionVerdict, PromotionDecision, PromotionOutcome,
   EvolutionStore,
@@ -208,3 +209,8 @@ export type {
 } from "./types.js"
 export { DurableContentError, decodeDurableContent, decodeDurableToolResult, encodeDurableContent, encodeDurableToolResult, toolOutputBlocksToDurable, durableBlocksToToolOutput } from "./runtime/durable-content.js"
 export type { DurableContent, DurableContentBlock, DurableSource, DurableToolResult } from "./runtime/durable-content.js"
+
+export { createContextPreparationAdapter, createNativeContextPreparationAdapter } from "./runtime/context.js"
+export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextProviderPreparationRequest } from "./runtime/context.js"
+
+export type { PreparedProviderRequest } from "./types.js"

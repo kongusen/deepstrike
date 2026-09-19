@@ -42,6 +42,21 @@ const flakyTool = () =>
 function normalize(events: SessionEvent[]): SessionEvent[] {
   return events.map(e => {
     if (e.kind === "run_started") return { ...e, run_id: "<run>" }
+    // Context identities commit the random operation ID; retain every semantic field while
+    // normalizing only those operation-dependent identifiers and their derived digests.
+    if (e.kind === "context_prepared") {
+      const { binding, execution_input: input, plan } = e.preparation
+      const step = (value: string) => value.replace(/^[^:]+/, "<operation>")
+      return {
+        ...e, effect_id: step(e.effect_id),
+        preparation: {
+          ...e.preparation,
+          binding: { ...binding, digest: "<binding>", operation_id: "<operation>", execution_input: "<input>", context_plan: "<plan>" },
+          execution_input: { ...input, input_digest: "<input>", operation_id: "<operation>", step_id: step(input.step_id), plan_digest: "<plan>" },
+          plan: { ...plan, plan_id: "<plan>", operation_id: "<operation>", step_id: step(plan.step_id) },
+        },
+      }
+    }
     if ("effect_id" in e && typeof e.effect_id === "string") {
       const normalized = { ...e, effect_id: e.effect_id.replace(/^[^:]+/, "<operation>") } as SessionEvent
       if ("finished_at_ms" in normalized) delete (normalized as { finished_at_ms?: number }).finished_at_ms

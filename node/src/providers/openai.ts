@@ -1,3 +1,5 @@
+import { requestSnapshot } from "./prepared-request.js"
+import type { PreparedProviderRequest, ProviderRunState as PreparedRunState } from "../types.js"
 import OpenAI from "openai"
 import type {
   LLMProvider,
@@ -230,17 +232,24 @@ export class OpenAIChatProvider implements LLMProvider {
     throw classifyProviderError(provider, lastError)
   }
 
-  async *stream(
-    context: RenderedContext,
-    tools: ToolSchema[],
-    extensions?: Record<string, unknown>,
-    _state?: ProviderRunState,
-    signal?: AbortSignal,
-  ): AsyncIterable<StreamEvent> {
+  prepareRequest(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState): PreparedProviderRequest {
+    const input = this.adapterInput(context, tools, extensions)
+    const plan = requestSnapshot(this.chat.buildRequest(input, this.dialect))
+    Object.assign(plan.params, { stream: true, stream_options: { include_usage: true } })
+    return {
+      scope: "encoded_body", request: requestSnapshot(plan.params), state: requestSnapshot(state ?? null),
+      stream: signal => this.streamPlan(input, plan, signal),
+
+    }
+  }
+
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+    yield* this.prepareRequest(context, tools, extensions, state).stream(signal)
+  }
+
+  private async *streamPlan(input: CanonicalAdapterInput, plan: ReturnType<OpenAIChatAdapter["buildRequest"]>, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const provider = this.dialect.providerId
     try {
-      const input = this.adapterInput(context, tools, extensions)
-      const plan = this.chat.buildRequest(input, this.dialect)
       const state = this.chat.createStreamState({ input }, this.dialect)
       const stream = await this.client.chat.completions.create({
         ...plan.params,

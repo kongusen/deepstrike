@@ -25,12 +25,23 @@ export interface EvolutionProposal {
 export interface EvaluationContextBinding {
   readonly digest: string
   readonly operation_id: string
+  readonly execution_input: string
+  readonly context_state: string
   readonly context_policy: string
-  readonly input_snapshot: string
+  readonly context_plan: string
   readonly rendered_snapshot: string
   readonly prompt_measurement: string
+  readonly provider_route: string
   readonly cache_prefix?: string
 }
+export type ContextEntrySource = "system" | "knowledge" | "history" | "state" | "signal"
+export type ContextPlanAction = "include" | "excerpt" | "collapse" | "page_out" | "omit"
+export interface ContextEntryRef { readonly entry_id: string; readonly content_digest: string; readonly source: ContextEntrySource; readonly ordinal: number }
+export interface ContextState { readonly schema: "context/v1"; readonly generation: number; readonly system: readonly ContextEntryRef[]; readonly knowledge: readonly ContextEntryRef[]; readonly history: readonly ContextEntryRef[]; readonly state: readonly ContextEntryRef[]; readonly task_state: string; readonly signals: readonly string[]; readonly digest: string }
+export interface ContextSelection { readonly entry_id: string; readonly action: ContextPlanAction; readonly reason: string }
+export interface ContextPlan { readonly schema: "context/v1"; readonly plan_id: string; readonly operation_id: string; readonly step_id: string; readonly state_digest: string; readonly state_generation: number; readonly runtime_inputs: string; readonly policy_digest: string; readonly provider_profile_digest: string; readonly measurement_fingerprints: readonly string[]; readonly selections: readonly ContextSelection[]; readonly input_budget_tokens: number; readonly projected_tokens: number; readonly pressure_ppm: number; readonly cache_prefix: { readonly digest: string; readonly entries: number } | null }
+export interface ContextExecutionInput { readonly schema: "context/v1"; readonly input_digest: string; readonly operation_id: string; readonly step_id: string; readonly input_sequence: number; readonly state_digest: string; readonly policy_digest: string; readonly plan_digest: string; readonly rendered_snapshot: string; readonly prompt_measurement: string; readonly provider_route: string; readonly cache_prefix: { readonly digest: string; readonly entries: number } | null }
+export interface ContextPreparationRequest { readonly operation_id: string; readonly step_id: string; readonly input_sequence: number; readonly policy_digest: string; readonly prompt_measurement: string; readonly provider_route: string }
 export interface EvaluationRun {
   readonly digest: string
   readonly proposal: string

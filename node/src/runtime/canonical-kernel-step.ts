@@ -176,6 +176,7 @@ export function canonicalActionFromProjectionJson(raw: string): KernelRunnerActi
       kind: "call_provider",
       effectId,
       context: renderedContextToSdk(context),
+      contextEffect: payload,
       tools: (Array.isArray(payload.tools) ? payload.tools : []).map(raw => {
         const tool = asObject(raw)
         return {

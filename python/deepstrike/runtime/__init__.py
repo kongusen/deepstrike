@@ -139,6 +139,12 @@ from deepstrike.runtime.process_sandbox_plane import ProcessSandboxPlane
 from deepstrike.runtime.mcp_proxy_plane import McpProxyPlane, McpServerConfig
 from deepstrike.runtime.evolution import (
   EVOLUTION_REPORT_SCHEMA,
+  ContextEntryRef,
+  ContextExecutionInput,
+  ContextPlan,
+  ContextPreparationRequest,
+  ContextSelection,
+  ContextState,
   EvaluationContextBinding,
   EvaluationRun,
   EvolutionReport,
@@ -204,7 +210,15 @@ from deepstrike.runtime.eval import (
   verdict_output_schema,
 )
 
+from deepstrike.runtime.context import (
+  ContextPrepared, ContextProviderPreparationRequest, ContextPreparationAdapter,
+  create_context_preparation_adapter, create_native_context_preparation_adapter,
+)
+
 __all__ = [
+  "ContextPrepared", "ContextProviderPreparationRequest", "ContextPreparationAdapter",
+  "create_context_preparation_adapter", "create_native_context_preparation_adapter",
+
   "run_agent",
   "run_fanout",
   "RuntimeRunner",
@@ -338,6 +352,12 @@ __all__ = [
   "McpProxyPlane",
   "McpServerConfig",
   "EVOLUTION_REPORT_SCHEMA",
+  "ContextEntryRef",
+  "ContextExecutionInput",
+  "ContextPlan",
+  "ContextPreparationRequest",
+  "ContextSelection",
+  "ContextState",
   "EvaluationContextBinding",
   "EvaluationRun",
   "EvolutionReport",

@@ -144,6 +144,14 @@ export type {
   ArtifactRef,
   ArtifactSet,
   ArtifactVersion,
+  ContextEntryRef,
+  ContextEntrySource,
+  ContextExecutionInput,
+  ContextPreparationRequest,
+  ContextPlan,
+  ContextPlanAction,
+  ContextSelection,
+  ContextState,
   EvaluationContextBinding,
   EvaluationFact,
   EvaluationGate,
@@ -216,3 +224,8 @@ export type {
   WorkflowNodeOutcome,
   WorkflowOutcome,
 } from "./types/agent.js"
+
+export { createContextPreparationAdapter, createNativeContextPreparationAdapter } from "./runtime/context.js"
+export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextProviderPreparationRequest } from "./runtime/context.js"
+
+export type { PreparedProviderRequest } from "./types.js"

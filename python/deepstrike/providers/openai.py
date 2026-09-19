@@ -1,4 +1,6 @@
 from __future__ import annotations
+from copy import deepcopy
+from .prepared_request import PreparedProviderRequest
 import json
 import logging
 from dataclasses import dataclass, field
@@ -400,16 +402,9 @@ class OpenAIProvider(ReasoningReplayMixin):
                     await asyncio.sleep(self._retry.base_delay * (2 ** attempt))
         raise last_exc or RuntimeError("Complete failed")
 
-    async def _stream_with_adapter(
-        self,
-        context: RenderedContext,
-        tools: list[ToolSchema],
-        extensions: dict | None,
-    ) -> AsyncIterator[StreamEvent]:
-        adapter_input = self._canonical_input(context, tools, extensions)
-        plan = self._adapter.build_request(adapter_input, self._wire_dialect, self._replay_for_assistant)
+    async def _stream_adapter_prepared(self, adapter_input, plan):
         stream = await self._client.chat.completions.create(
-            **plan.params,
+            **deepcopy(plan.params),
             stream=True,
             stream_options={"include_usage": True},
         )
@@ -492,14 +487,28 @@ class OpenAIProvider(ReasoningReplayMixin):
 
         raise last_exc or RuntimeError("Complete failed")
 
-    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
+    def prepare_request(self, context, tools, extensions=None, state=None):
         if self._wire_dialect is not None:
-            async for event in self._stream_with_adapter(context, tools, extensions):
-                yield event
-            return
-        prepared = self._prepare_extensions(extensions)
-        msgs = self._build_messages(context, extensions)
-        tool_defs = self._wire_tools(tools, extensions)
+            adapter_input = self._canonical_input(context, tools, extensions)
+            plan = deepcopy(self._adapter.build_request(adapter_input, self._wire_dialect, self._replay_for_assistant))
+            params = {**plan.params, "stream": True, "stream_options": {"include_usage": True}}
+            return PreparedProviderRequest("encoded_body", deepcopy(params), deepcopy(state),
+                lambda: self._stream_adapter_prepared(adapter_input, plan))
+        request_extensions = wire_request_extensions(self._prepare_extensions(extensions))
+        for key, value in self._cache_key_params(context, tools).items():
+            request_extensions.setdefault(key, value)
+        params = deepcopy({**request_extensions, "model": self._model,
+            "messages": self._build_messages(context, extensions), "tools": self._wire_tools(tools, extensions),
+            "stream": True, "stream_options": {"include_usage": True}})
+        frozen_extensions = deepcopy(extensions)
+        return PreparedProviderRequest("encoded_body", deepcopy(params), deepcopy(state),
+            lambda: self._stream_legacy_prepared(params, frozen_extensions))
+
+    async def stream(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None, state: dict | None = None) -> AsyncIterator[StreamEvent]:
+        async for event in self.prepare_request(context, tools, extensions, state).stream():
+            yield event
+
+    async def _stream_legacy_prepared(self, params, extensions):
         expose_reasoning = self._expose_reasoning_delta(extensions)
         use_tags = self._uses_inline_thinking_tags()
         capture_details = self._capture_reasoning_details()
@@ -518,17 +527,7 @@ class OpenAIProvider(ReasoningReplayMixin):
                 native_tool_calls=_native_tool_calls_from_bufs(tool_call_bufs),
             ))
 
-        request_extensions = wire_request_extensions(prepared)
-        for k, v in self._cache_key_params(context, tools).items():
-            request_extensions.setdefault(k, v)
-        stream = await self._client.chat.completions.create(
-            **request_extensions,
-            model=self._model,
-            messages=msgs,
-            tools=tool_defs,
-            stream=True,
-            stream_options={"include_usage": True},
-        )
+        stream = await self._client.chat.completions.create(**deepcopy(params))
 
         # Phase 4: OpenAI signals an output-cap truncation via finish_reason="length", which arrives
         # on a choices frame BEFORE the trailing usage frame — capture it and attach it to the usage

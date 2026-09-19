@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, NotRequired, TypedDict
+from typing import Any, TypedDict
 
 from deepstrike._kernel import ToolCall
 from deepstrike.providers.replay import assistant_replay_key  # re-exported for runtime API stability
@@ -26,15 +26,18 @@ class ProviderReplayProtocolMismatchError(RuntimeError):
             "explicitly to resume this session"
         )
 
-class ProviderReplay(TypedDict):
+class _ProviderReplayRequired(TypedDict):
     protocol: str
-    provider: NotRequired[str]
-    model: NotRequired[str]
-    native_blocks: NotRequired[list[dict[str, Any]]]
-    reasoning_content: NotRequired[str]
-    reasoning_details: NotRequired[Any]
-    native_message: NotRequired[Any]
-    tool_calls: NotRequired[list[Any]]
+
+
+class ProviderReplay(_ProviderReplayRequired, total=False):
+    provider: str
+    model: str
+    native_blocks: list[dict[str, Any]]
+    reasoning_content: str
+    reasoning_details: Any
+    native_message: Any
+    tool_calls: list[Any]
 
 
 def is_replay_compatible_with_provider(replay: dict[str, Any], descriptor: Any) -> bool:

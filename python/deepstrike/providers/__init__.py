@@ -31,6 +31,7 @@ from .stream import (
     PermissionResponse,
     ToolArgumentRepairedEvent,
 )
+from .prepared_request import PreparedProviderRequest
 from .replay import ReasoningReplayMixin, assistant_replay_key
 from .replay_validator import (
     DEGRADED_REASONING_PLACEHOLDER,
@@ -59,7 +60,7 @@ from .capability_router import CapabilityRequirement, CapabilityRouteResult, Cap
 from .runtime_registry import create_provider_async
 
 __all__ = [
-    "LLMProvider", "ContextBudgetOverflow", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
+    "PreparedProviderRequest", "LLMProvider", "ContextBudgetOverflow", "RenderedContext", "ProviderRunState", "RuntimePolicy", "AnthropicProvider", "OpenAIProvider",
     "OpenAIResponsesProvider", "OpenAIResponsesAdapter",
     "EmbeddingRequestPlan", "EmbeddingResult", "OpenAIEmbeddingAdapter",
     # Backend factories (one per backend; `protocol=` selects the wire where a backend speaks both):

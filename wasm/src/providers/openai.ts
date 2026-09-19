@@ -1,3 +1,5 @@
+import { requestSnapshot } from "./prepared-request.js"
+import type { PreparedProviderRequest, ProviderRunState } from "../types.js"
 import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, ProviderMessage, ProviderDescriptor } from "../types.js"
 import { collectStreamMessage, toOpenAIMessages } from "./base.js"
 
@@ -69,21 +71,7 @@ export class OpenAIProvider implements LLMProvider {
     return collectStreamMessage(this.stream(context, tools, extensions))
   }
 
-  protected async *streamInner(
-    context: RenderedContext,
-    tools: ToolSchema[],
-    extraBody: Record<string, unknown>,
-    exposeReasoning = false,
-    signal?: AbortSignal,
-  ): AsyncIterable<StreamEvent> {
-    const body: Record<string, unknown> = {
-      model: this.model,
-      messages: toOpenAIMessages(context),
-      stream: true,
-      ...(tools.length ? { tools: this.buildTools(tools) } : {}),
-      ...extraBody,
-    }
-
+  private async *streamBody(body: Record<string, unknown>, exposeReasoning = false, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     const resp = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: { "Authorization": `Bearer ${this.apiKey}`, "Content-Type": "application/json" },
@@ -141,31 +129,39 @@ export class OpenAIProvider implements LLMProvider {
     }
   }
 
-  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, _state?: unknown, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+  prepareRequest(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: ProviderRunState): PreparedProviderRequest {
+    let requestTools = tools
+    let extraBody: Record<string, unknown>
+    let exposeReasoning = false
     if (this.dialect === "qwen") {
       const enableThinking = Boolean(extensions?.enableThinking)
       const thinkingBudget = extensions?.thinkingBudget as number | undefined
       const { enableThinking: _, thinkingBudget: __, expose_reasoning: ___, exposeReasoning: ____, ...passthrough } = extensions ?? {}
-      yield* this.streamInner(context, tools, {
-        ...passthrough,
-        ...(enableThinking ? { enable_thinking: true, ...(thinkingBudget ? { thinking_budget: thinkingBudget } : {}) } : {}),
-      }, enableThinking, signal)
-      return
+      extraBody = { ...passthrough, ...(enableThinking ? { enable_thinking: true, ...(thinkingBudget ? { thinking_budget: thinkingBudget } : {}) } : {}) }
+      exposeReasoning = enableThinking
+    } else {
+      const { expose_reasoning: _, exposeReasoning: __, ...passthrough } = extensions ?? {}
+      extraBody = passthrough
+      if (this.dialect === "deepseek" || this.dialect === "minimax") {
+        exposeReasoning = Boolean(extensions?.exposeReasoning)
+        const isReasoner = this.dialect === "deepseek" ? DEEPSEEK_REASONERS.has(this.model) : MINIMAX_REASONERS.has(this.model)
+        if (isReasoner) requestTools = []
+      }
     }
-
-    if (this.dialect === "deepseek" || this.dialect === "minimax") {
-      const exposeReasoning = Boolean(extensions?.exposeReasoning)
-      const isReasoner = this.dialect === "deepseek"
-        ? DEEPSEEK_REASONERS.has(this.model)
-        : MINIMAX_REASONERS.has(this.model)
-      const { exposeReasoning: _, expose_reasoning: __, ...passthrough } = extensions ?? {}
-      yield* this.streamInner(context, isReasoner ? [] : tools, passthrough, exposeReasoning, signal)
-      return
+    const body = requestSnapshot({
+      model: this.model, messages: toOpenAIMessages(context), stream: true,
+      ...(requestTools.length ? { tools: this.buildTools(requestTools) } : {}), ...extraBody,
+    })
+    return {
+      scope: "encoded_body", request: requestSnapshot(body), state: requestSnapshot(state ?? null),
+      stream: signal => this.streamBody(body, exposeReasoning, signal),
     }
-
-    const { expose_reasoning: _, exposeReasoning: __, ...passthrough } = extensions ?? {}
-    yield* this.streamInner(context, tools, passthrough, false, signal)
   }
+
+  async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+    yield* this.prepareRequest(context, tools, extensions, state).stream(signal)
+  }
+
 }
 
 export function qwen(options: BackendProviderOptions): LLMProvider {

@@ -3,6 +3,7 @@ import { sha256Hex } from "../runtime/sha256.js"
 
 export interface ProviderRequestEndpoint { id: string; protocol: string; baseURL: string }
 export interface ProviderRequestPlan {
+  execution?: { scope: "encoded_body" | "adapter_input"; request: unknown; state: unknown }
   providerId: string
   modelId: string
   endpoint: ProviderRequestEndpoint
@@ -34,6 +35,7 @@ export interface ProviderUsage {
 
 /** P4 §1.3 mirror of the node ResolvedProviderRoute (content-addressed route evidence). */
 export interface ResolvedProviderRoute {
+  request_fingerprint_scope?: "encoded_body" | "adapter_input"
   routeId: string
   provider: string
   protocol: ProviderProtocol
@@ -72,6 +74,7 @@ export function createProviderRequestPlan(input: Omit<ProviderRequestPlan, "fing
   const value = {
     providerId: input.providerId, modelId: input.modelId, endpoint: sanitizeEndpoint(input.endpoint),
     context: clone(input.context), tools: clone(input.tools), options: materialOptions(input.options ?? {}),
+    ...(input.execution ? { execution: clone(input.execution) } : {}),
   }
   return { ...value, fingerprint: sha256Hex(stableJson(value)) }
 }
@@ -84,6 +87,7 @@ export function createProviderRequestPlanForProvider(
   context: RenderedContext,
   tools: ToolSchema[],
   options?: Record<string, unknown>,
+  execution?: ProviderRequestPlan["execution"],
 ): ProviderRequestPlan {
   const descriptor = provider.descriptor?.() ?? { provider: "unknown", protocol: "unknown", model: "unknown" }
   const identity = provider.requestPlanIdentity?.()
@@ -95,7 +99,7 @@ export function createProviderRequestPlanForProvider(
       protocol: identity?.endpoint?.protocol ?? descriptor.protocol,
       baseURL: identity?.endpoint?.baseURL ?? "",
     },
-    context, tools, options,
+    context, tools, options, execution,
   })
 }
 
@@ -157,7 +161,7 @@ export function priceProviderUsage(usage: NormalizedProviderUsage, snapshot: Pri
   return { source: "snapshot", currency: snapshot.currency, amount, pricingVersion: snapshot.version }
 }
 
-function materialOptions(options: Record<string, unknown>): Record<string, unknown> {
+export function materialOptions(options: Record<string, unknown>): Record<string, unknown> {
   return sanitizeMaterialValue(options) as Record<string, unknown>
 }
 
