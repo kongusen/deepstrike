@@ -26,6 +26,7 @@
 
 pub mod benchmark;
 pub mod context;
+pub mod evolution;
 pub mod governance;
 pub mod harness;
 pub mod lexical;
@@ -42,6 +43,12 @@ pub mod syscall;
 pub mod types;
 
 // Re-export key types at crate root for convenience
+pub use evolution::{
+    ActivationBinding, ArtifactKind, ArtifactManifest, ArtifactRef, ArtifactSet, ArtifactVersion,
+    ContentDigest, EvaluationFact, EvaluationGate, EvaluationMetric, EvaluationRun,
+    EvolutionBundle, EvolutionProposal, EvolutionReport, EvolutionVerdict, PromotionDecision,
+    PromotionOutcome, validate_evolution,
+};
 pub use governance::quota::ResourceQuota;
 pub use mm::{
     EvictionOp, EvictionPlan, Handle, HandleId, HandleKind, HandleTable, MemoryTierHint,
