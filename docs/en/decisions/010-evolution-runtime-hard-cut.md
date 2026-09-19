@@ -82,7 +82,7 @@ semver exception is recorded here so it cannot be mistaken for an additive minor
 
 ## References
 
-- [0.2.70 Evolution Runtime specification](../../.local-docs/specs/runtime-evolution-0.2.70.md)
+- [0.2.70 Evolution Runtime specification](../../specs/runtime-evolution-0.2.70.md)
 - [ADR-009: Framework Verifiable Runtime](./009-framework-verifiable-runtime.md)
 - [Runtime Authority](../architecture/runtime-authority.md)
 - [Runtime Language](../architecture/runtime-language.md)

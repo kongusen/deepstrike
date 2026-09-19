@@ -142,6 +142,7 @@ from deepstrike.runtime.evolution import (
   EvolutionReport,
   EvolutionRuntime,
   EvolutionRuntimeAdapter,
+  EvolutionStore,
   create_evolution_runtime_adapter,
   create_native_evolution_runtime_adapter,
 )

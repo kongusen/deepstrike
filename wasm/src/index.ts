@@ -162,6 +162,7 @@ export type {
   ActivationBinding, ArtifactKind, ArtifactManifest, ArtifactRef, ArtifactSet, ArtifactVersion,
   EvaluationFact, EvaluationGate, EvaluationMetric, EvaluationRun, EvolutionBundle,
   EvolutionProposal, EvolutionReport, EvolutionVerdict, PromotionDecision, PromotionOutcome,
+  EvolutionStore,
 } from "./runtime/evolution.js"
 export {
   AttemptLoop, RuntimeAttemptBody, VerdictFnJudge, LlmEvalJudge, HybridJudge,

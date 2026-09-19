@@ -24,6 +24,10 @@ class EvolutionRuntimeAdapter(Protocol):
   def validate(self, bundle: Mapping[str, Any]) -> EvolutionReport: ...
 
 
+class EvolutionStore(Protocol):
+  def load_bundle(self) -> Mapping[str, Any]: ...
+
+
 def create_evolution_runtime_adapter(validate_json: EvolutionValidateJson) -> EvolutionRuntimeAdapter:
   class Adapter:
     def validate(self, bundle: Mapping[str, Any]) -> EvolutionReport:
@@ -51,3 +55,17 @@ class EvolutionRuntime:
 
   def validate(self, bundle: Mapping[str, Any]) -> EvolutionReport:
     return self._adapter.validate(bundle)
+
+  def validate_store(self, store: EvolutionStore) -> EvolutionReport:
+    return self.validate(store.load_bundle())
+
+  def activate(self, bundle: Mapping[str, Any], operation_id: str) -> Mapping[str, Any]:
+    report = self.validate(bundle)
+    if report.verdict != "pass":
+      codes = ", ".join(str(item.get("code", "")) for item in report.violations)
+      raise ValueError(f"evolution bundle is not activatable: {codes}")
+    activations = bundle.get("activations", ())
+    for activation in activations:
+      if activation.get("operation_id") == operation_id:
+        return activation
+    raise ValueError(f"no verified activation binding for operation {operation_id}")

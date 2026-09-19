@@ -15,6 +15,10 @@ Artifact bytes remain in an immutable host-owned CAS. The kernel receives only v
 
 Evolution objects are authoritative in the host ArtifactStore, EvaluationStore, and EvolutionLedger. The kernel owns canonical bytes, digest integrity, activation causality, and replay binding. SessionLog, Checkpoint, SDK mirrors, and reports are evidence or projections and cannot become a second semantic authority for proposals, artifacts, or promotion.
 
+The SDK façade keeps this boundary explicit. `EvolutionRuntime.validate(bundle)` delegates to the Rust E1–E8 validator, `validateStore(store)` reads a host-owned bundle, and `activate(bundle, operationId)` only returns a binding after the canonical report passes. Node, Python, and WASM expose the same transport-neutral contract; artifact bytes and store implementations remain outside the SDK.
+
+Canonical runners accept an optional host `artifactSetDigest`. When it is omitted they record the named bootstrap identity, which is suitable for framework bootstrap operations only; promoted or replayed artifact sets must pass their content-addressed digest explicitly.
+
 The kernel ABI is the sole supported contract. Earlier journal, checkpoint, report, and evolution formats have no negotiation, shape inference, or migration path; deployments that must continue old data stay on 0.2.69. The E1–E8 validator rejects tampered digests, broken lineage, incorrect proposal bindings, incomplete evidence, invalid regressions, unsatisfied gates, and activation outside the declared boundary.
 
-Implementation references: [0.2.70 specification](../../.local-docs/specs/runtime-evolution-0.2.70.md) · [ADR-010](../decisions/010-evolution-runtime-hard-cut.md) · [Framework Verifiable Runtime](./verifiable-runtime)
+Implementation references: [0.2.70 specification](../../specs/runtime-evolution-0.2.70.md) · [ADR-010](../decisions/010-evolution-runtime-hard-cut.md) · [Framework Verifiable Runtime](./verifiable-runtime)

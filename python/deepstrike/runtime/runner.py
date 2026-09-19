@@ -234,6 +234,8 @@ class TurnMetrics:
 class RuntimeOptions:
   provider: LLMProvider
   session_log: SessionLog
+  # Host-owned artifact set identity captured in operation genesis. None uses the explicit bootstrap identity.
+  artifact_set_digest: str | None = None
   # Optional explicit canonical journal. Default SessionLog implementations expose
   # ``kernel_journal``; custom logs must provide this capability explicitly.
   kernel_journal: KernelJournal | None = None
@@ -576,6 +578,7 @@ class RuntimeRunner:
       max_turns=self._opts.max_turns,
       max_total_tokens=self._opts.max_total_tokens,
       max_wall_ms=self._opts.timeout_ms,
+      artifact_set_digest=self._opts.artifact_set_digest,
       memory_binding_id=f"python-memory-{self._opts.agent_id or 'root'}",
       persist_payload=persist_payload,
     )

@@ -75,6 +75,11 @@ export interface EvolutionReport {
 
 export type EvolutionValidateJson = (request: string) => string
 
+/** Host-owned persistence boundary. Implementations may use a CAS, database, or object store. */
+export interface EvolutionStore {
+  loadBundle(): Promise<EvolutionBundle> | EvolutionBundle
+}
+
 /** Create the SDK adapter backed by the Rust core E1–E8 validator. */
 export function createEvolutionRuntimeAdapter(validateJson: EvolutionValidateJson) {
   return {
@@ -93,4 +98,18 @@ export function createNativeEvolutionRuntimeAdapter() {
 export class EvolutionRuntime {
   constructor(private readonly adapter: ReturnType<typeof createEvolutionRuntimeAdapter>) {}
   validate(bundle: EvolutionBundle): EvolutionReport { return this.adapter.validate(bundle) }
+
+  async validateStore(store: EvolutionStore): Promise<EvolutionReport> {
+    return this.validate(await store.loadBundle())
+  }
+
+  activate(bundle: EvolutionBundle, operationId: string): ActivationBinding {
+    const report = this.validate(bundle)
+    if (report.verdict !== "pass") {
+      throw new Error(`evolution bundle is not activatable: ${report.violations.map(v => v.code).join(", ")}`)
+    }
+    const activation = bundle.activations.find(value => value.operation_id === operationId)
+    if (!activation) throw new Error(`no verified activation binding for operation ${operationId}`)
+    return activation
+  }
 }

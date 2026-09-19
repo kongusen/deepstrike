@@ -2342,8 +2342,7 @@ mod tests {
             max_turns: None,
             max_total_tokens: None,
             max_wall_ms: None,
-            artifact_set_digest:
-                "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1".into(),
+            artifact_set_digest: crate::runtime::runner::BOOTSTRAP_ARTIFACT_SET_DIGEST.into(),
             memory_binding_id: "test-binding".into(),
             persist_payload: None,
         }
@@ -2728,8 +2727,7 @@ mod tests {
             max_turns: Some(8),
             max_total_tokens: None,
             max_wall_ms: None,
-            artifact_set_digest:
-                "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1".into(),
+            artifact_set_digest: crate::runtime::runner::BOOTSTRAP_ARTIFACT_SET_DIGEST.into(),
             memory_binding_id: "restart-memory".into(),
             persist_payload: None,
         }
@@ -2754,6 +2752,7 @@ mod tests {
             std::sync::Arc::new(FileKernelJournal::new(dir.join("kernel-journal")));
         RuntimeRunner::new_with_kernel_journal(
             RuntimeOptions {
+                artifact_set_digest: None,
                 provider: Box::new(PingThenFinishProvider),
                 execution_plane: Some(Box::new(plane)),
                 session_log: Some(session_log),

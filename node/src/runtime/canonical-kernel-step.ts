@@ -21,6 +21,8 @@ import {
 } from "./kernel-step.js"
 
 export const MAX_CHAIN_POSITION = JOURNAL_MAX_CHAIN_POSITION
+/** Explicit bootstrap identity used only when a host has not supplied an artifact set. */
+export const BOOTSTRAP_ARTIFACT_SET_DIGEST = "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
 
 export type CanonicalKernelInput = Record<string, unknown> & { kind: string }
 
@@ -807,7 +809,7 @@ export class CanonicalRunnerRuntime {
     this.memoryBindingId = options.memoryBindingId ?? "node-memory"
     this.config = {
       artifact_set_binding: {
-        artifact_set_digest: options.artifactSetDigest ?? "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1",
+        artifact_set_digest: options.artifactSetDigest ?? BOOTSTRAP_ARTIFACT_SET_DIGEST,
       },
       execution_policy: {
         max_context_tokens: options.maxContextTokens,

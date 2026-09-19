@@ -290,6 +290,8 @@ export type OperationCancellationReason = "user" | "deadline" | "lease_lost" | "
 
 export interface RuntimeOptions {
   provider: LLMProvider
+  /** Host-owned artifact set identity captured in operation genesis. */
+  artifactSetDigest?: string
   /** M4/G5: cumulative token cap for this run (the kernel's `max_total_tokens`). A workflow node's
    *  `tokenBudget` flows here for its child run, so an expensive node self-terminates at the cap.
    *  Undefined ⇒ the kernel default. */
@@ -922,6 +924,7 @@ export class RuntimeRunner {
         maxTurns: this.opts.maxTurns,
         maxTotalTokens: this.opts.maxTotalTokens,
         maxWallMs: this.opts.timeoutMs,
+        artifactSetDigest: this.opts.artifactSetDigest,
         memoryBindingId: `node-memory-${this.opts.agentId ?? "root"}`,
         persistPayload: async (callId, content, previewBytes) => {
           const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`

@@ -17,6 +17,7 @@ export interface EvolutionBundle { readonly artifacts: readonly ArtifactVersion[
 export type EvolutionVerdict = "pass" | "fail" | "unavailable"
 export interface EvolutionReport { readonly schema: "evolution-report/v1"; readonly verdict: EvolutionVerdict; readonly violations: readonly { readonly code: string; readonly detail: string }[] }
 export type EvolutionValidateJson = (request: string) => string
+export interface EvolutionStore { loadBundle(): Promise<EvolutionBundle> | EvolutionBundle }
 
 export function createEvolutionRuntimeAdapter(validateJson: EvolutionValidateJson) {
   return { validate: (bundle: EvolutionBundle): EvolutionReport => JSON.parse(validateJson(JSON.stringify(bundle))) as EvolutionReport }
@@ -30,4 +31,12 @@ export async function createNativeEvolutionRuntimeAdapter() {
 export class EvolutionRuntime {
   constructor(private readonly adapter: ReturnType<typeof createEvolutionRuntimeAdapter>) {}
   validate(bundle: EvolutionBundle): EvolutionReport { return this.adapter.validate(bundle) }
+  async validateStore(store: EvolutionStore): Promise<EvolutionReport> { return this.validate(await store.loadBundle()) }
+  activate(bundle: EvolutionBundle, operationId: string): ActivationBinding {
+    const report = this.validate(bundle)
+    if (report.verdict !== "pass") throw new Error(`evolution bundle is not activatable: ${report.violations.map(v => v.code).join(", ")}`)
+    const activation = bundle.activations.find(value => value.operation_id === operationId)
+    if (!activation) throw new Error(`no verified activation binding for operation ${operationId}`)
+    return activation
+  }
 }

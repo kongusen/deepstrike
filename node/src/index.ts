@@ -155,6 +155,7 @@ export type {
   EvolutionViolation,
   PromotionDecision,
   PromotionOutcome,
+  EvolutionStore,
 } from "./runtime/evolution.js"
 
 export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"

@@ -255,6 +255,8 @@ export interface ToolResultHookDecision {
 
 export interface RuntimeOptions {
   provider: LLMProvider
+  /** Host-owned artifact set identity captured in operation genesis. */
+  artifactSetDigest?: string
   /** Required for ABI operation recovery unless the SessionLog embeds one. */
   kernelJournal?: KernelJournal
   /** M1/G3 intelligence routing: resolve a per-node provider from a workflow node's `modelHint`.
@@ -512,6 +514,7 @@ export class RuntimeRunner {
         maxTurns: this.opts.maxTurns,
         maxTotalTokens: this.opts.maxTotalTokens,
         maxWallMs: this.opts.timeoutMs,
+        artifactSetDigest: this.opts.artifactSetDigest,
         memoryBindingId: `wasm-memory-${this.opts.agentId ?? "root"}`,
         persistPayload: async (_callId, content, previewBytes) => {
           const digest = canonicalSha256(content)

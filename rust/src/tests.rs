@@ -555,6 +555,7 @@ mod tests {
         ));
 
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(provider),
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -666,6 +667,7 @@ mod tests {
         }
 
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(MetricsProvider),
             execution_plane: Some(Box::new(plane)),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -790,6 +792,7 @@ mod tests {
         }
 
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(GatingProvider {
                 calls: Arc::new(AtomicUsize::new(0)),
             }),
@@ -896,6 +899,7 @@ mod tests {
         let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(TooLongThenOkProvider {
                 call_count: call_count.clone(),
             }),
@@ -1096,6 +1100,7 @@ mod tests {
         let call_count = Arc::new(AtomicU32::new(0));
 
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(FakeProvider {
                 call_count: call_count.clone(),
             }),
@@ -1207,6 +1212,7 @@ mod tests {
         let contract =
             MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(FakeProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -1297,6 +1303,7 @@ mod tests {
         let contract =
             MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(FakeProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -1404,6 +1411,7 @@ mod tests {
         });
 
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(FakeProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -1593,6 +1601,7 @@ mod tests {
         };
 
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(MockLLMProvider),
             execution_plane: None,
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -1655,9 +1664,8 @@ mod tests {
                     max_turns: Some(3),
                     max_total_tokens: None,
                     max_wall_ms: None,
-                    artifact_set_digest:
-                        "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
-                            .into(),
+                    artifact_set_digest: crate::runtime::runner::BOOTSTRAP_ARTIFACT_SET_DIGEST
+                        .into(),
                     memory_binding_id: "test-memory".into(),
                     persist_payload: None,
                 },
@@ -1743,6 +1751,7 @@ mod tests {
 
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(MockLLMProvider),
             execution_plane: None,
             session_log: Some(session_log.clone()),
@@ -1860,6 +1869,7 @@ mod tests {
 
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(MockLLMProvider),
             execution_plane: None,
             session_log: Some(session_log.clone()),
@@ -2032,6 +2042,7 @@ mod tests {
 
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(MockLLMProvider),
             execution_plane: None,
             session_log: Some(session_log.clone()),
@@ -2144,6 +2155,7 @@ mod tests {
 
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(MockLLMProvider),
             execution_plane: None,
             session_log: Some(session_log.clone()),
@@ -2274,9 +2286,8 @@ mod tests {
                     max_turns: Some(3),
                     max_total_tokens: None,
                     max_wall_ms: None,
-                    artifact_set_digest:
-                        "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
-                            .into(),
+                    artifact_set_digest: crate::runtime::runner::BOOTSTRAP_ARTIFACT_SET_DIGEST
+                        .into(),
                     memory_binding_id: "test-memory".into(),
                     persist_payload: None,
                 },
@@ -2356,6 +2367,7 @@ mod tests {
         }
 
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(FakeProvider),
             execution_plane: None,
             session_log: Some(Arc::new(InMemorySessionLog::new())),
@@ -2465,6 +2477,7 @@ mod tests {
 
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(MidStreamFailProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(session_log.clone()),
@@ -2586,6 +2599,7 @@ mod tests {
             MilestoneContract::new().phase(MilestonePhase::new("phase1").with_criterion("test"));
         let session_log = Arc::new(InMemorySessionLog::new());
         let runner = RuntimeRunner::new(RuntimeOptions {
+            artifact_set_digest: None,
             provider: Box::new(FakeProvider),
             execution_plane: Some(Box::new(LocalExecutionPlane::new())),
             session_log: Some(session_log.clone()),

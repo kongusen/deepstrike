@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.70] - 2026-09-19
+
 ### Added — 0.2.70 Evolution Runtime hard cut
 
 - Added the Framework Verifiable Runtime Evolution flow: content-addressed artifact versions and

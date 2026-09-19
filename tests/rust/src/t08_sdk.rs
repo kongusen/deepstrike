@@ -148,6 +148,7 @@ fn runtime_options_can_be_constructed() {
     use std::sync::Arc;
 
     let runner = RuntimeRunner::new(RuntimeOptions {
+        artifact_set_digest: None,
         provider: Box::new(OpenAIProvider::new("sk-test")),
         execution_plane: Some(Box::new(LocalExecutionPlane::new())),
         session_log: Some(Arc::new(InMemorySessionLog::new())),
