@@ -312,7 +312,7 @@ class SequencedFakeKernel:
     def pending_effects_json(self) -> str:
         return "[]"
 
-    def current_projection_json(self) -> str:
+    def projection_json(self) -> str:
         return '{"state":"idle"}'
 
     def project_planned_step_json(self, planned_step_json: str) -> str:
@@ -416,7 +416,7 @@ def test_multi_effect_planned_step_projects_first_effect_not_throw():
     )
 
     selectors = json.loads(
-        (Path(__file__).parents[2] / "tests/fixtures/abi/current_projection_multi_effect.json").read_text()
+        (Path(__file__).parents[2] / "tests/fixtures/abi/projection_multi_effect.json").read_text()
     )["expected"]
     action = canonical_action_from_projection_json(json.dumps({
         "state": "action",

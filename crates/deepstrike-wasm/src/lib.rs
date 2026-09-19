@@ -763,11 +763,11 @@ impl CanonicalKernel {
         serde_json::to_string(&self.inner.pending_effects_in_order()).map_err(json_error)
     }
 
-    #[wasm_bindgen(js_name = currentProjectionJson)]
-    pub fn current_projection_json(&self) -> Result<String, JsValue> {
+    #[wasm_bindgen(js_name = projectionJson)]
+    pub fn projection_json(&self) -> Result<String, JsValue> {
         let projection = self
             .inner
-            .current_projection()
+            .projection()
             .map_err(|error| JsValue::from_str(&error.message))?;
         serde_json::to_string(&projection).map_err(json_error)
     }

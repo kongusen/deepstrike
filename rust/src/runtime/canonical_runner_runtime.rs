@@ -1618,13 +1618,10 @@ pub(crate) async fn canonical_kernel_action(
 }
 
 pub(crate) fn action_from_core_step(planned: &PlannedStep) -> Result<Option<HostAction>> {
-    let projection =
-        deepstrike_core::runtime::kernel::wire::projection::project_current_action(planned)
-            .map_err(|error| {
-                Error::Other(format!("kernel projection failed: {}", error.message))
-            })?;
+    let projection = deepstrike_core::runtime::kernel::wire::projection::project_action(planned)
+        .map_err(|error| Error::Other(format!("kernel projection failed: {}", error.message)))?;
     match projection {
-        deepstrike_core::runtime::kernel::wire::projection::CurrentProjection::Terminal(
+        deepstrike_core::runtime::kernel::wire::projection::KernelProjection::Terminal(
             terminal,
         ) => Ok(Some(HostAction {
             effect_id: String::new(),
@@ -1633,8 +1630,8 @@ pub(crate) fn action_from_core_step(planned: &PlannedStep) -> Result<Option<Host
                 result: loop_result_from_terminal(&terminal)?,
             },
         })),
-        deepstrike_core::runtime::kernel::wire::projection::CurrentProjection::Idle => Ok(None),
-        deepstrike_core::runtime::kernel::wire::projection::CurrentProjection::Action(_) => {
+        deepstrike_core::runtime::kernel::wire::projection::KernelProjection::Idle => Ok(None),
+        deepstrike_core::runtime::kernel::wire::projection::KernelProjection::Action(_) => {
             let current_effect =
                 deepstrike_core::runtime::kernel::wire::projection::current_effect(planned)
                     .expect("action projection must have a current effect");

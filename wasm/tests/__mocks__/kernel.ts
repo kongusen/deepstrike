@@ -599,7 +599,7 @@ export class CanonicalKernel {
     return JSON.stringify(this.pendingEffects)
   }
 
-  currentProjectionJson(): string {
+  projectionJson(): string {
     if (this.terminalPayload) return JSON.stringify({ state: "terminal", action: this.terminalPayload })
     const effect = this.pendingEffects[0] as Record<string, unknown> | undefined
     if (!effect) return JSON.stringify({ state: "idle" })

@@ -92,7 +92,7 @@ function fakeKernel(phases: string[]): CanonicalKernelInstance {
     },
     lifecycle: () => "running",
     pendingEffectsJson: () => "[]",
-    currentProjectionJson: () => JSON.stringify({ state: "idle" }),
+    projectionJson: () => JSON.stringify({ state: "idle" }),
     projectPlannedStepJson: (plannedStepJson: string) => {
       const planned = JSON.parse(plannedStepJson) as Record<string, unknown>
       const disposition = (planned.disposition ?? {}) as Record<string, unknown>
@@ -304,7 +304,7 @@ describe("multi-effect planned step projection", () => {
     }
 
     const selectors = JSON.parse(readFileSync(
-      join(process.cwd(), "../tests/fixtures/abi/current_projection_multi_effect.json"),
+      join(process.cwd(), "../tests/fixtures/abi/projection_multi_effect.json"),
       "utf8",
     )) as { expected: Record<string, unknown> }
     const action = canonicalActionFromProjectionJson(JSON.stringify({

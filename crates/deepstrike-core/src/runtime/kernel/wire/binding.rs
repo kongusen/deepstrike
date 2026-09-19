@@ -244,10 +244,10 @@ impl CanonicalKernel {
 
     /// The single host-facing current-action projection.  The transaction owns publication
     /// ordering; this method only delegates the ordered view to the pure projection module.
-    pub fn current_projection(
+    pub fn projection(
         &self,
-    ) -> Result<super::projection::CurrentProjection, super::projection::ProjectionError> {
-        super::projection::project_current_pending_action(
+    ) -> Result<super::projection::KernelProjection, super::projection::ProjectionError> {
+        super::projection::project_pending_action(
             self.transaction.terminal(),
             self.transaction.pending_effects_in_order(),
         )

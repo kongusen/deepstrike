@@ -86,7 +86,7 @@ pub enum CanonicalHostAction {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", content = "action", rename_all = "snake_case")]
-pub enum CurrentProjection {
+pub enum KernelProjection {
     Idle,
     Action(CanonicalHostAction),
     Terminal(super::terminal::KernelTerminal),
@@ -162,8 +162,8 @@ pub fn project_effect(effect: &KernelEffect) -> CanonicalHostAction {
 
 /// Select the current host action from one committed step.  The step's vector is already the
 /// kernel's publication order, so the first effect is the only legal current action.
-pub fn project_current_action(step: &PlannedStep) -> Result<CurrentProjection, ProjectionError> {
-    project_current_pending_action(step.disposition.terminal(), step.disposition.effects())
+pub fn project_action(step: &PlannedStep) -> Result<KernelProjection, ProjectionError> {
+    project_pending_action(step.disposition.terminal(), step.disposition.effects())
 }
 
 /// Return the first effect in a committed step's publication order. Transitional SDK adapters
@@ -177,7 +177,7 @@ pub fn project_planned_step_json(raw: &str) -> Result<String, ProjectionError> {
     let step: PlannedStep = serde_json::from_str(raw).map_err(|error| ProjectionError {
         message: format!("invalid planned step: {error}"),
     })?;
-    let projection = project_current_action(&step)?;
+    let projection = project_action(&step)?;
     serde_json::to_string(&projection).map_err(|error| ProjectionError {
         message: format!("projection serialization failed: {error}"),
     })
@@ -197,19 +197,19 @@ pub fn published_effects_manifest_json(raw: &str) -> Result<String, ProjectionEr
 /// Project the current action from the transaction's already ordered pending-effect view.
 /// Ordering is deliberately owned by `KernelTransaction::pending_effects_in_order`; this helper
 /// only selects the head and maps it to a canonical action.
-pub fn project_current_pending_action<'a, I>(
+pub fn project_pending_action<'a, I>(
     terminal: Option<&super::terminal::KernelTerminal>,
     effects: I,
-) -> Result<CurrentProjection, ProjectionError>
+) -> Result<KernelProjection, ProjectionError>
 where
     I: IntoIterator<Item = &'a KernelEffect>,
 {
     if let Some(terminal) = terminal {
-        return Ok(CurrentProjection::Terminal(terminal.clone()));
+        return Ok(KernelProjection::Terminal(terminal.clone()));
     }
     match effects.into_iter().next() {
-        Some(effect) => Ok(CurrentProjection::Action(project_effect(effect))),
-        None => Ok(CurrentProjection::Idle),
+        Some(effect) => Ok(KernelProjection::Action(project_effect(effect))),
+        None => Ok(KernelProjection::Idle),
     }
 }
 
@@ -232,8 +232,8 @@ fn effect_ref(effect: &KernelEffect) -> PublishedEffectRef {
 #[cfg(test)]
 mod tests {
     use super::{
-        CanonicalHostAction, CurrentProjection, project_current_action,
-        project_current_pending_action, project_effect, published_effects_manifest,
+        CanonicalHostAction, KernelProjection, project_action, project_effect,
+        project_pending_action, published_effects_manifest,
     };
     use crate::runtime::kernel::wire::{EffectKindTag, PlannedStep};
 
@@ -330,14 +330,14 @@ mod tests {
     }
 
     #[test]
-    fn current_projection_serialization_has_explicit_state_tag() {
+    fn projection_serialization_has_explicit_state_tag() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../../../tests/fixtures/abi/multi_effect_step.json"
         ))
         .expect("fixture JSON");
         let step: PlannedStep =
             serde_json::from_value(fixture["planned_step"].clone()).expect("planned step");
-        let value = serde_json::to_value(project_current_action(&step).expect("projection"))
+        let value = serde_json::to_value(project_action(&step).expect("projection"))
             .expect("projection JSON");
 
         assert_eq!(value["state"], "action");
@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn planned_step_json_bridge_matches_current_projection() {
+    fn planned_step_json_bridge_matches_projection() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../../../tests/fixtures/abi/multi_effect_step.json"
         ))
@@ -361,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn current_projection_selects_first_effect_and_distinguishes_idle() {
+    fn projection_selects_first_effect_and_distinguishes_idle() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../../../tests/fixtures/abi/multi_effect_step.json"
         ))
@@ -369,10 +369,10 @@ mod tests {
         let step: PlannedStep =
             serde_json::from_value(fixture["planned_step"].clone()).expect("planned step");
 
-        let projection = project_current_action(&step).expect("projection");
+        let projection = project_action(&step).expect("projection");
         assert!(matches!(
             projection,
-            CurrentProjection::Action(CanonicalHostAction::QueryMemory { .. })
+            KernelProjection::Action(CanonicalHostAction::QueryMemory { .. })
         ));
 
         let idle = PlannedStep {
@@ -382,14 +382,14 @@ mod tests {
             disposition: crate::runtime::kernel::wire::StepDisposition::Effects(Default::default()),
         };
         assert!(matches!(
-            project_current_action(&idle).expect("projection"),
-            CurrentProjection::Idle
+            project_action(&idle).expect("projection"),
+            KernelProjection::Idle
         ));
 
         let ordered = step.disposition.effects().iter();
         assert!(matches!(
-            project_current_pending_action(None, ordered).expect("projection"),
-            CurrentProjection::Action(CanonicalHostAction::QueryMemory { .. })
+            project_pending_action(None, ordered).expect("projection"),
+            KernelProjection::Action(CanonicalHostAction::QueryMemory { .. })
         ));
     }
 }

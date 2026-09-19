@@ -2,8 +2,8 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { canonicalActionFromProjectionJson } from "../src/runtime/canonical-kernel-step.js"
 
-test("WASM adapter consumes the shared CurrentProjection selector", () => {
-  const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/abi/current_projection_multi_effect.json"), "utf8"))
+test("WASM adapter consumes the shared KernelProjection selector", () => {
+  const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/abi/projection_multi_effect.json"), "utf8"))
   const expected = fixture.expected
   const action = canonicalActionFromProjectionJson(JSON.stringify({
     state: "action",

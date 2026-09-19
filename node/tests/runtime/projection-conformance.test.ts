@@ -4,8 +4,8 @@ import { canonicalActionFromProjectionJson } from "../../src/runtime/canonical-k
 import { archivePresentationFromObservations } from "../../src/runtime/kernel-step.js"
 import { stableSemanticArchiveName } from "../../src/runtime/runner.js"
 
-test("core CurrentProjection selector matches shared multi-effect fixture", () => {
-  const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/abi/current_projection_multi_effect.json"), "utf8"))
+test("core KernelProjection selector matches shared multi-effect fixture", () => {
+  const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/abi/projection_multi_effect.json"), "utf8"))
   const expected = fixture.expected
   const projection = {
     state: expected.state,

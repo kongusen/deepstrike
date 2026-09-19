@@ -1049,10 +1049,10 @@ impl CanonicalKernel {
             .map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
-    fn current_projection_json(&self) -> PyResult<String> {
+    fn projection_json(&self) -> PyResult<String> {
         let projection = self
             .inner
-            .current_projection()
+            .projection()
             .map_err(|error| PyValueError::new_err(error.message))?;
         serde_json::to_string(&projection).map_err(|error| PyValueError::new_err(error.to_string()))
     }

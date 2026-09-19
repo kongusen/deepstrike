@@ -137,7 +137,7 @@ function canonicalDoneFromTerminal(terminal: Record<string, unknown>): KernelRun
   return { kind: "done", effectId: "", result: { termination, turnsUsed, totalTokensUsed: totalUsageTokens(terminal) } }
 }
 
-/** Adapt the additive core CurrentProjection JSON into the existing Node action surface. */
+/** Adapt the core-owned KernelProjection JSON into the Node action surface. */
 export function canonicalActionFromProjectionJson(raw: string): KernelRunnerAction | null {
   const projection = asObject(JSON.parse(raw))
   const state = String(projection.state ?? "idle")
@@ -1317,7 +1317,7 @@ export class CanonicalRunnerRuntime {
   }
 
   private currentAction(): KernelRunnerAction | null {
-    return canonicalActionFromProjectionJson(this.host.kernel.currentProjectionJson())
+    return canonicalActionFromProjectionJson(this.host.kernel.projectionJson())
   }
 
   private pendingEffects(): Array<Record<string, unknown>> {

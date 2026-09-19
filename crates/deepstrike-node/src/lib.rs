@@ -698,11 +698,11 @@ impl CanonicalKernel {
         serde_json::to_string(&self.inner.pending_effects_in_order()).map_err(json_error)
     }
 
-    #[napi(js_name = "currentProjectionJson")]
-    pub fn current_projection_json(&self) -> Result<String> {
+    #[napi(js_name = "projectionJson")]
+    pub fn projection_json(&self) -> Result<String> {
         let projection = self
             .inner
-            .current_projection()
+            .projection()
             .map_err(|error| napi::Error::from_reason(error.message))?;
         serde_json::to_string(&projection).map_err(json_error)
     }

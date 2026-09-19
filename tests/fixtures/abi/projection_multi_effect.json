@@ -1,5 +1,5 @@
 {
-  "description": "Shared conformance selectors for the canonical CurrentProjection produced from multi_effect_step.json.",
+  "description": "Shared conformance selectors for the canonical kernel projection produced from multi_effect_step.json.",
   "source_fixture": "multi_effect_step.json",
   "expected": {
     "state": "action",

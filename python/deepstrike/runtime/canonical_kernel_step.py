@@ -417,7 +417,7 @@ def _action_from_core_step(planned_step: dict[str, Any]) -> KernelRunnerAction |
 
 
 def canonical_action_from_projection_json(raw: str) -> KernelRunnerAction | None:
-  """Adapt core CurrentProjection JSON to the existing Python action surface."""
+  """Adapt core-owned KernelProjection JSON to the Python action surface."""
   projection = _object(json.loads(raw))
   state = str(projection.get("state") or "idle")
   if state == "idle":
@@ -802,7 +802,7 @@ class CanonicalRunnerRuntime:
                                  "kind": kind, "message": message, "retryable": retryable}}})
 
   def _current_action(self) -> KernelRunnerAction | None:
-    return canonical_action_from_projection_json(self.host.kernel.current_projection_json())
+    return canonical_action_from_projection_json(self.host.kernel.projection_json())
 
   def _pending_effects(self) -> list[dict[str, Any]]:
     raw = json.loads(self.host.kernel.pending_effects_json())

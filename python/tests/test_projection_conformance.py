@@ -4,8 +4,8 @@ from pathlib import Path
 from deepstrike.runtime.canonical_kernel_step import canonical_action_from_projection_json
 
 
-def test_python_adapter_consumes_shared_current_projection_selector() -> None:
-  fixture = json.loads((Path(__file__).parents[2] / "tests/fixtures/abi/current_projection_multi_effect.json").read_text())
+def test_python_adapter_consumes_shared_projection_selector() -> None:
+  fixture = json.loads((Path(__file__).parents[2] / "tests/fixtures/abi/projection_multi_effect.json").read_text())
   expected = fixture["expected"]
   action = canonical_action_from_projection_json(json.dumps({
     "state": "action",
