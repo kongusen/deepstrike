@@ -7,7 +7,7 @@
 <h1 align="center">DeepStrike</h1>
 
 <p align="center">
-  <strong>A local Agent Process Runtime for durable, governed work.</strong>
+  <strong>Build AI assistants that do useful work, work together, and leave a record you can check.</strong>
 </p>
 
 <p align="center">
@@ -28,49 +28,102 @@
 
 ---
 
-DeepStrike is a local Agent Process Runtime for building Agents that can do more than answer a prompt. Give an Agent a model, instructions, tools, MCP servers, skills, memory, knowledge, and handoffs. The runtime gives its work a durable process tree so it can continue across turns, coordinate other Agents, wait for external input, and recover after interruption.
+DeepStrike helps developers build AI assistants that work through real tasks: gather information, use tools, remember project context, coordinate with other assistants, and ask for approval when needed.
 
-The framework keeps the public Agent model familiar while the kernel makes lifecycle, authority, resources, scheduling, communication, and recovery explicit, composable, and testable.
+You connect the models, data, tools, and rules for your application. DeepStrike provides the framework for running the work, controlling what each assistant can do, keeping execution records, and recovering interrupted tasks when durable storage is configured.
 
-## Agent Process Runtime
+## DeepStrike at a glance
 
-Every root Agent run, child Agent, and workflow node participates in one local runtime model:
+Execution, verification, evaluation, and governed evolution build on the same Agent Process Runtime foundation.
 
-| Runtime responsibility | What it guarantees |
+![Four connected DeepStrike responsibilities: execute, verify, evaluate, and evolve](./docs/public/readme/architecture.svg)
+
+## What can you build?
+
+| Application | A task you could give it | How DeepStrike helps |
+| --- | --- | --- |
+| **Research assistant** | “Compare these three vendors and prepare a recommendation.” | Connect search and document tools, divide the research, review the findings, and assemble a report with source references. |
+| **Project knowledge assistant** | “Continue our proposal using the requirements we agreed on last time.” | Connect project documents and persistent memory so relevant information can be retrieved across tasks. |
+| **Writing and review team** | “Turn this brief into a draft, then check facts and style.” | Give separate assistants research, writing, and review roles, with a defined sequence and revision limits. |
+| **Development assistant** | “Investigate this bug, propose a fix, and run the checks.” | Connect repository and development tools, isolate delegated work, and control which actions need approval. |
+| **Business workflow assistant** | “Group these customer issues, draft replies, and wait for approval before sending.” | Connect your business APIs, pass work between steps, and pause at approval points. |
+| **Recurring reporting assistant** | “Prepare a briefing from the latest project updates.” | Let your application trigger the task on a schedule, gather information through connected tools, and retain records for follow-up. |
+
+These are applications you can build with the framework. Search, email, databases, scheduling, and other external services are supplied by your application through tools, MCP integrations, or custom adapters.
+
+## Example: a weekly research report
+
+Suppose you want a weekly report about changes in your industry. Your application could define this workflow:
+
+1. **Read the brief.** Load the topics, sources, and output format for this project.
+2. **Gather information.** Use connected search and document tools. Split independent topics between assistants when useful.
+3. **Review the draft.** Run your checks or a review assistant to flag missing sources and unanswered questions.
+4. **Ask when needed.** Pause for a person's approval before an action you have marked as sensitive.
+5. **Deliver and retain the work.** Save the report and execution records. With durable storage, an interrupted task can resume from recorded runtime state.
+
+You choose the tools and the review criteria. The framework manages the task flow, delegation, limits, and records around them. The [example curriculum](./example/README.md) builds up from sourced Q&A to a multi-assistant editorial workflow in eight runnable levels.
+
+### How work moves forward
+
+![Animated execution loop: Intent enters the Kernel, the Host executes admitted Effects, and returned Facts drive the next kernel transition](./docs/public/readme/execution.gif)
+
+[View the static diagram](./docs/public/readme/execution.svg). This is a conceptual runtime sequence. The host reports intent and external facts; the kernel owns admission, decisions, and state transitions. A model's tool request still passes through execution controls.
+
+## What the framework takes care of
+
+- **Tools and integrations.** Give assistants access to files, services, and MCP servers through a controlled execution boundary.
+- **Reusable expertise.** Package specialized instructions and tool guidance as skills that can be loaded when needed.
+- **Project memory.** Connect a persistent memory store and define what may be recalled or written.
+- **Teamwork.** Run assistants in parallel, pass results to the next step, and set clear responsibilities.
+- **Longer tasks.** Manage growing context, compress older material, and page large tool results as work continues.
+- **Control.** Set permissions, budgets, deadlines, approval points, and cancellation rules.
+- **Recovery and inspection.** Persist runtime state for recovery and keep evidence that helps explain what happened.
+
+You can begin with one assistant and a few tools, then add the mechanisms your application needs. Model and integration availability varies by SDK.
+
+## Make improvements with evidence
+
+When you change an assistant's instructions, knowledge, tools, or rules, you need a way to judge the change. DeepStrike's **Evaluation Runtime** approach connects evaluation to the work that actually ran.
+
+![Evaluation binding connects context state, policy, plan, rendered snapshot, prompt measurement, and provider route to the executed input and evaluation evidence](./docs/public/readme/evaluation.svg)
+
+The binding identifies which executed input an evaluation refers to. Artifact-set lineage is bound separately at operation genesis; binding validation does not automatically replay every provider attempt.
+
+| Question | What the 0.2.70 update provides |
 | --- | --- |
-| **Process lifecycle** | Kernel-derived parent-child lineage with consistent spawn, join, cancel, and supervision semantics. |
-| **Durable scheduling** | Deterministic runnable selection and persistent waits for effects, children, approvals, signals, timers, channels, and resources. |
-| **Authority and resources** | Child capabilities can only narrow; nine-dimensional budget grants cannot exceed parent remaining capacity. |
-| **Communication and recovery** | Capability-checked local IPC, handle-only large objects, checkpoints, journals, and replay-safe continuation. |
+| **What did this answer depend on?** | Links between a task and the information, instructions, and model configuration selected for it. |
+| **Can we inspect an interrupted task?** | Records needed to recover and reconstruct task decisions, alongside records of tool and model activity. |
+| **Did a new configuration help?** | Links between your test cases, scoring method, comparison results, and the old and new configurations. |
+| **Which change was approved for use?** | A checked connection between the proposed change, review results, approval decision, and configuration selected for a new task. |
 
-“Process” is a runtime abstraction, not a requirement to launch one operating-system process per Agent. The SDK remains the public API; the runtime kernel enforces the invariants behind it. See [Agent Process Runtime](./docs/en/architecture/agent-process-runtime.md) for the complete model and its local-only boundary.
+Your application runs the evaluations and supplies the success criteria. DeepStrike validates the recorded relationships and required checks. Human review, test suites, and model-based reviewers can provide evaluation evidence; the framework does not independently guarantee that an answer is correct.
 
-## What An Agent Can Do
+The developer API for validating these change records is called `EvolutionRuntime`. See [evaluation inputs](./docs/en/architecture/evaluation-context.md) and [controlled evolution](./docs/en/architecture/evolution-runtime.md) for the implementation details.
 
-| Agent capability | What DeepStrike provides |
-| --- | --- |
-| **Reason** | OpenAI, Anthropic, Gemini, DeepSeek, Kimi, Qwen, GLM, Minimax, Ollama, and custom provider integrations with streaming and replay support. |
-| **Use tools** | Typed tools, streaming tools, MCP integrations, local execution, worktrees, process sandboxes, and remote tool adapters. |
-| **Remember** | Working memory for the current run, durable MemoryStore integrations, session extraction, retrieval, and governed memory writes. |
-| **Load knowledge** | Skills and knowledge sources that can be loaded when needed, pinned for a run, budgeted, and released as the Agent changes tasks. |
-| **Delegate** | Child Agents with explicit roles, narrowed capabilities, isolated context, handoffs, contracts, and lineage. |
-| **Coordinate** | Parallel fan-out, synthesis, dependency graphs, classifiers, reducers, verifier gates, tournaments, and bounded loops. |
-| **Wait and wake** | Approval requests, child completion, external signals, and resumable sessions without rebuilding the whole conversation manually. |
-| **Stay within limits** | Tool policies, parameter constraints, approval gates, rate limits, quotas, budgets, and cancellation rules. |
-| **Handle long context** | Stable instructions, knowledge, conversation history, state, compression, and large-result paging that keep prompts usable over long runs. |
-| **Explain what happened** | Session logs, structured events, replay fixtures, snapshots, and recovery evidence for debugging and audit. |
+### How a change reaches the next operation
 
-These capabilities compose around one Agent contract. You can start with a single tool call and add memory, skills, delegation, workflow control, or persistence only when the application needs them.
+![Governed evolution: proposal, evaluation evidence, promotion decision, activation binding, next operation genesis, and execution](./docs/public/readme/evolution.svg)
 
-## Quick Start
+Your application proposes a candidate configuration and supplies evaluation evidence. `EvolutionRuntime` checks lineage, evidence, and gates before returning an activation binding. The new configuration takes effect at the next operation boundary; a running operation keeps its existing artifact set.
 
-Install the Node.js SDK:
+## Get started
+
+Choose an SDK: [Node.js](./node/README.md) · [Python](./python/README.md) · [Rust](./rust/README.md) · [WASM](./wasm/README.md).
+
+For a first application, follow [Hello Agent](./docs/en/getting-started/hello-agent.md). To explore without provider credentials, use the examples' `--dry-run` mode.
+
+<details>
+<summary>Developer example: an assistant with a tool and a local execution log</summary>
+
+Install the Node.js SDK and choose a model available to your account:
 
 ```bash
-npm install @deepstrike/sdk
+npm install @deepstrike/sdk@0.2.70
+export OPENAI_API_KEY="your-api-key"
+export OPENAI_MODEL="your-model-id"
 ```
 
-Run an Agent with a typed tool and a local session log:
+Save this as `main.ts`, then run `npx tsx main.ts`:
 
 ```ts
 import {
@@ -82,6 +135,10 @@ import {
   tool,
 } from "@deepstrike/sdk"
 
+const apiKey = process.env.OPENAI_API_KEY
+const model = process.env.OPENAI_MODEL
+if (!apiKey || !model) throw new Error("Set OPENAI_API_KEY and OPENAI_MODEL")
+
 const add = tool("add", "Add two numbers.", {
   type: "object",
   properties: { x: { type: "number" }, y: { type: "number" } },
@@ -89,7 +146,7 @@ const add = tool("add", "Add two numbers.", {
 }, async ({ x, y }) => String(Number(x) + Number(y)))
 
 const runner = new RuntimeRunner({
-  provider: new OpenAIResponsesProvider(process.env.OPENAI_API_KEY!, "gpt-5-mini"),
+  provider: new OpenAIResponsesProvider(apiKey, model),
   executionPlane: new LocalExecutionPlane().register(add),
   sessionLog: new FileSessionLog(".deepstrike/sessions"),
   maxTokens: 4096,
@@ -99,98 +156,32 @@ const answer = await collectText(runner.run({
   sessionId: "math-1",
   goal: "What is 17 + 28?",
 }))
-
 console.log(answer)
 ```
 
-Choose the smallest entry point that fits your Agent:
+In this Node example, `FileSessionLog` provides a file-backed evidence log and an accompanying canonical journal. For production recovery, also retain the payloads and other host data your tools and integrations require.
 
-| Need | Entry point |
+</details>
+
+## What to plan for
+
+DeepStrike is a framework you integrate into an application. You provide model access, external services, storage, and application-specific rules. Persistent memory and recovery require persistent stores; convenience APIs use in-memory defaults.
+
+The task scheduler runs locally. Connecting remote tools does not provide a distributed worker system. Actions that affect an external system may be retried, so integrations should prevent duplicate side effects where necessary.
+
+**Upgrading to 0.2.70:** upgrade the kernel and SDK bindings together and start new operations. Earlier saved runtime records and removed APIs have no automatic migration path. See [CHANGELOG.md](./CHANGELOG.md).
+
+## Go deeper
+
+| Goal | Guide |
 | --- | --- |
-| One goal, optional tools, and final text | `runAgent` / `run_agent` |
-| Parallel Agents followed by synthesis | `runFanout` / `run_fanout` |
-| Streaming, sessions, memory, signals, governance, or explicit workflows | `RuntimeRunner` |
-
-For language-specific installation and examples, see [Node.js](./node/README.md), [Python](./python/README.md), [Rust](./rust/README.md), and [WASM](./wasm/README.md). Start with the [Hello Agent guide](./docs/en/getting-started/hello-agent.md).
-
-## Common Agent Patterns
-
-### One Agent with tools
-
-Register typed tools and let the Agent decide when to call them. Tool schemas, execution results, errors, and streaming events are part of the run.
-
-### Memory assistant
-
-Attach a `MemoryStore` to recall durable user or project facts, write new memories through a policy, and extract useful records when a session ends.
-
-### Skill-based Agent
-
-Keep specialized instructions and tools in skills. Load a skill when the task needs it, keep its knowledge available for the active phase, and release it when the Agent moves on.
-
-### Multi-Agent workflow
-
-Describe tasks as a graph. Run research Agents in parallel, reduce their outputs deterministically, ask a verifier to challenge the result, and synthesize the final response.
-
-### Long-running Agent
-
-Persist the session, pause for approval or external events, and resume with `wake(sessionId)`. Checkpoints and replay evidence let the application continue after a process restart.
-
-The [Research Brief Studio curriculum](./example/README.md) demonstrates these patterns in eight runnable levels, from sourced Q&A to a governed multi-Agent editorial room. Every level includes a `--dry-run` path that works without provider credentials.
-
-## When It Fits
-
-DeepStrike fits applications where Agents need durable sessions, controlled tools, memory, delegation, dynamic workflows, or consistent behavior across Node.js, Python, Rust, and WASM.
-
-For a stateless chat endpoint or a one-off prompt with no tools, a provider SDK may be enough. Add DeepStrike when the Agent needs to keep working, coordinate other Agents, respect limits, or explain and recover its own execution.
-
-## Current Scope
-
-The current focus is a reliable local Agent Process Runtime. It supports durable process trees, generalized wait and wake, hierarchical budgets, capability attenuation, local IPC, process supervision, deterministic scheduling, checkpoint/replay recovery, and host-provided integrations such as remote tools or MCP servers.
-
-The framework does not currently promise remote worker leasing, task migration, distributed takeover, or a distributed message broker. External effects are at-least-once, so applications should use idempotency keys and reconciliation for databases, mail, payments, and similar systems.
-
-Billing, pricing, taxes, and tenant accounting belong to the application using DeepStrike. The framework exposes usage information and runtime events, but does not define product billing policy.
-
-## Documentation
-
-| You want to... | Start here |
-| --- | --- |
-| Understand the runtime model | [Agent Process Runtime](./docs/en/architecture/agent-process-runtime.md) |
-| Learn the Agent model | [Getting Started](./docs/en/getting-started/index.md) |
-| Choose an API | [runAgent vs RuntimeRunner](./docs/en/getting-started/run-agent-vs-runner.md) |
-| Build workflows | [Dynamic Workflows](./docs/en/guides/workflow.md) |
-| Add tools and integrations | [Execution Plane & Tools](./docs/en/guides/execution-plane-and-tools.md) and [Provider Routing](./docs/en/guides/provider-routing.md) |
-| Add governance | [Governance](./docs/en/guides/governance.md) |
-| Add skills and memory | [Skills](./docs/en/guides/skills.md) and [Memory](./docs/en/guides/memory.md) |
-| Build recoverable runs | [Session, Replay & Recovery](./docs/en/guides/session-replay-and-recovery.md) |
-| Inspect the full API | [Reference](./docs/en/reference/index.md) |
-
-## Repository Layout
-
-```text
-crates/deepstrike-core/   Shared runtime implementation
-crates/deepstrike-node/   Node.js native bindings
-crates/deepstrike-py/     Python native bindings
-crates/deepstrike-wasm/   WASM bindings
-node/                     TypeScript SDK
-python/                   Python SDK
-rust/                     Rust SDK
-wasm/                     Browser and edge SDK
-example/                  Runnable Agent curriculum
-docs/                     VitePress documentation source
-tests/                    Cross-language contracts and fixtures
-```
-
-## Development
-
-Requirements: Rust 1.85+, Node.js 18+, and Python 3.10+.
-
-```bash
-cargo test
-npm run docs:build
-```
-
-For SDK-specific commands, use the language README linked above. Before opening a pull request, read [CONTRIBUTING.md](./CONTRIBUTING.md). Report vulnerabilities through [SECURITY.md](./SECURITY.md).
+| Build a sequence of tasks | [Workflows](./docs/en/guides/workflow.md) |
+| Connect tools and services | [Tools and execution](./docs/en/guides/execution-plane-and-tools.md) |
+| Add reusable expertise and project memory | [Skills](./docs/en/guides/skills.md) · [Memory](./docs/en/guides/memory.md) |
+| Control what assistants may do | [Governance](./docs/en/guides/governance.md) |
+| Recover and inspect work | [Session and recovery](./docs/en/guides/session-replay-and-recovery.md) · [Verification](./docs/en/architecture/verifiable-runtime.md) |
+| Understand the architecture and its vocabulary | [Runtime Language](./docs/en/architecture/runtime-language.md) · [Context](./docs/en/architecture/evaluation-context.md) · [Evolution Runtime](./docs/en/architecture/evolution-runtime.md) |
+| Contribute to the project | [Contributing](./CONTRIBUTING.md) · [API reference](./docs/en/reference/index.md) · [Security](./SECURITY.md) |
 
 ## License
 

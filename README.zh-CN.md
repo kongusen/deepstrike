@@ -7,7 +7,7 @@
 <h1 align="center">DeepStrike</h1>
 
 <p align="center">
-  <strong>面向持久化、可治理 Agent 工作的本地 Agent Process Runtime。</strong>
+  <strong>让 AI 助手能做事、能协作，工作过程可检查、改进有依据。</strong>
 </p>
 
 <p align="center">
@@ -28,49 +28,102 @@
 
 ---
 
-DeepStrike 是一个本地 Agent Process Runtime，用来构建不止会回答 prompt 的 Agent。你可以为 Agent 配置模型、指令、工具、MCP Server、Skill、Memory、Knowledge 和 Handoff。运行时为这些工作建立可持久化的进程树，让 Agent 跨多个回合工作、协调其他 Agent、等待外部输入，并在中断后继续运行。
+DeepStrike 帮助开发者搭建能完成实际任务的 AI 助手。它可以查资料、调用工具、记住项目背景、与其他助手分工，并在需要时等待人的确认。
 
-框架保留熟悉的 Agent 表达方式，内核则把生命周期、权限、资源、调度、通信和恢复做成明确、可组合、可测试的运行时语义。
+你为应用接入模型、资料、工具和工作规则，DeepStrike 负责组织任务执行、限制助手的权限、保留执行记录，并在配置持久化存储后支持中断恢复。
 
-## Agent Process Runtime
+## 一图看懂 DeepStrike
 
-每个根 Agent、子 Agent 和 Workflow 节点都进入同一套本地运行时模型。
+从任务执行、过程验证到评估与受控演进，Agent Process Runtime 是整套机制的执行基础。
 
-| 运行时职责 | 提供的保证 |
+![DeepStrike 的四项职责：执行、验证、评估与受控演进](./docs/public/readme/architecture-zh.svg)
+
+## 你可以用它做什么
+
+| 你想搭建的应用 | 可以交给它的任务 | DeepStrike 如何帮助你实现 |
+| --- | --- | --- |
+| **研究与资料整理助手** | “比较这三家供应商，整理差异并给出建议。” | 接入搜索和文档工具，分工调研、复核发现，再汇总成带来源的报告。 |
+| **项目知识助手** | “根据上次确定的要求，继续完善这份方案。” | 接入项目文档和持久记忆，让助手在后续任务中检索相关背景。 |
+| **写作与审稿团队** | “按这份需求写初稿，再检查事实和表达。” | 分配研究、写作、审稿角色，设定交接顺序和修改次数。 |
+| **研发协作助手** | “调查这个 bug，提出修改并运行检查。” | 接入代码仓库与开发工具，隔离委托任务，并控制哪些操作需要审批。 |
+| **业务流程助手** | “归类这些客户问题，生成回复草稿，批准后再发送。” | 接入业务接口，把工作传给下一步骤，在审批节点暂停。 |
+| **日报与简报助手** | “根据最新项目进展，准备一份简报。” | 由你的应用定时触发任务，通过已接入的工具收集信息，并保留后续跟进需要的记录。 |
+
+这些是可以用框架搭建的应用。搜索、邮件、数据库、定时触发等外部能力，需要由你的应用通过工具、MCP 集成或自定义适配器接入。
+
+## 举个例子：研究助理如何完成一份周报
+
+假设你每周需要一份行业动态报告，可以把工作安排成下面的流程。
+
+1. **读取任务要求。** 加载项目关心的主题、资料来源和报告格式。
+2. **收集资料。** 使用已接入的搜索与文档工具；独立的主题可以交给不同助手并行研究。
+3. **复核初稿。** 用你设定的检查规则或审稿助手，找出缺少来源、尚未回答的问题。
+4. **需要时请人确认。** 在你标记为敏感的操作前暂停，等待审批。
+5. **交付并保留过程。** 保存报告与执行记录；配置持久化存储后，中断的任务可以根据已记录的运行状态继续。
+
+你决定使用哪些工具、按照什么标准审查。框架负责这些工作之间的调度、分工、限制和记录。[示例课程](./example/README.md) 用八个可运行等级，从带来源的问答逐步搭建到多个助手协作的编辑流程。
+
+### 一次任务如何向前推进
+
+![运行流程动图：Intent 提交给 Kernel，获准的 Effect 由 Host 执行，Fact 返回 Kernel 驱动下一次状态转换](./docs/public/readme/execution-zh.gif)
+
+[查看静态流程图](./docs/public/readme/execution-zh.svg)。这是运行机制示意。Host 提交意图和外部事实，Kernel 负责准入、决策与状态转换；模型提出的工具调用仍需经过执行控制。
+
+## 框架替你处理哪些工作
+
+- **接入工具。** 让助手在受控边界内使用文件、外部服务和 MCP Server。
+- **复用专业能力。** 把专门的工作指引和工具说明整理成 Skill，任务需要时再加载。
+- **保留项目记忆。** 接入持久记忆存储，规定哪些信息可以被召回和写入。
+- **安排分工。** 让多个助手并行工作、交接结果，并各自承担明确职责。
+- **支持较长任务。** 管理不断增长的上下文，压缩较早的内容，对大型工具结果分页处理。
+- **控制执行。** 设置权限、预算、时限、审批节点和取消规则。
+- **恢复和检查。** 保存用于恢复的运行状态，以及帮助解释执行过程的证据。
+
+可以从一个助手和几个工具开始，按应用需要增加能力。各 SDK 支持的模型和集成范围有所不同。
+
+## 让每次改进有依据
+
+当你修改助手的指令、知识、工具或规则时，需要判断这些变化是否值得采用。DeepStrike 的 **Evaluation Runtime** 思路，是把评估与实际执行的任务联系起来。
+
+![评估输入绑定：上下文状态、策略、计划、渲染快照、提示词计量与模型路由关联到实际执行输入和评估证据](./docs/public/readme/evaluation-zh.svg)
+
+图中的绑定回答“这份评估对应哪份执行输入”。ArtifactSet 的版本沿革在任务起点单独绑定；绑定验证不会自动重放所有模型请求。
+
+| 你关心的问题 | 0.2.70 提供的支持 |
 | --- | --- |
-| **进程生命周期** | 父子谱系由内核派生，spawn、join、cancel 和 supervision 使用一致语义。 |
-| **持久化调度** | 确定性选择 runnable，并持久等待 Effect、子任务、审批、Signal、Timer、Channel 和 Resource。 |
-| **权限与资源** | 子任务能力只能收窄，九维预算授权不能超过父任务剩余容量。 |
-| **通信与恢复** | 受 capability 检查的本地 IPC、只传 handle 的大对象、checkpoint、journal 和可重放续跑。 |
+| **这个结果基于什么产生？** | 把一次任务与当时选用的资料、指令和模型配置关联起来，便于追查。 |
+| **任务中断后，还能检查过程吗？** | 保留恢复和重现任务决策所需的记录，以及工具和模型的调用过程。 |
+| **换一套配置，效果有没有改善？** | 把你使用的测试资料、评分方式、对比结果和检查记录，关联到新旧两套配置。 |
+| **这次采用的改动经过什么检查？** | 把候选改动、检查结果和批准决定连在一起，验证新任务采用这套配置的依据。 |
 
-“Process” 是运行时抽象，不要求每个 Agent 启动一个操作系统进程。SDK 仍是公开 API，运行时内核负责执行其背后的约束。完整模型与本地范围边界见 [Agent Process Runtime](./docs/architecture/agent-process-runtime.md)。
+应用负责执行评估并提供成功标准，DeepStrike 验证记录之间的关系与必要检查。人工审查、测试程序和模型评审都可以成为证据来源；框架本身不独立保证答案正确。
 
-## Agent 能做什么
+开发者用于验证这些变更记录的 API 名称是 `EvolutionRuntime`。具体机制见 [评估输入](./docs/architecture/evaluation-context.md) 与 [受控演进](./docs/architecture/evolution-runtime.md)。
 
-| Agent 能力 | DeepStrike 提供 |
-| --- | --- |
-| **推理** | 支持 OpenAI、Anthropic、Gemini、DeepSeek、Kimi、Qwen、GLM、Minimax、Ollama 和自定义 Provider，并支持流式输出与 replay。 |
-| **使用工具** | 类型化工具、流式工具、MCP 集成、本地执行、worktree、进程沙箱和远程工具适配。 |
-| **记忆** | 当前运行的 Working Memory、MemoryStore 持久记忆、Session 提取、检索和受策略约束的写入。 |
-| **加载知识** | 按需加载 Skill 与 Knowledge，在运行阶段固定、限制预算，并在任务切换后释放。 |
-| **委托工作** | 创建具有明确角色、收窄权限、隔离上下文、handoff、contract 和 lineage 的子 Agent。 |
-| **协作编排** | 并行 fan-out、综合、依赖图、分类器、reducer、验证 gate、tournament 和有界循环。 |
-| **等待与唤醒** | 等待审批、子 Agent 完成和外部信号，使用可恢复 Session 继续执行，不需要手动重建整段对话。 |
-| **遵守限制** | 工具策略、参数约束、审批 gate、速率限制、配额、预算和取消规则。 |
-| **处理长上下文** | 分开管理稳定指令、Knowledge、对话历史和运行状态，支持压缩与大结果分页，让长任务保持可用。 |
-| **解释执行过程** | Session Log、结构化事件、replay fixture、snapshot 和恢复证据，方便调试与审计。 |
+### 改动如何进入下一次任务
 
-这些能力围绕同一套 Agent contract 组合。你可以从一次工具调用开始，按需增加 Memory、Skill、委托、工作流控制和持久化。
+![受控演进：提案、评估证据、批准决定、激活绑定、新任务起点、执行](./docs/public/readme/evolution-zh.svg)
 
-## 快速开始
+应用提出候选配置并提供评估证据。`EvolutionRuntime` 检查版本沿革、证据与准入条件，验证通过后才返回激活绑定。新配置从下一次任务开始生效，运行中的任务继续使用原有 ArtifactSet。
 
-安装 Node.js SDK。
+## 从哪里开始
+
+选择适合你的 SDK：[Node.js](./node/README.md) · [Python](./python/README.md) · [Rust](./rust/README.md) · [WASM](./wasm/README.md)。
+
+第一个应用可以跟随 [Hello Agent](./docs/getting-started/hello-agent.md) 完成。想先体验流程，可以运行示例中的 `--dry-run`，无需配置 Provider 凭据。
+
+<details>
+<summary>开发者示例：带一个工具和本地执行日志的助手</summary>
+
+安装 Node.js SDK，选择你的模型账户可用的模型。
 
 ```bash
-npm install @deepstrike/sdk
+npm install @deepstrike/sdk@0.2.70
+export OPENAI_API_KEY="your-api-key"
+export OPENAI_MODEL="your-model-id"
 ```
 
-运行一个使用类型化工具并保存本地 Session Log 的 Agent。
+将以下代码保存为 `main.ts`，运行 `npx tsx main.ts`。
 
 ```ts
 import {
@@ -82,6 +135,10 @@ import {
   tool,
 } from "@deepstrike/sdk"
 
+const apiKey = process.env.OPENAI_API_KEY
+const model = process.env.OPENAI_MODEL
+if (!apiKey || !model) throw new Error("Set OPENAI_API_KEY and OPENAI_MODEL")
+
 const add = tool("add", "Add two numbers.", {
   type: "object",
   properties: { x: { type: "number" }, y: { type: "number" } },
@@ -89,7 +146,7 @@ const add = tool("add", "Add two numbers.", {
 }, async ({ x, y }) => String(Number(x) + Number(y)))
 
 const runner = new RuntimeRunner({
-  provider: new OpenAIResponsesProvider(process.env.OPENAI_API_KEY!, "gpt-5-mini"),
+  provider: new OpenAIResponsesProvider(apiKey, model),
   executionPlane: new LocalExecutionPlane().register(add),
   sessionLog: new FileSessionLog(".deepstrike/sessions"),
   maxTokens: 4096,
@@ -99,98 +156,32 @@ const answer = await collectText(runner.run({
   sessionId: "math-1",
   goal: "What is 17 + 28?",
 }))
-
 console.log(answer)
 ```
 
-按 Agent 的复杂度选择入口。
+在这个 Node 示例中，`FileSessionLog` 提供文件形式的证据日志和配套的运行时 journal。生产环境的恢复还需要保留工具与集成所依赖的 payload 等 Host 数据。
 
-| 需求 | 入口 |
+</details>
+
+## 使用前需要准备什么
+
+DeepStrike 是供开发者接入应用的框架。你需要提供模型访问、外部服务、存储和具体业务规则。持久记忆与恢复需要持久化存储，便捷 API 默认使用内存。
+
+任务调度器在本地运行，接入远程工具不等于获得分布式 worker 系统。影响外部系统的操作可能被重试，集成时应按需避免重复产生副作用。
+
+**升级到 0.2.70 时：** Kernel 与 SDK bindings 需要一起升级，并创建新 operation。旧运行记录和已移除的 API 没有自动迁移路径，详见 [CHANGELOG.md](./CHANGELOG.md)。
+
+## 继续了解
+
+| 你想做什么 | 文档入口 |
 | --- | --- |
-| 一个目标，可选工具和最终文本 | `runAgent` 或 `run_agent` |
-| 多个 Agent 并行工作后综合 | `runFanout` 或 `run_fanout` |
-| 流式事件、Session、Memory、信号、治理或显式工作流 | `RuntimeRunner` |
-
-各语言的安装与完整示例见 [Node.js](./node/README.md)、[Python](./python/README.md)、[Rust](./rust/README.md) 和 [WASM](./wasm/README.md)。第一步可以从 [Hello Agent](./docs/getting-started/hello-agent.md) 开始。
-
-## 常见 Agent 模式
-
-### 使用工具的单 Agent
-
-注册类型化工具，让 Agent 自己决定何时调用。工具 schema、执行结果、错误和流式事件都属于同一次运行。
-
-### 记忆助手
-
-接入 `MemoryStore`，召回用户或项目的持久事实，按策略写入新记忆，并在 Session 结束时提取有价值的记录。
-
-### Skill Agent
-
-把专业指令和工具放进 Skill。任务需要时加载 Skill，在当前阶段保留相关知识，切换任务后释放它。
-
-### 多 Agent 工作流
-
-把任务描述成一张图。让研究 Agent 并行工作，用确定性 reducer 合并结果，再让验证 Agent 质疑结论，最后综合输出。
-
-### 长时间运行的 Agent
-
-持久化 Session，在审批或外部事件处暂停，使用 `wake(sessionId)` 继续执行。Checkpoint 和 replay 证据让应用可以在进程重启后恢复。
-
-[Research Brief Studio 课程](./example/README.md) 用八个可运行等级展示这些模式，从带来源的问答 Agent 到受治理的多 Agent 编辑室。每个等级都提供 `--dry-run`，不需要 Provider 凭据。
-
-## 适用场景
-
-DeepStrike 适合需要持久 Session、受控工具、Memory、委托、动态工作流，或需要在 Node.js、Python、Rust 和 WASM 之间保持一致行为的应用。
-
-对于无状态聊天接口或没有工具的一次性 prompt，Provider SDK 可能已经足够。当 Agent 需要持续工作、协调其他 Agent、遵守限制，或者需要解释和恢复自己的执行过程时，再引入 DeepStrike。
-
-## 当前范围
-
-当前重点是可靠的本地 Agent Process Runtime。它支持持久进程树、通用等待与唤醒、层级预算、权限衰减、本地 IPC、进程监督、确定性调度、checkpoint/replay 恢复，以及由应用提供的远程工具和 MCP Server 集成。
-
-框架当前不承诺远程 worker lease、任务迁移、分布式接管或分布式消息 broker。外部 effect 采用 at-least-once 语义，数据库、邮件、支付等系统应由应用使用幂等键和 reconciliation。
-
-Billing、pricing、税务和租户计费属于使用 DeepStrike 的应用。框架可以提供使用量信息和运行时事件，但不定义产品计费策略。
-
-## 文档
-
-| 你想要做什么 | 从这里开始 |
-| --- | --- |
-| 理解运行时模型 | [Agent Process Runtime](./docs/architecture/agent-process-runtime.md) |
-| 了解 Agent 模型 | [快速开始](./docs/getting-started/index.md) |
-| 选择 API | [runAgent 与 RuntimeRunner](./docs/getting-started/run-agent-vs-runner.md) |
-| 构建工作流 | [动态工作流](./docs/guides/workflow.md) |
-| 添加工具和集成 | [Execution Plane 与 Tools](./docs/guides/execution-plane-and-tools.md) 和 [Provider 路由](./docs/guides/provider-routing.md) |
-| 添加治理 | [治理](./docs/guides/governance.md) |
-| 添加 Skill 和 Memory | [Skill](./docs/guides/skills.md) 和 [Memory](./docs/guides/memory.md) |
-| 构建可恢复运行 | [Session、Replay 与恢复](./docs/guides/session-replay-and-recovery.md) |
-| 查看完整 API | [Reference](./docs/reference/index.md) |
-
-## 仓库结构
-
-```text
-crates/deepstrike-core/   共享运行时实现
-crates/deepstrike-node/   Node.js 原生绑定
-crates/deepstrike-py/     Python 原生绑定
-crates/deepstrike-wasm/   WASM 绑定
-node/                     TypeScript SDK
-python/                   Python SDK
-rust/                     Rust SDK
-wasm/                     Browser 与 Edge SDK
-example/                  可运行的 Agent 课程
-docs/                     VitePress 文档源文件
-tests/                    跨语言 contract 与 fixture
-```
-
-## 开发
-
-要求 Rust 1.85+、Node.js 18+ 与 Python 3.10+。
-
-```bash
-cargo test
-npm run docs:build
-```
-
-各 SDK 的开发命令见上方对应语言 README。提交 PR 前请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)，安全漏洞请按 [SECURITY.md](./SECURITY.md) 的流程报告。
+| 安排一组有先后关系的任务 | [Workflow](./docs/guides/workflow.md) |
+| 接入工具与外部服务 | [工具与执行](./docs/guides/execution-plane-and-tools.md) |
+| 添加专业指引与项目记忆 | [Skill](./docs/guides/skills.md) · [Memory](./docs/guides/memory.md) |
+| 控制助手可以做什么 | [治理](./docs/guides/governance.md) |
+| 恢复与检查任务 | [Session 与恢复](./docs/guides/session-replay-and-recovery.md) · [执行验证](./docs/architecture/verifiable-runtime.md) |
+| 理解架构及其术语 | [运行时语言字典](./docs/architecture/runtime-language.md) · [Context](./docs/architecture/evaluation-context.md) · [Evolution Runtime](./docs/architecture/evolution-runtime.md) |
+| 参与项目开发 | [贡献指南](./CONTRIBUTING.md) · [API 参考](./docs/reference/index.md) · [安全问题](./SECURITY.md) |
 
 ## 许可证
 

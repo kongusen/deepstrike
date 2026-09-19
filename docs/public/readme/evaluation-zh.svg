@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 655" role="img" aria-labelledby="title desc">
+<title id="title">这次评估，究竟评了什么？</title><desc id="desc">EvaluationContextBinding 将评估关联到实际执行的上下文输入。</desc>
+<g font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<rect x="0" y="0" width="1200" height="655" rx="0" fill="#111714" stroke="#111714" stroke-width="2"/>
+<text x="42" y="43" font-size="15" fill="#b9e77a">DEEPSTRIKE  /  RUNTIME NOTES  /  0.2.70</text>
+<text x="42" y="99" font-size="34" fill="#f4f1e8">这次评估，究竟评了什么？</text>
+<text x="42" y="136" font-size="19" fill="#adb9ae">EvaluationContextBinding 将评估关联到实际执行的上下文输入。</text>
+<rect x="42" y="184" width="410" height="96" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
+<text x="62" y="222" font-size="23" fill="#80d7d0">ContextState + Policy</text>
+<text x="62" y="257" font-size="19" fill="#adb9ae">上下文状态与已解析策略</text>
+<path d="M462 232 L496 232" stroke="#80d7d0" stroke-width="3"/>
+<polygon points="496,232 487.22417438109625,236.79425538604204 487.22417438109625,227.20574461395796" fill="#80d7d0"/>
+<rect x="42" y="301" width="410" height="96" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
+<text x="62" y="339" font-size="23" fill="#80d7d0">ContextPlan + Snapshot</text>
+<text x="62" y="374" font-size="19" fill="#adb9ae">选择计划与渲染快照</text>
+<path d="M462 349 L496 349" stroke="#80d7d0" stroke-width="3"/>
+<polygon points="496,349 487.22417438109625,353.79425538604204 487.22417438109625,344.20574461395796" fill="#80d7d0"/>
+<rect x="42" y="418" width="410" height="96" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
+<text x="62" y="456" font-size="23" fill="#80d7d0">Measurement + Route</text>
+<text x="62" y="491" font-size="19" fill="#adb9ae">提示词计量与模型路由</text>
+<path d="M462 466 L496 466" stroke="#80d7d0" stroke-width="3"/>
+<polygon points="496,466 487.22417438109625,470.79425538604204 487.22417438109625,461.20574461395796" fill="#80d7d0"/>
+<rect x="507" y="184" width="651" height="330" rx="18" fill="#1c2520" stroke="#80d7d0" stroke-width="2"/>
+<text x="535" y="241" font-size="30" fill="#f4f1e8">ContextExecutionInput</text>
+<text x="535" y="286" font-size="23" fill="#adb9ae">冻结的执行输入身份</text>
+<path d="M831 308 L831 344" stroke="#80d7d0" stroke-width="3"/>
+<polygon points="831,344 826.205744613958,335.22417438109625 835.794255386042,335.22417438109625" fill="#80d7d0"/>
+<text x="535" y="384" font-size="29" fill="#80d7d0">EvaluationContextBinding</text>
+<text x="535" y="431" font-size="20" fill="#adb9ae">引用纳入应用提供的评估证据</text>
+<text x="535" y="472" font-size="20" fill="#adb9ae">+ 可选的缓存前缀</text>
+<text x="42" y="569" font-size="21" fill="#b8afff">ArtifactSet 的版本沿革在 operation genesis 单独绑定。</text>
+<text x="42" y="610" font-size="18" fill="#adb9ae">验证范围包括绑定完整性与证据覆盖，答案质量仍由你的评估标准判断。</text>
+</g></svg>

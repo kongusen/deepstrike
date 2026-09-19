@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+<title id="title">How an agent takes its next step</title><desc id="desc">The host reports intent and facts. The kernel owns decisions and state transitions.</desc>
+<g font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<rect x="0" y="0" width="1200" height="560" rx="0" fill="#111714" stroke="#111714" stroke-width="2"/>
+<text x="42" y="43" font-size="15" fill="#b9e77a">DEEPSTRIKE  /  RUNTIME NOTES  /  0.2.70</text>
+<text x="42" y="99" font-size="34" fill="#f4f1e8">How an agent takes its next step</text>
+<text x="42" y="136" font-size="19" fill="#adb9ae">The host reports intent and facts. The kernel owns decisions and state transitions.</text>
+<rect x="42" y="203" width="252" height="142" rx="18" fill="#1c2520" stroke="#b9e77a" stroke-width="2"/>
+<text x="62" y="234" font-size="16" fill="#b9e77a">01</text>
+<text x="62" y="281" font-size="30" fill="#f4f1e8">Intent</text>
+<text x="62" y="319" font-size="19" fill="#adb9ae">Request work</text>
+<path d="M300 276 L323 276" stroke="#b9e77a" stroke-width="3"/>
+<polygon points="323,276 314.22417438109625,280.79425538604204 314.22417438109625,271.20574461395796" fill="#b9e77a"/>
+<rect x="330" y="203" width="252" height="142" rx="18" fill="#1c2520" stroke="#80d7d0" stroke-width="2"/>
+<text x="350" y="234" font-size="16" fill="#80d7d0">02</text>
+<text x="350" y="281" font-size="30" fill="#f4f1e8">Kernel</text>
+<text x="350" y="319" font-size="19" fill="#adb9ae">Admit + decide</text>
+<path d="M588 276 L611 276" stroke="#80d7d0" stroke-width="3"/>
+<polygon points="611,276 602.2241743810963,280.79425538604204 602.2241743810963,271.20574461395796" fill="#80d7d0"/>
+<rect x="618" y="203" width="252" height="142" rx="18" fill="#1c2520" stroke="#b8afff" stroke-width="2"/>
+<text x="638" y="234" font-size="16" fill="#b8afff">03</text>
+<text x="638" y="281" font-size="30" fill="#f4f1e8">Effect</text>
+<text x="638" y="319" font-size="19" fill="#adb9ae">Host performs I/O</text>
+<path d="M876 276 L899 276" stroke="#b8afff" stroke-width="3"/>
+<polygon points="899,276 890.2241743810963,280.79425538604204 890.2241743810963,271.20574461395796" fill="#b8afff"/>
+<rect x="906" y="203" width="252" height="142" rx="18" fill="#1c2520" stroke="#ffbb85" stroke-width="2"/>
+<text x="926" y="234" font-size="16" fill="#ffbb85">04</text>
+<text x="926" y="281" font-size="30" fill="#f4f1e8">Fact</text>
+<text x="926" y="319" font-size="19" fill="#adb9ae">Report the result</text>
+<path d="M1032 353 L1032 389" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="1032,389 1027.205744613958,380.22417438109625 1036.794255386042,380.22417438109625" fill="#ffbb85"/>
+<path d="M1032 389 L456 389" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="456,389 464.77582561890375,384.20574461395796 464.77582561890375,393.79425538604204" fill="#ffbb85"/>
+<path d="M456 389 L456 353" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="456,353 460.79425538604204,361.77582561890375 451.20574461395796,361.77582561890375" fill="#ffbb85"/>
+<text x="42" y="454" font-size="22" fill="#b9e77a">An application asks for work through an explicit Intent.</text>
+<text x="42" y="499" font-size="18" fill="#adb9ae">Conceptual sequence • execution evidence can be retained in a durable host log.</text>
+</g></svg>

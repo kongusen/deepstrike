@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 775" role="img" aria-labelledby="title desc">
+<title id="title">一个 Runtime，四项相互衔接的职责</title><desc id="desc">应用层 · Agent、Skill、工具、记忆与工作流</desc>
+<g font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<rect x="0" y="0" width="1200" height="775" rx="0" fill="#111714" stroke="#111714" stroke-width="2"/>
+<text x="42" y="43" font-size="15" fill="#b9e77a">DEEPSTRIKE  /  RUNTIME NOTES  /  0.2.70</text>
+<text x="42" y="99" font-size="34" fill="#f4f1e8">一个 Runtime，四项相互衔接的职责</text>
+<text x="42" y="136" font-size="19" fill="#adb9ae">应用层 · Agent、Skill、工具、记忆与工作流</text>
+<rect x="42" y="177" width="1116" height="104" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
+<text x="64" y="235" font-size="25" fill="#b9e77a">01  Execute</text>
+<text x="320" y="216" font-size="24" fill="#f4f1e8">Agent Process Runtime</text>
+<text x="320" y="252" font-size="20" fill="#adb9ae">生命周期 · 调度 · 权限 · 预算</text>
+<path d="M600 285 L600 298" stroke="#405348" stroke-width="3"/>
+<polygon points="600,298 595.205744613958,289.22417438109625 604.794255386042,289.22417438109625" fill="#405348"/>
+<rect x="42" y="303" width="1116" height="104" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
+<text x="64" y="361" font-size="25" fill="#80d7d0">02  Verify</text>
+<text x="320" y="342" font-size="24" fill="#f4f1e8">Verifiable Runtime</text>
+<text x="320" y="378" font-size="20" fill="#adb9ae">检查 · 验证 · 基于证据重放 · 只读分叉</text>
+<path d="M600 411 L600 424" stroke="#405348" stroke-width="3"/>
+<polygon points="600,424 595.205744613958,415.22417438109625 604.794255386042,415.22417438109625" fill="#405348"/>
+<rect x="42" y="429" width="1116" height="104" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
+<text x="64" y="487" font-size="25" fill="#b8afff">03  Evaluate</text>
+<text x="320" y="468" font-size="24" fill="#f4f1e8">Evaluation context</text>
+<text x="320" y="504" font-size="20" fill="#adb9ae">把实际执行输入绑定到应用提供的评估证据</text>
+<path d="M600 537 L600 550" stroke="#405348" stroke-width="3"/>
+<polygon points="600,550 595.205744613958,541.2241743810963 604.794255386042,541.2241743810963" fill="#405348"/>
+<rect x="42" y="555" width="1116" height="104" rx="18" fill="#1c2520" stroke="#405348" stroke-width="2"/>
+<text x="64" y="613" font-size="25" fill="#ffbb85">04  Evolve</text>
+<text x="320" y="594" font-size="24" fill="#f4f1e8">EvolutionRuntime</text>
+<text x="320" y="630" font-size="20" fill="#adb9ae">验证提案、评估、批准与激活之间的关系</text>
+<text x="42" y="728" font-size="21" fill="#b9e77a">共享 Rust 核心 + SDK · Node.js / Python / Rust / WASM</text>
+</g></svg>

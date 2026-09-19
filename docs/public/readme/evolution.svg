@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 690" role="img" aria-labelledby="title desc">
+<title id="title">A change becomes active at a new operation</title><desc id="desc">Propose a candidate, supply evaluation evidence, then validate the promotion and activation.</desc>
+<g font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<rect x="0" y="0" width="1200" height="690" rx="0" fill="#111714" stroke="#111714" stroke-width="2"/>
+<text x="42" y="43" font-size="15" fill="#b9e77a">DEEPSTRIKE  /  RUNTIME NOTES  /  0.2.70</text>
+<text x="42" y="99" font-size="34" fill="#f4f1e8">A change becomes active at a new operation</text>
+<text x="42" y="136" font-size="19" fill="#adb9ae">Propose a candidate, supply evaluation evidence, then validate the promotion and activation.</text>
+<rect x="42" y="183" width="324" height="136" rx="18" fill="#1c2520" stroke="#b9e77a" stroke-width="2"/>
+<text x="61" y="232" font-size="25" fill="#f4f1e8">01  Proposal</text>
+<text x="61" y="280" font-size="19" fill="#adb9ae">Candidate artifact set</text>
+<rect x="438" y="183" width="324" height="136" rx="18" fill="#1c2520" stroke="#b9e77a" stroke-width="2"/>
+<text x="457" y="232" font-size="25" fill="#f4f1e8">02  Evaluation</text>
+<text x="457" y="280" font-size="19" fill="#adb9ae">Host tests + evidence</text>
+<rect x="834" y="183" width="324" height="136" rx="18" fill="#1c2520" stroke="#80d7d0" stroke-width="2"/>
+<text x="853" y="232" font-size="25" fill="#f4f1e8">03  Promotion</text>
+<text x="853" y="280" font-size="19" fill="#adb9ae">Explicit decision + gates</text>
+<rect x="834" y="410" width="324" height="136" rx="18" fill="#1c2520" stroke="#80d7d0" stroke-width="2"/>
+<text x="853" y="459" font-size="25" fill="#f4f1e8">04  Activation</text>
+<text x="853" y="507" font-size="19" fill="#adb9ae">Validated binding</text>
+<rect x="438" y="410" width="324" height="136" rx="18" fill="#1c2520" stroke="#b8afff" stroke-width="2"/>
+<text x="457" y="459" font-size="25" fill="#f4f1e8">05  Next genesis</text>
+<text x="457" y="507" font-size="19" fill="#adb9ae">Selected artifact-set digest</text>
+<rect x="42" y="410" width="324" height="136" rx="18" fill="#1c2520" stroke="#b8afff" stroke-width="2"/>
+<text x="61" y="459" font-size="25" fill="#f4f1e8">06  Execution</text>
+<text x="61" y="507" font-size="19" fill="#adb9ae">Run the next operation</text>
+<path d="M374 251 L428 251" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="428,251 419.22417438109625,255.79425538604204 419.22417438109625,246.20574461395796" fill="#ffbb85"/>
+<path d="M770 251 L824 251" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="824,251 815.2241743810963,255.79425538604204 815.2241743810963,246.20574461395796" fill="#ffbb85"/>
+<path d="M996 328 L996 400" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="996,400 991.205744613958,391.22417438109625 1000.794255386042,391.22417438109625" fill="#ffbb85"/>
+<path d="M824 478 L770 478" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="770,478 778.7758256189037,473.20574461395796 778.7758256189037,482.79425538604204" fill="#ffbb85"/>
+<path d="M428 478 L374 478" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="374,478 382.77582561890375,473.20574461395796 382.77582561890375,482.79425538604204" fill="#ffbb85"/>
+<text x="42" y="610" font-size="22" fill="#ffbb85">A running operation keeps its artifact set. Activation starts a successor.</text>
+<text x="42" y="651" font-size="19" fill="#adb9ae">Evidence supports the decision; evaluation does not grant activation authority.</text>
+</g></svg>

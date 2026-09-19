@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 690" role="img" aria-labelledby="title desc">
+<title id="title">经过检查的改动，在新任务中生效</title><desc id="desc">提出候选改动，提供评估证据，再验证批准决定与激活关系。</desc>
+<g font-family="Arial, Noto Sans CJK SC, Microsoft YaHei, sans-serif">
+<rect x="0" y="0" width="1200" height="690" rx="0" fill="#111714" stroke="#111714" stroke-width="2"/>
+<text x="42" y="43" font-size="15" fill="#b9e77a">DEEPSTRIKE  /  RUNTIME NOTES  /  0.2.70</text>
+<text x="42" y="99" font-size="34" fill="#f4f1e8">经过检查的改动，在新任务中生效</text>
+<text x="42" y="136" font-size="19" fill="#adb9ae">提出候选改动，提供评估证据，再验证批准决定与激活关系。</text>
+<rect x="42" y="183" width="324" height="136" rx="18" fill="#1c2520" stroke="#b9e77a" stroke-width="2"/>
+<text x="61" y="232" font-size="25" fill="#f4f1e8">01  Proposal</text>
+<text x="61" y="280" font-size="19" fill="#adb9ae">候选 ArtifactSet</text>
+<rect x="438" y="183" width="324" height="136" rx="18" fill="#1c2520" stroke="#b9e77a" stroke-width="2"/>
+<text x="457" y="232" font-size="25" fill="#f4f1e8">02  Evaluation</text>
+<text x="457" y="280" font-size="19" fill="#adb9ae">应用执行评估并提供证据</text>
+<rect x="834" y="183" width="324" height="136" rx="18" fill="#1c2520" stroke="#80d7d0" stroke-width="2"/>
+<text x="853" y="232" font-size="25" fill="#f4f1e8">03  Promotion</text>
+<text x="853" y="280" font-size="19" fill="#adb9ae">明确的批准决定与准入检查</text>
+<rect x="834" y="410" width="324" height="136" rx="18" fill="#1c2520" stroke="#80d7d0" stroke-width="2"/>
+<text x="853" y="459" font-size="25" fill="#f4f1e8">04  Activation</text>
+<text x="853" y="507" font-size="19" fill="#adb9ae">通过验证的激活绑定</text>
+<rect x="438" y="410" width="324" height="136" rx="18" fill="#1c2520" stroke="#b8afff" stroke-width="2"/>
+<text x="457" y="459" font-size="25" fill="#f4f1e8">05  Next genesis</text>
+<text x="457" y="507" font-size="19" fill="#adb9ae">选定的 ArtifactSet 摘要</text>
+<rect x="42" y="410" width="324" height="136" rx="18" fill="#1c2520" stroke="#b8afff" stroke-width="2"/>
+<text x="61" y="459" font-size="25" fill="#f4f1e8">06  Execution</text>
+<text x="61" y="507" font-size="19" fill="#adb9ae">启动下一次任务</text>
+<path d="M374 251 L428 251" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="428,251 419.22417438109625,255.79425538604204 419.22417438109625,246.20574461395796" fill="#ffbb85"/>
+<path d="M770 251 L824 251" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="824,251 815.2241743810963,255.79425538604204 815.2241743810963,246.20574461395796" fill="#ffbb85"/>
+<path d="M996 328 L996 400" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="996,400 991.205744613958,391.22417438109625 1000.794255386042,391.22417438109625" fill="#ffbb85"/>
+<path d="M824 478 L770 478" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="770,478 778.7758256189037,473.20574461395796 778.7758256189037,482.79425538604204" fill="#ffbb85"/>
+<path d="M428 478 L374 478" stroke="#ffbb85" stroke-width="3"/>
+<polygon points="374,478 382.77582561890375,473.20574461395796 382.77582561890375,482.79425538604204" fill="#ffbb85"/>
+<text x="42" y="610" font-size="22" fill="#ffbb85">运行中的任务保留原 ArtifactSet，激活从下一次任务边界开始。</text>
+<text x="42" y="651" font-size="19" fill="#adb9ae">评估为决定提供证据；评估本身不授予激活权限。</text>
+</g></svg>
