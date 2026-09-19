@@ -35,7 +35,6 @@
 //! ```
 
 #![deny(clippy::all)]
-#![allow(deprecated)]
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;

@@ -1,5 +1,3 @@
-#![allow(deprecated)]
-
 use js_sys::Uint8Array;
 use serde::{Deserialize, Serialize};
 use tsify_next::Tsify;
