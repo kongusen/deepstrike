@@ -541,6 +541,7 @@ export interface CanonicalRunnerRuntimeOptions {
   maxTurns?: number
   maxTotalTokens?: number
   maxWallMs?: number
+  artifactSetDigest?: string
   memoryBindingId?: string
   persistPayload?: (callId: string, content: string, previewBytes: number) => Promise<{
     payloadRef: string
@@ -785,6 +786,9 @@ export class CanonicalRunnerRuntime {
     this.host = new CanonicalKernelHost(kernel, journal, operationId)
     this.memoryBindingId = options.memoryBindingId ?? "wasm-memory"
     this.config = {
+      artifact_set_binding: {
+        artifact_set_digest: options.artifactSetDigest ?? "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1",
+      },
       execution_policy: {
         max_context_tokens: options.maxContextTokens,
         ...(options.maxTurns !== undefined ? { max_turns: options.maxTurns } : {}),
@@ -1222,7 +1226,7 @@ export class CanonicalRunnerRuntime {
         input = { kind: "host_control", command: this.canonicalCapabilityCommand(asObject(event.command)) }
         break
       case "add_history_message":
-        throw new Error("running ABI v3 operations accept history only through effects or external events")
+        throw new Error("running ABI v4 operations accept history only through effects or external events")
       default:
         throw new Error(`WASM host fact has no canonical ABI input: ${String(event.kind)}`)
     }

@@ -255,7 +255,7 @@ export interface ToolResultHookDecision {
 
 export interface RuntimeOptions {
   provider: LLMProvider
-  /** Required for ABI-v3 operation recovery unless the SessionLog embeds one. */
+  /** Required for ABI-v4 operation recovery unless the SessionLog embeds one. */
   kernelJournal?: KernelJournal
   /** M1/G3 intelligence routing: resolve a per-node provider from a workflow node's `modelHint`.
    *  Returns undefined ⇒ fall back to `provider`. Without this hook the hint is a no-op. */

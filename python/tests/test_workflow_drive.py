@@ -222,7 +222,7 @@ async def test_run_workflow_submit_nodes_appends_and_completes():
 
 @pytest.mark.asyncio
 async def test_run_workflow_rejected_submission_keeps_child_completion():
-    """ABI v3: parent-request admission is independent of ChildCompleted."""
+    """ABI v4: parent-request admission is independent of ChildCompleted."""
     class _SubmitOnceOrchestrator:
         def __init__(self):
             self.goals: list[str] = []

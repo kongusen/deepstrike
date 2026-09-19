@@ -1,5 +1,5 @@
 /**
- * SessionLog-only wake must fail closed under canonical ABI v3 (Node wake-recovery parity).
+ * SessionLog-only wake must fail closed under canonical ABI v4 (Node wake-recovery parity).
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import type { LLMProvider, Message, StreamEvent } from "../src/types.js"

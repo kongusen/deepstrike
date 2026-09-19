@@ -206,7 +206,10 @@
           }
         ]
       }
-    ]
+    ],
+    "artifact_set_binding": {
+      "artifact_set_digest": "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
+    }
   },
   "note": "frozen §7.3 ResolvedOperationConfig: the genesis record's defaults-free normal form",
   "resolved": {
@@ -416,6 +419,9 @@
           }
         ]
       }
-    ]
+    ],
+    "artifact_set_binding": {
+      "artifact_set_digest": "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
+    }
   }
 }

@@ -441,11 +441,13 @@ class CanonicalRunnerRuntime:
   def __init__(
     self, kernel: CanonicalKernel, journal: KernelJournal, operation_id: str, *,
     max_context_tokens: int, max_turns: int | None = None, max_total_tokens: int | None = None,
-    max_wall_ms: int | None = None, memory_binding_id: str = "python-memory",
+    max_wall_ms: int | None = None, artifact_set_digest: str = "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1",
+    memory_binding_id: str = "python-memory",
     persist_payload: Any = None,
   ) -> None:
     self.host = CanonicalKernelHost(kernel, journal, operation_id)
     self._config: dict[str, Any] = {
+      "artifact_set_binding": {"artifact_set_digest": artifact_set_digest},
       "execution_policy": {
         "max_context_tokens": max_context_tokens,
         **({"max_turns": max_turns} if max_turns is not None else {}),
@@ -711,7 +713,7 @@ class CanonicalRunnerRuntime:
       return await self._commit({"kind": "host_control", "command": self._capability_command(_object(event.get("command")))})
     if kind == "add_history_message":
       raise CanonicalKernelRejectedError("unsupported_host_event",
-                                         "running ABI v3 operations accept history only through effects or external events")
+                                         "running ABI v4 operations accept history only through effects or external events")
     if kind == "cancel_operation":
       action = await self._commit({"kind": "host_control", "command": {
         "kind": "cancel", "reason": event.get("reason") or "user",

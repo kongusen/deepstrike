@@ -1655,6 +1655,9 @@ mod tests {
                     max_turns: Some(3),
                     max_total_tokens: None,
                     max_wall_ms: None,
+                    artifact_set_digest:
+                        "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
+                            .into(),
                     memory_binding_id: "test-memory".into(),
                     persist_payload: None,
                 },
@@ -2271,6 +2274,9 @@ mod tests {
                     max_turns: Some(3),
                     max_total_tokens: None,
                     max_wall_ms: None,
+                    artifact_set_digest:
+                        "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
+                            .into(),
                     memory_binding_id: "test-memory".into(),
                     persist_payload: None,
                 },

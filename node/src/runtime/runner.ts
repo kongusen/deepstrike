@@ -304,7 +304,7 @@ export interface RuntimeOptions {
    *  Undefined ⇒ worktree nodes fall back to the inherited plane (no isolation). */
   worktreeManager?: import("./worktree-plane.js").WorktreeManager
   sessionLog: SessionLog
-  /** ABI v3 transaction capability. Default session logs expose one; custom logs pass it explicitly. */
+  /** ABI v4 transaction capability. Default session logs expose one; custom logs pass it explicitly. */
   kernelJournal?: KernelJournal
   executionPlane: ExecutionPlane
   /** Receives failures from run-owned best-effort tasks after their semantic owner has committed. */
@@ -1688,7 +1688,7 @@ export class RuntimeRunner {
         } else if (completionAction) {
           throw new Error(`workflow completion returned unexpected effect: ${completionAction.kind}`)
         }
-        // ABI v3: child-authored DAG additions ride on ChildCompleted.parent_requests. Admission is
+        // ABI v4: child-authored DAG additions ride on ChildCompleted.parent_requests. Admission is
         // independent of the completion fact; only an admitted request emits this observation.
         if (result.submittedNodes?.length) {
           const submitted = obs.find(o => o.kind === "workflow_nodes_submitted") as

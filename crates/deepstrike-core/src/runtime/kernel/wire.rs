@@ -1,4 +1,4 @@
-//! Canonical Kernel ABI — wire contract (revision 3).
+//! Canonical Kernel ABI — wire contract (revision 4).
 //!
 //! One envelope, five input classes, one root entry, strict tagged unions and cross-language
 //! scalar rules. This is the only host/kernel input contract; no compatibility adapter or
@@ -65,7 +65,7 @@ pub use transaction::*;
 
 /// The single supported wire revision. Bindings export this core-owned value so host SDKs do not
 /// maintain independent ABI constants.
-pub const KERNEL_ABI_VERSION: u32 = 3;
+pub const KERNEL_ABI_VERSION: u32 = 4;
 
 /// Absolute structural boundary applied **before** any JSON is parsed (§7.3).
 ///

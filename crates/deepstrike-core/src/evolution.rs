@@ -14,7 +14,7 @@ pub const EVOLUTION_SCHEMA: &str = "evolution/v1";
 pub const EVOLUTION_REPORT_SCHEMA: &str = "evolution-report/v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
 pub struct ContentDigest(String);
 
 impl ContentDigest {
@@ -38,6 +38,45 @@ impl ContentDigest {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<String> for ContentDigest {
+    type Error = EvolutionError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<ContentDigest> for String {
+    fn from(value: ContentDigest) -> Self {
+        value.0
+    }
+}
+
+/// The artifact identity a kernel operation is bound to at genesis.
+///
+/// Artifact bytes and promotion records stay host-owned. The kernel receives only their
+/// content-addressed identities, which makes the operation's execution set explicit and
+/// replayable without turning the kernel into an artifact store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactSetBinding {
+    pub artifact_set_digest: ContentDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_decision_digest: Option<ContentDigest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage_root_digest: Option<ContentDigest>,
+}
+
+impl ArtifactSetBinding {
+    pub fn new(artifact_set_digest: ContentDigest) -> Self {
+        Self {
+            artifact_set_digest,
+            promotion_decision_digest: None,
+            lineage_root_digest: None,
+        }
     }
 }
 
@@ -762,6 +801,12 @@ mod tests {
             ContentDigest::parse(set.digest.to_string()).unwrap(),
             set.digest
         );
+    }
+
+    #[test]
+    fn content_digest_json_decode_rejects_non_sha256_values() {
+        let invalid = serde_json::from_value::<ContentDigest>(serde_json::json!("legacy-id"));
+        assert!(invalid.is_err());
     }
 
     #[test]

@@ -307,7 +307,7 @@ def sub_agent_result_to_kernel(result: SubAgentResult) -> dict[str, Any]:
       } if verdict is not None else {}),
     }
   out: dict[str, Any] = {"agent_id": result.agent_id, "result": res}
-  # ABI v3: child-authored DAG additions ride on ChildCompleted.parent_requests.
+  # ABI v4: child-authored DAG additions ride on ChildCompleted.parent_requests.
   if result.submitted_nodes:
     out["submitted_nodes"] = [workflow_node_spec_to_kernel(node) for node in result.submitted_nodes]
   return out

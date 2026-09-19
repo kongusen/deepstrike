@@ -2,7 +2,7 @@
   "checkpoint": {
     "base_record_digest": "sha256:7bd87ca67f07e7904cc69653a6b4b41af5951dff5eabece3ef3553a034c592a4",
     "base_step_seq": "2",
-    "checkpoint_digest": "sha256:80e2e8bac769a1a0275622555b58e3bbc56f2377c17a4a4ec4a8e8a4f3367459",
+    "checkpoint_digest": "sha256:616549931e8e943454b1d7b7d093bcb251fcfa1ebe43701c0033571930979bfd",
     "covered_transaction_head_digest": "sha256:161fcc53e5674fa7b6660f0742c8e4d3eb8996bfd341b49bf57800a06b1d3e56",
     "genesis_digest": "sha256:aeebad4a796fcc2e15dc4c6061b45ed9b373f26adfc798ca7d2d8cc58182718e",
     "logical_state": {
@@ -84,6 +84,9 @@
         "lifecycle": "running",
         "pending_effects": [],
         "resolved_config": {
+          "artifact_set_binding": {
+            "artifact_set_digest": "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
+          },
           "budget_grant": null,
           "context_policy": {
             "collapse_old_assistant_narration": true,
@@ -204,13 +207,16 @@
       }
     },
     "operation_id": "op-checkpoint-1",
-    "state_digest": "sha256:8c3903bb7174875d17eb2c8011269a113fc70c480528204df0d70ed74f767608",
-    "tail_digest": "sha256:3eb63ddfab0b7fcf55057e5bb2f1977d793aa39fd5a28a5861fb553719a2b049",
+    "state_digest": "sha256:91cd2bfcb63e83744831eb4057aae719b43b25db3e6ecd572e2861dded6a093e",
+    "tail_digest": "sha256:17ef5f0a31b8689743db274db229f737fbe5369945fdfcb2f0dca6ba2ebf052c",
     "tail_inputs": [
       {
         "input": {
           "input": {
             "config": {
+              "artifact_set_binding": {
+                "artifact_set_digest": "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
+              },
               "budget_grant": null,
               "context_policy": {
                 "collapse_old_assistant_narration": true,
@@ -338,6 +344,9 @@
         "input": {
           "input": {
             "config": {
+              "artifact_set_binding": {
+                "artifact_set_digest": "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
+              },
               "budget_grant": null,
               "context_policy": {
                 "collapse_old_assistant_narration": true,

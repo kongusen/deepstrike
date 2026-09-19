@@ -25,6 +25,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::evolution::{ArtifactSetBinding, ContentDigest};
+
 use super::KernelBootstrapLimits;
 use super::command::{
     GovernancePolicy, PolicyAction, RecoveryPolicy, SignalPolicy, TailBoundsPolicy,
@@ -73,11 +75,18 @@ fn require_le_u32(
 /// Boot configuration for one operation (§7.3).
 ///
 /// Sparse on purpose: a host states what it wants to differ from the kernel's compile-time
-/// defaults. `host_effect_support` is the one **mandatory** field — DEC-8 makes it an explicit
-/// declaration, and a default would be exactly the implicit assumption it exists to remove.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// defaults. `artifact_set_binding` and `host_effect_support` are **mandatory at resolution** —
+/// the first fixes the execution artifact identity and the second declares host capabilities.
+/// Their optional Rust fields exist only so omitted wire data can fail closed with a typed
+/// configuration rejection.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationConfig {
+    /// The host-owned artifact identity this operation must execute against. This is required at
+    /// resolution time; `None` exists only so an omitted legacy payload fails closed instead of
+    /// silently selecting a binary default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_set_binding: Option<ArtifactSetBinding>,
     /// Turn/token/wall budgets plus the loop guards (criteria gate, repeat fuse, entropy watch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_policy: Option<ExecutionPolicy>,
@@ -130,6 +139,33 @@ pub struct OperationConfig {
     /// DEC-8. Mandatory: the kernel emits an effect only for a kind the host declared it can
     /// execute, and fail-closes on the rest.
     pub host_effect_support: HostEffectSupport,
+}
+
+impl Default for OperationConfig {
+    fn default() -> Self {
+        Self {
+            artifact_set_binding: Some(ArtifactSetBinding::new(ContentDigest::from_bytes(
+                b"deepstrike/rust-api-default-artifact-set",
+            ))),
+            execution_policy: None,
+            governance_policy: None,
+            scheduler_policy: None,
+            resource_quota: None,
+            budget_grant: None,
+            signal_policy: None,
+            context_policy: None,
+            recovery_policy: None,
+            payload_policy: None,
+            kernel_limits: None,
+            memory_access: None,
+            memory_policy: None,
+            tool_catalog: Vec::new(),
+            skill_catalog: Vec::new(),
+            verification_contracts: Vec::new(),
+            feature_policy: None,
+            host_effect_support: HostEffectSupport::default(),
+        }
+    }
 }
 
 impl OperationConfig {
@@ -557,6 +593,8 @@ impl HostEffectSupport {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedOperationConfig {
+    /// The immutable artifact identity captured in the genesis record.
+    pub artifact_set_binding: ArtifactSetBinding,
     pub execution_policy: ResolvedExecutionPolicy,
     pub governance_policy: ResolvedGovernancePolicy,
     pub scheduler_policy: ResolvedSchedulerPolicy,
@@ -825,6 +863,9 @@ impl ConfigDefaults {
         Self {
             bootstrap_limits,
             baseline: ResolvedOperationConfig {
+                artifact_set_binding: ArtifactSetBinding::new(ContentDigest::from_bytes(
+                    b"deepstrike/config-default-artifact-set",
+                )),
                 execution_policy: ResolvedExecutionPolicy {
                     max_context_tokens: 128_000,
                     max_turns: 25,
@@ -956,6 +997,11 @@ pub fn resolve_operation_config(
 ) -> Result<ResolvedOperationConfig, WireRejection> {
     let base = &defaults.baseline;
 
+    let artifact_set_binding = config
+        .artifact_set_binding
+        .clone()
+        .ok_or_else(|| invalid("artifact_set_binding is required for every 0.2.70 operation"))?;
+
     let kernel_limits = resolve_kernel_limits(
         config.kernel_limits.as_ref(),
         &defaults.bootstrap_limits,
@@ -1027,6 +1073,7 @@ pub fn resolve_operation_config(
     }
 
     Ok(ResolvedOperationConfig {
+        artifact_set_binding,
         execution_policy,
         governance_policy,
         scheduler_policy,
@@ -2074,6 +2121,9 @@ mod tests {
     /// A config exercising every field, so key-absence tests see the whole surface.
     fn fully_populated_config() -> OperationConfig {
         OperationConfig {
+            artifact_set_binding: Some(ArtifactSetBinding::new(ContentDigest::from_bytes(
+                b"test-artifact-set",
+            ))),
             execution_policy: Some(ExecutionPolicy {
                 max_context_tokens: Some(200_000),
                 max_turns: Some(40),
@@ -2542,6 +2592,16 @@ mod tests {
         let text = serde_json::to_string(&resolved).unwrap();
         let back: ResolvedOperationConfig = serde_json::from_str(&text).unwrap();
         assert_eq!(back, resolved);
+    }
+
+    #[test]
+    fn an_operation_without_an_artifact_binding_is_rejected_before_genesis() {
+        let mut config = minimal_config();
+        config.artifact_set_binding = None;
+
+        let rejection = config.resolve(&defaults()).unwrap_err();
+        assert_eq!(rejection.kind, WireRejectionKind::PolicyViolation);
+        assert!(rejection.message.contains("artifact_set_binding"));
     }
 
     #[test]
