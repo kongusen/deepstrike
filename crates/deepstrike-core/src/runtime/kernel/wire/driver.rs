@@ -1224,24 +1224,36 @@ fn restore_context_vm(
         }
     }
     for slot in &state.knowledge {
-        let message = restore_message(&slot.role, &slot.body, &[])?;
+        let message = restore_message(&slot.role, &slot.body, &slot.tool_calls)?;
         ctx.partitions.knowledge.push_entry(
             slot.key.as_deref().map(Into::into),
             message,
             slot.tokens,
             slot.pinned,
         );
-        // The boundary-eviction mark is bookkeeping the push path does not take, so it is set
-        // straight onto the entry it belongs to — a slot that was marked for removal must still be
-        // marked after a restore, or the next sweep keeps something the run had already dropped.
-        if slot.evict_at_boundary
-            && let Some(entry) = ctx.partitions.knowledge.entries.last_mut()
-        {
-            entry.evict_at_boundary = true;
+        if let Some(entry) = ctx.partitions.knowledge.entries.last_mut() {
+            entry.evict_at_boundary = slot.evict_at_boundary;
+            entry.use_count = slot.use_count;
+            entry.last_used_step = slot.last_used_step;
+            entry.pending = slot
+                .pending
+                .as_ref()
+                .map(|pending| {
+                    restore_message(&pending.role, &pending.body, &pending.tool_calls)
+                        .map(|message| Box::new((message, pending.tokens)))
+                })
+                .transpose()?;
         }
     }
+    ctx.partitions.system.measurements = state.system_measurements.clone();
+    ctx.partitions.history.measurements = state.history_measurements.clone();
+    ctx.restore_knowledge_checkpoint_state(
+        state.knowledge_reference_step,
+        state.knowledge_budget_warned,
+    );
     ctx.partitions.signals = state.signals.clone();
     ctx.partitions.task_state = restore_task_state(&state.task_state);
+    ctx.restore_state_generation(state.state_generation);
     ctx.last_activity_ms = state.last_activity_ms.get();
     ctx.last_compact_ms = state.last_compact_ms.map(WireU64::get);
     ctx.active_skills = state

@@ -696,6 +696,48 @@ fn an_agent_root_start_is_one_atomic_input_that_issues_the_model_turn() {
     let EffectKind::CallProvider(call) = &effect.effect else {
         panic!("expected a provider call");
     };
+    let candidate = &call.context_candidate;
+    candidate.state.verify_digest().unwrap();
+    assert_eq!(candidate.operation_id, OPERATION);
+    assert_eq!(candidate.input_sequence, started.step_seq.get());
+    assert_eq!(
+        candidate.step_id,
+        format!("{OPERATION}:step:{}", started.step_seq)
+    );
+    assert_eq!(
+        candidate.state,
+        runtime
+            .driver
+            .engine()
+            .unwrap()
+            .ctx
+            .context_state()
+            .unwrap()
+    );
+    let projection =
+        crate::runtime::kernel::wire::record::canonical_bytes(&(&call.context, &call.tools))
+            .unwrap();
+    assert_eq!(
+        candidate.rendered_snapshot,
+        crate::evolution::ContentDigest::from_bytes(projection.as_slice())
+    );
+    let (plan, input) = candidate
+        .bind(
+            crate::evolution::ContentDigest::from_bytes(b"host-measurement"),
+            crate::evolution::ContentDigest::from_bytes(b"host-route"),
+        )
+        .unwrap();
+    plan.verify(&candidate.state).unwrap();
+    input.verify(&plan).unwrap();
+    let mut changed_context = call.context.clone();
+    changed_context.system_stable.push_str("tampered");
+    let changed_projection =
+        crate::runtime::kernel::wire::record::canonical_bytes(&(&changed_context, &call.tools))
+            .unwrap();
+    assert_ne!(
+        candidate.rendered_snapshot,
+        crate::evolution::ContentDigest::from_bytes(changed_projection.as_slice())
+    );
     let rendered = format!(
         "{}{}",
         call.context.system_stable, call.context.system_knowledge
@@ -9048,6 +9090,62 @@ fn an_uninterrupted_run_and_a_full_state_restore_are_byte_identical() {
         surface(&uninterrupted),
         "and so is the state they end in",
     );
+}
+
+#[test]
+fn context_optimization_evidence_and_pending_knowledge_survive_checkpoint_restore() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&configure());
+    runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    {
+        let ctx = &mut runtime.driver.engine_mut().unwrap().ctx;
+        ctx.push_knowledge_entry(
+            Some("reference".into()),
+            CoreMessage::system("original evidence"),
+            3,
+            true,
+        );
+        ctx.push_history(CoreMessage::user("reference original evidence"), 4);
+        ctx.push_knowledge_entry(
+            Some("reference".into()),
+            CoreMessage::system("replacement evidence"),
+            7,
+            true,
+        );
+        ctx.partitions.history.measurements[0].source =
+            crate::context::measurement::MeasurementSource::LocalExact {
+                tokenizer: "checkpoint-estimator".into(),
+            };
+        ctx.partitions.history.measurements[0].confidence =
+            crate::context::measurement::MeasurementConfidence::Exact;
+    }
+    let checkpoint = runtime.checkpoint().decode().unwrap();
+    let restored = runtime.restore(&checkpoint);
+    let before = &runtime.driver.engine().unwrap().ctx;
+    let after = &restored.driver.engine().unwrap().ctx;
+    assert_eq!(
+        before.partitions.history.measurements,
+        after.partitions.history.measurements
+    );
+    assert_eq!(
+        before.knowledge_checkpoint_state(),
+        after.knowledge_checkpoint_state()
+    );
+    let entry = &after.partitions.knowledge.entries[0];
+    assert_eq!(entry.use_count, 1);
+    assert!(entry.last_used_step.is_some());
+    assert_eq!(
+        entry.pending.as_ref().unwrap().0.content.as_text(),
+        Some("replacement evidence")
+    );
+    let policy = crate::evolution::ContentDigest::from_bytes(b"policy");
+    let (expected, _) = before
+        .prepare_candidate(OPERATION.into(), "next-step".into(), 3, policy.clone())
+        .unwrap();
+    let (actual, _) = after
+        .prepare_candidate(OPERATION.into(), "next-step".into(), 3, policy)
+        .unwrap();
+    assert_eq!(expected, actual);
 }
 
 /// **Verification 1 (rebase form)** · the same differential over a checkpoint whose logical

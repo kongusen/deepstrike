@@ -25,6 +25,7 @@ use std::fmt;
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::context::execution::ContextCandidate;
 use crate::context::measurement::{PromptMeasurement, ToolMeasurement};
 use crate::types::durable_content::DurableContent;
 
@@ -363,9 +364,12 @@ impl fmt::Display for EffectKindTag {
 // §7.8 · effect payloads
 // ---------------------------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CallProviderEffect {
+    /// Frozen kernel facts; the host binds its actual provider route and preflight measurement
+    /// through the canonical Context ABI before dispatching this projection.
+    pub context_candidate: Box<ContextCandidate>,
     pub context: RenderedContext,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolSchema>,
@@ -1449,14 +1453,30 @@ mod tests {
 
     /// One sample per [`EffectKind`] variant, in [`EffectKindTag::ALL`] order.
     fn effect_samples() -> Vec<EffectKind> {
+        let context = RenderedContext::default();
+        let tools = vec![ToolSchema {
+            name: "read_file".to_string(),
+            description: "read a file".to_string(),
+            parameters: BoundedJson::null(),
+        }];
+        let (mut context_candidate, _) = crate::context::manager::ContextManager::new(100_000)
+            .prepare_candidate(
+                "op-1".into(),
+                "op-1:step:1".into(),
+                1,
+                crate::evolution::ContentDigest::from_bytes(b"test-policy"),
+            )
+            .unwrap();
+        context_candidate.rendered_snapshot = crate::evolution::ContentDigest::from_bytes(
+            super::super::record::canonical_bytes(&(&context, &tools))
+                .unwrap()
+                .as_slice(),
+        );
         vec![
             EffectKind::CallProvider(CallProviderEffect {
-                context: RenderedContext::default(),
-                tools: vec![ToolSchema {
-                    name: "read_file".to_string(),
-                    description: "read a file".to_string(),
-                    parameters: BoundedJson::null(),
-                }],
+                context_candidate: Box::new(context_candidate),
+                context,
+                tools,
             }),
             EffectKind::ExecuteTools(ExecuteToolsEffect {
                 calls: vec![ToolCall {

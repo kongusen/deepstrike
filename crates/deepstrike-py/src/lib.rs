@@ -1791,6 +1791,8 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verdict_output_schema, m)?)?;
     m.add_function(wrap_pyfunction!(verifiable_operation_json, m)?)?;
     m.add_function(wrap_pyfunction!(evolution_validate_json, m)?)?;
+    m.add_function(wrap_pyfunction!(context_prepare_json, m)?)?;
+    m.add_function(wrap_pyfunction!(context_verify_json, m)?)?;
     Ok(())
 }
 
@@ -1798,3 +1800,17 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // We deliberately don't add Rust unit tests here because the `extension-module`
 // PyO3 feature breaks `cargo test` linking — the tested behavior is already
 // covered exhaustively in deepstrike-core's own test suite.
+
+/// Freeze host route and measurement against the kernel's committed Context candidate.
+#[pyfunction]
+fn context_prepare_json(request: String) -> PyResult<String> {
+    deepstrike_core::context::execution::prepare_context_dispatch_json(&request)
+        .map_err(PyValueError::new_err)
+}
+
+/// Verify recorded execution evidence against a replayed Context candidate.
+#[pyfunction]
+fn context_verify_json(request: String) -> PyResult<String> {
+    deepstrike_core::context::execution::verify_context_dispatch_json(&request)
+        .map_err(PyValueError::new_err)
+}

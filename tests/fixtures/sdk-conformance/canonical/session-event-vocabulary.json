@@ -11,6 +11,7 @@
         "capability_changed",
         "checkpoint_taken",
         "compressed",
+        "context_prepared",
         "context_renewed",
         "entropy_alert",
         "entropy_sample",
@@ -55,7 +56,7 @@
         "workflow_node_completed",
         "workflow_nodes_submitted"
       ],
-      "count": 49
+      "count": 50
     }
   }
 }

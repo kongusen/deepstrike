@@ -612,6 +612,18 @@ pub struct MilestoneState {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextVmState {
+    /// Monotonic ContextState generation used to invalidate an admitted ContextPlan after restore.
+    #[serde(default)]
+    pub state_generation: u64,
+    /// Optimization evidence must survive restore without changing source/confidence/fingerprint.
+    #[serde(default)]
+    pub system_measurements: Vec<crate::context::measurement::TokenMeasurement>,
+    #[serde(default)]
+    pub history_measurements: Vec<crate::context::measurement::TokenMeasurement>,
+    #[serde(default)]
+    pub knowledge_reference_step: u64,
+    #[serde(default)]
+    pub knowledge_budget_warned: bool,
     /// **The** home of P3 handle identity and residency.
     #[serde(default)]
     pub handles: Vec<HandleState>,
@@ -861,6 +873,15 @@ pub struct KnowledgeSlotState {
     pub tokens: u32,
     pub pinned: bool,
     pub evict_at_boundary: bool,
+    #[serde(default)]
+    pub tool_calls: Vec<LogicalToolCall>,
+    /// The replacement staged for the next cache-generation boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<Box<StoredMessageState>>,
+    #[serde(default)]
+    pub use_count: u64,
+    #[serde(default)]
+    pub last_used_step: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1182,7 +1203,13 @@ fn validate_durable_message_bodies(context: &ContextVmState) -> Result<(), Check
         .messages
         .iter()
         .map(|message| &message.body)
-        .chain(context.knowledge.iter().map(|slot| &slot.body));
+        .chain(context.knowledge.iter().map(|slot| &slot.body))
+        .chain(
+            context
+                .knowledge
+                .iter()
+                .filter_map(|slot| slot.pending.as_ref().map(|pending| &pending.body)),
+        );
     for body in bodies {
         let StoredMessageBody::Structured(structured) = body else {
             continue;

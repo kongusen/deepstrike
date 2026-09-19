@@ -1,5 +1,9 @@
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
+use super::execution::{
+    ContextCandidate, ContextContractError, ContextEntrySource, ContextPlanAction,
+    ContextPreparation, ContextPreparationRequest, ContextSelection, ContextState,
+};
 use super::partitions::ContextPartitions;
 use super::policy::ContextPolicy;
 use super::pressure::{PressureAction, PressureMonitor};
@@ -100,6 +104,8 @@ pub struct ContextManager {
     pub memory_enabled: bool,
     pub knowledge_enabled: bool,
     pub plan_tool_enabled: bool,
+    /// Monotonic semantic-state generation used to invalidate ContextPlan decisions.
+    state_generation: u64,
     last_observed_prompt_tokens: Option<u32>,
     compression: CompressionPipeline,
     pressure: PressureMonitor,
@@ -171,6 +177,7 @@ impl ContextManager {
             memory_enabled: false,
             knowledge_enabled: false,
             plan_tool_enabled: false,
+            state_generation: 0,
             last_observed_prompt_tokens: None,
             compression,
             pressure,
@@ -412,6 +419,7 @@ impl ContextManager {
         target_tokens: u32,
         now_ms: Option<u64>,
     ) -> (u32, Option<String>, Vec<CoreMessage>, Option<usize>) {
+        self.state_generation = self.state_generation.saturating_add(1);
         let result = self.compression.compress(
             &mut self.partitions,
             action,
@@ -462,6 +470,7 @@ impl ContextManager {
     }
 
     pub fn renew(&mut self) {
+        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions = self
             .renewal
             .renew(&self.partitions, self.max_tokens, &self.engine);
@@ -499,9 +508,196 @@ impl ContextManager {
         )
     }
 
+    /// Build the canonical ContextState index for the current semantic state.
+    pub fn context_state(&self) -> Result<ContextState, ContextContractError> {
+        ContextState::from_partitions_with_handles(
+            &self.partitions,
+            self.state_generation,
+            &self.handles,
+        )
+    }
+
+    /// Prepare one verifiable execution input and its explicit optimisation decision.
+    ///
+    /// The current compression/renderer algorithms remain behind this boundary. The returned
+    /// projection is transient; only the digests in `execution_input` are suitable for journal or
+    /// evaluation evidence. Provider adapters attach that input identity to the host execution
+    /// record together with the raw request and native measurement evidence.
+    pub fn prepare_execution_input(
+        &self,
+        request: &ContextPreparationRequest,
+    ) -> Result<ContextPreparation, ContextContractError> {
+        let (candidate, rendered_projection) = self.prepare_candidate(
+            request.operation_id.clone(),
+            request.step_id.clone(),
+            request.input_sequence,
+            request.policy_digest.clone(),
+        )?;
+        let (plan, execution_input) = candidate.bind(
+            request.prompt_measurement.clone(),
+            request.provider_route.clone(),
+        )?;
+        Ok(ContextPreparation {
+            execution_input,
+            plan,
+            rendered_projection,
+        })
+    }
+
+    /// Freeze kernel-owned selection facts before the host resolves route and prompt measurement.
+    pub fn prepare_candidate(
+        &self,
+        operation_id: String,
+        step_id: String,
+        input_sequence: u64,
+        policy_digest: crate::evolution::ContentDigest,
+    ) -> Result<(ContextCandidate, InternalRenderedContext), ContextContractError> {
+        let state = self.context_state()?;
+        let (rendered_projection, trace) = super::renderer::render_projected_with_trace(
+            &self.partitions,
+            self.available_input_tokens(),
+            &self.engine,
+            self.config.preserve_recent_units,
+            &self.handles,
+            self.frozen_history_len,
+            self.config.collapse_assistant_narration,
+        );
+        let rendered_bytes =
+            crate::runtime::kernel::wire::record::canonical_bytes(&rendered_projection)
+                .map_err(|error| ContextContractError::Canonical(error.to_string()))?;
+        let rendered_snapshot =
+            crate::evolution::ContentDigest::from_bytes(rendered_bytes.as_slice());
+        let rendered_history = &rendered_projection.turns;
+        let selections = state
+            .system
+            .iter()
+            .chain(state.knowledge.iter())
+            .chain(state.history.iter())
+            .chain(state.state.iter())
+            .map(|entry| {
+                let (action, reason) = match entry.source {
+                    ContextEntrySource::System | ContextEntrySource::Knowledge => {
+                        let message = match entry.source {
+                            ContextEntrySource::System => {
+                                &self.partitions.system.messages[entry.ordinal as usize]
+                            }
+                            _ => &self.partitions.knowledge.entries[entry.ordinal as usize].message,
+                        };
+                        if message.content.as_text().is_some() {
+                            (ContextPlanAction::Include, "stable_partition".to_string())
+                        } else {
+                            (
+                                ContextPlanAction::Omit,
+                                "non_text_system_projection".to_string(),
+                            )
+                        }
+                    }
+                    ContextEntrySource::State | ContextEntrySource::Signal => {
+                        let included = match entry.source {
+                            ContextEntrySource::State => {
+                                !self.partitions.task_state.format_compact().is_empty()
+                            }
+                            _ => !self.partitions.signals[entry.ordinal as usize].is_empty(),
+                        };
+                        if included && rendered_projection.state_turn.is_some() {
+                            (
+                                ContextPlanAction::Include,
+                                "volatile_state_turn".to_string(),
+                            )
+                        } else {
+                            (
+                                ContextPlanAction::Omit,
+                                "empty_state_projection".to_string(),
+                            )
+                        }
+                    }
+                    ContextEntrySource::History => {
+                        let decision = &trace.history[entry.ordinal as usize];
+                        (decision.action, decision.reason.to_string())
+                    }
+                };
+                ContextSelection {
+                    entry_id: entry.entry_id.clone(),
+                    action,
+                    reason,
+                }
+            })
+            .collect();
+        let cache_prefix = if let Some(entries) = rendered_projection.frozen_prefix_len {
+            let prefix_turns = rendered_history.get(..entries).unwrap_or(rendered_history);
+            let prefix_bytes = crate::runtime::kernel::wire::record::canonical_bytes(&(
+                &rendered_projection.system_stable,
+                &rendered_projection.system_knowledge,
+                prefix_turns,
+            ))
+            .map_err(|error| ContextContractError::Canonical(error.to_string()))?;
+            Some(crate::context::execution::CachePrefixBoundary {
+                digest: crate::evolution::ContentDigest::from_bytes(prefix_bytes.as_slice()),
+                entries: prefix_turns.len() as u32,
+            })
+        } else {
+            None
+        };
+        let knowledge_lifecycle = self
+            .partitions
+            .knowledge
+            .entries
+            .iter()
+            .map(|entry| {
+                let pending = entry
+                    .pending
+                    .as_ref()
+                    .map(|pending| {
+                        super::execution::message_digest(&pending.0, &self.handles)
+                            .map(|content| (content, pending.1))
+                    })
+                    .transpose()?;
+                Ok((
+                    &entry.key,
+                    entry.pinned,
+                    entry.evict_at_boundary,
+                    pending,
+                    entry.use_count,
+                    entry.last_used_step,
+                    entry.tokens,
+                ))
+            })
+            .collect::<Result<Vec<_>, ContextContractError>>()?;
+        let runtime_bytes = crate::runtime::kernel::wire::record::canonical_bytes(&(
+            &self.handles,
+            &self.partitions.system.measurements,
+            &self.partitions.history.measurements,
+            knowledge_lifecycle,
+            self.knowledge_reference_step,
+            self.knowledge_budget_warned,
+            self.frozen_history_len,
+        ))
+        .map_err(|error| ContextContractError::Canonical(error.to_string()))?;
+        let runtime_inputs = crate::evolution::ContentDigest::from_bytes(runtime_bytes.as_slice());
+        Ok((
+            ContextCandidate {
+                schema: super::execution::CONTEXT_SCHEMA.to_string(),
+                operation_id,
+                step_id,
+                input_sequence,
+                state,
+                runtime_inputs,
+                policy_digest,
+                rendered_snapshot,
+                selections,
+                input_budget_tokens: self.available_input_tokens(),
+                projected_tokens: trace.projected_tokens,
+                pressure_ppm: (self.rho().clamp(0.0, 1.0) * 1_000_000.0).round() as u32,
+                cache_prefix,
+            },
+            rendered_projection,
+        ))
+    }
+
     // ── History / Knowledge ───────────────────────────────────────────────────
 
     pub fn push_history(&mut self, msg: CoreMessage, tokens: u32) {
+        self.state_generation = self.state_generation.saturating_add(1);
         self.knowledge_reference_step = self.knowledge_reference_step.saturating_add(1);
         self.partitions
             .knowledge
@@ -556,6 +752,23 @@ impl ContextManager {
         self.frozen_history_len
     }
 
+    pub(crate) fn knowledge_checkpoint_state(&self) -> (u64, bool) {
+        (self.knowledge_reference_step, self.knowledge_budget_warned)
+    }
+
+    pub(crate) fn restore_knowledge_checkpoint_state(&mut self, reference_step: u64, warned: bool) {
+        self.knowledge_reference_step = reference_step;
+        self.knowledge_budget_warned = warned;
+    }
+
+    pub fn state_generation(&self) -> u64 {
+        self.state_generation
+    }
+
+    pub fn restore_state_generation(&mut self, generation: u64) {
+        self.state_generation = generation;
+    }
+
     pub fn restore_frozen_history_len(&mut self, len: usize) -> bool {
         if len > self.partitions.history.messages.len() {
             return false;
@@ -566,6 +779,7 @@ impl ContextManager {
 
     /// Push content into the Knowledge slot (memory retrievals, skill defs, artifacts).
     pub fn push_knowledge(&mut self, msg: CoreMessage, tokens: u32) {
+        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions.knowledge.push(msg, tokens);
     }
 
@@ -579,6 +793,7 @@ impl ContextManager {
         tokens: u32,
         pinned: bool,
     ) {
+        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions
             .knowledge
             .push_entry(key, msg, tokens, pinned);
@@ -587,7 +802,11 @@ impl ContextManager {
     /// K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
     /// Errs-open: unknown key is a no-op (returns false).
     pub fn remove_knowledge(&mut self, key: &str) -> bool {
-        self.partitions.knowledge.remove(key)
+        let removed = self.partitions.knowledge.remove(key);
+        if removed {
+            self.state_generation = self.state_generation.saturating_add(1);
+        }
+        removed
     }
 
     /// K1: run the boundary sweep (apply pending upserts, drop marked entries) and stash the
@@ -596,6 +815,7 @@ impl ContextManager {
     fn sweep_knowledge_at_boundary(&mut self) {
         let sweep = self.partitions.knowledge.sweep_at_boundary();
         if sweep.changed {
+            self.state_generation = self.state_generation.saturating_add(1);
             // P9: the model must not have knowledge silently vanish under it. The boundary
             // already broke the prompt-cache prefix, so a one-line ephemeral tail note is
             // cache-free; keyed removals name what left and how to get it back.
@@ -686,6 +906,7 @@ impl ContextManager {
     /// Rendering does not consume signals. The state machine clears only the prefix acknowledged by
     /// a correlated provider result, so provider failures and retries see the same signal payload.
     pub fn push_signal(&mut self, text: String) {
+        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions.signals.push(text);
     }
 
@@ -693,12 +914,14 @@ impl ContextManager {
     /// mid-task user command keeps its salience across compaction/renewal — unlike the ephemeral
     /// signal channel, which is cleared on renewal.
     pub fn record_directive(&mut self, text: impl Into<String>) {
+        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions.task_state.record_directive(text);
     }
 
     // ── Task state ────────────────────────────────────────────────────────────
 
     pub fn init_task(&mut self, goal: String, criteria: Vec<String>) {
+        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions.task_state = TaskState {
             goal,
             criteria,
@@ -707,6 +930,7 @@ impl ContextManager {
     }
 
     pub fn update_task(&mut self, update: TaskUpdate) {
+        self.state_generation = self.state_generation.saturating_add(1);
         self.partitions.task_state.apply(update);
     }
 
@@ -717,6 +941,7 @@ impl ContextManager {
     /// a repeat. Control-plane meta-tools (plan/skill/memory/knowledge/workflow authoring) are noise,
     /// not task progress — filtered by name. A turn with only meta-tool calls records nothing.
     pub fn note_tool_actions(&mut self, calls: &[(String, String)]) {
+        self.state_generation = self.state_generation.saturating_add(1);
         let summary = calls
             .iter()
             .filter(|(name, _)| !is_meta_tool(name))
@@ -792,6 +1017,7 @@ impl ContextManager {
         for name in expired {
             self.deactivate_skill(&name);
             // P9: lease expiry re-widens the toolset invisibly otherwise — tell the model.
+            self.state_generation = self.state_generation.saturating_add(1);
             self.partitions.signals.push(format!(
                 "[SKILL] lease expired: {name} unloaded; the full toolset is restored."
             ));
@@ -1007,9 +1233,37 @@ impl ContextManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::execution::ContextPreparationRequest;
     use crate::context::task_state::PlanStep;
+    use crate::evolution::ContentDigest;
     use crate::types::message::CoreMessage;
     use crate::types::skill::SkillMetadata;
+
+    #[test]
+    fn preparation_freezes_state_plan_and_render_identity() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("verify context".to_string(), vec![]);
+        mgr.push_history(CoreMessage::user("hello"), 2);
+        let request = ContextPreparationRequest {
+            operation_id: "op-1".to_string(),
+            step_id: "step-1".to_string(),
+            input_sequence: 1,
+            policy_digest: ContentDigest::from_bytes(b"policy"),
+            prompt_measurement: ContentDigest::from_bytes(b"measurement"),
+            provider_route: ContentDigest::from_bytes(b"route"),
+        };
+        let prepared = mgr.prepare_execution_input(&request).unwrap();
+        prepared.plan.verify(&mgr.context_state().unwrap()).unwrap();
+        prepared.execution_input.verify(&prepared.plan).unwrap();
+        let binding = crate::evolution::EvaluationContextBinding::from_execution_input(
+            &prepared.execution_input,
+        );
+        binding.verify_digest().unwrap();
+        assert_eq!(prepared.execution_input.operation_id, request.operation_id);
+        assert!(!prepared.execution_input.input_digest.as_str().is_empty());
+        mgr.push_signal("new evidence".to_string());
+        assert!(prepared.plan.verify(&mgr.context_state().unwrap()).is_err());
+    }
 
     #[test]
     fn note_tool_actions_keys_on_name_and_args_so_legit_loops_dont_false_stop() {

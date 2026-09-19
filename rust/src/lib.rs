@@ -189,3 +189,10 @@ pub fn format_tool_error(e: &Error) -> String {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+// Context preparation and verification have one implementation in the Rust core.
+pub use deepstrike_core::context::execution::{
+    ContextCandidate, ContextDispatchPreparation, ContextDispatchRequest, ContextExecutionInput,
+    ContextPlan, ContextPromptMeasurement, ContextState, prepare_context_dispatch,
+    verify_context_dispatch,
+};

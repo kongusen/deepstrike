@@ -76,6 +76,41 @@ pub struct CacheReadBySlot {
 
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
+    /// Stable, credential-free route evidence used to freeze Context execution identity.
+    /// Custom providers may override this with their model, protocol and endpoint identity.
+    fn context_route(&self) -> serde_json::Value {
+        serde_json::json!({ "kind": "opaque", "implementation": std::any::type_name::<Self>() })
+    }
+
+    /// Freeze the material covered by a Context request fingerprint before I/O.
+    /// The default scope is logical adapter input. Providers with hidden encoding state must
+    /// override this and `stream_prepared` to consume the same frozen encoded request.
+    fn prepare_context_request(
+        &self,
+        context: &InternalRenderedContext,
+        tools: &[ToolSchema],
+        extensions: Option<&serde_json::Value>,
+        state: Option<&ProviderRunState>,
+    ) -> crate::Result<serde_json::Value> {
+        Ok(serde_json::json!({
+            "scope": "adapter_input", "context": context, "tools": tools,
+            "extensions": extensions, "state": state,
+        }))
+    }
+
+    /// Dispatch previously frozen material. The default supports stateless logical adapters;
+    /// encoded-request providers override this to avoid re-encoding after evidence is recorded.
+    async fn stream_prepared(
+        &self,
+        _prepared: &serde_json::Value,
+        context: &InternalRenderedContext,
+        tools: &[ToolSchema],
+        extensions: Option<&serde_json::Value>,
+        state: Option<&ProviderRunState>,
+    ) -> crate::Result<Box<dyn Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
+        self.stream(context, tools, extensions, state).await
+    }
+
     /// Optional per-run state for protocol-native continuation (e.g. Responses API).
     fn create_run_state(&self) -> Option<ProviderRunState> {
         None

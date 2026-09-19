@@ -42,18 +42,29 @@ pub struct TokenMeasurement {
 
 impl TokenMeasurement {
     pub fn for_message(message: &crate::types::message::CoreMessage, tokens: u32) -> Self {
-        use sha2::{Digest as _, Sha256};
-        let digest = Sha256::digest(serde_json::to_vec(message).expect("message is serializable"));
-        let hex = digest
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
         Self {
-            fingerprint: format!("sha256:{hex}"),
+            fingerprint: Self::message_fingerprint(message),
             tokens,
             source: MeasurementSource::HostProvided,
             confidence: MeasurementConfidence::HighConfidence,
         }
+    }
+
+    pub fn matches_message(&self, message: &crate::types::message::CoreMessage) -> bool {
+        self.fingerprint == Self::message_fingerprint(message)
+    }
+
+    fn message_fingerprint(message: &crate::types::message::CoreMessage) -> String {
+        use sha2::{Digest as _, Sha256};
+        let material =
+            super::execution::message_material(message, &crate::mm::handle::HandleTable::new());
+        let digest =
+            Sha256::digest(serde_json::to_vec(&material).expect("message is serializable"));
+        let hex = digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        format!("sha256:{hex}")
     }
 }
 

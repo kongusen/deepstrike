@@ -119,6 +119,35 @@ fn load_fixture(path: &Path) -> Result<Fixture, String> {
 
 fn project(fixture: &Fixture) -> Result<Value, AdapterError> {
     match fixture.domain.as_str() {
+        "context_execution" => {
+            let request: deepstrike_core::context::execution::ContextDispatchRequest =
+                serde_json::from_value(fixture.input["request"].clone()).map_err(|error| {
+                    AdapterError {
+                        code: "invalid_context".into(),
+                        path: "/input/request".into(),
+                        message: error.to_string(),
+                    }
+                })?;
+            let prepared = deepstrike_core::context::execution::prepare_context_dispatch(&request)
+                .map_err(|error| AdapterError {
+                    code: "invalid_context".into(),
+                    path: "/input/request".into(),
+                    message: error.to_string(),
+                })?;
+            deepstrike_core::context::execution::verify_context_dispatch(
+                &request.effect,
+                &prepared,
+            )
+            .map_err(|error| AdapterError {
+                code: "invalid_context".into(),
+                path: "/input/request".into(),
+                message: error.to_string(),
+            })?;
+            Ok(
+                json!({ "input_digest": prepared.execution_input.input_digest,
+                "plan_digest": prepared.plan.plan_id, "verified": true }),
+            )
+        }
         "agent_ir" => project_agent_ir(&fixture.input),
         "provider_request_plan" => project_request_plan(&fixture.input),
         "durable_tool_result" => project_durable_tool_result(&fixture.input),
@@ -297,6 +326,10 @@ fn project_request_plan(input: &Value) -> Result<Value, AdapterError> {
             .ok_or_else(|| AdapterError::failure("request plan options are required"))?,
     )
     .map_err(|error| AdapterError::failure(error.to_string()))?;
+    let plan = match request_input.get("execution") {
+        Some(execution) => plan.with_execution(execution.clone()),
+        None => plan,
+    };
     Ok(json!({ "fingerprint": plan.fingerprint }))
 }
 

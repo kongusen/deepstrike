@@ -192,6 +192,17 @@ fn context_to_openai(context: &InternalRenderedContext) -> Vec<Value> {
 
 #[async_trait]
 impl LLMProvider for OpenAIProvider {
+    fn context_route(&self) -> Value {
+        let endpoint = reqwest::Url::parse(&self.base_url).ok().map(|mut url| {
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            url.set_query(None);
+            url.set_fragment(None);
+            url.to_string()
+        });
+        json!({ "protocol": "openai-chat", "model": self.model, "endpoint": endpoint })
+    }
+
     fn runtime_policy(&self) -> RuntimePolicy {
         match self.model.as_str() {
             // OpenAI
@@ -321,13 +332,13 @@ impl LLMProvider for OpenAIProvider {
         }
     }
 
-    async fn stream(
+    fn prepare_context_request(
         &self,
         context: &InternalRenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&Value>,
         _state: Option<&super::ProviderRunState>,
-    ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
+    ) -> Result<Value> {
         let mut body = json!({
             "model": self.model,
             "messages": context_to_openai(context),
@@ -352,6 +363,37 @@ impl LLMProvider for OpenAIProvider {
                 }
             }
         }
+
+        Ok(json!({ "scope": "encoded_body", "body": body, "expose_reasoning": expose_reasoning }))
+    }
+
+    async fn stream(
+        &self,
+        context: &InternalRenderedContext,
+        tools: &[ToolSchema],
+        extensions: Option<&Value>,
+        state: Option<&super::ProviderRunState>,
+    ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
+        let prepared = self.prepare_context_request(context, tools, extensions, state)?;
+        self.stream_prepared(&prepared, context, tools, extensions, state)
+            .await
+    }
+
+    async fn stream_prepared(
+        &self,
+        prepared: &Value,
+        _context: &InternalRenderedContext,
+        _tools: &[ToolSchema],
+        _extensions: Option<&Value>,
+        _state: Option<&super::ProviderRunState>,
+    ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
+        let body = prepared
+            .get("body")
+            .filter(|body| body.is_object())
+            .ok_or_else(|| {
+                Error::Other("prepared provider request must contain an encoded body".into())
+            })?;
+        let expose_reasoning = prepared["expose_reasoning"].as_bool().unwrap_or(false);
 
         let resp = self
             .client

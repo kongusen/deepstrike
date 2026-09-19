@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as ShaDigest, Sha256};
 use thiserror::Error;
 
+use crate::context::execution::ContextExecutionInput;
+
 pub const EVOLUTION_SCHEMA: &str = "evolution/v1";
 pub const EVOLUTION_REPORT_SCHEMA: &str = "evolution-report/v1";
 
@@ -265,36 +267,67 @@ impl<'a> From<&'a EvolutionProposal> for ProposalBody<'a> {
 /// The verifiable context projection used by one evaluated operation.
 ///
 /// Context bytes remain host-owned evidence. The evaluation ledger binds only the canonical
-/// policy, accepted input snapshot, rendered projection, and prompt measurement digests so a
+/// execution-input, state, plan, rendered projection, route, and measurement digests so a
 /// replay can prove which context was evaluated without making the kernel a context store.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvaluationContextBinding {
     pub digest: ContentDigest,
     pub operation_id: String,
+    pub execution_input: ContentDigest,
+    pub context_state: ContentDigest,
     pub context_policy: ContentDigest,
-    pub input_snapshot: ContentDigest,
+    pub context_plan: ContentDigest,
     pub rendered_snapshot: ContentDigest,
     pub prompt_measurement: ContentDigest,
+    pub provider_route: ContentDigest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_prefix: Option<ContentDigest>,
 }
 
 impl EvaluationContextBinding {
+    /// Project a verified ContextExecutionInput into the evaluation evidence graph.
+    pub fn from_execution_input(input: &ContextExecutionInput) -> Self {
+        let unsigned = Self {
+            digest: ContentDigest::from_bytes(b"placeholder"),
+            operation_id: input.operation_id.clone(),
+            execution_input: input.input_digest.clone(),
+            context_state: input.state_digest.clone(),
+            context_policy: input.policy_digest.clone(),
+            context_plan: input.plan_digest.clone(),
+            rendered_snapshot: input.rendered_snapshot.clone(),
+            prompt_measurement: input.prompt_measurement.clone(),
+            provider_route: input.provider_route.clone(),
+            cache_prefix: input
+                .cache_prefix
+                .as_ref()
+                .map(|boundary| boundary.digest.clone()),
+        };
+        let digest = canonical_digest(&EvaluationContextBindingBody::from(&unsigned))
+            .expect("context input projection is canonical");
+        Self { digest, ..unsigned }
+    }
+
     pub fn new(
         operation_id: impl Into<String>,
+        execution_input: ContentDigest,
+        context_state: ContentDigest,
         context_policy: ContentDigest,
-        input_snapshot: ContentDigest,
+        context_plan: ContentDigest,
         rendered_snapshot: ContentDigest,
         prompt_measurement: ContentDigest,
+        provider_route: ContentDigest,
         cache_prefix: Option<ContentDigest>,
     ) -> Result<Self, EvolutionError> {
         let unsigned = Self {
             digest: ContentDigest::from_bytes(b"placeholder"),
             operation_id: operation_id.into(),
+            execution_input,
+            context_state,
             context_policy,
-            input_snapshot,
+            context_plan,
             rendered_snapshot,
             prompt_measurement,
+            provider_route,
             cache_prefix,
         };
         let digest = canonical_digest(&EvaluationContextBindingBody::from(&unsigned))?;
@@ -313,10 +346,13 @@ impl EvaluationContextBinding {
 #[derive(Debug, Serialize)]
 struct EvaluationContextBindingBody<'a> {
     operation_id: &'a str,
+    execution_input: &'a ContentDigest,
+    context_state: &'a ContentDigest,
     context_policy: &'a ContentDigest,
-    input_snapshot: &'a ContentDigest,
+    context_plan: &'a ContentDigest,
     rendered_snapshot: &'a ContentDigest,
     prompt_measurement: &'a ContentDigest,
+    provider_route: &'a ContentDigest,
     cache_prefix: Option<&'a ContentDigest>,
 }
 
@@ -324,10 +360,13 @@ impl<'a> From<&'a EvaluationContextBinding> for EvaluationContextBindingBody<'a>
     fn from(value: &'a EvaluationContextBinding) -> Self {
         Self {
             operation_id: &value.operation_id,
+            execution_input: &value.execution_input,
+            context_state: &value.context_state,
             context_policy: &value.context_policy,
-            input_snapshot: &value.input_snapshot,
+            context_plan: &value.context_plan,
             rendered_snapshot: &value.rendered_snapshot,
             prompt_measurement: &value.prompt_measurement,
+            provider_route: &value.provider_route,
             cache_prefix: value.cache_prefix.as_ref(),
         }
     }
@@ -691,7 +730,18 @@ pub fn validate_evolution(bundle: &EvolutionBundle) -> EvolutionReport {
             .iter()
             .map(|context| &context.operation_id)
             .collect();
+        let mut context_inputs = HashSet::new();
         for context in &evaluation.contexts {
+            if !context_inputs.insert((&context.operation_id, &context.execution_input)) {
+                violation(
+                    &mut violations,
+                    "E5",
+                    format!(
+                        "evaluation {} repeats context input {} for operation {}",
+                        evaluation.digest, context.execution_input, context.operation_id,
+                    ),
+                );
+            }
             if context.verify_digest().is_err() {
                 violation(
                     &mut violations,
@@ -710,10 +760,13 @@ pub fn validate_evolution(bundle: &EvolutionBundle) -> EvolutionReport {
                 );
             }
             for reference in [
+                &context.execution_input,
+                &context.context_state,
                 &context.context_policy,
-                &context.input_snapshot,
+                &context.context_plan,
                 &context.rendered_snapshot,
                 &context.prompt_measurement,
+                &context.provider_route,
             ] {
                 if !evaluation.evidence_refs.contains(reference) {
                     violation(
@@ -1003,26 +1056,35 @@ mod tests {
         let dataset = digest("dataset");
         let evidence = digest("evidence");
         let operation_ids = vec!["eval-op".to_string()];
+        let execution_input = digest("execution-input");
+        let context_state = digest("context-state");
         let context_policy = digest("context-policy");
-        let input_snapshot = digest("input-snapshot");
+        let context_plan = digest("context-plan");
         let rendered_snapshot = digest("rendered-snapshot");
         let prompt_measurement = digest("prompt-measurement");
+        let provider_route = digest("provider-route");
         let context = EvaluationContextBinding::new(
             "eval-op",
+            execution_input,
+            context_state,
             context_policy,
-            input_snapshot,
+            context_plan,
             rendered_snapshot,
             prompt_measurement,
+            provider_route,
             None,
         )
         .unwrap();
         let contexts = vec![context];
         let evidence_refs = vec![
             evidence.clone(),
+            contexts[0].execution_input.clone(),
+            contexts[0].context_state.clone(),
             contexts[0].context_policy.clone(),
-            contexts[0].input_snapshot.clone(),
+            contexts[0].context_plan.clone(),
             contexts[0].rendered_snapshot.clone(),
             contexts[0].prompt_measurement.clone(),
+            contexts[0].provider_route.clone(),
         ];
         let run_body = EvaluationRunBody {
             proposal: &proposal.digest,
@@ -1097,7 +1159,7 @@ mod tests {
             artifact_set: candidate_set.digest.clone(),
             promotion_decision: decision.digest.clone(),
         };
-        let report = validate_evolution(&EvolutionBundle {
+        let mut bundle = EvolutionBundle {
             artifacts: vec![base, candidate],
             artifact_sets: vec![base_set, candidate_set],
             proposals: vec![proposal],
@@ -1105,24 +1167,57 @@ mod tests {
             facts: vec![fact],
             decisions: vec![decision],
             activations: vec![activation],
-        });
+        };
+        let report = validate_evolution(&bundle);
 
         assert_eq!(report.verdict, EvolutionVerdict::Pass);
         assert!(report.violations.is_empty());
+
+        // An operation may contain several provider attempts, but repeating the same
+        // execution input must not inflate its context evidence coverage.
+        bundle.facts.clear();
+        bundle.decisions.clear();
+        bundle.activations.clear();
+        let evaluation = &mut bundle.evaluations[0];
+        let mut second = evaluation.contexts[0].clone();
+        second.execution_input = digest("second-attempt");
+        second.digest = canonical_digest(&EvaluationContextBindingBody::from(&second)).unwrap();
+        evaluation
+            .evidence_refs
+            .push(second.execution_input.clone());
+        evaluation.contexts.push(second);
+        evaluation.digest = canonical_digest(&EvaluationRunBody::from(&*evaluation)).unwrap();
+        assert_eq!(validate_evolution(&bundle).verdict, EvolutionVerdict::Pass);
+        let evaluation = &mut bundle.evaluations[0];
+        evaluation.contexts.push(evaluation.contexts[0].clone());
+        evaluation.digest = canonical_digest(&EvaluationRunBody::from(&*evaluation)).unwrap();
+        assert!(
+            validate_evolution(&bundle)
+                .violations
+                .iter()
+                .any(|violation| violation.code == "E5"
+                    && violation.detail.contains("repeats context input"))
+        );
     }
 
     #[test]
     fn evaluation_rejects_tampered_context_or_missing_measurement_evidence() {
         let context_policy = digest("context-policy");
-        let input_snapshot = digest("input-snapshot");
+        let execution_input = digest("execution-input");
+        let context_state = digest("context-state");
+        let context_plan = digest("context-plan");
         let rendered_snapshot = digest("rendered-snapshot");
         let prompt_measurement = digest("prompt-measurement");
+        let provider_route = digest("provider-route");
         let mut context = EvaluationContextBinding::new(
             "eval-op",
+            execution_input,
+            context_state,
             context_policy,
-            input_snapshot,
+            context_plan,
             rendered_snapshot,
             prompt_measurement,
+            provider_route,
             None,
         )
         .unwrap();
@@ -1136,7 +1231,7 @@ mod tests {
             dataset: digest("dataset"),
             operation_ids: vec!["eval-op".to_string()],
             contexts: vec![context],
-            evidence_refs: vec![digest("context-policy"), digest("input-snapshot")],
+            evidence_refs: vec![digest("context-policy"), digest("context-state")],
         };
         let report = validate_evolution(&EvolutionBundle {
             evaluations: vec![evaluation],

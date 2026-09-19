@@ -985,3 +985,17 @@ pub fn evolution_validate_json(request: String) -> Result<String> {
     deepstrike_core::evolution::validate_evolution_json(&request)
         .map_err(|error| Error::from_reason(error))
 }
+
+/// Freeze host route and measurement against the kernel's committed Context candidate.
+#[napi]
+pub fn context_prepare_json(request: String) -> Result<String> {
+    deepstrike_core::context::execution::prepare_context_dispatch_json(&request)
+        .map_err(Error::from_reason)
+}
+
+/// Verify recorded execution evidence against a replayed Context candidate.
+#[napi]
+pub fn context_verify_json(request: String) -> Result<String> {
+    deepstrike_core::context::execution::verify_context_dispatch_json(&request)
+        .map_err(Error::from_reason)
+}

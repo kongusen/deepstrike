@@ -1,7 +1,7 @@
 {
   "description": "The cancellation arc on the canonical wire (spec 7.5 / 7.7 / 11.1 · Task 12b): configure → workflow root start → spawn ack → a critical signal that preempts the running child → the host's preempt resolution → `HostControl::Cancel`, whose step is the cancelled terminal itself. Two things this chain fixes in place: the only host action a signal can cause is the preemption (its queueing/dropping/expiry are audit facts and publish nothing), and cancellation settles every downstream wait inside the same transition that commits the root terminal — §7.12 admits effects or a terminal and never both, so there is no second round trip in which the operation is neither running nor cancelled.",
   "genesis_digest": "sha256:cae40c7b4bb1667cfb5663806a6a6db52e821292301aa188361d643b4a1badd7",
-  "head_digest": "sha256:362e99fa952df37ec631ce7125da10d48d72aea2d6c5863947ef470e7f385896",
+  "head_digest": "sha256:ce39589e525025bd622958d2cca2cd87f4d99c13781928ed3174e3cbe830579e",
   "links": [
     {
       "envelope": {
@@ -435,8 +435,8 @@
         "input_id": "in-preempted",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:c096429fe9ecb9fb56a3174c5c0e1939550dd1554825ec3365b51cc676a5bc46",
-        "record_digest": "sha256:8d49c5614b97845869468eca681835c7e229f78c79040bcab58b9acc5d843e03",
-        "step_digest": "sha256:d449190ab104f437d2c2feef2feab06882128c601cba8628f3bcb9b9c4fcb61b",
+        "record_digest": "sha256:66b441b52ffd1d9f5b3798b795818c42e7f27be58f6037b35e5fc270ba640565",
+        "step_digest": "sha256:7ee4d6416c0d21fdd163cd0b7ce3d2fffd434e6ad87a4778ac68b36e04290c8c",
         "step_seq": "4"
       },
       "step": {
@@ -450,6 +450,57 @@
                     "content": "[INTERRUPT] sig-abort\n\nProceed.",
                     "role": "user"
                   }
+                },
+                "context_candidate": {
+                  "cache_prefix": null,
+                  "input_budget_tokens": 128000,
+                  "input_sequence": 4,
+                  "operation_id": "op-driver-1",
+                  "policy_digest": "sha256:1bed2ebaf3bec2921be116ab74027914adfb1cc072ecf3927b4389908beec6bb",
+                  "pressure_ppm": 0,
+                  "projected_tokens": 12,
+                  "rendered_snapshot": "sha256:a20998e594177ee4ab9285a1914dcc7ff62e97cf8f0c9d7121486a6932ef4fc0",
+                  "runtime_inputs": "sha256:574283edaf12534163268364164cfab7c00041a56c780d3fe3a4071fb9ac1914",
+                  "schema": "context/v1",
+                  "selections": [
+                    {
+                      "action": "omit",
+                      "entry_id": "state:task_state:sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4",
+                      "reason": "empty_state_projection"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "signal:0:sha256:e6712199ae1c7ddbef5badcd04c54fc71479aa421b44cee35f489d1edb461494",
+                      "reason": "volatile_state_turn"
+                    }
+                  ],
+                  "state": {
+                    "digest": "sha256:2a91aeed1c88ed951244ece477d1909d5168ed57e2efc63cc7acd88cac90bd6b",
+                    "generation": 1,
+                    "history": [],
+                    "knowledge": [],
+                    "schema": "context/v1",
+                    "signals": [
+                      "sha256:e6712199ae1c7ddbef5badcd04c54fc71479aa421b44cee35f489d1edb461494"
+                    ],
+                    "state": [
+                      {
+                        "content_digest": "sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4",
+                        "entry_id": "state:task_state:sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4",
+                        "ordinal": 0,
+                        "source": "state"
+                      },
+                      {
+                        "content_digest": "sha256:e6712199ae1c7ddbef5badcd04c54fc71479aa421b44cee35f489d1edb461494",
+                        "entry_id": "signal:0:sha256:e6712199ae1c7ddbef5badcd04c54fc71479aa421b44cee35f489d1edb461494",
+                        "ordinal": 0,
+                        "source": "signal"
+                      }
+                    ],
+                    "system": [],
+                    "task_state": "sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4"
+                  },
+                  "step_id": "op-driver-1:step:4"
                 },
                 "kind": "call_provider",
                 "tools": [
@@ -556,8 +607,8 @@
         "input_digest": "sha256:5434adf3f7e2db621abbfb3b7d4d28802319247b0f47cd5ee5ab86e86de04398",
         "input_id": "in-cancel",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:8d49c5614b97845869468eca681835c7e229f78c79040bcab58b9acc5d843e03",
-        "record_digest": "sha256:362e99fa952df37ec631ce7125da10d48d72aea2d6c5863947ef470e7f385896",
+        "previous_record_digest": "sha256:66b441b52ffd1d9f5b3798b795818c42e7f27be58f6037b35e5fc270ba640565",
+        "record_digest": "sha256:ce39589e525025bd622958d2cca2cd87f4d99c13781928ed3174e3cbe830579e",
         "step_digest": "sha256:483ffe6de46707cc62c22bc1d004f8988eed085315b8df64163bff2b429593d9",
         "step_seq": "5"
       },

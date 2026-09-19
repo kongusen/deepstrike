@@ -114,10 +114,71 @@ impl CanonicalOperationDriver {
             LoopAction::CallLLM {
                 context: rendered,
                 tools,
-            } => EffectKind::CallProvider(CallProviderEffect {
-                context: rendered_context(&rendered),
-                tools: tools.iter().map(tool_schema).collect(),
-            }),
+            } => {
+                let context_fault = |error: String| {
+                    KernelFault::new(
+                        KernelFaultCode::InvalidLifecycle,
+                        format!("provider context preparation failed: {error}"),
+                    )
+                };
+                let policy_bytes =
+                    super::super::record::canonical_bytes(&context.config.context_policy)
+                        .map_err(|error| context_fault(error.to_string()))?;
+                let policy_digest =
+                    crate::evolution::ContentDigest::from_bytes(policy_bytes.as_slice());
+                let engine = self
+                    .engine()
+                    .ok_or_else(|| context_fault("missing engine".into()))?;
+                let (mut context_candidate, prepared) = engine
+                    .ctx
+                    .prepare_candidate(
+                        operation_id.to_string(),
+                        format!("{operation_id}:step:{step_seq}"),
+                        step_seq.get(),
+                        policy_digest,
+                    )
+                    .map_err(|error| context_fault(error.to_string()))?;
+                let prepared_bytes = super::super::record::canonical_bytes(&prepared)
+                    .map_err(|error| context_fault(error.to_string()))?;
+                let actual_bytes = super::super::record::canonical_bytes(&rendered)
+                    .map_err(|error| context_fault(error.to_string()))?;
+                if prepared_bytes != actual_bytes {
+                    return Err(context_fault(
+                        "rendered projection changed after selection".into(),
+                    ));
+                }
+                let wire_context = rendered_context(&rendered);
+                let wire_tools = tools.iter().map(tool_schema).collect::<Vec<_>>();
+                context_candidate.cache_prefix = wire_context
+                    .frozen_prefix_len
+                    .map(|entries| {
+                        let prefix =
+                            wire_context.turns.get(..entries as usize).ok_or_else(|| {
+                                context_fault("cache prefix exceeds rendered projection".into())
+                            })?;
+                        let bytes = super::super::record::canonical_bytes(&(
+                            &wire_context.system_stable,
+                            &wire_context.system_knowledge,
+                            prefix,
+                        ))
+                        .map_err(|error| context_fault(error.to_string()))?;
+                        Ok(crate::context::execution::CachePrefixBoundary {
+                            digest: crate::evolution::ContentDigest::from_bytes(bytes.as_slice()),
+                            entries,
+                        })
+                    })
+                    .transpose()?;
+                let projection_bytes =
+                    super::super::record::canonical_bytes(&(&wire_context, &wire_tools))
+                        .map_err(|error| context_fault(error.to_string()))?;
+                context_candidate.rendered_snapshot =
+                    crate::evolution::ContentDigest::from_bytes(projection_bytes.as_slice());
+                EffectKind::CallProvider(CallProviderEffect {
+                    context_candidate: Box::new(context_candidate),
+                    context: wire_context,
+                    tools: wire_tools,
+                })
+            }
             LoopAction::ExecuteTools { calls } => EffectKind::ExecuteTools(ExecuteToolsEffect {
                 calls: calls.iter().map(wire_tool_call).collect::<Result<_, _>>()?,
             }),

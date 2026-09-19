@@ -1,0 +1,69 @@
+{
+  "domain": "context_execution",
+  "expected": {
+    "canonical": {
+      "input_digest": "sha256:8042431363177ace74d08dbe622cf75a74b4d3d3ff9c1694bce223abcdfdecb5",
+      "plan_digest": "sha256:6d0eab9d3ae74b1132f883382ead109436f46d13b8868c7091a8a0c39082ffef",
+      "verified": true
+    }
+  },
+  "id": "context-execution",
+  "input": {
+    "request": {
+      "effect": {
+        "context": {},
+        "context_candidate": {
+          "cache_prefix": null,
+          "input_budget_tokens": 100000,
+          "input_sequence": 1,
+          "operation_id": "op",
+          "policy_digest": "sha256:823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+          "pressure_ppm": 0,
+          "projected_tokens": 1,
+          "rendered_snapshot": "sha256:7a38905296006c575d7d45d1d881690a3ee87361ed67ce64642e2504482da818",
+          "runtime_inputs": "sha256:574283edaf12534163268364164cfab7c00041a56c780d3fe3a4071fb9ac1914",
+          "schema": "context/v1",
+          "selections": [
+            {
+              "action": "omit",
+              "entry_id": "state:task_state:sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4",
+              "reason": "empty_state_projection"
+            }
+          ],
+          "state": {
+            "digest": "sha256:1d5cc2c2fb50e62e50900d17658182e54cdeea27fd7f7f9eef2c14580f57e2b4",
+            "generation": 0,
+            "history": [],
+            "knowledge": [],
+            "schema": "context/v1",
+            "signals": [],
+            "state": [
+              {
+                "content_digest": "sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4",
+                "entry_id": "state:task_state:sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4",
+                "ordinal": 0,
+                "source": "state"
+              }
+            ],
+            "system": [],
+            "task_state": "sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4"
+          },
+          "step_id": "step"
+        }
+      },
+      "prompt_measurement": {
+        "confidence": "low_confidence",
+        "inputTokens": 10,
+        "requestFingerprint": "sha256:04dfe8627b03c95eaa80ee17dec9130a7d2ff7b054350eef1f67a853450cbb3d",
+        "source": {
+          "kind": "heuristic"
+        }
+      },
+      "provider_route": {
+        "model": "model",
+        "protocol": "test"
+      },
+      "request_fingerprint": "sha256:04dfe8627b03c95eaa80ee17dec9130a7d2ff7b054350eef1f67a853450cbb3d"
+    }
+  }
+}

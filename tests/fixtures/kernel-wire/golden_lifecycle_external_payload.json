@@ -1,7 +1,7 @@
 {
   "description": "The §7.10 external-payload arc (Task 13): configure → agent start → a provider turn calling one host tool → an **external** tool result → the model's `read_result` page-in → the loaded body. Read the records: the persisted body appears in exactly one place on this whole chain — the `payload_loaded` outcome the host sent when the kernel asked for it. It is in no effect the kernel published and in no accepted input the kernel did not ask for, which is what §25.10 means by \"large bodies do not enter the journal\". What the kernel holds instead is the reference: an opaque `payload_ref` it never interprets, a digest it checks the restored body against, and a bounded preview that is the only part to occupy context.",
   "genesis_digest": "sha256:a88b022db073cae4d6fc58bf2401da594921cf2339ff40628e1a482f5e4ba9a4",
-  "head_digest": "sha256:ec92d41ca68425e8057a54aad90a27ad9cfa92acc93c9d12d194fb62f9292dd5",
+  "head_digest": "sha256:ef35c37d06aad5efb55aa5398362aa48e92a352a7b62dff647762a5774598af1",
   "links": [
     {
       "envelope": {
@@ -151,8 +151,8 @@
         "input_id": "in-start",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:a88b022db073cae4d6fc58bf2401da594921cf2339ff40628e1a482f5e4ba9a4",
-        "record_digest": "sha256:969a66fdbefc0ac135132349c93e944b9a74d90f35e46182a6b731a3515970ec",
-        "step_digest": "sha256:c72277f45ca6a7c874e5753623a578e3858c1227da6b85c62c4bba18e63c3eb5",
+        "record_digest": "sha256:3beaff236fe98a77ba67c1b776a7657da533a7975e9a9735f41139d2a970e8f3",
+        "step_digest": "sha256:9b843162cb02368d14797f93d813087b63e84547a97acea791ce8fb2916139f2",
         "step_seq": "1"
       },
       "step": {
@@ -172,6 +172,56 @@
                       "role": "user"
                     }
                   ]
+                },
+                "context_candidate": {
+                  "cache_prefix": null,
+                  "input_budget_tokens": 128000,
+                  "input_sequence": 1,
+                  "operation_id": "op-driver-1",
+                  "policy_digest": "sha256:1bed2ebaf3bec2921be116ab74027914adfb1cc072ecf3927b4389908beec6bb",
+                  "pressure_ppm": 172,
+                  "projected_tokens": 36,
+                  "rendered_snapshot": "sha256:a2d809991487d1eb41034cb9a82e1a3bdc47b68af830395c94ea3991a243150e",
+                  "runtime_inputs": "sha256:3a30f0053b04b027ad41cd0db1186f82bb18b602ed8dbdbc5da70386f299d2a4",
+                  "schema": "context/v1",
+                  "selections": [
+                    {
+                      "action": "include",
+                      "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "state:task_state:sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e",
+                      "reason": "volatile_state_turn"
+                    }
+                  ],
+                  "state": {
+                    "digest": "sha256:b879762eecfbb9000a26f0c1d3471dbd9f6adfbbe663159ab4c3793e2b3db16e",
+                    "generation": 2,
+                    "history": [
+                      {
+                        "content_digest": "sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "ordinal": 0,
+                        "source": "history"
+                      }
+                    ],
+                    "knowledge": [],
+                    "schema": "context/v1",
+                    "signals": [],
+                    "state": [
+                      {
+                        "content_digest": "sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e",
+                        "entry_id": "state:task_state:sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e",
+                        "ordinal": 0,
+                        "source": "state"
+                      }
+                    ],
+                    "system": [],
+                    "task_state": "sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e"
+                  },
+                  "step_id": "op-driver-1:step:1"
                 },
                 "kind": "call_provider",
                 "tools": [
@@ -288,8 +338,8 @@
         "input_digest": "sha256:8d01c323dcb5b9059957a498afed825d767f916cc919abce37f8e9317a2b53bd",
         "input_id": "in-acted",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:969a66fdbefc0ac135132349c93e944b9a74d90f35e46182a6b731a3515970ec",
-        "record_digest": "sha256:3e10025df6ba811673c7c14a4e0933a94c4cce79a96c72a73398cbabc5ac553e",
+        "previous_record_digest": "sha256:3beaff236fe98a77ba67c1b776a7657da533a7975e9a9735f41139d2a970e8f3",
+        "record_digest": "sha256:937eb4a6ef879f5b09d8d201afce6c440e8c12a9c46d47d415c51aecea1a3b9c",
         "step_digest": "sha256:fc4df7785f97d163e1d7579cd8a6d63f57eafa0b1ac102da9925500d64614b29",
         "step_seq": "2"
       },
@@ -357,9 +407,9 @@
         "input_digest": "sha256:333a77d94e1856e4e8fe04050213046abe753c7d9959bd4bbb7134d4564d1018",
         "input_id": "in-results",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:3e10025df6ba811673c7c14a4e0933a94c4cce79a96c72a73398cbabc5ac553e",
-        "record_digest": "sha256:d78a57288a3700ab42796ebbf6e33df52498129bd55f606dee62fa0411241e9d",
-        "step_digest": "sha256:bbc2349b32ba94413e6ceb09a0635ba9ce4e33e5214d67ec6572ab999c9e5e23",
+        "previous_record_digest": "sha256:937eb4a6ef879f5b09d8d201afce6c440e8c12a9c46d47d415c51aecea1a3b9c",
+        "record_digest": "sha256:fbb24c10a8de9a90b7cf2408a9f6c72bf17c021da8f8ed6cc7d912508e97aa20",
+        "step_digest": "sha256:d5ad92795db627c8e2081c0947561693890a7ad9aeeafef06da82276eb776481",
         "step_seq": "3"
       },
       "step": {
@@ -397,6 +447,78 @@
                       "tool_call_id": "call-1"
                     }
                   ]
+                },
+                "context_candidate": {
+                  "cache_prefix": null,
+                  "input_budget_tokens": 128000,
+                  "input_sequence": 3,
+                  "operation_id": "op-driver-1",
+                  "policy_digest": "sha256:1bed2ebaf3bec2921be116ab74027914adfb1cc072ecf3927b4389908beec6bb",
+                  "pressure_ppm": 250,
+                  "projected_tokens": 49,
+                  "rendered_snapshot": "sha256:591b5b409072cced16aaefd7fbdf895139bc49906c1f54ffa3de5e9125256fae",
+                  "runtime_inputs": "sha256:1838d08740dd62737c1fe3b7403c9a9060a16a2db3241cb9806174cd1b790773",
+                  "schema": "context/v1",
+                  "selections": [
+                    {
+                      "action": "include",
+                      "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "history:1:sha256:29e5e7aaefac36771909c7357826351ef3ada3daec31bc6a7d0fdbb0dee54445",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "history:2:sha256:b1cd1979b3775d329516e95c482866c0cd6dbf1e3ddc97125b9bb4fad2f21a36",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "state:task_state:sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf",
+                      "reason": "volatile_state_turn"
+                    }
+                  ],
+                  "state": {
+                    "digest": "sha256:8d1f095387fe16e44f7e57d6109f8bdae185e9134182a0f6bf103ed3f387f5bb",
+                    "generation": 5,
+                    "history": [
+                      {
+                        "content_digest": "sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "ordinal": 0,
+                        "source": "history"
+                      },
+                      {
+                        "content_digest": "sha256:29e5e7aaefac36771909c7357826351ef3ada3daec31bc6a7d0fdbb0dee54445",
+                        "entry_id": "history:1:sha256:29e5e7aaefac36771909c7357826351ef3ada3daec31bc6a7d0fdbb0dee54445",
+                        "ordinal": 1,
+                        "source": "history"
+                      },
+                      {
+                        "content_digest": "sha256:b1cd1979b3775d329516e95c482866c0cd6dbf1e3ddc97125b9bb4fad2f21a36",
+                        "entry_id": "history:2:sha256:b1cd1979b3775d329516e95c482866c0cd6dbf1e3ddc97125b9bb4fad2f21a36",
+                        "ordinal": 2,
+                        "source": "history"
+                      }
+                    ],
+                    "knowledge": [],
+                    "schema": "context/v1",
+                    "signals": [],
+                    "state": [
+                      {
+                        "content_digest": "sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf",
+                        "entry_id": "state:task_state:sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf",
+                        "ordinal": 0,
+                        "source": "state"
+                      }
+                    ],
+                    "system": [],
+                    "task_state": "sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf"
+                  },
+                  "step_id": "op-driver-1:step:3"
                 },
                 "kind": "call_provider",
                 "tools": [
@@ -555,8 +677,8 @@
         "input_digest": "sha256:332d904efa8994ee2aa9c68acbc12ea3279ac07fa3d630e465a258266f3bf1cc",
         "input_id": "in-read",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:d78a57288a3700ab42796ebbf6e33df52498129bd55f606dee62fa0411241e9d",
-        "record_digest": "sha256:50903c35e8046a26233cfdb4a428778c0b731fb986e632a54afed947131bf1b6",
+        "previous_record_digest": "sha256:fbb24c10a8de9a90b7cf2408a9f6c72bf17c021da8f8ed6cc7d912508e97aa20",
+        "record_digest": "sha256:747bc515f732dc93a5f62f3550447bd3eb67f2b48d0f5b9e7a837094e66625bb",
         "step_digest": "sha256:133a194cd855dc754907fc7174ca3da970c5c7ecfd3f86e180165afded54d338",
         "step_seq": "4"
       },
@@ -612,9 +734,9 @@
         "input_digest": "sha256:bfbf740950a71e6ccf181a3b3b64e189b27db28d79189d814fc7a7e02cbcb904",
         "input_id": "in-loaded",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:50903c35e8046a26233cfdb4a428778c0b731fb986e632a54afed947131bf1b6",
-        "record_digest": "sha256:ec92d41ca68425e8057a54aad90a27ad9cfa92acc93c9d12d194fb62f9292dd5",
-        "step_digest": "sha256:2e1f507a4d4c3db9902159a95342f80c57e9a8fba210a698dfb462594b9c3682",
+        "previous_record_digest": "sha256:747bc515f732dc93a5f62f3550447bd3eb67f2b48d0f5b9e7a837094e66625bb",
+        "record_digest": "sha256:ef35c37d06aad5efb55aa5398362aa48e92a352a7b62dff647762a5774598af1",
+        "step_digest": "sha256:86f0bc5dc7cb1ef38a3043e09786732a033d6286ddbef32c53bfa4caa884e38e",
         "step_seq": "5"
       },
       "step": {
@@ -674,6 +796,111 @@
                       "role": "user"
                     }
                   ]
+                },
+                "context_candidate": {
+                  "cache_prefix": null,
+                  "input_budget_tokens": 128000,
+                  "input_sequence": 5,
+                  "operation_id": "op-driver-1",
+                  "policy_digest": "sha256:1bed2ebaf3bec2921be116ab74027914adfb1cc072ecf3927b4389908beec6bb",
+                  "pressure_ppm": 586,
+                  "projected_tokens": 92,
+                  "rendered_snapshot": "sha256:37a5b3fd8d20b6792d942afb52ace5271341224e7ee34391c89e7575d76899c5",
+                  "runtime_inputs": "sha256:ecb77bbe54dd2299bb6fcb23519afb00cc7e4c15c4958ee7c46115605bf3c297",
+                  "schema": "context/v1",
+                  "selections": [
+                    {
+                      "action": "include",
+                      "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "history:1:sha256:29e5e7aaefac36771909c7357826351ef3ada3daec31bc6a7d0fdbb0dee54445",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "history:2:sha256:79ec5bfefc32401ff095b819a80e3d0e001904bf746041574c839a9da2ddebd1",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "history:3:sha256:e650681e11ec9b2813b311868a40ac9b647e68883b98023f841d26c197252646",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "history:4:sha256:c3f43a649b02c9ec9fcd9efbebe615a7f85e58fe1b5b229f45a7ef46e1d53aeb",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "history:5:sha256:cc8ca097413bea82298fd941887127cacaab43d87f78d75792cb5068274114cf",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "state:task_state:sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf",
+                      "reason": "volatile_state_turn"
+                    }
+                  ],
+                  "state": {
+                    "digest": "sha256:7f00d975a17d0eac5ddfa2c88d31f7d872658a04139cb56d2be5b6dc051b78e4",
+                    "generation": 8,
+                    "history": [
+                      {
+                        "content_digest": "sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "ordinal": 0,
+                        "source": "history"
+                      },
+                      {
+                        "content_digest": "sha256:29e5e7aaefac36771909c7357826351ef3ada3daec31bc6a7d0fdbb0dee54445",
+                        "entry_id": "history:1:sha256:29e5e7aaefac36771909c7357826351ef3ada3daec31bc6a7d0fdbb0dee54445",
+                        "ordinal": 1,
+                        "source": "history"
+                      },
+                      {
+                        "content_digest": "sha256:79ec5bfefc32401ff095b819a80e3d0e001904bf746041574c839a9da2ddebd1",
+                        "entry_id": "history:2:sha256:79ec5bfefc32401ff095b819a80e3d0e001904bf746041574c839a9da2ddebd1",
+                        "ordinal": 2,
+                        "source": "history"
+                      },
+                      {
+                        "content_digest": "sha256:e650681e11ec9b2813b311868a40ac9b647e68883b98023f841d26c197252646",
+                        "entry_id": "history:3:sha256:e650681e11ec9b2813b311868a40ac9b647e68883b98023f841d26c197252646",
+                        "ordinal": 3,
+                        "source": "history"
+                      },
+                      {
+                        "content_digest": "sha256:c3f43a649b02c9ec9fcd9efbebe615a7f85e58fe1b5b229f45a7ef46e1d53aeb",
+                        "entry_id": "history:4:sha256:c3f43a649b02c9ec9fcd9efbebe615a7f85e58fe1b5b229f45a7ef46e1d53aeb",
+                        "ordinal": 4,
+                        "source": "history"
+                      },
+                      {
+                        "content_digest": "sha256:cc8ca097413bea82298fd941887127cacaab43d87f78d75792cb5068274114cf",
+                        "entry_id": "history:5:sha256:cc8ca097413bea82298fd941887127cacaab43d87f78d75792cb5068274114cf",
+                        "ordinal": 5,
+                        "source": "history"
+                      }
+                    ],
+                    "knowledge": [],
+                    "schema": "context/v1",
+                    "signals": [],
+                    "state": [
+                      {
+                        "content_digest": "sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf",
+                        "entry_id": "state:task_state:sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf",
+                        "ordinal": 0,
+                        "source": "state"
+                      }
+                    ],
+                    "system": [],
+                    "task_state": "sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf"
+                  },
+                  "step_id": "op-driver-1:step:5"
                 },
                 "kind": "call_provider",
                 "tools": [

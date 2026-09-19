@@ -1102,3 +1102,17 @@ pub struct MemoryProvenance {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_refs: Vec<String>,
 }
+
+/// Freeze host route and measurement against the kernel's committed Context candidate.
+#[wasm_bindgen(js_name = contextPrepareJson)]
+pub fn context_prepare_json(request: String) -> Result<String, JsValue> {
+    deepstrike_core::context::execution::prepare_context_dispatch_json(&request)
+        .map_err(|error| JsValue::from_str(&error))
+}
+
+/// Verify recorded execution evidence against a replayed Context candidate.
+#[wasm_bindgen(js_name = contextVerifyJson)]
+pub fn context_verify_json(request: String) -> Result<String, JsValue> {
+    deepstrike_core::context::execution::verify_context_dispatch_json(&request)
+        .map_err(|error| JsValue::from_str(&error))
+}

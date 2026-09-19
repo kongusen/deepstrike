@@ -1669,6 +1669,7 @@ fn protocol_action_from_wire(
                 unreachable!("call_provider effect must project to provider action");
             };
             HostEffect::CallProvider {
+                context_effect: call.clone(),
                 context: rendered_context_from_wire(&call.context)?,
                 tools: call
                     .tools

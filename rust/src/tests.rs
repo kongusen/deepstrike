@@ -850,6 +850,211 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    struct ContextOrderingLog {
+        inner: crate::runtime::InMemorySessionLog,
+        fail_preparation: bool,
+        persisted: std::sync::atomic::AtomicBool,
+        encoding_revision: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::runtime::SessionLog for ContextOrderingLog {
+        async fn append(
+            &self,
+            session_id: &str,
+            event: deepstrike_core::runtime::session::SessionEvent,
+        ) -> std::io::Result<u64> {
+            let prepared = matches!(
+                &event,
+                deepstrike_core::runtime::session::SessionEvent::ContextPrepared { .. }
+            );
+            if prepared && self.fail_preparation {
+                return Err(std::io::Error::other("context evidence write failed"));
+            }
+            let seq = self.inner.append(session_id, event).await?;
+            if prepared {
+                self.persisted
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                // A provider cache can change while the log append awaits storage.
+                self.encoding_revision
+                    .store(2, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok(seq)
+        }
+        async fn read(
+            &self,
+            session_id: &str,
+            from_seq: u64,
+            primitive_filter: Option<deepstrike_core::runtime::event_log::Primitive>,
+        ) -> std::io::Result<Vec<crate::runtime::session_log::SessionEntry>> {
+            self.inner
+                .read(session_id, from_seq, primitive_filter)
+                .await
+        }
+        async fn latest_seq(&self, session_id: &str) -> std::io::Result<i64> {
+            self.inner.latest_seq(session_id).await
+        }
+    }
+
+    struct FrozenContextTestProvider {
+        log: std::sync::Arc<ContextOrderingLog>,
+        dispatched: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::LLMProvider for FrozenContextTestProvider {
+        fn prepare_context_request(
+            &self,
+            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
+            _tools: &[deepstrike_core::types::message::ToolSchema],
+            _extensions: Option<&serde_json::Value>,
+            _state: Option<&crate::providers::ProviderRunState>,
+        ) -> crate::Result<serde_json::Value> {
+            Ok(serde_json::json!({ "scope": "encoded_body", "body": {
+                "revision": self.log.encoding_revision.load(std::sync::atomic::Ordering::SeqCst)
+            }}))
+        }
+        async fn stream(
+            &self,
+            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
+            _tools: &[deepstrike_core::types::message::ToolSchema],
+            _extensions: Option<&serde_json::Value>,
+            _state: Option<&crate::providers::ProviderRunState>,
+        ) -> crate::Result<
+            Box<
+                dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>>
+                    + Send
+                    + Unpin,
+            >,
+        > {
+            panic!("runner must dispatch the frozen request through stream_prepared")
+        }
+        async fn stream_prepared(
+            &self,
+            prepared: &serde_json::Value,
+            _context: &deepstrike_core::context::renderer::InternalRenderedContext,
+            _tools: &[deepstrike_core::types::message::ToolSchema],
+            _extensions: Option<&serde_json::Value>,
+            _state: Option<&crate::providers::ProviderRunState>,
+        ) -> crate::Result<
+            Box<
+                dyn futures::Stream<Item = crate::Result<crate::providers::StreamEvent>>
+                    + Send
+                    + Unpin,
+            >,
+        > {
+            assert!(
+                self.log.persisted.load(std::sync::atomic::Ordering::SeqCst),
+                "ContextPrepared must be stored before any provider execution"
+            );
+            assert_eq!(
+                self.log
+                    .encoding_revision
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                2
+            );
+            assert_eq!(
+                prepared["body"]["revision"],
+                serde_json::json!(1),
+                "dispatch must use the request frozen before the asynchronous log write"
+            );
+            self.dispatched
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(futures::stream::iter(vec![Ok(
+                crate::providers::StreamEvent::TextDelta {
+                    delta: "done".into(),
+                },
+            )])))
+        }
+    }
+
+    #[tokio::test]
+    async fn context_evidence_write_precedes_frozen_dispatch_and_failure_prevents_io() {
+        use crate::runtime::{RuntimeOptions, RuntimeRunner};
+        use futures::StreamExt;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        for fail_preparation in [false, true] {
+            let log = Arc::new(ContextOrderingLog {
+                inner: crate::runtime::InMemorySessionLog::new(),
+                fail_preparation,
+                persisted: AtomicBool::new(false),
+                encoding_revision: Arc::new(AtomicUsize::new(1)),
+            });
+            let dispatched = Arc::new(AtomicUsize::new(0));
+            let provider = FrozenContextTestProvider {
+                log: log.clone(),
+                dispatched: dispatched.clone(),
+            };
+            let runner = RuntimeRunner::new(RuntimeOptions {
+                artifact_set_digest: None,
+                provider: Box::new(provider),
+                execution_plane: None,
+                session_log: Some(log.clone()),
+                compression_store: None,
+                payload_store: None,
+                kernel_reliability: None,
+                session_id: None,
+                max_tokens: 1_000,
+                max_turns: Some(4),
+                timeout_ms: None,
+                extensions: None,
+                agent_id: None,
+                memory_scope: None,
+                system_prompt: None,
+                initial_memory: vec![],
+                skill_dir: None,
+                memory_store: None,
+                knowledge_source: None,
+                signal_source: None,
+                governance: None,
+                os_profile: None,
+                governance_policy: None,
+                signal_policy: None,
+                scheduler_policy: None,
+                resource_quota: None,
+                memory_policy: None,
+                tokenizer: None,
+                enable_plan_tool: None,
+                on_tool_suspend: None,
+                on_permission_request: None,
+                milestone_policy: crate::runtime::MilestonePolicy::Terminate,
+                milestone_contract: None,
+                run_spec: None,
+                allowed_tool_ids: None,
+                baseline_tool_ids: None,
+                on_turn_metrics: None,
+                stable_core_tool_ids: vec![],
+                pre_query_memory: None,
+                on_milestone_evaluate: None,
+            });
+            let mut stream = runner
+                .run_streaming("finish the task", &[], None, Some("context-order"))
+                .await
+                .unwrap();
+            let mut failure = None;
+            while let Some(event) = stream.next().await {
+                if let Err(error) = event {
+                    failure = Some(error.to_string());
+                    break;
+                }
+            }
+            if fail_preparation {
+                assert!(
+                    failure
+                        .as_deref()
+                        .is_some_and(|error| error.contains("context evidence write failed"))
+                );
+                assert_eq!(dispatched.load(Ordering::SeqCst), 0);
+            } else {
+                assert!(failure.is_none(), "{failure:?}");
+                assert_eq!(dispatched.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
     struct TooLongThenOkProvider {
         call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
@@ -1003,6 +1208,31 @@ mod tests {
 
         assert_eq!(text, "recovered");
         assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let preparations: Vec<_> = session_log
+            .read(session_id, 0, None)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|entry| match entry.event {
+                deepstrike_core::runtime::session::SessionEvent::ContextPrepared {
+                    preparation,
+                    ..
+                } => Some(preparation),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(preparations.len(), 2);
+        assert_ne!(
+            preparations[0].execution_input.input_digest,
+            preparations[1].execution_input.input_digest
+        );
+        for preparation in &preparations {
+            preparation
+                .execution_input
+                .verify(&preparation.plan)
+                .unwrap();
+        }
 
         let entries = session_log.read(session_id, 0, None).await.unwrap();
         assert!(entries.iter().any(|entry| {

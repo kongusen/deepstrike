@@ -39,6 +39,11 @@ impl Partition {
     pub fn measured_tokens(&self, index: usize, engine: &ContextTokenEngine) -> u32 {
         self.measurements
             .get(index)
+            .filter(|measurement| {
+                self.messages
+                    .get(index)
+                    .is_some_and(|message| measurement.matches_message(message))
+            })
             .map(|m| m.tokens)
             .unwrap_or_else(|| {
                 self.messages
@@ -418,6 +423,16 @@ mod tests {
 
     fn engine() -> ContextTokenEngine {
         ContextTokenEngine::char_approx()
+    }
+
+    #[test]
+    fn stale_measurement_does_not_count_a_replaced_message() {
+        let mut partition = Partition::new();
+        partition.push(CoreMessage::user("old"), 1);
+        partition.messages[0] = CoreMessage::user("new evidence ".repeat(100));
+        let expected = engine().count_message(&partition.messages[0]);
+        assert!(expected > 1);
+        assert_eq!(partition.measured_tokens(0, &engine()), expected);
     }
 
     #[test]

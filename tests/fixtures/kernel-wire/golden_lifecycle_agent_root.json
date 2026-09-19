@@ -1,7 +1,7 @@
 {
   "description": "Configure → atomic agent root start (spec 6, 7.4). Two accepted inputs reach the first provider call: the genesis record freezes the resolved configuration, and the start record's step carries the immutable root kind, the initial execution focus and the one CallProvider effect the transition published.",
   "genesis_digest": "sha256:37cf7f256f73de5de61d898c1a8cb1ce41cfb282bac269e7a4a5d72def45635e",
-  "head_digest": "sha256:f6c6a27b102f78eb7db4237cd7d53834c1e0976d6fdda47e525072478605ccd4",
+  "head_digest": "sha256:dfb01d179d39635f9b9ff732897435d56091872744d0bddc44735ff3d0aebed3",
   "links": [
     {
       "envelope": {
@@ -84,8 +84,8 @@
         "input_id": "in-start",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:37cf7f256f73de5de61d898c1a8cb1ce41cfb282bac269e7a4a5d72def45635e",
-        "record_digest": "sha256:f6c6a27b102f78eb7db4237cd7d53834c1e0976d6fdda47e525072478605ccd4",
-        "step_digest": "sha256:e10b550fc2b20e463b59484b9367c49385a2c0c65bc77578af1d9a1e0d2ad95d",
+        "record_digest": "sha256:dfb01d179d39635f9b9ff732897435d56091872744d0bddc44735ff3d0aebed3",
+        "step_digest": "sha256:ef54d995cfc49d29d50fc63c40cbf09c0693b6873aaf192b0a8bf286f96d2031",
         "step_seq": "1"
       },
       "step": {
@@ -105,6 +105,56 @@
                       "role": "user"
                     }
                   ]
+                },
+                "context_candidate": {
+                  "cache_prefix": null,
+                  "input_budget_tokens": 128000,
+                  "input_sequence": 1,
+                  "operation_id": "op-driver-1",
+                  "policy_digest": "sha256:1bed2ebaf3bec2921be116ab74027914adfb1cc072ecf3927b4389908beec6bb",
+                  "pressure_ppm": 172,
+                  "projected_tokens": 36,
+                  "rendered_snapshot": "sha256:1e2e036a0cc3b7373553c85961127e85cbca9cc052bc0b91038bf34d2d8600a3",
+                  "runtime_inputs": "sha256:3a30f0053b04b027ad41cd0db1186f82bb18b602ed8dbdbc5da70386f299d2a4",
+                  "schema": "context/v1",
+                  "selections": [
+                    {
+                      "action": "include",
+                      "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "state:task_state:sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e",
+                      "reason": "volatile_state_turn"
+                    }
+                  ],
+                  "state": {
+                    "digest": "sha256:b879762eecfbb9000a26f0c1d3471dbd9f6adfbbe663159ab4c3793e2b3db16e",
+                    "generation": 2,
+                    "history": [
+                      {
+                        "content_digest": "sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "ordinal": 0,
+                        "source": "history"
+                      }
+                    ],
+                    "knowledge": [],
+                    "schema": "context/v1",
+                    "signals": [],
+                    "state": [
+                      {
+                        "content_digest": "sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e",
+                        "entry_id": "state:task_state:sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e",
+                        "ordinal": 0,
+                        "source": "state"
+                      }
+                    ],
+                    "system": [],
+                    "task_state": "sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e"
+                  },
+                  "step_id": "op-driver-1:step:1"
                 },
                 "kind": "call_provider"
               },

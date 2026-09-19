@@ -1,7 +1,7 @@
 {
   "description": "One whole agent turn cycle on the canonical wire (spec 7.9 · Task 12): configure → atomic agent start → provider result carrying a tool call → tool results → final provider answer → agent terminal. Every step after the start is a single `ResolveEffect` input, and each one publishes exactly the next effect the loop is waiting on — until the last, whose disposition is the terminal itself and which publishes nothing.",
   "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
-  "head_digest": "sha256:6ade726643f03880e3f08cf64b9ef382c3837fa2a89f15b6c383c2faf753b456",
+  "head_digest": "sha256:f3c308463349d5cc54c3cbd17e379ec6289090157cb1e32f0f1e0a6b5c4a0e42",
   "links": [
     {
       "envelope": {
@@ -146,8 +146,8 @@
         "input_id": "in-start",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
-        "record_digest": "sha256:ad02c6b34be537d5d34143ec72e4dfdbe3b8c94c79437e122cc35e4025453a25",
-        "step_digest": "sha256:c72277f45ca6a7c874e5753623a578e3858c1227da6b85c62c4bba18e63c3eb5",
+        "record_digest": "sha256:bf21a96b09e865932bd1c4467098daa0c4f024ae380d23b24ed435ea89854513",
+        "step_digest": "sha256:9b843162cb02368d14797f93d813087b63e84547a97acea791ce8fb2916139f2",
         "step_seq": "1"
       },
       "step": {
@@ -167,6 +167,56 @@
                       "role": "user"
                     }
                   ]
+                },
+                "context_candidate": {
+                  "cache_prefix": null,
+                  "input_budget_tokens": 128000,
+                  "input_sequence": 1,
+                  "operation_id": "op-driver-1",
+                  "policy_digest": "sha256:1bed2ebaf3bec2921be116ab74027914adfb1cc072ecf3927b4389908beec6bb",
+                  "pressure_ppm": 172,
+                  "projected_tokens": 36,
+                  "rendered_snapshot": "sha256:a2d809991487d1eb41034cb9a82e1a3bdc47b68af830395c94ea3991a243150e",
+                  "runtime_inputs": "sha256:3a30f0053b04b027ad41cd0db1186f82bb18b602ed8dbdbc5da70386f299d2a4",
+                  "schema": "context/v1",
+                  "selections": [
+                    {
+                      "action": "include",
+                      "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "state:task_state:sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e",
+                      "reason": "volatile_state_turn"
+                    }
+                  ],
+                  "state": {
+                    "digest": "sha256:b879762eecfbb9000a26f0c1d3471dbd9f6adfbbe663159ab4c3793e2b3db16e",
+                    "generation": 2,
+                    "history": [
+                      {
+                        "content_digest": "sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "ordinal": 0,
+                        "source": "history"
+                      }
+                    ],
+                    "knowledge": [],
+                    "schema": "context/v1",
+                    "signals": [],
+                    "state": [
+                      {
+                        "content_digest": "sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e",
+                        "entry_id": "state:task_state:sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e",
+                        "ordinal": 0,
+                        "source": "state"
+                      }
+                    ],
+                    "system": [],
+                    "task_state": "sha256:8b0eaeeef8ac5127c4f50218d6980141c0ad2d39ee2dbbbf1bdf942211937a7e"
+                  },
+                  "step_id": "op-driver-1:step:1"
                 },
                 "kind": "call_provider",
                 "tools": [
@@ -283,8 +333,8 @@
         "input_digest": "sha256:8d01c323dcb5b9059957a498afed825d767f916cc919abce37f8e9317a2b53bd",
         "input_id": "in-acted",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:ad02c6b34be537d5d34143ec72e4dfdbe3b8c94c79437e122cc35e4025453a25",
-        "record_digest": "sha256:79c3e44a4935ed60bbe94e045b9a361b26c529acd5cda3842d38bf589000b600",
+        "previous_record_digest": "sha256:bf21a96b09e865932bd1c4467098daa0c4f024ae380d23b24ed435ea89854513",
+        "record_digest": "sha256:a4e4f0c68f6837c30655fefd1dbf679ab8f34d5c01fb9c3878cc71ad6a52850f",
         "step_digest": "sha256:fc4df7785f97d163e1d7579cd8a6d63f57eafa0b1ac102da9925500d64614b29",
         "step_seq": "2"
       },
@@ -351,9 +401,9 @@
         "input_digest": "sha256:f34c6835df793f83d0b33bcb423af480f951224abd057156f1609b28865a8f1b",
         "input_id": "in-results",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:79c3e44a4935ed60bbe94e045b9a361b26c529acd5cda3842d38bf589000b600",
-        "record_digest": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
-        "step_digest": "sha256:d1175759ebe270ec797f82453bcf11770527dda0e3840555dcb7be41b4bc1a0f",
+        "previous_record_digest": "sha256:a4e4f0c68f6837c30655fefd1dbf679ab8f34d5c01fb9c3878cc71ad6a52850f",
+        "record_digest": "sha256:a4360c1b54acd52d82f11ff74573fb8028abbbe9f9d442a71a685c50a95f7f30",
+        "step_digest": "sha256:07dafdaea4ead4df5630c97b246e1e50fcf2640419f69f355b3ffe9c5b05ed69",
         "step_seq": "3"
       },
       "step": {
@@ -391,6 +441,78 @@
                       "tool_call_id": "call-1"
                     }
                   ]
+                },
+                "context_candidate": {
+                  "cache_prefix": null,
+                  "input_budget_tokens": 128000,
+                  "input_sequence": 3,
+                  "operation_id": "op-driver-1",
+                  "policy_digest": "sha256:1bed2ebaf3bec2921be116ab74027914adfb1cc072ecf3927b4389908beec6bb",
+                  "pressure_ppm": 211,
+                  "projected_tokens": 44,
+                  "rendered_snapshot": "sha256:d5e50fee9a1728ff15c553fa6c452d03dfe95e598f3bf2ed952cbdff705f83d6",
+                  "runtime_inputs": "sha256:b891a271dcb82200d9bb3ec16110bc49e3d06fcbdbbba25fe44a293d6aeaa944",
+                  "schema": "context/v1",
+                  "selections": [
+                    {
+                      "action": "include",
+                      "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "history:1:sha256:29e5e7aaefac36771909c7357826351ef3ada3daec31bc6a7d0fdbb0dee54445",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "history:2:sha256:fbed5350e913243c5df7e0f0eccb379d9a8d01986afd877080110df352b55175",
+                      "reason": "history_rendered"
+                    },
+                    {
+                      "action": "include",
+                      "entry_id": "state:task_state:sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf",
+                      "reason": "volatile_state_turn"
+                    }
+                  ],
+                  "state": {
+                    "digest": "sha256:e44f2105d1078bba9d9252c932adac9405d0bd1b6507e5b5a2bf11d67719ac9c",
+                    "generation": 5,
+                    "history": [
+                      {
+                        "content_digest": "sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "entry_id": "history:0:sha256:2928c1116446671f1daeca8bddf686e73d85654367dda871e27008f3886f14e6",
+                        "ordinal": 0,
+                        "source": "history"
+                      },
+                      {
+                        "content_digest": "sha256:29e5e7aaefac36771909c7357826351ef3ada3daec31bc6a7d0fdbb0dee54445",
+                        "entry_id": "history:1:sha256:29e5e7aaefac36771909c7357826351ef3ada3daec31bc6a7d0fdbb0dee54445",
+                        "ordinal": 1,
+                        "source": "history"
+                      },
+                      {
+                        "content_digest": "sha256:fbed5350e913243c5df7e0f0eccb379d9a8d01986afd877080110df352b55175",
+                        "entry_id": "history:2:sha256:fbed5350e913243c5df7e0f0eccb379d9a8d01986afd877080110df352b55175",
+                        "ordinal": 2,
+                        "source": "history"
+                      }
+                    ],
+                    "knowledge": [],
+                    "schema": "context/v1",
+                    "signals": [],
+                    "state": [
+                      {
+                        "content_digest": "sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf",
+                        "entry_id": "state:task_state:sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf",
+                        "ordinal": 0,
+                        "source": "state"
+                      }
+                    ],
+                    "system": [],
+                    "task_state": "sha256:00ee76e1303f1dc7d0ba7fdf8ceb7669b9a096003f5e8dfe09fea49598f529cf"
+                  },
+                  "step_id": "op-driver-1:step:3"
                 },
                 "kind": "call_provider",
                 "tools": [
@@ -509,8 +631,8 @@
         "input_digest": "sha256:2775633498351ebb9a99cc2b6dffb425012a04201368f71633f5bd6dde9e9028",
         "input_id": "in-answer",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
-        "record_digest": "sha256:6ade726643f03880e3f08cf64b9ef382c3837fa2a89f15b6c383c2faf753b456",
+        "previous_record_digest": "sha256:a4360c1b54acd52d82f11ff74573fb8028abbbe9f9d442a71a685c50a95f7f30",
+        "record_digest": "sha256:f3c308463349d5cc54c3cbd17e379ec6289090157cb1e32f0f1e0a6b5c4a0e42",
         "step_digest": "sha256:94434864beecc9729b1244adbc2226dccdafbc0ad8954b1dd7239449c37750f5",
         "step_seq": "4"
       },

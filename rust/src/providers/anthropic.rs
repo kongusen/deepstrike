@@ -376,6 +376,11 @@ fn assert_cache_budget(system: Option<&Value>, tool_count: usize) -> Result<()> 
 
 #[async_trait]
 impl LLMProvider for AnthropicProvider {
+    fn context_route(&self) -> Value {
+        json!({ "provider": "anthropic", "protocol": "anthropic-messages", "model": self.model,
+            "endpoint": "https://api.anthropic.com/v1/messages" })
+    }
+
     fn runtime_policy(&self) -> RuntimePolicy {
         match self.model.as_str() {
             "claude-opus-4-7" | "claude-opus-4-6" => RuntimePolicy {
@@ -450,14 +455,13 @@ impl LLMProvider for AnthropicProvider {
         self.remember_native_blocks(content, tool_calls, blocks);
     }
 
-    async fn stream(
+    fn prepare_context_request(
         &self,
         context: &InternalRenderedContext,
         tools: &[ToolSchema],
         extensions: Option<&Value>,
         _state: Option<&super::ProviderRunState>,
-    ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
-        self.stream_native_blocks.lock().unwrap().clear();
+    ) -> Result<Value> {
         let strategy = resolve_cache_breakpoint_strategy(extensions);
         let (system, msgs) = self.context_to_anthropic(context, strategy)?;
         // Anchor the tool breakpoint only when system is not structured blocks.
@@ -484,6 +488,37 @@ impl LLMProvider for AnthropicProvider {
                 body["thinking"] = json!({ "type": "enabled", "budget_tokens": 8000 });
             }
         }
+
+        Ok(json!({ "scope": "encoded_body", "body": body }))
+    }
+
+    async fn stream(
+        &self,
+        context: &InternalRenderedContext,
+        tools: &[ToolSchema],
+        extensions: Option<&Value>,
+        state: Option<&super::ProviderRunState>,
+    ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
+        let prepared = self.prepare_context_request(context, tools, extensions, state)?;
+        self.stream_prepared(&prepared, context, tools, extensions, state)
+            .await
+    }
+
+    async fn stream_prepared(
+        &self,
+        prepared: &Value,
+        _context: &InternalRenderedContext,
+        _tools: &[ToolSchema],
+        _extensions: Option<&Value>,
+        _state: Option<&super::ProviderRunState>,
+    ) -> Result<Box<dyn Stream<Item = Result<StreamEvent>> + Send + Unpin>> {
+        self.stream_native_blocks.lock().unwrap().clear();
+        let body = prepared
+            .get("body")
+            .filter(|body| body.is_object())
+            .ok_or_else(|| {
+                Error::Other("prepared provider request must contain an encoded body".into())
+            })?;
 
         let resp = self
             .client
@@ -702,6 +737,58 @@ mod tests {
     use super::*;
     use compact_str::CompactString;
     use deepstrike_core::types::message::{ContentPart, CoreMessage, ToolCall};
+
+    #[test]
+    fn prepared_request_freezes_native_replay_blocks() {
+        let provider = AnthropicProvider::new("test-key");
+        let tool_calls = vec![ToolCall {
+            id: "call".into(),
+            name: "lookup".into(),
+            arguments: json!({}),
+        }];
+        let mut assistant = CoreMessage::assistant("answer");
+        assistant.tool_calls = tool_calls.clone();
+        let context = InternalRenderedContext {
+            system_text: String::new(),
+            system_stable: String::new(),
+            system_knowledge: String::new(),
+            turns: vec![CoreMessage::user("question"), assistant],
+            state_turn: None,
+            frozen_prefix_len: None,
+            budget_overflow: None,
+        };
+        let before = provider
+            .prepare_context_request(&context, &[], None, None)
+            .unwrap();
+        provider.remember_native_blocks(
+            "answer",
+            &tool_calls,
+            vec![
+                json!({ "type": "thinking", "thinking": "reasoning", "signature": "signed" }),
+                json!({ "type": "text", "text": "answer" }),
+            ],
+        );
+        let frozen = provider
+            .prepare_context_request(&context, &[], None, None)
+            .unwrap();
+        assert_ne!(before, frozen);
+        assert_eq!(
+            frozen["body"]["messages"][1]["content"][0]["type"],
+            "thinking"
+        );
+        provider.native_assistant_blocks.lock().unwrap().clear();
+        assert_eq!(
+            before,
+            provider
+                .prepare_context_request(&context, &[], None, None)
+                .unwrap()
+        );
+        // stream_prepared consumes this owned body without consulting the replay cache again.
+        assert_eq!(
+            frozen["body"]["messages"][1]["content"][0]["signature"],
+            "signed"
+        );
+    }
 
     #[test]
     fn anthropic_usage_breakdown_extracts_raw_components() {

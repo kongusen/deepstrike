@@ -1,0 +1,50 @@
+{
+  "input": {
+    "providerId": "openai",
+    "modelId": "gpt-4o",
+    "endpoint": {
+      "id": "openai.chat",
+      "protocol": "openai-chat",
+      "baseURL": "https://api.openai.com/v1"
+    },
+    "context": {
+      "systemText": "Be precise.",
+      "turns": [
+        {
+          "role": "user",
+          "content": "Explain CJK: 你好",
+          "toolCalls": []
+        }
+      ]
+    },
+    "tools": [
+      {
+        "name": "lookup",
+        "description": "Look up a fact.",
+        "parameters": "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}"
+      }
+    ],
+    "options": {
+      "temperature": 0.2
+    },
+    "execution": {
+      "scope": "encoded_body",
+      "request": {
+        "body": {
+          "model": "gpt-4o",
+          "messages": [
+            {
+              "role": "assistant",
+              "content": "answer",
+              "reasoning_content": "native reasoning"
+            }
+          ]
+        }
+      },
+      "state": {
+        "previous_response_id": "response-17"
+      }
+    }
+  },
+  "fingerprint": "sha256:f1127be213b168f42b89cab94285c823685b5aa761b00c2ab8c471bc8f9b2f49"
+}

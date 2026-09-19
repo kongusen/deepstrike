@@ -41,6 +41,8 @@ pub struct ProviderRequestPlan {
     pub context: Value,
     pub tools: Vec<Value>,
     pub options: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<Value>,
     pub fingerprint: String,
 }
 
@@ -79,8 +81,24 @@ impl ProviderRequestPlan {
             context: hashed["context"].clone(),
             tools: hashed["tools"].as_array().cloned().unwrap_or_default(),
             options: hashed["options"].clone(),
+            execution: None,
             fingerprint,
         })
+    }
+
+    /// Bind frozen provider material and continuation state to this request's identity.
+    pub fn with_execution(mut self, execution: Value) -> Self {
+        let material = serde_json::json!({
+            "providerId": self.provider_id, "modelId": self.model_id,
+            "endpoint": self.endpoint, "context": self.context, "tools": self.tools,
+            "options": self.options, "execution": execution,
+        });
+        self.fingerprint = format!(
+            "sha256:{:x}",
+            Sha256::digest(canonical_json(&material).as_bytes())
+        );
+        self.execution = Some(execution);
+        self
     }
 }
 

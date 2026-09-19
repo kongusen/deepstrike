@@ -46,7 +46,7 @@ use crate::runtime::provider_replay::{peek_provider_replay, seed_provider_replay
 use crate::runtime::replay::{
     is_mid_run, replay_messages_with_cap, replay_messages_with_cap_and_loader,
 };
-use crate::runtime::session_log::{SessionEntry, SessionLog};
+use crate::runtime::session_log::{InMemorySessionLog, SessionEntry, SessionLog};
 use crate::runtime::{InMemoryKernelJournal, KernelJournal};
 use crate::{Error, Result};
 use crate::{SignalDeliveryReceipt, SignalSource};
@@ -117,6 +117,7 @@ pub struct RuntimeOptions {
     /// Host-owned artifact set identity captured in operation genesis.
     pub artifact_set_digest: Option<String>,
     pub execution_plane: Option<Box<dyn ExecutionPlane>>,
+    /// Defaults to an in-memory log. Supply a durable log for cross-process evidence retention.
     pub session_log: Option<Arc<dyn SessionLog>>,
     pub compression_store: Option<Arc<dyn ArchiveStore>>,
     /// Storage for canonical opaque external payload locators.
@@ -266,6 +267,9 @@ impl RuntimeRunner {
         mut opts: RuntimeOptions,
         kernel_journal: Arc<dyn KernelJournal>,
     ) -> Self {
+        if opts.session_log.is_none() {
+            opts.session_log = Some(Arc::new(InMemorySessionLog::new()));
+        }
         if opts.payload_store.is_none() {
             opts.payload_store = Some(Arc::new(FilePayloadStore::new(".payloads")));
         }
@@ -1333,7 +1337,7 @@ impl RuntimeRunner {
                 }
 
                 match &action.effect {
-                    HostEffect::CallProvider { context, tools } => {
+                    HostEffect::CallProvider { context, tools, context_effect } => {
                         let provider_effect_id = action.effect_id.clone();
                         let mut final_text = String::new();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
@@ -1370,10 +1374,50 @@ impl RuntimeRunner {
                         // reassigned before the metrics emit below.
                         let tools_exposed = provider_tools.len();
 
+                        // Freeze host-owned route and preflight evidence against the committed
+                        // candidate before any provider I/O. Core owns all digest/plan validation.
+                        let mut route = self.opts.provider.context_route();
+                        let prepared_request = self.opts.provider.prepare_context_request(
+                            provider_context, provider_tools, ext.as_ref(), provider_state.as_ref(),
+                        )?;
+                        route.as_object_mut().ok_or_else(|| Error::Other("provider context route must be an object".into()))?
+                            .insert("request_fingerprint_scope".into(), prepared_request.get("scope")
+                                .cloned().unwrap_or_else(|| serde_json::json!("adapter_input")));
+                        let material = serde_json::json!({
+                            "route": route, "request": prepared_request,
+                            "context": provider_context, "tools": provider_tools,
+                            "options": ext, "provider_state": provider_state,
+                        });
+                        let material_bytes = deepstrike_core::runtime::kernel::wire::record::canonical_bytes(&material)
+                            .map_err(|error| Error::Other(error.to_string()))?;
+                        let fingerprint = deepstrike_core::evolution::ContentDigest::from_bytes(material_bytes.as_slice());
+                        // Advisory estimate only; native provider usage settles the execution later.
+                        let counted_material = deepstrike_core::runtime::kernel::wire::record::canonical_bytes(
+                            prepared_request.get("body").unwrap_or(&prepared_request),
+                        ).map_err(|error| Error::Other(error.to_string()))?;
+                        let estimated = counted_material.as_slice().len().div_ceil(4) as u64;
+                        let preparation = deepstrike_core::context::execution::prepare_context_dispatch(
+                            &deepstrike_core::context::execution::ContextDispatchRequest {
+                                effect: context_effect.clone(), request_fingerprint: fingerprint.clone(),
+                                provider_route: route,
+                                prompt_measurement: deepstrike_core::context::execution::ContextPromptMeasurement {
+                                    request_fingerprint: fingerprint, input_tokens: estimated,
+                                    source: deepstrike_core::context::measurement::MeasurementSource::Heuristic,
+                                    confidence: deepstrike_core::context::measurement::MeasurementConfidence::LowConfidence,
+                                },
+                            },
+                        ).map_err(|error| Error::Other(error.to_string()))?;
+                        if let Some(log) = &self.opts.session_log {
+                            log.append(&session_id, SessionEvent::ContextPrepared {
+                                turn: kernel.lock().await.turn(),
+                                effect_id: provider_effect_id.clone(), preparation: Box::new(preparation),
+                            }).await.map_err(Error::Io)?;
+                        }
+
                         let mut provider_stream = match self
                             .opts
                             .provider
-                            .stream(provider_context, provider_tools, ext.as_ref(), provider_state.as_ref())
+                            .stream_prepared(&prepared_request, provider_context, provider_tools, ext.as_ref(), provider_state.as_ref())
                             .await
                         {
                             Ok(s) => s,

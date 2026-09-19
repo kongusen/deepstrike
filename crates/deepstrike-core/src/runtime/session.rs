@@ -45,6 +45,11 @@ pub enum RollbackReason {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionEvent {
+    ContextPrepared {
+        turn: u32,
+        effect_id: String,
+        preparation: Box<crate::context::execution::ContextDispatchPreparation>,
+    },
     // ─── 1. Execution & Inference Loop ───
     RunStarted {
         run_id: String,
@@ -314,6 +319,7 @@ impl SessionEvent {
     /// Event `kind` string (snake_case tag).
     pub fn kind_str(&self) -> &'static str {
         match self {
+            Self::ContextPrepared { .. } => "context_prepared",
             Self::RunStarted { .. } => "run_started",
             Self::LlmCompleted { .. } => "llm_completed",
             Self::ToolRequested { .. } => "tool_requested",

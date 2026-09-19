@@ -25,6 +25,7 @@ pub(crate) struct HostAction {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum HostEffect {
     CallProvider {
+        context_effect: deepstrike_core::runtime::kernel::wire::effect::CallProviderEffect,
         context: InternalRenderedContext,
         tools: Vec<ToolSchema>,
     },

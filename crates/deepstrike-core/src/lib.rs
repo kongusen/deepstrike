@@ -43,6 +43,13 @@ pub mod syscall;
 pub mod types;
 
 // Re-export key types at crate root for convenience
+pub use context::execution::{
+    CachePrefixBoundary, ContextCandidate, ContextContractError, ContextDispatchPreparation,
+    ContextDispatchRequest, ContextEntryRef, ContextEntrySource, ContextExecutionInput,
+    ContextPlan, ContextPlanAction, ContextPreparation, ContextPreparationRequest,
+    ContextPromptMeasurement, ContextSelection, ContextState, prepare_context_dispatch,
+    verify_context_dispatch,
+};
 pub use evolution::{
     ActivationBinding, ArtifactKind, ArtifactManifest, ArtifactRef, ArtifactSet, ArtifactVersion,
     ContentDigest, EvaluationContextBinding, EvaluationFact, EvaluationGate, EvaluationMetric,
