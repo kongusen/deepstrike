@@ -2581,7 +2581,6 @@ fn a_mixed_syscall_and_host_tool_batch_resolves_without_re_emitting_the_tool_bat
                 durable_content: None,
                 is_error: false,
                 disposition: ToolResultDisposition::Recoverable,
-                tokens: None,
             },
         })],
     ));
@@ -3002,7 +3001,10 @@ fn payloads_resolved(
         id,
         at,
         effect,
-        EffectSuccess::Tools(ToolsSuccess { results }),
+        EffectSuccess::Tools(ToolsSuccess {
+            results,
+            measurements: Vec::new(),
+        }),
     )
 }
 
@@ -3234,7 +3236,6 @@ fn one_illegal_result_rejects_the_whole_batch() {
                     durable_content: None,
                     is_error: false,
                     disposition: ToolResultDisposition::Recoverable,
-                    tokens: None,
                 },
             }),
             external_payload("call-2", Digest::new("md5:deadbeef").unwrap(), 9_000, "p"),
@@ -3922,11 +3923,11 @@ fn tools_resolved(
                             durable_content: None,
                             is_error: *is_error,
                             disposition: ToolResultDisposition::Recoverable,
-                            tokens: None,
                         },
                     })
                 })
                 .collect(),
+            measurements: Vec::new(),
         }),
     )
 }
@@ -4548,11 +4549,11 @@ fn tool_batch(
                             durable_content: None,
                             is_error: *is_error,
                             disposition: *disposition,
-                            tokens: None,
                         },
                     })
                 })
                 .collect(),
+            measurements: Vec::new(),
         }),
     )
 }
@@ -4677,6 +4678,7 @@ fn an_externalised_fatal_stops_the_batch_exactly_as_an_inline_one_does() {
                 true,
                 ToolResultDisposition::Fatal,
             )],
+            measurements: Vec::new(),
         }),
     ));
     assert_eq!(kinds(&settled), vec![EffectKindTag::CallProvider]);
@@ -9243,7 +9245,6 @@ fn a_structured_inline_tool_result_survives_checkpoint_restore() {
                 durable_content: Some(durable.clone()),
                 is_error: false,
                 disposition: ToolResultDisposition::Recoverable,
-                tokens: None,
             },
         })],
     ));
@@ -9307,7 +9308,6 @@ fn an_inline_tool_result_rejects_invalid_durable_content_before_state_mutation()
                 }),
                 is_error: false,
                 disposition: ToolResultDisposition::Recoverable,
-                tokens: None,
             },
         })],
     ));

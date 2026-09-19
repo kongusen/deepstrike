@@ -586,10 +586,13 @@ class CanonicalRunnerRuntime:
       )
     if kind == "tool_results":
       results = []
+      measurements = []
       for raw in event.get("results") or []:
         result = _object(raw)
         output = str(result.get("output") or "")
         call_id = str(result.get("call_id") or "")
+        if result.get("token_count") is not None:
+          measurements.append({"call_id": call_id, "tokens": int(result["token_count"])})
         self._new_messages.append(Message(role="tool", content=output))
         if len(output.encode()) > self._payload_inline_threshold and self._persist_payload is not None:
           persisted = await self._persist_payload(call_id, output, self._payload_preview_bytes)
@@ -603,9 +606,9 @@ class CanonicalRunnerRuntime:
         results.append({"kind": "inline", "call_id": call_id, "result": {
           "output": output, **({"is_error": True} if result.get("is_error") else {}),
           "disposition": "fatal" if result.get("is_fatal") else "recoverable",
-          **({"tokens": int(result["token_count"])} if result.get("token_count") is not None else {}),
         }})
-      return await self._resolve(event, {"kind": "tools", "results": results})
+      return await self._resolve(event, {"kind": "tools", "results": results,
+                                         **({"measurements": measurements} if measurements else {})})
     if kind == "approval_result":
       return await self._resolve(event, {"kind": "approval",
         "approved_call_ids": event.get("approved_calls") or [], "denied_call_ids": event.get("denied_calls") or []})

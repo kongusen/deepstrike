@@ -373,11 +373,11 @@ fn tools_resolved(
                             durable_content: None,
                             is_error: *is_error,
                             disposition: ToolResultDisposition::Recoverable,
-                            tokens: None,
                         },
                     })
                 })
                 .collect(),
+            measurements: Vec::new(),
         }),
     )
 }

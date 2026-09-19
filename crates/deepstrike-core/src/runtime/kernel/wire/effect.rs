@@ -25,7 +25,7 @@ use std::fmt;
 use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
-use crate::context::measurement::PromptMeasurement;
+use crate::context::measurement::{PromptMeasurement, ToolMeasurement};
 use crate::types::durable_content::DurableContent;
 
 use super::root::{LogicalAgentSpec, MessageRole};
@@ -963,6 +963,10 @@ impl fmt::Display for ProviderStopReason {
 #[serde(deny_unknown_fields)]
 pub struct ToolsSuccess {
     pub results: Vec<ToolResultPayload>,
+    /// Host-owned accounting evidence, kept beside execution results rather than embedded in
+    /// the canonical tool-result message. A missing entry means this call was not measured.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub measurements: Vec<ToolMeasurement>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1249,8 +1253,6 @@ pub struct ToolResult {
     /// Whether the executor can keep going after this result. **Mandatory** — see
     /// [`ToolResultDisposition`].
     pub disposition: ToolResultDisposition,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tokens: Option<u32>,
 }
 
 /// Can the batch continue past this result?
@@ -1349,7 +1351,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use crate::context::measurement::{
-        MeasurementConfidence, MeasurementSource, PromptMeasurement,
+        MeasurementConfidence, MeasurementSource, PromptMeasurement, ToolMeasurement,
     };
 
     use super::super::*;
@@ -1562,7 +1564,6 @@ mod tests {
                             durable_content: None,
                             is_error: false,
                             disposition: ToolResultDisposition::Recoverable,
-                            tokens: Some(2),
                         },
                     }),
                     ToolResultPayload::External(ExternalToolResult {
@@ -1575,6 +1576,7 @@ mod tests {
                         disposition: ToolResultDisposition::Recoverable,
                     }),
                 ],
+                measurements: vec![ToolMeasurement::new("call-1", 2)],
             }),
             EffectSuccess::Approval(ApprovalSuccess {
                 approved_call_ids: vec![call_id("call-1")],
@@ -2099,7 +2101,6 @@ mod tests {
                 durable_content: None,
                 is_error: true,
                 disposition: ToolResultDisposition::Fatal,
-                tokens: None,
             },
         });
         let external = ToolResultPayload::External(ExternalToolResult {

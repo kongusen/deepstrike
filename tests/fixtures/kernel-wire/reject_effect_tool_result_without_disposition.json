@@ -16,8 +16,7 @@
               "kind": "inline",
               "call_id": "call-1",
               "result": {
-                "output": "3 files changed",
-                "tokens": 12
+                "output": "3 files changed"
               }
             }
           ]

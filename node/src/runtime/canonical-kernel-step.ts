@@ -1006,12 +1006,16 @@ export class CanonicalRunnerRuntime {
       }
       case "tool_results": {
         const results: Array<Record<string, unknown>> = []
+        const measurements: Array<{ call_id: string; tokens: number }> = []
         for (const value of Array.isArray(event.results) ? event.results : []) {
           const result = asObject(value)
           const callId = String(result.call_id ?? "")
           const output = String(result.output ?? "")
           const isError = Boolean(result.is_error)
           const disposition = result.is_fatal ? "fatal" : "recoverable"
+          if (result.token_count !== null && result.token_count !== undefined) {
+            measurements.push({ call_id: callId, tokens: Number(result.token_count) })
+          }
           const bytes = Buffer.byteLength(output, "utf8")
           if (bytes > this.payloadInlineThreshold && this.options.persistPayload) {
             const persisted = await this.options.persistPayload(
@@ -1037,15 +1041,16 @@ export class CanonicalRunnerRuntime {
                 output,
                 ...(isError ? { is_error: true } : {}),
                 disposition,
-                ...(result.token_count !== null && result.token_count !== undefined
-                  ? { tokens: Number(result.token_count) }
-                  : {}),
               },
             })
           }
           this.newMessages.push({ role: "tool", content: output, toolCalls: [] })
         }
-        input = this.succeededEffect(event, { kind: "tools", results })
+        input = this.succeededEffect(event, {
+          kind: "tools",
+          results,
+          ...(measurements.length > 0 ? { measurements } : {}),
+        })
         break
       }
       case "approval_result":
