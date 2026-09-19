@@ -1,6 +1,5 @@
 //! Deterministic value-aware selection over indivisible context units.
 
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::ops::Range;

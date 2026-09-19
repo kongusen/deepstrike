@@ -36,13 +36,17 @@ async def test_wake_restores_thinking_blocks_from_provider_replay(tmp_path):
     "turn": 0,
     "content": "checking",
     "tool_calls": [ToolCall(id="call_ping", name="ping", arguments="{}")],
-    "provider_replay": {
+    "wire_evidence": {
       "protocol": "anthropic-messages",
-      "native_blocks": [
-        {"type": "thinking", "thinking": "plan", "signature": "sig"},
-        {"type": "text", "text": "checking"},
-        {"type": "tool_use", "id": "call_ping", "name": "ping", "input": {}},
-      ],
+      "request_fingerprint": "fp",
+      "replay_state": {
+        "protocol": "anthropic-messages",
+        "native_blocks": [
+          {"type": "thinking", "thinking": "plan", "signature": "sig"},
+          {"type": "text", "text": "checking"},
+          {"type": "tool_use", "id": "call_ping", "name": "ping", "input": {}},
+        ],
+      },
     },
   })
   await FileSessionLog(tmp_path).append(session_id, {
@@ -125,10 +129,21 @@ async def test_file_session_log_provider_replay_roundtrip(tmp_path):
     "turn": 0,
     "content": "hi",
     "tool_calls": [],
-    "provider_replay": {"protocol": "openai-chat", "reasoning_content": "trace"},
+    "wire_evidence": {"protocol": "openai-chat", "request_fingerprint": "fp", "replay_state": {"protocol": "openai-chat", "reasoning_content": "trace"}},
   })
   events = await session_log.read("s1")
-  assert events[0].event["provider_replay"] == {"protocol": "openai-chat", "reasoning_content": "trace"}
+  assert events[0].event["wire_evidence"]["replay_state"] == {"protocol": "openai-chat", "reasoning_content": "trace"}
+
+
+@pytest.mark.asyncio
+async def test_file_session_log_rejects_removed_top_level_provider_replay(tmp_path):
+  session_log = FileSessionLog(tmp_path)
+  await session_log.append("s1", {
+    "kind": "llm_completed", "turn": 0, "content": "hi", "tool_calls": [],
+    "provider_replay": {"protocol": "openai-chat"},
+  })
+  with pytest.raises(ValueError, match="removed provider_replay field"):
+    await session_log.read("s1")
 
 
 def test_assistant_replay_key_normalization():

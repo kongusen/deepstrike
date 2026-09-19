@@ -50,19 +50,19 @@ describe("provider fallback replay", () => {
     expect(() => seedProviderReplayFromEvents(deepseekProvider, [llmCompleted({
       content: message.content,
       tool_calls: message.toolCalls,
-      provider_replay: { protocol: "anthropic-messages", native_blocks: [{ type: "thinking", thinking: "secret-reasoning" }] },
+      wire_evidence: { protocol: "anthropic-messages", request_fingerprint: "fp", replay_state: { protocol: "anthropic-messages", native_blocks: [{ type: "thinking", thinking: "secret-reasoning" }] } },
     })])).toThrow(ProviderReplayProtocolMismatchError)
     expect(() => seedProviderReplayFromEvents(deepseekProvider, [llmCompleted({
       content: message.content,
       tool_calls: message.toolCalls,
-      provider_replay: { protocol: "anthropic-messages", native_blocks: [{ type: "thinking", thinking: "secret-reasoning" }] },
+      wire_evidence: { protocol: "anthropic-messages", request_fingerprint: "fp", replay_state: { protocol: "anthropic-messages", native_blocks: [{ type: "thinking", thinking: "secret-reasoning" }] } },
     })])).toThrow(/pin the previous anthropic-messages endpoint explicitly/)
 
     try {
       seedProviderReplayFromEvents(deepseekProvider, [llmCompleted({
         content: message.content,
         tool_calls: message.toolCalls,
-        provider_replay: { protocol: "anthropic-messages", native_blocks: [{ type: "thinking", thinking: "secret-reasoning" }] },
+        wire_evidence: { protocol: "anthropic-messages", request_fingerprint: "fp", replay_state: { protocol: "anthropic-messages", native_blocks: [{ type: "thinking", thinking: "secret-reasoning" }] } },
       })])
     } catch (error) {
       expect(error).toMatchObject({ code: "provider_replay_protocol_mismatch" })
@@ -93,7 +93,7 @@ describe("provider fallback replay", () => {
     seedProviderReplayFromEvents(deepseekProvider, [llmCompleted({
       content: message.content,
       tool_calls: message.toolCalls,
-      provider_replay: { provider: "deepseek", protocol: "openai-chat", reasoning_content: "thinking" },
+      wire_evidence: { protocol: "openai-chat", request_fingerprint: "fp", replay_state: { provider: "deepseek", protocol: "openai-chat", reasoning_content: "thinking" } },
     })])
     expect(deepseekProvider.peekProviderReplay?.(message)?.reasoning_content).toBe("thinking")
   })

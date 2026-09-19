@@ -2632,7 +2632,6 @@ export class RuntimeRunner {
           content: finalText,
           tokenCount: turnOutputTokens || turnTokens || undefined,
           toolCalls: finalToolCalls,
-          providerReplay,
           effectId: providerEffectId,
           invocationId,
           wireEvidence,

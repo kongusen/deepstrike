@@ -17,8 +17,8 @@ import type { SessionEvent } from "./session-log.js"
  * one ProviderMessage per event. Pass the result directly to `new ReplayProvider(messages)`.
  *
  * Accepts both wire shapes the SDK uses interchangeably:
- *   - in-memory: `{ toolCalls, providerReplay }` (camelCase)
- *   - serialised session-log: `{ tool_calls, token_count, provider_replay }` (snake_case; token_count is wire evidence)
+ *   - in-memory: `{ toolCalls }` (camelCase)
+ *   - serialised session-log: `{ tool_calls, token_count, wire_evidence }` (snake_case; token_count is wire evidence)
  *
  * @param events Session events, in original order. Accepts both `{ event, seq }` (the shape
  *               `SessionLog.read()` returns) and a bare `SessionEvent[]`.

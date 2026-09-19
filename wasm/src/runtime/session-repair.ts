@@ -1,4 +1,4 @@
-import type { ProviderMessage, ProviderReplay, ProviderWireEvidence, ToolCall } from "../types.js"
+import type { ProviderMessage, ProviderWireEvidence, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
 import type { WorkflowNodeStatus } from "./types/agent.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
@@ -7,7 +7,7 @@ export { REPLAY_CONTENT_MAX_BYTES as RECOVERY_CONTENT_MAX_BYTES } from "./replay
 
 /**
  * Normalize a persisted llm_completed event for recovery. Content is sanitized
- * and any existing token_count remains raw evidence, but the stored `provider_replay` envelope is
+ * and any existing token_count remains raw evidence, but `wire_evidence.replay_state` is
  * passed through verbatim — this layer is provider-neutral and never
  * synthesizes protocol-specific replay shapes. Canonical replay seeding is the
  * responsibility of the target provider's `seedProviderReplay`.
@@ -18,14 +18,12 @@ export function normalizeLlmCompleted(
 ): Extract<SessionEvent, { kind: "llm_completed" }> {
   const content = sanitizeReplayText(event.content ?? "", maxBytes)
   const toolCalls = event.tool_calls ?? []
-  const providerReplay = event.provider_replay
   return {
     kind: "llm_completed",
     turn: event.turn,
     content,
     tool_calls: toolCalls,
     ...(event.token_count !== undefined ? { token_count: event.token_count } : {}),
-    ...(providerReplay ? { provider_replay: providerReplay } : {}),
     // P4 §3: the evidence-plane fields ride along verbatim — recovery never reads them
     // (SessionLog is evidence, not authority), so normalize must neither synthesize nor drop them.
     ...(event.effect_id !== undefined ? { effect_id: event.effect_id } : {}),
@@ -49,7 +47,6 @@ export function buildLlmCompletedEvent(input: {
   content: string
   tokenCount?: number
   toolCalls: ToolCall[]
-  providerReplay?: ProviderReplay
   effectId?: string
   invocationId?: string
   wireEvidence?: ProviderWireEvidence
@@ -60,7 +57,6 @@ export function buildLlmCompletedEvent(input: {
     content: sanitizeReplayText(input.content),
     tool_calls: input.toolCalls ?? [],
     token_count: input.tokenCount,
-    provider_replay: input.providerReplay,
     ...(input.effectId !== undefined ? { effect_id: input.effectId } : {}),
     ...(input.invocationId !== undefined ? { invocation_id: input.invocationId } : {}),
     ...(input.wireEvidence !== undefined ? { wire_evidence: input.wireEvidence } : {}),

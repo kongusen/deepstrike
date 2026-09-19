@@ -12,14 +12,13 @@ def normalize_llm_completed(event: dict[str, Any], max_bytes: int | None = None)
   """Normalize a persisted llm_completed event for recovery.
 
   Content is sanitized while any existing token_count remains raw evidence, but the stored
-  ``provider_replay`` envelope is passed through verbatim. This layer is
+  ``wire_evidence.replay_state`` is passed through verbatim. This layer is
   provider-neutral and never synthesizes protocol-specific replay shapes
   (e.g. Anthropic ``native_blocks``); canonical replay seeding for a given
   protocol is the target provider's ``seed_provider_replay`` responsibility.
   """
   content = sanitize_replay_text(event.get("content", ""), max_bytes)
   tool_calls = list(event.get("tool_calls") or [])
-  provider_replay = event.get("provider_replay")
   out: dict[str, Any] = {
     "kind": "llm_completed",
     "turn": event["turn"],
@@ -27,8 +26,6 @@ def normalize_llm_completed(event: dict[str, Any], max_bytes: int | None = None)
     "tool_calls": tool_calls,
     **({"token_count": event["token_count"]} if event.get("token_count") is not None else {}),
   }
-  if provider_replay:
-    out["provider_replay"] = provider_replay
   # P4 §3: the evidence-plane fields ride along verbatim — recovery never reads them (SessionLog
   # is evidence, not authority), so normalize must neither synthesize nor drop them.
   for field in ("effect_id", "invocation_id", "wire_evidence"):
@@ -60,7 +57,6 @@ def build_llm_completed_event(
   content: str,
   tool_calls: list[ToolCall],
   token_count: int | None = None,
-  provider_replay: dict[str, Any] | None = None,
   effect_id: str | None = None,
   invocation_id: str | None = None,
   wire_evidence: dict[str, Any] | None = None,
@@ -71,7 +67,6 @@ def build_llm_completed_event(
     "content": content,
     "tool_calls": tool_calls,
     "token_count": token_count,
-    "provider_replay": provider_replay,
     "effect_id": effect_id,
     "invocation_id": invocation_id,
     "wire_evidence": wire_evidence,

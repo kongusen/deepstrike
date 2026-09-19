@@ -42,10 +42,10 @@ describe("session-repair", () => {
         turn: 0,
         content: "x",
         tool_calls: [],
-        provider_replay: stored,
+        wire_evidence: { protocol: "openai-chat", request_fingerprint: "fp", replay_state: stored },
       },
     }])
-    expect((repaired[0].event as { provider_replay?: unknown }).provider_replay).toEqual(stored)
+    expect((repaired[0].event as { wire_evidence?: { replay_state?: unknown } }).wire_evidence?.replay_state).toEqual(stored)
   })
 
   it("builds run_terminal with non-negative counters", () => {

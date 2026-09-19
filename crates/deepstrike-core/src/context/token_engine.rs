@@ -1,4 +1,3 @@
-// DEL-1 migration window (0.2.67 → removed 0.2.68): this module still reads/writes the
 use std::sync::Arc;
 
 use crate::types::message::{Content, ContentPart, CoreMessage};

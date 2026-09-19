@@ -62,7 +62,7 @@ def seed_provider_replay_from_events(provider: Any, events: list[Any]) -> None:
         if event.get("kind") != "llm_completed":
             continue
         tool_calls = event.get("tool_calls", [])
-        stored = event.get("provider_replay")
+        stored = (event.get("wire_evidence") or {}).get("replay_state")
         if not stored:
             continue
         if not is_replay_compatible_with_provider(stored, descriptor):

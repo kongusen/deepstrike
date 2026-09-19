@@ -2626,7 +2626,6 @@ class RuntimeRunner:
           content=final_text,
           token_count=turn_output_tokens or turn_tokens or None,
           tool_calls=final_tool_calls,
-          provider_replay=provider_replay,
           effect_id=provider_effect_id,
           invocation_id=invocation_id,
           wire_evidence=wire_evidence,

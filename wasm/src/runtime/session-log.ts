@@ -37,9 +37,9 @@ export interface ProviderAttemptRecord {
 export type SessionEvent =
   // P4-S1: `route` is the runner-construction ResolvedProviderRoute snapshot (P4 §0.2).
   | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: import("../types.js").ContentPart[]; route?: ResolvedProviderRoute }
-  // P3-S2 + P4-S1: effect_id (G4) + invocation_id + wire_evidence (D1). `provider_replay` is
-  // DEPRECATED — carried unchanged for one full minor, then removed (P3 §3.3).
-  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
+  // P3-S2 + P4-S1: effect_id (G4) + invocation_id + wire_evidence (D1). The wire evidence bundle
+  // is the sole persisted carrier for provider replay state.
+  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
   | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement; effect_id?: string }
   // P4-S1 (G1): one record per provider attempt — the full P4 §1.2 payload.
   | ({ kind: "provider_attempt" } & ProviderAttemptRecord)

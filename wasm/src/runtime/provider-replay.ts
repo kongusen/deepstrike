@@ -37,7 +37,7 @@ export function seedProviderReplayFromEvents(
   for (const { event } of events) {
     if (event.kind !== "llm_completed") continue
     const toolCalls = event.tool_calls ?? []
-    const stored = event.provider_replay
+    const stored = event.wire_evidence?.replay_state
     if (!stored || !isReplayCompatibleWithProvider(stored, descriptor)) continue
     provider.seedProviderReplay({ content: event.content, toolCalls }, stored)
   }

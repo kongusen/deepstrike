@@ -25,7 +25,7 @@ class ProviderWireEvidence(TypedDict, total=False):
     request_fingerprint: str  # required, → ProviderRequestPlan.fingerprint (G2)
     response_id: str  # optional, OpenAI response id / Anthropic message id
     raw_usage: Any  # optional, BoundedJson semantics: truncated to ≤4KB
-    replay_state: dict[str, Any]  # optional, former llm_completed.provider_replay
+    replay_state: dict[str, Any]  # optional, provider-native replay state
 
 class ModelUsageSettlement(TypedDict):
     """

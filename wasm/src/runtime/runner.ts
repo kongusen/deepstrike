@@ -1327,7 +1327,6 @@ export class RuntimeRunner {
           turn: runtime.turn(),
           content: finalText,
           toolCalls: finalToolCalls,
-          providerReplay,
           effectId: providerEffectId,
           invocationId,
           wireEvidence,

@@ -1,4 +1,4 @@
-import type { ProviderMessage, ProviderReplay, ProviderWireEvidence, ToolCall } from "../types.js"
+import type { ProviderMessage, ProviderWireEvidence, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
 import type { WorkflowNodeStatus } from "../types/agent.js"
 import { sanitizeReplayText } from "./replay-sanitize.js"
@@ -9,7 +9,7 @@ export { REPLAY_CONTENT_MAX_BYTES as RECOVERY_CONTENT_MAX_BYTES } from "./replay
  * Normalize a persisted llm_completed event for recovery.
  *
  * Content is sanitized while any existing token_count remains raw evidence, but the stored
- * `provider_replay` envelope is passed through verbatim — this layer is
+ * `wire_evidence.replay_state` is passed through verbatim — this layer is
  * provider-neutral and must never synthesize protocol-specific replay shapes
  * (e.g. Anthropic `native_blocks`). Canonical replay seeding for a given protocol
  * is the responsibility of that provider's `seedProviderReplay`.
@@ -24,14 +24,12 @@ export function normalizeLlmCompleted(
 ): Extract<SessionEvent, { kind: "llm_completed" }> {
   const content = sanitizeReplayText(event.content ?? "", maxBytes)
   const toolCalls = event.tool_calls ?? []
-  const providerReplay = event.provider_replay
   return {
     kind: "llm_completed",
     turn: event.turn,
     content,
     tool_calls: toolCalls,
     ...(event.token_count !== undefined ? { token_count: event.token_count } : {}),
-    ...(providerReplay ? { provider_replay: providerReplay } : {}),
     ...(event.effect_id !== undefined ? { effect_id: event.effect_id } : {}),
     ...(event.invocation_id !== undefined ? { invocation_id: event.invocation_id } : {}),
     ...(event.wire_evidence !== undefined ? { wire_evidence: event.wire_evidence } : {}),
@@ -55,7 +53,6 @@ export function buildLlmCompletedEvent(input: {
   content: string
   tokenCount?: number
   toolCalls: ToolCall[]
-  providerReplay?: ProviderReplay
   effectId?: string
   invocationId?: string
   wireEvidence?: ProviderWireEvidence
@@ -66,7 +63,6 @@ export function buildLlmCompletedEvent(input: {
     content: sanitizeReplayText(input.content),
     tool_calls: input.toolCalls ?? [],
     token_count: input.tokenCount,
-    provider_replay: input.providerReplay,
     ...(input.effectId !== undefined ? { effect_id: input.effectId } : {}),
     ...(input.invocationId !== undefined ? { invocation_id: input.invocationId } : {}),
     ...(input.wireEvidence !== undefined ? { wire_evidence: input.wireEvidence } : {}),

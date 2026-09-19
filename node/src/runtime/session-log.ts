@@ -26,9 +26,8 @@ export type SessionEvent =
   // fixed route per run today). Older logs simply lack it — C7 degrades, never fails.
   | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: ContentPart[]; route?: ResolvedProviderRoute }
   // P3-S2 + P4-S1: `effect_id` (G4) + `invocation_id` (P4 §3) join this evidence projection to
-  // the journal effect chain; `wire_evidence` (D1) is the ProviderWireEvidence bundle.
-  // `provider_replay` is DEPRECATED — carried unchanged for one full minor, then removed (P3 §3.3).
-  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; provider_replay?: ProviderReplay; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
+  // the journal effect chain; `wire_evidence` (D1) is the sole ProviderWireEvidence bundle.
+  | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
   | { kind: "prompt_measured"; turn: number; measurement: RecordedPromptMeasurement; effect_id?: string }
   // P4-S1 (G1): one record per provider attempt — the full P4 §1.2 payload. The kernel-minted
   // effect_id joins this host evidence to the journal effect chain 1:1 (C6); step_seq NEVER
@@ -426,8 +425,8 @@ function decodePersistedSessionRecord(value: unknown): PersistedSessionRecord {
   if (!Number.isInteger(record.seq) || (record.seq as number) < 0) throw new Error("session record seq must be a non-negative integer")
   if (!record.event || typeof record.event !== "object" || Array.isArray(record.event)) throw new Error("session record event must be an object")
   const event = record.event as Record<string, unknown>
-  if (event.kind === "llm_completed" && event.provider_replay !== undefined) {
-    assertCanonicalProviderReplay(event.provider_replay)
+  if (event.kind === "llm_completed" && "provider_replay" in event) {
+    throw new Error("llm_completed has removed provider_replay field; use wire_evidence.replay_state")
   }
   if (event.kind === "llm_completed" && event.wire_evidence !== undefined) {
     assertCanonicalWireEvidence(event.wire_evidence)

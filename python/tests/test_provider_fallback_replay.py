@@ -29,7 +29,11 @@ def _tool_call_context():
 def _llm_completed(content, tool_calls, provider_replay=None):
     event = {"kind": "llm_completed", "turn": 0, "content": content, "tool_calls": tool_calls}
     if provider_replay is not None:
-        event["provider_replay"] = provider_replay
+        event["wire_evidence"] = {
+            "protocol": provider_replay["protocol"],
+            "request_fingerprint": "fp",
+            "replay_state": provider_replay,
+        }
     return event
 
 

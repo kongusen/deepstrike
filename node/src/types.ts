@@ -468,7 +468,7 @@ export interface ProviderWireEvidence {
   response_id?: string
   /** BoundedJson semantics: producers truncate to ≤4KB before landing it here. */
   raw_usage?: unknown
-  /** The former `llm_completed.provider_replay` field, carried verbatim (P3-S2 migration). */
+  /** Provider-native replay state carried inside the wire evidence bundle. */
   replay_state?: ProviderReplay
 }
 

@@ -25,10 +25,10 @@ def test_repair_passes_stored_replay_through():
     "turn": 0,
     "content": "x",
     "tool_calls": [],
-    "provider_replay": stored,
+    "wire_evidence": {"protocol": "openai-chat", "request_fingerprint": "fp", "replay_state": stored},
   })]
   repaired = repair_events_for_recovery(entries)
-  assert repaired[0].event["provider_replay"] == stored
+  assert repaired[0].event["wire_evidence"]["replay_state"] == stored
 
 
 def test_build_llm_completed_always_has_tool_calls():

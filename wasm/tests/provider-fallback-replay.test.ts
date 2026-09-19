@@ -45,7 +45,7 @@ describe("wasm provider fallback replay (M3 parity)", () => {
     seedProviderReplayFromEvents(anthropic, [llmCompleted({
       content: message.content,
       tool_calls: message.toolCalls,
-      provider_replay: { protocol: "openai-chat", reasoning_content: "x" },
+      wire_evidence: { protocol: "openai-chat", request_fingerprint: "fp", replay_state: { protocol: "openai-chat", reasoning_content: "x" } },
     })])
     expect(anthropic.peekProviderReplay?.(message)).toBeUndefined()
 

@@ -1,41 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { RuntimeRunner, collectText } from "../../src/runtime/runner.js"
 import { FileSessionLog } from "../../src/runtime/session-log.js"
-import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
-import { AnthropicProvider } from "../../src/providers/anthropic.js"
-import { tool } from "../../src/tools/index.js"
-import type { RenderedContext, StreamEvent, ToolSchema, ProviderMessage } from "../../src/types.js"
-
-class CapturingAnthropicProvider extends AnthropicProvider {
-  streamCalls = 0
-  capturedRequest?: Record<string, unknown>
-
-  constructor() {
-    super({ apiKey: "test-key" })
-    ;(this as unknown as {
-      client: { messages: { stream(req: Record<string, unknown>): AsyncIterable<Record<string, unknown>> } }
-    }).client = {
-      messages: {
-        stream: (req: Record<string, unknown>) => {
-          this.streamCalls += 1
-          if (this.streamCalls === 1) this.capturedRequest = req
-          return this.mockStream()
-        },
-      },
-    }
-  }
-
-  private async *mockStream(): AsyncIterable<Record<string, unknown>> {
-    yield { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }
-    yield { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "finished" } }
-    yield { type: "content_block_stop", index: 0 }
-  }
-}
 
 describe("RuntimeRunner thinking wake recovery", () => {
-  it("does not treat SessionLog provider_replay as canonical recovery state", async () => {
+  it("rejects the removed top-level provider_replay field", async () => {
     const dir = await mkdtemp(join(tmpdir(), "ds-thinking-wake-"))
     try {
       const sessionId = "thinking-wake"
@@ -59,27 +28,8 @@ describe("RuntimeRunner thinking wake recovery", () => {
             { type: "tool_use", id: "call_ping", name: "ping", input: {} },
           ],
         },
-      })
-      await sessionLog.append(sessionId, {
-        kind: "tool_completed",
-        turn: 0,
-        results: [{ call_id: "call_ping", output: "pong", is_error: false }],
-      })
-
-      const provider = new CapturingAnthropicProvider()
-      const runner = new RuntimeRunner({
-        provider,
-        sessionLog: new FileSessionLog(dir),
-        executionPlane: new LocalExecutionPlane().register(
-          tool("ping", "Ping", { type: "object", properties: {} }, () => "should-not-run"),
-        ),
-        maxTokens: 2048,
-        maxTurns: 4,
-      })
-
-      await expect(collectText(runner.wake(sessionId))).rejects.toThrow("provider replay protocol is required")
-      expect(provider.streamCalls).toBe(0)
-      expect(provider.capturedRequest).toBeUndefined()
+      } as never)
+      await expect(sessionLog.read(sessionId)).rejects.toThrow("removed provider_replay field")
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

@@ -49,7 +49,6 @@ class LlmCompletedEvent(TypedDict, total=False):
     content: str
     token_count: int
     tool_calls: list[ToolCall]
-    provider_replay: dict
     effect_id: str
     invocation_id: str
     wire_evidence: dict[str, Any]
@@ -727,8 +726,7 @@ def _decode_persisted_session_record(value: Any) -> dict[str, Any]:
     if not isinstance(event, dict):
         raise ValueError("session record event must be an object")
     if event.get("kind") == "llm_completed" and "provider_replay" in event:
-        from deepstrike.runtime.provider_replay import is_replay_compatible_with_provider
-        is_replay_compatible_with_provider(event["provider_replay"], None)
+        raise ValueError("llm_completed has removed provider_replay field; use wire_evidence.replay_state")
     if event.get("kind") == "provider_attempt":
         _validate_provider_attempt_event(event)
     if event.get("kind") == "tool_completed":
@@ -816,7 +814,6 @@ def _event_from_json(raw: dict) -> SessionEvent:
         ToolCall(id=c["id"], name=c["name"], arguments=c["arguments"])
         for c in raw.get("tool_calls", [])
       ],
-      **({"provider_replay": raw["provider_replay"]} if "provider_replay" in raw else {}),
       # P4 §3 evidence fields — passthrough, never read by recovery.
       **({"effect_id": raw["effect_id"]} if raw.get("effect_id") is not None else {}),
       **({"invocation_id": raw["invocation_id"]} if raw.get("invocation_id") is not None else {}),

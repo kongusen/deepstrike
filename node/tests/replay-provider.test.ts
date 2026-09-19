@@ -195,7 +195,7 @@ describe("extractRecordedMessages", () => {
   })
 
   it("accepts snake_case fields from serialised session logs (tool_calls / token_count)", () => {
-    // The session-log on-disk shape uses snake_case (tool_calls / token_count / provider_replay).
+    // The session-log on-disk shape uses snake_case (tool_calls / token_count / wire_evidence).
     // This is a regression test for a benchmark-replay-mode bug where extractRecordedMessages was
     // reading only camelCase, causing replay to think every recorded turn had no tool calls.
     const events: Array<{ event: SessionEvent }> = [
