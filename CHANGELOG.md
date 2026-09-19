@@ -26,6 +26,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ToolsSuccess.measurements` keyed by tool call id; provider usage remains host evidence.
 - Runtime message accounting uses `ContextTokenEngine` or the host `TokenMeasurement` side table;
   SDK mirrors no longer carry message token projections.
+- Renamed the first-party SDK provider mirrors to `ProviderMessage` and `ToolExecutionResult`;
+  the former `Message` and `ToolResult` constructors are not exported.
 
 ### Removed — 0.2.68 DEL-1 runtime language convergence
 
