@@ -23,10 +23,18 @@ pretty_assertions = "1"
 name = "ds-chain-validator"
 path = "src/bin/ds-chain-validator.rs"
 
+[[bin]]
+name = "deepstrike"
+path = "src/bin/deepstrike.rs"
+
 [[bench]]
 name = "kernel_baseline"
 harness = false
 
 [[bench]]
 name = "wait_index_baseline"
+harness = false
+
+[[bench]]
+name = "verifiable_baseline"
 harness = false

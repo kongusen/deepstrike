@@ -34,3 +34,23 @@ export {
   isReplayCompatibleWithProvider,
 } from "../runtime/provider-replay.js"
 export type { ReplayabilityAssessment } from "../types.js"
+export {
+  VERIFIABLE_REPORT_SCHEMA,
+  VERIFIABLE_FORK_SCHEMA,
+  assertVerifiableReportSchema,
+  createVerifiableRuntimeAdapter,
+  createNativeVerifiableRuntimeAdapter,
+  VerifiableOperation,
+} from "../runtime/verifiable-report.js"
+export type {
+  VerifiableCommand,
+  CheckVerdict,
+  VerifiableForkManifest,
+  ForkPlan,
+  VerifiableEvidence,
+  VerifyOptions,
+  ReplayOptions,
+  VerifiableRuntimeAdapter,
+  VerifiableReport,
+  VerifiableOperationJson,
+} from "../runtime/verifiable-report.js"

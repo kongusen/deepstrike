@@ -28,8 +28,13 @@
 //! beside its ack/restore metadata) is unwrapped automatically. Without this plane C5 is
 //! deferred, not red; `--strict` arms the re-plan replay.
 
-use std::path::{Path, PathBuf};
+#[path = "support/evidence_io.rs"]
+mod evidence_io;
+
+use std::path::PathBuf;
 use std::process::ExitCode;
+
+use evidence_io::{read_checkpoint, read_journal, read_session_log};
 
 use deepstrike_core::runtime::chain_validator::{
     ValidationReport, Verdict, validate_journal, validate_with_checkpoint,
@@ -172,131 +177,6 @@ fn main() -> ExitCode {
 fn usage(message: &str) -> ExitCode {
     eprintln!("ds-chain-validator: {message}\n\n{USAGE}");
     ExitCode::from(64)
-}
-
-/// Collect record blobs from one journal source. Byte-exactness is the whole game: directory
-/// entries and whole-file objects pass through raw; array elements and JSONL lines are handed
-/// over exactly as found (array elements are re-emitted compactly — safe because the record's
-/// self-digest is computed from its decoded fields, not its input byte layout).
-fn read_journal(path: &Path, blobs: &mut Vec<Vec<u8>>) -> Result<usize, String> {
-    let before = blobs.len();
-    if path.is_dir() {
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
-            .map_err(|error| format!("cannot read directory {}: {error}", path.display()))?
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|entry| {
-                entry
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-            })
-            .collect();
-        entries.sort();
-        for entry in entries {
-            let bytes = std::fs::read(&entry)
-                .map_err(|error| format!("cannot read {}: {error}", entry.display()))?;
-            blobs.push(bytes);
-        }
-        return Ok(blobs.len() - before);
-    }
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    split_blob_file(&bytes, blobs);
-    Ok(blobs.len() - before)
-}
-
-/// Collect SessionLog event streams from one session-log source. Unlike the journal plane,
-/// append order within one file is meaningful, so **each file becomes one stream** — for a
-/// directory, every `*.json`/`*.jsonl` file inside (name-sorted); for a single path, the file
-/// itself. Event blobs within a stream preserve the file's order.
-fn read_session_log(path: &Path, streams: &mut Vec<Vec<Vec<u8>>>) -> Result<usize, String> {
-    let mut added = 0usize;
-    if path.is_dir() {
-        let mut entries: Vec<PathBuf> = std::fs::read_dir(path)
-            .map_err(|error| format!("cannot read directory {}: {error}", path.display()))?
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|entry| {
-                entry
-                    .extension()
-                    .is_some_and(|extension| extension == "json" || extension == "jsonl")
-            })
-            .collect();
-        entries.sort();
-        for entry in entries {
-            let bytes = std::fs::read(&entry)
-                .map_err(|error| format!("cannot read {}: {error}", entry.display()))?;
-            let mut stream = Vec::new();
-            split_blob_file(&bytes, &mut stream);
-            added += stream.len();
-            streams.push(stream);
-        }
-        return Ok(added);
-    }
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-    let mut stream = Vec::new();
-    split_blob_file(&bytes, &mut stream);
-    added += stream.len();
-    streams.push(stream);
-    Ok(added)
-}
-
-/// Collect checkpoint blobs from one checkpoint-plane source — the same shapes the journal
-/// accepts: a directory of `*.json` files (name-sorted), a whole-file JSON object, a JSON
-/// array (one checkpoint per element), or JSON Lines. Bytes pass through untouched, with one
-/// accommodation for the published artifact shape: a blob that parses as a JSON object
-/// carrying a nested `checkpoint` object (the golden-fixture wrapper, which also holds
-/// ack/restore metadata) contributes that nested document instead — re-serialized compactly,
-/// digest-safe because a checkpoint's self-digest is computed from its decoded fields, not
-/// its input byte layout. Every verdict about the bytes belongs to the validator's decoder.
-fn read_checkpoint(path: &Path, blobs: &mut Vec<Vec<u8>>) -> Result<usize, String> {
-    let before = blobs.len();
-    read_journal(path, blobs)?;
-    for blob in &mut blobs[before..] {
-        if let Ok(serde_json::Value::Object(map)) =
-            serde_json::from_slice::<serde_json::Value>(blob)
-            && let Some(nested) = map.get("checkpoint")
-            && nested.is_object()
-        {
-            *blob = serde_json::to_vec(nested).unwrap_or_default();
-        }
-    }
-    Ok(blobs.len() - before)
-}
-
-/// Split one file's bytes into blobs: a JSON array yields one blob per element, a single JSON
-/// value yields one blob, anything else parses as JSON Lines. Array elements are re-emitted
-/// compactly — safe for journal records because the record's self-digest is computed from its
-/// decoded fields, not its input byte layout, and safe for SessionLog events because the
-/// session plane is opaque JSON throughout.
-fn split_blob_file(bytes: &[u8], blobs: &mut Vec<Vec<u8>>) {
-    match serde_json::from_slice::<serde_json::Value>(bytes) {
-        Ok(serde_json::Value::Array(records)) => {
-            for record in records {
-                blobs.push(serde_json::to_vec(&record).unwrap_or_default());
-            }
-        }
-        Ok(_) => blobs.push(bytes.to_vec()),
-        Err(_) => {
-            for line in bytes.split(|byte| *byte == b'\n') {
-                let line = trim_ascii(line);
-                if !line.is_empty() {
-                    blobs.push(line.to_vec());
-                }
-            }
-        }
-    }
-}
-
-fn trim_ascii(bytes: &[u8]) -> &[u8] {
-    let start = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace())
-        .map_or(start, |position| position + 1);
-    &bytes[start..end]
 }
 
 fn print_human(report: &ValidationReport) {

@@ -175,6 +175,7 @@ interface KernelModule {
   buildEvalMessages(goal: string, criteria: NativeCriterion[], result: string, attempt: number, extractSkillOnPass: boolean): Message[]
   parseVerdict(content: string): Verdict
   verdictOutputSchema(extractSkillOnPass: boolean): string
+  verifiableOperationJson(request: string): string
 }
 
 const cjsRequire = createRequire(import.meta.url)

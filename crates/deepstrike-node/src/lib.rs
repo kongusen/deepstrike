@@ -971,3 +971,11 @@ pub fn parse_verdict(content: String) -> Verdict {
 pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
     rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
+
+/// Framework Verifiable Runtime bridge. The request contains byte arrays encoded by the SDK
+/// adapter; Rust core owns all inspect/verify/replay/fork semantics.
+#[napi]
+pub fn verifiable_operation_json(request: String) -> Result<String> {
+    deepstrike_core::runtime::verifiable::operation_json(&request)
+        .map_err(|error| Error::from_reason(error))
+}

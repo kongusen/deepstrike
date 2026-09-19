@@ -116,6 +116,26 @@ export { createProviderRequestPlan, createProviderRequestPlanForProvider, estima
 export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement, ResolvedProviderRoute } from "./providers/request-plan.js"
 export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY, providerAttemptToRecord } from "./runtime/execution-evidence.js"
 export type { InvocationOutcome, ModelInvocation, ProviderAttempt, ProviderAttemptRecord, ProviderAttemptStatus, UsageAccountingPolicy, ModelUsageSettlement } from "./runtime/execution-evidence.js"
+export {
+  VERIFIABLE_REPORT_SCHEMA,
+  VERIFIABLE_FORK_SCHEMA,
+  assertVerifiableReportSchema,
+  createVerifiableRuntimeAdapter,
+  createNativeVerifiableRuntimeAdapter,
+  VerifiableOperation,
+} from "./runtime/verifiable-report.js"
+export type {
+  VerifiableCommand,
+  CheckVerdict,
+  VerifiableForkManifest,
+  ForkPlan,
+  VerifiableEvidence,
+  VerifyOptions,
+  ReplayOptions,
+  VerifiableRuntimeAdapter,
+  VerifiableReport,
+  VerifiableOperationJson,
+} from "./runtime/verifiable-report.js"
 
 export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 

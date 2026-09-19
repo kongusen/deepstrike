@@ -38,6 +38,10 @@ pub use deepstrike_core::orchestration::workflow::{JudgeMatch, WorkflowRun, Work
 pub use deepstrike_core::orchestration::workflow::{
     WorkflowNode, WorkflowSpec, fanout_synthesize, gen_eval, generate_and_filter, verify_rules,
 };
+pub use deepstrike_core::runtime::verifiable::{
+    CheckVerdict, EvidenceBundle, ForkManifest, ForkPlan, InspectReport, ReplayOptions,
+    ReplayReport, ReplayVerdict, VerifiableOperation, VerifyOptions, VerifyReport,
+};
 pub use governance::{Governance, GovernanceVerdict};
 pub use harness::{Criterion, CriterionResult, Verdict};
 pub use harness_loop::{

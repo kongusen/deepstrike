@@ -1739,6 +1739,12 @@ fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
     rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
 
+/// Framework Verifiable Runtime bridge. Rust core remains the single semantic implementation.
+#[pyfunction]
+fn verifiable_operation_json(request: String) -> PyResult<String> {
+    deepstrike_core::runtime::verifiable::operation_json(&request).map_err(PyValueError::new_err)
+}
+
 // ──────────────────────────────────────── module registration ─────────────────────────────────
 
 #[pymodule]
@@ -1782,6 +1788,7 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(build_eval_messages, m)?)?;
     m.add_function(wrap_pyfunction!(parse_verdict, m)?)?;
     m.add_function(wrap_pyfunction!(verdict_output_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(verifiable_operation_json, m)?)?;
     Ok(())
 }
 

@@ -72,6 +72,26 @@ export type {
   KernelPrimitive,
 } from "./runtime/index.js"
 export { primitiveForCategory, primitiveForKind } from "./runtime/index.js"
+export {
+  VERIFIABLE_REPORT_SCHEMA,
+  VERIFIABLE_FORK_SCHEMA,
+  assertVerifiableReportSchema,
+  createVerifiableRuntimeAdapter,
+  createNativeVerifiableRuntimeAdapter,
+  VerifiableOperation,
+} from "./runtime/verifiable-report.js"
+export type {
+  VerifiableCommand,
+  CheckVerdict,
+  VerifiableForkManifest,
+  ForkPlan,
+  VerifiableEvidence,
+  VerifyOptions,
+  ReplayOptions,
+  VerifiableRuntimeAdapter,
+  VerifiableReport,
+  VerifiableOperationJson,
+} from "./runtime/verifiable-report.js"
 export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
 export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "./runtime/sub-agent-orchestrator.js"
 export type { SubAgentRunContext } from "./runtime/sub-agent-orchestrator.js"

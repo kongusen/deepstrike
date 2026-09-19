@@ -191,6 +191,38 @@ impl ValidationReport {
             .any(|rule| rule.verdict == Verdict::Fail)
     }
 
+    /// Whether a selected operation has a proven rule violation. Cross-plane checks are
+    /// report-scoped and therefore still count; segment checks are narrowed to the requested
+    /// operation so a multi-operation evidence bundle cannot make an unrelated operation red.
+    pub fn has_violations_for(&self, operation_id: &str) -> bool {
+        self.segments
+            .iter()
+            .filter(|segment| segment.operation_id == operation_id)
+            .flat_map(|segment| segment.rules.iter())
+            .chain(self.cross_checks.iter())
+            .chain(self.checkpoint_checks.iter())
+            .any(|rule| rule.verdict == Verdict::Fail)
+    }
+
+    /// Keep report-scope checks while narrowing the journal segments to one operation for a host
+    /// command. The source evidence is still represented by the counts and cross-plane checks.
+    pub fn for_operation(&self, operation_id: &str) -> Self {
+        let mut report = self.clone();
+        report
+            .segments
+            .retain(|segment| segment.operation_id == operation_id);
+        report
+    }
+
+    /// Evidence-plane parse failures that make a report insufficient rather than contradictory.
+    pub fn has_insufficient_evidence(&self) -> bool {
+        self.unparseable_records > 0
+            || self.unparseable_events > 0
+            || self.unparseable_checkpoints > 0
+            || matches!(self.session_events, Some(0))
+            || matches!(self.checkpoints, Some(0))
+    }
+
     /// The CLI contract (P7 §3.2): `0` all green, `1` a violation was proven, `2` the evidence
     /// was insufficient. A proven violation outranks insufficient evidence; degraded hops and
     /// deferred scope never move the code. An explicitly provided SessionLog or checkpoint
@@ -199,13 +231,7 @@ impl ValidationReport {
     pub fn exit_code(&self) -> i32 {
         if self.has_violations() {
             1
-        } else if self.unparseable_records > 0
-            || self.unparseable_events > 0
-            || self.unparseable_checkpoints > 0
-            || self.segments.is_empty()
-            || matches!(self.session_events, Some(0))
-            || matches!(self.checkpoints, Some(0))
-        {
+        } else if self.has_insufficient_evidence() || self.segments.is_empty() {
             2
         } else {
             0

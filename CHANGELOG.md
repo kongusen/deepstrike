@@ -6,6 +6,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — 0.2.69 Verifiable Runtime
+
+- Added the Framework Verifiable Runtime Foundation: storage-neutral `EvidenceBundle`, typed
+  `VerifiableOperation`, verification/replay options, and read-only `ForkPlan` in Rust core.
+- Added the host-side `deepstrike inspect`, `verify`, `replay`, and read-only `fork` adapter;
+  `ds-chain-validator` remains the compatible low-level validator.
+- Added the frozen `verifiable-report/v1` and `verifiable-fork/v1` host report contracts with
+  stable exit codes for pass, proven contradiction, insufficient evidence, and usage errors.
+- Added offline replay divergence reporting, fork-boundary validation, a performance baseline, and
+  callable framework-operation mirrors for Node, Python, and WASM.
+- Added one Rust-core JSON bridge for native SDK adapters; SDKs do not duplicate C1–C8 validation.
+- No Kernel ABI or durable authority was added; Evolution objects remain planned for 0.2.70+.
+
 ### Removed — 0.2.68 DEL-1 runtime language convergence
 
 - Removed `CoreMessage.token_count` and `ToolResult.token_count`, including the Rust, Node,

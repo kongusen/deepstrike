@@ -1032,6 +1032,13 @@ pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
     rust_verdict_output_schema(extract_skill_on_pass).to_string()
 }
 
+/// Framework Verifiable Runtime bridge. Rust core remains the single semantic implementation.
+#[wasm_bindgen(js_name = verifiableOperationJson)]
+pub fn verifiable_operation_json(request: String) -> Result<String, JsValue> {
+    deepstrike_core::runtime::verifiable::operation_json(&request)
+        .map_err(|error| JsValue::from_str(&error))
+}
+
 // ────────────────────────────── Durable-memory wire values ──────────────────────────────────────
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]

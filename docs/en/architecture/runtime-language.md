@@ -69,3 +69,19 @@ Settlement`. SessionLog records the evidence; it is not recovery authority.
 
 Every new runtime object should document its Domain, Authority, Durability, Identity, Causation,
 and Replay behavior before it crosses a layer boundary.
+
+## 0.2.69 Verifiable Runtime
+
+0.2.69 adds the Framework Verifiable Runtime Foundation. The host-side `deepstrike` command surface
+is only one adapter:
+
+```text
+deepstrike inspect <operation>
+deepstrike verify <operation>
+deepstrike replay <operation>
+deepstrike fork <operation> --at <step>
+```
+
+The framework accepts an adapter-owned evidence bundle, delegates C1–C8 to the chain validator, and
+never creates a second semantic authority or invokes a live provider. See
+[ADR-009](../../decisions/009-framework-verifiable-runtime).

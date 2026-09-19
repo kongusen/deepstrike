@@ -79,4 +79,5 @@ declare module "@deepstrike/wasm-kernel" {
   export function buildEvalMessages(goal: string, criteria: unknown[], result: string, attempt: number, extractSkillOnPass: boolean): import("./types.js").Message[]
   export function parseVerdict(content: string): { passed: boolean; overallScore: number; feedback: string; details: unknown[]; skillCandidate?: unknown }
   export function verdictOutputSchema(extractSkillOnPass: boolean): string
+  export function verifiableOperationJson(request: string): string
 }
