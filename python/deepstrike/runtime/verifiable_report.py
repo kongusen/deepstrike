@@ -4,8 +4,8 @@ from dataclasses import dataclass
 import json
 from typing import Callable, Literal, Mapping, Protocol, Sequence
 
-VERIFIABLE_REPORT_SCHEMA = "verifiable-report/v1"
-VERIFIABLE_FORK_SCHEMA = "verifiable-fork/v1"
+VERIFIABLE_REPORT_SCHEMA = "verifiable-report/v2"
+VERIFIABLE_FORK_SCHEMA = "verifiable-fork/v2"
 VerifiableCommand = Literal["inspect", "verify", "replay", "fork"]
 CheckVerdict = Literal["pass", "degraded", "fail", "unavailable"]
 ReplayVerdict = Literal["pass", "fail", "unavailable"]
@@ -47,7 +47,7 @@ class VerifiableRuntimeAdapter(Protocol):
 
 @dataclass(frozen=True)
 class VerifiableForkManifest:
-    schema: Literal["verifiable-fork/v1"]
+    schema: Literal["verifiable-fork/v2"]
     operation_id: str
     at_step: str
     parent_record_digest: str

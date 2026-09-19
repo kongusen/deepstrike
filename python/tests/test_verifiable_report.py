@@ -14,8 +14,8 @@ from deepstrike.runtime.verifiable_report import (
 
 
 def test_report_and_fork_schema_names_match_rust_contract():
-    assert VERIFIABLE_REPORT_SCHEMA == "verifiable-report/v1"
-    assert VERIFIABLE_FORK_SCHEMA == "verifiable-fork/v1"
+    assert VERIFIABLE_REPORT_SCHEMA == "verifiable-report/v2"
+    assert VERIFIABLE_FORK_SCHEMA == "verifiable-fork/v2"
     assert_verifiable_report_schema({"schema": VERIFIABLE_REPORT_SCHEMA})
 
 
@@ -65,7 +65,7 @@ def test_adapter_encodes_evidence_for_the_rust_json_bridge():
 
     def operation_json(request):
         requests.append(request)
-        return '{"schema":"verifiable-report/v1","command":"inspect","operation_id":"op"}'
+        return '{"schema":"verifiable-report/v2","command":"inspect","operation_id":"op"}'
 
     adapter = create_verifiable_runtime_adapter(operation_json)
     report = VerifiableOperation("op", VerifiableEvidence(journal=[b"\x01\x02"]), adapter).inspect()

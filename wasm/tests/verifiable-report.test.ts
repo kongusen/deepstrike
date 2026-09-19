@@ -8,8 +8,8 @@ import {
 
 describe("0.2.69 verifiable report mirror", () => {
   test("uses the Rust report and fork schema names", () => {
-    expect(VERIFIABLE_REPORT_SCHEMA).toBe("verifiable-report/v1")
-    expect(VERIFIABLE_FORK_SCHEMA).toBe("verifiable-fork/v1")
+    expect(VERIFIABLE_REPORT_SCHEMA).toBe("verifiable-report/v2")
+    expect(VERIFIABLE_FORK_SCHEMA).toBe("verifiable-fork/v2")
     expect(() => assertVerifiableReportSchema({ schema: VERIFIABLE_REPORT_SCHEMA })).not.toThrow()
     expect(() => assertVerifiableReportSchema({ schema: "other/v1" })).toThrow()
   })

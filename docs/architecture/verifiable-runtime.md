@@ -29,7 +29,7 @@ deepstrike replay <operation> [evidence options] [--at <step>]
 deepstrike fork <operation> [evidence options] --at <step> --output <path>
 ```
 
-JSON 输出固定为 `verifiable-report/v1`，退出码固定为 `0` 通过、`1` 证实矛盾、`2` 证据
+JSON 输出固定为 `verifiable-report/v2`，退出码固定为 `0` 通过、`1` 证实矛盾、`2` 证据
 不足或检查不可用、`64` 参数错误。`ds-chain-validator` 继续作为底层兼容入口。
 
 `replay` 只使用已记录的证据，绝不会调用真实 Provider。`fork` 只写入包含父操作、边界

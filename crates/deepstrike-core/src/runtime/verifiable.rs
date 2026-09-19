@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use super::chain_validator::{SegmentReport, ValidationReport, validate_with_checkpoint};
 use super::kernel::wire::record::KernelRecord;
 
-pub const REPORT_SCHEMA: &str = "verifiable-report/v1";
-pub const FORK_SCHEMA: &str = "verifiable-fork/v1";
+pub const REPORT_SCHEMA: &str = "verifiable-report/v2";
+pub const FORK_SCHEMA: &str = "verifiable-fork/v2";
 
 #[derive(Debug, Default, Deserialize)]
 struct JsonEvidence {
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn report_schema_is_frozen_for_the_minor() {
-        assert_eq!(REPORT_SCHEMA, "verifiable-report/v1");
+        assert_eq!(REPORT_SCHEMA, "verifiable-report/v2");
     }
 
     #[test]
@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn a_fork_manifest_round_trips_without_new_authority() {
         let manifest = ForkManifest {
-            schema: "verifiable-fork/v1".to_string(),
+            schema: "verifiable-fork/v2".to_string(),
             operation_id: "op-1".to_string(),
             at_step: "3".to_string(),
             parent_record_digest: "sha256:parent".to_string(),

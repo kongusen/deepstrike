@@ -28,7 +28,7 @@ deepstrike replay <operation> [evidence options] [--at <step>]
 deepstrike fork <operation> [evidence options] --at <step> --output <path>
 ```
 
-JSON output is frozen as `verifiable-report/v1`. Exit codes are `0` pass, `1` proven contradiction,
+JSON output is frozen as `verifiable-report/v2`. Exit codes are `0` pass, `1` proven contradiction,
 `2` insufficient evidence or unavailable check, and `64` usage error. `ds-chain-validator` remains
 the compatibility entry point.
 

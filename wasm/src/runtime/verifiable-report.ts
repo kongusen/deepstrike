@@ -1,8 +1,8 @@
 import { getKernel } from "./kernel.js"
 
 /** Framework-facing API plus the Rust verifiable-runtime report ABI. */
-export const VERIFIABLE_REPORT_SCHEMA = "verifiable-report/v1" as const
-export const VERIFIABLE_FORK_SCHEMA = "verifiable-fork/v1" as const
+export const VERIFIABLE_REPORT_SCHEMA = "verifiable-report/v2" as const
+export const VERIFIABLE_FORK_SCHEMA = "verifiable-fork/v2" as const
 
 export type VerifiableCommand = "inspect" | "verify" | "replay" | "fork"
 export type CheckVerdict = "pass" | "degraded" | "fail" | "unavailable"
