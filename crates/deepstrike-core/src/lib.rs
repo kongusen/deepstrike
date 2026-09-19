@@ -45,9 +45,9 @@ pub mod types;
 // Re-export key types at crate root for convenience
 pub use evolution::{
     ActivationBinding, ArtifactKind, ArtifactManifest, ArtifactRef, ArtifactSet, ArtifactVersion,
-    ContentDigest, EvaluationFact, EvaluationGate, EvaluationMetric, EvaluationRun,
-    EvolutionBundle, EvolutionProposal, EvolutionReport, EvolutionVerdict, PromotionDecision,
-    PromotionOutcome, validate_evolution, validate_evolution_json,
+    ContentDigest, EvaluationContextBinding, EvaluationFact, EvaluationGate, EvaluationMetric,
+    EvaluationRun, EvolutionBundle, EvolutionProposal, EvolutionReport, EvolutionVerdict,
+    PromotionDecision, PromotionOutcome, validate_evolution, validate_evolution_json,
 };
 pub use governance::quota::ResourceQuota;
 pub use mm::{

@@ -144,6 +144,7 @@ export type {
   ArtifactRef,
   ArtifactSet,
   ArtifactVersion,
+  EvaluationContextBinding,
   EvaluationFact,
   EvaluationGate,
   EvaluationMetric,

@@ -262,6 +262,77 @@ impl<'a> From<&'a EvolutionProposal> for ProposalBody<'a> {
     }
 }
 
+/// The verifiable context projection used by one evaluated operation.
+///
+/// Context bytes remain host-owned evidence. The evaluation ledger binds only the canonical
+/// policy, accepted input snapshot, rendered projection, and prompt measurement digests so a
+/// replay can prove which context was evaluated without making the kernel a context store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvaluationContextBinding {
+    pub digest: ContentDigest,
+    pub operation_id: String,
+    pub context_policy: ContentDigest,
+    pub input_snapshot: ContentDigest,
+    pub rendered_snapshot: ContentDigest,
+    pub prompt_measurement: ContentDigest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_prefix: Option<ContentDigest>,
+}
+
+impl EvaluationContextBinding {
+    pub fn new(
+        operation_id: impl Into<String>,
+        context_policy: ContentDigest,
+        input_snapshot: ContentDigest,
+        rendered_snapshot: ContentDigest,
+        prompt_measurement: ContentDigest,
+        cache_prefix: Option<ContentDigest>,
+    ) -> Result<Self, EvolutionError> {
+        let unsigned = Self {
+            digest: ContentDigest::from_bytes(b"placeholder"),
+            operation_id: operation_id.into(),
+            context_policy,
+            input_snapshot,
+            rendered_snapshot,
+            prompt_measurement,
+            cache_prefix,
+        };
+        let digest = canonical_digest(&EvaluationContextBindingBody::from(&unsigned))?;
+        Ok(Self { digest, ..unsigned })
+    }
+
+    pub fn verify_digest(&self) -> Result<(), EvolutionError> {
+        let expected = canonical_digest(&EvaluationContextBindingBody::from(self))?;
+        if expected != self.digest {
+            return Err(EvolutionError::InvalidDigest(self.digest.to_string()));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct EvaluationContextBindingBody<'a> {
+    operation_id: &'a str,
+    context_policy: &'a ContentDigest,
+    input_snapshot: &'a ContentDigest,
+    rendered_snapshot: &'a ContentDigest,
+    prompt_measurement: &'a ContentDigest,
+    cache_prefix: Option<&'a ContentDigest>,
+}
+
+impl<'a> From<&'a EvaluationContextBinding> for EvaluationContextBindingBody<'a> {
+    fn from(value: &'a EvaluationContextBinding) -> Self {
+        Self {
+            operation_id: &value.operation_id,
+            context_policy: &value.context_policy,
+            input_snapshot: &value.input_snapshot,
+            rendered_snapshot: &value.rendered_snapshot,
+            prompt_measurement: &value.prompt_measurement,
+            cache_prefix: value.cache_prefix.as_ref(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EvaluationRun {
     pub digest: ContentDigest,
@@ -271,6 +342,7 @@ pub struct EvaluationRun {
     pub evaluator: ContentDigest,
     pub dataset: ContentDigest,
     pub operation_ids: Vec<String>,
+    pub contexts: Vec<EvaluationContextBinding>,
     pub evidence_refs: Vec<ContentDigest>,
 }
 
@@ -292,6 +364,7 @@ struct EvaluationRunBody<'a> {
     evaluator: &'a ContentDigest,
     dataset: &'a ContentDigest,
     operation_ids: &'a [String],
+    contexts: &'a [EvaluationContextBinding],
     evidence_refs: &'a [ContentDigest],
 }
 
@@ -304,6 +377,7 @@ impl<'a> From<&'a EvaluationRun> for EvaluationRunBody<'a> {
             evaluator: &value.evaluator,
             dataset: &value.dataset,
             operation_ids: &value.operation_ids,
+            contexts: &value.contexts,
             evidence_refs: &value.evidence_refs,
         }
     }
@@ -601,11 +675,78 @@ pub fn validate_evolution(bundle: &EvolutionBundle) -> EvolutionReport {
                 ),
             ),
         }
-        if evaluation.operation_ids.is_empty() || evaluation.evidence_refs.is_empty() {
+        if evaluation.operation_ids.is_empty()
+            || evaluation.contexts.is_empty()
+            || evaluation.evidence_refs.is_empty()
+        {
             violation(
                 &mut violations,
                 "E5",
                 format!("evaluation {} has incomplete evidence", evaluation.digest),
+            );
+        }
+        let operation_ids: HashSet<_> = evaluation.operation_ids.iter().collect();
+        let context_operation_ids: HashSet<_> = evaluation
+            .contexts
+            .iter()
+            .map(|context| &context.operation_id)
+            .collect();
+        for context in &evaluation.contexts {
+            if context.verify_digest().is_err() {
+                violation(
+                    &mut violations,
+                    "E1",
+                    format!("evaluation context {} digest mismatch", context.digest),
+                );
+            }
+            if !operation_ids.contains(&context.operation_id) {
+                violation(
+                    &mut violations,
+                    "E5",
+                    format!(
+                        "evaluation context {} references an unknown operation {}",
+                        context.digest, context.operation_id
+                    ),
+                );
+            }
+            for reference in [
+                &context.context_policy,
+                &context.input_snapshot,
+                &context.rendered_snapshot,
+                &context.prompt_measurement,
+            ] {
+                if !evaluation.evidence_refs.contains(reference) {
+                    violation(
+                        &mut violations,
+                        "E5",
+                        format!(
+                            "evaluation context {} is missing evidence reference {}",
+                            context.digest, reference
+                        ),
+                    );
+                }
+            }
+            if let Some(cache_prefix) = &context.cache_prefix {
+                if !evaluation.evidence_refs.contains(cache_prefix) {
+                    violation(
+                        &mut violations,
+                        "E5",
+                        format!(
+                            "evaluation context {} is missing cache evidence reference {}",
+                            context.digest, cache_prefix
+                        ),
+                    );
+                }
+            }
+        }
+        if operation_ids != context_operation_ids {
+            violation(
+                &mut violations,
+                "E5",
+                format!(
+                    "evaluation {} does not bind every operation to a context",
+                    evaluation.digest
+                ),
             );
         }
     }
@@ -862,7 +1003,27 @@ mod tests {
         let dataset = digest("dataset");
         let evidence = digest("evidence");
         let operation_ids = vec!["eval-op".to_string()];
-        let evidence_refs = vec![evidence.clone()];
+        let context_policy = digest("context-policy");
+        let input_snapshot = digest("input-snapshot");
+        let rendered_snapshot = digest("rendered-snapshot");
+        let prompt_measurement = digest("prompt-measurement");
+        let context = EvaluationContextBinding::new(
+            "eval-op",
+            context_policy,
+            input_snapshot,
+            rendered_snapshot,
+            prompt_measurement,
+            None,
+        )
+        .unwrap();
+        let contexts = vec![context];
+        let evidence_refs = vec![
+            evidence.clone(),
+            contexts[0].context_policy.clone(),
+            contexts[0].input_snapshot.clone(),
+            contexts[0].rendered_snapshot.clone(),
+            contexts[0].prompt_measurement.clone(),
+        ];
         let run_body = EvaluationRunBody {
             proposal: &proposal.digest,
             baseline_artifact_set: &base_set.digest,
@@ -870,6 +1031,7 @@ mod tests {
             evaluator: &evaluator,
             dataset: &dataset,
             operation_ids: &operation_ids,
+            contexts: &contexts,
             evidence_refs: &evidence_refs,
         };
         let evaluation = EvaluationRun {
@@ -880,6 +1042,7 @@ mod tests {
             evaluator,
             dataset,
             operation_ids,
+            contexts,
             evidence_refs,
         };
         let metrics = vec![EvaluationMetric {
@@ -946,6 +1109,53 @@ mod tests {
 
         assert_eq!(report.verdict, EvolutionVerdict::Pass);
         assert!(report.violations.is_empty());
+    }
+
+    #[test]
+    fn evaluation_rejects_tampered_context_or_missing_measurement_evidence() {
+        let context_policy = digest("context-policy");
+        let input_snapshot = digest("input-snapshot");
+        let rendered_snapshot = digest("rendered-snapshot");
+        let prompt_measurement = digest("prompt-measurement");
+        let mut context = EvaluationContextBinding::new(
+            "eval-op",
+            context_policy,
+            input_snapshot,
+            rendered_snapshot,
+            prompt_measurement,
+            None,
+        )
+        .unwrap();
+        context.rendered_snapshot = digest("tampered-render");
+        let evaluation = EvaluationRun {
+            digest: digest("evaluation"),
+            proposal: digest("proposal"),
+            baseline_artifact_set: digest("base-set"),
+            candidate_artifact_set: digest("candidate-set"),
+            evaluator: digest("evaluator"),
+            dataset: digest("dataset"),
+            operation_ids: vec!["eval-op".to_string()],
+            contexts: vec![context],
+            evidence_refs: vec![digest("context-policy"), digest("input-snapshot")],
+        };
+        let report = validate_evolution(&EvolutionBundle {
+            evaluations: vec![evaluation],
+            ..Default::default()
+        });
+
+        assert_eq!(report.verdict, EvolutionVerdict::Fail);
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|violation| violation.code == "E1")
+        );
+        assert!(
+            report
+                .violations
+                .iter()
+                .any(|violation| violation.code == "E5")
+        );
     }
 
     #[test]

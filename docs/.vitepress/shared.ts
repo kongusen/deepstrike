@@ -95,6 +95,13 @@ function sidebar(prefix: '' | '/en'): SidebarGroup[] {
         { text: prefix ? 'Causality & Chain Validator' : '因果链与链验证器', link: `${p}/architecture/runtime-causality` },
       ],
     },
+    {
+      text: prefix ? 'Evolution Runtime' : 'Evolution Runtime',
+      items: [
+        { text: 'Evolution Runtime', link: `${p}/architecture/evolution-runtime` },
+        { text: 'Evaluation Context', link: `${p}/architecture/evaluation-context` },
+      ],
+    },
   ]
 }
 

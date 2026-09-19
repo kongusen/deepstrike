@@ -53,10 +53,6 @@ use crate::{SignalDeliveryReceipt, SignalSource};
 use deepstrike_core::context::task_state::TaskUpdate;
 use deepstrike_core::runtime::repair::repair_llm_completed;
 
-/// Explicit bootstrap identity used only when a host has not supplied an artifact set.
-pub const BOOTSTRAP_ARTIFACT_SET_DIGEST: &str =
-    "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1";
-
 /// Controls what the runner does when the state machine returns
 /// `EvaluateMilestone` — i.e., the LLM finished a turn but a milestone phase
 /// has not yet been evaluated.
@@ -580,11 +576,7 @@ impl RuntimeRunner {
                 max_turns: Some(effective_max_turns),
                 max_total_tokens: None,
                 max_wall_ms: effective_timeout,
-                artifact_set_digest: self
-                    .opts
-                    .artifact_set_digest
-                    .clone()
-                    .unwrap_or_else(|| BOOTSTRAP_ARTIFACT_SET_DIGEST.into()),
+                artifact_set_digest: self.opts.artifact_set_digest.clone(),
                 memory_binding_id: self
                     .opts
                     .agent_id

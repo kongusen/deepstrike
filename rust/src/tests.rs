@@ -1664,8 +1664,7 @@ mod tests {
                     max_turns: Some(3),
                     max_total_tokens: None,
                     max_wall_ms: None,
-                    artifact_set_digest: crate::runtime::runner::BOOTSTRAP_ARTIFACT_SET_DIGEST
-                        .into(),
+                    artifact_set_digest: None,
                     memory_binding_id: "test-memory".into(),
                     persist_payload: None,
                 },
@@ -2286,8 +2285,7 @@ mod tests {
                     max_turns: Some(3),
                     max_total_tokens: None,
                     max_wall_ms: None,
-                    artifact_set_digest: crate::runtime::runner::BOOTSTRAP_ARTIFACT_SET_DIGEST
-                        .into(),
+                    artifact_set_digest: None,
                     memory_binding_id: "test-memory".into(),
                     persist_payload: None,
                 },

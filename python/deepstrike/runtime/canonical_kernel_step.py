@@ -37,7 +37,6 @@ from deepstrike.providers.provider_error import canonical_provider_failure_kind
 
 
 MAX_CHAIN_POSITION = 9_007_199_254_740_991
-BOOTSTRAP_ARTIFACT_SET_DIGEST = "sha256:a0f09b7abc9d81c07f5a39004992382bdfd7ce9c4bf8d960119aaa2f04acb3a1"
 
 
 class CanonicalKernelRejectedError(RuntimeError):
@@ -448,7 +447,7 @@ class CanonicalRunnerRuntime:
   ) -> None:
     self.host = CanonicalKernelHost(kernel, journal, operation_id)
     self._config: dict[str, Any] = {
-      "artifact_set_binding": {"artifact_set_digest": artifact_set_digest or BOOTSTRAP_ARTIFACT_SET_DIGEST},
+      **({"artifact_set_binding": {"artifact_set_digest": artifact_set_digest}} if artifact_set_digest else {}),
       "execution_policy": {
         "max_context_tokens": max_context_tokens,
         **({"max_turns": max_turns} if max_turns is not None else {}),

@@ -139,6 +139,8 @@ from deepstrike.runtime.process_sandbox_plane import ProcessSandboxPlane
 from deepstrike.runtime.mcp_proxy_plane import McpProxyPlane, McpServerConfig
 from deepstrike.runtime.evolution import (
   EVOLUTION_REPORT_SCHEMA,
+  EvaluationContextBinding,
+  EvaluationRun,
   EvolutionReport,
   EvolutionRuntime,
   EvolutionRuntimeAdapter,
@@ -336,6 +338,8 @@ __all__ = [
   "McpProxyPlane",
   "McpServerConfig",
   "EVOLUTION_REPORT_SCHEMA",
+  "EvaluationContextBinding",
+  "EvaluationRun",
   "EvolutionReport",
   "EvolutionRuntime",
   "EvolutionRuntimeAdapter",

@@ -55,8 +55,8 @@ kinds require a vocabulary and replay rule before implementation.
 ### ArtifactSet
 
 An `ArtifactSet` names every artifact that can affect a new operation. Its ordering and canonical
-bytes are frozen. `ConfigureOperation` must carry the `artifact_set_digest`; omitted or unresolved
-bindings are invalid. An operation cannot mutate its artifact set after genesis.
+bytes are frozen. An unbound operation may omit `artifact_set_digest`; a promoted or replayed artifact
+set must carry a verified digest, and an operation cannot mutate its artifact set after genesis.
 
 ### EvolutionProposal
 
@@ -68,8 +68,10 @@ invalid.
 ### EvaluationRun and EvaluationFact
 
 An evaluation run binds a proposal, baseline and candidate artifact sets, evaluator manifest,
-dataset/fixture digest, operation IDs, and evidence references. Facts contain normalized metrics,
-required gate outcomes, regression comparisons, and replay verdicts. Raw provider usage and wire
+dataset/fixture digest, operation IDs, one `EvaluationContextBinding` per operation, and evidence
+references. A context binding covers the resolved context policy, canonical input snapshot, rendered
+snapshot, prompt measurement, and optional cache prefix. Facts contain normalized metrics, required gate
+outcomes, regression comparisons, and replay verdicts. Raw context bytes, provider usage, and wire
 evidence stay on the host evidence plane.
 
 ### PromotionDecision
@@ -87,7 +89,7 @@ The core evolution validator adds these fail-closed rules:
 - **E2** — parent closure and acyclic lineage;
 - **E3** — proposal base/candidate binding;
 - **E4** — evaluation binding to the exact proposal and artifact sets;
-- **E5** — evidence completeness and operation replayability;
+- **E5** — evidence completeness, context coverage, and operation replayability;
 - **E6** — baseline/candidate metric and regression validity;
 - **E7** — promotion policy and required-gate satisfaction;
 - **E8** — activation causality, boundary, and decision validity.

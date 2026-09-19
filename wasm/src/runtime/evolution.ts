@@ -6,7 +6,8 @@ export interface ArtifactManifest { readonly kind: ArtifactKind; readonly payloa
 export interface ArtifactVersion { readonly digest: string; readonly manifest: ArtifactManifest }
 export interface ArtifactSet { readonly digest: string; readonly artifacts: readonly ArtifactRef[] }
 export interface EvolutionProposal { readonly digest: string; readonly base_artifact_set: string; readonly candidate_artifact_set: string; readonly objective: string; readonly change_manifest: string; readonly proposer: string; readonly constraints: readonly string[] }
-export interface EvaluationRun { readonly digest: string; readonly proposal: string; readonly baseline_artifact_set: string; readonly candidate_artifact_set: string; readonly evaluator: string; readonly dataset: string; readonly operation_ids: readonly string[]; readonly evidence_refs: readonly string[] }
+export interface EvaluationContextBinding { readonly digest: string; readonly operation_id: string; readonly context_policy: string; readonly input_snapshot: string; readonly rendered_snapshot: string; readonly prompt_measurement: string; readonly cache_prefix?: string }
+export interface EvaluationRun { readonly digest: string; readonly proposal: string; readonly baseline_artifact_set: string; readonly candidate_artifact_set: string; readonly evaluator: string; readonly dataset: string; readonly operation_ids: readonly string[]; readonly contexts: readonly EvaluationContextBinding[]; readonly evidence_refs: readonly string[] }
 export interface EvaluationMetric { readonly name: string; readonly baseline: string; readonly candidate: string; readonly improved: boolean }
 export interface EvaluationGate { readonly name: string; readonly required: boolean; readonly passed: boolean }
 export interface EvaluationFact { readonly digest: string; readonly evaluation: string; readonly metrics: readonly EvaluationMetric[]; readonly gates: readonly EvaluationGate[]; readonly replay_passed: boolean }

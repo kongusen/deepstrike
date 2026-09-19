@@ -15,9 +15,11 @@ Artifact bytes remain in an immutable host-owned CAS. The kernel receives only v
 
 Evolution objects are authoritative in the host ArtifactStore, EvaluationStore, and EvolutionLedger. The kernel owns canonical bytes, digest integrity, activation causality, and replay binding. SessionLog, Checkpoint, SDK mirrors, and reports are evidence or projections and cannot become a second semantic authority for proposals, artifacts, or promotion.
 
+An `EvaluationRun` must also carry one `EvaluationContextBinding` for every evaluated operation. The binding fixes the resolved context policy, canonical input snapshot, renderer projection, prompt measurement, and optional cache prefix, and requires those references in evaluation evidence. Raw context bytes remain host-owned; see [Evaluation Context](./evaluation-context).
+
 The SDK façade keeps this boundary explicit. `EvolutionRuntime.validate(bundle)` delegates to the Rust E1–E8 validator, `validateStore(store)` reads a host-owned bundle, and `activate(bundle, operationId)` only returns a binding after the canonical report passes. Node, Python, and WASM expose the same transport-neutral contract; artifact bytes and store implementations remain outside the SDK.
 
-Canonical runners accept an optional host `artifactSetDigest`. When it is omitted they record the named bootstrap identity, which is suitable for framework bootstrap operations only; promoted or replayed artifact sets must pass their content-addressed digest explicitly.
+Canonical runners accept an optional host `artifactSetDigest`. An unbound operation may omit it; a promoted or replayed artifact set must pass a verified content-addressed digest explicitly. The SDK no longer provides a bootstrap fallback.
 
 The kernel ABI is the sole supported contract. Earlier journal, checkpoint, report, and evolution formats have no negotiation, shape inference, or migration path; deployments that must continue old data stay on 0.2.69. The E1–E8 validator rejects tampered digests, broken lineage, incorrect proposal bindings, incomplete evidence, invalid regressions, unsatisfied gates, and activation outside the declared boundary.
 

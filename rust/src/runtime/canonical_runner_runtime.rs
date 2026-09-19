@@ -54,7 +54,7 @@ pub(crate) struct CanonicalRunnerOptions {
     pub max_total_tokens: Option<u64>,
     pub max_wall_ms: Option<u64>,
     /// Host-owned artifact set identity captured in the operation genesis.
-    pub artifact_set_digest: String,
+    pub artifact_set_digest: Option<String>,
     pub memory_binding_id: String,
     pub persist_payload: Option<PersistPayloadFn>,
 }
@@ -115,10 +115,12 @@ impl CanonicalRunnerRuntime {
         }
 
         let mut config = Map::new();
-        config.insert(
-            "artifact_set_binding".into(),
-            json!({"artifact_set_digest": options.artifact_set_digest}),
-        );
+        if let Some(artifact_set_digest) = options.artifact_set_digest {
+            config.insert(
+                "artifact_set_binding".into(),
+                json!({"artifact_set_digest": artifact_set_digest}),
+            );
+        }
         config.insert("execution_policy".into(), Value::Object(execution_policy));
         config.insert(
             "host_effect_support".into(),
@@ -2342,7 +2344,7 @@ mod tests {
             max_turns: None,
             max_total_tokens: None,
             max_wall_ms: None,
-            artifact_set_digest: crate::runtime::runner::BOOTSTRAP_ARTIFACT_SET_DIGEST.into(),
+            artifact_set_digest: None,
             memory_binding_id: "test-binding".into(),
             persist_payload: None,
         }
@@ -2727,7 +2729,7 @@ mod tests {
             max_turns: Some(8),
             max_total_tokens: None,
             max_wall_ms: None,
-            artifact_set_digest: crate::runtime::runner::BOOTSTRAP_ARTIFACT_SET_DIGEST.into(),
+            artifact_set_digest: None,
             memory_binding_id: "restart-memory".into(),
             persist_payload: None,
         }

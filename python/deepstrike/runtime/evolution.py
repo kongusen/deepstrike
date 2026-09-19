@@ -4,13 +4,44 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, TypedDict
 
 EVOLUTION_REPORT_SCHEMA = "evolution-report/v1"
 EvolutionValidateJson = Callable[[str], str]
 
 
 EvolutionBundle = Mapping[str, Any]
+
+
+class EvaluationContextBinding(TypedDict, total=False):
+  """SDK mirror for the context evidence binding checked by the Rust core.
+
+  The canonical payload requires ``digest``, ``operation_id``, ``context_policy``,
+  ``input_snapshot``, ``rendered_snapshot``, and ``prompt_measurement``. ``cache_prefix``
+  is optional and, when present, must also be listed in ``evidence_refs``.
+  """
+
+  digest: str
+  operation_id: str
+  context_policy: str
+  input_snapshot: str
+  rendered_snapshot: str
+  prompt_measurement: str
+  cache_prefix: str
+
+
+class EvaluationRun(TypedDict):
+  """Python SDK mirror for the canonical evaluation run shape."""
+
+  digest: str
+  proposal: str
+  baseline_artifact_set: str
+  candidate_artifact_set: str
+  evaluator: str
+  dataset: str
+  operation_ids: list[str]
+  contexts: list[EvaluationContextBinding]
+  evidence_refs: list[str]
 
 
 @dataclass(frozen=True, slots=True)

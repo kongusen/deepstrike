@@ -234,7 +234,7 @@ class TurnMetrics:
 class RuntimeOptions:
   provider: LLMProvider
   session_log: SessionLog
-  # Host-owned artifact set identity captured in operation genesis. None uses the explicit bootstrap identity.
+  # Optional host-owned artifact set identity captured in operation genesis.
   artifact_set_digest: str | None = None
   # Optional explicit canonical journal. Default SessionLog implementations expose
   # ``kernel_journal``; custom logs must provide this capability explicitly.

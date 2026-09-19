@@ -160,7 +160,7 @@ export type { KnowledgeSource } from "./knowledge/index.js"
 export { createEvolutionRuntimeAdapter, createNativeEvolutionRuntimeAdapter, EvolutionRuntime } from "./runtime/evolution.js"
 export type {
   ActivationBinding, ArtifactKind, ArtifactManifest, ArtifactRef, ArtifactSet, ArtifactVersion,
-  EvaluationFact, EvaluationGate, EvaluationMetric, EvaluationRun, EvolutionBundle,
+  EvaluationContextBinding, EvaluationFact, EvaluationGate, EvaluationMetric, EvaluationRun, EvolutionBundle,
   EvolutionProposal, EvolutionReport, EvolutionVerdict, PromotionDecision, PromotionOutcome,
   EvolutionStore,
 } from "./runtime/evolution.js"

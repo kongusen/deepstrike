@@ -1,15 +1,15 @@
 {
-  "base_record_digest": "sha256:af139aca0fef6861d2242565eebb1e8f5899f69541e02883056fa0110033b218",
+  "base_record_digest": "sha256:ad02c6b34be537d5d34143ec72e4dfdbe3b8c94c79437e122cc35e4025453a25",
   "base_step_seq": "1",
-  "covered_head": "sha256:665a3a59934719c0a09829e8aa86e4ab8abefe851179f2b9ab70218af2adf396",
+  "covered_head": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
   "description": "Spec 12.2 / 12.3 rule 11 · the rebase form end to end. `logical_state` is the state after `base_step_seq`, `tail_inputs` covers (base, through] exactly, and `base_record_digest` is the chain anchor the tail replays from — the record an acked checkpoint is allowed to have reclaimed. Restoring the blob replays that tail, verifies each replayed record against the digest the checkpoint carries, and lands on the head the run was at.",
   "restore_cost": {
     "records_after_checkpoint": 0,
     "records_before_checkpoint": 0,
     "tail_inputs_replayed": 2
   },
-  "restored_head": "sha256:665a3a59934719c0a09829e8aa86e4ab8abefe851179f2b9ab70218af2adf396",
-  "state_digest": "sha256:7329e98851cc244e9ccbf1ca45f179ec670393af7e0aecb6204fc9fbaa4efc80",
+  "restored_head": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
+  "state_digest": "sha256:6c08dbe9ca29b9547c276d16e00d9abcfa9d3c578435bd39af9f90b4731c8572",
   "tail_steps": [
     "2",
     "3"

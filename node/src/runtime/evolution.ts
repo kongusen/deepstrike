@@ -22,6 +22,15 @@ export interface EvolutionProposal {
   readonly proposer: string
   readonly constraints: readonly string[]
 }
+export interface EvaluationContextBinding {
+  readonly digest: string
+  readonly operation_id: string
+  readonly context_policy: string
+  readonly input_snapshot: string
+  readonly rendered_snapshot: string
+  readonly prompt_measurement: string
+  readonly cache_prefix?: string
+}
 export interface EvaluationRun {
   readonly digest: string
   readonly proposal: string
@@ -30,6 +39,7 @@ export interface EvaluationRun {
   readonly evaluator: string
   readonly dataset: string
   readonly operation_ids: readonly string[]
+  readonly contexts: readonly EvaluationContextBinding[]
   readonly evidence_refs: readonly string[]
 }
 export interface EvaluationMetric { readonly name: string; readonly baseline: string; readonly candidate: string; readonly improved: boolean }

@@ -19,6 +19,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Added fail-closed E1–E8 evolution validation and removed the `ds-chain-validator` entry point.
 - Added the Rust-core JSON bridge and framework mirrors for Node, Python, and WASM without a
   second validation authority.
+- Added verifiable `EvaluationContextBinding` records for each evaluated operation, binding the
+  context policy, input snapshot, rendered snapshot, prompt measurement, and optional cache prefix
+  to host evidence.
 
 ### Removed — 0.2.70 compatibility and projection surfaces
 

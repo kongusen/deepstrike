@@ -517,9 +517,6 @@ mod tests {
                 json!({
                     "kind": "configure_operation",
                     "config": {
-                        "artifact_set_binding": {
-                            "artifact_set_digest": crate::runtime::runner::BOOTSTRAP_ARTIFACT_SET_DIGEST
-                        },
                         "host_effect_support": { "supported": ["call_provider"] }
                     }
                 }),
