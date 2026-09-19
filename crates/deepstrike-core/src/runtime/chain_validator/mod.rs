@@ -2,7 +2,8 @@
 //!
 //! Host-ops tooling, not an SDK runtime path: CI gates and incident triage run the same knife,
 //! and C3 needs the deterministic transition (re-plan), which only the core can perform. The CLI
-//! half is `src/bin/ds-chain-validator.rs`; this module is the verdict logic.
+//! The `deepstrike inspect|verify|replay|fork` command is the host entry point; this module owns
+//! the verdict logic.
 //!
 //! Input is a journal prefix — a sequence of opaque record byte blobs. Records are grouped into
 //! per-operation chain segments and every segment is judged independently. Nothing here ever

@@ -65,7 +65,7 @@ syscall（11 个 meta-tool）在 feed 之前裁决——它们改变下一次渲
 
 ## 链验证器规则（C1–C8）
 
-验证器输入 = journal 前缀 +（可选）checkpoint +（可选）SessionLog。按链分段检查，每段独立出报告；退出码 0=全绿 / 1=违例 / 2=输入不可解析。实现归属：core 库模块 + `ds-chain-validator` CLI（C3 本质是"用内核重放自己"，非 core 不可；验证器是 host ops 工具，不进 SDK runtime 路径）。
+验证器输入 = journal 前缀 +（可选）checkpoint +（可选）SessionLog。按链分段检查，每段独立出报告；退出码 0=全绿 / 1=违例 / 2=输入不可解析。实现归属：core 库模块 + `deepstrike inspect|verify|replay|fork`（C3 本质是"用内核重放自己"，非 core 不可；验证器是 host ops 工具，不进 SDK runtime 路径）。
 
 | # | 规则 | 强制执行的条文 |
 |---|---|---|

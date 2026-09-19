@@ -69,7 +69,7 @@ Syscalls (the 11 meta-tools) are adjudicated before the feed — they change wha
 
 ## Chain-Validator Rules (C1–C8)
 
-Validator input = journal prefix + (optional) checkpoint + (optional) SessionLog. Checks run per chain segment, each segment reported independently; exit codes 0 = green / 1 = violation / 2 = input unparseable. Home: a core library module + the `ds-chain-validator` CLI (C3 is essentially "replaying the kernel with itself" and cannot live elsewhere; the validator is a host ops tool, not an SDK runtime path).
+Validator input = journal prefix + (optional) checkpoint + (optional) SessionLog. Checks run per chain segment, each segment reported independently; exit codes 0 = green / 1 = violation / 2 = input unparseable. Home: a core library module plus the `deepstrike inspect|verify|replay|fork` command (C3 is essentially "replaying the kernel with itself" and cannot live elsewhere; the validator is a host ops tool, not an SDK runtime path).
 
 | # | Rule | Articles enforced |
 |---|---|---|

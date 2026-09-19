@@ -17,12 +17,6 @@ deepstrike-tokenizer = { workspace = true }
 [dev-dependencies]
 pretty_assertions = "1"
 
-# P7-S5 · chain validator CLI (P2 §5 batch 1: C1–C4 + C7). Host-ops tooling with its own
-# release rhythm (P7 §3.1: tool nature — does not gate SDK versions).
-[[bin]]
-name = "ds-chain-validator"
-path = "src/bin/ds-chain-validator.rs"
-
 [[bin]]
 name = "deepstrike"
 path = "src/bin/deepstrike.rs"

@@ -29,8 +29,8 @@ deepstrike fork <operation> [evidence options] --at <step> --output <path>
 ```
 
 JSON output is frozen as `verifiable-report/v2`. Exit codes are `0` pass, `1` proven contradiction,
-`2` insufficient evidence or unavailable check, and `64` usage error. `ds-chain-validator` remains
-the compatibility entry point.
+`2` insufficient evidence or unavailable check, and `64` usage error. `deepstrike inspect|verify|replay|fork`
+is the only command entry point.
 
 `replay` uses recorded evidence only and never invokes a live provider. `fork` writes only a
 read-only manifest containing the parent operation, boundary step, and parent digest. It does not

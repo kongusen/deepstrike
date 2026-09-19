@@ -30,7 +30,7 @@ deepstrike fork <operation> [evidence options] --at <step> --output <path>
 ```
 
 JSON 输出固定为 `verifiable-report/v2`，退出码固定为 `0` 通过、`1` 证实矛盾、`2` 证据
-不足或检查不可用、`64` 参数错误。`ds-chain-validator` 继续作为底层兼容入口。
+不足或检查不可用、`64` 参数错误。`deepstrike inspect|verify|replay|fork` 是唯一命令入口。
 
 `replay` 只使用已记录的证据，绝不会调用真实 Provider。`fork` 只写入包含父操作、边界
 步骤和父记录 digest 的只读 manifest，不写 Kernel Journal、不修改 Checkpoint，也不成为
