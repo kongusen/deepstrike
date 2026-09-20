@@ -17,19 +17,19 @@
 
 ### 阶段 1：公开契约
 
-- [ ] 任务 1：定义 Agent、Run、Session 的公开类型
+- [x] 任务 1：定义 Agent、Run、Session 的公开类型
   - 验收：`AgentDefinition`、`AgentRunOptions`、`RunResult`、`AgentSession`、`DelegationRequest` 和相关结果类型有明确输入输出。
   - 验证：类型测试覆盖最小 Agent、结构化输出、session 引用和取消信号。
   - 文件：`node/src/agent.ts`、`node/src/session.ts`、`node/src/types.ts`、`node/tests/agent-surface-types.test.ts`
 
-- [ ] 任务 2：实现 Agent facade
+- [x] 任务 2：实现 Agent facade
   - 验收：`createAgent(definition)` 返回对象，支持 `run`、`stream`、`session`；用户不需要直接创建 `RuntimeRunner`。
   - 验证：最小文本调用、流式调用和 session 连续调用通过集成测试。
   - 文件：`node/src/agent.ts`、新增 `node/src/agent-facade.ts`、`node/tests/agent-facade.test.ts`
 
 ### 阶段 2：普通用户高级能力
 
-- [ ] 任务 3：封装 Memory 和 Session
+- [x] 任务 3：封装 Memory 和 Session
   - 验收：`agent.remember`、`agent.recall`、`agent.session(id)` 能使用现有 memory store 和 session log，用户不接触 syscall 或事件重放。
   - 验证：记忆写入、查询、跨 run 恢复和失败结果测试。
   - 文件：`node/src/agent-facade.ts`、`node/src/memory/public.ts`、`node/tests/agent-memory.test.ts`
@@ -39,7 +39,7 @@
   - 验证：允许、拒绝、等待审批和取消测试。
   - 文件：`node/src/agent-facade.ts`、`node/src/runtime/runner.ts`、`node/tests/agent-governance.test.ts`
 
-- [ ] 任务 5：封装委托和 Workflow
+- [x] 任务 5：封装委托和 Workflow
   - 验收：`agent.delegate` 支持一次专门任务；`agent.workflow` 支持并行节点、依赖和综合结果；用户传入 Agent/目标，而不是手写 kernel task。
   - 验证：单委托、并行 fanout、依赖 join、部分失败和预算拒绝测试。
   - 文件：`node/src/agent-facade.ts`、`node/src/workflow/public.ts`、`node/tests/agent-workflow.test.ts`

@@ -4,6 +4,8 @@ import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-pl
 import { RuntimeRunner, type RuntimeOptions } from "./runtime/runner.js"
 import type { LLMProvider, StreamEvent, DoneEvent, ErrorEvent, TokenUsage } from "./types.js"
 import type { RegisteredTool } from "./tools/index.js"
+import type { MemoryRecord, MemoryRecall, MemoryQuery, MemoryScope, MemoryStore, MemoryKind } from "./memory/protocols.js"
+import type { WorkflowSpec, WorkflowOutcome, KernelAgentRole } from "./types/agent.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -12,6 +14,9 @@ export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   executionPlane?: ExecutionPlane
   sessionLog?: SessionLog
   maxTokens?: number
+  memoryStore?: MemoryStore
+  memoryScope?: MemoryScope
+  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers">
 }
 
 export interface AgentRunOptions {
@@ -40,12 +45,45 @@ export interface AgentSession extends SessionRef {
   interrupt(reason?: "user" | "deadline" | "lease_lost" | "host_shutdown"): void
 }
 
+export interface MemoryInput {
+  name: string
+  content: string
+  description?: string
+  kind?: MemoryKind
+  confidence?: number
+  pinned?: boolean
+  ttlDays?: number
+}
+
+export interface RecallOptions {
+  topK?: number
+  kinds?: MemoryKind[]
+  minScore?: number
+}
+
+export interface DelegationRequest {
+  goal: string
+  role?: KernelAgentRole
+  instructions?: string
+  tools?: RegisteredTool[]
+}
+
+export interface DelegationResult {
+  output: string
+  status: "completed" | "partial" | "failed"
+  nodeId?: string
+}
+
 export interface ExecutableAgent {
   readonly name: string
   readonly definition: Readonly<AgentDefinition>
   run(goal: string, options?: AgentRunOptions): Promise<RunResult>
   stream(goal: string, options?: AgentRunOptions): AsyncIterable<StreamEvent>
   session(id?: string): AgentSession
+  remember(input: MemoryInput): Promise<MemoryRecord>
+  recall(query: string, options?: RecallOptions): Promise<MemoryRecall[]>
+  delegate(request: DelegationRequest): Promise<DelegationResult>
+  workflow(spec: WorkflowSpec, options?: { session?: SessionRef }): Promise<WorkflowOutcome>
 }
 
 function sessionId(ref?: SessionRef): string {
@@ -94,6 +132,74 @@ class ExecutableAgentImpl implements ExecutableAgent {
 
   session(id = `session-${crypto.randomUUID()}`): AgentSession {
     return new AgentSessionImpl(this, id)
+  }
+
+  async remember(input: MemoryInput): Promise<MemoryRecord> {
+    const store = this.definition.memoryStore
+    const scope = this.definition.memoryScope
+    if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
+    const now = Date.now()
+    const record: MemoryRecord = {
+      record_id: crypto.randomUUID(),
+      scope,
+      name: input.name,
+      kind: input.kind ?? "reference",
+      content: input.content,
+      description: input.description ?? "",
+      provenance: { author: "host", trust: "user_asserted", evidence_refs: [] },
+      created_at: now,
+      updated_at: now,
+      recall_count: 0,
+      confidence: input.confidence ?? 1,
+      links: [],
+      pinned: input.pinned ?? false,
+      ...(input.ttlDays !== undefined ? { ttl_days: input.ttlDays } : {}),
+    }
+    await store.put(this.name, record)
+    return record
+  }
+
+  async recall(query: string, options: RecallOptions = {}): Promise<MemoryRecall[]> {
+    const store = this.definition.memoryStore
+    const scope = this.definition.memoryScope
+    if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
+    const request: MemoryQuery = {
+      scope,
+      query,
+      top_k: options.topK ?? 8,
+      kinds: options.kinds ?? [],
+      ...(options.minScore !== undefined ? { min_score: options.minScore } : {}),
+    }
+    return store.search(this.name, request)
+  }
+
+  async delegate(request: DelegationRequest): Promise<DelegationResult> {
+    const spec: WorkflowSpec = {
+      nodes: [{
+        task: { goal: request.goal },
+        role: request.role ?? "explore",
+        isolation: "read_only",
+        contextInheritance: "system_only",
+      }],
+    }
+    const outcome = await this.workflow(spec)
+    const node = outcome.nodeOutcomes[0]
+    const nodeId = node?.nodeId
+    return {
+      output: nodeId ? outcome.outputs[nodeId] ?? "" : "",
+      status: node?.status === "completed" ? "completed" : node?.status === "failed" ? "failed" : "partial",
+      ...(nodeId ? { nodeId } : {}),
+    }
+  }
+
+  async workflow(spec: WorkflowSpec, options: { session?: SessionRef } = {}): Promise<WorkflowOutcome> {
+    const runner = this.createRunner({})
+    this.activeRunner = runner
+    try {
+      return await runner.runWorkflow(spec, { sessionId: sessionId(options.session) })
+    } finally {
+      this.activeRunner = null
+    }
   }
 
   stream(goal: string, options: AgentRunOptions = {}): AsyncIterable<StreamEvent> {
@@ -149,6 +255,10 @@ class ExecutableAgentImpl implements ExecutableAgent {
       maxTokens: this.definition.maxTokens ?? 32_000,
       ...(this.definition.instructions ? { systemPrompt: this.definition.instructions } : {}),
       ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
+      ...(this.definition.memoryStore ? { memoryStore: this.definition.memoryStore } : {}),
+      ...(this.definition.memoryScope ? { memoryScope: this.definition.memoryScope } : {}),
+      agentId: this.name,
+      ...(this.definition.runtimeOptions ?? {}),
     }
     return new RuntimeRunner(runtime)
   }

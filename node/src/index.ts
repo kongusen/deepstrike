@@ -22,7 +22,11 @@ export type {
   AgentDefinition,
   AgentRunOptions,
   AgentSession,
+  DelegationRequest,
+  DelegationResult,
   ExecutableAgent,
+  MemoryInput,
+  RecallOptions,
   RunResult,
   SessionRef,
 } from "./agent-facade.js"
