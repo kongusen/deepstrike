@@ -89,7 +89,7 @@ When you change an assistant's instructions, knowledge, tools, or rules, you nee
 
 The binding identifies which executed input an evaluation refers to. Artifact-set lineage is bound separately at operation genesis; binding validation does not automatically replay every provider attempt.
 
-| Question | What the 0.2.70 update provides |
+| Question | What the 0.2.71 update provides |
 | --- | --- |
 | **What did this answer depend on?** | Links between a task and the information, instructions, and model configuration selected for it. |
 | **Can we inspect an interrupted task?** | Records needed to recover and reconstruct task decisions, alongside records of tool and model activity. |
