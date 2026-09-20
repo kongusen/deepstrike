@@ -9,8 +9,8 @@
  * The canonical workflow root now exercises the real journaled run queue for the diamond DAG
  * A,B → C and A → D.
  */
-import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
-import type { WorkflowSpec } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog } from "../src/advanced/public.js"
+import type { WorkflowSpec } from "../src/advanced/public.js"
 
 describe("runWorkflow over the run-queue executor", () => {
   it("runs every node of an uneven DAG, including a dependent unblocked by a single early completion", async () => {

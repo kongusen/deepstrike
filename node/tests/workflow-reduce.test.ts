@@ -2,9 +2,9 @@
  * G2 deterministic compute: a `NodeKind::Reduce` node runs no LLM agent — the kernel hands the SDK a
  * reducer name + its dependency outputs, and the runner runs the registered pure function.
  */
-import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog } from "../src/advanced/public.js"
 import { builtinReducers } from "../src/workflow/public.js"
-import type { WorkflowSpec } from "../src/index.js"
+import type { WorkflowSpec } from "../src/advanced/public.js"
 import { workflowNodeSpecToKernel } from "../src/types/agent.js"
 
 describe("built-in reducers", () => {

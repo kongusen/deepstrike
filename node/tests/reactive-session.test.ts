@@ -7,8 +7,8 @@ import {
   InMemoryGroupBudgetStore, InMemoryEventStream, isVisibleTo,
   reactByMention, directorDriven, roundRobin, firstNonEmpty,
   InMemoryReactionCheckpointStore, ReactiveSession, readRecentTool,
-} from "../src/index.js"
-import type { RunGroup, BlackboardEvent, PeerView, SignalSource } from "../src/index.js"
+} from "../src/advanced/public.js"
+import type { RunGroup, BlackboardEvent, PeerView, SignalSource } from "../src/advanced/public.js"
 
 // ── EventStream visibility ──────────────────────────────────────────────────
 describe("EventStream visibility (L2 §6.1)", () => {

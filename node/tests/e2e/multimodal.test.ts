@@ -10,7 +10,7 @@
  *   set -a; source .env; set +a; E2E_PROVIDER=minimax npx jest e2e/multimodal --testTimeout 120000
  */
 import { deflateSync } from "node:zlib"
-import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, collectText } from "../../src/index.js"
+import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, collectText } from "../../src/advanced/public.js"
 import type { ContentPart } from "../../src/types.js"
 import { loadProviders, anyProvider } from "./providers.js"
 

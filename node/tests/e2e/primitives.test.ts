@@ -12,8 +12,8 @@ import {
   RuntimeRunner,
   InMemorySessionLog,
   LocalExecutionPlane,
-} from "../../src/index.js"
-import type { WorkflowSpec } from "../../src/index.js"
+} from "../../src/advanced/public.js"
+import type { WorkflowSpec } from "../../src/advanced/public.js"
 import { loadProviders, anyProvider } from "./providers.js"
 
 const provider = anyProvider(loadProviders())

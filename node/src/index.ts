@@ -12,11 +12,7 @@
 // ╚══════════════════════════════════════════════════════════════════════════╝
 
 // ── Start here: the canonical entry points ─────────────────────────────────
-export { runAgent, runFanout } from "./runtime/facade.js"
 // ③ dynamic loop agents: self-pacing rounds over the kernel pacing trap.
-export { runLoop, LoopDriver, foldLoopState } from "./runtime/loop-driver.js"
-export type { LoopSpec, LoopOutcome } from "./runtime/loop-driver.js"
-export type { RunAgentOptions, RunFanoutOptions } from "./runtime/facade.js"
 export { createAgent } from "./agent-facade.js"
 export type {
   AgentDefinition,
@@ -30,10 +26,7 @@ export type {
   RunResult,
   SessionRef,
 } from "./agent-facade.js"
-export { RuntimeRunner, collectText } from "./runtime/runner.js"
-export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationReason, PromptBudget, SchedulerPolicy } from "./runtime/runner.js"
-export { PayloadStore } from "./runtime/payload-store.js"
-export type { PayloadStoreConfig } from "./runtime/payload-store.js"
+export { collectText } from "./runtime/runner.js"
 // Self-Harness H1 instruction/nudge surfaces named on `RuntimeOptions`; the full manifest API lives
 // on the `@deepstrike/sdk/harness` subpath.
 export type { InstructionProfile, NudgeRule, NudgeTrigger } from "./harness/public.js"
@@ -53,10 +46,7 @@ export type {
 } from "./runtime/context-policy.js"
 
 // ── Execution plane + session log (the defaults) ────────────────────────────
-export { LocalExecutionPlane } from "./runtime/execution-plane.js"
-export type { ExecutionPlane, RunContext } from "./runtime/execution-plane.js"
-export { InMemorySessionLog, FileSessionLog } from "./runtime/session-log.js"
-export type { SessionLog, SessionEvent, SessionEventKind } from "./runtime/session-log.js"
+export type { SessionEvent, SessionEventKind } from "./runtime/session-log.js"
 // Registered session-event vocabulary (F9/S3; manifest-pinned by sdk-conformance, P7-S4)
 export { SESSION_EVENT_KINDS } from "./runtime/session-log.js"
 // ── content-parts-v1 registered encoding (F14/B5; byte-pinned by sdk-conformance) ──
@@ -93,7 +83,6 @@ export type {
 export { InMemoryEventStream, isVisibleTo } from "./runtime/event-stream.js"
 export type { EventStream, EventStreamOptions, BlackboardEvent, EventViewer } from "./runtime/event-stream.js"
 export type { ObserverFailure, ObserverErrorHandler } from "./runtime/reliability.js"
-export { ManagedTaskScope, operationAbortSignal } from "./runtime/reliability.js"
 export type { OperationContext, BackgroundTaskFailure, BackgroundTaskErrorHandler } from "./runtime/reliability.js"
 export { reactByMention, directorDriven, roundRobin, firstNonEmpty, union } from "./runtime/turn-policy.js"
 export type { TurnPolicy, PeerView } from "./runtime/turn-policy.js"
@@ -184,8 +173,6 @@ export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 
 // ── Multi-agent primitive ───────────────────────────────────────────────────
 // Parallel fan-out / sub-agent delegation. The full orchestration layer is in `@deepstrike/sdk/workflow`.
-export { AgentPool } from "./collaboration/pool.js"
-
 // ── Ecosystem Surface Contract (spc_001) ────────────────────────────────────
 export { Agent } from "./agent.js"
 export type { AgentOptions, AgentMemory, MemoryReference, ModelRef, ModelRequirement } from "./agent.js"

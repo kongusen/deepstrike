@@ -1,93 +1,48 @@
-# API 选型：run_agent vs RuntimeRunner vs run_fanout
+# 选择 Agent API
 
-根据 Agent 需要承担多少职责来选择入口。
+现在所有普通调用都从一个可执行 Agent 开始。Agent 定义身份和能力，Run 表示一次目标执行，Session 表示连续对话，Workflow 表示多个 Agent 的协作。
 
-## 决策树
+## 最小调用
 
-```
-需要流式事件 / 信号 / 记忆 / 治理？
-├─ 否 → 单任务？
-│        ├─ 是 → run_agent()
-│        └─ 否（并行+合成）→ run_fanout()
-└─ 是 → RuntimeRunner
-```
+```ts
+import { createAgent, OpenAIResponsesProvider } from "@deepstrike/sdk"
 
-## Level 1：`run_agent` — 最简单
+const agent = createAgent({
+  name: "researcher",
+  provider: new OpenAIResponsesProvider(process.env.OPENAI_API_KEY!, "gpt-5-mini"),
+  instructions: "查证事实并给出来源。",
+})
 
-```python
-from deepstrike import run_agent, AnthropicProvider, read_file
-
-text = await run_agent(
-    provider=AnthropicProvider(api_key=os.environ["ANTHROPIC_API_KEY"]),
-    goal="列出当前目录文件",
-    tools=[read_file],
-    max_turns=10,
-)
+const result = await agent.run("解释这个问题")
+console.log(result.output)
 ```
 
-适用：HTTP handler、脚本、一次性任务。
+## 流式输出
 
-## Level 2：`run_fanout` — 并行 + 合成
-
-```python
-from deepstrike import run_fanout, AnthropicProvider
-
-result = await run_fanout(
-    provider=AnthropicProvider(api_key=...),
-    tasks=["分析模块 A", "分析模块 B", "分析模块 C"],
-    synthesize="合并三份分析，给出结论",
-    worker_role="explore",
-    synthesis_role="plan",
-)
-print(result["synthesis"])
-print(result["outputs"])  # 各节点输出
+```ts
+for await (const event of agent.stream("解释这个问题")) {
+  if (event.type === "text_delta") process.stdout.write(event.delta)
+}
 ```
 
-它会为每个任务创建一个专注的 Agent，并同时返回综合结果和每个 worker 的输出。
+## 连续 Session
 
-## Level 3：`RuntimeRunner` — 完整能力
-
-```python
-runner = RuntimeRunner(RuntimeOptions(
-    provider=provider,
-    session_log=InMemorySessionLog(),
-    execution_plane=plane,
-    max_tokens=32_000,
-    # 以下为可选高级能力
-    skill_dir="./skills",
-    memory_store=store,
-    governance_policy=policy,
-    signal_source=gateway,
-    run_group=group,
-))
-
-async for event in runner.run(goal, session_id="my-session"):
-    ...
-
-# 或显式工作流
-outcome = await runner.run_workflow(spec, session_id="wf-1")
+```ts
+const session = agent.session("chat-1")
+await session.run("我叫 Ada")
+const reply = await session.run("我叫什么？")
 ```
 
-当 Agent 需要以下能力时使用 `RuntimeRunner`：
+## 高级能力
 
-- Skill / Memory / Knowledge
-- Governance / ResourceQuota
-- Signals / ReactiveSession
-- Sub-agent / Milestones
-- Harness 重试
+高级能力仍然通过 Agent 或 Session 的场景方法使用：
 
-## 对照表
+| 需求 | API |
+|---|---|
+| 持久记忆 | `agent.remember()`、`agent.recall()` |
+| 人工审批和取消 | `agent.run({ onPermissionRequest })`、`session.interrupt()` |
+| 委托专门任务 | `agent.delegate()` |
+| 并行研究和依赖编排 | `agent.workflow()` |
+| 低层 Kernel、Journal、Harness | `@deepstrike/sdk/advanced` |
 
-| 能力 | run_agent | run_fanout | RuntimeRunner |
-|------|:---------:|:----------:|:-------------:|
-| 流式事件 | ✗ | ✗ | ✓ |
-| 工具 | ✓ | ✓ | ✓ |
-| Workflow DAG | ✗ | ✓（固定模板） | ✓ |
-| Memory | ✗ | ✗ | ✓ |
-| Governance | ✗ | ✗ | ✓ |
-| Session resume | 有限 | 有限 | ✓ |
-
-## 延伸阅读
-
-- [动态工作流](../guides/workflow)
-- [RuntimeOptions 参考](../reference/runtime-options)
+普通应用不需要创建 RuntimeRunner、ExecutionPlane 或 Kernel 对象。

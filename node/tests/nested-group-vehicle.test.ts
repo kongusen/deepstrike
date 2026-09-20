@@ -25,7 +25,7 @@ import {
   type GroupBudgetRequest,
   type GroupBudgetReservation,
   type RunGroup,
-} from "../src/index.js"
+} from "../src/advanced/public.js"
 import type { LLMProvider, ProviderMessage, RenderedContext, ToolSchema } from "../src/types.js"
 import { tool } from "../src/tools/index.js"
 import { spawnStandalone } from "../src/runtime/sub-agent-orchestrator.js"

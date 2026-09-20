@@ -6,8 +6,8 @@
  *
  * Uses a stub orchestrator so no LLM is needed — the focus is the bootstrap / teardown / resume wiring.
  */
-import { RuntimeRunner, InMemorySessionLog, InMemoryGroupBudgetStore, runFanout } from "../src/index.js"
-import type { LLMProvider, ProviderMessage, SessionEvent, StreamEvent, WorkflowSpec } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog, InMemoryGroupBudgetStore, runFanout } from "../src/advanced/public.js"
+import type { LLMProvider, ProviderMessage, SessionEvent, StreamEvent, WorkflowSpec } from "../src/advanced/public.js"
 
 function stubOrchestrator(onCall?: () => void) {
   return {

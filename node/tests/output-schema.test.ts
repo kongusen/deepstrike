@@ -1,8 +1,8 @@
 /**
  * G3 structured output: the JSON-Schema-subset validator + the runWorkflow validate-retry path.
  */
-import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
-import type { WorkflowSpec } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog } from "../src/advanced/public.js"
+import type { WorkflowSpec } from "../src/advanced/public.js"
 import {
   validateAgainstSchema,
   extractJsonValue,

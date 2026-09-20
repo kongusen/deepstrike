@@ -127,11 +127,8 @@ Save this as `main.ts`, then run `npx tsx main.ts`:
 
 ```ts
 import {
-  FileSessionLog,
-  LocalExecutionPlane,
+  createAgent,
   OpenAIResponsesProvider,
-  RuntimeRunner,
-  collectText,
   tool,
 } from "@deepstrike/sdk"
 
@@ -145,18 +142,14 @@ const add = tool("add", "Add two numbers.", {
   required: ["x", "y"],
 }, async ({ x, y }) => String(Number(x) + Number(y)))
 
-const runner = new RuntimeRunner({
+const agent = createAgent({
+  name: "math",
   provider: new OpenAIResponsesProvider(apiKey, model),
-  executionPlane: new LocalExecutionPlane().register(add),
-  sessionLog: new FileSessionLog(".deepstrike/sessions"),
-  maxTokens: 4096,
+  tools: [add],
 })
 
-const answer = await collectText(runner.run({
-  sessionId: "math-1",
-  goal: "What is 17 + 28?",
-}))
-console.log(answer)
+const result = await agent.run("What is 17 + 28?")
+console.log(result.output)
 ```
 
 In this Node example, `FileSessionLog` provides a file-backed evidence log and an accompanying canonical journal. For production recovery, also retain the payloads and other host data your tools and integrations require.

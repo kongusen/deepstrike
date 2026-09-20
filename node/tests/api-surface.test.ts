@@ -11,12 +11,9 @@ import { OpenAIProvider } from "../src/index.js"
 describe("root surface", () => {
   it("exposes the Tier-1 entry points", () => {
     for (const name of [
-      "runAgent", "runFanout", "RuntimeRunner", "collectText",
-      "LocalExecutionPlane", "InMemorySessionLog", "FileSessionLog",
+      "createAgent", "collectText",
       "tool", "streamingTool", "safeTool", "ok", "fail",
       "AnthropicProvider", "OpenAIProvider", "OpenAIResponsesProvider", "createProvider",
-      "AgentPool",
-      "ManagedTaskScope", "operationAbortSignal",
     ]) {
       expect(root).toHaveProperty(name)
     }
@@ -25,6 +22,8 @@ describe("root surface", () => {
   it("does NOT leak machinery that moved to subpaths or was internalized", () => {
     for (const name of [
       // moved to subpaths
+      "runAgent", "runFanout", "RuntimeRunner", "LocalExecutionPlane", "InMemorySessionLog", "FileSessionLog",
+      "AgentPool", "ManagedTaskScope", "operationAbortSignal",
       "OpenAIChatProvider", "DeepSeekProvider", "builtinReducers", "SubAgentOrchestrator",
       "WorktreeExecutionPlane", "McpProxyPlane", "MemoryStore", "WorkingMemory",
       "HarnessLoop", "EvalLoopHarness", "judge", "osProfile", "ReplayProvider", "PermissionManager",

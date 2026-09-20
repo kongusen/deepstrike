@@ -24,6 +24,7 @@ export interface AgentRunOptions {
   maxTurns?: number
   signal?: AbortSignal
   metadata?: Record<string, unknown>
+  onPermissionRequest?: RuntimeOptions["onPermissionRequest"]
 }
 
 export interface SessionRef {
@@ -206,8 +207,13 @@ class ExecutableAgentImpl implements ExecutableAgent {
     const session = sessionId(options.session)
     const runner = this.createRunner(options)
     this.activeRunner = runner
+    const abort = () => runner.interrupt("user")
+    if (options.signal) {
+      if (options.signal.aborted) runner.interrupt("user")
+      else options.signal.addEventListener("abort", abort, { once: true })
+    }
     const stream = runner.run({ sessionId: session, goal })
-    return this.clearRunnerAfter(stream)
+    return this.clearRunnerAfter(stream, options.signal, abort)
   }
 
   async run(goal: string, options: AgentRunOptions = {}): Promise<RunResult> {
@@ -238,7 +244,7 @@ class ExecutableAgentImpl implements ExecutableAgent {
   async *resume(id: string, options: Omit<AgentRunOptions, "session"> = {}): AsyncIterable<StreamEvent> {
     const runner = this.createRunner(options)
     this.activeRunner = runner
-    yield* this.clearRunnerAfter(runner.wake(id))
+    yield* this.clearRunnerAfter(runner.wake(id), options.signal, () => runner.interrupt("user"))
   }
 
   interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user"): void {
@@ -259,14 +265,16 @@ class ExecutableAgentImpl implements ExecutableAgent {
       ...(this.definition.memoryScope ? { memoryScope: this.definition.memoryScope } : {}),
       agentId: this.name,
       ...(this.definition.runtimeOptions ?? {}),
+      ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
     }
     return new RuntimeRunner(runtime)
   }
 
-  private async *clearRunnerAfter(stream: AsyncIterable<StreamEvent>): AsyncIterable<StreamEvent> {
+  private async *clearRunnerAfter(stream: AsyncIterable<StreamEvent>, signal?: AbortSignal, abort?: () => void): AsyncIterable<StreamEvent> {
     try {
       yield* stream
     } finally {
+      if (signal && abort) signal.removeEventListener("abort", abort)
       this.activeRunner = null
     }
   }

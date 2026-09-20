@@ -2,8 +2,8 @@
  * G4 budget-as-signal: the kernel reports remaining workflow headroom on `workflow_batch_spawned`,
  * and the runner surfaces it into a coordinator node's goal so it can size its submission.
  */
-import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
-import type { WorkflowSpec } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog } from "../src/advanced/public.js"
+import type { WorkflowSpec } from "../src/advanced/public.js"
 import { workflowBudgetNote, type WorkflowBudget } from "../src/types/agent.js"
 
 describe("workflowBudgetNote", () => {

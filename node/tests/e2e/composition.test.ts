@@ -15,11 +15,11 @@
  *   set -a; source .env; set +a; E2E_PROVIDER=deepseek npx jest e2e/composition --testTimeout 300000
  * Skips cleanly when no provider key is present.
  */
-import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, collectText } from "../../src/index.js"
+import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, collectText } from "../../src/advanced/public.js"
 import { InMemoryGroupBudgetStore } from "../../src/runtime/run-group.js"
 import type { RunGroup } from "../../src/runtime/run-group.js"
 import { ReactiveSession, readRecentTool } from "../../src/runtime/reactive-session.js"
-import type { WorkflowSpec } from "../../src/index.js"
+import type { WorkflowSpec } from "../../src/advanced/public.js"
 import { loadProviders, anyProvider } from "./providers.js"
 
 const provider = anyProvider(loadProviders())

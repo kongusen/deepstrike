@@ -6,7 +6,7 @@ DeepStrike 帮你构建能够使用工具、记住事实、协作委托，并跨
 
 1. 为 Python、Node.js、Rust 或 WASM [安装 SDK](./installation)。
 2. 使用一个工具运行 [Hello Agent](./hello-agent)。
-3. 在 [API 选型](./run-agent-vs-runner) 中选择 `run_agent`、`run_fanout` 或 `RuntimeRunner`。
+3. 在 [API 选型](./run-agent-vs-runner) 中使用统一的 `createAgent`、`agent.run` 和 `agent.stream`。
 4. 接入一个 [Provider](./providers)。
 5. 从 [Agent 能力指南](/guides/) 中添加 Agent 需要的能力。
 
@@ -14,9 +14,9 @@ DeepStrike 帮你构建能够使用工具、记住事实、协作委托，并跨
 
 | API | 适合场景 |
 | --- | --- |
-| `run_agent()` | 一个目标，可选工具和最终文本。 |
-| `run_fanout()` | 多个专注任务并行执行后统一综合。 |
-| `RuntimeRunner` | 流式事件、Session、Memory、Signals、治理、工作流和自定义执行。 |
+| `createAgent()` + `agent.run()` | 执行一次目标并返回结构化结果。 |
+| `agent.stream()` | 获取流式事件。 |
+| `agent.session()` / `agent.workflow()` | 使用连续会话和多 Agent 编排。 |
 
 ## 边做边学
 

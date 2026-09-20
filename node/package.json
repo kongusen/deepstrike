@@ -34,6 +34,10 @@
     "./os": {
       "types": "./dist/os/public.d.ts",
       "import": "./dist/os/public.js"
+    },
+    "./advanced": {
+      "types": "./dist/advanced/public.d.ts",
+      "import": "./dist/advanced/public.js"
     }
   },
   "typesVersions": {
@@ -55,6 +59,9 @@
       ],
       "os": [
         "./dist/os/public.d.ts"
+      ],
+      "advanced": [
+        "./dist/advanced/public.d.ts"
       ]
     }
   },

@@ -8,7 +8,7 @@ import {
   type GroupBudgetRequest,
   type GroupBudgetReservation,
   type RunGroup,
-} from "../src/index.js"
+} from "../src/advanced/public.js"
 import { tool } from "../src/tools/index.js"
 
 class ToolThenTextProvider implements LLMProvider {

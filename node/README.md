@@ -40,11 +40,8 @@ The correct platform package is selected automatically via `optionalDependencies
 
 ```typescript
 import {
-  FileSessionLog,
-  LocalExecutionPlane,
-  RuntimeRunner,
+  createAgent,
   OpenAIResponsesProvider,
-  collectText,
   tool,
 } from "@deepstrike/sdk"
 
@@ -56,19 +53,14 @@ const add = tool("add", "Add two numbers.", {
   required: ["x", "y"],
 }, async ({ x, y }) => String(Number(x) + Number(y)))
 
-const plane = new LocalExecutionPlane().register(add)
-const runner = new RuntimeRunner({
+const agent = createAgent({
+  name: "math",
   provider,
-  executionPlane: plane,
-  sessionLog: new FileSessionLog(".deepstrike/sessions"),
-  maxTokens: 4096,
+  tools: [add],
 })
 
-const result = await collectText(runner.run({
-  sessionId: "math-1",
-  goal: "What is 17 + 28?",
-}))
-console.log(result)
+const result = await agent.run("What is 17 + 28?")
+console.log(result.output)
 ```
 
 Same-session continuity is explicit via `sessionId`:
@@ -86,41 +78,39 @@ The root export is the **intent layer** — what you reach for to run an agent, 
 
 | Import | Contains |
 |--------|----------|
-| `@deepstrike/sdk` | `runAgent` · `runFanout` · `RuntimeRunner` · `tool` · `LocalExecutionPlane` · `InMemorySessionLog`/`FileSessionLog` · `AnthropicProvider`/`OpenAIProvider`/`OpenAIResponsesProvider` · `createProvider` · `Governance` · `AgentPool` · `operationAbortSignal` · core types |
+| `@deepstrike/sdk` | `createAgent` · `Agent`/`RunResult` · `tool` · `AnthropicProvider`/`OpenAIProvider`/`OpenAIResponsesProvider` · `createProvider` · core types |
 | `@deepstrike/sdk/providers` | backend factories (`deepseek`, `kimi`, `qwen`, `glm`, `minimax`, `gemini`, `ollama`), profiles, `CircuitBreaker` |
 | `@deepstrike/sdk/workflow` | `SubAgentOrchestrator`, `spawnStandalone`, reducers, contracts, handoff/modes, agent + spec types |
 | `@deepstrike/sdk/planes` | `WorktreeExecutionPlane`, `ProcessSandboxPlane`, `McpProxyPlane`, `RemoteVpcPlane`, archive/credential stores |
 | `@deepstrike/sdk/memory` | `MemoryStore`, `WorkingMemory`, `InMemoryMemoryStore`, `rankMemories`, `extractSessionMemories`, `KnowledgeSource` |
 | `@deepstrike/sdk/harness` | `AttemptLoop`, body/judge/carry policies, `judge` |
 | `@deepstrike/sdk/os` | profiles, `KernelPrimitivesDashboard`, `primitiveForKind` / `KernelPrimitive`, signals, `PermissionManager`, replay-testing utilities |
+| `@deepstrike/sdk/advanced` | RuntimeRunner, SessionLog, execution planes, kernel diagnostics, and low-level orchestration escape hatches |
 
 > **Migration from 0.2.x:** the kernel-lowering converters (`*ToKernel`), low-level prompt/eval builders, and the `OpenAIChatProvider` alias are no longer exported from root; backend providers, planes, memory, harness, and OS utilities moved to the subpaths above. See [`MIGRATION-v0.2.30.md`](./MIGRATION-v0.2.30.md).
 
+The recipes below the Agent section that mention `RuntimeRunner` are advanced implementation examples. Import it from `@deepstrike/sdk/advanced`; application code should use the Agent and Session methods shown above.
+
 ### Recipes — the canonical entry points
 
-Most apps need one of three shapes. Start with the facades and drop down to `RuntimeRunner` only when you need streaming, signals, memory, or governance hooks.
+Most apps start with one executable Agent. Streaming, sessions, memory, delegation, governance, and workflows are exposed from the Agent and Session objects.
 
 ```typescript
-import { runAgent, runFanout } from "@deepstrike/sdk"
+import { createAgent } from "@deepstrike/sdk"
 
-// 1) Single agent — one prompt, one model, the text back.
-const answer = await runAgent({ provider, goal: "What is 17 + 28?", tools: [add] })
+const agent = createAgent({ name: "researcher", provider, tools: [add] })
+const answer = await agent.run("What is 17 + 28?")
+console.log(answer.output)
 
-// 2) Parallel fan-out → synthesize — N workers, then a synthesis pass, over the kernel-gated DAG.
-//    Bootstraps and tears down its own kernel, so it's safe from a stateless request handler.
-const { synthesis } = await runFanout({
-  provider,
-  tasks: [
-    "Summarize the security posture of the auth module",
-    "Summarize the data-retention posture",
-  ],
-  synthesize: "Combine the worker findings into one risk summary.",
-})
+for await (const event of agent.stream("Summarize the auth module")) {
+  if (event.type === "text_delta") process.stdout.write(event.delta)
+}
 
-// 3) Full control — sub-agents, governance, signals, streaming, resume → use RuntimeRunner directly.
+const delegated = await agent.delegate({ goal: "Check the data-retention posture" })
+console.log(delegated.output)
 ```
 
-`runFanout` is sugar over the **standalone `runWorkflow`** path: with no active `run()`, `runner.runWorkflow(spec)` auto-bootstraps a kernel that owns the DAG (governed · resumable), drives it, and tears it down — exactly what a Vercel/Lambda handler needs. See [Dynamic workflows](#dynamic-workflows). For parallel work you can also give each worker its own `RuntimeRunner`; `RuntimeRunner` carries per-run state, so **never share one instance across concurrent runs** — use a fresh instance per worker (or the `AgentPool` primitive).
+For parallel work and dependency graphs, use `agent.workflow(...)`. Kernel scheduling and run isolation remain internal to the Agent facade.
 
 ### Deploying to serverless / bundlers
 
@@ -308,7 +298,7 @@ Providers take an **options object** and share a `CircuitBreaker`. `extensions` 
 `OpenAIProvider` with an options object — no more positional `baseURL` hole:
 
 ```typescript
-import { OpenAIProvider } from "@deepstrike/sdk"
+import { OpenAIProvider } from "@deepstrike/sdk/advanced"
 
 const provider = new OpenAIProvider({
   apiKey,
@@ -479,7 +469,7 @@ No configuration is required. Pass a `PayloadStore` through `RuntimeOptions.payl
 ## Tools
 
 ```typescript
-import { tool } from "@deepstrike/sdk"
+import { tool } from "@deepstrike/sdk/advanced"
 import { readFile } from "@deepstrike/sdk/workflow"
 
 plane.register(tool("search", "Search.", schema, async (args) => ...))
@@ -646,7 +636,7 @@ Session events: `memory_written`, `memory_queried`, `memory_validation_failed`, 
 Every run loads `governancePolicy` into the kernel via `load_governance_policy`. The kernel enforces rules **before** tools execute:
 
 ```typescript
-import type { GovernancePolicy } from "@deepstrike/sdk"
+import type { GovernancePolicy } from "@deepstrike/sdk/advanced"
 
 const policy: GovernancePolicy = {
   rules: [
@@ -680,7 +670,7 @@ Default when omitted: allow-all (`DEFAULT_NATIVE_GOVERNANCE_POLICY`).
 `Governance` wraps the native governance evaluator for SDK-side use (tests, custom gates). It is **not** wired automatically into `RuntimeRunner` — use `governancePolicy` for run-time enforcement.
 
 ```typescript
-import { Governance } from "@deepstrike/sdk"
+import { Governance } from "@deepstrike/sdk/advanced"
 
 const gov = new Governance("allow")
 gov.addPermissionRule("danger.*", "deny")

@@ -1,14 +1,14 @@
 ---
 # code_refs: validated by scripts/check-docs-drift.mjs against live source — symbols must exist.
 code_refs:
-  node: [RuntimeRunner, LLMProvider, SessionLog]
+  node: [AgentDefinition, AgentRunOptions, RunResult, LLMProvider]
   fields:
     "python:RuntimeOptions": [provider, session_log, execution_plane, max_tokens, max_turns, max_total_tokens, timeout_ms, system_prompt, agent_id, compression_store, payload_store, initial_memory, tokenizer, enable_plan_tool, knowledge_budget_ratio, skill_dir, stable_core_tool_ids, skill_lease_turns, memory_store, memory_policy, pre_query_memory, knowledge_source, memory_provider, memory_summarizer, governance_policy, resource_quota, scheduler_policy, run_group, signal_policy, prompt_budget, allowed_tool_ids, on_permission_request, repeat_fuse, criteria_gate, provider_for, worktree_manager, sub_agent_orchestrator, sub_agent_harness, reducers, milestone_policy, milestone_contract, on_milestone_evaluate, signal_source, os_profile, on_turn_metrics, on_tool_suspend, extensions]
 ---
 
 # RuntimeOptions 参考
 
-Python `RuntimeRunner` 的配置中心。定义：`python/deepstrike/runtime/runner.py`。
+Node 普通用户通过 `createAgent` 配置 Agent；底层运行时配置由 Agent facade 管理。高级运行时实现位于 `@deepstrike/sdk/advanced`。
 
 ## 必填
 

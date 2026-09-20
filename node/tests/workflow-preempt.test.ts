@@ -5,9 +5,9 @@
  * `AgentPreempted` + tears the workflow down → the matching child's `AbortSignal` fires, cancelling
  * its in-flight LLM call. Real native kernel; mock orchestrator whose child blocks until aborted.
  */
-import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/advanced/public.js"
 import { SignalGateway } from "../src/os/public.js"
-import type { WorkflowSpec } from "../src/index.js"
+import type { WorkflowSpec } from "../src/advanced/public.js"
 
 describe("#2-B-ii mid-flight workflow preemption", () => {
   it("a Critical signal aborts the running node and tears the workflow down", async () => {

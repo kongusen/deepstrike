@@ -2,7 +2,7 @@ import {
   InMemorySessionLog,
   LocalExecutionPlane,
   RuntimeRunner,
-} from "../../src/index.js"
+} from "../../src/advanced/public.js"
 import type {
   LLMProvider,
   ProviderMessage,
@@ -13,7 +13,7 @@ import type {
   SignalSource,
   StreamEvent,
   ToolSchema,
-} from "../../src/index.js"
+} from "../../src/advanced/public.js"
 
 class TextProvider implements LLMProvider {
   async complete(): Promise<ProviderMessage> {

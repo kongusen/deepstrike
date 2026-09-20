@@ -129,7 +129,7 @@ export interface RuntimeOptions {
 `RuntimeOptions` 只作为 `createAgent` 的高级宿主配置或测试注入使用。它不作为普通用户的第一入口，也不要求用户直接实例化 Runtime。
 ```
 
-现有 `RuntimeRunner` 可以先作为 `Runtime` 的兼容实现，后续再决定是否改名或隐藏。
+现有 `RuntimeRunner` 只作为 facade 内部实现；它不属于普通用户公开模型。
 
 ### Tier 4：Workflow 编排 API
 
@@ -163,7 +163,7 @@ export interface AgentSession {
 }
 ```
 
-`runFanout` 可以保留为兼容 helper，但目标 API 应归入 `@deepstrike/sdk/workflow`，并使用 `Workflow` 语义命名。
+原有 `runFanout` 不再作为公开入口；并行任务统一通过 `agent.workflow(...)` 表达。
 
 ## 配置归属规则
 

@@ -127,11 +127,8 @@ export OPENAI_MODEL="your-model-id"
 
 ```ts
 import {
-  FileSessionLog,
-  LocalExecutionPlane,
+  createAgent,
   OpenAIResponsesProvider,
-  RuntimeRunner,
-  collectText,
   tool,
 } from "@deepstrike/sdk"
 
@@ -145,18 +142,14 @@ const add = tool("add", "Add two numbers.", {
   required: ["x", "y"],
 }, async ({ x, y }) => String(Number(x) + Number(y)))
 
-const runner = new RuntimeRunner({
+const agent = createAgent({
+  name: "math",
   provider: new OpenAIResponsesProvider(apiKey, model),
-  executionPlane: new LocalExecutionPlane().register(add),
-  sessionLog: new FileSessionLog(".deepstrike/sessions"),
-  maxTokens: 4096,
+  tools: [add],
 })
 
-const answer = await collectText(runner.run({
-  sessionId: "math-1",
-  goal: "What is 17 + 28?",
-}))
-console.log(answer)
+const result = await agent.run("What is 17 + 28?")
+console.log(result.output)
 ```
 
 在这个 Node 示例中，`FileSessionLog` 提供文件形式的证据日志和配套的运行时 journal。生产环境的恢复还需要保留工具与集成所依赖的 payload 等 Host 数据。
