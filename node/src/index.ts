@@ -17,6 +17,15 @@ export { runAgent, runFanout } from "./runtime/facade.js"
 export { runLoop, LoopDriver, foldLoopState } from "./runtime/loop-driver.js"
 export type { LoopSpec, LoopOutcome } from "./runtime/loop-driver.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./runtime/facade.js"
+export { createAgent } from "./agent-facade.js"
+export type {
+  AgentDefinition,
+  AgentRunOptions,
+  AgentSession,
+  ExecutableAgent,
+  RunResult,
+  SessionRef,
+} from "./agent-facade.js"
 export { RuntimeRunner, collectText } from "./runtime/runner.js"
 export type { RuntimeOptions, KernelReliabilityOptions, OperationCancellationReason, PromptBudget, SchedulerPolicy } from "./runtime/runner.js"
 export { PayloadStore } from "./runtime/payload-store.js"
@@ -177,7 +186,7 @@ export { AgentPool } from "./collaboration/pool.js"
 export { Agent } from "./agent.js"
 export type { AgentOptions, AgentMemory, MemoryReference, ModelRef, ModelRequirement } from "./agent.js"
 export { lowerAgent, normalizeAgent } from "./agent-ir.js"
-export type { AgentCapabilityIR, AgentDefinition, AgentLoweringInputs, AgentMemoryIR, AgentSpec, AgentToolDefinition, AgentToolIR } from "./agent-ir.js"
+export type { AgentCapabilityIR, AgentLoweringInputs, AgentMemoryIR, AgentSpec, AgentToolDefinition, AgentToolIR } from "./agent-ir.js"
 export type { Guardrail } from "./guardrail.js"
 export type { MCPServer, McpTransport } from "./mcp-server.js"
 export type { Knowledge, KnowledgeSourceRef } from "./knowledge/public.js"
