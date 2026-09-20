@@ -1,11 +1,12 @@
-import { Agent as DeclarativeAgent, type AgentOptions } from "./agent.js"
-import { InMemorySessionLog, type SessionEvent, type SessionLog } from "./runtime/session-log.js"
+import { type AgentOptions } from "./agent.js"
+import { InMemorySessionLog, type SessionLog } from "./runtime/session-log.js"
 import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-plane.js"
 import { RuntimeRunner, type RuntimeOptions } from "./runtime/runner.js"
 import type { LLMProvider, StreamEvent, DoneEvent, ErrorEvent, TokenUsage } from "./types.js"
 import type { RegisteredTool } from "./tools/index.js"
 
-export interface AgentDefinition extends Omit<AgentOptions, "model"> {
+export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
+  name?: string
   provider: LLMProvider
   tools?: RegisteredTool[]
   executionPlane?: ExecutionPlane
