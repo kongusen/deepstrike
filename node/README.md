@@ -114,6 +114,28 @@ console.log(delegated.output)
 
 For parallel work and dependency graphs, use `agent.workflow(...)`. Kernel scheduling and run isolation remain internal to the Agent facade.
 
+### Multimodal input
+
+Pass image or audio parts through `AgentRunOptions.attachments`. The runner persists them with the
+session and avoids injecting the same attachment twice when a session continues or resumes:
+
+```typescript
+const session = agent.session("conversation-1")
+
+await session.run("先看看这张图", {
+  attachments: [{
+    type: "image",
+    source: { kind: "url", url: "https://storage.example.com/signed/image.png" },
+    mediaType: "image/png",
+  }],
+})
+
+await session.run("继续解释其中的内容")
+```
+
+The current public `ContentPart` contract supports text, image, audio, and tool-result parts.
+Video and file attachments require an explicit content-type extension and provider conversion.
+
 ### Deploying to serverless / bundlers
 
 `@deepstrike/core` is a native N-API addon; its platform binary ships via `optionalDependencies`. Bundlers (Next.js/Vercel, webpack, esbuild) don't trace `.node` files by default, so the function fails at runtime with `Cannot find module '@deepstrike/core'`. Tell your bundler to treat the package as external and trace its files:
