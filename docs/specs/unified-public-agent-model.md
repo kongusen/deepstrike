@@ -150,8 +150,6 @@ export interface Workflow {
 export interface DelegationRequest {
   goal: string
   role?: KernelAgentRole
-  instructions?: string
-  tools?: RegisteredTool[]
 }
 
 export interface AgentSession {

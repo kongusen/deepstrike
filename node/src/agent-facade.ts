@@ -65,8 +65,6 @@ export interface RecallOptions {
 export interface DelegationRequest {
   goal: string
   role?: KernelAgentRole
-  instructions?: string
-  tools?: RegisteredTool[]
 }
 
 export interface DelegationResult {
