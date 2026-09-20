@@ -118,7 +118,7 @@ For a first application, follow [Hello Agent](./docs/en/getting-started/hello-ag
 Install the Node.js SDK and choose a model available to your account:
 
 ```bash
-npm install @deepstrike/sdk@0.2.70
+npm install @deepstrike/sdk@0.2.71
 export OPENAI_API_KEY="your-api-key"
 export OPENAI_MODEL="your-model-id"
 ```
