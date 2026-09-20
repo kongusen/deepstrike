@@ -2,7 +2,7 @@ import { type AgentOptions } from "./agent.js"
 import { InMemorySessionLog, type SessionLog } from "./runtime/session-log.js"
 import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-plane.js"
 import { RuntimeRunner, type RuntimeOptions } from "./runtime/runner.js"
-import type { LLMProvider, StreamEvent, DoneEvent, ErrorEvent, TokenUsage } from "./types.js"
+import type { LLMProvider, StreamEvent, DoneEvent, ErrorEvent, TokenUsage, ContentPart } from "./types.js"
 import type { RegisteredTool } from "./tools/index.js"
 import type { MemoryRecord, MemoryRecall, MemoryQuery, MemoryScope, MemoryStore, MemoryKind } from "./memory/protocols.js"
 import type { WorkflowSpec, WorkflowOutcome, KernelAgentRole } from "./types/agent.js"
@@ -25,6 +25,8 @@ export interface AgentRunOptions {
   signal?: AbortSignal
   metadata?: Record<string, unknown>
   onPermissionRequest?: RuntimeOptions["onPermissionRequest"]
+  /** Multimodal user input attached to this run and persisted in the session log. */
+  attachments?: ContentPart[]
 }
 
 export interface SessionRef {
@@ -232,7 +234,7 @@ class ExecutableAgentImpl implements ExecutableAgent {
       if (options.signal.aborted) runner.interrupt("user")
       else options.signal.addEventListener("abort", abort, { once: true })
     }
-    const stream = runner.run({ sessionId: session, goal })
+    const stream = runner.run({ sessionId: session, goal, ...(options.attachments?.length ? { attachments: options.attachments } : {}) })
     return this.clearRunnerAfter(stream, options.signal, abort)
   }
 
