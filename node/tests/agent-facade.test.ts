@@ -1,6 +1,7 @@
 import { createAgent } from "../src/agent-facade.js"
 import { ReplayProvider } from "../src/runtime/replay-provider.js"
 import { InMemoryMemoryStore } from "../src/memory/in-memory-store.js"
+import { InMemorySessionLog } from "../src/runtime/session-log.js"
 
 describe("createAgent", () => {
   it("runs a goal and returns a structured result", async () => {
@@ -26,6 +27,25 @@ describe("createAgent", () => {
 
     expect(events).toContain("text_delta")
     expect(events).toContain("done")
+  })
+
+  it("persists multimodal attachments through the public Agent facade", async () => {
+    const sessionLog = new InMemorySessionLog()
+    const agent = createAgent({
+      name: "vision",
+      provider: new ReplayProvider([{ role: "assistant", content: "seen" }]),
+      sessionLog,
+    })
+
+    await agent.run("describe this", {
+      session: { id: "vision-session" },
+      attachments: [{ type: "image", source: { kind: "url", url: "https://storage.test/image" }, mediaType: "image/png" }],
+    })
+
+    const started = (await sessionLog.read("vision-session")).find(entry => entry.event.kind === "run_started")
+    expect(started?.event.kind === "run_started" ? started.event.attachments : undefined).toEqual([
+      { type: "image", source: { kind: "url", url: "https://storage.test/image" }, mediaType: "image/png" },
+    ])
   })
 
   it("exposes memory as an agent capability", async () => {
