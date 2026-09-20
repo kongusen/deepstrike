@@ -54,4 +54,34 @@ describe("createAgent", () => {
       status: "completed",
     })
   })
+
+  it("turns a claimed signal into an agent run", async () => {
+    let acknowledged = false
+    let claimed = false
+    const signalSource = {
+      async claimSignal() {
+        if (claimed) return null
+        claimed = true
+        return {
+          deliveryId: "delivery-1",
+          leaseToken: "lease-1",
+          signalId: "signal-1",
+          deliveryAttempt: 1,
+          leaseExpiresAtMs: Date.now() + 1000,
+          signal: { source: "gateway" as const, signalType: "event" as const, urgency: "normal" as const, payload: { goal: "handle alert" } },
+        }
+      },
+      async ackSignal() { acknowledged = true; return true },
+      async nackSignal() { return true },
+    }
+    const agent = createAgent({
+      name: "operator",
+      provider: new ReplayProvider([{ role: "assistant", content: "handled" }]),
+      runtimeOptions: { signalSource },
+    })
+
+    const signalResult = await agent.listen()
+    expect(signalResult).toMatchObject({ output: "handled", status: "completed" })
+    expect(acknowledged).toBe(true)
+  })
 })

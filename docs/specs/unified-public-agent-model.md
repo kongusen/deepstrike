@@ -80,6 +80,7 @@ export interface Agent {
   recall(query: string, options?: RecallOptions): Promise<MemoryRecord[]>
   delegate(request: DelegationRequest): Promise<DelegationResult>
   workflow(spec: WorkflowSpec): Promise<WorkflowResult>
+  listen(options?: { session?: SessionRef; leaseMs?: number }): Promise<RunResult | null>
 }
 
 export function createAgent(definition: AgentDefinition): Agent

@@ -34,7 +34,7 @@
   - 验证：记忆写入、查询、跨 run 恢复和失败结果测试。
   - 文件：`node/src/agent-facade.ts`、`node/src/memory/public.ts`、`node/tests/agent-memory.test.ts`
 
-- [ ] 任务 4：封装权限、治理和中断
+- [x] 任务 4：封装权限、治理和中断
   - 验收：工具的审批请求可通过 `AgentRunOptions.onPermissionRequest` 处理；Session 能中断当前 Run；错误统一落到 `RunResult.status` 或结构化异常。
   - 验证：允许、拒绝、等待审批和取消测试。
   - 文件：`node/src/agent-facade.ts`、`node/src/runtime/runner.ts`、`node/tests/agent-governance.test.ts`
@@ -44,19 +44,19 @@
   - 验证：单委托、并行 fanout、依赖 join、部分失败和预算拒绝测试。
   - 文件：`node/src/agent-facade.ts`、`node/src/workflow/public.ts`、`node/tests/agent-workflow.test.ts`
 
-- [ ] 任务 6：封装 Signals 和验证
+- [x] 任务 6：封装 Signals 和验证
   - 验收：外部事件可以唤醒 Session；验证选项可以返回用户可读的 verdict/evidence；底层 SignalGateway 和 Harness 不出现在普通调用中。
   - 验证：事件唤醒、恢复、验证通过和失败测试。
   - 文件：`node/src/agent-facade.ts`、`node/src/signals/types.ts`、`node/src/harness/public.ts`、`node/tests/agent-signals.test.ts`
 
 ### 阶段 3：公开表面替换
 
-- [ ] 任务 7：重建根入口和 subpath
+- [x] 任务 7：重建根入口和 subpath
   - 验收：根入口只导出统一 Agent 模型、Provider 工厂、工具、基础结果类型；`RuntimeRunner`、`runAgent`、`runFanout` 不再从根入口导出；高级扩展集中到 `@deepstrike/sdk/advanced` 或同等 subpath。
   - 验证：API surface 测试和 TypeScript 构建通过。
   - 文件：`node/src/index.ts`、`node/package.json`、新增 `node/src/advanced/public.ts`、`node/tests/api-surface.test.ts`
 
-- [ ] 任务 8：重写文档和示例
+- [x] 任务 8：重写文档和示例
   - 验收：Quick start、getting started 和 API reference 只展示 `createAgent`、`agent.run`、`agent.stream`；高级能力按用户任务组织。
   - 验证：文档 drift 检查、README 示例类型检查和 docs build 通过。
   - 文件：`node/README.md`、`README.md`、`README.zh-CN.md`、`docs/getting-started/*`、`docs/reference/*`

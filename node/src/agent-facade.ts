@@ -83,6 +83,7 @@ export interface ExecutableAgent {
   recall(query: string, options?: RecallOptions): Promise<MemoryRecall[]>
   delegate(request: DelegationRequest): Promise<DelegationResult>
   workflow(spec: WorkflowSpec, options?: { session?: SessionRef }): Promise<WorkflowOutcome>
+  listen(options?: { session?: SessionRef; leaseMs?: number }): Promise<RunResult | null>
 }
 
 function sessionId(ref?: SessionRef): string {
@@ -198,6 +199,27 @@ class ExecutableAgentImpl implements ExecutableAgent {
       return await runner.runWorkflow(spec, { sessionId: sessionId(options.session) })
     } finally {
       this.activeRunner = null
+    }
+  }
+
+  async listen(options: { session?: SessionRef; leaseMs?: number } = {}): Promise<RunResult | null> {
+    const source = this.definition.runtimeOptions?.signalSource
+    if (!source) throw new Error("agent signals require runtimeOptions.signalSource")
+    const claim = await source.claimSignal(this.name, options.leaseMs)
+    if (!claim) return null
+    const payload = claim.signal.payload
+    const goal = typeof payload.goal === "string"
+      ? payload.goal
+      : typeof payload.summary === "string"
+        ? payload.summary
+        : JSON.stringify(payload)
+    try {
+      const result = await this.run(goal, options.session ? { session: options.session } : {})
+      await source.ackSignal(claim)
+      return result
+    } catch (error) {
+      await source.nackSignal(claim)
+      throw error
     }
   }
 
