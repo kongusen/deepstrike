@@ -63,18 +63,20 @@ const result = await agent.run("What is 17 + 28?")
 console.log(result.output)
 ```
 
-Same-session continuity is explicit via `sessionId`:
+Same-session continuity is explicit via `agent.session()`:
 
 ```typescript
-await collectText(runner.run({ sessionId: "chat-1", goal: "My name is Ada." }))
-const reply = await collectText(runner.run({ sessionId: "chat-1", goal: "What is my name?" }))
+const session = agent.session("chat-1")
+await session.run("My name is Ada.")
+const reply = await session.run("What is my name?")
+console.log(reply.output)
 ```
 
-Use `InMemorySessionLog` for process-local sessions or `FileSessionLog` when replay should survive restarts. `wake(sessionId)` resumes from the event log without inserting a duplicate `run_started` event.
+Session persistence and recovery are configured on the Agent; applications use `session.resume()` rather than rebuilding a runner.
 
 ### Package layout
 
-The root export is the **intent layer** — what you reach for to run an agent, run a workflow, author a tool, or pick a provider (~30 symbols). Advanced machinery lives behind subpaths, so the common surface stays small and tree-shakeable:
+The root export is the **Agent intent layer** — what you reach for to define and run an Agent, author a tool, or pick a provider. Advanced machinery lives behind subpaths, so the common surface stays small and tree-shakeable:
 
 | Import | Contains |
 |--------|----------|

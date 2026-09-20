@@ -152,7 +152,7 @@ const result = await agent.run("What is 17 + 28?")
 console.log(result.output)
 ```
 
-在这个 Node 示例中，`FileSessionLog` 提供文件形式的证据日志和配套的运行时 journal。生产环境的恢复还需要保留工具与集成所依赖的 payload 等 Host 数据。
+Agent facade 默认使用进程内 Session。需要跨进程恢复时配置持久化 Session 存储；生产环境还需要保留工具与集成所依赖的 payload 等 Host 数据。
 
 </details>
 

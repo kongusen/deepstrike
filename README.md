@@ -152,7 +152,7 @@ const result = await agent.run("What is 17 + 28?")
 console.log(result.output)
 ```
 
-In this Node example, `FileSessionLog` provides a file-backed evidence log and an accompanying canonical journal. For production recovery, also retain the payloads and other host data your tools and integrations require.
+The Agent facade provides in-memory sessions by default. Configure a durable session store when recovery must survive process restarts; retain the payloads and other host data your tools and integrations require.
 
 </details>
 
