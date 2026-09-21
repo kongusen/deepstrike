@@ -54,6 +54,10 @@ This is an implementation checkpoint, not release approval.
   and pinned only after dynamic activation. Inline text Knowledge uses a deterministic
   lexical `KnowledgeSource` and is retrieved through the `knowledge` capability on
   demand; file, URL, directory and vector sources remain explicit asynchronous bindings.
+- Context follow-up: advanced runtime now exposes a budgeted `ContextManager` with
+  typed item provenance, priority ordering, response reserve, TTL expiry and pinned
+  entries. Kernel context remains the execution authority while host selection is
+  deterministic and testable.
 - 028-54: Node, Rust and WASM test surfaces now consume the shared semantic
   contract fixture. The Python fixture test is present but its environment check
   is pinned to the checked-out SDK. After rebuilding the PyO3 extension with
