@@ -94,7 +94,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.99.0",
-    "@deepstrike/core": "0.2.71",
+    "@deepstrike/core": "0.2.72",
     "@google/generative-ai": "^0.24.1",
     "openai": "^7.5.0"
   },
