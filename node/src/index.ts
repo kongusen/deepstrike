@@ -162,7 +162,7 @@ export type { Session } from "./session.js"
 export { createWorkflow } from "./workflow/definition.js"
 export type { WorkflowDefinition, WorkflowStep, WorkflowResult } from "./workflow/definition.js"
 export { evaluate } from "./evals/public.js"
-export type { Dataset, DatasetCase, Evaluator, EvalResult, EvalRun } from "./evals/public.js"
+export type { Dataset, DatasetCase, Evaluator, EvalResult, EvalRun, EvalTrace } from "./evals/public.js"
 
 // ── Signals (the `RuntimeOptions.signalSource` surface) ─────────────────────
 export type {
