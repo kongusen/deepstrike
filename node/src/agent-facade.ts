@@ -9,6 +9,8 @@ import type { MemoryRecord, MemoryRecall, MemoryQuery, MemoryScope, MemoryStore,
 import type { WorkflowSpec, WorkflowOutcome, KernelAgentRole } from "./types/agent.js"
 import { extractJsonValue, schemaInstruction, validateAgainstSchema } from "./runtime/output-schema.js"
 import type { GovernancePolicy } from "./governance.js"
+import { McpProxyPlane } from "./runtime/mcp-proxy-plane.js"
+import { EnvCredentialVault } from "./runtime/credential-vault.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -96,6 +98,7 @@ export interface AgentRuntime {
   delegate(request: DelegationRequest): Promise<DelegationResult>
   workflow(spec: WorkflowSpec, options?: { session?: SessionRef }): Promise<WorkflowOutcome>
   listen(options?: { session?: SessionRef; leaseMs?: number }): Promise<RunResult | null>
+  close(): Promise<void>
 }
 
 function sessionId(ref?: SessionRef): string {
@@ -167,6 +170,8 @@ class AgentRuntimeImpl implements AgentRuntime {
   readonly definition: Readonly<AgentDefinition>
   private readonly sessionLog: SessionLog
   private activeRunner: RuntimeRunner | null = null
+  private mcpPlane?: McpProxyPlane
+  private mcpConnection?: Promise<void>
 
   constructor(definition: AgentDefinition) {
     this.definition = Object.freeze({ ...definition })
@@ -248,6 +253,7 @@ class AgentRuntimeImpl implements AgentRuntime {
 
   async workflow(spec: WorkflowSpec, options: { session?: SessionRef } = {}): Promise<WorkflowOutcome> {
     const runner = this.createRunner({})
+    await this.prepareMcp()
     this.activeRunner = runner
     try {
       return await runner.runWorkflow(spec, { sessionId: sessionId(options.session) })
@@ -279,15 +285,19 @@ class AgentRuntimeImpl implements AgentRuntime {
 
   stream(goal: string, options: AgentRunOptions = {}): AsyncIterable<StreamEvent> {
     const session = sessionId(options.session)
-    const runner = this.createRunner(options)
-    this.activeRunner = runner
-    const abort = () => runner.interrupt("user")
-    if (options.signal) {
-      if (options.signal.aborted) runner.interrupt("user")
-      else options.signal.addEventListener("abort", abort, { once: true })
-    }
-    const stream = runner.run({ sessionId: session, goal, ...(options.attachments?.length ? { attachments: options.attachments } : {}) })
-    return this.clearRunnerAfter(stream, options.signal, abort)
+    const owner = this
+    return (async function* () {
+      const runner = owner.createRunner(options)
+      await owner.prepareMcp()
+      owner.activeRunner = runner
+      const abort = () => runner.interrupt("user")
+      if (options.signal) {
+        if (options.signal.aborted) runner.interrupt("user")
+        else options.signal.addEventListener("abort", abort, { once: true })
+      }
+      const stream = runner.run({ sessionId: session, goal, ...(options.attachments?.length ? { attachments: options.attachments } : {}) })
+      yield* owner.clearRunnerAfter(stream, options.signal, abort)
+    })()
   }
 
   async run(goal: string, options: AgentRunOptions = {}): Promise<RunResult> {
@@ -321,12 +331,29 @@ class AgentRuntimeImpl implements AgentRuntime {
 
   async *resume(id: string, options: Omit<AgentRunOptions, "session"> = {}): AsyncIterable<StreamEvent> {
     const runner = this.createRunner(options)
+    await this.prepareMcp()
     this.activeRunner = runner
     yield* this.clearRunnerAfter(runner.wake(id), options.signal, () => runner.interrupt("user"))
   }
 
   interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user"): void {
     this.activeRunner?.interrupt(reason)
+  }
+
+  async close(): Promise<void> {
+    await this.mcpConnection
+    await this.mcpPlane?.disconnect()
+    this.mcpPlane = undefined
+    this.mcpConnection = undefined
+  }
+
+  private async prepareMcp(): Promise<void> {
+    if (!this.mcpPlane || this.mcpConnection) {
+      await this.mcpConnection
+      return
+    }
+    this.mcpConnection = this.mcpPlane.connect()
+    await this.mcpConnection
   }
 
   private createRunner(options: AgentRunOptions): RuntimeRunner {
@@ -336,8 +363,25 @@ class AgentRuntimeImpl implements AgentRuntime {
     if (!provider) {
       throw new Error(`agent "${this.name}" has no runtime provider binding for model ${typeof this.definition.model === "string" ? this.definition.model : "(unresolved)"}`)
     }
+    if (this.definition.executionPlane && this.definition.mcpServers?.length) {
+      throw new Error("agent mcpServers cannot be combined with a custom executionPlane")
+    }
     const plane = this.definition.executionPlane
-      ?? (this.definition.tools ?? []).reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane())
+      ?? (this.definition.mcpServers?.length
+        ? (() => {
+            const servers = Object.fromEntries(this.definition.mcpServers.map(server => {
+              if (server.transport.kind !== "stdio") {
+                throw new Error(`agent MCP transport "${server.transport.kind}" is not supported by the local runtime`)
+              }
+              return [server.name ?? server.transport.command, {
+                command: server.transport.command,
+                ...(server.transport.args ? { args: server.transport.args } : {}),
+              }]
+            }))
+            this.mcpPlane ??= new McpProxyPlane({ servers, vault: new EnvCredentialVault() })
+            return this.mcpPlane
+          })()
+        : (this.definition.tools ?? []).reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane()))
     const runtime: RuntimeOptions = {
       provider,
       ...(mergeGuardrailPolicies(this.definition.runtimeOptions?.governancePolicy, this.definition.guardrails)

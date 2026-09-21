@@ -205,4 +205,14 @@ describe("createAgent", () => {
       status: "completed",
     })
   })
+
+  it("fails explicitly for MCP transports without a local execution binding", async () => {
+    const agent = createAgent({
+      name: "remote-mcp",
+      provider: new ReplayProvider([{ role: "assistant", content: "done" }]),
+      mcpServers: [{ transport: { kind: "http", url: "https://example.test/mcp" } }],
+    })
+
+    await expect(agent.run("use mcp")).rejects.toThrow("MCP transport \"http\" is not supported")
+  })
 })
