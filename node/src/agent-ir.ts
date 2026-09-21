@@ -1,3 +1,4 @@
+import type { AgentDefinition } from "./agent-facade.js"
 import { Agent, type AgentMemory, type AgentOptions, type ModelRef } from "./agent.js"
 import type { Guardrail } from "./guardrail.js"
 import type { Handoff } from "./handoff-target.js"
@@ -18,7 +19,7 @@ export interface AgentToolDefinition {
 
 /** A JSON-friendly Agent definition accepted by `normalizeAgent`.  It is deliberately declarative:
  * executable tools still enter the SDK through `AgentOptions.tools`. */
-export interface AgentDefinition extends Omit<AgentOptions, "tools"> {
+export interface AgentDescriptor extends Omit<AgentOptions, "tools"> {
   tools?: Array<RegisteredTool | AgentToolDefinition>
 }
 
@@ -119,11 +120,11 @@ function isRegisteredTool(tool: RegisteredTool | AgentToolDefinition): tool is R
 
 /** Normalizes native Agents and JSON-safe descriptor objects into the one public surface used by
  * lowering. It does not interpret provider namespaces or create executable capabilities. */
-export function normalizeAgent(agent: Agent | AgentDefinition): Agent {
+export function normalizeAgent(agent: Agent | AgentDefinition | AgentDescriptor): Agent {
   if (agent instanceof Agent) return agent
   const tools = agent.tools?.map(tool => isRegisteredTool(tool) ? tool : toolDefinitionToRegisteredTool(tool))
   const { tools: _rawTools, ...options } = agent
-  return new Agent({ ...options, ...(tools ? { tools } : {}) })
+  return new Agent({ ...options, name: options.name ?? "agent", ...(tools ? { tools } : {}) })
 }
 
 function lowerTool(tool: RegisteredTool): AgentToolIR {

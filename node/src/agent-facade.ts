@@ -1,3 +1,4 @@
+import { normalizeAgent } from "./agent-ir.js"
 import { type AgentOptions } from "./agent.js"
 import { InMemorySessionLog, type SessionLog } from "./runtime/session-log.js"
 import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-plane.js"
@@ -128,7 +129,7 @@ class ExecutableAgentImpl implements ExecutableAgent {
   constructor(definition: AgentDefinition) {
     if (!definition.provider) throw new TypeError("createAgent requires a provider")
     this.definition = Object.freeze({ ...definition })
-    this.name = definition.name ?? "agent"
+    this.name = normalizeAgent(definition).name
     this.sessionLog = definition.sessionLog ?? new InMemorySessionLog()
   }
 

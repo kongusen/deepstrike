@@ -1,12 +1,12 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Agent } from "../src/agent.js"
-import { lowerAgent, normalizeAgent, type AgentDefinition } from "../src/agent-ir.js"
+import { lowerAgent, normalizeAgent, type AgentDescriptor } from "../src/agent-ir.js"
 import { fromOpenAiAgent, type OpenAiAgentJson } from "../src/compat/openai/agent.js"
 import { fromAnthropicMcpConfig } from "../src/compat/anthropic/mcp.js"
 
-async function fixture(): Promise<AgentDefinition> {
-  return JSON.parse(await readFile(join(process.cwd(), "..", "tests", "fixtures", "agent-ir", "canonical-agent.json"), "utf8")) as AgentDefinition
+async function fixture(): Promise<AgentDescriptor> {
+  return JSON.parse(await readFile(join(process.cwd(), "..", "tests", "fixtures", "agent-ir", "canonical-agent.json"), "utf8")) as AgentDescriptor
 }
 
 describe("spc_015-09: Canonical Agent IR", () => {
