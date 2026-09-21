@@ -31,6 +31,7 @@ describe("root surface", () => {
       "workflowSpecToKernel", "agentRunSpecToKernel", "governancePolicyToKernelEvent",
       "kernelObservationToSessionEvent", "loopInstruction", "buildEvalMessages", "fanoutSynthesize",
       "KERNEL_ROLE_MAP",
+      "EvolutionRuntime", "createEvolutionRuntimeAdapter", "KernelJournal", "ProviderRequestPlan",
     ]) {
       expect(root).not.toHaveProperty(name)
     }

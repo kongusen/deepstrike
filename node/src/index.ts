@@ -115,36 +115,6 @@ export type {
   VerifiableReport,
   VerifiableOperationJson,
 } from "./runtime/verifiable-report.js"
-export type {
-  ActivationBinding,
-  ArtifactKind,
-  ArtifactManifest,
-  ArtifactRef,
-  ArtifactSet,
-  ArtifactVersion,
-  ContextEntryRef,
-  ContextEntrySource,
-  ContextExecutionInput,
-  ContextPreparationRequest,
-  ContextPlan,
-  ContextPlanAction,
-  ContextSelection,
-  ContextState,
-  EvaluationContextBinding,
-  EvaluationFact,
-  EvaluationGate,
-  EvaluationMetric,
-  EvaluationRun,
-  EvolutionBundle,
-  EvolutionProposal,
-  EvolutionReport,
-  EvolutionVerdict,
-  EvolutionViolation,
-  PromotionDecision,
-  PromotionOutcome,
-  EvolutionStore,
-} from "./runtime/evolution.js"
-
 export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 
 // ── Multi-agent primitive ───────────────────────────────────────────────────
@@ -205,5 +175,3 @@ export type {
   WorkflowOutcome,
 } from "./types/agent.js"
 
-
-export type { PreparedProviderRequest } from "./types.js"
