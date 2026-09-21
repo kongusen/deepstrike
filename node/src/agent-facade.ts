@@ -79,7 +79,8 @@ export interface DelegationResult {
   nodeId?: string
 }
 
-export interface ExecutableAgent {
+/** The executable host handle created from an AgentDefinition. */
+export interface AgentRuntime {
   readonly name: string
   readonly definition: Readonly<AgentDefinition>
   run(goal: string, options?: AgentRunOptions): Promise<RunResult>
@@ -103,8 +104,8 @@ function statusFromDone(status: string): RunResult["status"] {
   return "partial"
 }
 
-class AgentSessionImpl implements AgentSession {
-  constructor(private readonly owner: ExecutableAgentImpl, public readonly id: string) {}
+class AgentSessionImpl {
+  constructor(private readonly owner: AgentRuntimeImpl, public readonly id: string) {}
 
   run(goal: string, options?: Omit<AgentRunOptions, "session">): Promise<RunResult> {
     return this.owner.run(goal, { ...options, session: { id: this.id } })
@@ -123,7 +124,7 @@ class AgentSessionImpl implements AgentSession {
   }
 }
 
-class ExecutableAgentImpl implements ExecutableAgent {
+class AgentRuntimeImpl implements AgentRuntime {
   readonly name: string
   readonly definition: Readonly<AgentDefinition>
   private readonly sessionLog: SessionLog
@@ -308,6 +309,6 @@ class ExecutableAgentImpl implements ExecutableAgent {
   }
 }
 
-export function createAgent(definition: AgentDefinition): ExecutableAgent {
-  return new ExecutableAgentImpl(definition)
+export function createAgent(definition: AgentDefinition): AgentRuntime {
+  return new AgentRuntimeImpl(definition)
 }

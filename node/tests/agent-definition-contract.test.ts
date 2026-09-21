@@ -22,6 +22,12 @@ test("SPC-028-05 Node declares exactly one public AgentDefinition", () => {
   expect(declarations(join(process.cwd(), "src"))).toEqual([join(process.cwd(), "src/agent-facade.ts")])
 })
 
+test("SPC-028-28 executable facade has one explicit runtime name", () => {
+  const source = readFileSync(join(process.cwd(), "src/agent-facade.ts"), "utf8")
+  expect(source).toMatch(/export interface AgentRuntime/)
+  expect(source).not.toMatch(/export interface ExecutableAgent/)
+})
+
 test("SPC-028-05 normalization accepts the facade definition with its default identity", async () => {
   const agent = createAgent({
     provider: new ReplayProvider([{ role: "assistant", content: "done" }]),

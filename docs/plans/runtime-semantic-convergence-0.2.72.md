@@ -48,6 +48,11 @@ This is an implementation checkpoint, not release approval.
 Runtime binding is optional at definition time; execution reports an unresolved binding explicitly.
 WASM/Python/Rust have not been migrated in this checkpoint.
 
+The Node facade now names the two public stages explicitly: `AgentDefinition` is the
+serializable declaration and `AgentRuntime` is the executable handle returned by
+`createAgent`. The internal `Agent` class remains a lowering input and is not the
+execution contract.
+
 ## Node migration notes
 
 For internal JSON descriptors, replace the old `AgentDefinition` import from
