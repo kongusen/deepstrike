@@ -8,6 +8,7 @@ import type { RegisteredTool } from "./tools/index.js"
 import type { MemoryRecord, MemoryRecall, MemoryQuery, MemoryScope, MemoryStore, MemoryKind } from "./memory/protocols.js"
 import type { WorkflowSpec, WorkflowOutcome, KernelAgentRole } from "./types/agent.js"
 import { extractJsonValue, schemaInstruction, validateAgainstSchema } from "./runtime/output-schema.js"
+import type { GovernancePolicy } from "./governance.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -119,6 +120,24 @@ function declarativeContextSeeds(definition: AgentDefinition): string[] {
     if (item.source.kind === "text") seeds.push(item.name ? `[Knowledge: ${item.name}]\n${item.source.content}` : item.source.content)
   }
   return seeds
+}
+
+function mergeGuardrailPolicies(
+  base: GovernancePolicy | undefined,
+  guardrails: AgentDefinition["guardrails"] | undefined,
+): GovernancePolicy | undefined {
+  const policies = [base, ...(guardrails ?? []).map(guardrail => guardrail.policy)].filter(
+    (policy): policy is GovernancePolicy => policy !== undefined,
+  )
+  if (!policies.length) return undefined
+  return {
+    ...(policies.some(policy => policy.defaultAction === "deny") ? { defaultAction: "deny" as const } : {}),
+    rules: policies.flatMap(policy => policy.rules ?? []),
+    vetoes: [...new Set(policies.flatMap(policy => policy.vetoes ?? []))],
+    rateLimits: policies.flatMap(policy => policy.rateLimits ?? []),
+    constraints: policies.flatMap(policy => policy.constraints ?? []),
+    ...(policies.some(policy => policy.surfaceDeniedInSystem === false) ? { surfaceDeniedInSystem: false } : {}),
+  }
 }
 
 class AgentSessionImpl {
@@ -309,6 +328,9 @@ class AgentRuntimeImpl implements AgentRuntime {
       ?? (this.definition.tools ?? []).reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane())
     const runtime: RuntimeOptions = {
       provider,
+      ...(mergeGuardrailPolicies(this.definition.runtimeOptions?.governancePolicy, this.definition.guardrails)
+        ? { governancePolicy: mergeGuardrailPolicies(this.definition.runtimeOptions?.governancePolicy, this.definition.guardrails) }
+        : {}),
       ...(this.definition.capabilityFilter ? { capabilityFilter: this.definition.capabilityFilter } : {}),
       executionPlane: plane,
       sessionLog: this.sessionLog,

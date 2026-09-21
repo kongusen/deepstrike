@@ -69,6 +69,27 @@ describe("createAgent", () => {
     expect(knowledge).toContain("Project code: K-42")
   })
 
+  it("lowers executable guardrails into the existing governance policy", async () => {
+    const provider = new ReplayProvider([{ role: "assistant", content: "done" }])
+    const seen: string[][] = []
+    const originalStream = provider.stream.bind(provider)
+    provider.stream = (async function* (...args: Parameters<typeof provider.stream>) {
+      seen.push(args[1].map(schema => schema.name))
+      yield* originalStream(...args)
+    }) as typeof provider.stream
+    const blocked = tool("blocked", "must never be exposed", { type: "object", properties: {} }, () => "blocked")
+    const agent = createAgent({
+      name: "guarded",
+      provider,
+      tools: [blocked],
+      guardrails: [{ name: "deny-blocked", policy: { vetoes: ["blocked"] } }],
+    })
+
+    await agent.run("say done")
+
+    expect(seen[0]).not.toContain("blocked")
+  })
+
   it("runs a goal and returns a structured result", async () => {
     const agent = createAgent({
       name: "researcher",
