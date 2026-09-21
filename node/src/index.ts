@@ -183,6 +183,8 @@ export type { MCPServer, McpTransport } from "./mcp-server.js"
 export type { Knowledge, KnowledgeSourceRef } from "./knowledge/public.js"
 export type { AgentRef, Handoff } from "./handoff-target.js"
 export type { Session } from "./session.js"
+export { createWorkflow } from "./workflow/definition.js"
+export type { WorkflowDefinition, WorkflowStep, WorkflowResult } from "./workflow/definition.js"
 
 // ── Signals (the `RuntimeOptions.signalSource` surface) ─────────────────────
 export type {
