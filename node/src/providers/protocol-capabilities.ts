@@ -8,6 +8,10 @@ export type GenerationProtocol =
   | "gemini"
   | "ollama-chat"
 
+export const GENERATION_PROTOCOLS: readonly GenerationProtocol[] = [
+  "anthropic-messages", "openai-chat", "openai-responses", "gemini", "ollama-chat",
+]
+
 export interface ProtocolRuntimeCapabilities {
   acceptedInputModalities: readonly InputModality[]
   emittedOutputModalities: readonly OutputModality[]

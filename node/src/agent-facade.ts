@@ -1,5 +1,5 @@
 import { normalizeAgent } from "./agent-ir.js"
-import { type AgentOptions } from "./agent.js"
+import { type AgentOptions, type ModelRef } from "./agent.js"
 import { InMemorySessionLog, type SessionLog } from "./runtime/session-log.js"
 import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-plane.js"
 import { RuntimeRunner, type RuntimeOptions } from "./runtime/runner.js"
@@ -10,7 +10,10 @@ import type { WorkflowSpec, WorkflowOutcome, KernelAgentRole } from "./types/age
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
-  provider: LLMProvider
+  /** Public model identity. Runtime resolves this through a provider binding. */
+  model?: ModelRef
+  /** Optional host binding retained for local/custom execution. */
+  provider?: LLMProvider
   tools?: RegisteredTool[]
   executionPlane?: ExecutionPlane
   sessionLog?: SessionLog
@@ -127,7 +130,6 @@ class ExecutableAgentImpl implements ExecutableAgent {
   private activeRunner: RuntimeRunner | null = null
 
   constructor(definition: AgentDefinition) {
-    if (!definition.provider) throw new TypeError("createAgent requires a provider")
     this.definition = Object.freeze({ ...definition })
     this.name = normalizeAgent(definition).name
     this.sessionLog = definition.sessionLog ?? new InMemorySessionLog()
@@ -275,6 +277,9 @@ class ExecutableAgentImpl implements ExecutableAgent {
   }
 
   private createRunner(options: AgentRunOptions): RuntimeRunner {
+    if (!this.definition.provider) {
+      throw new Error(`agent "${this.name}" has no runtime provider binding for model ${typeof this.definition.model === "string" ? this.definition.model : "(unresolved)"}`)
+    }
     const plane = this.definition.executionPlane
       ?? (this.definition.tools ?? []).reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane())
     const runtime: RuntimeOptions = {

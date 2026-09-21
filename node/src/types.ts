@@ -65,7 +65,8 @@ export type ToolOutputBlock =
   | ContentBlockFile
 
 
-export interface ProviderMessage {
+/** Semantic message consumed by the model invocation layer. Provider wire messages are adapter-local. */
+export interface ModelMessage {
   role: "system" | "user" | "assistant" | "tool"
   /** Plain-text content. When `contentParts` is present, this holds only the text segments. */
   content: string
@@ -73,6 +74,23 @@ export interface ProviderMessage {
   contentParts?: ContentPart[]
   toolCalls?: ToolCall[]
 }
+
+/** Stored durable representation. It references the semantic message without becoming a second content authority. */
+export interface StoredMessage extends ModelMessage {
+  readonly messageId?: string
+  readonly createdAt?: number
+}
+
+/** Host execution representation; contentParts remains the structured content authority. */
+export interface RuntimeMessage extends ModelMessage {
+  readonly messageId?: string
+}
+
+/** Compatibility mirror retained for the 0.2.71 provider contract. */
+export type ProviderMessage = ModelMessage
+
+/** Provider wire representation is adapter-owned and intentionally opaque at the SDK boundary. */
+export type WireMessage = Readonly<Record<string, unknown>>
 
 export interface ToolCall {
   id: string

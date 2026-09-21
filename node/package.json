@@ -38,6 +38,14 @@
     "./advanced": {
       "types": "./dist/advanced/public.d.ts",
       "import": "./dist/advanced/public.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/public.d.ts",
+      "import": "./dist/runtime/public.js"
+    },
+    "./evals": {
+      "types": "./dist/evals/public.d.ts",
+      "import": "./dist/evals/public.js"
     }
   },
   "typesVersions": {
@@ -62,6 +70,12 @@
       ],
       "advanced": [
         "./dist/advanced/public.d.ts"
+      ],
+      "runtime": [
+        "./dist/runtime/public.d.ts"
+      ],
+      "evals": [
+        "./dist/evals/public.d.ts"
       ]
     }
   },
