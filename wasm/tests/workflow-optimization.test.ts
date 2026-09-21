@@ -15,7 +15,7 @@ import {
 } from "../src/runtime/types/agent.js"
 import type { WorkflowSpec } from "../src/index.js"
 import { dependencyOutputsNote } from "../src/runtime/workflow-control-flow.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 import type { RegisteredTool } from "../src/tools/index.js"
 import { wrapScriptedKernel } from "./helpers/scripted-canonical-runtime.js"
 
@@ -69,7 +69,7 @@ function createWorkflowRunner(
 }
 
 const idleProvider: LLMProvider = {
-  async complete(): Promise<ProviderMessage> {
+  async complete(): Promise<ModelMessage> {
     return { role: "assistant", content: "done", toolCalls: [] }
   },
   async *stream(): AsyncIterable<StreamEvent> {
@@ -132,7 +132,7 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
   function nodeProvider(): LLMProvider {
     let call = 0
     return {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -195,7 +195,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
   function pacingLoopProvider(verbs: string[]): LLMProvider {
     let call = 0
     return {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -261,7 +261,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
 
   it("an iteration that never paces completes the loop (silence = done, not run-to-cap)", async () => {
     const silent: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {

@@ -196,7 +196,7 @@ export { ContentPolicyError, contentDispositionFor, requireContentDisposition } 
 export type { ContentDisposition, ContentPlacement, InputModality } from "./providers/content-policy.js"
 export type { PermissionDecision } from "./safety/index.js"
 export type {
-  ProviderMessage, ToolCall, ToolExecutionResult, ToolSchema,
+  ModelMessage, ToolCall, ToolExecutionResult, ToolSchema,
   RenderedContext, ProviderRunState,
   StreamEvent, TextDelta, ThinkingDelta,
   ToolCallEvent, ToolResultEvent, ToolAuditFailedEvent, DoneEvent, ErrorEvent,

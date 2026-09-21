@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from deepstrike._kernel import ProviderMessage, ToolCall, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolCall, ToolSchema
 from deepstrike.providers.base import (
     ThinkingTagStreamExtractor,
     openai_cached_prompt_tokens,
@@ -35,7 +35,7 @@ class OpenAIChatRequestPlan:
 
 @dataclass(frozen=True)
 class OpenAIChatDecodeResult:
-    message: ProviderMessage
+    message: ModelMessage
     replay: dict[str, Any] | None = None
 
 
@@ -250,7 +250,7 @@ class OpenAIChatAdapter:
             }} for call in native_calls],
         )
         return OpenAIChatDecodeResult(
-            message=ProviderMessage(role="assistant", content=content, tool_calls=tool_calls or None),
+            message=ModelMessage(role="assistant", content=content, tool_calls=tool_calls or None),
             replay=replay,
         )
 

@@ -8,7 +8,7 @@ try:
     from google import genai as google_genai
 except ImportError:  # pragma: no cover - exercised only when optional provider dep is absent.
     google_genai = None
-from deepstrike._kernel import ProviderMessage, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolSchema
 from .stream import StreamEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy
 from .gemini_adapter import GeminiAdapter
@@ -63,7 +63,7 @@ class GeminiProvider:
     def runtime_policy(self) -> RuntimePolicy:
         return _GEMINI_POLICIES.get(self._model_name, RuntimePolicy())
 
-    def _build_contents(self, turns: list[ProviderMessage]) -> list[dict]:
+    def _build_contents(self, turns: list[ModelMessage]) -> list[dict]:
         return self._adapter.build_contents(turns)
 
     def _build_tools(self, tools: list[ToolSchema]) -> list[dict] | None:
@@ -140,7 +140,7 @@ class GeminiProvider:
             confidence="exact",
         )
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ProviderMessage:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ModelMessage:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 

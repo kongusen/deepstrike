@@ -1,4 +1,4 @@
-import type { ContentPart, ProviderMessage, RenderedContext } from "../types.js"
+import type { ContentPart, ModelMessage, RenderedContext } from "../types.js"
 import { assistantReplayKey } from "../runtime/provider-replay.js"
 
 export class UnsupportedModalityError extends Error {
@@ -64,7 +64,7 @@ function anthropicPartsContent(parts: ContentPart[]): Array<Record<string, unkno
  *  (OpenAI), keeping the history a stable cacheable prefix. Anthropic appends it
  *  after the cache breakpoint. Absent on un-rebuilt bindings — then the state is
  *  already inside `turns`. */
-export function turnsWithStateAppended(context: RenderedContext): ProviderMessage[] {
+export function turnsWithStateAppended(context: RenderedContext): ModelMessage[] {
   return context.stateTurn ? [...context.turns, context.stateTurn] : context.turns
 }
 
@@ -97,7 +97,7 @@ export function toOpenAIMessages(context: RenderedContext): Array<Record<string,
 
 export function toAnthropicMessages(
   context: RenderedContext,
-  nativeReplay?: (message: ProviderMessage) => Array<Record<string, unknown>> | undefined,
+  nativeReplay?: (message: ModelMessage) => Array<Record<string, unknown>> | undefined,
 ): Array<Record<string, unknown>> {
   const result: Array<Record<string, unknown>> = []
 
@@ -142,12 +142,12 @@ export function toAnthropicMessages(
   return result
 }
 
-/** Collect a non-streaming assistant ProviderMessage from stream events. */
+/** Collect a non-streaming assistant ModelMessage from stream events. */
 export async function collectStreamMessage(
   stream: AsyncIterable<{ type: string; delta?: string; id?: string; name?: string; arguments?: Record<string, unknown> }>,
-): Promise<ProviderMessage> {
+): Promise<ModelMessage> {
   let content = ""
-  const toolCalls: ProviderMessage["toolCalls"] = []
+  const toolCalls: ModelMessage["toolCalls"] = []
   for await (const evt of stream) {
     if (evt.type === "text_delta" && evt.delta) content += evt.delta
     else if (evt.type === "tool_call" && evt.id && evt.name) {

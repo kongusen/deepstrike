@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from deepstrike._kernel import ProviderMessage, ToolCall, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolCall, ToolSchema
 from deepstrike.providers.base import normalize_tool_call, parse_tool_arguments, to_anthropic_messages
 from deepstrike.providers.protocol_adapter import AdapterOutput, ProtocolResponseError
 from deepstrike.providers.stop_reason import canonicalize_stop_reason
@@ -171,7 +171,7 @@ class AnthropicMessagesAdapter:
             },
         )
 
-    def decode_complete(self, raw: Any, input: CanonicalAdapterInput) -> tuple[ProviderMessage, dict | None]:
+    def decode_complete(self, raw: Any, input: CanonicalAdapterInput) -> tuple[ModelMessage, dict | None]:
         content = ""
         calls: list[ToolCall] = []
         native_blocks: list[dict] = []
@@ -194,7 +194,7 @@ class AnthropicMessagesAdapter:
         ):
             raise _textual_tool_call_error()
         usage = self.normalize_usage(_get(raw, "usage"))
-        message = ProviderMessage(role="assistant", content=content, tool_calls=calls or None)
+        message = ModelMessage(role="assistant", content=content, tool_calls=calls or None)
         return message, ({"native_blocks": native_blocks} if native_blocks else None)
 
     def create_stream_state(self, input: CanonicalAdapterInput, cache_slots: dict[str, bool] | None = None) -> AnthropicStreamState:

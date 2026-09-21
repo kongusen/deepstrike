@@ -1,4 +1,4 @@
-import type { ProviderMessage, ToolSchema } from "../../types.js"
+import type { ModelMessage, ToolSchema } from "../../types.js"
 import { getKernel } from "../kernel.js"
 
 export type KernelAgentRole = "explore" | "plan" | "implement" | "verify" | "custom"
@@ -97,7 +97,7 @@ export interface AgentProcessChangedObservation {
 
 export interface LoopResult {
   termination: TerminationReason | string
-  finalMessage?: ProviderMessage
+  finalMessage?: ModelMessage
   turnsUsed: number
   totalTokensUsed: number
   /** loop-control loop stop signal: a loop iteration sets `false` to end the loop before `max_iters`.
@@ -341,7 +341,7 @@ export interface KernelWorkflowNodeOutcome {
   status: WorkflowNodeStatus
   termination?: TerminationReason
   output?: {
-    role: ProviderMessage["role"]
+    role: ModelMessage["role"]
     content: string
     tool_calls?: Array<{ id: string; name: string; arguments?: Record<string, unknown> }>
   }
@@ -351,7 +351,7 @@ export interface WorkflowNodeOutcome {
   nodeId: string
   status: WorkflowNodeStatus
   termination?: TerminationReason
-  output?: ProviderMessage
+  output?: ModelMessage
 }
 
 export interface ControlRequestRejection {

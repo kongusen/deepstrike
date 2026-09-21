@@ -6,7 +6,7 @@ import logging
 from types import SimpleNamespace
 from typing import AsyncIterator
 from anthropic import AsyncAnthropic
-from deepstrike._kernel import ProviderMessage, ToolCall, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolCall, ToolSchema
 from .stream import StreamEvent
 from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, parse_tool_arguments, to_anthropic_content, to_anthropic_messages
 from .anthropic_adapter import AnthropicMessagesAdapter
@@ -98,7 +98,7 @@ class AnthropicProvider:
             blocks.append({"type": "text", "text": knowledge, **cc})
         return blocks or None
 
-    def _build_messages(self, turns: list[ProviderMessage], state_turn=None, frozen_prefix_len=None, strategy: str = "default", cache_control: dict | None = None) -> list[dict]:
+    def _build_messages(self, turns: list[ModelMessage], state_turn=None, frozen_prefix_len=None, strategy: str = "default", cache_control: dict | None = None) -> list[dict]:
         msgs = to_anthropic_messages(
             turns,
             native_replay=lambda message: self._native_assistant_blocks.get(
@@ -191,7 +191,7 @@ class AnthropicProvider:
             confidence="exact",
         )
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ProviderMessage:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ModelMessage:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
 
@@ -238,7 +238,7 @@ class AnthropicProvider:
         if finalized.replay:
             self._remember_native_blocks(stream_state.final_text, stream_state.final_tool_calls, finalized.replay["native_blocks"])
 
-    def _assistant_replay_key(self, message: ProviderMessage) -> str:
+    def _assistant_replay_key(self, message: ModelMessage) -> str:
         return self._assistant_replay_key_parts(message.content, message.tool_calls or [])
 
     def _assistant_replay_key_parts(self, content: str, tool_calls: list[ToolCall]) -> str:
@@ -317,7 +317,7 @@ def _apply_message_cache_control(msgs: list[dict], frozen_prefix_len: "int | Non
     body is promoted to a cache-bearing text block."""
     if not msgs:
         return
-    # ProviderMessage-level cache_control is emitted under "default" and "frozen-prefix" only.
+    # ModelMessage-level cache_control is emitted under "default" and "frozen-prefix" only.
     if strategy in ("tools-only", "system-only", "none"):
         return
     targets = {len(msgs) - 1}

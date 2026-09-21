@@ -6,7 +6,7 @@
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import { ProviderError } from "../src/providers/provider-error.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 
 function makeRunner(provider: LLMProvider) {
   return new RuntimeRunner({
@@ -29,7 +29,7 @@ describe("kernel-owned reactive recovery (wasm runner wiring)", () => {
         })
         yield { type: "text_delta", delta: "ok" }
       },
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
     }
@@ -56,7 +56,7 @@ describe("kernel-owned reactive recovery (wasm runner wiring)", () => {
           message: "413 context_length_exceeded",
         })
       },
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
     }

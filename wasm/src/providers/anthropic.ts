@@ -1,6 +1,6 @@
 import { requestSnapshot } from "./prepared-request.js"
 import type { PreparedProviderRequest, ProviderRunState } from "../types.js"
-import type { CacheBreakpointStrategy, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, ProviderMessage, ProviderDescriptor, ProviderReplay } from "../types.js"
+import type { CacheBreakpointStrategy, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, ModelMessage, ProviderDescriptor, ProviderReplay } from "../types.js"
 import { assistantReplayKey, collectStreamMessage, toAnthropicMessages } from "./base.js"
 
 /** Anthropic accepts at most this many cache_control breakpoints per request. */
@@ -156,18 +156,18 @@ export class AnthropicProvider implements LLMProvider {
     }
   }
 
-  peekProviderReplay(message: Pick<ProviderMessage, "content" | "toolCalls">): ProviderReplay | undefined {
+  peekProviderReplay(message: Pick<ModelMessage, "content" | "toolCalls">): ProviderReplay | undefined {
     const blocks = this.nativeAssistantBlocks.get(assistantReplayKey(message))
     return blocks?.length ? { protocol: "anthropic-messages", native_blocks: blocks } : undefined
   }
 
-  seedProviderReplay(message: Pick<ProviderMessage, "content" | "toolCalls">, replay: ProviderReplay): void {
+  seedProviderReplay(message: Pick<ModelMessage, "content" | "toolCalls">, replay: ProviderReplay): void {
     if (replay.protocol === "anthropic-messages" && replay.native_blocks?.length) {
       this.nativeAssistantBlocks.set(assistantReplayKey(message), replay.native_blocks)
     }
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ProviderMessage> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ModelMessage> {
     return collectStreamMessage(this.stream(context, tools, extensions))
   }
 
@@ -337,7 +337,7 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   private rememberNativeBlocks(
-    message: Pick<ProviderMessage, "content" | "toolCalls">,
+    message: Pick<ModelMessage, "content" | "toolCalls">,
     blocks: Array<Record<string, unknown>>,
   ): void {
     if (!blocks.length) return

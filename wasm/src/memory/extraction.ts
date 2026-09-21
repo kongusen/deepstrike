@@ -1,4 +1,4 @@
-import type { LLMProvider, ProviderMessage } from "../types.js"
+import type { LLMProvider, ModelMessage } from "../types.js"
 import type { MemoryKind, MemoryRecord, MemoryScope, SessionData } from "./index.js"
 
 const KINDS = new Set<MemoryKind>(["user", "feedback", "project", "reference"])
@@ -8,7 +8,7 @@ export async function extractSessionMemories(provider: LLMProvider, session: Ses
   const transcript = session.messages.map(message => `[${message.role.toUpperCase()}] ${message.content}`).join("\n").slice(0, 8_000)
   const context = {
     systemText: [systemPrompt, "Extract durable, reusable facts from this completed session. Return only JSON; do not include transient progress or guesses."].filter(Boolean).join("\n\n"),
-    turns: [{ role: "user" as const, content: `${transcript}\n\nReturn {"memories":[{"name":"stable-kebab-key","kind":"user|feedback|project|reference","content":"fact","description":"why durable","confidence":0.0,"links":[],"pinned":false,"ttl_days":null,"evidence_refs":[]}]} with at most 10 items. Return {"memories":[]} when nothing is durable.`, toolCalls: [] } satisfies ProviderMessage],
+    turns: [{ role: "user" as const, content: `${transcript}\n\nReturn {"memories":[{"name":"stable-kebab-key","kind":"user|feedback|project|reference","content":"fact","description":"why durable","confidence":0.0,"links":[],"pinned":false,"ttl_days":null,"evidence_refs":[]}]} with at most 10 items. Return {"memories":[]} when nothing is durable.`, toolCalls: [] } satisfies ModelMessage],
   }
   let output = ""
   const state = provider.createRunState?.()

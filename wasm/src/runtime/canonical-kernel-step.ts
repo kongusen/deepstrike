@@ -3,7 +3,7 @@ import type {
   CanonicalPreparation,
   CanonicalRestoreCost,
 } from "@deepstrike/wasm-kernel"
-import type { ProviderMessage } from "../types.js"
+import type { ModelMessage } from "../types.js"
 import { normalizeProviderStopReason } from "../providers/stop-reason.js"
 import { sha256Hex } from "./sha256.js"
 import {
@@ -99,7 +99,7 @@ function canonicalDoneFromTerminal(terminal: Record<string, unknown>): KernelRun
       result: {
         termination, turnsUsed, totalTokensUsed: totalUsageTokens(terminal),
         ...(Object.keys(finalMessage).length > 0 ? { finalMessage: {
-          role: String(finalMessage.role ?? "assistant") as ProviderMessage["role"],
+          role: String(finalMessage.role ?? "assistant") as ModelMessage["role"],
           content: String(finalMessage.content ?? ""),
           toolCalls: (Array.isArray(finalMessage.tool_calls) ? finalMessage.tool_calls : []).map(value => {
             const call = asObject(value)
@@ -240,7 +240,7 @@ export function canonicalActionFromProjectionJson(raw: string): KernelRunnerActi
       original_size?: string
       preview?: string
     }
-    let archived: ProviderMessage[] = []
+    let archived: ModelMessage[] = []
     try {
       const decoded = JSON.parse(String(archivePayload.content ?? "")) as unknown
       if (Array.isArray(decoded)) archived = decoded.map(value => kernelMessageToSdk(asObject(value)))
@@ -771,7 +771,7 @@ export class CanonicalRunnerRuntime {
   private started = false
   private turns = 0
   private lastAction: KernelRunnerAction | null = null
-  private readonly newMessages: ProviderMessage[] = []
+  private readonly newMessages: ModelMessage[] = []
   private readonly hostObservations: KernelObservationLike[] = []
   private spawnedTasks = 0
   private readonly memoryBindingId: string
@@ -849,7 +849,7 @@ export class CanonicalRunnerRuntime {
     return []
   }
 
-  drainNewMessages(): ProviderMessage[] {
+  drainNewMessages(): ModelMessage[] {
     return this.newMessages.splice(0)
   }
 
@@ -927,7 +927,7 @@ export class CanonicalRunnerRuntime {
       case "provider_result": {
         const message = canonicalProviderMessage(asObject(event.message))
         this.newMessages.push({
-          role: message.role as ProviderMessage["role"],
+          role: message.role as ModelMessage["role"],
           content: String(message.content ?? ""),
           toolCalls: (Array.isArray(message.tool_calls) ? message.tool_calls : []).map(raw => {
             const call = asObject(raw)

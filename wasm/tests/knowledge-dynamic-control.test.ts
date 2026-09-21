@@ -7,7 +7,7 @@
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import type { MemoryStore, MemoryRecall } from "../src/memory/index.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 import { kernelEvents } from "@deepstrike/wasm-kernel"
 
 function hostControls() {
@@ -21,7 +21,7 @@ describe("skill content is pinned into durable knowledge on activation", () => {
   it("emits seed_knowledge with the skill's resolved content on activation", async () => {
     kernelEvents.length = 0
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "unused", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -53,7 +53,7 @@ describe("skill lease + deactivation events reach the kernel (K3)", () => {
     kernelEvents.length = 0
     let runnerRef: RuntimeRunner | undefined
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "unused", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -88,7 +88,7 @@ describe("knowledgeBudgetRatio reaches the kernel via configure_operation (K2)",
   it("carries knowledge_budget_ratio in the configure_operation bundle", async () => {
     kernelEvents.length = 0
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "unused", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -134,7 +134,7 @@ describe("preQueryMemory prefetch lands in initial history, not knowledge", () =
     }
 
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "unused", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {

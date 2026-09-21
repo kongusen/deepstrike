@@ -33,6 +33,9 @@ This is an implementation checkpoint, not release approval.
 - 028-65: removed Node surface compatibility adapters and the `ProviderMessage`
   alias; runtime code now uses `ModelMessage` directly. Provider protocol adapters
   remain because they are execution implementations, not legacy public aliases.
+- 028-51/52/53: WASM and Python public bindings now use `ModelMessage`; the Rust
+  core wire struct keeps its internal `ProviderMessage` name because it is a Kernel
+  wire representation rather than an SDK compatibility alias.
 - 028-54: Node, Rust and WASM test surfaces now consume the shared semantic
   contract fixture. The Python fixture test is present but its environment check
   is blocked here by the optional `anthropic` package not being installed.

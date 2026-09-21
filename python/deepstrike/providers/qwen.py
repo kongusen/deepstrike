@@ -5,7 +5,7 @@ import json
 import logging
 from typing import AsyncIterator
 from http import HTTPStatus
-from deepstrike._kernel import ProviderMessage, ToolCall, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolCall, ToolSchema
 from .stream import StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 from .base import RetryConfig, CircuitBreaker, RenderedContext, RuntimePolicy, normalize_tool_call, openai_cached_prompt_tokens, to_openai_message_params, UnsupportedModalityError
 from .replay import ReasoningReplayMixin
@@ -141,7 +141,7 @@ class _QwenProvider(ReasoningReplayMixin):
                 kwargs["search_options"] = ext["search_options"]
         return kwargs
 
-    async def _complete_mm(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None) -> ProviderMessage:
+    async def _complete_mm(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None) -> ModelMessage:
         if self._mm_generation is None:
             raise RuntimeError("Qwen multimodal needs a dashscope build with MultiModalConversation")
         last_exc = None
@@ -157,7 +157,7 @@ class _QwenProvider(ReasoningReplayMixin):
                     normalized = normalize_tool_call(tc.function.name, tc.function.name, tc.function.arguments)
                     if normalized:
                         tool_calls.append(normalized)
-                return ProviderMessage(
+                return ModelMessage(
                     role="assistant",
                     content=self._mm_text(choice.content),
                     tool_calls=tool_calls or None,
@@ -200,7 +200,7 @@ class _QwenProvider(ReasoningReplayMixin):
                 provider_usage=normalize_usage(last_usage),
             )
 
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ProviderMessage:
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ModelMessage:
         if self._circuit.is_open():
             raise RuntimeError("Circuit breaker open")
         if self._has_image_input(context):
@@ -245,7 +245,7 @@ class _QwenProvider(ReasoningReplayMixin):
                     if normalized:
                         tool_calls.append(normalized)
 
-                return ProviderMessage(
+                return ModelMessage(
                     role="assistant",
                     content=content,
                     tool_calls=tool_calls or None,

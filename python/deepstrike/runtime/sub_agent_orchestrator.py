@@ -250,11 +250,11 @@ class SubAgentOrchestrator:
     finally:
       await cleanup_worktree()
 
-    from deepstrike._kernel import ProviderMessage
+    from deepstrike._kernel import ModelMessage
 
     final_message = None
     if outcome.result:
-      final_message = ProviderMessage(role="assistant", content=outcome.result)
+      final_message = ModelMessage(role="assistant", content=outcome.result)
 
     run_termination = _termination_from_status(outcome.run_status)
     termination = (
@@ -323,9 +323,9 @@ class SubAgentOrchestrator:
     finally:
       await cleanup_worktree()
 
-    from deepstrike._kernel import ProviderMessage
+    from deepstrike._kernel import ModelMessage
 
-    final_message = ProviderMessage(role="assistant", content=final_text) if final_text else None
+    final_message = ModelMessage(role="assistant", content=final_text) if final_text else None
     loop_result = LoopResult(
       termination=_termination_from_status(done.status if done else "error"),
       turns_used=done.iterations if done else 0,

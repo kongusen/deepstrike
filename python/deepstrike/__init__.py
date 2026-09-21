@@ -6,7 +6,7 @@ except PackageNotFoundError:
     __version__ = "0+unknown"
 
 from deepstrike._kernel import (
-    ProviderMessage, ToolCall, ToolExecutionResult, ToolSchema,
+    ModelMessage, ToolCall, ToolExecutionResult, ToolSchema,
     SkillMetadata,
 )
 from deepstrike.runtime import (
@@ -378,7 +378,7 @@ __all__ = [
     "KnowledgeSource",
     "RuntimeSignal", "SignalClaim", "SignalDeliveryReceipt",
     "SignalSource", "ScheduledPrompt", "SignalGateway",
-    "ProviderMessage", "ToolCall", "ToolExecutionResult", "ToolSchema",
+    "ModelMessage", "ToolCall", "ToolExecutionResult", "ToolSchema",
     "SkillMetadata",
     # Sub-agent isolation
     "AgentIdentity", "AgentCapabilityFilter", "AgentRunSpec",

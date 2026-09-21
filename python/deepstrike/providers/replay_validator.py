@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from deepstrike._kernel import ProviderMessage
+from deepstrike._kernel import ModelMessage
 
 # Placeholder reasoning injected for an assistant tool-call turn that has no
 # stored reasoning replay when the caller opted into graceful degradation
@@ -17,7 +17,7 @@ class ProviderReplayValidationError(Exception):
 
 
 def validate_openai_chat_replay(
-    turns: list[ProviderMessage],
+    turns: list[ModelMessage],
     *,
     descriptor: Any = None,
     require_non_empty_reasoning_for_tool_calls: bool = False,
@@ -32,7 +32,7 @@ def validate_openai_chat_replay(
 
 
 def assess_reasoning_replay(
-    turns: list[ProviderMessage],
+    turns: list[ModelMessage],
     replay_for_assistant: Callable[[str, list], dict | None] | None,
 ) -> dict:
     """Pure, raise-free assessment: which assistant tool-call turns lack the
@@ -59,11 +59,11 @@ def _reasoning_replay_error(call_ids: list[str], descriptor: Any) -> ProviderRep
     )
 
 
-def _tool_result_parts(message: ProviderMessage) -> list:
+def _tool_result_parts(message: ModelMessage) -> list:
     return [p for p in (getattr(message, "content_parts", None) or []) if p.type == "tool_result"]
 
 
-def _validate_strict_tool_result_pairing(turns: list[ProviderMessage]) -> None:
+def _validate_strict_tool_result_pairing(turns: list[ModelMessage]) -> None:
     pending_ids: set[str] | None = None
     completed_ids: set[str] = set()
 

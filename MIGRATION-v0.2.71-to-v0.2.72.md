@@ -25,6 +25,9 @@ execution is attempted.
 `ModelMessage` and adapter-local `WireMessage` according to representation.
 `GenerationProtocol` is the only generation protocol type.
 
+Python and WASM bindings expose `ModelMessage` under the same name. Rust core
+wire internals are not part of the public SDK contract.
+
 Prompt measurements must carry the exact request fingerprint. A stale measurement
 is discarded. Unknown usage fields remain absent; they are not converted to zero.
 

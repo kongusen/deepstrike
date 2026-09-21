@@ -1,32 +1,32 @@
 import json
 from pathlib import Path
 from typing import Protocol
-from deepstrike._kernel import ProviderMessage, ToolCall, ContentPartObj
+from deepstrike._kernel import ModelMessage, ToolCall, ContentPartObj
 from deepstrike.types.content import media_source
 
 class ArchiveStore(Protocol):
-    async def write(self, session_id: str, seq: int, messages: list[ProviderMessage]) -> str: ...
-    async def read(self, archive_ref: str) -> list[ProviderMessage]: ...
+    async def write(self, session_id: str, seq: int, messages: list[ModelMessage]) -> str: ...
+    async def read(self, archive_ref: str) -> list[ModelMessage]: ...
 
 class NullArchiveStore:
-    async def write(self, session_id: str, seq: int, messages: list[ProviderMessage]) -> str:
+    async def write(self, session_id: str, seq: int, messages: list[ModelMessage]) -> str:
         return ""
 
-    async def read(self, archive_ref: str) -> list[ProviderMessage]:
+    async def read(self, archive_ref: str) -> list[ModelMessage]:
         raise FileNotFoundError("NullArchiveStore does not store archives")
 
 class FileArchiveStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
 
-    async def write(self, session_id: str, seq: int, messages: list[ProviderMessage]) -> str:
+    async def write(self, session_id: str, seq: int, messages: list[ModelMessage]) -> str:
         dir_path = self.root / session_id
         dir_path.mkdir(parents=True, exist_ok=True)
         file_path = dir_path / f"{seq}.jsonl"
         
         lines = []
         for msg in messages:
-            # Convert ProviderMessage object to dict for serialization
+            # Convert ModelMessage object to dict for serialization
             tc_list = []
             for tc in getattr(msg, "tool_calls", []):
                 tc_list.append({
@@ -65,7 +65,7 @@ class FileArchiveStore:
             f.write("\n".join(lines) + "\n")
         return str(file_path)
 
-    async def read(self, archive_ref: str) -> list[ProviderMessage]:
+    async def read(self, archive_ref: str) -> list[ModelMessage]:
         file_path = Path(archive_ref)
         if not file_path.exists():
             raise FileNotFoundError(f"Archive not found: {archive_ref}")
@@ -106,7 +106,7 @@ class FileArchiveStore:
                         )
                         parts_list.append(part)
                 
-                messages.append(ProviderMessage(
+                messages.append(ModelMessage(
                     role=data["role"],
                     content=data["content"],
                     tool_calls=tc_list,
