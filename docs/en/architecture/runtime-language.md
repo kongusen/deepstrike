@@ -1,8 +1,21 @@
 # DeepStrike Runtime Language
 
-This glossary is normative for 0.2.70. It names what data means, who owns it, how it crosses a
+This glossary is normative for 0.2.72. It names what data means, who owns it, how it crosses a
 boundary, and how it becomes durable history. The paired Chinese page is
 [运行时语言](../../architecture/runtime-language.md).
+
+## 0.2.72 language layers
+
+The following registry is normative for the public, host, kernel, and provider boundaries. A term may be referenced by more than one layer when the representation crosses that boundary; `primaryDomain` in the shared fixture remains the classification authority.
+
+| Layer | Terms |
+| --- | --- |
+| Public Agent | **Agent**, **Model**, **Run**, **Session**, **Tool**, **Skill**, **Memory**, **Knowledge**, **MCPServer**, **Handoff**, **Workflow**, **Guardrail**, **Eval**, **Dataset**, **Evaluator**, **Output**, **Usage** |
+| Host Runtime | **AgentSpec**, **Context**, **ContextPlan**, **Capability**, **ModelRoute**, **Invocation**, **ProviderAttempt**, **Measurement**, **Evidence**, **Artifact**, **Evaluation**, **Promotion**, **ExecutionPlane** |
+| Kernel | **Operation**, **Intent**, **Decision**, **Effect**, **Fact**, **Settlement**, **Task**, **Capability**, **Budget**, **Journal**, **Checkpoint**, **StateTransition** |
+| Provider Boundary | **Model**, **Provider**, **Endpoint**, **Protocol**, **Route**, **Adapter**, **Request**, **Response**, **Usage**, **ReplayEvidence** |
+
+The normative verbs are **resolve**, **render**, **encode**, **execute**, **decode**, **normalize**, and **settle**. Their definitions are kept in the shared vocabulary fixture at `tests/fixtures/runtime-language/vocabulary.json`.
 
 ## Kernel boundary
 
