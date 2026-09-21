@@ -1,5 +1,5 @@
 // ╔══════════════════════════════════════════════════════════════════════════╗
-// ║ @deepstrike/sdk — root surface (v0.2.30).                                      ║
+// ║ @deepstrike/sdk — root surface (v0.2.72).                                      ║
 // ║                                                                            ║
 // ║ This is the intent layer: run an agent, run a workflow, author a tool,     ║
 // ║ pick a provider. Advanced machinery lives behind subpaths:                 ║
@@ -56,25 +56,6 @@ export {
   decodeCanonicalContentParts,
 } from "./runtime/kernel-step.js"
 // ── Durable transaction capability (Canonical Kernel ABI §9.1) ──────────────
-export {
-  FileKernelJournal,
-  InMemoryKernelJournal,
-  JournalCasConflictError,
-  JournalIntegrityError,
-  JournalIoError,
-} from "./runtime/kernel-journal.js"
-export type {
-  CheckpointCandidate,
-  InstalledCheckpoint,
-  JournalAppendReceipt,
-  JournalEntry,
-  JournalHead,
-  JournalPruneReceipt,
-  JournalRecordInput,
-  KernelJournal,
-} from "./runtime/kernel-journal.js"
-export { diagnoseKernelJournal } from "./runtime/kernel-doctor.js"
-export type { KernelJournalDiagnosis } from "./runtime/kernel-doctor.js"
 export { InMemoryGroupBudgetStore, GroupBudgetScope } from "./runtime/run-group.js"
 export type {
   RunGroup, GroupBudgetStore, GroupLedger, GroupCharge, GroupMember,
@@ -114,10 +95,6 @@ export { OpenAIResponsesProvider } from "./providers/openai-responses.js"
 export { createProvider, createProviderAsync, resolveProviderRuntime, resolveProviderRuntimeAsync } from "./providers/catalog.js"
 export { UnsupportedModalityError } from "./providers/base.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
-export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement, resolveProviderRoute } from "./providers/request-plan.js"
-export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement, ResolvedProviderRoute } from "./providers/request-plan.js"
-export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY, providerAttemptToRecord } from "./runtime/execution-evidence.js"
-export type { InvocationOutcome, ModelInvocation, ProviderAttempt, ProviderAttemptRecord, ProviderAttemptStatus, UsageAccountingPolicy, ModelUsageSettlement } from "./runtime/execution-evidence.js"
 export {
   VERIFIABLE_REPORT_SCHEMA,
   VERIFIABLE_FORK_SCHEMA,
@@ -138,7 +115,6 @@ export type {
   VerifiableReport,
   VerifiableOperationJson,
 } from "./runtime/verifiable-report.js"
-export { createEvolutionRuntimeAdapter, createNativeEvolutionRuntimeAdapter, EvolutionRuntime } from "./runtime/evolution.js"
 export type {
   ActivationBinding,
   ArtifactKind,
@@ -229,7 +205,5 @@ export type {
   WorkflowOutcome,
 } from "./types/agent.js"
 
-export { createContextPreparationAdapter, createNativeContextPreparationAdapter } from "./runtime/context.js"
-export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextProviderPreparationRequest } from "./runtime/context.js"
 
 export type { PreparedProviderRequest } from "./types.js"
