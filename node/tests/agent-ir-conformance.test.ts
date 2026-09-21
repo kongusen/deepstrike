@@ -2,8 +2,6 @@ import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Agent } from "../src/agent.js"
 import { lowerAgent, normalizeAgent, projectAgentContext, projectAgentCapabilities, projectAgentDelegation, projectAgentGovernance, type AgentDescriptor } from "../src/agent-ir.js"
-import { fromOpenAiAgent, type OpenAiAgentJson } from "../src/compat/openai/agent.js"
-import { fromAnthropicMcpConfig } from "../src/compat/anthropic/mcp.js"
 
 async function fixture(): Promise<AgentDescriptor> {
   return JSON.parse(await readFile(join(process.cwd(), "..", "tests", "fixtures", "agent-ir", "canonical-agent.json"), "utf8")) as AgentDescriptor
@@ -80,11 +78,11 @@ describe("spc_015-09: Canonical Agent IR", () => {
 
   it("normalizes native, OpenAI-shaped, and Anthropic-MCP surfaces before lowering", async () => {
     const native = normalizeAgent(await fixture())
-    const openaiRaw = JSON.parse(await readFile(join(process.cwd(), "src", "__fixtures__", "openai-agent.json"), "utf8")) as OpenAiAgentJson
-    const openai = normalizeAgent(fromOpenAiAgent(openaiRaw))
+    const openaiRaw = JSON.parse(await readFile(join(process.cwd(), "src", "__fixtures__", "openai-agent.json"), "utf8")) as AgentDescriptor
+    const openai = normalizeAgent(openaiRaw)
     const anthropic = normalizeAgent(new Agent({
       name: "filesystem-agent",
-      mcpServers: [fromAnthropicMcpConfig({ name: "filesystem", command: "mcp-filesystem", args: ["/workspace"] })],
+      mcpServers: [{ name: "filesystem", transport: { kind: "stdio", command: "mcp-filesystem", args: ["/workspace"] } }],
     }))
 
     expect(lowerAgent(native).tools[0].name).toBe("web_search")

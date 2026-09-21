@@ -1,7 +1,7 @@
 import { collectText } from "../../src/runtime/runner.js"
 import { measurementForPlan } from "../../src/providers/request-plan.js"
 import { createRunner } from "./helpers.js"
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent, ToolSchema } from "../../src/types.js"
 
 class MeasuredProvider implements LLMProvider {
   countCalls = 0
@@ -22,7 +22,7 @@ class MeasuredProvider implements LLMProvider {
     return { inputTokens: 12, source: { kind: "native" as const, provider: "test" }, confidence: "exact" as const }
   }
 
-  async complete(): Promise<ProviderMessage> {
+  async complete(): Promise<ModelMessage> {
     return { role: "assistant", content: "done", toolCalls: [] }
   }
 

@@ -1,6 +1,6 @@
 import { requestSnapshot } from "./prepared-request.js"
 import type { PreparedProviderRequest, ProviderRunState as PreparedRunState } from "../types.js"
-import type { ProviderMessage, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, ProviderTransportTelemetry } from "../types.js"
+import type { ModelMessage, RenderedContext, ToolSchema, StreamEvent, LLMProvider, RuntimePolicy, ProviderTransportTelemetry } from "../types.js"
 import {
   normalizeCanonicalAdapterInput,
   type CanonicalAdapterInput,
@@ -80,7 +80,7 @@ export class OllamaProvider implements LLMProvider {
     return normalizeCanonicalAdapterInput({ context, tools, resolved, extensions })
   }
 
-  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ProviderMessage> {
+  async complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ModelMessage> {
     try {
       const input = this.adapterInput(context, tools, extensions)
       const body = { ...this.adapter.buildRequest(input), stream: false }

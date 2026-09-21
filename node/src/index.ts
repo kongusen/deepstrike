@@ -198,7 +198,7 @@ export type {
 
 // ── Core data types ─────────────────────────────────────────────────────────
 export type {
-  ModelMessage, ProviderMessage, RuntimeMessage, StoredMessage, WireMessage, ToolCall, ToolExecutionResult, ToolSchema,
+  ModelMessage, RuntimeMessage, StoredMessage, WireMessage, ToolCall, ToolExecutionResult, ToolSchema,
   ContentPart, TextPart, ImagePart, AudioPart,
   MediaSource, ContentBlockText, ContentBlockImage, ContentBlockAudio,
   ContentBlockVideo, ContentBlockFile,

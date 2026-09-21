@@ -10,7 +10,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../src/types.js"
 
 const SKILL_BODY = "Debug guidance: always reproduce before fixing."
 
@@ -27,7 +27,7 @@ describe("skill deactivation (K3)", () => {
     let afterReactivation = ""
 
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
@@ -77,7 +77,7 @@ describe("skill deactivation (K3)", () => {
     let finalKnowledge = ""
 
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {

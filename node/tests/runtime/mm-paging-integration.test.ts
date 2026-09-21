@@ -3,22 +3,22 @@ import { collectText } from "../../src/runtime/runner.js"
 import type { ArchiveStore } from "../../src/runtime/archive.js"
 import type { MemoryStore, MemoryRecall } from "../../src/memory/protocols.js"
 import type { InMemorySessionLog } from "../../src/runtime/session-log.js"
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent } from "../../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../../src/types.js"
 
 const AGENT_ID = "agent-mm-paging"
 const MEMORY_SCOPE = { tenant_id: AGENT_ID, namespace: "integration" }
 const RECALL_MARKER = "LONGTERM_FACT_AFTER_COMPRESS"
 
 class InMemoryArchiveStore implements ArchiveStore {
-  private readonly blobs = new Map<string, ProviderMessage[]>()
+  private readonly blobs = new Map<string, ModelMessage[]>()
 
-  async write(sessionId: string, seq: number, messages: ProviderMessage[]): Promise<string> {
+  async write(sessionId: string, seq: number, messages: ModelMessage[]): Promise<string> {
     const ref = `${sessionId}@${seq}`
     this.blobs.set(ref, messages)
     return ref
   }
 
-  async read(archiveRef: string): Promise<ProviderMessage[]> {
+  async read(archiveRef: string): Promise<ModelMessage[]> {
     return this.blobs.get(archiveRef) ?? []
   }
 }
@@ -78,7 +78,7 @@ describe("long-session memory paging integration", () => {
     let sawRecallInContext = false
 
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
@@ -161,7 +161,7 @@ describe("long-session memory paging integration", () => {
     let sawRecallOnWake = false
 
     const compressProvider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -220,7 +220,7 @@ describe("long-session memory paging integration", () => {
     await seedWakeSession(sharedLog, compressSession, wakeSession)
 
     const wakeProvider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {

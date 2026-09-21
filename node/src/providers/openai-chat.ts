@@ -1,6 +1,6 @@
 import type OpenAI from "openai"
 import type {
-  ProviderMessage,
+  ModelMessage,
   ProviderDescriptor,
   ProviderReplay,
   ProviderUsage,
@@ -318,14 +318,14 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
     raw: Record<string, any>,
     input: AdapterDecodeInput,
     dialect: OpenAIChatWireDialect = openAIChatDialects.openai,
-  ): { message: ProviderMessage; replay?: ProviderReplay } {
+  ): { message: ModelMessage; replay?: ProviderReplay } {
     const choice = raw.choices?.[0]?.message ?? {}
     const nativeCalls = choice.tool_calls ?? []
     const toolCalls = this.normalizeToolCalls(nativeCalls)
     const content = choice.content ?? ""
     const usage = raw.usage as Record<string, unknown> | undefined
     if (usage) this.normalizeUsage(usage)
-    const message: ProviderMessage = {
+    const message: ModelMessage = {
       role: "assistant",
       content,
       toolCalls,
@@ -525,14 +525,14 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
       .filter((call): call is ToolCall => call !== null)
   }
 
-  rememberReplayFields(message: Pick<ProviderMessage, "content" | "toolCalls">, fields: Record<string, unknown>): void {
+  rememberReplayFields(message: Pick<ModelMessage, "content" | "toolCalls">, fields: Record<string, unknown>): void {
     compatibilityReplayStore(this).set(assistantReplayKey(message), {
       protocol: "openai-chat",
       ...fields,
     } as ProviderReplay)
   }
 
-  peekReplayFields(message: Pick<ProviderMessage, "content" | "toolCalls">): Record<string, unknown> | undefined {
+  peekReplayFields(message: Pick<ModelMessage, "content" | "toolCalls">): Record<string, unknown> | undefined {
     return compatibilityReplayStore(this).get(assistantReplayKey(message)) as Record<string, unknown> | undefined
   }
 }

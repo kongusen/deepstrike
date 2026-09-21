@@ -1,6 +1,6 @@
 import type {
   EntropySample,
-  ProviderMessage,
+  ModelMessage,
   RenderedContext,
   TaskUpdate,
   ToolCall,
@@ -44,7 +44,7 @@ export interface KernelLoopResult {
   termination: string
   turnsUsed: number
   totalTokensUsed: number
-  finalMessage?: ProviderMessage
+  finalMessage?: ModelMessage
   /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */
   paceDecision?: PaceDecision
 }
@@ -82,7 +82,7 @@ export type KernelRunnerAction =
   | {
       kind: "archive_page_out"
       effectId: string
-      archived?: ProviderMessage[]
+      archived?: ModelMessage[]
       handleId?: string
       payload?: {
         content: string
@@ -262,7 +262,7 @@ export function skillMetadataToKernel(skill: SkillMetadata): Record<string, unkn
   return out
 }
 
-export function messageToKernelMessage(message: ProviderMessage): Record<string, unknown> {
+export function messageToKernelMessage(message: ModelMessage): Record<string, unknown> {
   const out: Record<string, unknown> = {
     role: message.role,
     tool_calls: (message.toolCalls ?? []).map(tc => ({
@@ -384,14 +384,14 @@ export function entropySampleFromObservation(obs: KernelObservation): EntropySam
   }
 }
 
-export function kernelMessageToSdk(raw: Record<string, unknown>): ProviderMessage {
+export function kernelMessageToSdk(raw: Record<string, unknown>): ModelMessage {
   const content = raw.content
   const canonicalParts = typeof content === "string"
     ? decodeCanonicalContentParts(content)
     : undefined
   const structuredContent = canonicalParts ?? (Array.isArray(content) ? content : undefined)
-  const message: ProviderMessage = {
-    role: raw.role as ProviderMessage["role"],
+  const message: ModelMessage = {
+    role: raw.role as ModelMessage["role"],
     content: canonicalParts
       ? canonicalParts
           .filter(part => part.type === "text")

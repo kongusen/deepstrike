@@ -13,7 +13,7 @@
 import { createRunner } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
 import type { MemoryStore, MemoryRecall, MemoryRecallLifecycle } from "../src/memory/protocols.js"
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../src/types.js"
 
 const scope = { tenant_id: "agent-lifecycle", namespace: "t5" }
 
@@ -56,7 +56,7 @@ function trackingStore(initialCount = 0, opts: { withRecordRecall?: boolean; fai
 
 function textProvider(onContext?: (context: RenderedContext) => void): LLMProvider {
   return {
-    async complete(): Promise<ProviderMessage> {
+    async complete(): Promise<ModelMessage> {
       return { role: "assistant", content: "unused", toolCalls: [] }
     },
     async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {

@@ -1,7 +1,7 @@
 /**
  * L2 — EventStream visibility, TurnPolicy default set, and ReactiveSession orchestration (spec §6).
  */
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import {
   RuntimeRunner, InMemorySessionLog, LocalExecutionPlane,
   InMemoryGroupBudgetStore, InMemoryEventStream, isVisibleTo,
@@ -84,7 +84,7 @@ describe("TurnPolicy default set (L2 §6.2.1)", () => {
 // ── ReactiveSession orchestration ───────────────────────────────────────────
 class TextProvider implements LLMProvider {
   constructor(private readonly personaId: string) {}
-  async complete(): Promise<ProviderMessage> { return { role: "assistant", content: `${this.personaId}-ack`, toolCalls: [] } }
+  async complete(): Promise<ModelMessage> { return { role: "assistant", content: `${this.personaId}-ack`, toolCalls: [] } }
   async *stream(_c: RenderedContext, _t: ToolSchema[]): AsyncIterable<StreamEvent> {
     yield { type: "text_delta", delta: `${this.personaId}-ack` }
   }

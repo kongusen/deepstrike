@@ -1,7 +1,7 @@
 import { prepareProviderRequest } from "../providers/prepared-request.js"
 import { createNativeContextPreparationAdapter } from "./context.js"
 import type {
-  LLMProvider, ProviderMessage, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolExecutionResult, ToolSchema, ToolOutputBlock,
+  LLMProvider, ModelMessage, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolExecutionResult, ToolSchema, ToolOutputBlock,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, UsageEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
   PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, MemorySummarizer,
@@ -1150,7 +1150,7 @@ export class RuntimeRunner {
    *  K1: `opts.key` gives the entry identity — a same-key push upserts (applied at the next
    *  compaction/renewal boundary, where the cached system[1] block is rewritten anyway) instead
    *  of appending a duplicate. `opts.pinned` exempts the entry from the knowledge-budget sweep. */
-  async pushKnowledge(message: ProviderMessage, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
+  async pushKnowledge(message: ModelMessage, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
     if (!this.activeKernel) return
     await this.commitKernelApply(this.activeKernel, this.pendingObservations, {
       kind: "add_knowledge_message",
@@ -2562,7 +2562,7 @@ export class RuntimeRunner {
                 return call
               }
             })
-        const assistantMessage: ProviderMessage = {
+        const assistantMessage: ModelMessage = {
           role: "assistant",
           content: finalText,
           toolCalls: canonicalToolCalls,
@@ -3452,7 +3452,7 @@ export class RuntimeRunner {
   }
 
   private async archiveSemanticPageOut(
-    archived: ProviderMessage[],
+    archived: ModelMessage[],
     action: string | undefined,
     sessionId: string,
     effectId = "unknown",
@@ -3515,7 +3515,7 @@ export class RuntimeRunner {
   private async upgradeCompressedSummary(
     sessionId: string,
     compressedSeq: number,
-    archived: ProviderMessage[],
+    archived: ModelMessage[],
     action: string,
     runtime?: CanonicalRunnerRuntime,
   ): Promise<void> {
@@ -3596,7 +3596,7 @@ function attachmentsToKernelMessage(parts: ContentPart[]): Record<string, unknow
 
 async function summarizeForLongTermMemory(
   provider: LLMProvider,
-  archived: ProviderMessage[],
+  archived: ModelMessage[],
   systemPrompt?: string,
 ): Promise<string> {
   const transcript = archived
@@ -3628,8 +3628,8 @@ async function summarizeForLongTermMemory(
  *  message exists. A tail assistant tool_call with nothing after it is a genuinely PENDING tool the
  *  run stopped in front of (the wake/recovery case), which must stay unpaired so wake executes it.
  *  Pure. */
-export function pairOrphanToolCalls(messages: ProviderMessage[]): ProviderMessage[] {
-  const out: ProviderMessage[] = []
+export function pairOrphanToolCalls(messages: ModelMessage[]): ModelMessage[] {
+  const out: ModelMessage[] = []
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]
     out.push(m)
@@ -3657,14 +3657,14 @@ export function pairOrphanToolCalls(messages: ProviderMessage[]): ProviderMessag
   return out
 }
 
-export function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): ProviderMessage[] {
+export function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): ModelMessage[] {
   // Build upgraded-summary index: compressed_seq -> upgraded summary
   const upgradedSummaries = new Map<number, string>()
   for (const { event: e } of events) {
     if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
   }
 
-  const messages: ProviderMessage[] = []
+  const messages: ModelMessage[] = []
   for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
     const { seq, event: e } = events[eventIndex]!
     if (e.kind === "run_started") {
@@ -3726,15 +3726,15 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
 export async function replayMessagesAsync(
   events: Array<{ seq: number; event: SessionEvent }>,
   maxBytes?: number,
-  loadArchive?: (archiveRef: string) => Promise<ProviderMessage[]>,
-): Promise<ProviderMessage[]> {
+  loadArchive?: (archiveRef: string) => Promise<ModelMessage[]>,
+): Promise<ModelMessage[]> {
   // Build upgraded-summary index: compressed_seq -> upgraded summary
   const upgradedSummaries = new Map<number, string>()
   for (const { event: e } of events) {
     if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
   }
 
-  const messages: ProviderMessage[] = []
+  const messages: ModelMessage[] = []
   for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
     const { seq, event: e } = events[eventIndex]!
     if (e.kind === "run_started") {

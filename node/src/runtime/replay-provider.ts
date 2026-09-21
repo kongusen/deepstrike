@@ -17,7 +17,7 @@
  *     from the original run). That's the point of replay-for-benchmarking: prompt may differ across
  *     variants, response is pinned, so a cost Δ purely reflects the prompt change.
  *   - `outputTokens` is estimated from `message.content.length / 4`; provider usage belongs to
- *     the session measurement plane, never to the public ProviderMessage mirror.
+ *     the session measurement plane, never to the public ModelMessage mirror.
  *   - `cacheReadInputTokens` / `cacheCreationInputTokens` are emitted as 0 — replay has no real
  *     cache state. Mechanisms whose Δ depends on cache behavior must validate with a live A/B too.
  *
@@ -27,7 +27,7 @@
 
 import type {
   LLMProvider,
-  ProviderMessage,
+  ModelMessage,
   ProviderDescriptor,
   ProviderRunState,
   RenderedContext,
@@ -68,7 +68,7 @@ const DEFAULT_DESCRIPTOR: ProviderDescriptor = {
 
 export class ReplayProvider implements LLMProvider {
   private cursor = 0
-  private readonly messages: ReadonlyArray<ProviderMessage>
+  private readonly messages: ReadonlyArray<ModelMessage>
   private readonly tokenizer: (text: string) => number
   private readonly _descriptor: ProviderDescriptor
   private readonly wrap: boolean
@@ -77,7 +77,7 @@ export class ReplayProvider implements LLMProvider {
    * @param messages Ordered list of assistant messages to replay (one per LLM call).
    * @param opts Optional tokenizer / descriptor / wrap-around behavior.
    */
-  constructor(messages: ReadonlyArray<ProviderMessage>, opts: ReplayProviderOpts = {}) {
+  constructor(messages: ReadonlyArray<ModelMessage>, opts: ReplayProviderOpts = {}) {
     this.messages = messages
     this.tokenizer = opts.tokenizer ?? defaultTokenizer
     this._descriptor = opts.descriptor ?? DEFAULT_DESCRIPTOR
@@ -103,7 +103,7 @@ export class ReplayProvider implements LLMProvider {
     this.cursor = 0
   }
 
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ModelMessage> {
     const msg = this.pull()
     return {
       role: "assistant",
@@ -151,7 +151,7 @@ export class ReplayProvider implements LLMProvider {
     }
   }
 
-  private pull(): ProviderMessage {
+  private pull(): ModelMessage {
     if (this.cursor >= this.messages.length) {
       if (this.wrap && this.messages.length > 0) {
         this.cursor = 0

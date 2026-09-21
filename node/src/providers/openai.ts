@@ -3,7 +3,7 @@ import type { PreparedProviderRequest, ProviderRunState as PreparedRunState } fr
 import OpenAI from "openai"
 import type {
   LLMProvider,
-  ProviderMessage,
+  ModelMessage,
   ProviderDescriptor,
   ProviderReplay,
   ProviderRunState,
@@ -133,7 +133,7 @@ export class OpenAIChatProvider implements LLMProvider {
     return this.lastTelemetry
   }
 
-  peekProviderReplay(message: Pick<ProviderMessage, "content" | "toolCalls">): ProviderReplay | undefined {
+  peekProviderReplay(message: Pick<ModelMessage, "content" | "toolCalls">): ProviderReplay | undefined {
     const replay = this.replayStore.get(assistantReplayKey(message))
     if (!replay || !("reasoning_content" in replay || "reasoning_details" in replay)) return undefined
     if (this.dialect.id === "qwen" && replay.reasoning_content !== undefined) {
@@ -142,7 +142,7 @@ export class OpenAIChatProvider implements LLMProvider {
     return replay
   }
 
-  seedProviderReplay(message: Pick<ProviderMessage, "content" | "toolCalls">, replay: ProviderReplay): void {
+  seedProviderReplay(message: Pick<ModelMessage, "content" | "toolCalls">, replay: ProviderReplay): void {
     if (replay.protocol !== "openai-chat"
       || (replay.reasoning_content === undefined && replay.reasoning_details === undefined)) return
     this.replayStore.set(assistantReplayKey(message), this.dialect.id === "qwen"
@@ -151,7 +151,7 @@ export class OpenAIChatProvider implements LLMProvider {
   }
 
   private rememberReplay(
-    message: Pick<ProviderMessage, "content" | "toolCalls">,
+    message: Pick<ModelMessage, "content" | "toolCalls">,
     replay: ProviderReplay | undefined,
   ): void {
     if (replay) this.replayStore.set(assistantReplayKey(message), replay)
@@ -193,7 +193,7 @@ export class OpenAIChatProvider implements LLMProvider {
     context: RenderedContext,
     tools: ToolSchema[],
     extensions?: Record<string, unknown>,
-  ): Promise<ProviderMessage> {
+  ): Promise<ModelMessage> {
     const provider = this.dialect.providerId
     if (this.circuit.isOpen()) throw circuitOpenError(provider)
     let input: CanonicalAdapterInput

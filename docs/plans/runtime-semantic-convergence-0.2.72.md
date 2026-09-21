@@ -30,6 +30,8 @@ This is an implementation checkpoint, not release approval.
   typed evaluation entry point over Agent.run.
 - 028-63/66/67: added the 0.2.71 to 0.2.72 migration guide and updated the Node
   Quick Start/package layout for the public Agent language and runtime subpaths.
+- 028-65: removed Node surface compatibility adapters and the `ProviderMessage`
+  alias; runtime code now uses `ModelMessage` directly.
 - 028-54: Node, Rust and WASM test surfaces now consume the shared semantic
   contract fixture. The Python fixture test is present but its environment check
   is blocked here by the optional `anthropic` package not being installed.

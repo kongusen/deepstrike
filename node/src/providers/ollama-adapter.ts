@@ -1,5 +1,5 @@
 import type {
-  ProviderMessage,
+  ModelMessage,
   ProviderUsage,
   StreamEvent,
   TextDelta,
@@ -181,7 +181,7 @@ export class OllamaAdapter implements ProtocolAdapter<
     }
   }
 
-  decodeComplete(raw: OllamaChunk, _input: AdapterDecodeInput): { message: ProviderMessage } {
+  decodeComplete(raw: OllamaChunk, _input: AdapterDecodeInput): { message: ModelMessage } {
     return {
       message: {
         role: "assistant",

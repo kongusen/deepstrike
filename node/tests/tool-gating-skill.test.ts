@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
-import type { LLMProvider, ProviderMessage, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent, ToolSchema } from "../src/types.js"
 
 /**
  * P1-B B3 end-to-end: loading a skill widens the canonical baseline on the next turn by exactly
@@ -13,7 +13,7 @@ function toolsPerTurnProvider(captured: string[][]): LLMProvider {
   let call = 0
   const record = (tools: ToolSchema[]) => captured.push(tools.map(t => t.name))
   return {
-    async complete(_ctx, tools: ToolSchema[]): Promise<ProviderMessage> {
+    async complete(_ctx, tools: ToolSchema[]): Promise<ModelMessage> {
       record(tools)
       return { role: "assistant", content: "done" }
     },
@@ -99,7 +99,7 @@ describe("skillFilter host allowlist over the skill catalog", () => {
   // A provider that only records the exposed schemas (no tool calls) — turn 0 carries the full catalog.
   function schemaRecorder(captured: ToolSchema[][]): LLMProvider {
     return {
-      async complete(_ctx, tools: ToolSchema[]): Promise<ProviderMessage> {
+      async complete(_ctx, tools: ToolSchema[]): Promise<ModelMessage> {
         captured.push(tools); return { role: "assistant", content: "done" }
       },
       async *stream(_ctx, tools: ToolSchema[]): AsyncIterable<StreamEvent> {

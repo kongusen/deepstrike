@@ -1,10 +1,10 @@
 import { buildContents } from "../src/providers/gemini.js"
 import { toOpenAIMessageParams, toAnthropicMessages, UnsupportedModalityError } from "../src/providers/base.js"
-import type { ContentPart, LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { ContentPart, LLMProvider, ModelMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import { createRunner } from "./runtime/helpers.js"
 
 describe("multimodal image input", () => {
-  const imageMsg: ProviderMessage = {
+  const imageMsg: ModelMessage = {
     role: "user",
     content: "",
     contentParts: [
@@ -45,7 +45,7 @@ describe("multimodal image input", () => {
 describe("attachment seeding is idempotent per session (runner)", () => {
   class CapturingProvider implements LLMProvider {
     readonly calls: RenderedContext[] = []
-    async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
+    async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ModelMessage> {
       return { role: "assistant", content: "unused", toolCalls: [] }
     }
     async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
@@ -97,7 +97,7 @@ describe("attachment seeding is idempotent per session (runner)", () => {
 })
 
 describe("multimodal audio map-or-reject", () => {
-  const audioMsg: ProviderMessage = {
+  const audioMsg: ModelMessage = {
     role: "user",
     content: "",
     contentParts: [

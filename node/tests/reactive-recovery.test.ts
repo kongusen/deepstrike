@@ -17,12 +17,12 @@ import { RuntimeRunner } from "../src/runtime/runner.js"
 import { ProviderError } from "../src/providers/provider-error.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 
 class ThrowingProvider implements LLMProvider {
   calls = 0
   constructor(private readonly message: string, private readonly overflow = false) {}
-  async complete(): Promise<ProviderMessage> {
+  async complete(): Promise<ModelMessage> {
     return { role: "assistant", content: "", toolCalls: [] }
   }
   // eslint-disable-next-line require-yield
@@ -83,7 +83,7 @@ describe("kernel-owned reactive recovery", () => {
  */
 class TruncatingProvider implements LLMProvider {
   calls = 0
-  async complete(): Promise<ProviderMessage> {
+  async complete(): Promise<ModelMessage> {
     return { role: "assistant", content: "", toolCalls: [] }
   }
   async *stream(): AsyncIterable<StreamEvent> {

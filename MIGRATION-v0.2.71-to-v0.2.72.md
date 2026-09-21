@@ -21,10 +21,9 @@ execution is attempted.
 
 ## Messages and providers
 
-`ProviderMessage` remains a compatibility mirror of `ModelMessage`. New host code
-should use `StoredMessage`, `RuntimeMessage`, `ModelMessage` and adapter-local
-`WireMessage` according to representation. `GenerationProtocol` is the only
-generation protocol type.
+`ProviderMessage` has been removed. Use `StoredMessage`, `RuntimeMessage`,
+`ModelMessage` and adapter-local `WireMessage` according to representation.
+`GenerationProtocol` is the only generation protocol type.
 
 Prompt measurements must carry the exact request fingerprint. A stale measurement
 is discarded. Unknown usage fields remain absent; they are not converted to zero.

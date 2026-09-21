@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises"
 import { PayloadStore } from "../../src/runtime/payload-store.js"
 import { collectText } from "../../src/runtime/runner.js"
 import { createRunner, tool } from "./helpers.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../../src/types.js"
 
 describe("runner external payload integration", () => {
   const storageDir = path.join(process.cwd(), ".payload-runner-test")
@@ -18,7 +18,7 @@ describe("runner external payload integration", () => {
 
     let callCount = 0
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -49,7 +49,7 @@ describe("runner external payload integration", () => {
     const payloadStore = new PayloadStore({ storageDir })
     let callCount = 0
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {

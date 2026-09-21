@@ -1,6 +1,6 @@
 import { collectText } from "../../src/runtime/runner.js"
 import { createRunner, tool } from "./helpers.js"
-import type { MemorySummarizer, LLMProvider, ProviderMessage, StreamEvent } from "../../src/types.js"
+import type { MemorySummarizer, LLMProvider, ModelMessage, StreamEvent } from "../../src/types.js"
 import type { MemoryStore } from "../../src/memory/protocols.js"
 
 describe("semantic page_out → MemoryStore (Layer 5 contract)", () => {
@@ -27,7 +27,7 @@ describe("semantic page_out → MemoryStore (Layer 5 contract)", () => {
 
     let callCount = 0
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
