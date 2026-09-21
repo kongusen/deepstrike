@@ -27,6 +27,10 @@ export const RUNTIME_OBJECT_CLASSIFICATIONS = {
     domain: "host", authority: "host-runtime", representation: "state-truth", durability: "durable",
     identity: "message identity", causation: "accepted session or run input", replay: "replayed from durable message history",
   },
+  ModelMessage: {
+    domain: "host", authority: "host-runtime", representation: "semantic", durability: "rebuildable",
+    identity: "message identity", causation: "stored or runtime message projection", replay: "re-rendered from message state",
+  },
   ProviderRequestPlan: {
     domain: "host", authority: "none", representation: "projection", durability: "rebuildable",
     identity: "request fingerprint", causation: "ContextCandidate plus ResolvedProviderRoute", replay: "re-rendered and re-encoded from inputs",

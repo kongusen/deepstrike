@@ -19,6 +19,9 @@ This is an implementation checkpoint, not release approval.
   runtime fails at execution when no Provider binding has been resolved.
 - 028-47/49: `@deepstrike/sdk/runtime` and `@deepstrike/sdk/evals` package subpaths
   are declared and built.
+- 028-11 through 028-27: provider route identity, exact request fingerprint
+  measurement reuse, usage settlement policy, attempt evidence and provider
+  conformance fixtures are now covered by executable gates.
 
 Runtime binding is optional at definition time; execution reports an unresolved binding explicitly.
 WASM/Python/Rust have not been migrated in this checkpoint.

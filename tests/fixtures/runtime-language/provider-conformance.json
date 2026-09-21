@@ -1,0 +1,11 @@
+{
+  "protocols": {
+    "anthropic-messages": ["text", "toolUse", "streaming", "usage", "replay", "requestFingerprint"],
+    "openai-chat": ["text", "toolUse", "streaming", "usage", "replay", "requestFingerprint"],
+    "openai-responses": ["text", "toolUse", "streaming", "usage", "replay", "requestFingerprint"],
+    "gemini": ["text", "toolUse", "streaming", "usage", "replay", "requestFingerprint"],
+    "ollama-chat": ["text", "toolUse", "streaming", "usage", "replay", "requestFingerprint"]
+  },
+  "measurementSources": ["native", "local_exact", "heuristic", "postflight", "unavailable"],
+  "unknownFieldsRemainAbsent": true
+}
