@@ -18,3 +18,6 @@ export * from "../runtime/reliability.js"
 export * from "../runtime/turn-policy.js"
 export * from "../runtime/reactive-session.js"
 export * from "../runtime/reaction-checkpoint.js"
+
+export { projectAgentRun, projectAgentContext, projectAgentCapabilities, projectAgentGovernance, projectAgentDelegation } from "../agent-ir.js"
+export type { AgentDescriptor } from "../agent-ir.js"

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Agent } from "../src/agent.js"
-import { lowerAgent, normalizeAgent, type AgentDescriptor } from "../src/agent-ir.js"
+import { lowerAgent, normalizeAgent, projectAgentContext, projectAgentCapabilities, projectAgentDelegation, projectAgentGovernance, type AgentDescriptor } from "../src/agent-ir.js"
 import { fromOpenAiAgent, type OpenAiAgentJson } from "../src/compat/openai/agent.js"
 import { fromAnthropicMcpConfig } from "../src/compat/anthropic/mcp.js"
 
@@ -51,13 +51,12 @@ describe("spc_015-09: Canonical Agent IR", () => {
       "example.future_provider": { opaque: { preserve: true } },
     })
 
-    expect(spec.inputs.context.knowledge).toEqual(spec.knowledge)
-    expect(spec.inputs.capabilities.tools).toEqual(spec.tools)
-    expect(spec.inputs.capabilities.mcpServers).toEqual(spec.mcpServers)
-    expect(spec.inputs.capabilities.skills).toEqual(spec.skills)
-    expect(spec.inputs.memory).toEqual(spec.memory)
-    expect(spec.inputs.delegation.handoffs).toEqual(spec.handoffs)
-    expect(spec.inputs.governance.guardrails).toEqual(spec.guardrails)
+    expect(projectAgentContext(spec).knowledge).toEqual(spec.knowledge)
+    expect(projectAgentCapabilities(spec).tools).toEqual(spec.tools)
+    expect(projectAgentCapabilities(spec).mcpServers).toEqual(spec.mcpServers)
+    expect(projectAgentCapabilities(spec).skills).toEqual(spec.skills)
+    expect(projectAgentDelegation(spec).handoffs).toEqual(spec.handoffs)
+    expect(projectAgentGovernance(spec).guardrails).toEqual(spec.guardrails)
     expect(spec.capabilityFilter).toEqual({
       allowedKinds: ["tool", "skill", "mcp_server"],
       allowedIds: ["web_search", "citations"],
@@ -66,7 +65,7 @@ describe("spc_015-09: Canonical Agent IR", () => {
       { kind: "tool", id: "web_search", description: "Search the web for source material." },
       { kind: "skill", id: "citations", description: "Citation policy." },
     ])
-    expect(spec.inputs.capabilities.effective).toEqual(spec.effectiveCapabilities)
+    expect(projectAgentCapabilities(spec).effective).toEqual(spec.effectiveCapabilities)
   })
 
   it("keeps the canonical IR independent of later mutations to the public surface", async () => {
