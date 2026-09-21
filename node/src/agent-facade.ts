@@ -373,6 +373,9 @@ class AgentRuntimeImpl implements AgentRuntime {
               if (server.transport.kind !== "stdio") {
                 throw new Error(`agent MCP transport "${server.transport.kind}" is not supported by the local runtime`)
               }
+              if (server.auth && Object.keys(server.auth).length > 0) {
+                throw new Error(`agent MCP server "${server.name ?? server.transport.command}" auth requires an explicit CredentialVault binding`)
+              }
               return [server.name ?? server.transport.command, {
                 command: server.transport.command,
                 ...(server.transport.args ? { args: server.transport.args } : {}),
@@ -382,6 +385,9 @@ class AgentRuntimeImpl implements AgentRuntime {
             return this.mcpPlane
           })()
         : (this.definition.tools ?? []).reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane()))
+    if (this.definition.mcpServers?.length && this.definition.tools?.length) {
+      plane.register(...this.definition.tools)
+    }
     const runtime: RuntimeOptions = {
       provider,
       ...(mergeGuardrailPolicies(this.definition.runtimeOptions?.governancePolicy, this.definition.guardrails)
