@@ -25,9 +25,12 @@ This is an implementation checkpoint, not release approval.
 - 028-36: Skill resources, scripts, tools, MCP servers and knowledge references
   now have typed public containers instead of `unknown[]` placeholders.
 - 028-39/41: public `WorkflowDefinition` and `WorkflowStep` use named agents and
-  lower to the existing runtime WorkflowSpec.
-- 028-43: public `Dataset`, `Evaluator`, `EvalRun` and `evaluate()` now form a
-  typed evaluation entry point over Agent.run.
+  lower to the existing runtime WorkflowSpec. Step dependencies are resolved from
+  stable public step ids to runtime indexes and unknown dependencies fail closed.
+- 028-43/44: public `Dataset`, `Evaluator`, `EvalRun` and `evaluate()` now form a
+  typed evaluation entry point over Agent.run. Optional `includeTrace` evidence
+  carries executed input, context binding, route, measurement and artifact set
+  without changing the basic EvalResult shape.
 - 028-63/66/67: added the 0.2.71 to 0.2.72 migration guide and updated the Node
   Quick Start/package layout for the public Agent language and runtime subpaths.
 - 028-65: removed Node surface compatibility adapters and the `ProviderMessage`
@@ -38,9 +41,15 @@ This is an implementation checkpoint, not release approval.
   wire representation rather than an SDK compatibility alias.
 - 028-46/50: root Node exports no longer expose `KernelJournal`,
   `ProviderRequestPlan`, `ProviderAttempt`, `ContextPrepared` or
-  `EvolutionRuntime`; those implementation surfaces are available through the
-  runtime, providers and advanced subpaths. The Node conformance adapter now
-  consumes those subpaths directly.
+  `EvolutionRuntime`; evolution types are also removed from the root type surface.
+  Those implementation surfaces are available through the runtime, providers and
+  advanced subpaths. The Node conformance adapter now consumes those subpaths
+  directly.
+- 028-37/38: handoff targets are allowlisted at the Agent boundary and guardrail
+  policies lower into GovernancePolicy with deny/veto aggregation.
+- 028-36/37: skills and text knowledge seed runtime context; MCP stdio servers have
+  explicit async connect/disconnect lifecycle, local tools can coexist with MCP
+  tools, unsupported transports fail closed, and unbound server auth is rejected.
 - 028-54: Node, Rust and WASM test surfaces now consume the shared semantic
   contract fixture. The Python fixture test is present but its environment check
   is blocked here by the optional `anthropic` package not being installed.
