@@ -52,7 +52,10 @@ This is an implementation checkpoint, not release approval.
   tools, unsupported transports fail closed, and unbound server auth is rejected.
 - 028-54: Node, Rust and WASM test surfaces now consume the shared semantic
   contract fixture. The Python fixture test is present but its environment check
-  is blocked here by the optional `anthropic` package not being installed.
+  is pinned to the checked-out SDK. `cargo check -p deepstrike-node -p deepstrike-py`
+  passes; executing the Python adapter remains blocked on this host because the
+  checked-out PyO3 extension cannot be linked against the installed macOS Python
+  development symbols. This is a build-environment blocker, not a fixture mismatch.
 
 Runtime binding is optional at definition time; execution reports an unresolved binding explicitly.
 WASM/Python/Rust have not been migrated in this checkpoint.
