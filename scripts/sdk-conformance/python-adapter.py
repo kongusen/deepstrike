@@ -16,6 +16,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES_ROOT = (ROOT / "tests" / "fixtures").resolve()
+# Conformance must exercise the checked-out SDK.  A globally installed package
+# can contain an older extension module named ``deepstrike`` and shadow the
+# source tree when this adapter is launched as a subprocess.
+sys.path.insert(0, str(ROOT / "python"))
 
 try:
   from deepstrike import (
@@ -39,7 +43,6 @@ try:
 except ModuleNotFoundError as error:
   if error.name != "deepstrike":
     raise
-  sys.path.insert(0, str(ROOT / "python"))
   from deepstrike import (
     create_native_context_preparation_adapter,
     InMemorySessionLog,
