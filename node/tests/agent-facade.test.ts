@@ -2,8 +2,30 @@ import { createAgent } from "../src/agent-facade.js"
 import { ReplayProvider } from "../src/runtime/replay-provider.js"
 import { InMemoryMemoryStore } from "../src/memory/in-memory-store.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
+import { tool } from "../src/tools/index.js"
 
 describe("createAgent", () => {
+  it("lowers the Agent capability filter into the root runtime ceiling", async () => {
+    const provider = new ReplayProvider([{ role: "assistant", content: "done" }])
+    const seen: string[][] = []
+    const originalStream = provider.stream.bind(provider)
+    provider.stream = (async function* (...args: Parameters<typeof provider.stream>) {
+      seen.push(args[1].map(schema => schema.name))
+      yield* originalStream(...args)
+    }) as typeof provider.stream
+    const hidden = tool("hidden", "should not be exposed", { type: "object", properties: {} }, () => "hidden")
+    const agent = createAgent({
+      name: "filtered",
+      provider,
+      tools: [hidden],
+      capabilityFilter: { allowedIds: ["other-tool"] },
+    })
+
+    await agent.run("say done")
+
+    expect(seen[0]).not.toContain("hidden")
+  })
+
   it("runs a goal and returns a structured result", async () => {
     const agent = createAgent({
       name: "researcher",

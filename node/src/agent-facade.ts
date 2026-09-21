@@ -288,6 +288,7 @@ class AgentRuntimeImpl implements AgentRuntime {
       ?? (this.definition.tools ?? []).reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane())
     const runtime: RuntimeOptions = {
       provider,
+      ...(this.definition.capabilityFilter ? { capabilityFilter: this.definition.capabilityFilter } : {}),
       executionPlane: plane,
       sessionLog: this.sessionLog,
       maxTokens: this.definition.maxTokens ?? 32_000,

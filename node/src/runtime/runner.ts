@@ -71,6 +71,22 @@ import type {
   WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome,
   WorkflowNodeOutcome, KernelWorkflowNodeOutcome,
 } from "../types/agent.js"
+import type { AgentCapabilityFilter } from "../types/agent.js"
+
+function intersectCapabilityFilters(a?: AgentCapabilityFilter, b?: AgentCapabilityFilter): AgentCapabilityFilter | undefined {
+  if (!a && !b) return undefined
+  const intersect = (left?: string[], right?: string[]): string[] | undefined => {
+    if (!left?.length) return right?.length ? [...right] : undefined
+    if (!right?.length) return [...left]
+    return left.filter(value => right.includes(value))
+  }
+  const allowedKinds = intersect(a?.allowedKinds, b?.allowedKinds)
+  const allowedIds = intersect(a?.allowedIds, b?.allowedIds)
+  return {
+    ...(allowedKinds?.length ? { allowedKinds } : allowedKinds ? { allowedKinds: [] } : {}),
+    ...(allowedIds?.length ? { allowedIds } : allowedIds ? { allowedIds: [] } : {}),
+  }
+}
 
 export function stableSemanticArchiveName(effectId: string): string {
   const stableEffectId = effectId.replace(/[^a-zA-Z0-9._:-]/g, "_")
@@ -292,6 +308,8 @@ export type OperationCancellationReason = "user" | "deadline" | "lease_lost" | "
 
 export interface RuntimeOptions {
   provider: LLMProvider
+  /** Host-owned capability ceiling applied to the root run before skills or run profiles narrow it further. */
+  capabilityFilter?: AgentCapabilityFilter
   /** Host-owned artifact set identity captured in operation genesis. */
   artifactSetDigest?: string
   /** M4/G5: cumulative token cap for this run (the kernel's `max_total_tokens`). A workflow node's
@@ -2178,9 +2196,16 @@ export class RuntimeRunner {
         role: "custom",
         goal,
       }
-      let spec: AgentRunSpec = hasProfile
-        ? { ...baseSpec, capabilityFilter: { ...baseSpec.capabilityFilter, allowedIds: allowedToolIds } }
+      const filtered = intersectCapabilityFilters(baseSpec.capabilityFilter, this.opts.capabilityFilter)
+      let spec: AgentRunSpec = filtered
+        ? { ...baseSpec, capabilityFilter: filtered }
         : baseSpec
+      if (hasProfile) {
+        spec = {
+          ...spec,
+          capabilityFilter: intersectCapabilityFilters(spec.capabilityFilter, { allowedIds: allowedToolIds }),
+        }
+      }
       spec = { ...spec, exposureBaseline: baselineToolIds }
       if (hasMilestoneContract && !spec.verificationContractId) {
         spec = { ...spec, verificationContractId: "node-default" }
