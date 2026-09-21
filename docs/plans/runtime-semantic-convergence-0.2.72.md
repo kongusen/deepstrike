@@ -22,6 +22,10 @@ This is an implementation checkpoint, not release approval.
 - 028-11 through 028-27: provider route identity, exact request fingerprint
   measurement reuse, usage settlement policy, attempt evidence and provider
   conformance fixtures are now covered by executable gates.
+- 028-36: Skill resources, scripts, tools, MCP servers and knowledge references
+  now have typed public containers instead of `unknown[]` placeholders.
+- 028-39/41: public `WorkflowDefinition` and `WorkflowStep` use named agents and
+  lower to the existing runtime WorkflowSpec.
 
 Runtime binding is optional at definition time; execution reports an unresolved binding explicitly.
 WASM/Python/Rust have not been migrated in this checkpoint.
@@ -47,8 +51,9 @@ classification coverage based on source declarations, ABI-only Canonical excepti
 (the current list also contains provider types), and consolidation of the older
 glossary definitions with the new vocabulary. Cross-SDK language conformance is pending.
 
-Next dependency-ordered work: provider route identity and request fingerprint gates. Later waves cover
-workflow/eval surface, cross-SDK conformance, and final release gates.
+Next dependency-ordered work: cross-SDK semantic fixture consumption, root export
+allowlist, migration guide and final release gates. The Node implementation is the
+reference surface; Python, Rust and WASM still need their corresponding fixture checks.
 
 ## Verification
 
