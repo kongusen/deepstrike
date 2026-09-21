@@ -17,3 +17,6 @@ export interface Knowledge {
   metadata?: Record<string, unknown>
   providerOptions?: Record<string, unknown>
 }
+
+export { createTextKnowledgeSource } from "./source.js"
+export type { TextKnowledgeDocument } from "./source.js"

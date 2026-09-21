@@ -12,6 +12,8 @@ import type { GovernancePolicy } from "./governance.js"
 import { McpProxyPlane } from "./runtime/mcp-proxy-plane.js"
 import { EnvCredentialVault } from "./runtime/credential-vault.js"
 import { agentRefName } from "./handoff-target.js"
+import { createTextKnowledgeSource } from "./knowledge/public.js"
+import type { Knowledge } from "./knowledge/public.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -25,7 +27,7 @@ export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   maxTokens?: number
   memoryStore?: MemoryStore
   memoryScope?: MemoryScope
-  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "providerFor" | "initialMemory" | "skillCatalog">
+  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "providerFor" | "initialMemory" | "skillCatalog" | "knowledgeSource">
 }
 
 export interface AgentRunOptions {
@@ -392,6 +394,11 @@ class AgentRuntimeImpl implements AgentRuntime {
       ...(this.definition.memoryStore ? { memoryStore: this.definition.memoryStore } : {}),
       ...(this.definition.memoryScope ? { memoryScope: this.definition.memoryScope } : {}),
       ...(this.definition.skills?.length ? { skillCatalog: this.definition.skills } : {}),
+      ...(!this.definition.runtimeOptions?.knowledgeSource && this.definition.knowledge?.some(item => item.source.kind === "text") ? {
+        knowledgeSource: createTextKnowledgeSource(this.definition.knowledge
+          .filter((item): item is Knowledge & { source: { kind: "text"; content: string } } => item.source.kind === "text")
+          .map(item => ({ id: item.id, name: item.name, content: item.source.content }))),
+      } : {}),
       agentId: this.name,
       ...(this.definition.runtimeOptions ?? {}),
       ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
