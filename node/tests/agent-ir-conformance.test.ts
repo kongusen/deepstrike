@@ -78,8 +78,8 @@ describe("spc_015-09: Canonical Agent IR", () => {
 
   it("normalizes native, OpenAI-shaped, and Anthropic-MCP surfaces before lowering", async () => {
     const native = normalizeAgent(await fixture())
-    const openaiRaw = JSON.parse(await readFile(join(process.cwd(), "src", "__fixtures__", "openai-agent.json"), "utf8")) as AgentDescriptor
-    const openai = normalizeAgent(openaiRaw)
+    const descriptorRaw = JSON.parse(await readFile(join(process.cwd(), "src", "__fixtures__", "agent-descriptor.json"), "utf8")) as AgentDescriptor
+    const openai = normalizeAgent(descriptorRaw)
     const anthropic = normalizeAgent(new Agent({
       name: "filesystem-agent",
       mcpServers: [{ name: "filesystem", transport: { kind: "stdio", command: "mcp-filesystem", args: ["/workspace"] } }],
