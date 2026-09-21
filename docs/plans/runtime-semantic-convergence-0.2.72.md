@@ -50,6 +50,10 @@ This is an implementation checkpoint, not release approval.
 - 028-36/37: skills and text knowledge seed runtime context; MCP stdio servers have
   explicit async connect/disconnect lifecycle, local tools can coexist with MCP
   tools, unsupported transports fail closed, and unbound server auth is rejected.
+- Context follow-up: inline Skill content is now exposed as metadata at run start
+  and pinned only after dynamic activation. Inline text Knowledge uses a deterministic
+  lexical `KnowledgeSource` and is retrieved through the `knowledge` capability on
+  demand; file, URL, directory and vector sources remain explicit asynchronous bindings.
 - 028-54: Node, Rust and WASM test surfaces now consume the shared semantic
   contract fixture. The Python fixture test is present but its environment check
   is pinned to the checked-out SDK. After rebuilding the PyO3 extension with
