@@ -29,17 +29,32 @@ export function dependencyOutputsNote(
   inputAgentIds: string[] | undefined,
   outputs: Map<string, string> | undefined,
   maxPerDep = 8_000,
+  mode: "full" | "summary" | "reference" = "full",
 ): string {
   if (!inputAgentIds?.length || !outputs) return ""
+  if (mode === "reference") {
+    return inputAgentIds.some(id => outputs.has(id))
+      ? `[dependency references]\n${inputAgentIds.filter(id => outputs.has(id)).join(", ")}`
+      : ""
+  }
   const blocks = inputAgentIds
     .map(id => {
       const out = outputs.get(id) ?? ""
       if (!out) return ""
-      const clipped = out.length > maxPerDep ? `${out.slice(0, maxPerDep)}\n…[truncated]` : out
+      const clipped = mode === "summary"
+        ? summarizeDependency(out, maxPerDep)
+        : out.length > maxPerDep ? `${out.slice(0, maxPerDep)}\n…[truncated]` : out
       return `[dependency ${id} output]\n${clipped}`
     })
     .filter(Boolean)
   return blocks.join("\n\n")
+}
+
+function summarizeDependency(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value
+  const head = Math.max(1, Math.floor(maxChars * 0.7))
+  const tail = Math.max(1, maxChars - head)
+  return `${value.slice(0, head)}\n…[summary truncated]…\n${value.slice(-tail)}`
 }
 
 /** Instruction appended to a classify node's goal: pick exactly one of the kernel's branch labels. */

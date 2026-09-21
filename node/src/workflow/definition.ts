@@ -1,13 +1,14 @@
 import type { Agent } from "../agent.js"
 import { agentRefName } from "../handoff-target.js"
 import type { AgentRef } from "../handoff-target.js"
-import type { WorkflowDependencyPolicy, WorkflowOutcome, WorkflowSpec } from "../types/agent.js"
+import type { WorkflowContextPolicy, WorkflowDependencyPolicy, WorkflowOutcome, WorkflowSpec } from "../types/agent.js"
 
 export interface WorkflowStep {
   agent: Agent | AgentRef
   input: string
   dependsOn?: string[]
   dependencyPolicy?: WorkflowDependencyPolicy
+  context?: WorkflowContextPolicy
   metadata?: Record<string, unknown>
 }
 
@@ -36,6 +37,7 @@ export function lowerWorkflowDefinition(definition: WorkflowDefinition): Workflo
       isolation: "read_only",
       contextInheritance: "system_only",
       dependencyPolicy: step.dependencyPolicy,
+      context: step.context,
       agent: agentRefName(step.agent),
     })),
   }

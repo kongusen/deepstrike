@@ -318,6 +318,13 @@ export type WorkflowTaskSpec = { goal: string; criteria?: string[]; lane?: strin
 /** W3 trust level for a workflow node. */
 export type NodeTrust = "trusted" | "quarantined"
 export type WorkflowDependencyPolicy = "all_success" | "accept_partial" | "all_terminal" | "optional"
+export type WorkflowContextInclude = "dependency_outputs" | "memory" | "knowledge"
+export type WorkflowDependencyMode = "full" | "summary" | "reference"
+export interface WorkflowContextPolicy {
+  include?: WorkflowContextInclude[]
+  dependencyMode?: WorkflowDependencyMode
+  maxTokens?: number
+}
 export type WorkflowNodeStatus = "completed" | "completed_partial" | "failed" | "skipped_upstream_failed"
 
 /** Host-observed, deterministic scheduling inputs for one workflow node. They never originate
@@ -343,6 +350,8 @@ export interface WorkflowNodeSpec {
   role: KernelAgentRole
   /** Public workflow binding retained by the host while lowering the node to a kernel agent run. */
   agent?: string
+  /** Host context contract; dependency data is narrowed before entering the child goal. */
+  context?: WorkflowContextPolicy
   isolation?: AgentIsolation
   contextInheritance?: ContextInheritance
   modelHint?: string

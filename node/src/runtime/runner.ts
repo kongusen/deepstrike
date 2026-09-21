@@ -71,7 +71,7 @@ import {
 } from "./canonical-kernel-step.js"
 import type {
   AgentRunSpec, AgentProcessChangedObservation, MilestoneCheckResult, MilestoneContract, MilestonePolicy, SubAgentResult,
-  WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome,
+  WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome, WorkflowContextPolicy,
   WorkflowNodeOutcome, KernelWorkflowNodeOutcome,
 } from "../types/agent.js"
 import type { AgentCapabilityFilter } from "../types/agent.js"
@@ -1237,6 +1237,7 @@ export class RuntimeRunner {
     budget?: WorkflowBudget,
     outputs?: Map<string, string>,
     abortSignal?: AbortSignal,
+    contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
   ): Promise<SubAgentResult> {
     // G2: a reduce node runs no LLM — execute the registered pure function over its dependency
     // outputs and feed the result back as an ordinary completion. Deterministic; no agent burned.
@@ -1251,7 +1252,16 @@ export class RuntimeRunner {
     const budgetNote = workflowBudgetNote(budget)
     // W-N2: a DAG edge carries data — every dependent node sees its dependencies' outputs (the
     // kernel sends `input_agent_ids` for all dependents; judges/reduce keep their special paths).
-    const depsNote = dependencyOutputsNote(node.input_agent_ids, outputs)
+    const policy = contextPolicies?.get(node.agent_id) ?? contextPolicies?.get(node.agent_id.replace(/-i\d+$/, ""))
+    const include = policy?.include ?? ["dependency_outputs"]
+    const depsNote = include.includes("dependency_outputs")
+      ? dependencyOutputsNote(
+          node.input_agent_ids,
+          outputs,
+          policy?.maxTokens !== undefined ? Math.max(256, policy.maxTokens * 4) : 8_000,
+          policy?.dependencyMode ?? "full",
+        )
+      : ""
     const withBudget = (goal: string) =>
       [goal, depsNote, budgetNote].filter(Boolean).join("\n\n")
     const mkCtx = (goal: string) => ({
@@ -1440,6 +1450,7 @@ export class RuntimeRunner {
         parentSessionId,
         runtime,
         new Map(),
+        new Map(spec.nodes.flatMap((node, index) => node.context ? [[`wf-node${index}`, node.context] as const] : [])),
       )
       if (bootstrapped) {
         let terminal = runtime.resumeAction()
@@ -1617,6 +1628,7 @@ export class RuntimeRunner {
     parentSessionId: string,
     runtime: CanonicalRunnerRuntime,
     seedOutputs?: Map<string, string>,
+    contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
   ): Promise<WorkflowOutcome> {
     let observations = initial
     const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
@@ -1685,7 +1697,7 @@ export class RuntimeRunner {
       const batchState = { settled: false }
       const monitor = this.monitorWorkflowPreemption(runtime, controllers, batchState)
       const results = await Promise.all(
-        nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs, controllers.get(node.agent_id)?.signal)),
+        nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs, controllers.get(node.agent_id)?.signal, contextPolicies)),
       )
       batchState.settled = true
       const preempted = await monitor

@@ -37,6 +37,8 @@ describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", ()
     expect(note).not.toContain("wf-node-missing")
     expect(dependencyOutputsNote([], outputs)).toBe("")
     expect(dependencyOutputsNote(undefined, outputs)).toBe("")
+    expect(dependencyOutputsNote(["wf-node0"], outputs, 100, "reference")).toBe("[dependency references]\nwf-node0")
+    expect(dependencyOutputsNote(["wf-node1"], outputs, 100, "summary")).toContain("[summary truncated]")
   })
 })
 
