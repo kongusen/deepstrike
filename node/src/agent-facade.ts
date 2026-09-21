@@ -21,7 +21,7 @@ export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   maxTokens?: number
   memoryStore?: MemoryStore
   memoryScope?: MemoryScope
-  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "providerFor">
+  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "providerFor" | "initialMemory">
 }
 
 export interface AgentRunOptions {
@@ -104,6 +104,21 @@ function statusFromDone(status: string): RunResult["status"] {
   if (status === "cancelled" || status === "user" || status === "deadline" || status === "lease_lost" || status === "host_shutdown") return "cancelled"
   if (status === "failed" || status === "error") return "failed"
   return "partial"
+}
+
+function declarativeContextSeeds(definition: AgentDefinition): string[] {
+  const seeds: string[] = []
+  for (const skill of definition.skills ?? []) {
+    if (skill.instructions) seeds.push(`[Skill: ${skill.name}]\n${skill.instructions}`)
+    for (const entry of skill.knowledge ?? []) {
+      if (typeof entry === "string") seeds.push(`[Skill knowledge: ${skill.name}]\n${entry}`)
+      else if (entry.content) seeds.push(`[Skill knowledge: ${entry.name}]\n${entry.content}`)
+    }
+  }
+  for (const item of definition.knowledge ?? []) {
+    if (item.source.kind === "text") seeds.push(item.name ? `[Knowledge: ${item.name}]\n${item.source.content}` : item.source.content)
+  }
+  return seeds
 }
 
 class AgentSessionImpl {
@@ -307,6 +322,12 @@ class AgentRuntimeImpl implements AgentRuntime {
       ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
       ...(this.definition.memoryStore ? { memoryStore: this.definition.memoryStore } : {}),
       ...(this.definition.memoryScope ? { memoryScope: this.definition.memoryScope } : {}),
+      ...((this.definition.runtimeOptions?.initialMemory?.length || declarativeContextSeeds(this.definition).length) ? {
+        initialMemory: [
+          ...(this.definition.runtimeOptions?.initialMemory ?? []),
+          ...declarativeContextSeeds(this.definition),
+        ],
+      } : {}),
       agentId: this.name,
       ...(this.definition.runtimeOptions ?? {}),
       ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),

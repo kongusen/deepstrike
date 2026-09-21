@@ -48,6 +48,27 @@ describe("createAgent", () => {
     expect(seen[0]).not.toContain("hidden")
   })
 
+  it("projects inline skills and text knowledge into the first context", async () => {
+    const provider = new ReplayProvider([{ role: "assistant", content: "done" }])
+    let knowledge = ""
+    const originalStream = provider.stream.bind(provider)
+    provider.stream = (async function* (...args: Parameters<typeof provider.stream>) {
+      knowledge = args[0].systemKnowledge ?? ""
+      yield* originalStream(...args)
+    }) as typeof provider.stream
+    const agent = createAgent({
+      name: "researcher",
+      provider,
+      skills: [{ name: "research", instructions: "Cite every claim." }],
+      knowledge: [{ name: "facts", source: { kind: "text", content: "Project code: K-42" } }],
+    })
+
+    await agent.run("answer")
+
+    expect(knowledge).toContain("Cite every claim.")
+    expect(knowledge).toContain("Project code: K-42")
+  })
+
   it("runs a goal and returns a structured result", async () => {
     const agent = createAgent({
       name: "researcher",
