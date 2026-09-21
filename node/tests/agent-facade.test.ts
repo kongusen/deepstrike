@@ -5,6 +5,28 @@ import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { tool } from "../src/tools/index.js"
 
 describe("createAgent", () => {
+  it("validates a structured Agent output with the shared schema validator", async () => {
+    const valid = createAgent({
+      name: "structured",
+      provider: new ReplayProvider([{ role: "assistant", content: '{"answer":"ok"}' }]),
+      outputSchema: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } },
+    })
+    await expect(valid.run("answer")).resolves.toMatchObject({
+      status: "completed",
+      outputValidation: { ok: true, errors: [] },
+    })
+
+    const invalid = createAgent({
+      name: "structured",
+      provider: new ReplayProvider([{ role: "assistant", content: '{"answer":42}' }]),
+      outputSchema: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } },
+    })
+    await expect(invalid.run("answer")).resolves.toMatchObject({
+      status: "failed",
+      outputValidation: { ok: false },
+    })
+  })
+
   it("lowers the Agent capability filter into the root runtime ceiling", async () => {
     const provider = new ReplayProvider([{ role: "assistant", content: "done" }])
     const seen: string[][] = []

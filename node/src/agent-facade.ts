@@ -7,6 +7,7 @@ import type { LLMProvider, StreamEvent, DoneEvent, ErrorEvent, TokenUsage, Conte
 import type { RegisteredTool } from "./tools/index.js"
 import type { MemoryRecord, MemoryRecall, MemoryQuery, MemoryScope, MemoryStore, MemoryKind } from "./memory/protocols.js"
 import type { WorkflowSpec, WorkflowOutcome, KernelAgentRole } from "./types/agent.js"
+import { extractJsonValue, schemaInstruction, validateAgainstSchema } from "./runtime/output-schema.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -43,6 +44,7 @@ export interface RunResult<T = string> {
   sessionId: string
   status: "completed" | "partial" | "failed" | "cancelled"
   usage?: TokenUsage
+  outputValidation?: { ok: boolean; errors: string[] }
 }
 
 export interface AgentSession extends SessionRef {
@@ -252,11 +254,15 @@ class AgentRuntimeImpl implements AgentRuntime {
     const started = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
     const usageEvent = [...events].reverse().find(event => event.type === "usage") as (StreamEvent & Partial<TokenUsage>) | undefined
     const output = events.filter(event => event.type === "text_delta").map(event => String((event as { delta?: unknown }).delta ?? "")).join("")
+    const outputValidation = this.definition.outputSchema
+      ? validateAgainstSchema(extractJsonValue(output), this.definition.outputSchema)
+      : undefined
     return {
       output,
       runId: started?.event.kind === "run_started" ? started.event.run_id : `run-${crypto.randomUUID()}`,
       sessionId: session,
-      status: error ? "failed" : statusFromDone(done?.status ?? "partial"),
+      status: error || outputValidation && !outputValidation.ok ? "failed" : statusFromDone(done?.status ?? "partial"),
+      ...(outputValidation ? { outputValidation } : {}),
       ...(usageEvent?.totalTokens !== undefined ? {
         usage: {
           inputTokens: usageEvent.inputTokens ?? 0,
@@ -292,7 +298,12 @@ class AgentRuntimeImpl implements AgentRuntime {
       executionPlane: plane,
       sessionLog: this.sessionLog,
       maxTokens: this.definition.maxTokens ?? 32_000,
-      ...(this.definition.instructions ? { systemPrompt: this.definition.instructions } : {}),
+      ...(this.definition.instructions || this.definition.outputSchema ? {
+        systemPrompt: [
+          this.definition.instructions,
+          this.definition.outputSchema ? schemaInstruction(this.definition.outputSchema) : undefined,
+        ].filter((part): part is string => Boolean(part)).join("\n\n"),
+      } : {}),
       ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
       ...(this.definition.memoryStore ? { memoryStore: this.definition.memoryStore } : {}),
       ...(this.definition.memoryScope ? { memoryScope: this.definition.memoryScope } : {}),
