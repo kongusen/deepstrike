@@ -579,10 +579,8 @@ export interface LLMProvider {
    * (Anthropic `messages.countTokens` and Gemini `countTokens`),
    * where the vendor offers one. Optional — providers without a native endpoint simply omit it,
    * and callers fall back to `FallbackEstimator` (Rust `context::token_engine`, spc_011-C-01) or
-   * a local tokenizer. Not currently invoked by any dispatch loop (nothing in the Rust kernel
-   * emits `EffectKind::MeasurePrompt` yet — see its doc comment); this method exists so the
-   * capability remains directly callable, but no dispatch trigger is enabled until request
-   * fingerprinting and durable measurement semantics are defined.
+   * a local tokenizer. The host runner invokes this capability during provider request
+   * preparation and binds the resulting measurement to the prepared request fingerprint.
    */
   countTokens?(
     context: RenderedContext,
