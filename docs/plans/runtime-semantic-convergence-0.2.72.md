@@ -60,6 +60,10 @@ This is an implementation checkpoint, not release approval.
   initial context through that manager before committing to the Kernel. Kernel
   context remains the execution authority while host selection is deterministic and
   testable.
+- Workflow Context follow-up: `WorkflowStep.context` and `WorkflowNodeSpec.context`
+  now constrain dependency propagation. Nodes can choose `full`, `summary` or
+  `reference` dependency data, select the context categories they receive, and set
+  a per-dependency token-derived limit.
 - 028-54: Node, Rust and WASM test surfaces now consume the shared semantic
   contract fixture. The Python fixture test is present but its environment check
   is pinned to the checked-out SDK. After rebuilding the PyO3 extension with
