@@ -15,7 +15,7 @@ from deepstrike import (
     WorkflowSpawnInfo,
     workflow_node_spec_to_kernel,
 )
-from deepstrike.providers.base import ProviderMessage
+from deepstrike.providers.base import ModelMessage
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.runtime.run_group import GroupMember
 from deepstrike.runtime.workflow_control_flow import dependency_outputs_note
@@ -67,7 +67,7 @@ class _NodeProvider:
         self._call = 0
 
     async def complete(self, context, tools, extensions=None):
-        return ProviderMessage(role="assistant", content="done")
+        return ModelMessage(role="assistant", content="done")
 
     async def stream(self, context, tools, extensions=None, state=None):
         self._call += 1
@@ -130,7 +130,7 @@ class _PacingLoopProvider:
         self._call = 0
 
     async def complete(self, context, tools, extensions=None):
-        return ProviderMessage(role="assistant", content="done")
+        return ModelMessage(role="assistant", content="done")
 
     async def stream(self, context, tools, extensions=None, state=None):
         self._call += 1
@@ -172,7 +172,7 @@ async def test_pace_continue_then_stop_fails_closed_on_loop_kind():
 async def test_iteration_that_never_paces_also_fails_closed_on_loop_kind():
     class _Silent:
         async def complete(self, context, tools, extensions=None):
-            return ProviderMessage(role="assistant", content="done")
+            return ModelMessage(role="assistant", content="done")
 
         async def stream(self, context, tools, extensions=None, state=None):
             yield TextDelta(delta="all done in one pass")

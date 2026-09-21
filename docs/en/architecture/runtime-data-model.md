@@ -83,7 +83,7 @@ Any representation that is not the authority must register as one of:
 | `StoredMessageState` / `StoredMessageBody` | **L1 durable authority** (semantic truth in checkpoint/journal) |
 | `DurableContent` family | **L1 content vocabulary**: `Text/Image/Audio/Video/File` × `DurableSource{Url, Base64, FileId, Object}` |
 | `LogicalMessage` | **Inbound Intent form**: StartOperation initial_context only (no tool_calls) |
-| `ProviderMessage` | **Render/fact boundary form**: render output and ProviderCompleted payload |
+| `ModelMessage` | **Render/fact boundary form**: render output and ProviderCompleted payload |
 | `CoreMessage` (formerly `types::Message`, renamed 0.2.67) | **Internal runtime form**; the core aliases are removed in 0.2.68 and `ContentPart` is a rendering-time projection |
 | `ContentPart` | **Render-time projection** (does not own inline bytes; media is expressed through `DurableSource` and materialized by the adapter at L0) |
 
@@ -93,7 +93,7 @@ Tool association is a **structural field** (`tool_calls` forward pointers + in-b
 
 ## Registered Encoding: content-parts-v1
 
-On the wire, `ProviderMessage.content` / `LogicalMessage.content` are `String`; multimodal parts travel via a registered encoding:
+On the wire, `ModelMessage.content` / `LogicalMessage.content` are `String`; multimodal parts travel via a registered encoding. The Kernel's internal Rust `ProviderMessage` wire struct is an implementation detail, not an SDK public type:
 
 ```text
 content = "[[deepstrike-content-parts]]" + base64url(JSON(parts))

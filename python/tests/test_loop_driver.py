@@ -21,7 +21,7 @@ from deepstrike import (
     signal_aware_sleeper,
 )
 from deepstrike.runtime.loop_driver import LoopSpec
-from deepstrike.providers.base import ProviderMessage
+from deepstrike.providers.base import ModelMessage
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 
 
@@ -34,7 +34,7 @@ class ScriptedLoopProvider:
         self._round = 0
 
     async def complete(self, context, tools, extensions=None):
-        return ProviderMessage(role="assistant", content="done")
+        return ModelMessage(role="assistant", content="done")
 
     async def stream(self, context, tools, extensions=None, state=None):
         self._call += 1
@@ -270,7 +270,7 @@ async def test_round_that_never_paces_falls_back_to_kernel_default_action():
     # Provider ends immediately with text — no pace call; goal loop default = stop.
     class SilentProvider:
         async def complete(self, context, tools, extensions=None):
-            return ProviderMessage(role="assistant", content="all done")
+            return ModelMessage(role="assistant", content="all done")
 
         async def stream(self, context, tools, extensions=None, state=None):
             yield TextDelta(delta="all done")

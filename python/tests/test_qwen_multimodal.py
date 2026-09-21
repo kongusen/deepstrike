@@ -10,12 +10,12 @@ import pytest
 
 from deepstrike.providers.factories import qwen
 from deepstrike.providers.base import RenderedContext
-from deepstrike._kernel import ProviderMessage, ContentPartObj
+from deepstrike._kernel import ModelMessage, ContentPartObj
 from deepstrike.providers.stream import TextDelta, UsageEvent
 
 
 def _img_ctx():
-    return RenderedContext(turns=[ProviderMessage(role="user", content="", content_parts=[
+    return RenderedContext(turns=[ModelMessage(role="user", content="", content_parts=[
         ContentPartObj("text", text="what is this?"),
         ContentPartObj("image", source_kind="base64", source_data="QkFTRTY0", media_type="image/png"),
     ])])
@@ -50,7 +50,7 @@ def _provider(mode):
 
 def test_has_image_input_detection():
     assert qwen(api_key="k")._has_image_input(_img_ctx()) is True
-    assert qwen(api_key="k")._has_image_input(RenderedContext(turns=[ProviderMessage(role="user", content="hi")])) is False
+    assert qwen(api_key="k")._has_image_input(RenderedContext(turns=[ModelMessage(role="user", content="hi")])) is False
 
 
 def test_build_mm_messages_format():

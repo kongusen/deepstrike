@@ -11,10 +11,10 @@ import pytest
 
 from deepstrike.providers.anthropic import AnthropicProvider
 from deepstrike.providers.base import RenderedContext
-from deepstrike._kernel import ProviderMessage
+from deepstrike._kernel import ModelMessage
 from deepstrike.providers.anthropic_adapter import ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER
 
-CTX = RenderedContext(turns=[ProviderMessage(role="user", content="hi")])
+CTX = RenderedContext(turns=[ModelMessage(role="user", content="hi")])
 
 
 class _EmptyStreamCtx:

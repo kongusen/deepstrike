@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike._kernel import ContentPartObj, ProviderMessage, ToolCall
+from deepstrike._kernel import ContentPartObj, ModelMessage, ToolCall
 from deepstrike.providers.anthropic import AnthropicProvider
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.factories import deepseek
@@ -18,9 +18,9 @@ from deepstrike.runtime.provider_replay import (
 
 def _tool_call_context():
     return RenderedContext(turns=[
-        ProviderMessage(role="user", content="use a tool"),
-        ProviderMessage(role="assistant", content="calling", tool_calls=[ToolCall(id="c1", name="ping", arguments="{}")]),
-        ProviderMessage(role="tool", content="", content_parts=[
+        ModelMessage(role="user", content="use a tool"),
+        ModelMessage(role="assistant", content="calling", tool_calls=[ToolCall(id="c1", name="ping", arguments="{}")]),
+        ModelMessage(role="tool", content="", content_parts=[
             ContentPartObj("tool_result", call_id="c1", output="pong", is_error=False),
         ]),
     ])
@@ -81,8 +81,8 @@ def test_missing_replay_is_not_reconstructed():
 def test_validator_rejects_orphan_tool_result():
     provider = deepseek(api_key="k", model="deepseek-chat")
     context = RenderedContext(turns=[
-        ProviderMessage(role="user", content="hi"),
-        ProviderMessage(role="tool", content="", content_parts=[
+        ModelMessage(role="user", content="hi"),
+        ModelMessage(role="tool", content="", content_parts=[
             ContentPartObj("tool_result", call_id="orphan", output="x", is_error=False),
         ]),
     ])
@@ -93,8 +93,8 @@ def test_validator_rejects_orphan_tool_result():
 def test_validator_accepts_matched_tool_result():
     provider = deepseek(api_key="k", model="deepseek-chat")
     context = RenderedContext(turns=[
-        ProviderMessage(role="assistant", content="", tool_calls=[ToolCall(id="c1", name="ping", arguments="{}")]),
-        ProviderMessage(role="tool", content="", content_parts=[
+        ModelMessage(role="assistant", content="", tool_calls=[ToolCall(id="c1", name="ping", arguments="{}")]),
+        ModelMessage(role="tool", content="", content_parts=[
             ContentPartObj("tool_result", call_id="c1", output="pong", is_error=False),
         ]),
     ])
@@ -111,9 +111,9 @@ def test_deepseek_reasoning_model_fails_fast_without_reasoning_replay():
 def test_validator_rejects_missing_tool_result():
     provider = deepseek(api_key="k", model="deepseek-chat")
     context = RenderedContext(turns=[
-        ProviderMessage(role="user", content="hi"),
-        ProviderMessage(role="assistant", content="calling", tool_calls=[ToolCall(id="c_unanswered", name="ping", arguments="{}")]),
-        ProviderMessage(role="user", content="never mind"),
+        ModelMessage(role="user", content="hi"),
+        ModelMessage(role="assistant", content="calling", tool_calls=[ToolCall(id="c_unanswered", name="ping", arguments="{}")]),
+        ModelMessage(role="user", content="never mind"),
     ])
     with pytest.raises(ProviderReplayValidationError, match="no tool result for c_unanswered"):
         provider._build_messages(context)
@@ -122,7 +122,7 @@ def test_validator_rejects_missing_tool_result():
 def test_validator_rejects_dangling_tool_call_at_end():
     provider = deepseek(api_key="k", model="deepseek-chat")
     context = RenderedContext(turns=[
-        ProviderMessage(role="assistant", content="calling", tool_calls=[ToolCall(id="c_dangling", name="ping", arguments="{}")]),
+        ModelMessage(role="assistant", content="calling", tool_calls=[ToolCall(id="c_dangling", name="ping", arguments="{}")]),
     ])
     with pytest.raises(ProviderReplayValidationError, match="no tool result for c_dangling"):
         provider._build_messages(context)

@@ -12,7 +12,7 @@ from deepstrike import (
     RuntimeOptions,
     RuntimeRunner,
 )
-from deepstrike.providers.base import ProviderMessage
+from deepstrike.providers.base import ModelMessage
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.tools import tool
 
@@ -22,7 +22,7 @@ class _ToolThenTextProvider:
         self._turn = 0
 
     async def complete(self, context, tools, extensions=None):
-        return ProviderMessage(role="assistant", content="done")
+        return ModelMessage(role="assistant", content="done")
 
     async def stream(self, context, tools, extensions=None, state=None):
         self._turn += 1

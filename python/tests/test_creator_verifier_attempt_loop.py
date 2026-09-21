@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from deepstrike._kernel import ProviderMessage
+from deepstrike._kernel import ModelMessage
 from deepstrike.collaboration.contract import AcceptanceCriterion, VerificationContract
 from deepstrike.collaboration.modes import CreatorVerifierMode
 from deepstrike.types.agent import LoopResult, SubAgentResult
@@ -36,7 +36,7 @@ class _Pool:
                 termination="completed",
                 turns_used=1,
                 total_tokens_used=10,
-                final_message=ProviderMessage(role="assistant", content=f"artifact-{len(self.sessions)}"),
+                final_message=ModelMessage(role="assistant", content=f"artifact-{len(self.sessions)}"),
             ),
         )
 

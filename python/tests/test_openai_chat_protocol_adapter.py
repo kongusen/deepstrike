@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepstrike._kernel import ProviderMessage, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolSchema
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.model_registry import model_registry
 from deepstrike.providers.openai_chat_adapter import OpenAIChatAdapter
@@ -17,7 +17,7 @@ from deepstrike.types.content import normalize_canonical_adapter_input
 
 def _input(provider: str, model: str, extensions: dict | None = None):
     return normalize_canonical_adapter_input(
-        RenderedContext(system_text="system", turns=[ProviderMessage(role="user", content="hello")]),
+        RenderedContext(system_text="system", turns=[ModelMessage(role="user", content="hello")]),
         [ToolSchema(name="lookup", description="Lookup", parameters='{"type":"object"}')],
         extensions=extensions,
         resolved=model_registry.resolve_provider_runtime(provider, model),
