@@ -20,7 +20,7 @@ export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   maxTokens?: number
   memoryStore?: MemoryStore
   memoryScope?: MemoryScope
-  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers">
+  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "providerFor">
 }
 
 export interface AgentRunOptions {
@@ -278,13 +278,16 @@ class AgentRuntimeImpl implements AgentRuntime {
   }
 
   private createRunner(options: AgentRunOptions): RuntimeRunner {
-    if (!this.definition.provider) {
+    const model = this.definition.model
+    const provider = this.definition.provider
+      ?? (typeof model === "string" ? this.definition.runtimeOptions?.providerFor?.(model) : undefined)
+    if (!provider) {
       throw new Error(`agent "${this.name}" has no runtime provider binding for model ${typeof this.definition.model === "string" ? this.definition.model : "(unresolved)"}`)
     }
     const plane = this.definition.executionPlane
       ?? (this.definition.tools ?? []).reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane())
     const runtime: RuntimeOptions = {
-      provider: this.definition.provider,
+      provider,
       executionPlane: plane,
       sessionLog: this.sessionLog,
       maxTokens: this.definition.maxTokens ?? 32_000,
