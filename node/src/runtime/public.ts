@@ -1,7 +1,15 @@
 /** Runtime subpath: host execution primitives intentionally outside the root quick-start API. */
 export { RuntimeRunner, collectText } from "./runner.js"
 export { ContextManager, estimateContextTokens } from "./context-manager.js"
-export type { ContextItem, ContextItemKind, ContextItemScope, ContextManagerOptions, ContextSnapshot } from "./context-manager.js"
+export type {
+  ContextItem,
+  ContextItemKind,
+  ContextItemScope,
+  ContextLedgerEvent,
+  ContextLedgerEventKind,
+  ContextManagerOptions,
+  ContextSnapshot,
+} from "./context-manager.js"
 export type { RuntimeOptions } from "./runner.js"
 export { runAgent, runFanout } from "./facade.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./facade.js"

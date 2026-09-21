@@ -60,6 +60,11 @@ This is an implementation checkpoint, not release approval.
   initial context through that manager before committing to the Kernel. Kernel
   context remains the execution authority while host selection is deterministic and
   testable.
+- Context observability follow-up: `ContextManager` now exposes a stable selected-context
+  fingerprint and an optional append-only ledger callback for add, remove, expiry and
+  selection events. Renewal memory recalls use the same `pushKnowledge()` admission path,
+  so dynamic memory and Skill/Knowledge overlays share one budget and provenance surface.
+  Explicit Skill deactivation and kernel lease expiry also clear the host overlay immediately.
 - Workflow Context follow-up: `WorkflowStep.context` and `WorkflowNodeSpec.context`
   now constrain dependency propagation. Nodes can choose `full`, `summary` or
   `reference` dependency data, select the context categories they receive, and set
@@ -71,7 +76,9 @@ This is an implementation checkpoint, not release approval.
   binding checks also pass.
 
 Runtime binding is optional at definition time; execution reports an unresolved binding explicitly.
-WASM/Python/Rust have not been migrated in this checkpoint.
+Python semantic conformance is rebuilt against the checked-out SDK and passes; Rust and WASM
+consume the shared fixture surfaces. Remaining release work is limited to the explicit final
+audit and release-gate evidence listed below.
 
 The Node facade now names the two public stages explicitly: `AgentDefinition` is the
 serializable declaration and `AgentRuntime` is the executable handle returned by
@@ -93,19 +100,16 @@ Edit the semantic fields on the spec and request a fresh projection instead.
 
 ## Remaining acceptance work
 
-The previous Wave 1 commits established a baseline, but their passing Node tests do
-not establish every acceptance condition in the proposal. Remaining work includes
-classification coverage based on source declarations, ABI-only Canonical exceptions
-(the current list also contains provider types), and consolidation of the older
-glossary definitions with the new vocabulary. Cross-SDK language conformance is pending.
-
-Next dependency-ordered work: cross-SDK semantic fixture consumption, root export
-allowlist, migration guide and final release gates. The Node implementation is the
-reference surface; Python, Rust and WASM still need their corresponding fixture checks.
+The implementation waves and cross-SDK fixture checks are complete for this checkpoint.
+Before release, run the final semantic audit, verify the generated package surfaces against
+the allowlist, and attach the release-gate evidence. The Node implementation remains the
+reference surface; Python, Rust and WASM consume the same semantic fixture domains.
 
 ## Verification
 
 The 028-05 regression tests first failed on duplicate declarations and a lost default
 name. The 028-06 tests first failed on absent projection functions, then exposed stale
 capability derivation after changing the spec. Both targeted suites now pass.
-Node TypeScript build passes. Full Node regression results are recorded in the task.
+Node TypeScript build passes. Full Node regression: 179 suites passed, 6 skipped;
+1,103 tests passed, 14 skipped. Python SDK conformance: 30 passed. Context-manager
+targeted tests: 5 passed.

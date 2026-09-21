@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto"
+
 export type ContextItemKind = "core" | "task" | "skill" | "memory" | "knowledge" | "workflow"
 export type ContextItemScope = "run" | "session" | "step" | "turn"
 
@@ -18,6 +20,16 @@ export interface ContextManagerOptions {
   maxTokens: number
   responseReserveTokens?: number
   now?: () => number
+  onEvent?: (event: ContextLedgerEvent) => void
+}
+
+export type ContextLedgerEventKind = "context_added" | "context_removed" | "context_expired" | "context_selected"
+export interface ContextLedgerEvent {
+  kind: ContextLedgerEventKind
+  itemId?: string
+  source?: ContextItem["source"]
+  fingerprint: string
+  at: number
 }
 
 export interface ContextSnapshot {
@@ -25,6 +37,7 @@ export interface ContextSnapshot {
   selected: ContextItem[]
   usedTokens: number
   availableTokens: number
+  fingerprint: string
 }
 
 export function estimateContextTokens(content: string): number {
@@ -36,6 +49,7 @@ export class ContextManager {
   private readonly items = new Map<string, ContextItem>()
   private readonly now: () => number
   private readonly budget: number
+  private readonly onEvent?: (event: ContextLedgerEvent) => void
 
   constructor(options: ContextManagerOptions) {
     if (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1) throw new RangeError("maxTokens must be a safe integer >= 1")
@@ -43,15 +57,22 @@ export class ContextManager {
     if (!Number.isSafeInteger(reserve) || reserve < 0 || reserve >= options.maxTokens) throw new RangeError("responseReserveTokens must be >= 0 and lower than maxTokens")
     this.budget = options.maxTokens - reserve
     this.now = options.now ?? Date.now
+    this.onEvent = options.onEvent
   }
 
   upsert(item: ContextItem): void {
     const tokenCost = item.tokenCost ?? estimateContextTokens(item.content)
     if (!Number.isSafeInteger(tokenCost) || tokenCost < 1) throw new RangeError(`context item "${item.id}" has invalid tokenCost`)
     this.items.set(item.id, { ...item, tokenCost })
+    this.emit({ kind: "context_added", itemId: item.id, source: item.source })
   }
 
-  remove(id: string): void { this.items.delete(id) }
+  remove(id: string): void {
+    const item = this.items.get(id)
+    if (!item) return
+    this.items.delete(id)
+    this.emit({ kind: "context_removed", itemId: id, source: item.source })
+  }
 
   expire(now = this.now()): string[] {
     const removed: string[] = []
@@ -59,6 +80,7 @@ export class ContextManager {
       if (item.expiresAt !== undefined && item.expiresAt <= now && !item.pinned) {
         this.items.delete(id)
         removed.push(id)
+        this.emit({ kind: "context_expired", itemId: id, source: item.source })
       }
     }
     return removed
@@ -66,6 +88,31 @@ export class ContextManager {
 
   select(now = this.now()): ContextItem[] {
     this.expire(now)
+    const selected = this.selectWithoutEvents()
+    this.emit({ kind: "context_selected" })
+    return selected
+  }
+
+  snapshot(now = this.now()): ContextSnapshot {
+    this.expire(now)
+    const items = [...this.items.values()]
+    const selected = this.select(now)
+    const usedTokens = selected.reduce((sum, item) => sum + (item.tokenCost ?? estimateContextTokens(item.content)), 0)
+    return {
+      items,
+      selected,
+      usedTokens,
+      availableTokens: Math.max(0, this.budget - usedTokens),
+      fingerprint: this.fingerprint(now),
+    }
+  }
+
+  fingerprint(now = this.now()): string {
+    this.expire(now)
+    return this.fingerprintOf(this.selectWithoutEvents())
+  }
+
+  private selectWithoutEvents(): ContextItem[] {
     const candidates = [...this.items.values()].sort((left, right) =>
       Number(Boolean(right.pinned)) - Number(Boolean(left.pinned))
       || right.priority - left.priority
@@ -82,10 +129,31 @@ export class ContextManager {
     return selected
   }
 
-  snapshot(now = this.now()): ContextSnapshot {
-    const items = [...this.items.values()]
-    const selected = this.select(now)
-    const usedTokens = selected.reduce((sum, item) => sum + (item.tokenCost ?? estimateContextTokens(item.content)), 0)
-    return { items, selected, usedTokens, availableTokens: Math.max(0, this.budget - usedTokens) }
+  private emit(event: Omit<ContextLedgerEvent, "fingerprint" | "at">): void {
+    try {
+      this.onEvent?.({ ...event, fingerprint: this.fingerprintOf(this.selectWithoutEvents()), at: this.now() })
+    } catch {
+      // Ledger observers are diagnostic only; a faulty sink must never reject context admission.
+    }
+  }
+
+  private fingerprintOf(selected: ContextItem[]): string {
+    const hash = createHash("sha256")
+    for (const item of selected) {
+      hash.update(JSON.stringify({
+        id: item.id,
+        kind: item.kind,
+        content: item.content,
+        scope: item.scope,
+        priority: item.priority,
+        tokenCost: item.tokenCost ?? estimateContextTokens(item.content),
+        confidence: item.confidence ?? null,
+        expiresAt: item.expiresAt ?? null,
+        pinned: Boolean(item.pinned),
+        source: { type: item.source.type, id: item.source.id ?? null },
+      }))
+      hash.update("\n")
+    }
+    return `ctx-${hash.digest("hex")}`
   }
 }

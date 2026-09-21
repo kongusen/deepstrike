@@ -648,6 +648,8 @@ export class RuntimeRunner {
    *  run — guards against re-pushing a duplicate entry if the model calls `skill(name)` again for
    *  an already-active skill (loading is idempotent; the knowledge push should be too). */
   private knowledgePushedSkills = new Set<string>()
+  /** Host mirror of kernel skill lease expiry, used only to clear ContextManager overlays. */
+  private skillLeaseExpirations = new Map<string, number>()
   private nextArchiveStart = 0
   private pendingPageOutArchives: Array<{
     archiveStart: number
@@ -815,7 +817,6 @@ export class RuntimeRunner {
     agentId: string,
     sessionId: string | null | undefined,
     seenRecordIds?: Set<string>,
-    leftovers?: KernelObservation[],
   ): Promise<{ hits: MemoryRecall[]; action: KernelRunnerAction | null }> {
     let hits: MemoryRecall[] = []
     try {
@@ -829,12 +830,14 @@ export class RuntimeRunner {
         })
       }
       for (const hit of hits) {
-        await this.commitKernelApply(runtime, leftovers ?? [], {
-          kind: "add_knowledge_message",
-          key: `memory:${hit.record.record_id}`,
-          content: hit.record.content,
-          tokens: Math.max(1, Math.ceil(hit.record.content.length / 4)),
-        }, sessionId)
+        // Route renewal recalls through the same host context admission path as every other
+        // dynamic knowledge entry. This keeps ContextManager budgets and ledger events in sync
+        // while preserving the canonical kernel knowledge command underneath.
+        await this.pushKnowledge(
+          { role: "system", content: hit.record.content, toolCalls: [] },
+          Math.max(1, Math.ceil(hit.record.content.length / 4)),
+          { key: `memory:${hit.record.record_id}` },
+        )
       }
       await this.applyHostMemoryRecallLifecycle(hits, agentId)
       await this.logMemoryRetrievalResult(sessionId, hits)
@@ -1216,10 +1219,23 @@ export class RuntimeRunner {
    *  drops at the next compaction/renewal boundary. A later `skill(name)` call re-activates and
    *  re-pins fresh content. Errs-open: not-active is a kernel-side no-op. */
   async deactivateSkill(name: string): Promise<void> {
-    if (!this.activeKernel) return
-    await this.commitKernelApply(this.activeKernel, this.pendingObservations, { kind: "skill_deactivated", name })
+    if (this.activeKernel) {
+      await this.commitKernelApply(this.activeKernel, this.pendingObservations, { kind: "skill_deactivated", name })
+    }
     // Re-arm the SDK-side push guard so a re-activation re-pins the content.
     this.knowledgePushedSkills.delete(name)
+    this.skillLeaseExpirations.delete(name)
+    this.opts.contextManager?.remove(`skill:${name}`)
+  }
+
+  private expireSkillContext(currentTurn: number): void {
+    if (this.opts.skillLeaseTurns === undefined) return
+    for (const [name, expiresAtTurn] of this.skillLeaseExpirations) {
+      if (currentTurn < expiresAtTurn) continue
+      this.skillLeaseExpirations.delete(name)
+      this.knowledgePushedSkills.delete(name)
+      this.opts.contextManager?.remove(`skill:${name}`)
+    }
   }
 
   /**
@@ -1508,6 +1524,8 @@ export class RuntimeRunner {
     this.pendingObservations = []
     this.pendingPageOutArchives = []
     this.activePageOutArchive = undefined
+    this.knowledgePushedSkills.clear()
+    this.skillLeaseExpirations.clear()
     this.currentSessionId = sessionId
 
     const runtime = this.createCanonicalRuntime(runId, sessionId)
@@ -2065,6 +2083,8 @@ export class RuntimeRunner {
     this.pendingObservations = []
     this.pendingPageOutArchives = []
     this.activePageOutArchive = undefined
+    this.knowledgePushedSkills.clear()
+    this.skillLeaseExpirations.clear()
     this.currentSessionId = sessionId
     this.activeProviderInvocationId = undefined
     this.providerRetryPending = false
@@ -2319,6 +2339,7 @@ export class RuntimeRunner {
         taskScope,
       )
       this.nextArchiveStart = nextCompressedArchiveStart
+      this.expireSkillContext(runtime.turn())
       if (this.interrupted) {
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "cancel_operation",
@@ -3134,6 +3155,9 @@ export class RuntimeRunner {
                 undefined,
                 { key: `skill:${name}` },
               )
+              if (this.opts.skillLeaseTurns !== undefined) {
+                this.skillLeaseExpirations.set(name, runtime.turn() + this.opts.skillLeaseTurns)
+              }
             }
           } catch { /* malformed skill args — skip the knowledge pin */ }
         }
@@ -3414,7 +3438,6 @@ export class RuntimeRunner {
           this.opts.agentId,
           this.durableSessionId(this.currentSessionId),
           seenRecordIds,
-          this.pendingObservations,
         )
         resumed = action ?? resumed
       }
