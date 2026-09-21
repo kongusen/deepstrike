@@ -26,6 +26,8 @@ This is an implementation checkpoint, not release approval.
   now have typed public containers instead of `unknown[]` placeholders.
 - 028-39/41: public `WorkflowDefinition` and `WorkflowStep` use named agents and
   lower to the existing runtime WorkflowSpec.
+- 028-63/66/67: added the 0.2.71 to 0.2.72 migration guide and updated the Node
+  Quick Start/package layout for the public Agent language and runtime subpaths.
 
 Runtime binding is optional at definition time; execution reports an unresolved binding explicitly.
 WASM/Python/Rust have not been migrated in this checkpoint.
