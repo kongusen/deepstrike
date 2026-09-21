@@ -190,4 +190,19 @@ describe("createAgent", () => {
     expect(signalResult).toMatchObject({ output: "handled", status: "completed" })
     expect(acknowledged).toBe(true)
   })
+
+  it("requires delegate targets to match declared handoffs", async () => {
+    const agent = createAgent({
+      name: "writer",
+      provider: new ReplayProvider([{ role: "assistant", content: "reviewed" }]),
+      handoffs: [{ agent: "reviewer" }],
+    })
+
+    await expect(agent.delegate({ goal: "review", target: "unknown" })).rejects.toThrow("cannot hand off")
+    await expect(agent.delegate({ goal: "review" })).rejects.toThrow("requires an explicit handoff target")
+    await expect(agent.delegate({ goal: "review", target: "reviewer" })).resolves.toMatchObject({
+      output: "reviewed",
+      status: "completed",
+    })
+  })
 })

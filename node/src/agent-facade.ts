@@ -74,6 +74,8 @@ export interface RecallOptions {
 export interface DelegationRequest {
   goal: string
   role?: KernelAgentRole
+  /** Optional declared handoff target. When handoffs are declared, this is required and allowlisted. */
+  target?: import("./handoff-target.js").AgentRef
 }
 
 export interface DelegationResult {
@@ -216,6 +218,16 @@ class AgentRuntimeImpl implements AgentRuntime {
   }
 
   async delegate(request: DelegationRequest): Promise<DelegationResult> {
+    const handoffs = this.definition.handoffs ?? []
+    if (handoffs.length) {
+      if (!request.target) throw new Error(`agent "${this.name}" requires an explicit handoff target`)
+      const targetName = typeof request.target === "string" ? request.target : request.target.name
+      const allowed = handoffs.some(handoff => {
+        const name = typeof handoff.agent === "string" ? handoff.agent : handoff.agent.name
+        return name === targetName
+      })
+      if (!allowed) throw new Error(`agent "${this.name}" cannot hand off to "${targetName}"`)
+    }
     const spec: WorkflowSpec = {
       nodes: [{
         task: { goal: request.goal },
