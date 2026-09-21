@@ -11,6 +11,7 @@ import { extractJsonValue, schemaInstruction, validateAgainstSchema } from "./ru
 import type { GovernancePolicy } from "./governance.js"
 import { McpProxyPlane } from "./runtime/mcp-proxy-plane.js"
 import { EnvCredentialVault } from "./runtime/credential-vault.js"
+import { agentRefName } from "./handoff-target.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -226,10 +227,9 @@ class AgentRuntimeImpl implements AgentRuntime {
     const handoffs = this.definition.handoffs ?? []
     if (handoffs.length) {
       if (!request.target) throw new Error(`agent "${this.name}" requires an explicit handoff target`)
-      const targetName = typeof request.target === "string" ? request.target : request.target.name
+      const targetName = agentRefName(request.target)
       const allowed = handoffs.some(handoff => {
-        const name = typeof handoff.agent === "string" ? handoff.agent : handoff.agent.name
-        return name === targetName
+        return agentRefName(handoff.agent) === targetName
       })
       if (!allowed) throw new Error(`agent "${this.name}" cannot hand off to "${targetName}"`)
     }
