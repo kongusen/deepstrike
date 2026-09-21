@@ -1,7 +1,7 @@
 import type { ModelMessage, ModelMessage, RuntimeMessage, StoredMessage, WireMessage } from "../src/types.js"
 import { PROJECTION_PAIRS } from "../src/projection-pairs.js"
 
-test("SPC-028-07 ModelMessage is a compatibility mirror of ModelMessage", () => {
+test("SPC-028-07 ModelMessage is the semantic message contract", () => {
   const message: ModelMessage = { role: "assistant", content: "ready" }
   const provider: ModelMessage = message
   const stored: StoredMessage = { ...provider, messageId: "m1", createdAt: 1 }

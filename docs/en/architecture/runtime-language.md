@@ -45,8 +45,8 @@ The complete boundary sequence is `Intent → Decision → encode → Execution 
 | **Evidence** | An immutable record that an external event occurred. |
 | **Mirror** | An ABI or SDK serialization mapping. A mirror cannot add semantic authority. |
 
-`CoreMessage` is an Internal runtime representation. `ProviderMessage` is Kernel Wire. Provider
-JSON is Provider Wire. The SDK `ProviderMessage` and `ToolExecutionResult` types are mirrors of
+`CoreMessage` is an Internal runtime representation. `ModelMessage` is the host semantic message;
+provider JSON is Provider Wire. `ModelMessage` and `ToolExecutionResult` are representations of
 the provider boundary; they are not core authorities. `StoredMessageState` and checkpoint DTOs
 are Durable representations. `ToolMeasurement` is host-owned measurement evidence keyed by a
 tool call, never a field on the runtime result.
