@@ -1,0 +1,9 @@
+{
+  "version": "0.2.72",
+  "public": ["Agent", "Model", "Run", "Session", "Tool", "Skill", "Memory", "Knowledge", "MCPServer", "Handoff", "Workflow", "Guardrail", "Eval"],
+  "host": ["AgentSpec", "Context", "ModelRoute", "Invocation", "ProviderAttempt", "Measurement", "Evidence"],
+  "kernel": ["Operation", "Intent", "Decision", "Effect", "Fact", "Settlement", "Journal", "Checkpoint"],
+  "provider": ["Model", "Provider", "Endpoint", "Protocol", "Route", "Adapter", "Request", "Response"],
+  "representations": {"message": ["StoredMessage", "RuntimeMessage", "ModelMessage", "WireMessage"], "content": ["Content", "ContentBlock", "ToolCall", "ToolResult"]},
+  "authorities": {"AgentDefinition": "public-agent", "AgentSpec": "host-runtime", "ModelMessage": "host-runtime", "Journal": "kernel", "ProviderAttempt": "host-runtime"}
+}

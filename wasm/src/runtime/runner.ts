@@ -1,7 +1,7 @@
 import { prepareProviderRequest } from "../providers/prepared-request.js"
 import { createNativeContextPreparationAdapter } from "./context.js"
 import type {
-  LLMProvider, ProviderMessage, ToolCall, ToolExecutionResult, ToolSchema, ContentPart,
+  LLMProvider, ModelMessage, ToolCall, ToolExecutionResult, ToolSchema, ContentPart,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
@@ -223,8 +223,8 @@ interface InboundSignalDelivery {
 }
 
 export interface ArchiveStore {
-  write(sessionId: string, startSeq: number, messages: ProviderMessage[]): Promise<string | undefined>
-  read?(archiveRef: string): Promise<ProviderMessage[]>
+  write(sessionId: string, startSeq: number, messages: ModelMessage[]): Promise<string | undefined>
+  read?(archiveRef: string): Promise<ModelMessage[]>
 }
 
 /** P0-C tool-gating telemetry: per-LLM-turn metrics, emitted via `RuntimeOptions.onTurnMetrics`.
@@ -735,7 +735,7 @@ export class RuntimeRunner {
    *  K1: `opts.key` gives the entry identity — a same-key push upserts (applied at the next
    *  compaction/renewal boundary) instead of appending a duplicate. `opts.pinned` exempts the
    *  entry from the knowledge-budget sweep. */
-  async pushKnowledge(message: ProviderMessage, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
+  async pushKnowledge(message: ModelMessage, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
     if (!this.activeKernel) return
     await this.commitKernelApply(this.activeKernel, this.pendingObservations, {
       kind: "add_knowledge_message",
@@ -1293,7 +1293,7 @@ export class RuntimeRunner {
           break
         }
 
-        const assistantMessage: ProviderMessage = {
+        const assistantMessage: ModelMessage = {
           role: "assistant",
           content: finalText,
           toolCalls: finalToolCalls,
@@ -2409,7 +2409,7 @@ export class RuntimeRunner {
     } catch { /* errs-open */ }
   }
 
-  private async archiveSemanticPageOut(archived: ProviderMessage[], action?: string): Promise<void> {
+  private async archiveSemanticPageOut(archived: ModelMessage[], action?: string): Promise<void> {
     if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     try {
       const summary = this.opts.memorySummarizer
@@ -2436,7 +2436,7 @@ export class RuntimeRunner {
 
 async function summarizeForLongTermMemory(
   provider: LLMProvider,
-  archived: ProviderMessage[],
+  archived: ModelMessage[],
   systemPrompt?: string,
 ): Promise<string> {
   const transcript = archived
@@ -2477,14 +2477,14 @@ export async function replayMessages(
   events: Array<{ seq: number; event: SessionEvent }>,
   maxBytes?: number,
   archiveStore?: ArchiveStore,
-): Promise<ProviderMessage[]> {
+): Promise<ModelMessage[]> {
   // Build upgraded-summary index: compressed_seq -> upgraded summary
   const upgradedSummaries = new Map<number, string>()
   for (const { event: e } of events) {
     if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
   }
 
-  const messages: ProviderMessage[] = []
+  const messages: ModelMessage[] = []
   const archivedTurns = new Set(events.flatMap(({ event }) =>
     event.kind === "page_out" && event.archive_ref && archiveStore?.read ? [event.turn] : [],
   ))

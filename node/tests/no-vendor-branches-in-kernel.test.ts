@@ -4,8 +4,7 @@ import { join, relative, sep } from "node:path"
 /** spc_007-05: static guard against `if (provider === "openai")`-style vendor branches leaking
  *  into Kernel-facing code (spc_007 §7's third acceptance criterion; spc_001 §4's "otherwise it
  *  degrades into `if provider == openai ...`" warning). Scans the Rust kernel crate and the Node
- *  SDK's `src/`, excluding `node/src/compat/**` — vendor branching is exactly what an adapter is
- *  for; the point is keeping it OUT of everything an adapter feeds into. */
+ *  SDK's `src/`; provider branching belongs only inside explicit adapters. */
 const VENDOR_BRANCH_PATTERN = /\bprovider\s*={2,3}\s*['"]/
 
 function collectSourceFiles(dir: string, exclude: (absolutePath: string) => boolean, extensions: RegExp): string[] {
@@ -21,8 +20,7 @@ function collectSourceFiles(dir: string, exclude: (absolutePath: string) => bool
 }
 
 function findVendorBranchViolations(repoRoot: string): string[] {
-  const compatDir = join(repoRoot, "node", "src", "compat") + sep
-  const nodeExclude = (full: string) => full.includes(`${sep}node_modules${sep}`) || full.startsWith(compatDir)
+  const nodeExclude = (full: string) => full.includes(`${sep}node_modules${sep}`)
   const rustExclude = (full: string) => full.includes(`${sep}target${sep}`)
 
   const files = [
@@ -40,7 +38,7 @@ function findVendorBranchViolations(repoRoot: string): string[] {
 }
 
 describe("spc_007-05: no vendor branches in Kernel-facing code", () => {
-  it("crates/deepstrike-core/src and node/src (excluding node/src/compat/**) contain no provider === vendor branches", () => {
+  it("crates/deepstrike-core/src and node/src contain no provider === vendor branches", () => {
     const repoRoot = join(process.cwd(), "..")
     expect(findVendorBranchViolations(repoRoot)).toEqual([])
   })

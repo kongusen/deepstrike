@@ -5,7 +5,7 @@ import logging
 import time
 from typing import Any, AsyncIterator, Callable, Protocol, TypeVar, runtime_checkable
 from dataclasses import dataclass, field
-from deepstrike._kernel import ProviderMessage, ToolCall, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolCall, ToolSchema
 from .stream import StreamEvent
 from deepstrike.types.content import (
     normalize_canonical_adapter_input,
@@ -159,8 +159,8 @@ def _tool_result_anthropic_content(p: Any) -> "str | list[dict]":
   return p.output
 
 
-def to_anthropic_content(msg: ProviderMessage) -> str | list[dict]:
-    """Convert ProviderMessage to Anthropic API content format."""
+def to_anthropic_content(msg: ModelMessage) -> str | list[dict]:
+    """Convert ModelMessage to Anthropic API content format."""
     validate_rendered_message(msg)
     if not getattr(msg, "content_parts", None):
         return msg.content
@@ -201,8 +201,8 @@ def _openai_audio_format(media_type: str | None) -> str:
     return sub
 
 
-def to_openai_content(msg: ProviderMessage) -> str | list[dict]:
-    """Convert ProviderMessage to OpenAI API content format."""
+def to_openai_content(msg: ModelMessage) -> str | list[dict]:
+    """Convert ModelMessage to OpenAI API content format."""
     validate_rendered_message(msg)
     if not getattr(msg, "content_parts", None):
         return msg.content
@@ -231,8 +231,8 @@ def to_openai_content(msg: ProviderMessage) -> str | list[dict]:
 
 
 def to_anthropic_messages(
-    turns: list[ProviderMessage],
-    native_replay: Callable[[ProviderMessage], list[dict] | None] | None = None,
+    turns: list[ModelMessage],
+    native_replay: Callable[[ModelMessage], list[dict] | None] | None = None,
     resolved=None,
 ) -> list[dict]:
     """Serialize provider-neutral turns into Anthropic-native messages."""
@@ -403,7 +403,7 @@ class ContextBudgetOverflow:
 @dataclass
 class RenderedContext:
     system_text: str = ""
-    turns: list[ProviderMessage] = field(default_factory=list)
+    turns: list[ModelMessage] = field(default_factory=list)
     # Identity partition (Anthropic system[0] with cache_control). Empty when the
     # kernel did not partition the system prompt.
     system_stable: str = ""
@@ -412,7 +412,7 @@ class RenderedContext:
     # Volatile State turn (task_state + signals), rendered after the cacheable
     # history. None when produced by an older binding — then the State turn is
     # still inside turns[0] and providers render turns as-is.
-    state_turn: "ProviderMessage | None" = None
+    state_turn: "ModelMessage | None" = None
     # P1-E: count of leading turns forming the frozen prefix (byte-stable until the
     # next compaction). The Anthropic provider pins a deep cache breakpoint here and
     # rolls the other at the tail; None ⇒ rolling-pair fallback.
@@ -450,7 +450,7 @@ class ProviderDescriptor:
 
 @runtime_checkable
 class LLMProvider(Protocol):
-    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ProviderMessage: ...
+    async def complete(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None) -> ModelMessage: ...
     def stream(
         self,
         context: RenderedContext,

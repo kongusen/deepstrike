@@ -145,7 +145,7 @@ export class LlmEvalJudge implements AttemptJudge {
       context.result,
       context.attempt,
       false,
-    ) as import("../types.js").ProviderMessage[]
+    ) as import("../types.js").ModelMessage[]
     const rendered: RenderedContext = {
       systemText: messages.filter(message => message.role === "system").map(message => message.content).join("\n\n"),
       turns: messages.filter(message => message.role !== "system"),

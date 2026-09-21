@@ -9,7 +9,7 @@ from deepstrike import (
     PeerView, react_by_mention, director_driven, round_robin, first_non_empty,
     InMemoryReactionCheckpointStore, ReactiveSession, read_recent_tool,
 )
-from deepstrike.providers.base import ProviderMessage
+from deepstrike.providers.base import ModelMessage
 from deepstrike.providers.stream import TextDelta
 
 
@@ -77,7 +77,7 @@ class _TextProvider:
         self._pid = persona_id
 
     async def complete(self, context, tools, extensions=None):
-        return ProviderMessage(role="assistant", content=f"{self._pid}-ack")
+        return ModelMessage(role="assistant", content=f"{self._pid}-ack")
 
     async def stream(self, context, tools, extensions=None, state=None):
         yield TextDelta(delta=f"{self._pid}-ack")

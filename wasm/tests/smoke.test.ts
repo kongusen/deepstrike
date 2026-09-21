@@ -6,7 +6,7 @@ import { AnthropicProvider } from "../src/providers/anthropic.js"
 import { OpenAIProvider, qwen, deepseek, minimax } from "../src/providers/openai.js"
 import { RuntimeRunner, collectText, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import { workflowNodeSpecToKernel } from "../src/runtime/types/agent.js"
-import type { LLMProvider, ProviderMessage, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ModelMessage, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import { kernelEvents, SignalRouter } from "@deepstrike/wasm-kernel"
 
 describe("SignalRouter lifecycle ABI", () => {
@@ -141,7 +141,7 @@ describe("RuntimeRunner", () => {
         return { marker: crypto.randomUUID() }
       }
 
-      async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
+      async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ModelMessage> {
         return { role: "assistant", content: "unused" }
       }
 

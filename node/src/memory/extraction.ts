@@ -1,4 +1,4 @@
-import type { LLMProvider, ProviderMessage } from "../types.js"
+import type { LLMProvider, ModelMessage } from "../types.js"
 import type { MemoryKind, MemoryRecord, MemoryScope, SessionData } from "./protocols.js"
 
 const KINDS = new Set<MemoryKind>(["user", "feedback", "project", "reference"])
@@ -22,7 +22,7 @@ export async function extractSessionMemories(
       role: "user" as const,
       content: `${transcript}\n\nReturn {"memories":[{"name":"stable-kebab-key","kind":"user|feedback|project|reference","content":"fact","description":"why durable","confidence":0.0,"links":[],"pinned":false,"ttl_days":null,"evidence_refs":[]}]} with at most 10 items. Return {"memories":[]} when nothing is durable.`,
       toolCalls: [],
-    } satisfies ProviderMessage],
+    } satisfies ModelMessage],
   }
   let output = ""
   const state = provider.createRunState?.()

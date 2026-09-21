@@ -8,7 +8,7 @@
  * See node/src/runtime/eval.ts for the full design rationale.
  */
 
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, TextDelta } from "../types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent, TextDelta } from "../types.js"
 import { getKernel } from "./kernel.js"
 
 export interface Criterion {
@@ -46,7 +46,7 @@ export async function buildEvalMessages(
   goal: string,
   criteria: Criterion[],
   result: string,
-): Promise<ProviderMessage[]> {
+): Promise<ModelMessage[]> {
   const kernel = await getKernel()
   return kernel.buildEvalMessages(
     goal,

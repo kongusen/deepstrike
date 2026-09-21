@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
 import type { TurnMetrics } from "../src/runtime/runner.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 
 /**
  * P0-C tool-gating telemetry: `onTurnMetrics` must surface, per LLM turn, the data the epoch-gating
@@ -14,7 +14,7 @@ import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
 describe("P0-C tool-gating telemetry (onTurnMetrics)", () => {
   it("reports exposure/call counts and the prompt-cache split", async () => {
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "done" }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -53,7 +53,7 @@ describe("P0-C tool-gating telemetry (onTurnMetrics)", () => {
 
   it("does not report missing cache telemetry as a measured zero", async () => {
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "done" }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -86,7 +86,7 @@ describe("P0-C tool-gating telemetry (onTurnMetrics)", () => {
 
     let call = 0
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "done" }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -115,7 +115,7 @@ describe("P0-C tool-gating telemetry (onTurnMetrics)", () => {
 
   it("a throwing sink never breaks the run", async () => {
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "done" }
       },
       async *stream(): AsyncIterable<StreamEvent> {

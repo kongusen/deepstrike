@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike import InMemorySessionLog, LocalExecutionPlane, ProviderMessage, RuntimeOptions, RuntimeRunner, streaming_tool
+from deepstrike import InMemorySessionLog, LocalExecutionPlane, ModelMessage, RuntimeOptions, RuntimeRunner, streaming_tool
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta, ToolCallEvent, ToolDeltaEvent, ToolResultEvent
 
@@ -10,7 +10,7 @@ class ToolStreamingProvider:
         self.calls = 0
 
     async def complete(self, context, tools, extensions=None):
-        return ProviderMessage(role="assistant", content="unused")
+        return ModelMessage(role="assistant", content="unused")
 
     async def stream(self, context, tools, extensions=None, state=None):
         self.calls += 1

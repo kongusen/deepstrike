@@ -7,12 +7,12 @@
  * This is the seam for STATEFUL host policy — e.g. counting repeats — while `governancePolicy`
  * stays static/declarative (the Claude Code rules-vs-hooks split).
  */
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import { createRunner, tool } from "./runtime/helpers.js"
 
 class TwoToolTurnsProvider implements LLMProvider {
   readonly calls: RenderedContext[] = []
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ModelMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
   async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {

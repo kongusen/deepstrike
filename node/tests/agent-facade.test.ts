@@ -2,8 +2,94 @@ import { createAgent } from "../src/agent-facade.js"
 import { ReplayProvider } from "../src/runtime/replay-provider.js"
 import { InMemoryMemoryStore } from "../src/memory/in-memory-store.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
+import { tool } from "../src/tools/index.js"
 
 describe("createAgent", () => {
+  it("validates a structured Agent output with the shared schema validator", async () => {
+    const valid = createAgent({
+      name: "structured",
+      provider: new ReplayProvider([{ role: "assistant", content: '{"answer":"ok"}' }]),
+      outputSchema: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } },
+    })
+    await expect(valid.run("answer")).resolves.toMatchObject({
+      status: "completed",
+      outputValidation: { ok: true, errors: [] },
+    })
+
+    const invalid = createAgent({
+      name: "structured",
+      provider: new ReplayProvider([{ role: "assistant", content: '{"answer":42}' }]),
+      outputSchema: { type: "object", required: ["answer"], properties: { answer: { type: "string" } } },
+    })
+    await expect(invalid.run("answer")).resolves.toMatchObject({
+      status: "failed",
+      outputValidation: { ok: false },
+    })
+  })
+
+  it("lowers the Agent capability filter into the root runtime ceiling", async () => {
+    const provider = new ReplayProvider([{ role: "assistant", content: "done" }])
+    const seen: string[][] = []
+    const originalStream = provider.stream.bind(provider)
+    provider.stream = (async function* (...args: Parameters<typeof provider.stream>) {
+      seen.push(args[1].map(schema => schema.name))
+      yield* originalStream(...args)
+    }) as typeof provider.stream
+    const hidden = tool("hidden", "should not be exposed", { type: "object", properties: {} }, () => "hidden")
+    const agent = createAgent({
+      name: "filtered",
+      provider,
+      tools: [hidden],
+      capabilityFilter: { allowedIds: ["other-tool"] },
+    })
+
+    await agent.run("say done")
+
+    expect(seen[0]).not.toContain("hidden")
+  })
+
+  it("keeps inline skills and text knowledge out of the first context until activated", async () => {
+    const provider = new ReplayProvider([{ role: "assistant", content: "done" }])
+    let knowledge = ""
+    const originalStream = provider.stream.bind(provider)
+    provider.stream = (async function* (...args: Parameters<typeof provider.stream>) {
+      knowledge = args[0].systemKnowledge ?? ""
+      yield* originalStream(...args)
+    }) as typeof provider.stream
+    const agent = createAgent({
+      name: "researcher",
+      provider,
+      skills: [{ name: "research", instructions: "Cite every claim." }],
+      knowledge: [{ name: "facts", source: { kind: "text", content: "Project code: K-42" } }],
+    })
+
+    await agent.run("answer")
+
+    expect(knowledge).not.toContain("Cite every claim.")
+    expect(knowledge).not.toContain("Project code: K-42")
+  })
+
+  it("lowers executable guardrails into the existing governance policy", async () => {
+    const provider = new ReplayProvider([{ role: "assistant", content: "done" }])
+    const seen: string[][] = []
+    const originalStream = provider.stream.bind(provider)
+    provider.stream = (async function* (...args: Parameters<typeof provider.stream>) {
+      seen.push(args[1].map(schema => schema.name))
+      yield* originalStream(...args)
+    }) as typeof provider.stream
+    const blocked = tool("blocked", "must never be exposed", { type: "object", properties: {} }, () => "blocked")
+    const agent = createAgent({
+      name: "guarded",
+      provider,
+      tools: [blocked],
+      guardrails: [{ name: "deny-blocked", policy: { vetoes: ["blocked"] } }],
+    })
+
+    await agent.run("say done")
+
+    expect(seen[0]).not.toContain("blocked")
+  })
+
   it("runs a goal and returns a structured result", async () => {
     const agent = createAgent({
       name: "researcher",
@@ -103,5 +189,30 @@ describe("createAgent", () => {
     const signalResult = await agent.listen()
     expect(signalResult).toMatchObject({ output: "handled", status: "completed" })
     expect(acknowledged).toBe(true)
+  })
+
+  it("requires delegate targets to match declared handoffs", async () => {
+    const agent = createAgent({
+      name: "writer",
+      provider: new ReplayProvider([{ role: "assistant", content: "reviewed" }]),
+      handoffs: [{ agent: "reviewer" }],
+    })
+
+    await expect(agent.delegate({ goal: "review", target: "unknown" })).rejects.toThrow("cannot hand off")
+    await expect(agent.delegate({ goal: "review" })).rejects.toThrow("requires an explicit handoff target")
+    await expect(agent.delegate({ goal: "review", target: "reviewer" })).resolves.toMatchObject({
+      output: "reviewed",
+      status: "completed",
+    })
+  })
+
+  it("fails explicitly for MCP transports without a local execution binding", async () => {
+    const agent = createAgent({
+      name: "remote-mcp",
+      provider: new ReplayProvider([{ role: "assistant", content: "done" }]),
+      mcpServers: [{ transport: { kind: "http", url: "https://example.test/mcp" } }],
+    })
+
+    await expect(agent.run("use mcp")).rejects.toThrow("MCP transport \"http\" is not supported")
   })
 })

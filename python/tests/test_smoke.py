@@ -3,7 +3,7 @@ from deepstrike import (
     AnthropicProvider, InMemorySessionLog, LocalExecutionPlane, OpenAIProvider,
     RuntimeOptions, RuntimeRunner, collect_text,
     Governance,
-    ProviderMessage, ToolSchema, ToolCall, ToolExecutionResult,
+    ModelMessage, ToolSchema, ToolCall, ToolExecutionResult,
     tool, read_file,
     RetryConfig,
 )

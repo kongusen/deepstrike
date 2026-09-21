@@ -1,5 +1,5 @@
 import { collectText, InMemorySessionLog, LocalExecutionPlane, RuntimeRunner } from "../src/runtime/index.js"
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 class ReservedBudgetProvider implements LLMProvider {
   countCalls = 0
@@ -20,7 +20,7 @@ class ReservedBudgetProvider implements LLMProvider {
     return { inputTokens: 55, source: { kind: "native" as const, provider: "test" }, confidence: "exact" as const }
   }
 
-  async complete(): Promise<ProviderMessage> {
+  async complete(): Promise<ModelMessage> {
     return { role: "assistant", content: "done", toolCalls: [] }
   }
 

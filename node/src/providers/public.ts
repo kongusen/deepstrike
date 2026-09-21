@@ -41,8 +41,10 @@ export { ContentPolicyError, contentDispositionFor } from "./content-policy.js"
 export type { ContentDisposition, ContentPlacement } from "./content-policy.js"
 export { CapabilityRouter } from "./capability-router.js"
 export type { CapabilityRequirement, CapabilityRouteResult } from "./capability-router.js"
-export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./request-plan.js"
-export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement } from "./request-plan.js"
+export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement, resolveProviderRoute } from "./request-plan.js"
+export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement, ResolvedProviderRoute } from "./request-plan.js"
+export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY, providerAttemptToRecord } from "../runtime/execution-evidence.js"
+export type { InvocationOutcome, ModelInvocation, ProviderAttempt, ProviderAttemptRecord, ProviderAttemptStatus, UsageAccountingPolicy, ModelUsageSettlement } from "../runtime/execution-evidence.js"
 export { CredentialResolutionError, OAuthCredentialResolver, redactCredential, resolveCredential } from "./credentials.js"
 export type {
   CredentialOptions,

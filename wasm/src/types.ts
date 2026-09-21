@@ -24,7 +24,7 @@ export type ToolOutputBlock =
   | { type: "text"; text: string }
   | { type: "image" | "audio" | "video" | "file"; source: MediaSource; mediaType?: string; providerOptions?: Record<string, unknown> }
 
-export interface ProviderMessage {
+export interface ModelMessage {
   role: "system" | "user" | "assistant" | "tool"
   content: string
   toolCalls?: ToolCall[]
@@ -67,11 +67,11 @@ export interface RenderedContext {
   systemText: string
   systemStable?: string
   systemKnowledge?: string
-  turns: ProviderMessage[]
+  turns: ModelMessage[]
   /** Volatile State turn (task_state + signals), rendered after the cacheable
    *  history. Absent on un-rebuilt bindings — then it's still inside turns[0]. */
-  stateTurn?: ProviderMessage
-  /** ProviderMessage count of the frozen history prefix (compaction boundary). When set,
+  stateTurn?: ModelMessage
+  /** ModelMessage count of the frozen history prefix (compaction boundary). When set,
    *  Anthropic pins a deep cache breakpoint here instead of the rolling pair. */
   frozenPrefixLen?: number
   budgetOverflow?: ContextBudgetOverflow
@@ -255,12 +255,12 @@ export interface LLMProvider {
     modelId?: string
     endpoint?: { id?: string; protocol?: string; baseURL?: string }
   }
-  peekProviderReplay?(message: Pick<ProviderMessage, "content" | "toolCalls">): ProviderReplay | undefined
-  seedProviderReplay?(message: Pick<ProviderMessage, "content" | "toolCalls">, replay: ProviderReplay): void
+  peekProviderReplay?(message: Pick<ModelMessage, "content" | "toolCalls">): ProviderReplay | undefined
+  seedProviderReplay?(message: Pick<ModelMessage, "content" | "toolCalls">, replay: ProviderReplay): void
   /** P4-S1 mirror: transport facts of the most recent execution (host evidence only, B7). */
   peekTransportTelemetry?(): ProviderTransportTelemetry | undefined
   countTokens?(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: ProviderRunState): Promise<PromptMeasurement>
-  complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ProviderMessage>
+  complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ModelMessage>
   stream(
     context: RenderedContext,
     tools: ToolSchema[],
@@ -274,5 +274,5 @@ export interface LLMProvider {
 }
 
 export interface MemorySummarizer {
-  summarize(archived: ProviderMessage[], context: { action?: string }): Promise<string>
+  summarize(archived: ModelMessage[], context: { action?: string }): Promise<string>
 }

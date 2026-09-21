@@ -1,7 +1,7 @@
-import type { LLMProvider, ProviderMessage, ProviderDescriptor, ProviderReplay, ToolCall } from "../types.js"
+import type { LLMProvider, ModelMessage, ProviderDescriptor, ProviderReplay, ToolCall } from "../types.js"
 import type { SessionEvent } from "./session-log.js"
 
-export function assistantReplayKey(message: Pick<ProviderMessage, "content" | "toolCalls">): string {
+export function assistantReplayKey(message: Pick<ModelMessage, "content" | "toolCalls">): string {
   return JSON.stringify({
     content: message.content,
     toolCalls: message.toolCalls ?? [],

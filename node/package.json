@@ -1,6 +1,6 @@
 {
   "name": "@deepstrike/sdk",
-  "version": "0.2.71",
+  "version": "0.2.72",
   "description": "DeepStrike Node.js SDK",
   "license": "SEE LICENSE IN LICENSE",
   "type": "module",
@@ -38,6 +38,14 @@
     "./advanced": {
       "types": "./dist/advanced/public.d.ts",
       "import": "./dist/advanced/public.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime/public.d.ts",
+      "import": "./dist/runtime/public.js"
+    },
+    "./evals": {
+      "types": "./dist/evals/public.d.ts",
+      "import": "./dist/evals/public.js"
     }
   },
   "typesVersions": {
@@ -62,6 +70,12 @@
       ],
       "advanced": [
         "./dist/advanced/public.d.ts"
+      ],
+      "runtime": [
+        "./dist/runtime/public.d.ts"
+      ],
+      "evals": [
+        "./dist/evals/public.d.ts"
       ]
     }
   },
@@ -80,7 +94,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.99.0",
-    "@deepstrike/core": "0.2.71",
+    "@deepstrike/core": "0.2.72",
     "@google/generative-ai": "^0.24.1",
     "openai": "^7.5.0"
   },

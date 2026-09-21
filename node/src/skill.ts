@@ -1,15 +1,21 @@
 import { readSkillFile, scanSkillDir } from "./skills/loader.js"
 
+export interface SkillResource { name: string; uri?: string; content?: string; metadata?: Record<string, unknown> }
+export interface SkillScript { name: string; command: string; description?: string; metadata?: Record<string, unknown> }
+export type SkillTool = string | { name: string; description?: string; inputSchema?: Record<string, unknown> }
+export type SkillMCPServer = string | { name: string; transport: Record<string, unknown> }
+export type SkillKnowledge = string | { name: string; content?: string; source?: unknown }
+
 /** spc_001 §2.4: public Skill contract, built directly on `SKILL.md`-style frontmatter files. */
 export interface Skill {
   name: string
   description?: string
   instructions?: string
-  resources?: unknown[] // placeholder — no resource-file convention wired up yet
-  scripts?: unknown[] // placeholder — no script-file convention wired up yet
-  tools?: unknown[] // placeholder
-  mcpServers?: unknown[] // placeholder
-  knowledge?: unknown[] // placeholder
+  resources?: SkillResource[]
+  scripts?: SkillScript[]
+  tools?: SkillTool[]
+  mcpServers?: SkillMCPServer[]
+  knowledge?: SkillKnowledge[]
   metadata?: Record<string, unknown>
   providerOptions?: Record<string, unknown>
 }

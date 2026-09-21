@@ -4,20 +4,20 @@ Python port of node/src/runtime/replay-fixture.ts. Walks `llm_completed` events 
 session log and returns the ordered list of assistant Messages.
 
 Accepts both camelCase and snake_case tool-call wire shapes. Token usage remains session evidence;
-the returned public ProviderMessage mirror carries no token projection.
+the returned public ModelMessage mirror carries no token projection.
 """
 from __future__ import annotations
 
 from typing import Any, Iterable
 
-from deepstrike._kernel import ProviderMessage  # type: ignore
+from deepstrike._kernel import ModelMessage  # type: ignore
 
 
-def extract_recorded_messages(events: Iterable[Any]) -> list[ProviderMessage]:
-    """Walk session events (either wrapped `{seq, event}` or bare events) into ProviderMessage[]."""
+def extract_recorded_messages(events: Iterable[Any]) -> list[ModelMessage]:
+    """Walk session events (either wrapped `{seq, event}` or bare events) into ModelMessage[]."""
     import json
 
-    out: list[ProviderMessage] = []
+    out: list[ModelMessage] = []
     for entry in events:
         event = entry.get("event") if isinstance(entry, dict) and "event" in entry else entry
         kind = event.get("kind") if isinstance(event, dict) else getattr(event, "kind", None)

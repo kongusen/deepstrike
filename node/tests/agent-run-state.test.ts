@@ -1,5 +1,5 @@
 import { tool } from "../src/tools/index.js"
-import type { LLMProvider, ProviderMessage, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ModelMessage, ProviderRunState, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import { createRunner } from "./runtime/helpers.js"
 
 class StatefulTestProvider implements LLMProvider {
@@ -10,7 +10,7 @@ class StatefulTestProvider implements LLMProvider {
     return { marker: crypto.randomUUID() }
   }
 
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ModelMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
 

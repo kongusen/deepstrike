@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepstrike._kernel import ContentPartObj, ProviderMessage, ToolCall
+from deepstrike._kernel import ContentPartObj, ModelMessage, ToolCall
 from deepstrike.providers.anthropic import AnthropicProvider
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.openai_responses import OpenAIResponsesProvider
@@ -24,7 +24,7 @@ def fingerprint(prepared):
 @pytest.mark.asyncio
 async def test_custom_counter_is_isolated_and_dispatch_restores_frozen_run_state():
     state = {"continuation": "before", "remove": True}
-    context = RenderedContext(turns=[ProviderMessage(role="user", content="before")])
+    context = RenderedContext(turns=[ModelMessage(role="user", content="before")])
     options = {"temperature": 0.2, "api_key": "credential"}
     seen = []
 
@@ -65,9 +65,9 @@ async def test_anthropic_replay_is_frozen_once_for_count_and_dispatch(monkeypatc
     provider = AnthropicProvider("test")
     calls = [ToolCall(id="call-1", name="lookup", arguments="{}")]
     context = RenderedContext(turns=[
-        ProviderMessage(role="user", content="question"),
-        ProviderMessage(role="assistant", content="answer", tool_calls=calls),
-        ProviderMessage(role="tool", content="", content_parts=[
+        ModelMessage(role="user", content="question"),
+        ModelMessage(role="assistant", content="answer", tool_calls=calls),
+        ModelMessage(role="tool", content="", content_parts=[
             ContentPartObj("tool_result", call_id="call-1", output="result", is_error=False)]),
     ])
     replay = [{"type": "thinking", "thinking": "reason", "signature": "sig-a"},
@@ -115,9 +115,9 @@ async def test_responses_continuation_is_frozen_for_native_count_and_stream(monk
     provider = OpenAIResponsesProvider("test")
     state = {"previous_response_id": "resp-before", "covered_message_count": 2}
     context = RenderedContext(turns=[
-        ProviderMessage(role="user", content="covered"),
-        ProviderMessage(role="assistant", content="reply"),
-        ProviderMessage(role="user", content="tail"),
+        ModelMessage(role="user", content="covered"),
+        ModelMessage(role="assistant", content="reply"),
+        ModelMessage(role="user", content="tail"),
     ])
     prepared = provider.prepare_request(context, [], state=state)
     original_fingerprint = fingerprint(prepared)

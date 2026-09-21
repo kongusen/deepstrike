@@ -1,6 +1,6 @@
 import type {
   CacheBreakpointStrategy,
-  ProviderMessage,
+  ModelMessage,
   ProviderReplay,
   ProviderUsage,
   StreamEvent,
@@ -395,7 +395,7 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
   }
 
   decodeComplete(raw: Record<string, any>, decodeInput: AdapterDecodeInput): {
-    message: ProviderMessage
+    message: ModelMessage
     replay?: ProviderReplay
   } {
     let content = ""

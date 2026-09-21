@@ -7,14 +7,14 @@ import {
 import { RuntimeRunner } from "../src/runtime/runner.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 import { OpenAIChatProvider } from "../src/providers/openai.js"
 import { OllamaProvider } from "../src/providers/ollama.js"
 
 class StructuredThrowingProvider implements LLMProvider {
   constructor(private readonly error: Error) {}
 
-  async complete(): Promise<ProviderMessage> {
+  async complete(): Promise<ModelMessage> {
     return { role: "assistant", content: "", toolCalls: [] }
   }
 

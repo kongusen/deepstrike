@@ -83,7 +83,7 @@ L4 · Durable Truth       Journal = State Truth / Checkpoint = State Snapshot /
 | `StoredMessageState` / `StoredMessageBody` | **L1 持久权威**（checkpoint/journal 中的语义真值） |
 | `DurableContent` 族 | **L1 内容词表**：`Text/Image/Audio/Video/File` × `DurableSource{Url, Base64, FileId, Object}` |
 | `LogicalMessage` | **入边界 Intent 形态**：仅 StartOperation initial_context（不可带 tool_calls） |
-| `ProviderMessage` | **渲染/事实边界形态**：render 输出与 ProviderCompleted 载荷 |
+| `ModelMessage` | **渲染/事实边界形态**：render 输出与 ProviderCompleted 载荷 |
 | `CoreMessage`（原 `types::Message`，0.2.67 改名） | **内部运行期形态**（core 唯一名称；公共别名已在 0.2.68 删除） |
 | `ContentPart` | **渲染期投影**（不持有独立 inline 字节；媒体通过 `DurableSource` 表达，adapter 在 L0 物化） |
 
@@ -93,7 +93,7 @@ L4 · Durable Truth       Journal = State Truth / Checkpoint = State Snapshot /
 
 ## 注册编码：content-parts-v1
 
-wire 上 `ProviderMessage.content` / `LogicalMessage.content` 类型是 `String`；多模态 parts 经注册编码承载：
+wire 上 `ModelMessage.content` / `LogicalMessage.content` 类型是 `String`；多模态 parts 经注册编码承载。Kernel 内部的 `ProviderMessage` 仅是 Rust wire 实现细节，不属于 SDK 公共类型：
 
 ```text
 content = "[[deepstrike-content-parts]]" + base64url(JSON(parts))

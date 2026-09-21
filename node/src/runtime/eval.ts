@@ -10,7 +10,7 @@
  * no skill extraction, no loop state. Use `AttemptLoop` if you want the retry/refine flow.
  */
 
-import type { LLMProvider, ProviderMessage, RenderedContext, TextDelta } from "../types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, TextDelta } from "../types.js"
 import { getKernel } from "../kernel.js"
 
 export interface Criterion {
@@ -59,7 +59,7 @@ export interface JudgeArgs {
  * Exposed in case a caller wants to render the prompt without calling the LLM (e.g., dry-run cost
  * estimation, fixture generation). For the common case, use `judge()`.
  */
-export function buildEvalMessages(goal: string, criteria: Criterion[], result: string): ProviderMessage[] {
+export function buildEvalMessages(goal: string, criteria: Criterion[], result: string): ModelMessage[] {
   return getKernel().buildEvalMessages(
     goal,
     criteria.map(c => ({ text: c.text, required: c.required ?? true, weight: c.weight })),

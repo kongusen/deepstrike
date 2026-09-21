@@ -5,13 +5,13 @@
  * line in the state turn of the FOLLOWING provider call (same timing as a polled `signalSource`
  * signal — the in-flight turn's context is already rendered when the note is applied).
  */
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import type { RuntimeRunner } from "../src/runtime/runner.js"
 import { createRunner, tool } from "./runtime/helpers.js"
 
 class CapturingToolProvider implements LLMProvider {
   readonly calls: RenderedContext[] = []
-  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
+  async complete(_context: RenderedContext, _tools: ToolSchema[]): Promise<ModelMessage> {
     return { role: "assistant", content: "unused", toolCalls: [] }
   }
   async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {

@@ -6,7 +6,7 @@ import { join } from "node:path"
 // exists, parses, and carries the fields the doc's §2 table maps.
 describe("spc_007-01: OpenAI-style agent fixture", () => {
   it("parses and contains the required fields", async () => {
-    const path = join(process.cwd(), "src", "__fixtures__", "openai-agent.json")
+    const path = join(process.cwd(), "src", "__fixtures__", "agent-descriptor.json")
     const raw = await readFile(path, "utf8")
     const fixture = JSON.parse(raw)
 

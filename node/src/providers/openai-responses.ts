@@ -3,7 +3,7 @@ import type { PreparedProviderRequest, ProviderRunState as PreparedRunState } fr
 import OpenAI from "openai"
 import type {
   LLMProvider,
-  ProviderMessage,
+  ModelMessage,
   PromptMeasurement,
   ProviderRunState,
   ProviderTransportTelemetry,
@@ -123,7 +123,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
     context: RenderedContext,
     tools: ToolSchema[],
     extensions?: Record<string, unknown>,
-  ): Promise<ProviderMessage> {
+  ): Promise<ModelMessage> {
     if (this.circuit.isOpen()) throw circuitOpenError("openai")
     let input: CanonicalAdapterInput
     let plan: ReturnType<OpenAIResponsesAdapter["buildRequest"]>

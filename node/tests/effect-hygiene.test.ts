@@ -13,10 +13,10 @@ import { RuntimeRunner } from "../src/runtime/runner.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
 import { MILESTONE_UNVERIFIED_REASON } from "../src/types/agent.js"
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../src/types.js"
 
 const provider: LLMProvider = {
-  async complete(): Promise<ProviderMessage> {
+  async complete(): Promise<ModelMessage> {
     return { role: "assistant", content: "done", toolCalls: [] }
   },
   async *stream(_context: RenderedContext): AsyncIterable<StreamEvent> {

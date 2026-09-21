@@ -5,7 +5,7 @@ from copy import deepcopy
 
 import pytest
 
-from deepstrike._kernel import ContentPartObj, ProviderMessage, ToolCall, ToolSchema
+from deepstrike._kernel import ContentPartObj, ModelMessage, ToolCall, ToolSchema
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.model_registry import model_registry
 from deepstrike.providers.openai_responses import OpenAIResponsesAdapter
@@ -16,7 +16,7 @@ from deepstrike.types.content import normalize_canonical_adapter_input
 
 def _input(context: RenderedContext | None = None, extensions: dict | None = None):
     return normalize_canonical_adapter_input(
-        context or RenderedContext(turns=[ProviderMessage(role="user", content="hello")]),
+        context or RenderedContext(turns=[ModelMessage(role="user", content="hello")]),
         [ToolSchema(name="lookup", description="Lookup", parameters='{"type":"object"}')],
         extensions=extensions,
         resolved=model_registry.resolve_provider_runtime("openai", "gpt-4.1"),
@@ -25,11 +25,11 @@ def _input(context: RenderedContext | None = None, extensions: dict | None = Non
 
 def test_adapter_builds_continuation_tail_and_merges_function_and_builtin_tools() -> None:
     context = RenderedContext(turns=[
-        ProviderMessage(role="user", content="find weather"),
-        ProviderMessage(role="assistant", content="", tool_calls=[
+        ModelMessage(role="user", content="find weather"),
+        ModelMessage(role="assistant", content="", tool_calls=[
             ToolCall(id="call_1", name="lookup", arguments='{"city":"Shanghai"}'),
         ]),
-        ProviderMessage(role="tool", content="", content_parts=[
+        ModelMessage(role="tool", content="", content_parts=[
             ContentPartObj("tool_result", call_id="call_1", output="sunny", is_error=False),
         ]),
     ], system_text="system rules")

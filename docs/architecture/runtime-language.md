@@ -1,8 +1,21 @@
 # DeepStrike Runtime Language
 
-This glossary is normative for 0.2.70. It names what data means, who owns it, how it crosses a
+This glossary is normative for 0.2.72. It names what data means, who owns it, how it crosses a
 boundary, and how it becomes durable history. The paired English page is
 [Runtime Language](../en/architecture/runtime-language.md).
+
+## 0.2.72 language layers
+
+The following registry is normative for the public, host, kernel, and provider boundaries. A term may be referenced by more than one layer when the representation crosses that boundary; `primaryDomain` in the shared fixture remains the classification authority.
+
+| Layer | Terms |
+| --- | --- |
+| Public Agent | **Agent**, **AgentDefinition**, **AgentRuntime**, **Model**, **Run**, **Session**, **Tool**, **Skill**, **Memory**, **Knowledge**, **MCPServer**, **Handoff**, **Workflow**, **Guardrail**, **Eval**, **Dataset**, **Evaluator**, **Output**, **Usage** |
+| Host Runtime | **AgentSpec**, **Context**, **ContextPlan**, **Capability**, **ModelRoute**, **Invocation**, **ProviderAttempt**, **Measurement**, **Evidence**, **Artifact**, **Evaluation**, **Promotion**, **ExecutionPlane** |
+| Kernel | **Operation**, **Intent**, **Decision**, **Effect**, **Fact**, **Settlement**, **Task**, **Capability**, **Budget**, **Journal**, **Checkpoint**, **StateTransition** |
+| Provider Boundary | **Model**, **Provider**, **Endpoint**, **Protocol**, **Route**, **Adapter**, **Request**, **Response**, **Usage**, **ReplayEvidence** |
+
+The normative verbs are **resolve**, **render**, **encode**, **execute**, **decode**, **normalize**, and **settle**. Their definitions are kept in the shared vocabulary fixture at `tests/fixtures/runtime-language/vocabulary.json`.
 
 ## Kernel boundary
 
@@ -32,8 +45,8 @@ The complete boundary sequence is `Intent → Decision → encode → Execution 
 | **Evidence** | An immutable record that an external event occurred. |
 | **Mirror** | An ABI or SDK serialization mapping. A mirror cannot add semantic authority. |
 
-`CoreMessage` is an Internal runtime representation. `ProviderMessage` is Kernel Wire. Provider
-JSON is Provider Wire. The SDK `ProviderMessage` and `ToolExecutionResult` types are mirrors of
+`CoreMessage` is an Internal runtime representation. `ModelMessage` is the host semantic message;
+provider JSON is Provider Wire. `ModelMessage` and `ToolExecutionResult` are representations of
 the provider boundary; they are not core authorities. `StoredMessageState` and checkpoint DTOs
 are Durable representations. `ToolMeasurement` is host-owned Measurement evidence keyed by a
 tool call, never a field on the runtime result.

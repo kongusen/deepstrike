@@ -8,7 +8,7 @@
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
 import type { MemoryStore, MemoryRecall } from "../src/memory/protocols.js"
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../src/types.js"
 
 const RECALL = "LONGTERM_FACT_FOR_SPRINT"
 const scope = { tenant_id: "agent-k4", namespace: "renewal" }
@@ -38,7 +38,7 @@ describe("renewal-boundary memory re-query (K4)", () => {
     }
 
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {

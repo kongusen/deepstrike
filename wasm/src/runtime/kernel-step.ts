@@ -1,5 +1,5 @@
 import type {
-  ProviderMessage,
+  ModelMessage,
   RenderedContext,
   ToolCall,
   ToolExecutionResult,
@@ -77,7 +77,7 @@ export interface KernelLoopResult {
   termination: string
   turnsUsed: number
   totalTokensUsed: number
-  finalMessage?: ProviderMessage
+  finalMessage?: ModelMessage
   /** ③ loop-agent: the kernel-adjudicated after-round decision (absent on non-loop runs). */
   paceDecision?: PaceDecision
 }
@@ -93,7 +93,7 @@ export type KernelRunnerAction =
   | {
       kind: "archive_page_out"
       effectId: string
-      archived: ProviderMessage[]
+      archived: ModelMessage[]
       handleId?: string
       payload?: {
         content: string
@@ -240,7 +240,7 @@ export function skillMetadataToKernel(skill: SkillMetadata): Record<string, unkn
   return out
 }
 
-export function messageToKernelMessage(message: ProviderMessage): Record<string, unknown> {
+export function messageToKernelMessage(message: ModelMessage): Record<string, unknown> {
   const out: Record<string, unknown> = {
     role: message.role,
     tool_calls: (message.toolCalls ?? []).map(tc => ({
@@ -318,10 +318,10 @@ export function capabilityMarker(kind: string, id: string, description: string):
   return { id, kind, description }
 }
 
-export function kernelMessageToSdk(raw: Record<string, unknown>): ProviderMessage {
+export function kernelMessageToSdk(raw: Record<string, unknown>): ModelMessage {
   const content = raw.content
-  const message: ProviderMessage = {
-    role: raw.role as ProviderMessage["role"],
+  const message: ModelMessage = {
+    role: raw.role as ModelMessage["role"],
     content: typeof content === "string"
       ? content
       : Array.isArray(content)
@@ -341,7 +341,7 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): ProviderMessag
   if (typeof content === "string") {
     const parts = decodeCanonicalContentParts(content)
     if (parts) {
-      const contentParts: NonNullable<ProviderMessage["contentParts"]> = []
+      const contentParts: NonNullable<ModelMessage["contentParts"]> = []
       for (const part of parts) {
         switch (part.type) {
           case "text":

@@ -1,4 +1,4 @@
-import type { ToolOutputBlock, ProviderMessage, ContentPart, RenderedContext } from "../types.js"
+import type { ToolOutputBlock, ModelMessage, ContentPart, RenderedContext } from "../types.js"
 import { normalizeToolResultPart, projectToolOutputToText } from "./content-normalization.js"
 
 export class CircuitBreaker {
@@ -128,7 +128,7 @@ export class UnsupportedModalityError extends Error {
   }
 }
 
-export function toAnthropicContent(msg: ProviderMessage): string | Array<Record<string, unknown>> {
+export function toAnthropicContent(msg: ModelMessage): string | Array<Record<string, unknown>> {
   if (!msg.contentParts?.length) return msg.content
   return msg.contentParts.map(p => {
     if (p.type === "text") return { type: "text", text: p.text }
@@ -186,15 +186,15 @@ function toolResultAnthropicContent(p: Extract<ContentPart, { type: "tool_result
  * AnthropicProvider.buildMessages). When `stateTurn` is absent (un-rebuilt
  * binding) the State turn is still inside `turns`, so this returns `turns` as-is.
  */
-export function turnsWithStateAppended(context: RenderedContext): ProviderMessage[] {
+export function turnsWithStateAppended(context: RenderedContext): ModelMessage[] {
   return context.stateTurn ? [...context.turns, context.stateTurn] : context.turns
 }
 
 /** Convert RenderedContext.turns to Anthropic messages array.
  *  `turns` contains only user / assistant / tool roles — no system filtering needed. */
 export function toAnthropicMessages(
-  turns: ProviderMessage[],
-  nativeReplay?: (message: ProviderMessage) => Array<Record<string, unknown>> | undefined,
+  turns: ModelMessage[],
+  nativeReplay?: (message: ModelMessage) => Array<Record<string, unknown>> | undefined,
 ): Array<Record<string, unknown>> {
   const result: Array<Record<string, unknown>> = []
 
@@ -250,7 +250,7 @@ export function openaiAudioFormat(mediaType: string | undefined): string {
   return sub
 }
 
-export function toOpenAIContent(msg: ProviderMessage): string | Array<Record<string, unknown>> {
+export function toOpenAIContent(msg: ModelMessage): string | Array<Record<string, unknown>> {
   if (!msg.contentParts?.length) return msg.content
   return msg.contentParts.map(p => {
     if (p.type === "text") return { type: "text", text: p.text }

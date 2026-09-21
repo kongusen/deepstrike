@@ -1,4 +1,4 @@
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 import {
   GroupBudgetScope,
   InMemoryGroupBudgetStore,
@@ -13,7 +13,7 @@ import { tool } from "../src/tools/index.js"
 
 class ToolThenTextProvider implements LLMProvider {
   private turn = 0
-  async complete(): Promise<ProviderMessage> {
+  async complete(): Promise<ModelMessage> {
     return { role: "assistant", content: "done", toolCalls: [] }
   }
   async *stream(_ctx: RenderedContext, _tools: ToolSchema[]): AsyncIterable<StreamEvent> {

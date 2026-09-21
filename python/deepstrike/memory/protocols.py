@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from deepstrike._kernel import ProviderMessage
+    from deepstrike._kernel import ModelMessage
 
 
 # ─── Durable-memory types ────────────────────────────────────────────────────
@@ -101,8 +101,8 @@ class MemoryStore(Protocol):
 class SessionData:
     session_id: str
     agent_id: str
-    """ProviderMessage objects using the kernel message contract."""
-    messages: list["ProviderMessage"]
+    """ModelMessage objects using the kernel message contract."""
+    messages: list["ModelMessage"]
     metadata: Any = None
     created_at_ms: int = 0
     updated_at_ms: int = 0

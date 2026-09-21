@@ -7,6 +7,8 @@ export type { SubAgentRunContext } from "../runtime/sub-agent-orchestrator.js"
 export { builtinReducers, resolveReducer } from "../runtime/reducers.js"
 export type { Reducer, ReducerRegistry, ReducerInput } from "../runtime/reducers.js"
 export { FileWorkflowStore } from "../runtime/workflow-store.js"
+export { createWorkflow, lowerWorkflowDefinition } from "./definition.js"
+export type { WorkflowDefinition, WorkflowStep, WorkflowResult } from "./definition.js"
 
 export {
   submitWorkflowNodesTool,
@@ -36,6 +38,9 @@ export type {
   WorkflowSpawnInfo,
   WorkflowTaskSpec,
   WorkflowDependencyPolicy,
+  WorkflowContextInclude,
+  WorkflowDependencyMode,
+  WorkflowContextPolicy,
   WorkflowNodeStatus,
   WorkflowNodeOutcome,
   WorkflowOutcome,

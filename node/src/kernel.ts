@@ -2,7 +2,7 @@ import { createRequire } from "module"
 import { existsSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import type { ProviderMessage } from "./types.js"
+import type { ModelMessage } from "./types.js"
 
 /**
  * M2 资源配额 — declarative resource limits enforced at the kernel's single syscall trap.
@@ -172,7 +172,7 @@ interface KernelModule {
   CanonicalKernel: new () => CanonicalKernelInstance
   SignalRouter: new (maxQueueSize: number) => SignalRouterInstance
   // Eval / harness quality gate (0.5.0 fold: free functions, was the EvalPipeline class).
-  buildEvalMessages(goal: string, criteria: NativeCriterion[], result: string, attempt: number, extractSkillOnPass: boolean): ProviderMessage[]
+  buildEvalMessages(goal: string, criteria: NativeCriterion[], result: string, attempt: number, extractSkillOnPass: boolean): ModelMessage[]
   parseVerdict(content: string): Verdict
   verdictOutputSchema(extractSkillOnPass: boolean): string
   verifiableOperationJson(request: string): string

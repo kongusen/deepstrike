@@ -9,7 +9,7 @@ import {
 import {
   rebuildOsSnapshotFromSessionEvents,
 } from "../src/runtime/os-snapshot.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 
 function createRunner(
   provider: LLMProvider,
@@ -48,7 +48,7 @@ describe("OS Native Profile (Phase 6)", () => {
 
   it("native profile run writes kernel events with required categories", async () => {
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> { return { role: "assistant", content: "done", toolCalls: [] } },
+      async complete(): Promise<ModelMessage> { return { role: "assistant", content: "done", toolCalls: [] } },
       async *stream(): AsyncIterable<StreamEvent> { yield { type: "text_delta", delta: "ok" } },
     }
     const { runner, sessionLog } = createRunner(provider, [], {
@@ -63,7 +63,7 @@ describe("OS Native Profile (Phase 6)", () => {
   it("native profile with AskUser emits syscall/sched audit events", async () => {
     let n = 0
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> { return { role: "assistant", content: "", toolCalls: [] } },
+      async complete(): Promise<ModelMessage> { return { role: "assistant", content: "", toolCalls: [] } },
       async *stream(): AsyncIterable<StreamEvent> {
         n += 1
         if (n === 1) {

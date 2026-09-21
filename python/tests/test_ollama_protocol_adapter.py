@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from deepstrike._kernel import ProviderMessage, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolSchema
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.model_registry import model_registry
 from deepstrike.providers.ollama_adapter import OllamaAdapter
@@ -13,7 +13,7 @@ from deepstrike.types.content import normalize_canonical_adapter_input
 
 def _input(extensions: dict | None = None):
     return normalize_canonical_adapter_input(
-        RenderedContext(turns=[ProviderMessage(role="user", content="hi")], system_text="system"),
+        RenderedContext(turns=[ModelMessage(role="user", content="hi")], system_text="system"),
         [ToolSchema(name="lookup", description="Lookup", parameters='{"type":"object"}')],
         extensions=extensions,
         resolved=model_registry.resolve_provider_runtime("ollama", "llama3"),

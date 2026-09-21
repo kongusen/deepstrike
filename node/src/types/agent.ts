@@ -1,4 +1,4 @@
-import type { ProviderMessage, ToolSchema } from "../types.js"
+import type { ModelMessage, ToolSchema } from "../types.js"
 import { getKernel } from "../kernel.js"
 
 export type KernelAgentRole = "explore" | "plan" | "implement" | "verify" | "custom"
@@ -102,7 +102,7 @@ export interface AgentProcessChangedObservation {
 
 export interface LoopResult {
   termination: TerminationReason | string
-  finalMessage?: ProviderMessage
+  finalMessage?: ModelMessage
   turnsUsed: number
   totalTokensUsed: number
   /** loop-control loop stop signal: a loop iteration sets `false` to end the loop before `max_iters`.
@@ -318,6 +318,13 @@ export type WorkflowTaskSpec = { goal: string; criteria?: string[]; lane?: strin
 /** W3 trust level for a workflow node. */
 export type NodeTrust = "trusted" | "quarantined"
 export type WorkflowDependencyPolicy = "all_success" | "accept_partial" | "all_terminal" | "optional"
+export type WorkflowContextInclude = "dependency_outputs" | "memory" | "knowledge"
+export type WorkflowDependencyMode = "full" | "summary" | "reference"
+export interface WorkflowContextPolicy {
+  include?: WorkflowContextInclude[]
+  dependencyMode?: WorkflowDependencyMode
+  maxTokens?: number
+}
 export type WorkflowNodeStatus = "completed" | "completed_partial" | "failed" | "skipped_upstream_failed"
 
 /** Host-observed, deterministic scheduling inputs for one workflow node. They never originate
@@ -337,8 +344,14 @@ export function workflowNodeStatusFromTermination(termination: TerminationReason
 
 /** One node in a declarative workflow DAG (camelCase host shape). */
 export interface WorkflowNodeSpec {
+  /** Stable public workflow step key; host-only metadata for lowering and diagnostics. */
+  nodeId?: string
   task: WorkflowTaskSpec
   role: KernelAgentRole
+  /** Public workflow binding retained by the host while lowering the node to a kernel agent run. */
+  agent?: string
+  /** Host context contract; dependency data is narrowed before entering the child goal. */
+  context?: WorkflowContextPolicy
   isolation?: AgentIsolation
   contextInheritance?: ContextInheritance
   modelHint?: string
@@ -383,7 +396,7 @@ export interface KernelWorkflowNodeOutcome {
   status: WorkflowNodeStatus
   termination?: TerminationReason
   output?: {
-    role: ProviderMessage["role"]
+    role: ModelMessage["role"]
     content: string
     tool_calls?: Array<{ id: string; name: string; arguments?: Record<string, unknown> }>
   }
@@ -393,7 +406,7 @@ export interface WorkflowNodeOutcome {
   nodeId: string
   status: WorkflowNodeStatus
   termination?: TerminationReason
-  output?: ProviderMessage
+  output?: ModelMessage
 }
 
 /** A control-plane request rejected before any workflow effect started. */

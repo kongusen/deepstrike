@@ -4,18 +4,16 @@ import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import {
-  createNativeContextPreparationAdapter,
-  createProviderRequestPlan,
   decodeDurableToolResult,
   decodeDurableContent,
   decodeCanonicalContentParts,
   encodeCanonicalContentParts,
-  providerAttemptToRecord,
   SESSION_EVENT_KINDS,
   lowerAgent,
   normalizeAgent,
-  recordPromptMeasurement,
 } from "../../node/dist/index.js"
+import { createNativeContextPreparationAdapter, providerAttemptToRecord } from "../../node/dist/runtime/public.js"
+import { createProviderRequestPlan, recordPromptMeasurement } from "../../node/dist/providers/public.js"
 import { FileSessionLog, InMemorySessionLog } from "../../node/dist/advanced/public.js"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..")

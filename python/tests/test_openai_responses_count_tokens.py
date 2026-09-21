@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepstrike._kernel import ProviderMessage, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolSchema
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.openai_responses import OpenAIResponsesProvider
 
@@ -13,9 +13,9 @@ async def test_openai_responses_count_tokens_reuses_stateful_request_plan() -> N
     context = RenderedContext(
         system_text="system",
         turns=[
-            ProviderMessage(role="user", content="covered"),
-            ProviderMessage(role="assistant", content="covered reply"),
-            ProviderMessage(role="user", content="new turn"),
+            ModelMessage(role="user", content="covered"),
+            ModelMessage(role="assistant", content="covered reply"),
+            ModelMessage(role="user", content="new turn"),
         ],
     )
     tools = [ToolSchema(name="lookup", description="Lookup", parameters='{"type":"object"}')]

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url"
 
 import { collectText } from "../../src/runtime/runner.js"
 import { createRunner } from "./helpers.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../../src/types.js"
 import type { MemoryStore, MemoryRecord } from "../../src/memory/protocols.js"
 
 describe("M2 memory single-write path", () => {
@@ -13,7 +13,7 @@ describe("M2 memory single-write path", () => {
     const persisted: MemoryRecord[] = []
     let providerCalls = 0
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {

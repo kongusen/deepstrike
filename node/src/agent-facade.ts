@@ -1,4 +1,5 @@
-import { type AgentOptions } from "./agent.js"
+import { normalizeAgent } from "./agent-ir.js"
+import { type AgentOptions, type ModelRef } from "./agent.js"
 import { InMemorySessionLog, type SessionLog } from "./runtime/session-log.js"
 import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-plane.js"
 import { RuntimeRunner, type RuntimeOptions } from "./runtime/runner.js"
@@ -6,17 +7,27 @@ import type { LLMProvider, StreamEvent, DoneEvent, ErrorEvent, TokenUsage, Conte
 import type { RegisteredTool } from "./tools/index.js"
 import type { MemoryRecord, MemoryRecall, MemoryQuery, MemoryScope, MemoryStore, MemoryKind } from "./memory/protocols.js"
 import type { WorkflowSpec, WorkflowOutcome, KernelAgentRole } from "./types/agent.js"
+import { extractJsonValue, schemaInstruction, validateAgainstSchema } from "./runtime/output-schema.js"
+import type { GovernancePolicy } from "./governance.js"
+import { McpProxyPlane } from "./runtime/mcp-proxy-plane.js"
+import { EnvCredentialVault } from "./runtime/credential-vault.js"
+import { agentRefName } from "./handoff-target.js"
+import { createTextKnowledgeSource } from "./knowledge/public.js"
+import type { Knowledge } from "./knowledge/public.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
-  provider: LLMProvider
+  /** Public model identity. Runtime resolves this through a provider binding. */
+  model?: ModelRef
+  /** Optional host binding retained for local/custom execution. */
+  provider?: LLMProvider
   tools?: RegisteredTool[]
   executionPlane?: ExecutionPlane
   sessionLog?: SessionLog
   maxTokens?: number
   memoryStore?: MemoryStore
   memoryScope?: MemoryScope
-  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers">
+  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "providerFor" | "initialMemory" | "skillCatalog" | "knowledgeSource" | "contextManager">
 }
 
 export interface AgentRunOptions {
@@ -39,6 +50,7 @@ export interface RunResult<T = string> {
   sessionId: string
   status: "completed" | "partial" | "failed" | "cancelled"
   usage?: TokenUsage
+  outputValidation?: { ok: boolean; errors: string[] }
 }
 
 export interface AgentSession extends SessionRef {
@@ -67,6 +79,8 @@ export interface RecallOptions {
 export interface DelegationRequest {
   goal: string
   role?: KernelAgentRole
+  /** Optional declared handoff target. When handoffs are declared, this is required and allowlisted. */
+  target?: import("./handoff-target.js").AgentRef
 }
 
 export interface DelegationResult {
@@ -75,7 +89,8 @@ export interface DelegationResult {
   nodeId?: string
 }
 
-export interface ExecutableAgent {
+/** The executable host handle created from an AgentDefinition. */
+export interface AgentRuntime {
   readonly name: string
   readonly definition: Readonly<AgentDefinition>
   run(goal: string, options?: AgentRunOptions): Promise<RunResult>
@@ -86,6 +101,7 @@ export interface ExecutableAgent {
   delegate(request: DelegationRequest): Promise<DelegationResult>
   workflow(spec: WorkflowSpec, options?: { session?: SessionRef }): Promise<WorkflowOutcome>
   listen(options?: { session?: SessionRef; leaseMs?: number }): Promise<RunResult | null>
+  close(): Promise<void>
 }
 
 function sessionId(ref?: SessionRef): string {
@@ -99,8 +115,26 @@ function statusFromDone(status: string): RunResult["status"] {
   return "partial"
 }
 
-class AgentSessionImpl implements AgentSession {
-  constructor(private readonly owner: ExecutableAgentImpl, public readonly id: string) {}
+function mergeGuardrailPolicies(
+  base: GovernancePolicy | undefined,
+  guardrails: AgentDefinition["guardrails"] | undefined,
+): GovernancePolicy | undefined {
+  const policies = [base, ...(guardrails ?? []).map(guardrail => guardrail.policy)].filter(
+    (policy): policy is GovernancePolicy => policy !== undefined,
+  )
+  if (!policies.length) return undefined
+  return {
+    ...(policies.some(policy => policy.defaultAction === "deny") ? { defaultAction: "deny" as const } : {}),
+    rules: policies.flatMap(policy => policy.rules ?? []),
+    vetoes: [...new Set(policies.flatMap(policy => policy.vetoes ?? []))],
+    rateLimits: policies.flatMap(policy => policy.rateLimits ?? []),
+    constraints: policies.flatMap(policy => policy.constraints ?? []),
+    ...(policies.some(policy => policy.surfaceDeniedInSystem === false) ? { surfaceDeniedInSystem: false } : {}),
+  }
+}
+
+class AgentSessionImpl {
+  constructor(private readonly owner: AgentRuntimeImpl, public readonly id: string) {}
 
   run(goal: string, options?: Omit<AgentRunOptions, "session">): Promise<RunResult> {
     return this.owner.run(goal, { ...options, session: { id: this.id } })
@@ -119,16 +153,17 @@ class AgentSessionImpl implements AgentSession {
   }
 }
 
-class ExecutableAgentImpl implements ExecutableAgent {
+class AgentRuntimeImpl implements AgentRuntime {
   readonly name: string
   readonly definition: Readonly<AgentDefinition>
   private readonly sessionLog: SessionLog
   private activeRunner: RuntimeRunner | null = null
+  private mcpPlane?: McpProxyPlane
+  private mcpConnection?: Promise<void>
 
   constructor(definition: AgentDefinition) {
-    if (!definition.provider) throw new TypeError("createAgent requires a provider")
     this.definition = Object.freeze({ ...definition })
-    this.name = definition.name ?? "agent"
+    this.name = normalizeAgent(definition).name
     this.sessionLog = definition.sessionLog ?? new InMemorySessionLog()
   }
 
@@ -176,6 +211,15 @@ class ExecutableAgentImpl implements ExecutableAgent {
   }
 
   async delegate(request: DelegationRequest): Promise<DelegationResult> {
+    const handoffs = this.definition.handoffs ?? []
+    if (handoffs.length) {
+      if (!request.target) throw new Error(`agent "${this.name}" requires an explicit handoff target`)
+      const targetName = agentRefName(request.target)
+      const allowed = handoffs.some(handoff => {
+        return agentRefName(handoff.agent) === targetName
+      })
+      if (!allowed) throw new Error(`agent "${this.name}" cannot hand off to "${targetName}"`)
+    }
     const spec: WorkflowSpec = {
       nodes: [{
         task: { goal: request.goal },
@@ -196,6 +240,7 @@ class ExecutableAgentImpl implements ExecutableAgent {
 
   async workflow(spec: WorkflowSpec, options: { session?: SessionRef } = {}): Promise<WorkflowOutcome> {
     const runner = this.createRunner({})
+    await this.prepareMcp()
     this.activeRunner = runner
     try {
       return await runner.runWorkflow(spec, { sessionId: sessionId(options.session) })
@@ -227,15 +272,19 @@ class ExecutableAgentImpl implements ExecutableAgent {
 
   stream(goal: string, options: AgentRunOptions = {}): AsyncIterable<StreamEvent> {
     const session = sessionId(options.session)
-    const runner = this.createRunner(options)
-    this.activeRunner = runner
-    const abort = () => runner.interrupt("user")
-    if (options.signal) {
-      if (options.signal.aborted) runner.interrupt("user")
-      else options.signal.addEventListener("abort", abort, { once: true })
-    }
-    const stream = runner.run({ sessionId: session, goal, ...(options.attachments?.length ? { attachments: options.attachments } : {}) })
-    return this.clearRunnerAfter(stream, options.signal, abort)
+    const owner = this
+    return (async function* () {
+      const runner = owner.createRunner(options)
+      await owner.prepareMcp()
+      owner.activeRunner = runner
+      const abort = () => runner.interrupt("user")
+      if (options.signal) {
+        if (options.signal.aborted) runner.interrupt("user")
+        else options.signal.addEventListener("abort", abort, { once: true })
+      }
+      const stream = runner.run({ sessionId: session, goal, ...(options.attachments?.length ? { attachments: options.attachments } : {}) })
+      yield* owner.clearRunnerAfter(stream, options.signal, abort)
+    })()
   }
 
   async run(goal: string, options: AgentRunOptions = {}): Promise<RunResult> {
@@ -248,11 +297,15 @@ class ExecutableAgentImpl implements ExecutableAgent {
     const started = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
     const usageEvent = [...events].reverse().find(event => event.type === "usage") as (StreamEvent & Partial<TokenUsage>) | undefined
     const output = events.filter(event => event.type === "text_delta").map(event => String((event as { delta?: unknown }).delta ?? "")).join("")
+    const outputValidation = this.definition.outputSchema
+      ? validateAgainstSchema(extractJsonValue(output), this.definition.outputSchema)
+      : undefined
     return {
       output,
       runId: started?.event.kind === "run_started" ? started.event.run_id : `run-${crypto.randomUUID()}`,
       sessionId: session,
-      status: error ? "failed" : statusFromDone(done?.status ?? "partial"),
+      status: error || outputValidation && !outputValidation.ok ? "failed" : statusFromDone(done?.status ?? "partial"),
+      ...(outputValidation ? { outputValidation } : {}),
       ...(usageEvent?.totalTokens !== undefined ? {
         usage: {
           inputTokens: usageEvent.inputTokens ?? 0,
@@ -265,6 +318,7 @@ class ExecutableAgentImpl implements ExecutableAgent {
 
   async *resume(id: string, options: Omit<AgentRunOptions, "session"> = {}): AsyncIterable<StreamEvent> {
     const runner = this.createRunner(options)
+    await this.prepareMcp()
     this.activeRunner = runner
     yield* this.clearRunnerAfter(runner.wake(id), options.signal, () => runner.interrupt("user"))
   }
@@ -273,18 +327,78 @@ class ExecutableAgentImpl implements ExecutableAgent {
     this.activeRunner?.interrupt(reason)
   }
 
+  async close(): Promise<void> {
+    await this.mcpConnection
+    await this.mcpPlane?.disconnect()
+    this.mcpPlane = undefined
+    this.mcpConnection = undefined
+  }
+
+  private async prepareMcp(): Promise<void> {
+    if (!this.mcpPlane || this.mcpConnection) {
+      await this.mcpConnection
+      return
+    }
+    this.mcpConnection = this.mcpPlane.connect()
+    await this.mcpConnection
+  }
+
   private createRunner(options: AgentRunOptions): RuntimeRunner {
+    const model = this.definition.model
+    const provider = this.definition.provider
+      ?? (typeof model === "string" ? this.definition.runtimeOptions?.providerFor?.(model) : undefined)
+    if (!provider) {
+      throw new Error(`agent "${this.name}" has no runtime provider binding for model ${typeof this.definition.model === "string" ? this.definition.model : "(unresolved)"}`)
+    }
+    if (this.definition.executionPlane && this.definition.mcpServers?.length) {
+      throw new Error("agent mcpServers cannot be combined with a custom executionPlane")
+    }
     const plane = this.definition.executionPlane
-      ?? (this.definition.tools ?? []).reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane())
+      ?? (this.definition.mcpServers?.length
+        ? (() => {
+            const servers = Object.fromEntries(this.definition.mcpServers.map(server => {
+              if (server.transport.kind !== "stdio") {
+                throw new Error(`agent MCP transport "${server.transport.kind}" is not supported by the local runtime`)
+              }
+              if (server.auth && Object.keys(server.auth).length > 0) {
+                throw new Error(`agent MCP server "${server.name ?? server.transport.command}" auth requires an explicit CredentialVault binding`)
+              }
+              return [server.name ?? server.transport.command, {
+                command: server.transport.command,
+                ...(server.transport.args ? { args: server.transport.args } : {}),
+              }]
+            }))
+            this.mcpPlane ??= new McpProxyPlane({ servers, vault: new EnvCredentialVault() })
+            return this.mcpPlane
+          })()
+        : (this.definition.tools ?? []).reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane()))
+    if (this.definition.mcpServers?.length && this.definition.tools?.length) {
+      plane.register(...this.definition.tools)
+    }
     const runtime: RuntimeOptions = {
-      provider: this.definition.provider,
+      provider,
+      ...(mergeGuardrailPolicies(this.definition.runtimeOptions?.governancePolicy, this.definition.guardrails)
+        ? { governancePolicy: mergeGuardrailPolicies(this.definition.runtimeOptions?.governancePolicy, this.definition.guardrails) }
+        : {}),
+      ...(this.definition.capabilityFilter ? { capabilityFilter: this.definition.capabilityFilter } : {}),
       executionPlane: plane,
       sessionLog: this.sessionLog,
       maxTokens: this.definition.maxTokens ?? 32_000,
-      ...(this.definition.instructions ? { systemPrompt: this.definition.instructions } : {}),
+      ...(this.definition.instructions || this.definition.outputSchema ? {
+        systemPrompt: [
+          this.definition.instructions,
+          this.definition.outputSchema ? schemaInstruction(this.definition.outputSchema) : undefined,
+        ].filter((part): part is string => Boolean(part)).join("\n\n"),
+      } : {}),
       ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
       ...(this.definition.memoryStore ? { memoryStore: this.definition.memoryStore } : {}),
       ...(this.definition.memoryScope ? { memoryScope: this.definition.memoryScope } : {}),
+      ...(this.definition.skills?.length ? { skillCatalog: this.definition.skills } : {}),
+      ...(!this.definition.runtimeOptions?.knowledgeSource && this.definition.knowledge?.some(item => item.source.kind === "text") ? {
+        knowledgeSource: createTextKnowledgeSource(this.definition.knowledge
+          .filter((item): item is Knowledge & { source: { kind: "text"; content: string } } => item.source.kind === "text")
+          .map(item => ({ id: item.id, name: item.name, content: item.source.content }))),
+      } : {}),
       agentId: this.name,
       ...(this.definition.runtimeOptions ?? {}),
       ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
@@ -302,6 +416,6 @@ class ExecutableAgentImpl implements ExecutableAgent {
   }
 }
 
-export function createAgent(definition: AgentDefinition): ExecutableAgent {
-  return new ExecutableAgentImpl(definition)
+export function createAgent(definition: AgentDefinition): AgentRuntime {
+  return new AgentRuntimeImpl(definition)
 }

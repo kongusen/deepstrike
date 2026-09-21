@@ -1,6 +1,5 @@
 import { Agent } from "../src/agent.js"
 import { tool } from "../src/tools/index.js"
-import { fromAnthropicMcpConfig } from "../src/compat/anthropic/mcp.js"
 import type { Skill } from "../src/skill.js"
 
 describe("spc_001-02: Agent public class", () => {
@@ -36,7 +35,7 @@ describe("spc_001-02: Agent public class", () => {
 
 describe("spc_009-08: Agent.mcpServers is MCPServer[], not unknown[]", () => {
   it("accesses a field only MCPServer[] exposes without an `as` assertion", () => {
-    const server = fromAnthropicMcpConfig({ name: "fs", command: "npx", args: ["mcp-fs"] })
+    const server = { name: "fs", transport: { kind: "stdio" as const, command: "npx", args: ["mcp-fs"] } }
     const agent = new Agent({ name: "researcher", mcpServers: [server] })
 
     // With `mcpServers?: unknown[]`, `agent.mcpServers[0].transport` does not type-check without

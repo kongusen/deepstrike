@@ -18,3 +18,38 @@ export * from "../runtime/reliability.js"
 export * from "../runtime/turn-policy.js"
 export * from "../runtime/reactive-session.js"
 export * from "../runtime/reaction-checkpoint.js"
+
+export { projectAgentRun, projectAgentContext, projectAgentCapabilities, projectAgentGovernance, projectAgentDelegation } from "../agent-ir.js"
+export type { AgentDescriptor } from "../agent-ir.js"
+export {
+  FileKernelJournal,
+  InMemoryKernelJournal,
+  JournalCasConflictError,
+  JournalIntegrityError,
+  JournalIoError,
+  diagnoseKernelJournal,
+} from "../runtime/public.js"
+export type {
+  CheckpointCandidate,
+  InstalledCheckpoint,
+  JournalAppendReceipt,
+  JournalEntry,
+  JournalHead,
+  JournalPruneReceipt,
+  JournalRecordInput,
+  KernelJournal,
+  KernelJournalDiagnosis,
+  ContextPrepared,
+  ContextPrepareJson,
+  ContextVerifyJson,
+  ContextProviderPreparationRequest,
+  EvolutionRuntime,
+  EvolutionStore,
+  InvocationOutcome,
+  ModelInvocation,
+  ProviderAttempt,
+  ProviderAttemptRecord,
+  ProviderAttemptStatus,
+  UsageAccountingPolicy,
+  ModelUsageSettlement,
+} from "../runtime/public.js"

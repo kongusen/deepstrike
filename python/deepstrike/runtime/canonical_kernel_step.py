@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
-from deepstrike._kernel import ProviderMessage, ToolCall, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolCall, ToolSchema
 from deepstrike.kernel.canonical import (
     CanonicalCheckpoint,
     CanonicalKernel,
@@ -383,7 +383,7 @@ def _action_from_core_step(planned_step: dict[str, Any]) -> KernelRunnerAction |
                               requested_k=int(effect.get("requested_k") or 0))
   if kind == "archive_page_out":
     payload = _object(effect.get("payload"))
-    archived: list[ProviderMessage] = []
+    archived: list[ModelMessage] = []
     try:
       archived = [_message_from_kernel(_object(v)) for v in json.loads(str(payload.get("content") or ""))]
     except (ValueError, TypeError):
@@ -477,7 +477,7 @@ class CanonicalRunnerRuntime:
     self._turns = 0
     self._last_action: KernelRunnerAction | None = None
     self._observations: list[dict[str, Any]] = []
-    self._new_messages: list[ProviderMessage] = []
+    self._new_messages: list[ModelMessage] = []
     self._spawned_tasks = 0
     self._payload_inline_threshold = 50 * 1024
     self._payload_preview_bytes = 2 * 1024
@@ -510,7 +510,7 @@ class CanonicalRunnerRuntime:
     observations, self._observations = self._observations, []
     return observations
 
-  def drain_new_messages(self) -> list[ProviderMessage]:
+  def drain_new_messages(self) -> list[ModelMessage]:
     messages, self._new_messages = self._new_messages, []
     return messages
 
@@ -594,7 +594,7 @@ class CanonicalRunnerRuntime:
         call_id = str(result.get("call_id") or "")
         if result.get("token_count") is not None:
           measurements.append({"call_id": call_id, "tokens": int(result["token_count"])})
-        self._new_messages.append(ProviderMessage(role="tool", content=output))
+        self._new_messages.append(ModelMessage(role="tool", content=output))
         if len(output.encode()) > self._payload_inline_threshold and self._persist_payload is not None:
           persisted = await self._persist_payload(call_id, output, self._payload_preview_bytes)
           results.append({"kind": "external", "call_id": call_id,

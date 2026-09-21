@@ -1,3 +1,4 @@
+import type { AgentDefinition } from "./agent-facade.js"
 import { Agent, type AgentMemory, type AgentOptions, type ModelRef } from "./agent.js"
 import type { Guardrail } from "./guardrail.js"
 import type { Handoff } from "./handoff-target.js"
@@ -18,7 +19,7 @@ export interface AgentToolDefinition {
 
 /** A JSON-friendly Agent definition accepted by `normalizeAgent`.  It is deliberately declarative:
  * executable tools still enter the SDK through `AgentOptions.tools`. */
-export interface AgentDefinition extends Omit<AgentOptions, "tools"> {
+export interface AgentDescriptor extends Omit<AgentOptions, "tools"> {
   tools?: Array<RegisteredTool | AgentToolDefinition>
 }
 
@@ -77,14 +78,13 @@ export interface AgentSpec {
   guardrails?: Guardrail[]
   metadata?: Record<string, unknown>
   /** Declared capabilities. This descriptive view grants nothing by itself. */
-  capabilities: AgentCapabilityIR[]
+  readonly capabilities: AgentCapabilityIR[]
   /** Host ceiling copied from the public Agent, when supplied. Empty axes remain non-narrowing. */
   capabilityFilter?: AgentCapabilityFilter
   /** The declarations that survive the supplied local ceiling. Host mounts may narrow further. */
-  effectiveCapabilities: AgentCapabilityIR[]
+  readonly effectiveCapabilities: AgentCapabilityIR[]
   /** Namespace-isolated provider extensions. Unknown namespaces are preserved verbatim. */
   extensions: Record<string, unknown>
-  inputs: AgentLoweringInputs
 }
 
 function clone<T>(value: T): T {
@@ -119,11 +119,11 @@ function isRegisteredTool(tool: RegisteredTool | AgentToolDefinition): tool is R
 
 /** Normalizes native Agents and JSON-safe descriptor objects into the one public surface used by
  * lowering. It does not interpret provider namespaces or create executable capabilities. */
-export function normalizeAgent(agent: Agent | AgentDefinition): Agent {
+export function normalizeAgent(agent: Agent | AgentDefinition | AgentDescriptor): Agent {
   if (agent instanceof Agent) return agent
   const tools = agent.tools?.map(tool => isRegisteredTool(tool) ? tool : toolDefinitionToRegisteredTool(tool))
   const { tools: _rawTools, ...options } = agent
-  return new Agent({ ...options, ...(tools ? { tools } : {}) })
+  return new Agent({ ...options, name: options.name ?? "agent", ...(tools ? { tools } : {}) })
 }
 
 function lowerTool(tool: RegisteredTool): AgentToolIR {
@@ -174,17 +174,7 @@ export function lowerAgent(agent: Agent): AgentSpec {
   const guardrails = clone(agent.guardrails ?? [])
   const memory = lowerMemory(agent.memory)
   const extensions = clone(agent.providerOptions ?? {})
-  const capabilities: AgentCapabilityIR[] = [
-    ...tools.map(tool => ({ kind: "tool" as const, id: tool.name, description: tool.description })),
-    ...mcpServers.map(server => ({
-      kind: "mcp_server" as const,
-      id: server.name ?? server.transport.kind,
-      description: server.name ?? `${server.transport.kind} MCP server`,
-    })),
-    ...skills.map(skill => ({ kind: "skill" as const, id: skill.name, description: skill.description ?? "" })),
-  ]
   const capabilityFilter = agent.capabilityFilter ? clone(agent.capabilityFilter) : undefined
-  const effectiveCapabilities = capabilities.filter(capability => capabilityAllowed(capability, capabilityFilter))
   return {
     name: agent.name,
     ...(agent.description ? { description: agent.description } : {}),
@@ -199,22 +189,54 @@ export function lowerAgent(agent: Agent): AgentSpec {
     ...(handoffs.length ? { handoffs } : {}),
     ...(guardrails.length ? { guardrails } : {}),
     ...(agent.metadata ? { metadata: clone(agent.metadata) } : {}),
-    capabilities,
+    get capabilities() { return declaredCapabilities(this) },
     ...(capabilityFilter ? { capabilityFilter } : {}),
-    effectiveCapabilities,
-    extensions,
-    inputs: {
-      run: { name: agent.name, ...(agent.model ? { model: clone(agent.model) } : {}) },
-      context: {
-        ...(agent.description ? { description: agent.description } : {}),
-        ...(agent.instructions ? { instructions: agent.instructions } : {}),
-        ...(agent.outputSchema ? { outputSchema: clone(agent.outputSchema) } : {}),
-        knowledge,
-      },
-      capabilities: { tools, mcpServers, skills, effective: effectiveCapabilities },
-      ...(memory ? { memory } : {}),
-      delegation: { handoffs },
-      governance: { guardrails },
+    get effectiveCapabilities() {
+      return declaredCapabilities(this).filter(capability => capabilityAllowed(capability, this.capabilityFilter))
     },
+    extensions,
   }
+}
+
+/** Detached projections; callers can adapt them without changing AgentSpec authority. */
+export function projectAgentRun(spec: AgentSpec): AgentLoweringInputs["run"] {
+  return { name: spec.name, ...(spec.model !== undefined ? { model: clone(spec.model) } : {}) }
+}
+
+export function projectAgentContext(spec: AgentSpec): AgentLoweringInputs["context"] {
+  return {
+    ...(spec.description !== undefined ? { description: spec.description } : {}),
+    ...(spec.instructions !== undefined ? { instructions: spec.instructions } : {}),
+    ...(spec.outputSchema !== undefined ? { outputSchema: clone(spec.outputSchema) } : {}),
+    knowledge: clone(spec.knowledge ?? []),
+  }
+}
+
+export function projectAgentCapabilities(spec: AgentSpec): AgentLoweringInputs["capabilities"] {
+  return {
+    tools: clone(spec.tools),
+    mcpServers: clone(spec.mcpServers ?? []),
+    skills: clone(spec.skills ?? []),
+    effective: clone(spec.effectiveCapabilities),
+  }
+}
+
+export function projectAgentGovernance(spec: AgentSpec): AgentLoweringInputs["governance"] {
+  return { guardrails: clone(spec.guardrails ?? []) }
+}
+
+export function projectAgentDelegation(spec: AgentSpec): AgentLoweringInputs["delegation"] {
+  return { handoffs: clone(spec.handoffs ?? []) }
+}
+
+function declaredCapabilities(spec: AgentSpec): AgentCapabilityIR[] {
+  return [
+    ...spec.tools.map(tool => ({ kind: "tool" as const, id: tool.name, description: tool.description })),
+    ...(spec.mcpServers ?? []).map(server => ({
+      kind: "mcp_server" as const,
+      id: server.name ?? server.transport.kind,
+      description: server.name ?? `${server.transport.kind} MCP server`,
+    })),
+    ...(spec.skills ?? []).map(skill => ({ kind: "skill" as const, id: skill.name, description: skill.description ?? "" })),
+  ]
 }

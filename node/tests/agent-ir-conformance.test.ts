@@ -1,12 +1,10 @@
 import { readFile } from "node:fs/promises"
 import { join } from "node:path"
 import { Agent } from "../src/agent.js"
-import { lowerAgent, normalizeAgent, type AgentDefinition } from "../src/agent-ir.js"
-import { fromOpenAiAgent, type OpenAiAgentJson } from "../src/compat/openai/agent.js"
-import { fromAnthropicMcpConfig } from "../src/compat/anthropic/mcp.js"
+import { lowerAgent, normalizeAgent, projectAgentContext, projectAgentCapabilities, projectAgentDelegation, projectAgentGovernance, type AgentDescriptor } from "../src/agent-ir.js"
 
-async function fixture(): Promise<AgentDefinition> {
-  return JSON.parse(await readFile(join(process.cwd(), "..", "tests", "fixtures", "agent-ir", "canonical-agent.json"), "utf8")) as AgentDefinition
+async function fixture(): Promise<AgentDescriptor> {
+  return JSON.parse(await readFile(join(process.cwd(), "..", "tests", "fixtures", "agent-ir", "canonical-agent.json"), "utf8")) as AgentDescriptor
 }
 
 describe("spc_015-09: Canonical Agent IR", () => {
@@ -51,13 +49,12 @@ describe("spc_015-09: Canonical Agent IR", () => {
       "example.future_provider": { opaque: { preserve: true } },
     })
 
-    expect(spec.inputs.context.knowledge).toEqual(spec.knowledge)
-    expect(spec.inputs.capabilities.tools).toEqual(spec.tools)
-    expect(spec.inputs.capabilities.mcpServers).toEqual(spec.mcpServers)
-    expect(spec.inputs.capabilities.skills).toEqual(spec.skills)
-    expect(spec.inputs.memory).toEqual(spec.memory)
-    expect(spec.inputs.delegation.handoffs).toEqual(spec.handoffs)
-    expect(spec.inputs.governance.guardrails).toEqual(spec.guardrails)
+    expect(projectAgentContext(spec).knowledge).toEqual(spec.knowledge)
+    expect(projectAgentCapabilities(spec).tools).toEqual(spec.tools)
+    expect(projectAgentCapabilities(spec).mcpServers).toEqual(spec.mcpServers)
+    expect(projectAgentCapabilities(spec).skills).toEqual(spec.skills)
+    expect(projectAgentDelegation(spec).handoffs).toEqual(spec.handoffs)
+    expect(projectAgentGovernance(spec).guardrails).toEqual(spec.guardrails)
     expect(spec.capabilityFilter).toEqual({
       allowedKinds: ["tool", "skill", "mcp_server"],
       allowedIds: ["web_search", "citations"],
@@ -66,7 +63,7 @@ describe("spc_015-09: Canonical Agent IR", () => {
       { kind: "tool", id: "web_search", description: "Search the web for source material." },
       { kind: "skill", id: "citations", description: "Citation policy." },
     ])
-    expect(spec.inputs.capabilities.effective).toEqual(spec.effectiveCapabilities)
+    expect(projectAgentCapabilities(spec).effective).toEqual(spec.effectiveCapabilities)
   })
 
   it("keeps the canonical IR independent of later mutations to the public surface", async () => {
@@ -81,11 +78,11 @@ describe("spc_015-09: Canonical Agent IR", () => {
 
   it("normalizes native, OpenAI-shaped, and Anthropic-MCP surfaces before lowering", async () => {
     const native = normalizeAgent(await fixture())
-    const openaiRaw = JSON.parse(await readFile(join(process.cwd(), "src", "__fixtures__", "openai-agent.json"), "utf8")) as OpenAiAgentJson
-    const openai = normalizeAgent(fromOpenAiAgent(openaiRaw))
+    const descriptorRaw = JSON.parse(await readFile(join(process.cwd(), "src", "__fixtures__", "agent-descriptor.json"), "utf8")) as AgentDescriptor
+    const openai = normalizeAgent(descriptorRaw)
     const anthropic = normalizeAgent(new Agent({
       name: "filesystem-agent",
-      mcpServers: [fromAnthropicMcpConfig({ name: "filesystem", command: "mcp-filesystem", args: ["/workspace"] })],
+      mcpServers: [{ name: "filesystem", transport: { kind: "stdio", command: "mcp-filesystem", args: ["/workspace"] } }],
     }))
 
     expect(lowerAgent(native).tools[0].name).toBe("web_search")

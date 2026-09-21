@@ -1,7 +1,7 @@
 import { prepareProviderRequest } from "../providers/prepared-request.js"
 import { createNativeContextPreparationAdapter } from "./context.js"
 import type {
-  LLMProvider, ProviderMessage, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolExecutionResult, ToolSchema, ToolOutputBlock,
+  LLMProvider, ModelMessage, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolExecutionResult, ToolSchema, ToolOutputBlock,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, UsageEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
   PermissionResponse, PermissionResolvedEvent, AsyncSummarizer, MemorySummarizer,
@@ -18,6 +18,9 @@ import type {
 } from "../memory/protocols.js"
 import { extractSessionMemories } from "../memory/extraction.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
+import type { Skill } from "../skill.js"
+import type { SkillMetadata } from "../skills/loader.js"
+import type { ContextManager } from "./context-manager.js"
 import type {
   RuntimeSignal,
   RuntimeSignalUrgency,
@@ -68,9 +71,25 @@ import {
 } from "./canonical-kernel-step.js"
 import type {
   AgentRunSpec, AgentProcessChangedObservation, MilestoneCheckResult, MilestoneContract, MilestonePolicy, SubAgentResult,
-  WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome,
+  WorkflowSpec, WorkflowSpawnInfo, WorkflowBudget, WorkflowOutcome, WorkflowContextPolicy,
   WorkflowNodeOutcome, KernelWorkflowNodeOutcome,
 } from "../types/agent.js"
+import type { AgentCapabilityFilter } from "../types/agent.js"
+
+function intersectCapabilityFilters(a?: AgentCapabilityFilter, b?: AgentCapabilityFilter): AgentCapabilityFilter | undefined {
+  if (!a && !b) return undefined
+  const intersect = (left?: string[], right?: string[]): string[] | undefined => {
+    if (!left?.length) return right?.length ? [...right] : undefined
+    if (!right?.length) return [...left]
+    return left.filter(value => right.includes(value))
+  }
+  const allowedKinds = intersect(a?.allowedKinds, b?.allowedKinds)
+  const allowedIds = intersect(a?.allowedIds, b?.allowedIds)
+  return {
+    ...(allowedKinds?.length ? { allowedKinds } : allowedKinds ? { allowedKinds: [] } : {}),
+    ...(allowedIds?.length ? { allowedIds } : allowedIds ? { allowedIds: [] } : {}),
+  }
+}
 
 export function stableSemanticArchiveName(effectId: string): string {
   const stableEffectId = effectId.replace(/[^a-zA-Z0-9._:-]/g, "_")
@@ -292,6 +311,8 @@ export type OperationCancellationReason = "user" | "deadline" | "lease_lost" | "
 
 export interface RuntimeOptions {
   provider: LLMProvider
+  /** Host-owned capability ceiling applied to the root run before skills or run profiles narrow it further. */
+  capabilityFilter?: AgentCapabilityFilter
   /** Host-owned artifact set identity captured in operation genesis. */
   artifactSetDigest?: string
   /** M4/G5: cumulative token cap for this run (the kernel's `max_total_tokens`). A workflow node's
@@ -347,7 +368,11 @@ export interface RuntimeOptions {
    *  behavior difference. */
   nudges?: NudgeRule[]
   initialMemory?: string[]
+  /** Optional host ledger that admits dynamic context before kernel insertion. */
+  contextManager?: ContextManager
   skillDir?: string
+  /** Inline skill catalog. Metadata is exposed at run start; content is loaded only on activation. */
+  skillCatalog?: Skill[]
   /** Host-layer allowlist over the `skillDir` catalog by skill NAME. When set, only scanned skills
    *  whose name is listed are fed to the kernel via `set_available_skills` (the manifest layer
    *  intersects onto this host baseline in `applyManifest`). Absent ⇒ zero behavior difference (all
@@ -623,6 +648,8 @@ export class RuntimeRunner {
    *  run — guards against re-pushing a duplicate entry if the model calls `skill(name)` again for
    *  an already-active skill (loading is idempotent; the knowledge push should be too). */
   private knowledgePushedSkills = new Set<string>()
+  /** Host mirror of kernel skill lease expiry, used only to clear ContextManager overlays. */
+  private skillLeaseExpirations = new Map<string, number>()
   private nextArchiveStart = 0
   private pendingPageOutArchives: Array<{
     archiveStart: number
@@ -790,7 +817,6 @@ export class RuntimeRunner {
     agentId: string,
     sessionId: string | null | undefined,
     seenRecordIds?: Set<string>,
-    leftovers?: KernelObservation[],
   ): Promise<{ hits: MemoryRecall[]; action: KernelRunnerAction | null }> {
     let hits: MemoryRecall[] = []
     try {
@@ -804,12 +830,14 @@ export class RuntimeRunner {
         })
       }
       for (const hit of hits) {
-        await this.commitKernelApply(runtime, leftovers ?? [], {
-          kind: "add_knowledge_message",
-          key: `memory:${hit.record.record_id}`,
-          content: hit.record.content,
-          tokens: Math.max(1, Math.ceil(hit.record.content.length / 4)),
-        }, sessionId)
+        // Route renewal recalls through the same host context admission path as every other
+        // dynamic knowledge entry. This keeps ContextManager budgets and ledger events in sync
+        // while preserving the canonical kernel knowledge command underneath.
+        await this.pushKnowledge(
+          { role: "system", content: hit.record.content, toolCalls: [] },
+          Math.max(1, Math.ceil(hit.record.content.length / 4)),
+          { key: `memory:${hit.record.record_id}` },
+        )
       }
       await this.applyHostMemoryRecallLifecycle(hits, agentId)
       await this.logMemoryRetrievalResult(sessionId, hits)
@@ -1150,12 +1178,29 @@ export class RuntimeRunner {
    *  K1: `opts.key` gives the entry identity — a same-key push upserts (applied at the next
    *  compaction/renewal boundary, where the cached system[1] block is rewritten anyway) instead
    *  of appending a duplicate. `opts.pinned` exempts the entry from the knowledge-budget sweep. */
-  async pushKnowledge(message: ProviderMessage, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
+  async pushKnowledge(message: ModelMessage, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
     if (!this.activeKernel) return
+    const content = message.content ?? ""
+    const itemId = opts?.key ?? `context:${createHash("sha256").update(content).digest("hex").slice(0, 16)}`
+    if (this.opts.contextManager) {
+      this.opts.contextManager.upsert({
+        id: itemId,
+        kind: opts?.key?.startsWith("skill:") ? "skill" : opts?.key?.startsWith("memory:") ? "memory" : "knowledge",
+        content,
+        scope: opts?.key?.startsWith("skill:") ? "session" : "turn",
+        priority: opts?.pinned ? 100 : 50,
+        pinned: opts?.pinned,
+        source: { type: opts?.key?.split(":", 1)[0] ?? "context", ...(opts?.key ? { id: opts.key } : {}) },
+      })
+      if (!this.opts.contextManager.select().some(item => item.id === itemId)) {
+        this.opts.contextManager.remove(itemId)
+        return
+      }
+    }
     await this.commitKernelApply(this.activeKernel, this.pendingObservations, {
       kind: "add_knowledge_message",
-      content: message.content ?? "",
-      tokens: tokens ?? Math.max(1, Math.ceil((message.content?.length ?? 0) / 4)),
+      content,
+      tokens: tokens ?? Math.max(1, Math.ceil(content.length / 4)),
       ...(opts?.key !== undefined ? { key: opts.key } : {}),
       ...(opts?.pinned ? { pinned: true } : {}),
     })
@@ -1164,6 +1209,7 @@ export class RuntimeRunner {
   /** K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
    *  Errs-open: an unknown key is a kernel-side no-op. */
   async removeKnowledge(key: string): Promise<void> {
+    this.opts.contextManager?.remove(key)
     if (!this.activeKernel) return
     await this.commitKernelApply(this.activeKernel, this.pendingObservations, { kind: "remove_knowledge", key })
   }
@@ -1173,10 +1219,23 @@ export class RuntimeRunner {
    *  drops at the next compaction/renewal boundary. A later `skill(name)` call re-activates and
    *  re-pins fresh content. Errs-open: not-active is a kernel-side no-op. */
   async deactivateSkill(name: string): Promise<void> {
-    if (!this.activeKernel) return
-    await this.commitKernelApply(this.activeKernel, this.pendingObservations, { kind: "skill_deactivated", name })
+    if (this.activeKernel) {
+      await this.commitKernelApply(this.activeKernel, this.pendingObservations, { kind: "skill_deactivated", name })
+    }
     // Re-arm the SDK-side push guard so a re-activation re-pins the content.
     this.knowledgePushedSkills.delete(name)
+    this.skillLeaseExpirations.delete(name)
+    this.opts.contextManager?.remove(`skill:${name}`)
+  }
+
+  private expireSkillContext(currentTurn: number): void {
+    if (this.opts.skillLeaseTurns === undefined) return
+    for (const [name, expiresAtTurn] of this.skillLeaseExpirations) {
+      if (currentTurn < expiresAtTurn) continue
+      this.skillLeaseExpirations.delete(name)
+      this.knowledgePushedSkills.delete(name)
+      this.opts.contextManager?.remove(`skill:${name}`)
+    }
   }
 
   /**
@@ -1194,6 +1253,7 @@ export class RuntimeRunner {
     budget?: WorkflowBudget,
     outputs?: Map<string, string>,
     abortSignal?: AbortSignal,
+    contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
   ): Promise<SubAgentResult> {
     // G2: a reduce node runs no LLM — execute the registered pure function over its dependency
     // outputs and feed the result back as an ordinary completion. Deterministic; no agent burned.
@@ -1208,7 +1268,16 @@ export class RuntimeRunner {
     const budgetNote = workflowBudgetNote(budget)
     // W-N2: a DAG edge carries data — every dependent node sees its dependencies' outputs (the
     // kernel sends `input_agent_ids` for all dependents; judges/reduce keep their special paths).
-    const depsNote = dependencyOutputsNote(node.input_agent_ids, outputs)
+    const policy = contextPolicies?.get(node.agent_id) ?? contextPolicies?.get(node.agent_id.replace(/-i\d+$/, ""))
+    const include = policy?.include ?? ["dependency_outputs"]
+    const depsNote = include.includes("dependency_outputs")
+      ? dependencyOutputsNote(
+          node.input_agent_ids,
+          outputs,
+          policy?.maxTokens !== undefined ? Math.max(256, policy.maxTokens * 4) : 8_000,
+          policy?.dependencyMode ?? "full",
+        )
+      : ""
     const withBudget = (goal: string) =>
       [goal, depsNote, budgetNote].filter(Boolean).join("\n\n")
     const mkCtx = (goal: string) => ({
@@ -1397,6 +1466,7 @@ export class RuntimeRunner {
         parentSessionId,
         runtime,
         new Map(),
+        new Map(spec.nodes.flatMap((node, index) => node.context ? [[`wf-node${index}`, node.context] as const] : [])),
       )
       if (bootstrapped) {
         let terminal = runtime.resumeAction()
@@ -1454,6 +1524,8 @@ export class RuntimeRunner {
     this.pendingObservations = []
     this.pendingPageOutArchives = []
     this.activePageOutArchive = undefined
+    this.knowledgePushedSkills.clear()
+    this.skillLeaseExpirations.clear()
     this.currentSessionId = sessionId
 
     const runtime = this.createCanonicalRuntime(runId, sessionId)
@@ -1574,6 +1646,7 @@ export class RuntimeRunner {
     parentSessionId: string,
     runtime: CanonicalRunnerRuntime,
     seedOutputs?: Map<string, string>,
+    contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
   ): Promise<WorkflowOutcome> {
     let observations = initial
     const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
@@ -1642,7 +1715,7 @@ export class RuntimeRunner {
       const batchState = { settled: false }
       const monitor = this.monitorWorkflowPreemption(runtime, controllers, batchState)
       const results = await Promise.all(
-        nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs, controllers.get(node.agent_id)?.signal)),
+        nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs, controllers.get(node.agent_id)?.signal, contextPolicies)),
       )
       batchState.settled = true
       const preempted = await monitor
@@ -2010,6 +2083,8 @@ export class RuntimeRunner {
     this.pendingObservations = []
     this.pendingPageOutArchives = []
     this.activePageOutArchive = undefined
+    this.knowledgePushedSkills.clear()
+    this.skillLeaseExpirations.clear()
     this.currentSessionId = sessionId
     this.activeProviderInvocationId = undefined
     this.providerRetryPending = false
@@ -2076,18 +2151,24 @@ export class RuntimeRunner {
     }
 
     if (this.opts.initialMemory) {
-      for (const mem of this.opts.initialMemory) {
-        await this.commitKernelApply(runtime, this.pendingObservations, {
-          kind: "add_knowledge_message",
-          content: mem,
-          tokens: Math.max(1, Math.ceil(mem.length / 4)),
-        })
+      for (const [index, mem] of this.opts.initialMemory.entries()) {
+        await this.pushKnowledge({ role: "system", content: mem, toolCalls: [] }, undefined, { key: `initial:${index}`, pinned: true })
       }
     }
 
-    if (this.opts.skillDir) {
+    if (this.opts.skillDir || this.opts.skillCatalog?.length) {
       const { scanSkillDir } = await import("../skills/loader.js")
-      const metas = await scanSkillDir(this.opts.skillDir)
+      const metas: SkillMetadata[] = [
+        ...(this.opts.skillDir ? await scanSkillDir(this.opts.skillDir) : []),
+        ...(this.opts.skillCatalog ?? []).map(skill => ({
+          name: skill.name,
+          description: skill.description ?? "",
+          ...(skill.metadata?.whenToUse ? { whenToUse: String(skill.metadata.whenToUse) } : {}),
+          ...(skill.metadata?.effort !== undefined ? { effort: Number(skill.metadata.effort) } : {}),
+          ...(skill.metadata?.estimatedTokens !== undefined ? { estimatedTokens: Number(skill.metadata.estimatedTokens) } : {}),
+          ...(skill.tools?.length ? { allowedTools: skill.tools.map(tool => typeof tool === "string" ? tool : tool.name) } : {}),
+        })),
+      ]
       // S2 host-layer skill allowlist: keep only scanned skills named in `skillFilter` before feeding
       // the catalog. Absent ⇒ feed all (identical to the pre-feature message); empty ⇒ feed none. The
       // `set_available_skills` message is ALWAYS sent when a skillDir exists (shape preserved) — only
@@ -2178,9 +2259,16 @@ export class RuntimeRunner {
         role: "custom",
         goal,
       }
-      let spec: AgentRunSpec = hasProfile
-        ? { ...baseSpec, capabilityFilter: { ...baseSpec.capabilityFilter, allowedIds: allowedToolIds } }
+      const filtered = intersectCapabilityFilters(baseSpec.capabilityFilter, this.opts.capabilityFilter)
+      let spec: AgentRunSpec = filtered
+        ? { ...baseSpec, capabilityFilter: filtered }
         : baseSpec
+      if (hasProfile) {
+        spec = {
+          ...spec,
+          capabilityFilter: intersectCapabilityFilters(spec.capabilityFilter, { allowedIds: allowedToolIds }),
+        }
+      }
       spec = { ...spec, exposureBaseline: baselineToolIds }
       if (hasMilestoneContract && !spec.verificationContractId) {
         spec = { ...spec, verificationContractId: "node-default" }
@@ -2251,6 +2339,7 @@ export class RuntimeRunner {
         taskScope,
       )
       this.nextArchiveStart = nextCompressedArchiveStart
+      this.expireSkillContext(runtime.turn())
       if (this.interrupted) {
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "cancel_operation",
@@ -2562,7 +2651,7 @@ export class RuntimeRunner {
                 return call
               }
             })
-        const assistantMessage: ProviderMessage = {
+        const assistantMessage: ModelMessage = {
           role: "assistant",
           content: finalText,
           toolCalls: canonicalToolCalls,
@@ -2600,7 +2689,7 @@ export class RuntimeRunner {
           ...(turnOutputTokens > 0 ? { observed_output_tokens: settlement?.observed_output_tokens ?? turnOutputTokens } : {}),
           ...(turnStopReason ? { stop_reason: turnStopReason } : {}),
         }
-        if (this.opts.skillDir) {
+        if (this.opts.skillDir || this.opts.skillCatalog?.length) {
           const skillCalls = finalToolCalls.filter(call => call.name === "skill")
           if (skillCalls.length > 0) {
             const { readSkillFile } = await import("../skills/loader.js")
@@ -2609,15 +2698,19 @@ export class RuntimeRunner {
                 const name = String((JSON.parse(call.arguments || "{}") as { name?: unknown }).name ?? "")
                 if (!name) continue
                 if (this.opts.skillFilter && !this.opts.skillFilter.includes(name)) continue
-                const content = await readSkillFile(this.opts.skillDir, name)
+                const inline = this.opts.skillCatalog?.find(skill => skill.name === name)
+                const content = inline?.instructions
+                  ?? (this.opts.skillDir ? await readSkillFile(this.opts.skillDir, name) : null)
                 if (!content) continue
-                await this.commitKernelApply(runtime, this.pendingObservations, {
-                  kind: "add_knowledge_message",
-                  key: `skill:${name}`,
-                  content,
-                  tokens: Math.max(1, Math.ceil(content.length / 4)),
-                  pinned: true,
-                })
+                const knowledge = inline?.knowledge
+                  ?.map(entry => typeof entry === "string" ? entry : entry.content)
+                  .filter((entry): entry is string => Boolean(entry)) ?? []
+                const fullContent = [content, ...knowledge].join("\n\n")
+                await this.pushKnowledge(
+                  { role: "system", content: fullContent, toolCalls: [] },
+                  Math.max(1, Math.ceil(fullContent.length / 4)),
+                  { key: `skill:${name}`, pinned: true },
+                )
               } catch {
                 // A missing or malformed skill stays a model-visible syscall rejection.
               }
@@ -3062,6 +3155,9 @@ export class RuntimeRunner {
                 undefined,
                 { key: `skill:${name}` },
               )
+              if (this.opts.skillLeaseTurns !== undefined) {
+                this.skillLeaseExpirations.set(name, runtime.turn() + this.opts.skillLeaseTurns)
+              }
             }
           } catch { /* malformed skill args — skip the knowledge pin */ }
         }
@@ -3342,7 +3438,6 @@ export class RuntimeRunner {
           this.opts.agentId,
           this.durableSessionId(this.currentSessionId),
           seenRecordIds,
-          this.pendingObservations,
         )
         resumed = action ?? resumed
       }
@@ -3452,7 +3547,7 @@ export class RuntimeRunner {
   }
 
   private async archiveSemanticPageOut(
-    archived: ProviderMessage[],
+    archived: ModelMessage[],
     action: string | undefined,
     sessionId: string,
     effectId = "unknown",
@@ -3515,7 +3610,7 @@ export class RuntimeRunner {
   private async upgradeCompressedSummary(
     sessionId: string,
     compressedSeq: number,
-    archived: ProviderMessage[],
+    archived: ModelMessage[],
     action: string,
     runtime?: CanonicalRunnerRuntime,
   ): Promise<void> {
@@ -3596,7 +3691,7 @@ function attachmentsToKernelMessage(parts: ContentPart[]): Record<string, unknow
 
 async function summarizeForLongTermMemory(
   provider: LLMProvider,
-  archived: ProviderMessage[],
+  archived: ModelMessage[],
   systemPrompt?: string,
 ): Promise<string> {
   const transcript = archived
@@ -3628,8 +3723,8 @@ async function summarizeForLongTermMemory(
  *  message exists. A tail assistant tool_call with nothing after it is a genuinely PENDING tool the
  *  run stopped in front of (the wake/recovery case), which must stay unpaired so wake executes it.
  *  Pure. */
-export function pairOrphanToolCalls(messages: ProviderMessage[]): ProviderMessage[] {
-  const out: ProviderMessage[] = []
+export function pairOrphanToolCalls(messages: ModelMessage[]): ModelMessage[] {
+  const out: ModelMessage[] = []
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]
     out.push(m)
@@ -3657,14 +3752,14 @@ export function pairOrphanToolCalls(messages: ProviderMessage[]): ProviderMessag
   return out
 }
 
-export function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): ProviderMessage[] {
+export function replayMessages(events: Array<{ seq: number; event: SessionEvent }>, maxBytes?: number): ModelMessage[] {
   // Build upgraded-summary index: compressed_seq -> upgraded summary
   const upgradedSummaries = new Map<number, string>()
   for (const { event: e } of events) {
     if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
   }
 
-  const messages: ProviderMessage[] = []
+  const messages: ModelMessage[] = []
   for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
     const { seq, event: e } = events[eventIndex]!
     if (e.kind === "run_started") {
@@ -3726,15 +3821,15 @@ export function replayMessages(events: Array<{ seq: number; event: SessionEvent 
 export async function replayMessagesAsync(
   events: Array<{ seq: number; event: SessionEvent }>,
   maxBytes?: number,
-  loadArchive?: (archiveRef: string) => Promise<ProviderMessage[]>,
-): Promise<ProviderMessage[]> {
+  loadArchive?: (archiveRef: string) => Promise<ModelMessage[]>,
+): Promise<ModelMessage[]> {
   // Build upgraded-summary index: compressed_seq -> upgraded summary
   const upgradedSummaries = new Map<number, string>()
   for (const { event: e } of events) {
     if (e.kind === "summary_upgraded") upgradedSummaries.set(e.compressed_seq, e.summary)
   }
 
-  const messages: ProviderMessage[] = []
+  const messages: ModelMessage[] = []
   for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
     const { seq, event: e } = events[eventIndex]!
     if (e.kind === "run_started") {

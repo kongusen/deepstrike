@@ -336,7 +336,7 @@ impl ContentPartObj {
 
 #[pyclass]
 #[derive(Clone)]
-struct ProviderMessage {
+struct ModelMessage {
     #[pyo3(get, set)]
     role: String,
     #[pyo3(get, set)]
@@ -348,7 +348,7 @@ struct ProviderMessage {
 }
 
 #[pymethods]
-impl ProviderMessage {
+impl ModelMessage {
     #[new]
     #[pyo3(signature = (role, content, tool_calls = None, content_parts = None))]
     fn new(
@@ -371,7 +371,7 @@ impl ProviderMessage {
             None => String::new(),
         };
         format!(
-            "ProviderMessage(role={:?}, content={:?}{})",
+            "ModelMessage(role={:?}, content={:?}{})",
             self.role, self.content, parts_info
         )
     }
@@ -535,7 +535,7 @@ fn content_part_from_rust(p: &ContentPart) -> ContentPartObj {
     }
 }
 
-impl ProviderMessage {
+impl ModelMessage {
     fn from_rust(msg: &RustMessage) -> Self {
         let role = match msg.role {
             Role::System => "system",
@@ -728,7 +728,7 @@ struct LoopResult {
     #[pyo3(get)]
     termination: String,
     #[pyo3(get)]
-    final_message: Option<ProviderMessage>,
+    final_message: Option<ModelMessage>,
     #[pyo3(get)]
     turns_used: u32,
     #[pyo3(get)]
@@ -841,10 +841,10 @@ struct RenderedContext {
     system_knowledge: String,
     /// History turns only — the stable, cacheable message prefix.
     #[pyo3(get)]
-    turns: Vec<ProviderMessage>,
+    turns: Vec<ModelMessage>,
     /// Volatile State turn (task_state + signals), rendered after the cacheable history.
     #[pyo3(get)]
-    state_turn: Option<ProviderMessage>,
+    state_turn: Option<ModelMessage>,
     /// P1-E: count of leading `turns` forming the frozen prefix (byte-stable until the next
     /// compaction). Providers pin a deep cache breakpoint here; absent ⇒ rolling-pair fallback.
     #[pyo3(get)]
@@ -1396,7 +1396,7 @@ struct SessionData {
     #[pyo3(get, set)]
     agent_id: String,
     #[pyo3(get, set)]
-    messages: Vec<ProviderMessage>,
+    messages: Vec<ModelMessage>,
     /// JSON-encoded metadata blob.
     #[pyo3(get, set)]
     metadata: String,
@@ -1413,7 +1413,7 @@ impl SessionData {
     fn new(
         session_id: String,
         agent_id: String,
-        messages: Vec<ProviderMessage>,
+        messages: Vec<ModelMessage>,
         metadata: String,
         created_at_ms: f64,
         updated_at_ms: f64,
@@ -1693,7 +1693,7 @@ fn build_eval_messages(
     result: String,
     attempt: u32,
     extract_skill_on_pass: bool,
-) -> Vec<ProviderMessage> {
+) -> Vec<ModelMessage> {
     let rust_criteria = criteria_from_py(criteria);
     rust_build_eval_messages(
         &goal,
@@ -1703,7 +1703,7 @@ fn build_eval_messages(
         extract_skill_on_pass,
     )
     .iter()
-    .map(ProviderMessage::from_rust)
+    .map(ModelMessage::from_rust)
     .collect()
 }
 
@@ -1756,7 +1756,7 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ABI", deepstrike_core::runtime::kernel::wire::ABI)?;
     // POD types
     m.add_class::<ContentPartObj>()?;
-    m.add_class::<ProviderMessage>()?;
+    m.add_class::<ModelMessage>()?;
     m.add_class::<ToolCall>()?;
     m.add_class::<ToolExecutionResult>()?;
     m.add_class::<ToolSchema>()?;

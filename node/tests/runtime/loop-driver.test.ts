@@ -2,14 +2,14 @@ import { createRunner } from "./helpers.js"
 import { LoopDriver, foldLoopState, runLoop, signalAwareSleeper } from "../../src/runtime/loop-driver.js"
 import { SignalGateway } from "../../src/os/public.js"
 import { InMemoryGroupBudgetStore } from "../../src/runtime/run-group.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../../src/types.js"
 
 /** Scripted loop provider: each ROUND proposes a pace verb, then files its round report. */
 function scriptedLoopProvider(script: Array<{ next: string; delayMs?: number }>): LLMProvider {
   let call = 0
   let round = 0
   return {
-    async complete(): Promise<ProviderMessage> {
+    async complete(): Promise<ModelMessage> {
       return { role: "assistant", content: "done", toolCalls: [] }
     },
     async *stream(): AsyncIterable<StreamEvent> {
@@ -226,7 +226,7 @@ describe("③ dynamic loop agent — LoopDriver over the kernel pacing trap", ()
   it("a round that never calls pace falls back to the kernel default_action", async () => {
     // Provider ends immediately with text — no pace call; goal loop default = stop.
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "all done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {

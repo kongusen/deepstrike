@@ -1,12 +1,12 @@
 import { createRunner } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
 import { tool } from "../src/tools/index.js"
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 function usageTrackingProvider(): LLMProvider {
   let call = 0
   return {
-    async complete(_ctx: RenderedContext, _tools: ToolSchema[]): Promise<ProviderMessage> {
+    async complete(_ctx: RenderedContext, _tools: ToolSchema[]): Promise<ModelMessage> {
       return { role: "assistant", content: "done" }
     },
     async *stream(_context: RenderedContext): AsyncIterable<StreamEvent> {

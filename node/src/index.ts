@@ -1,5 +1,5 @@
 // ╔══════════════════════════════════════════════════════════════════════════╗
-// ║ @deepstrike/sdk — root surface (v0.2.30).                                      ║
+// ║ @deepstrike/sdk — root surface (v0.2.72).                                      ║
 // ║                                                                            ║
 // ║ This is the intent layer: run an agent, run a workflow, author a tool,     ║
 // ║ pick a provider. Advanced machinery lives behind subpaths:                 ║
@@ -18,9 +18,9 @@ export type {
   AgentDefinition,
   AgentRunOptions,
   AgentSession,
+  AgentRuntime,
   DelegationRequest,
   DelegationResult,
-  ExecutableAgent,
   MemoryInput,
   RecallOptions,
   RunResult,
@@ -56,25 +56,6 @@ export {
   decodeCanonicalContentParts,
 } from "./runtime/kernel-step.js"
 // ── Durable transaction capability (Canonical Kernel ABI §9.1) ──────────────
-export {
-  FileKernelJournal,
-  InMemoryKernelJournal,
-  JournalCasConflictError,
-  JournalIntegrityError,
-  JournalIoError,
-} from "./runtime/kernel-journal.js"
-export type {
-  CheckpointCandidate,
-  InstalledCheckpoint,
-  JournalAppendReceipt,
-  JournalEntry,
-  JournalHead,
-  JournalPruneReceipt,
-  JournalRecordInput,
-  KernelJournal,
-} from "./runtime/kernel-journal.js"
-export { diagnoseKernelJournal } from "./runtime/kernel-doctor.js"
-export type { KernelJournalDiagnosis } from "./runtime/kernel-doctor.js"
 export { InMemoryGroupBudgetStore, GroupBudgetScope } from "./runtime/run-group.js"
 export type {
   RunGroup, GroupBudgetStore, GroupLedger, GroupCharge, GroupMember,
@@ -114,10 +95,6 @@ export { OpenAIResponsesProvider } from "./providers/openai-responses.js"
 export { createProvider, createProviderAsync, resolveProviderRuntime, resolveProviderRuntimeAsync } from "./providers/catalog.js"
 export { UnsupportedModalityError } from "./providers/base.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
-export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement, resolveProviderRoute } from "./providers/request-plan.js"
-export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, RecordedPromptMeasurement, ResolvedProviderRoute } from "./providers/request-plan.js"
-export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY, providerAttemptToRecord } from "./runtime/execution-evidence.js"
-export type { InvocationOutcome, ModelInvocation, ProviderAttempt, ProviderAttemptRecord, ProviderAttemptStatus, UsageAccountingPolicy, ModelUsageSettlement } from "./runtime/execution-evidence.js"
 export {
   VERIFIABLE_REPORT_SCHEMA,
   VERIFIABLE_FORK_SCHEMA,
@@ -138,37 +115,6 @@ export type {
   VerifiableReport,
   VerifiableOperationJson,
 } from "./runtime/verifiable-report.js"
-export { createEvolutionRuntimeAdapter, createNativeEvolutionRuntimeAdapter, EvolutionRuntime } from "./runtime/evolution.js"
-export type {
-  ActivationBinding,
-  ArtifactKind,
-  ArtifactManifest,
-  ArtifactRef,
-  ArtifactSet,
-  ArtifactVersion,
-  ContextEntryRef,
-  ContextEntrySource,
-  ContextExecutionInput,
-  ContextPreparationRequest,
-  ContextPlan,
-  ContextPlanAction,
-  ContextSelection,
-  ContextState,
-  EvaluationContextBinding,
-  EvaluationFact,
-  EvaluationGate,
-  EvaluationMetric,
-  EvaluationRun,
-  EvolutionBundle,
-  EvolutionProposal,
-  EvolutionReport,
-  EvolutionVerdict,
-  EvolutionViolation,
-  PromotionDecision,
-  PromotionOutcome,
-  EvolutionStore,
-} from "./runtime/evolution.js"
-
 export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 
 // ── Multi-agent primitive ───────────────────────────────────────────────────
@@ -181,8 +127,15 @@ export type { AgentCapabilityIR, AgentLoweringInputs, AgentMemoryIR, AgentSpec, 
 export type { Guardrail } from "./guardrail.js"
 export type { MCPServer, McpTransport } from "./mcp-server.js"
 export type { Knowledge, KnowledgeSourceRef } from "./knowledge/public.js"
+export { createTextKnowledgeSource } from "./knowledge/public.js"
+export type { TextKnowledgeDocument } from "./knowledge/public.js"
+export { agentRefName } from "./handoff-target.js"
 export type { AgentRef, Handoff } from "./handoff-target.js"
 export type { Session } from "./session.js"
+export { createWorkflow } from "./workflow/definition.js"
+export type { WorkflowDefinition, WorkflowStep, WorkflowResult } from "./workflow/definition.js"
+export { evaluate } from "./evals/public.js"
+export type { Dataset, DatasetCase, Evaluator, EvalResult, EvalRun, EvalTrace } from "./evals/public.js"
 
 // ── Signals (the `RuntimeOptions.signalSource` surface) ─────────────────────
 export type {
@@ -194,7 +147,7 @@ export type {
 
 // ── Core data types ─────────────────────────────────────────────────────────
 export type {
-  ProviderMessage, ToolCall, ToolExecutionResult, ToolSchema,
+  ModelMessage, RuntimeMessage, StoredMessage, WireMessage, ToolCall, ToolExecutionResult, ToolSchema,
   ContentPart, TextPart, ImagePart, AudioPart,
   MediaSource, ContentBlockText, ContentBlockImage, ContentBlockAudio,
   ContentBlockVideo, ContentBlockFile,
@@ -220,12 +173,10 @@ export type {
   WorkflowNodeSpec,
   SchedulingFactors,
   WorkflowDependencyPolicy,
+  WorkflowContextInclude,
+  WorkflowDependencyMode,
+  WorkflowContextPolicy,
   WorkflowNodeStatus,
   WorkflowNodeOutcome,
   WorkflowOutcome,
 } from "./types/agent.js"
-
-export { createContextPreparationAdapter, createNativeContextPreparationAdapter } from "./runtime/context.js"
-export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextProviderPreparationRequest } from "./runtime/context.js"
-
-export type { PreparedProviderRequest } from "./types.js"

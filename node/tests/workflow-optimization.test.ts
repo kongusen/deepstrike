@@ -4,7 +4,7 @@ import { dependencyOutputsNote } from "../src/runtime/workflow-control-flow.js"
 import { createRunner, tool } from "./runtime/helpers.js"
 import { ReactiveSession } from "../src/runtime/reactive-session.js"
 import { InMemoryGroupBudgetStore } from "../src/runtime/run-group.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 
 describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", () => {
   it("workflowNodeSpecToKernel emits max_turns/max_wall_ms and workflowNodeToSpec maps them back", () => {
@@ -37,6 +37,8 @@ describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", ()
     expect(note).not.toContain("wf-node-missing")
     expect(dependencyOutputsNote([], outputs)).toBe("")
     expect(dependencyOutputsNote(undefined, outputs)).toBe("")
+    expect(dependencyOutputsNote(["wf-node0"], outputs, 100, "reference")).toBe("[dependency references]\nwf-node0")
+    expect(dependencyOutputsNote(["wf-node1"], outputs, 100, "summary")).toContain("[summary truncated]")
   })
 })
 
@@ -44,7 +46,7 @@ describe("W-N1: workflow nodes get tools (trusted inherit; quarantined stay deny
   function nodeProvider(): LLMProvider {
     let call = 0
     return {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -91,7 +93,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
   function pacingLoopProvider(verbs: string[]): LLMProvider {
     let call = 0
     return {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -122,7 +124,7 @@ describe("DW-3/W-N6: loop nodes pace through the kernel trap on ONE stable sessi
 
   it("also rejects a silent loop before starting its child", async () => {
     const silent: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "done", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {

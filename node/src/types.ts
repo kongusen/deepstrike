@@ -65,7 +65,8 @@ export type ToolOutputBlock =
   | ContentBlockFile
 
 
-export interface ProviderMessage {
+/** Semantic message consumed by the model invocation layer. Provider wire messages are adapter-local. */
+export interface ModelMessage {
   role: "system" | "user" | "assistant" | "tool"
   /** Plain-text content. When `contentParts` is present, this holds only the text segments. */
   content: string
@@ -73,6 +74,21 @@ export interface ProviderMessage {
   contentParts?: ContentPart[]
   toolCalls?: ToolCall[]
 }
+
+/** Stored durable representation. It references the semantic message without becoming a second content authority. */
+export interface StoredMessage extends ModelMessage {
+  readonly messageId?: string
+  readonly createdAt?: number
+}
+
+/** Host execution representation; contentParts remains the structured content authority. */
+export interface RuntimeMessage extends ModelMessage {
+  readonly messageId?: string
+}
+
+
+/** Provider wire representation is adapter-owned and intentionally opaque at the SDK boundary. */
+export type WireMessage = Readonly<Record<string, unknown>>
 
 export interface ToolCall {
   id: string
@@ -499,7 +515,7 @@ export interface RenderedContext {
   /** Knowledge (memory retrievals, skill definitions, artifacts). Anthropic system[1] with cache_control. */
   systemKnowledge?: string
   /** History turns only — the stable, cacheable message prefix. */
-  turns: ProviderMessage[]
+  turns: ModelMessage[]
   /**
    * Volatile State turn (task_state + signals), rebuilt every call. Providers
    * render it after the cacheable history (Anthropic: after the cache breakpoint;
@@ -507,7 +523,7 @@ export interface RenderedContext {
    * older binding that has not been rebuilt — then the State turn is still inside
    * `turns[0]` and providers render `turns` as-is.
    */
-  stateTurn?: ProviderMessage
+  stateTurn?: ModelMessage
   /**
    * P1-E: count of leading `turns` forming the frozen prefix — byte-stable until the next
    * compaction. The Anthropic provider pins a deep cache breakpoint at this boundary (a long-lived
@@ -556,7 +572,7 @@ export interface LLMProvider {
    */
   runtimePolicy?(): RuntimePolicy
   /** Read provider-native replay fields captured after the most recent assistant turn. */
-  peekProviderReplay?(message: Pick<ProviderMessage, "content" | "toolCalls">): ProviderReplay | undefined
+  peekProviderReplay?(message: Pick<ModelMessage, "content" | "toolCalls">): ProviderReplay | undefined
   /**
    * P4-S1: read the transport facts captured during the most recent execution (HTTP rung count,
    * wire response id). Optional — a provider without it simply omits the telemetry and the
@@ -565,7 +581,7 @@ export interface LLMProvider {
    */
   peekTransportTelemetry?(): ProviderTransportTelemetry | undefined
   /** Restore provider-native replay fields when rebuilding history from SessionLog. */
-  seedProviderReplay?(message: Pick<ProviderMessage, "content" | "toolCalls">, replay: ProviderReplay): void
+  seedProviderReplay?(message: Pick<ModelMessage, "content" | "toolCalls">, replay: ProviderReplay): void
   /**
    * Pre-flight query: would this history validate against this provider with the
    * given extensions, without sending the request? Returns the tool-call ids
@@ -579,10 +595,8 @@ export interface LLMProvider {
    * (Anthropic `messages.countTokens` and Gemini `countTokens`),
    * where the vendor offers one. Optional — providers without a native endpoint simply omit it,
    * and callers fall back to `FallbackEstimator` (Rust `context::token_engine`, spc_011-C-01) or
-   * a local tokenizer. Not currently invoked by any dispatch loop (nothing in the Rust kernel
-   * emits `EffectKind::MeasurePrompt` yet — see its doc comment); this method exists so the
-   * capability remains directly callable, but no dispatch trigger is enabled until request
-   * fingerprinting and durable measurement semantics are defined.
+   * a local tokenizer. The host runner invokes this capability during provider request
+   * preparation and binds the resulting measurement to the prepared request fingerprint.
    */
   countTokens?(
     context: RenderedContext,
@@ -590,7 +604,7 @@ export interface LLMProvider {
     extensions?: Record<string, unknown>,
     state?: ProviderRunState,
   ): Promise<PromptMeasurement>
-  complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ProviderMessage>
+  complete(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>): Promise<ModelMessage>
   stream(
     context: RenderedContext,
     tools: ToolSchema[],
@@ -609,7 +623,7 @@ export interface LLMProvider {
  * Produces a richer LLM-generated summary that replaces the rule-based one on next wake.
  */
 export interface AsyncSummarizer {
-  summarize(archived: ProviderMessage[], action: string): Promise<string>
+  summarize(archived: ModelMessage[], action: string): Promise<string>
 }
 
 /**
@@ -617,7 +631,7 @@ export interface AsyncSummarizer {
  * The kernel emits `page_out { tier_hint: "semantic" }`; the SDK persists an LLM summary to MemoryStore.
  */
 export interface MemorySummarizer {
-  summarize(archived: ProviderMessage[], context: { action?: string }): Promise<string>
+  summarize(archived: ModelMessage[], context: { action?: string }): Promise<string>
 }
 
 export interface TaskUpdate {

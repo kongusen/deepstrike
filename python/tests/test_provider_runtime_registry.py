@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from deepstrike._kernel import ProviderMessage, ToolSchema
+from deepstrike._kernel import ModelMessage, ToolSchema
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.factories import deepseek, gemini, glm, kimi, minimax, qwen
 from deepstrike.providers.openai import OpenAIProvider
@@ -99,7 +99,7 @@ def test_factory_attaches_runtime_for_gemini_before_its_sdk_model_is_initialized
 def test_kimi_cache_helper_remains_available_from_table_constructed_provider() -> None:
     provider = create_provider("kimi", api_key="key", protocol="openai")
     messages = provider._build_messages(
-        RenderedContext(turns=[ProviderMessage(role="user", content="hello")]),
+        RenderedContext(turns=[ModelMessage(role="user", content="hello")]),
         {"context_cache_id": "cache-1"},
     )
     assert messages[0] == {"role": "cache", "content": "cache_id=cache-1"}

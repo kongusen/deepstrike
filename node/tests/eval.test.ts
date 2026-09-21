@@ -1,11 +1,11 @@
 import { buildEvalMessages, parseVerdict, verdictOutputSchema, judge } from "../src/runtime/eval.js"
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent, ToolSchema } from "../src/types.js"
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 function makeStubProvider(responseText: string): LLMProvider {
   return {
-    async complete(): Promise<ProviderMessage> {
+    async complete(): Promise<ModelMessage> {
       return { role: "assistant", content: responseText }
     },
     async *stream(): AsyncIterable<StreamEvent> {
@@ -97,7 +97,7 @@ describe("judge", () => {
 
   it("throws when provider produces no text", async () => {
     const emptyProvider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> { return { role: "assistant", content: "" } },
+      async complete(): Promise<ModelMessage> { return { role: "assistant", content: "" } },
       // eslint-disable-next-line require-yield
       async *stream(): AsyncIterable<StreamEvent> { return },
     }
@@ -109,7 +109,7 @@ describe("judge", () => {
   it("renders system + user messages in RenderedContext correctly", async () => {
     let capturedCtx: RenderedContext | undefined
     const captureProvider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> { return { role: "assistant", content: "{}" } },
+      async complete(): Promise<ModelMessage> { return { role: "assistant", content: "{}" } },
       async *stream(ctx: RenderedContext, _tools: ToolSchema[]): AsyncIterable<StreamEvent> {
         capturedCtx = ctx
         yield { type: "text_delta", delta: JSON.stringify({ passed: true, overall_score: 1, feedback: "ok" }) } as { type: "text_delta"; delta: string }

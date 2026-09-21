@@ -1,5 +1,5 @@
 /** Legacy ToolExecutionResult carriers remain accepted, then normalize to canonical blocks at the boundary. */
-import type { ContentBlock, ProviderMessage, ToolExecutionResult, ToolResultPart } from "../src/types.js"
+import type { ContentBlock, ModelMessage, ToolExecutionResult, ToolResultPart } from "../src/types.js"
 import { mcpResultToToolOutput } from "../src/runtime/mcp-proxy-plane.js"
 import { toAnthropicMessages } from "../src/providers/base.js"
 
@@ -97,7 +97,7 @@ describe("mcpResultToToolOutput (spc_012-N-02)", () => {
  * protocol natively supports image blocks inside tool_result), not the flattened text projection.
  */
 describe("toAnthropicMessages structured tool_result (spc_012-N-03)", () => {
-  const toolMessage = (contentParts?: ContentBlock[]): ProviderMessage => ({
+  const toolMessage = (contentParts?: ContentBlock[]): ModelMessage => ({
     role: "tool",
     content: "weather: sunny\n[image]",
     toolCalls: [],
@@ -148,7 +148,7 @@ import { RuntimeRunner } from "../src/runtime/runner.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import type { ExecutionPlane } from "../src/runtime/execution-plane.js"
 import type {
-  LLMProvider, ProviderMessage, RenderedContext, StreamEvent, ToolCall, ToolResultEvent, ToolSchema,
+  LLMProvider, ModelMessage, RenderedContext, StreamEvent, ToolCall, ToolResultEvent, ToolSchema,
 } from "../src/types.js"
 
 class MultimodalToolPlane implements ExecutionPlane {
@@ -183,7 +183,7 @@ class CapturingProvider implements LLMProvider {
   readonly contexts: RenderedContext[] = []
   private callCount = 0
 
-  async complete(): Promise<ProviderMessage> {
+  async complete(): Promise<ModelMessage> {
     return { role: "assistant", content: "done", toolCalls: [] }
   }
 

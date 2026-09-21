@@ -7,7 +7,7 @@
 import { createRunner } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
 import type { MemoryStore, MemoryRecall } from "../src/memory/protocols.js"
-import type { LLMProvider, ProviderMessage, RenderedContext, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../src/types.js"
 
 const RECALL = "PREFETCHED_LONGTERM_FACT"
 const scope = { tenant_id: "agent-prequery", namespace: "prefetch" }
@@ -36,7 +36,7 @@ describe("preQueryMemory prefetch lands in history, not knowledge", () => {
     let sawInTurns = false
     let sawInKnowledge = false
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "unused", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {

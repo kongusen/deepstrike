@@ -1,10 +1,10 @@
 import { InMemorySessionLog, LocalExecutionPlane, RuntimeRunner, runFanout } from "../src/runtime/index.js"
-import type { LLMProvider, ProviderMessage, StreamEvent } from "../src/types.js"
+import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 
 describe("Task 21 standalone workflow cutover", () => {
   it("runFanout executes the public context-inheritance template instead of returning empty success", async () => {
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "facade-output", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
@@ -70,7 +70,7 @@ describe("Task 21 standalone workflow cutover", () => {
     }
 
     const provider: LLMProvider = {
-      async complete(): Promise<ProviderMessage> {
+      async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "unused", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
