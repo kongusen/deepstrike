@@ -17,17 +17,26 @@ export interface WorkflowDefinition {
 }
 
 export function lowerWorkflowDefinition(definition: WorkflowDefinition): WorkflowSpec {
+  const entries = Object.entries(definition.steps)
+  const indexById = new Map(entries.map(([nodeId], index) => [nodeId, index]))
   return {
-    nodes: Object.entries(definition.steps).map(([nodeId, step]) => ({
+    nodes: entries.map(([nodeId, step]) => ({
+      ...(() => {
+        const dependsOn = step.dependsOn?.map(dependencyId => {
+          const index = indexById.get(dependencyId)
+          if (index === undefined) throw new Error(`workflow step "${nodeId}" depends on unknown step "${dependencyId}"`)
+          return index
+        })
+        return dependsOn ? { dependsOn } : {}
+      })(),
       nodeId,
       task: { goal: step.input },
-      role: "execute",
+      role: "implement",
       isolation: "read_only",
       contextInheritance: "system_only",
-      dependsOn: step.dependsOn,
       dependencyPolicy: step.dependencyPolicy,
       agent: typeof step.agent === "string" ? step.agent : step.agent.name,
-    } as never)),
+    })),
   }
 }
 

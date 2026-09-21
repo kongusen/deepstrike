@@ -337,8 +337,12 @@ export function workflowNodeStatusFromTermination(termination: TerminationReason
 
 /** One node in a declarative workflow DAG (camelCase host shape). */
 export interface WorkflowNodeSpec {
+  /** Stable public workflow step key; host-only metadata for lowering and diagnostics. */
+  nodeId?: string
   task: WorkflowTaskSpec
   role: KernelAgentRole
+  /** Public workflow binding retained by the host while lowering the node to a kernel agent run. */
+  agent?: string
   isolation?: AgentIsolation
   contextInheritance?: ContextInheritance
   modelHint?: string
