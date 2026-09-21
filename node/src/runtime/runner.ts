@@ -20,6 +20,7 @@ import { extractSessionMemories } from "../memory/extraction.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { Skill } from "../skill.js"
 import type { SkillMetadata } from "../skills/loader.js"
+import type { ContextManager } from "./context-manager.js"
 import type {
   RuntimeSignal,
   RuntimeSignalUrgency,
@@ -367,6 +368,8 @@ export interface RuntimeOptions {
    *  behavior difference. */
   nudges?: NudgeRule[]
   initialMemory?: string[]
+  /** Optional host ledger that admits dynamic context before kernel insertion. */
+  contextManager?: ContextManager
   skillDir?: string
   /** Inline skill catalog. Metadata is exposed at run start; content is loaded only on activation. */
   skillCatalog?: Skill[]
@@ -1174,10 +1177,27 @@ export class RuntimeRunner {
    *  of appending a duplicate. `opts.pinned` exempts the entry from the knowledge-budget sweep. */
   async pushKnowledge(message: ModelMessage, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
     if (!this.activeKernel) return
+    const content = message.content ?? ""
+    const itemId = opts?.key ?? `context:${createHash("sha256").update(content).digest("hex").slice(0, 16)}`
+    if (this.opts.contextManager) {
+      this.opts.contextManager.upsert({
+        id: itemId,
+        kind: opts?.key?.startsWith("skill:") ? "skill" : opts?.key?.startsWith("memory:") ? "memory" : "knowledge",
+        content,
+        scope: opts?.key?.startsWith("skill:") ? "session" : "turn",
+        priority: opts?.pinned ? 100 : 50,
+        pinned: opts?.pinned,
+        source: { type: opts?.key?.split(":", 1)[0] ?? "context", ...(opts?.key ? { id: opts.key } : {}) },
+      })
+      if (!this.opts.contextManager.select().some(item => item.id === itemId)) {
+        this.opts.contextManager.remove(itemId)
+        return
+      }
+    }
     await this.commitKernelApply(this.activeKernel, this.pendingObservations, {
       kind: "add_knowledge_message",
-      content: message.content ?? "",
-      tokens: tokens ?? Math.max(1, Math.ceil((message.content?.length ?? 0) / 4)),
+      content,
+      tokens: tokens ?? Math.max(1, Math.ceil(content.length / 4)),
       ...(opts?.key !== undefined ? { key: opts.key } : {}),
       ...(opts?.pinned ? { pinned: true } : {}),
     })
@@ -1186,6 +1206,7 @@ export class RuntimeRunner {
   /** K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
    *  Errs-open: an unknown key is a kernel-side no-op. */
   async removeKnowledge(key: string): Promise<void> {
+    this.opts.contextManager?.remove(key)
     if (!this.activeKernel) return
     await this.commitKernelApply(this.activeKernel, this.pendingObservations, { kind: "remove_knowledge", key })
   }
@@ -2098,12 +2119,8 @@ export class RuntimeRunner {
     }
 
     if (this.opts.initialMemory) {
-      for (const mem of this.opts.initialMemory) {
-        await this.commitKernelApply(runtime, this.pendingObservations, {
-          kind: "add_knowledge_message",
-          content: mem,
-          tokens: Math.max(1, Math.ceil(mem.length / 4)),
-        })
+      for (const [index, mem] of this.opts.initialMemory.entries()) {
+        await this.pushKnowledge({ role: "system", content: mem, toolCalls: [] }, undefined, { key: `initial:${index}`, pinned: true })
       }
     }
 
@@ -2656,13 +2673,11 @@ export class RuntimeRunner {
                   ?.map(entry => typeof entry === "string" ? entry : entry.content)
                   .filter((entry): entry is string => Boolean(entry)) ?? []
                 const fullContent = [content, ...knowledge].join("\n\n")
-                await this.commitKernelApply(runtime, this.pendingObservations, {
-                  kind: "add_knowledge_message",
-                  key: `skill:${name}`,
-                  content: fullContent,
-                  tokens: Math.max(1, Math.ceil(fullContent.length / 4)),
-                  pinned: true,
-                })
+                await this.pushKnowledge(
+                  { role: "system", content: fullContent, toolCalls: [] },
+                  Math.max(1, Math.ceil(fullContent.length / 4)),
+                  { key: `skill:${name}`, pinned: true },
+                )
               } catch {
                 // A missing or malformed skill stays a model-visible syscall rejection.
               }
