@@ -48,7 +48,7 @@ describe("createAgent", () => {
     expect(seen[0]).not.toContain("hidden")
   })
 
-  it("projects inline skills and text knowledge into the first context", async () => {
+  it("keeps inline skills and text knowledge out of the first context until activated", async () => {
     const provider = new ReplayProvider([{ role: "assistant", content: "done" }])
     let knowledge = ""
     const originalStream = provider.stream.bind(provider)
@@ -65,8 +65,8 @@ describe("createAgent", () => {
 
     await agent.run("answer")
 
-    expect(knowledge).toContain("Cite every claim.")
-    expect(knowledge).toContain("Project code: K-42")
+    expect(knowledge).not.toContain("Cite every claim.")
+    expect(knowledge).not.toContain("Project code: K-42")
   })
 
   it("lowers executable guardrails into the existing governance policy", async () => {

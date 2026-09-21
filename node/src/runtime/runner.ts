@@ -18,6 +18,8 @@ import type {
 } from "../memory/protocols.js"
 import { extractSessionMemories } from "../memory/extraction.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
+import type { Skill } from "../skill.js"
+import type { SkillMetadata } from "../skills/loader.js"
 import type {
   RuntimeSignal,
   RuntimeSignalUrgency,
@@ -366,6 +368,8 @@ export interface RuntimeOptions {
   nudges?: NudgeRule[]
   initialMemory?: string[]
   skillDir?: string
+  /** Inline skill catalog. Metadata is exposed at run start; content is loaded only on activation. */
+  skillCatalog?: Skill[]
   /** Host-layer allowlist over the `skillDir` catalog by skill NAME. When set, only scanned skills
    *  whose name is listed are fed to the kernel via `set_available_skills` (the manifest layer
    *  intersects onto this host baseline in `applyManifest`). Absent ⇒ zero behavior difference (all
@@ -2103,9 +2107,19 @@ export class RuntimeRunner {
       }
     }
 
-    if (this.opts.skillDir) {
+    if (this.opts.skillDir || this.opts.skillCatalog?.length) {
       const { scanSkillDir } = await import("../skills/loader.js")
-      const metas = await scanSkillDir(this.opts.skillDir)
+      const metas: SkillMetadata[] = [
+        ...(this.opts.skillDir ? await scanSkillDir(this.opts.skillDir) : []),
+        ...(this.opts.skillCatalog ?? []).map(skill => ({
+          name: skill.name,
+          description: skill.description ?? "",
+          ...(skill.metadata?.whenToUse ? { whenToUse: String(skill.metadata.whenToUse) } : {}),
+          ...(skill.metadata?.effort !== undefined ? { effort: Number(skill.metadata.effort) } : {}),
+          ...(skill.metadata?.estimatedTokens !== undefined ? { estimatedTokens: Number(skill.metadata.estimatedTokens) } : {}),
+          ...(skill.tools?.length ? { allowedTools: skill.tools.map(tool => typeof tool === "string" ? tool : tool.name) } : {}),
+        })),
+      ]
       // S2 host-layer skill allowlist: keep only scanned skills named in `skillFilter` before feeding
       // the catalog. Absent ⇒ feed all (identical to the pre-feature message); empty ⇒ feed none. The
       // `set_available_skills` message is ALWAYS sent when a skillDir exists (shape preserved) — only
@@ -2625,7 +2639,7 @@ export class RuntimeRunner {
           ...(turnOutputTokens > 0 ? { observed_output_tokens: settlement?.observed_output_tokens ?? turnOutputTokens } : {}),
           ...(turnStopReason ? { stop_reason: turnStopReason } : {}),
         }
-        if (this.opts.skillDir) {
+        if (this.opts.skillDir || this.opts.skillCatalog?.length) {
           const skillCalls = finalToolCalls.filter(call => call.name === "skill")
           if (skillCalls.length > 0) {
             const { readSkillFile } = await import("../skills/loader.js")
@@ -2634,13 +2648,19 @@ export class RuntimeRunner {
                 const name = String((JSON.parse(call.arguments || "{}") as { name?: unknown }).name ?? "")
                 if (!name) continue
                 if (this.opts.skillFilter && !this.opts.skillFilter.includes(name)) continue
-                const content = await readSkillFile(this.opts.skillDir, name)
+                const inline = this.opts.skillCatalog?.find(skill => skill.name === name)
+                const content = inline?.instructions
+                  ?? (this.opts.skillDir ? await readSkillFile(this.opts.skillDir, name) : null)
                 if (!content) continue
+                const knowledge = inline?.knowledge
+                  ?.map(entry => typeof entry === "string" ? entry : entry.content)
+                  .filter((entry): entry is string => Boolean(entry)) ?? []
+                const fullContent = [content, ...knowledge].join("\n\n")
                 await this.commitKernelApply(runtime, this.pendingObservations, {
                   kind: "add_knowledge_message",
                   key: `skill:${name}`,
-                  content,
-                  tokens: Math.max(1, Math.ceil(content.length / 4)),
+                  content: fullContent,
+                  tokens: Math.max(1, Math.ceil(fullContent.length / 4)),
                   pinned: true,
                 })
               } catch {
