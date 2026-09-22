@@ -1,0 +1,12 @@
+{
+  "id": "skill.activation",
+  "source": { "layer": "runtime", "type": "SkillPackage", "authority": "host-runtime" },
+  "target": { "layer": "runtime", "type": "ActivatedSkill", "authority": "host-runtime" },
+  "crossing": { "direction": "runtime_internal", "verb": "project", "function": "activateSkill" },
+  "preserves": ["skill_identity", "digest", "allowed_tools"],
+  "drops": ["storage_backend", "unread_resource_contents"],
+  "forbidden": ["identity_remint", "kernel_authority", "provider_credentials"],
+  "kernel": { "crosses": false },
+  "lossiness": "intentional",
+  "implementation": { "file": "node/src/skill.ts", "symbol": "activateSkill" }
+}

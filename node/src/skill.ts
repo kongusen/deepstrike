@@ -1,5 +1,6 @@
-import { readSkillFile, scanSkillDir, type SkillMetadata } from "./skills/loader.js"
+import { loadSkillPackage, readSkillFile, readSkillResource, scanSkillDir, type SkillMetadata, type SkillPackage, type SkillResourceRef } from "./skills/loader.js"
 import path from "node:path"
+export type { SkillPackage } from "./skills/loader.js"
 
 export interface SkillResource { name: string; uri?: string; content?: string; metadata?: Record<string, unknown> }
 export interface SkillScript { name: string; command: string; description?: string; metadata?: Record<string, unknown> }
@@ -19,6 +20,23 @@ export interface Skill {
   knowledge?: SkillKnowledge[]
   metadata?: Record<string, unknown>
   providerOptions?: Record<string, unknown>
+  /** Capability requirements are distinct from bundled package resources. */
+  requires?: {
+    tools?: SkillTool[]
+    mcpServers?: SkillMCPServer[]
+    knowledge?: SkillKnowledge[]
+  }
+}
+
+export interface SkillRevision {
+  ref: SkillRef
+  digest?: string
+}
+
+export interface ActivatedSkill extends SkillRevision {
+  activationId: string
+  activatedAt: number
+  allowedTools?: string[]
 }
 
 /** A source-independent public reference. The runtime resolves it inside a user/tenant scope. */
@@ -28,7 +46,23 @@ export interface SkillRef {
   digest?: string
 }
 
-export type SkillDeclaration = Skill | SkillRef
+export type SkillRefInput = string | SkillRef
+export type SkillDeclaration = Skill | SkillRefInput
+
+function isSkillObject(value: SkillDeclaration): value is Skill {
+  return typeof value === "object" && ["description", "instructions", "resources", "scripts", "tools", "mcpServers", "knowledge", "metadata", "providerOptions", "requires"].some(key => key in value)
+}
+
+export function normalizeSkillRef(input: SkillRefInput): SkillRef {
+  if (typeof input === "string") return { name: input }
+  return { name: input.name, ...(input.version ? { version: input.version } : {}), ...(input.digest ? { digest: input.digest } : {}) }
+}
+
+/** Named L1 crossing: inline declarations become source-independent runtime requirements. */
+export function projectSkillRequirement(input: SkillDeclaration): SkillRef {
+  if (!isSkillObject(input)) return normalizeSkillRef(input)
+  return { name: input.name }
+}
 
 /** Named L1 → L2 crossing for inline declarations. Directory/database sources converge here. */
 export function projectSkillMetadata(skill: Skill): SkillMetadata {
@@ -49,6 +83,24 @@ export interface SkillLoadContext {
 export interface SkillCatalog {
   list(context: SkillLoadContext): Promise<SkillRef[]>
   resolve(ref: SkillRef, context: SkillLoadContext): Promise<Skill>
+}
+
+/** Storage-neutral L2 source. It exposes packages and lazy resource reads, never source details. */
+export interface SkillSource {
+  list(context: SkillLoadContext): Promise<SkillMetadata[]>
+  load(ref: SkillRef, context: SkillLoadContext): Promise<SkillPackage>
+  readResource(pkg: SkillPackage, resource: SkillResourceRef): Promise<Uint8Array>
+}
+
+/** Freeze a resolved package into the run-scoped activation fact. */
+export function activateSkill(pkg: SkillPackage, ref: SkillRef): ActivatedSkill {
+  return Object.freeze({
+    ref: { name: ref.name, ...(pkg.descriptor.version ? { version: pkg.descriptor.version } : {}), ...(pkg.descriptor.digest ? { digest: pkg.descriptor.digest } : {}) },
+    digest: pkg.descriptor.digest,
+    activationId: `skill-${crypto.randomUUID()}`,
+    activatedAt: Date.now(),
+    ...(pkg.descriptor.allowedTools ? { allowedTools: [...pkg.descriptor.allowedTools] } : {}),
+  })
 }
 
 export class InlineSkillCatalog implements SkillCatalog {
@@ -80,10 +132,45 @@ export class DirectorySkillCatalog implements SkillCatalog {
   }
 
   async resolve(ref: SkillRef, context: SkillLoadContext): Promise<Skill> {
+    const pkg = await loadSkillPackage(this.scopedRoot(context), ref.name)
+    if (pkg) {
+      if (ref.version && pkg.descriptor.version !== ref.version) throw new Error(`skill "${ref.name}" does not match requested version "${ref.version}"`)
+      if (ref.digest && pkg.descriptor.digest !== ref.digest) throw new Error(`skill "${ref.name}" does not match requested digest`)
+      return {
+        name: pkg.descriptor.name,
+        description: pkg.descriptor.description,
+        instructions: pkg.instructions,
+        resources: Object.values(pkg.resources).flat().map(resource => ({ name: resource.path, uri: resource.path, metadata: { kind: resource.kind } })),
+        metadata: { version: pkg.descriptor.version, digest: pkg.descriptor.digest },
+      }
+    }
     const skill = await loadSkill(this.scopedRoot(context), ref.name)
     if (!skill) throw new Error(`skill "${ref.name}" was not found for user "${context.userId}"`)
     return skill
   }
+}
+
+export class DirectorySkillSource implements SkillSource {
+  constructor(private readonly root: string) {}
+
+  private scopedRoot(context: SkillLoadContext): string {
+    for (const value of [context.userId, context.tenantId, context.namespace]) {
+      if (value !== undefined && !/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("skill source scope contains an unsafe segment")
+    }
+    return path.join(this.root, context.tenantId ?? "default", context.userId, ...(context.namespace ? [context.namespace] : []))
+  }
+
+  list(context: SkillLoadContext): Promise<SkillMetadata[]> { return scanSkillDir(this.scopedRoot(context)) }
+
+  async load(ref: SkillRef, context: SkillLoadContext): Promise<SkillPackage> {
+    const pkg = await loadSkillPackage(this.scopedRoot(context), ref.name)
+    if (!pkg) throw new Error(`skill "${ref.name}" was not found for user "${context.userId}"`)
+    if (ref.version && pkg.descriptor.version !== ref.version) throw new Error(`skill "${ref.name}" does not match requested version "${ref.version}"`)
+    if (ref.digest && pkg.descriptor.digest !== ref.digest) throw new Error(`skill "${ref.name}" does not match requested digest`)
+    return pkg
+  }
+
+  readResource(pkg: SkillPackage, resource: SkillResourceRef): Promise<Uint8Array> { return readSkillResource(pkg, resource) }
 }
 
 /** Adapter for database-backed or remote catalogs. The storage implementation remains host-owned. */

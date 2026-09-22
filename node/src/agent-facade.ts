@@ -14,7 +14,7 @@ import { EnvCredentialVault } from "./runtime/credential-vault.js"
 import { agentRefName } from "./handoff-target.js"
 import { createTextKnowledgeSource } from "./knowledge/public.js"
 import type { Knowledge } from "./knowledge/public.js"
-import type { Skill, SkillCatalog, SkillDeclaration, SkillLoadContext, SkillRef } from "./skill.js"
+import { normalizeSkillRef, type Skill, type SkillCatalog, type SkillDeclaration, type SkillLoadContext, type SkillRef } from "./skill.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -463,8 +463,9 @@ class AgentRuntimeImpl implements Agent {
 
   private async resolveSkills(): Promise<void> {
     const declarations = this.definition.skills ?? []
-    const refs = declarations.filter((skill): skill is SkillRef => "version" in skill || "digest" in skill)
-    const inline = declarations.filter((skill): skill is Skill => !refs.includes(skill as SkillRef))
+    const refs = declarations.filter((skill): skill is string | SkillRef => typeof skill === "string" || !("instructions" in skill || "description" in skill || "resources" in skill || "scripts" in skill || "tools" in skill || "mcpServers" in skill || "knowledge" in skill || "metadata" in skill || "providerOptions" in skill || "requires" in skill))
+      .map(normalizeSkillRef)
+    const inline = declarations.filter((skill): skill is Skill => typeof skill === "object" && ["description", "instructions", "resources", "scripts", "tools", "mcpServers", "knowledge", "metadata", "providerOptions", "requires"].some(key => key in skill))
     if (refs.length && !this.binding?.skillCatalog) throw new Error(`agent "${this.name}" declares external skills without a skill catalog binding`)
     const loaded = this.binding?.skillCatalog && this.binding.skillContext
       ? await Promise.all(refs.map(ref => this.binding!.skillCatalog!.resolve(ref, this.binding!.skillContext!)))

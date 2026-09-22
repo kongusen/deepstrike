@@ -59,8 +59,8 @@ export type {
 // Parallel fan-out / sub-agent delegation. The full orchestration layer is in `@deepstrike/sdk/workflow`.
 // ── Ecosystem Surface Contract (spc_001) ────────────────────────────────────
 export type { ModelRef, ModelRequirement } from "./agent.js"
-export { DatabaseSkillCatalog, DirectorySkillCatalog, InlineSkillCatalog, ResolverSkillCatalog, projectSkillMetadata } from "./skill.js"
-export type { Skill, SkillCatalog, SkillDeclaration, SkillLoadContext, SkillRef } from "./skill.js"
+export { activateSkill, DatabaseSkillCatalog, DirectorySkillCatalog, DirectorySkillSource, InlineSkillCatalog, normalizeSkillRef, projectSkillMetadata, projectSkillRequirement, ResolverSkillCatalog } from "./skill.js"
+export type { ActivatedSkill, Skill, SkillCatalog, SkillDeclaration, SkillLoadContext, SkillPackage, SkillRef, SkillRefInput, SkillRevision, SkillSource } from "./skill.js"
 export type { Guardrail } from "./guardrail.js"
 export type { MCPServer, McpTransport } from "./mcp-server.js"
 export type { Knowledge, KnowledgeSourceRef } from "./knowledge/public.js"

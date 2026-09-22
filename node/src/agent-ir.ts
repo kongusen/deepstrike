@@ -237,6 +237,6 @@ function declaredCapabilities(spec: AgentSpec): AgentCapabilityIR[] {
       id: server.name ?? server.transport.kind,
       description: server.name ?? `${server.transport.kind} MCP server`,
     })),
-    ...(spec.skills ?? []).map(skill => ({ kind: "skill" as const, id: skill.name, description: "description" in skill ? skill.description ?? "" : "" })),
+    ...(spec.skills ?? []).map(skill => ({ kind: "skill" as const, id: typeof skill === "string" ? skill : skill.name, description: typeof skill === "object" && "description" in skill ? skill.description ?? "" : "" })),
   ]
 }
