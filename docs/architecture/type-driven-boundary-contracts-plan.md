@@ -107,7 +107,7 @@ The first slice does not attempt to migrate all existing crossings or all SDKs.
 - Record which facts were inferred and which required explicit metadata.
 - Decide whether the same mechanism is ready for Agent lowering and Usage settlement.
 
-**Status:** In Progress
+**Status:** Completed
 
 ---
 
@@ -123,9 +123,18 @@ The first slice does not attempt to migrate all existing crossings or all SDKs.
    - Explicit Security Policy: `provider_credentials`, `activation_authority`, `storage_backend`, `user_storage_path`, `source_adapter` explicitly forbidden.
 3. **Runtime Enforcement**: Validator rejects unsafe projections even if TypeScript compilation succeeds (e.g. object spread leaks or dynamic properties).
 
+### Migration comparison
+
+The previous `skill-kernel-projection` contract described a broader `SkillDescriptor → SkillMetadata` crossing and listed instructions, resources, and storage as drops. The typed crossing uses the actual runtime adapter boundary, `SkillMetadata → KernelSkillMetadata`. The former drops therefore do not belong to this projection; they belong to the separate materialization boundary. The new manifest also makes the camelCase-to-snake_case wire renames explicit and expands the kernel security policy.
+
+### Expansion decision
+
+The mechanism is validated for one crossing, but it is not ready to copy directly to Agent lowering or Usage settlement. The checker and generator still select the Skill adapter explicitly, and the protocol runtime mirror remains a temporary loading mechanism. The next increment must make protocol registration and adapter discovery generic before a second crossing is added.
+
 ### Follow-up Refinements Identified
 
-1. **Protocol source loading**: remove the checked-in JavaScript mirror once the repository has a supported TypeScript protocol loading path.
+1. **Generic protocol registry**: discover registered protocols and adapters from one registry instead of hard-coded Skill paths.
+2. **Protocol source loading**: remove the checked-in JavaScript mirror once the repository has a supported TypeScript protocol loading path.
 
 ---
 

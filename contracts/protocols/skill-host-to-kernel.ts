@@ -97,33 +97,3 @@ export const SKILL_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol<
 
   lossiness: "intentional",
 }
-
-/**
- * Type guard to validate that a value conforms to the forbidden policy.
- * Generated validator will be created in Task 4.
- */
-export function validateSkillKernelCrossing(result: unknown): void {
-  if (typeof result !== "object" || result === null) {
-    throw new Error("Skill kernel projection must be an object")
-  }
-
-  const obj = result as Record<string, unknown>
-
-  // Check forbidden fields
-  for (const field of SKILL_HOST_TO_KERNEL_PROTOCOL.fields.forbidden) {
-    if (field in obj) {
-      throw new Error(
-        `Forbidden field leaked across skill kernel boundary: ${field}`
-      )
-    }
-  }
-
-  // Check required preserved fields
-  for (const field of SKILL_HOST_TO_KERNEL_PROTOCOL.fields.preserves ?? []) {
-    if (!(field in obj)) {
-      throw new Error(
-        `Required preserved field missing from skill kernel projection: ${field}`
-      )
-    }
-  }
-}
