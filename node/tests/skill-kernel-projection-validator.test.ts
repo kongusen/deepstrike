@@ -91,6 +91,28 @@ describe("validateSkillKernelProjection", () => {
     expect(() => validateSkillKernelProjection(leakedProjection)).toThrow(/forbidden field "source_adapter" leaked/i)
   })
 
+  it("rejects lazy field materialization: instructions", () => {
+    const materialized = {
+      name: "test-skill",
+      description: "A test skill",
+      estimated_tokens: 1000,
+      instructions: "full skill body", // lazy — loads on activation, never crosses in metadata
+    }
+
+    expect(() => validateSkillKernelProjection(materialized)).toThrow(/lazy field "instructions" must not be materialized/i)
+  })
+
+  it("rejects lazy field materialization: resource_contents", () => {
+    const materialized = {
+      name: "test-skill",
+      description: "A test skill",
+      estimated_tokens: 1000,
+      resource_contents: [{ path: "references/api.md", content: "..." }], // lazy
+    }
+
+    expect(() => validateSkillKernelProjection(materialized)).toThrow(/lazy field "resource_contents" must not be materialized/i)
+  })
+
   it("rejects missing required field: name", () => {
     const incompleteProjection = {
       description: "A test skill",

@@ -12,6 +12,12 @@ const FORBIDDEN_FIELDS = [
   "user_storage_path",
   "source_adapter"
 ] as const
+const LAZY_FIELDS = [
+  "instructions",
+  "resource_contents",
+  "scripts",
+  "assets"
+] as const
 const REQUIRED_PRESERVED_FIELDS = [
   "name",
   "description"
@@ -59,6 +65,13 @@ export function validateSkillKernelProjection(
     if (field in object) {
       throw new Error(
         `Skill kernel projection validation failed: forbidden field "${field}" leaked across boundary.`,
+      )
+    }
+  }
+  for (const field of LAZY_FIELDS) {
+    if (field in object) {
+      throw new Error(
+        `Skill kernel projection validation failed: lazy field "${field}" must not be materialized in the kernel metadata projection (progressive disclosure).`,
       )
     }
   }

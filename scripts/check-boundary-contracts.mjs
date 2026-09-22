@@ -135,6 +135,15 @@ function inspectFields(checker, declaration, sourceType, targetType) {
   for (const [sourceField, targetField] of Object.entries(protocol.fields.renames ?? {})) {
     if (!sourceNames.has(sourceField)) fail(`rename source "${sourceField}" is absent from source type`)
     if (!targetNames.has(targetField)) fail(`rename target "${targetField}" is absent from target type`)
+    const sourceProperty = sourceProperties.find(property => property.name === sourceField)
+    const targetProperty = targetProperties.find(property => property.name === targetField)
+    const sourcePropertyType = checker.getTypeOfSymbolAtLocation(sourceProperty.symbol, declaration)
+    const targetPropertyType = checker.getTypeOfSymbolAtLocation(targetProperty.symbol, declaration)
+    // Renames may tighten optionality (e.g. `estimatedTokens?: number` → `estimated_tokens: number`
+    // through an explicit default), so compare with undefined stripped from both sides.
+    if (!checker.isTypeAssignableTo(checker.getNonNullableType(sourcePropertyType), checker.getNonNullableType(targetPropertyType))) {
+      fail(`rename "${sourceField}" → "${targetField}" changes the field type: ${typeName(checker, sourcePropertyType)} is not assignable to ${typeName(checker, targetPropertyType)}`)
+    }
   }
   for (const field of protocol.fields.derived ?? []) {
     if (!targetNames.has(field)) fail(`derived field "${field}" is absent from target type`)
@@ -197,6 +206,10 @@ function generateValidator(fields) {
   const required = JSON.stringify(fields.requiredPreserves, null, 2)
   const allowed = JSON.stringify(fields.targetProperties.map(property => property.name), null, 2)
   const shapes = JSON.stringify(Object.fromEntries(fields.targetProperties.map(property => [property.name, runtimeShape(property.type)])), null, 2)
+  // Progressive disclosure: when the crossing preserves lazy semantics, lazy content fields
+  // must never appear in the projection — metadata crosses, content loads on activation.
+  const lazyFields = protocol.lazy.lazySemantics === "preserve" ? (protocol.lazy.lazyFields ?? []) : []
+  const lazy = JSON.stringify(lazyFields, null, 2)
   return `/**
  * Generated runtime validator for the skill host-to-kernel boundary.
  * DO NOT EDIT BY HAND - regenerate with: npm run contracts:check
@@ -205,6 +218,7 @@ function generateValidator(fields) {
 import type { KernelSkillMetadata } from "../kernel-step.js"
 
 const FORBIDDEN_FIELDS = ${forbidden} as const
+const LAZY_FIELDS = ${lazy} as const
 const REQUIRED_PRESERVED_FIELDS = ${required} as const
 const ALLOWED_TARGET_FIELDS = ${allowed} as const
 const TARGET_FIELD_SHAPES = ${shapes} as const
@@ -233,6 +247,13 @@ export function validateSkillKernelProjection(
     if (field in object) {
       throw new Error(
         \`Skill kernel projection validation failed: forbidden field "\${field}" leaked across boundary.\`,
+      )
+    }
+  }
+  for (const field of LAZY_FIELDS) {
+    if (field in object) {
+      throw new Error(
+        \`Skill kernel projection validation failed: lazy field "\${field}" must not be materialized in the kernel metadata projection (progressive disclosure).\`,
       )
     }
   }
