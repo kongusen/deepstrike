@@ -7,6 +7,7 @@
 2. **真实的跨层函数共 16 处**（下表），其中 4 处已强类型化，12 处返回 `Record<string, unknown>`。
 3. **provider 线格式不是契约面**——encode/decode 是 adapter-local 的 vendor 特化（刻意设计）；契约落在类型化的 plan/normalize/settle 层。
 4. **废弃分支发明的 `SkillSource` 四阶阶梯（SkillDeclaration→SkillRef→SkillRevision→SkillPackage）在 v0.2.73 不存在**，不予注册。协议只覆盖真实存在的 crossing。
+5. **Boundary A 存在双降级分叉**：类型化的 `lowerAgent → AgentSpec → projectAgent*` 在运行时无消费方（仅 conformance），真实 run 路径手写内联降级且两链覆盖面已分叉。P2 必须先收敛再注册，否则契约守护旁路。
 
 ## 一、四层语言 → 实际代码映射
 
@@ -101,3 +102,151 @@
 - **`SkillSource` 阶梯**：v0.2.73 不存在，不预建架构。
 - **`encodeCanonicalContentParts`**：内容编解码（base64 容器），无语义字段可推断。
 - **`projectAgent*` 五投影**：同一 `AgentSpec` 内部的切片视图，权威未移动；若未来需要，走 runtime-internal 族再议。
+
+## 七、附图
+
+### 图一：四层架构与三条语言边界全景
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  PUBLIC 层（public-agent 权威）— 用户声明语言                                 │
+│  Agent · Skill · Tool · Memory · Knowledge · MCPServer · Handoff · Eval      │
+│  落点: agent-facade.ts(Agent/AgentDefinition) · skill.ts(Skill) · evals/     │
+└──────────────────────────────────┬──────────────────────────────────────────┘
+                    ═══════════════╪══════════════════════════════════════════
+                    ║  BOUNDARY A: public|host · verb=lower · 唯一 crossing      ║
+                    ╚═══════════════════════════════════════════════════════════╝
+                                     │  ① Agent → AgentSpec  (lowerAgent ⚠️旁路)
+┌──────────────────────────────────┴──────────────────────────────────────────┐
+│  HOST 层（host-runtime 权威）— 执行语言                                       │
+│  AgentSpec · RenderedContext · SkillMetadata · ProviderRequestPlan           │
+│  NormalizedProviderUsage · ModelUsageSettlement · ProviderAttempt            │
+│  落点: agent-ir.ts · runner.ts · skills/loader.ts · providers/request-plan.ts│
+│       · runtime/execution-evidence.ts                                        │
+│                                                                             │
+│   ┌───────────── BOUNDARY B: host|kernel（syscall 膜）─────────────────┐     │
+│   │                                                                    │     │
+│   │  project 下沉（host→kernel）      decode 观察重建（kernel→host）    │     │
+│   │  ② skillMetadataToKernel ✅       ⑨ entropySampleFromObservation ✅│     │
+│   │  ③ messageToKernelMessage         ⑩ kernelMessageToSdk             │     │
+│   │  ④ toolSchemaToKernel             ⑪ renderedContextToSdk           │     │
+│   │  ⑤ toolResultToKernel                                             │     │
+│   │  ⑥ taskUpdateToKernel                                             │     │
+│   │  ⑦ capability* ×5（tool/skill/marker/mount/unmount）               │     │
+│   │  ⑧ encodeCanonicalContentParts（编解码，非语义）                    │     │
+└───┴──────────────────────────────────┬──────────────────────────────────┴─────┘
+                                       │
+                        ┌──────────────┴──────────────┐
+                        │  KERNEL 层（kernel 权威）     │
+                        │  Rust canonical ABI          │
+                        │  TS 侧按设计无类型（wire      │
+                        │  Record）；唯一身份铸造方      │
+                        │  （EffectId 禁宿主铸造）       │
+                        └─────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  BOUNDARY C: host|provider（vendor 膜）— 契约在语义点，不在 wire              │
+│                                                                             │
+│   ⑫ normalizeProviderUsage ✅      （ProviderUsage → Normalized）             │
+│   ⑬ UsageAccountingPolicy.settle ✅（Normalized → ModelUsageSettlement）      │
+│   ⑭ createProviderRequestPlan ✅   （RenderedContext+tools → Plan）           │
+│   ⑮ vendor wire 编解码 ────────── ✗ 不注册：adapter-local、vendor 特化是设计   │
+│                                                                             │
+│  ┌────────────────────────────────────────────────────────────────┐         │
+│  │  PROVIDER 层（provider 权威）：anthropic.ts · openai-chat.ts ·  │         │
+│  │  gemini.ts · ollama.ts（Template Method 钩子，wire opaque）      │         │
+│  └────────────────────────────────────────────────────────────────┘         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  ✅ = 已强类型化（4 处）    ⚠️ = 存在但运行时旁路    其余 = Record<string,unknown>
+```
+
+### 图二：一次真实 run 的数据流（实路线与旁路）
+
+```
+ user: agent.run("...")
+   │
+   ▼
+┌─────────────────────────── PUBLIC ───────────────────────────┐
+│ AgentRuntimeImpl.run()                                       │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+            ┌──────────────┴───────────────┐
+            │   BOUNDARY A 双链分叉 ⚠️      │
+            ▼                              ▼
+   ┌─ 实路线（内联手写）────────┐   ┌─ 旁路（已类型化，无人调用）─┐
+   │ this.definition 直读×30   │   │ lowerAgent() → AgentSpec   │
+   │ instructions+outputSchema │   │ projectAgentRun/Context/   │
+   │   → systemPrompt          │   │   Capabilities/Governance/ │
+   │ skills → skillCatalog     │   │   Delegation               │
+   │ knowledge → knowledgeSrc  │   │ （仅 conformance 消费）     │
+   │ handoffs → delegate() 内联│   └────────────────────────────┘
+   └──────────────┬────────────┘
+                  ▼
+┌─────────────────────────── HOST ─────────────────────────────┐
+│ RuntimeRunner 主循环（每 turn）：                             │
+│                                                              │
+│  render → RenderedContext ──→ createProviderRequestPlan ⑭   │
+│            │                              │                  │
+│            │            BOUNDARY C        ▼                  │
+│            │        vendor wire（opaque，不注册）             │
+│            │                              │                  │
+│            │      UsageEvent/ProviderUsage ◀─┘                │
+│            │                   │                              │
+│            │        normalizeProviderUsage ⑫                 │
+│            │                   │                              │
+│            │        UsageAccountingPolicy.settle ⑬ → Settlement│
+└────────────┼───────────────────┼──────────────────────────────┘
+             │ BOUNDARY B        │
+             ▼ project 下沉      ▼
+   ┌──────────────────────────────────────────────┐
+   │ kernel step（syscall）：                      │
+   │  messageToKernelMessage ③  每条消息           │
+   │  toolSchemaToKernel ④     executionPlane 全量│
+   │  skillMetadataToKernel ②  激活时              │
+   │  taskUpdateToKernel ⑥ / capability* ⑦        │
+   └──────────────┬───────────────────────────────┘
+                  ▼
+           ┌───────────── KERNEL（Rust ABI）──────┐
+           │ 铸 EffectId · 记 Journal · 观察       │
+           └──────────────┬───────────────────────┘
+                                 │ KernelObservation
+                                 ▼
+                  entropySampleFromObservation ⑨ → EntropySample
+                  （⑩⑪ journal→ModelMessage/RenderedContext
+                    = 恢复/重放路径的 decode）
+```
+
+### 图三：Boundary A 双降级分叉（P2 前置收敛的目标）
+
+```
+            AgentDefinition（public 声明）
+                    │
+        ┌───────────┴────────────┐
+        ▼                        ▼
+  实路线：内联降级          形式链：lowerAgent
+  （agent-facade.ts:395-434）（agent-ir.ts:168，已类型化）
+        │                        │
+        │ systemPrompt 拼接       │ AgentSpec{instructions,
+        │ skillCatalog            │   outputSchema, tools, ...}
+        │ knowledgeSource         │        │
+        │ governancePolicy        │        ▼
+        │ memoryStore/Scope ✓     │ 5× projectAgent*
+        │ maxTokens ✓             │ （memory ✗ maxTokens ✗）
+        │ capabilityFilter ✓      │
+        │ handoffs: delegate 内联  │ handoffs: projectAgentDelegation
+        ▼                        ▼
+     RuntimeOptions          AgentLoweringInputs
+        │                        │
+        │  实际执行 ✓             │  无人调用 ✗（仅 conformance）
+        └────────────────────────┘
+         两链覆盖面已分叉 = 静默漂移温床
+         这正是契约系统存在要防的事
+```
+
+**P2 前置收敛的两个方向**（待拍板）：
+
+1. **提取内联链**：把 facade 内联降级提取为唯一命名函数并让 run 路径真实消费（或让 `lowerAgent` 收编它）——改动集中在 agent-facade，中等工作量。
+2. **先注册 B/C 边界**：P3（kernel 投影族）与 P5（provider 语义点）不受分叉影响，先推进，Boundary A 收敛单独立项。
+
+倾向方向 1：契约系统的价值在守护真实路径，绕开最关键的 A 边界会让体系缺一角。
