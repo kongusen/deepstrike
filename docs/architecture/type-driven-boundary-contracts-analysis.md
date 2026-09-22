@@ -7,7 +7,7 @@
 2. **主流程真实的跨层函数共 16 处**（下表），其中 4 处已强类型化，12 处返回 `Record<string, unknown>`；子系统深化另查明 Memory/Context/Workflow/Events/Signals 的 crossing（M1–M5、CT1–CT4、WF1–WF2、EV1、S1–S6，见第八节）。
 3. **provider 线格式不是契约面**——encode/decode 是 adapter-local 的 vendor 特化（刻意设计）；契约落在类型化的 plan/normalize/settle 层。
 4. **废弃分支发明的 `SkillSource` 四阶阶梯（SkillDeclaration→SkillRef→SkillRevision→SkillPackage）在 v0.2.73 不存在**，不予注册。协议只覆盖真实存在的 crossing。
-5. **Boundary A 存在双降级分叉**：类型化的 `lowerAgent → AgentSpec → projectAgent*` 在运行时无消费方（仅 conformance），真实 run 路径手写内联降级且两链覆盖面已分叉。P2 必须先收敛再注册，否则契约守护旁路。
+5. **Boundary A 存在双降级分叉**：类型化的 `lowerAgent → AgentSpec → projectAgent*` 在运行时无消费方（仅 conformance），真实 run 路径手写内联降级且两链覆盖面已分叉。P2 必须先收敛再注册，否则契约守护旁路。**已裁决（2026-09-22）：舍弃旁路、实路线提取**（裁决全文见图三后）。
 6. **Memory 的信任边界在过界瞬间盖章**：`MemoryProvenance`（author/trust）不在 wire 也不在 public 参数里，由宿主在数据过界瞬间按来源赋值（model→`untrusted`，public 直写→`user_asserted`）——信任级是**路径属性**不是数据属性；协议模型的 `derived` 字段族需支持 crossing-time derivation（第八节 8.1）。
 7. **Context 渲染权威在 kernel**：`call_provider` effect 携带每 turn 渲染好的 context，host 解码后再 plan——⑩⑪ 是**每 turn 热路径**而非恢复/重放路径；`configure_run` 是**复合配置 crossing**（一次过界捆绑 governance/context_policy/reliability/signal_policy 四子政策）。
 8. **"一协议多 adapter"是机制级需求**：capability 族（1 协议 5 adapter）、`configure_run`（4 子政策）、events（约 19 个 yield 点）三个真实现场都要求多 adapter 支持，应在 P3 前升格为前置机制任务（第八节 8.6）。
@@ -34,7 +34,7 @@
 
 唯一入口；`createAgent` 只是句柄包装，真正的语义降级全在 `lowerAgent` + 5 个 `projectAgent*` 投影（run/context/capabilities/governance/delegation）。
 
-**⚠️ 现场警示（双降级分叉）**：`lowerAgent`/`projectAgent*` 在运行时路径上**没有消费方**——只有 conformance 与 advanced/runtime 公共再导出引用它们。真实 run 路径（`AgentRuntimeImpl`/`AgentSessionImpl`）直接读 `this.definition`（30 处），在构造 `RuntimeOptions` 时**手写内联降级**：`instructions+outputSchema→systemPrompt`、`skills→skillCatalog`、`knowledge→knowledgeSource`、`guardrails→governancePolicy`、`handoffs→delegate()` 内联消费、`memoryStore/memoryScope/maxTokens/capabilityFilter` 直通。两条降级链覆盖面已经分叉（`projectAgent*` 不管 memory/maxTokens；内联链不用 AgentSpec），正是契约系统要防的静默漂移。**P2 注册前必须先收敛**（见路线修订）。
+**⚠️ 现场警示（双降级分叉）**：`lowerAgent`/`projectAgent*` 在运行时路径上**没有消费方**——只有 conformance 与 advanced/runtime 公共再导出引用它们。真实 run 路径（`AgentRuntimeImpl`/`AgentSessionImpl`）直接读 `this.definition`（30 处），在构造 `RuntimeOptions` 时**手写内联降级**：`instructions+outputSchema→systemPrompt`、`skills→skillCatalog`、`knowledge→knowledgeSource`、`guardrails→governancePolicy`、`handoffs→delegate()` 内联消费、`memoryStore/memoryScope/maxTokens/capabilityFilter` 直通。两条降级链覆盖面已经分叉（`projectAgent*` 不管 memory/maxTokens；内联链不用 AgentSpec），正是契约系统要防的静默漂移。**P2 注册前必须先收敛**——已裁决：舍弃旁路、实路线提取（见图三后裁决）。
 
 ### Boundary B：host → kernel（verb: project）
 
@@ -161,7 +161,7 @@ createAgent(definition)
 | 批次 | 协议 | 前置工作 |
 |---|---|---|
 | ✅ P1 | `skill.host-to-kernel` | 无（试点） |
-| P2 | `agent.public-to-host` | **先收敛双降级**：把 facade 内联降级提取为唯一命名函数并让 run 路径真实消费它（或让 `lowerAgent` 成为唯一实现），再注册契约——否则契约守护的是旁路 |
+| P2 | `agent.public-to-host` | **已裁决（2026-09-22）**：提取 facade 内联降级为唯一命名函数（行为等价）→ 补行为测试 → 修三点一 P0/P1 → 注册；`lowerAgent`/`projectAgent*` 走 deprecation 窗退役（裁决全文见图三后） |
 | P3 | kernel 投影族：`message` / `tool-schema` / `tool-result` / `task-update` | 每个需先补 `Kernel*` 命名目标类型（复制 `KernelSkillMetadata` 模式）；capability 族作为一个协议、五个 adapter，需先扩展机制支持多 adapter |
 | P4 | kernel 观察面：`entropy` / `kernel-message` / `rendered-context` decode | ⑩⑪ 已确认为**每 turn 热路径**（8.2），必须契约化；需补 `Kernel*` 命名目标类型（同 P3 模式） |
 | P5 | provider 语义点：`usage-normalize` / `usage-settle` / `request-plan` | 已类型化；settle 的 forbidden（pricing_authority）直接沿用旧裁决 |
@@ -325,12 +325,28 @@ createAgent(definition)
          这正是契约系统存在要防的事
 ```
 
-**P2 前置收敛的两个方向**（待拍板）：
+**P2 收敛裁决（2026-09-22 已拍板）：舍弃旁路，从实路线着手**——不吸收 `lowerAgent`，而是退役它。
 
-1. **提取内联链**：把 facade 内联降级提取为唯一命名函数并让 run 路径真实消费（或让 `lowerAgent` 收编它）——改动集中在 agent-facade，中等工作量。
-2. **先注册 B/C 边界**：P3（kernel 投影族）与 P5（provider 语义点）不受分叉影响，先推进，Boundary A 收敛单独立项。
+退役面（已核实）：
 
-倾向方向 1：契约系统的价值在守护真实路径，绕开最关键的 A 边界会让体系缺一角。三点一审计强化此判定：审计给出的修复前置顺序（1→5）即收敛路线，且 P0 级工具暴露缺陷（三点一.2）证明旁路已产生真实行为错误，不只是"漂移风险"。
+| 面 | 内容 |
+|---|---|
+| node | agent-ir.ts（`lowerAgent`/`projectAgent*`/`AgentSpec`）+ conformance.ts:5 再导出 + runtime/public.ts:18 与 advanced/public.ts:22 五投影再导出 + runtime-language.ts:15 / runtime-classification.ts:22 词表登记 + 5 个测试文件（agent-ir / agent-ir-conformance / agent-projections / agent-definition-contract / runtime-classification） |
+| wasm | agent-ir.ts 移植副本 + index.ts:133/135 再导出 |
+| rust | 仅 sdk-conformance.rs 夹具镜像 |
+| python | 无 formal 链，零动作 |
+
+实施顺序：
+
+1. **提取**：把 `createRunner()` 内联降级块（agent-facade.ts:372-433）提取为唯一命名函数（行为等价纯重构），run 路径消费它——它同时成为 `agent.public-to-host` 的注册 adapter。
+2. **补行为测试**（三点一修复顺序第 1 步落在该缝上）：工具暴露 / capability filter / providerExtensions / guardrail 优先级 / memory / handoff target。
+3. **修审计缺陷**：P0（baselineToolIds 未绑定→provider 空工具集）、providerOptions 透传、声明式 memory 绑定——在新函数处集中修复。
+4. **注册** `agent.public-to-host`（新函数为 adapter）。
+5. **退役旁路**：按 0.2.67 双写窗纪律——doc 级 `@deprecated`（conformance 保留至窗末），下一 minor 按 DEL 清单删除上表全部面；runtime/advanced 再导出与两处词表登记同步标注。
+
+与三点一修复顺序的衔接：第 2-3 步"分离 definition/binding、生成不可变规范化计划、唯一 `bindAgent`"的**概念保留**，但规范化计划类型由新函数新建承载，不复用 agent-ir.ts 的 `AgentSpec`——避免新权威与退役面纠缠同名。
+
+裁决理由：漂移源是"存在两个实现"，不是行进方向。删除未用实现使漂移在**构造上不可能**；吸收式收敛反而要先扩 `lowerAgent` 覆盖面（memory/maxTokens/capabilityFilter/handoffs 内联）再改写热路径，是侵入性最高的路。保留死的形式 IR 即"为契约造架构"，正是本次重做要根除的偏差模式；且 P0 级缺陷（三点一.2）证明修复精力应全部投在实路线。
 
 ## 八、子系统深化：Memory / Context / Workflow / Eval / Events（2026-09-22）
 
