@@ -49,11 +49,6 @@ export const SKILL_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol<
   },
 
   fields: {
-    // Exact preserves (same name in both types):
-    // - name, description are skill identity
-    // These will be verified by type inspector in Task 3
-    preserves: ["name", "description"],
-
     // Renames (camelCase → snake_case for kernel wire):
     renames: {
       whenToUse: "when_to_use",

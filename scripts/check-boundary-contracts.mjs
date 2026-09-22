@@ -152,7 +152,12 @@ function inspectFields(checker, declaration, sourceType, targetType) {
     .filter(property => !targetNames.has(property.name) && !renamedSourceFields.has(property.name))
     .map(property => property.name)
 
-  return { sourceProperties, targetProperties, inferredPreserves, inferredDrops }
+  const requiredPreserves = inferredPreserves.filter(name => {
+    const sourceProperty = sourceProperties.find(property => property.name === name)
+    const targetProperty = targetProperties.find(property => property.name === name)
+    return sourceProperty && targetProperty && !sourceProperty.optional && !targetProperty.optional
+  })
+  return { sourceProperties, targetProperties, inferredPreserves, requiredPreserves, inferredDrops }
 }
 
 function generateManifest(checker, declaration, signature, fields) {
@@ -188,7 +193,7 @@ function generateManifest(checker, declaration, signature, fields) {
 
 function generateValidator(fields) {
   const forbidden = JSON.stringify(protocol.fields.forbidden, null, 2)
-  const required = JSON.stringify(protocol.fields.preserves ?? [], null, 2)
+  const required = JSON.stringify(fields.requiredPreserves, null, 2)
   const allowed = JSON.stringify(fields.targetProperties.map(property => property.name), null, 2)
   return `/**
  * Generated runtime validator for the skill host-to-kernel boundary.

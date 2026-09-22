@@ -121,6 +121,7 @@ The first slice does not attempt to migrate all existing crossings or all SDKs.
    - Inferred Renames: `whenToUse` → `when_to_use`, `estimatedTokens` → `estimated_tokens`, `allowedTools` → `allowed_tools`, `capabilityGrants` → `capability_grants`
    - Inferred Drops: none (all fields preserved or renamed)
    - Explicit Security Policy: `provider_credentials`, `activation_authority`, `storage_backend`, `user_storage_path`, `source_adapter` explicitly forbidden.
+   - No `preserves` list is authored in the protocol; exact compatible fields and required preserved fields come from the types.
 3. **Runtime Enforcement**: Validator rejects unsafe projections even if TypeScript compilation succeeds (e.g. object spread leaks or dynamic properties).
 
 ### Migration comparison
