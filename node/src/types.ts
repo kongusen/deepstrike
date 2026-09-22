@@ -402,7 +402,7 @@ export interface RetryConfig {
  */
 export type ProviderRunState = Record<string, unknown>
 
-export type ProviderProtocol =
+export type GenerationProtocol =
   | "anthropic-messages"
   | "openai-chat"
   | "openai-responses"
@@ -444,7 +444,7 @@ export type CacheBreakpointStrategy =
 
 export interface ProviderDescriptor {
   provider: string
-  protocol: ProviderProtocol
+  protocol: GenerationProtocol
   model: string
   reasoning: {
     supported: boolean
@@ -460,7 +460,7 @@ export interface ProviderDescriptor {
 /** Provider-native fields required to replay a turn across requests (thinking blocks, reasoning_content, etc.). */
 export interface ProviderReplay {
   provider?: string
-  protocol: ProviderProtocol
+  protocol: GenerationProtocol
   model?: string
   /** Anthropic-style assistant content blocks (thinking, text, tool_use). */
   native_blocks?: Array<Record<string, unknown>>

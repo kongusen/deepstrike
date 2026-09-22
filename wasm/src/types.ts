@@ -163,7 +163,7 @@ export interface EntropyWatchOptions {
  */
 export type ProviderRunState = Record<string, unknown>
 
-export type ProviderProtocol =
+export type GenerationProtocol =
   | "anthropic-messages"
   | "openai-chat"
   | "openai-responses"
@@ -184,7 +184,7 @@ export type CacheBreakpointStrategy =
 
 export interface ProviderDescriptor {
   provider: string
-  protocol: ProviderProtocol
+  protocol: GenerationProtocol
   model: string
   reasoning: {
     supported: boolean
@@ -210,7 +210,7 @@ export interface PromptMeasurement {
 
 export interface ProviderReplay {
   provider?: string
-  protocol: ProviderProtocol
+  protocol: GenerationProtocol
   model?: string
   native_blocks?: Array<Record<string, unknown>>
   reasoning_content?: string
@@ -221,7 +221,7 @@ export interface ProviderReplay {
 
 /** P3 §3.3 (D1) mirror of the node ProviderWireEvidence — SessionLog wire evidence bundle. */
 export interface ProviderWireEvidence {
-  protocol: ProviderProtocol
+  protocol: GenerationProtocol
   /** → ProviderRequestPlan.fingerprint. Mandatory non-empty (G2). */
   request_fingerprint: string
   response_id?: string

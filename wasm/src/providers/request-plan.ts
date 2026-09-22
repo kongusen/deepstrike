@@ -1,4 +1,4 @@
-import type { ProviderProtocol, RenderedContext, ToolSchema } from "../types.js"
+import type { GenerationProtocol, RenderedContext, ToolSchema } from "../types.js"
 import { sha256Hex } from "../runtime/sha256.js"
 
 export interface ProviderRequestEndpoint { id: string; protocol: string; baseURL: string }
@@ -38,7 +38,7 @@ export interface ResolvedProviderRoute {
   request_fingerprint_scope?: "encoded_body" | "adapter_input"
   routeId: string
   provider: string
-  protocol: ProviderProtocol
+  protocol: GenerationProtocol
   model: string
   endpoint: ProviderRequestEndpoint
   adapterVersion: string
@@ -207,7 +207,7 @@ export function resolveProviderRoute(provider: {
     const protocolRaw = identity?.endpoint?.protocol ?? descriptor.protocol
     // Evidence records what the descriptor said, even when a foreign provider speaks a protocol
     // outside the in-tree vocabulary — the field is a report, not a gate.
-    const protocol = protocolRaw as ProviderProtocol
+    const protocol = protocolRaw as GenerationProtocol
     const route = {
       provider: identity?.providerId ?? descriptor.provider,
       protocol,
@@ -226,7 +226,7 @@ export function resolveProviderRoute(provider: {
   } catch {
     const fallback = {
       provider: "unknown",
-      protocol: "unknown" as ProviderProtocol,
+      protocol: "unknown" as GenerationProtocol,
       model: "unknown",
       endpoint: { id: "unknown", protocol: "unknown", baseURL: "" },
       adapterVersion: "unknown",
