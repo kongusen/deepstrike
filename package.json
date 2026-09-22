@@ -6,6 +6,7 @@
   "scripts": {
     "test:conformance": "node scripts/run-sdk-conformance.mjs",
     "test:conformance:runner": "node --test scripts/run-sdk-conformance.test.mjs",
+    "contracts:check": "node scripts/check-boundary-contracts.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
@@ -13,6 +14,7 @@
     "docs:manifest": "node scripts/extract-symbol-manifest.mjs"
   },
   "devDependencies": {
+    "typescript": "^7.0.2",
     "vitepress": "^1.5.0",
     "vue": "^3.4.21"
   }
