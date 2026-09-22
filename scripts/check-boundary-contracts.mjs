@@ -174,9 +174,75 @@ async function checkSkillHostToKernelAdapter() {
   }
 }
 
+/**
+ * Generate crossing manifest from verification results.
+ */
+function generateManifest(result) {
+  const { adapter, signature, sourceProps, targetProps, protocol } = result
+
+  // Infer exact preserves (fields with same name in both types)
+  const inferredPreserves = sourceProps
+    .filter(sp => targetProps.some(tp => tp.name === sp.name))
+    .map(p => p.name)
+
+  // Infer drops (fields in source but not in target, excluding renamed fields)
+  const renamedSourceFields = Object.keys(protocol.fields.renames || {})
+  const inferredDrops = sourceProps
+    .filter(sp => {
+      const inTarget = targetProps.some(tp => tp.name === sp.name)
+      const isRenamed = renamedSourceFields.includes(sp.name)
+      return !inTarget && !isRenamed
+    })
+    .map(p => p.name)
+
+  const manifest = {
+    id: "skill.host-to-kernel",
+    version: "0.2.74",
+    protocol: {
+      family: protocol.family,
+      direction: protocol.direction,
+      source: protocol.source,
+      target: protocol.target,
+      adapter: protocol.adapter,
+      lossiness: protocol.lossiness,
+    },
+    fields: {
+      preserves: {
+        declared: protocol.fields.preserves || [],
+        inferred: inferredPreserves,
+      },
+      renames: protocol.fields.renames || {},
+      drops: {
+        declared: protocol.fields.drops || [],
+        inferred: inferredDrops,
+      },
+      forbidden: protocol.fields.forbidden,
+    },
+    lazy: protocol.lazy,
+    adapterSignature: {
+      parameters: signature.parameters,
+      returnType: signature.returnType,
+    },
+    generatedAt: new Date().toISOString(),
+  }
+
+  return manifest
+}
+
 // Run the checker
 try {
   const result = await checkSkillHostToKernelAdapter()
+
+  // Generate and save manifest
+  const manifest = generateManifest(result)
+  const manifestPath = resolve(root, "contracts/manifests/skill-host-to-kernel.json")
+  const { mkdirSync, writeFileSync } = await import("node:fs")
+  mkdirSync(resolve(root, "contracts/manifests"), { recursive: true })
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n")
+
+  console.log(`\n📄 Generated manifest: contracts/manifests/skill-host-to-kernel.json`)
+  console.log(`   Inferred preserves: ${manifest.fields.preserves.inferred.join(", ")}`)
+  console.log(`   Inferred drops: ${manifest.fields.drops.inferred.join(", ") || "(none)"}`)
   console.log("\n✅ All boundary contract checks passed")
   process.exit(0)
 } catch (error) {

@@ -1,0 +1,69 @@
+{
+  "id": "skill.host-to-kernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "SkillMetadata",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelSkillMetadata",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/kernel-step:skillMetadataToKernel",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [
+        "name",
+        "description"
+      ],
+      "inferred": [
+        "name",
+        "description",
+        "effort"
+      ]
+    },
+    "renames": {
+      "whenToUse": "when_to_use",
+      "estimatedTokens": "estimated_tokens",
+      "allowedTools": "allowed_tools",
+      "capabilityGrants": "capability_grants"
+    },
+    "drops": {
+      "declared": [],
+      "inferred": []
+    },
+    "forbidden": [
+      "provider_credentials",
+      "activation_authority",
+      "storage_backend",
+      "user_storage_path",
+      "source_adapter"
+    ]
+  },
+  "lazy": {
+    "lazyFields": [
+      "instructions",
+      "resource_contents",
+      "scripts",
+      "assets"
+    ],
+    "lazySemantics": "preserve"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "skill",
+        "type": "SkillMetadata"
+      }
+    ],
+    "returnType": "KernelSkillMetadata"
+  },
+  "generatedAt": "2026-09-22T13:19:06.005Z"
+}

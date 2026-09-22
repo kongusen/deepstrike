@@ -10,6 +10,7 @@ import type {
 } from "../types.js"
 import type { SkillMetadata } from "../skills/loader.js"
 import type { RollbackReason } from "./session-log.js"
+import { validateSkillKernelProjection } from "./validators/skill-kernel-projection.js"
 
 /**
  * Kernel projection of skill metadata (host-to-kernel crossing).
@@ -280,6 +281,7 @@ export function toolSchemaToKernel(schema: ToolSchema): Record<string, unknown> 
  * identity, capability hints, and cost estimates, but not storage details or full content.
  *
  * Explicitly constructs the output to prevent field leakage via object spread.
+ * Runtime validation enforces the boundary protocol.
  * See: contracts/protocols/skill-host-to-kernel.ts
  */
 export function skillMetadataToKernel(skill: SkillMetadata): KernelSkillMetadata {
@@ -299,6 +301,9 @@ export function skillMetadataToKernel(skill: SkillMetadata): KernelSkillMetadata
 
   // SPC-015-01: structured grants are caller-supplied rather than inferred from scalar frontmatter.
   if (skill.capabilityGrants?.length) projection.capability_grants = skill.capabilityGrants
+
+  // Runtime validation: enforce boundary protocol (catches violations TypeScript cannot prevent)
+  validateSkillKernelProjection(projection)
 
   return projection
 }
