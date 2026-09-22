@@ -1,0 +1,12 @@
+{
+  "AgentDefinition": "public-agent",
+  "AgentSpec": "host-runtime",
+  "ResolvedProviderRoute": "host-runtime",
+  "ProviderUsage": "host-runtime",
+  "Measurement": "host-runtime",
+  "Operation": "kernel",
+  "Effect": "kernel",
+  "Fact": "kernel",
+  "Settlement": "kernel",
+  "Journal": "kernel"
+}

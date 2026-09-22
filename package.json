@@ -10,7 +10,8 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "docs:drift": "node scripts/check-docs-drift.mjs",
-    "docs:manifest": "node scripts/extract-symbol-manifest.mjs"
+    "docs:manifest": "node scripts/extract-symbol-manifest.mjs",
+    "contracts:check": "node scripts/check-semantic-contracts.mjs"
   },
   "devDependencies": {
     "vitepress": "^1.5.0",

@@ -1,0 +1,11 @@
+{
+  "id": "agent.model",
+  "source": {"layer": "public", "type": "AgentDefinition.model", "authority": "public-agent"},
+  "target": {"layer": "runtime", "type": "ResolvedProviderRoute", "authority": "host-runtime"},
+  "crossing": {"direction": "public_to_runtime", "verb": "bind", "function": "resolveProviderRuntime"},
+  "preserves": ["requested_model_identity", "capability_requirements"],
+  "drops": ["none"],
+  "forbidden": ["provider_credentials", "endpoint_identity", "protocol_wire_state"],
+  "kernel": {"crosses": false},
+  "lossiness": "intentional"
+}

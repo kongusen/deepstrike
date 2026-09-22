@@ -1,0 +1,10 @@
+{
+  "AgentId": {"mint": "public_or_host", "crosses": ["public_to_runtime"], "remint": false},
+  "RunId": {"mint": "host", "crosses": ["public_to_runtime"], "remint": false},
+  "SessionId": {"mint": "host", "crosses": ["public_to_runtime"], "remint": false},
+  "OperationId": {"mint": "host_then_kernel_bind", "crosses": ["runtime_to_kernel"], "remint": false},
+  "TaskId": {"mint": "kernel", "crosses": ["kernel_to_runtime"], "remint": false},
+  "EffectId": {"mint": "kernel", "crosses": ["kernel_to_runtime"], "remint": false},
+  "RequestFingerprint": {"mint": "runtime_content_addressed", "crosses": [], "remint": false},
+  "RouteId": {"mint": "runtime_content_addressed", "crosses": [], "remint": false}
+}

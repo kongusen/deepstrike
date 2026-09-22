@@ -19,6 +19,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Closed the portable Agent API contract across Node, WASM, Python, and Rust: every SDK carries the same semantic definition fields and exposes structured `run` plus streaming `stream`; Rust now returns the same `{ output, session_id, status }` run shape and a `create_agent` constructor.
 - Removed embedded `runtimeBinding`/`runtime_binding` construction from Node, WASM, and Python; pass the host binding as the separate Agent binding argument.
 - Python and WASM runtime machinery now has an explicit advanced import surface, with conformance adapters and tests migrated to it.
+- Added the executable `contracts/` registry for named semantic crossings, authority ownership, identity remint rules, intentional lossiness, and forbidden direct Public/Provider-to-Kernel paths; `npm run contracts:check` enforces it.
 
 ## [0.2.73] - 2026-09-22
 
