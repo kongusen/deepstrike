@@ -39,6 +39,7 @@
       "declared": [],
       "inferred": []
     },
+    "derived": [],
     "forbidden": [
       "provider_credentials",
       "activation_authority",
@@ -64,6 +65,5 @@
       }
     ],
     "returnType": "KernelSkillMetadata"
-  },
-  "generatedAt": "2026-09-22T13:19:06.005Z"
+  }
 }

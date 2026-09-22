@@ -7,8 +7,7 @@
  * - Unexpected fields in strict mode
  */
 
-import { describe, it } from "node:test"
-import assert from "node:assert"
+import { describe, expect, it } from "@jest/globals"
 import { validateSkillKernelProjection } from "../src/runtime/validators/skill-kernel-projection.js"
 
 describe("validateSkillKernelProjection", () => {
@@ -20,9 +19,7 @@ describe("validateSkillKernelProjection", () => {
     }
 
     // Should not throw
-    assert.doesNotThrow(() => {
-      validateSkillKernelProjection(validProjection)
-    })
+    expect(() => validateSkillKernelProjection(validProjection)).not.toThrow()
   })
 
   it("accepts optional fields", () => {
@@ -36,9 +33,7 @@ describe("validateSkillKernelProjection", () => {
       capability_grants: [{ type: "filesystem" }],
     }
 
-    assert.doesNotThrow(() => {
-      validateSkillKernelProjection(projectionWithOptionals)
-    })
+    expect(() => validateSkillKernelProjection(projectionWithOptionals)).not.toThrow()
   })
 
   it("rejects forbidden field: provider_credentials", () => {
@@ -49,12 +44,7 @@ describe("validateSkillKernelProjection", () => {
       provider_credentials: { apiKey: "secret" }, // FORBIDDEN
     }
 
-    assert.throws(
-      () => validateSkillKernelProjection(leakedProjection),
-      {
-        message: /forbidden field "provider_credentials" leaked/i,
-      }
-    )
+    expect(() => validateSkillKernelProjection(leakedProjection)).toThrow(/forbidden field "provider_credentials" leaked/i)
   })
 
   it("rejects forbidden field: activation_authority", () => {
@@ -65,12 +55,7 @@ describe("validateSkillKernelProjection", () => {
       activation_authority: "kernel", // FORBIDDEN
     }
 
-    assert.throws(
-      () => validateSkillKernelProjection(leakedProjection),
-      {
-        message: /forbidden field "activation_authority" leaked/i,
-      }
-    )
+    expect(() => validateSkillKernelProjection(leakedProjection)).toThrow(/forbidden field "activation_authority" leaked/i)
   })
 
   it("rejects forbidden field: storage_backend", () => {
@@ -81,12 +66,7 @@ describe("validateSkillKernelProjection", () => {
       storage_backend: "filesystem", // FORBIDDEN
     }
 
-    assert.throws(
-      () => validateSkillKernelProjection(leakedProjection),
-      {
-        message: /forbidden field "storage_backend" leaked/i,
-      }
-    )
+    expect(() => validateSkillKernelProjection(leakedProjection)).toThrow(/forbidden field "storage_backend" leaked/i)
   })
 
   it("rejects forbidden field: user_storage_path", () => {
@@ -97,12 +77,7 @@ describe("validateSkillKernelProjection", () => {
       user_storage_path: "/home/user/.skills", // FORBIDDEN
     }
 
-    assert.throws(
-      () => validateSkillKernelProjection(leakedProjection),
-      {
-        message: /forbidden field "user_storage_path" leaked/i,
-      }
-    )
+    expect(() => validateSkillKernelProjection(leakedProjection)).toThrow(/forbidden field "user_storage_path" leaked/i)
   })
 
   it("rejects forbidden field: source_adapter", () => {
@@ -113,12 +88,7 @@ describe("validateSkillKernelProjection", () => {
       source_adapter: "DirectorySkillSource", // FORBIDDEN
     }
 
-    assert.throws(
-      () => validateSkillKernelProjection(leakedProjection),
-      {
-        message: /forbidden field "source_adapter" leaked/i,
-      }
-    )
+    expect(() => validateSkillKernelProjection(leakedProjection)).toThrow(/forbidden field "source_adapter" leaked/i)
   })
 
   it("rejects missing required field: name", () => {
@@ -128,12 +98,7 @@ describe("validateSkillKernelProjection", () => {
       // name is MISSING
     }
 
-    assert.throws(
-      () => validateSkillKernelProjection(incompleteProjection),
-      {
-        message: /required field "name" is missing/i,
-      }
-    )
+    expect(() => validateSkillKernelProjection(incompleteProjection)).toThrow(/required field "name" is missing/i)
   })
 
   it("rejects missing required field: description", () => {
@@ -143,35 +108,13 @@ describe("validateSkillKernelProjection", () => {
       // description is MISSING
     }
 
-    assert.throws(
-      () => validateSkillKernelProjection(incompleteProjection),
-      {
-        message: /required field "description" is missing/i,
-      }
-    )
+    expect(() => validateSkillKernelProjection(incompleteProjection)).toThrow(/required field "description" is missing/i)
   })
 
   it("rejects non-object input", () => {
-    assert.throws(
-      () => validateSkillKernelProjection(null),
-      {
-        message: /result must be an object/i,
-      }
-    )
-
-    assert.throws(
-      () => validateSkillKernelProjection("not an object"),
-      {
-        message: /result must be an object/i,
-      }
-    )
-
-    assert.throws(
-      () => validateSkillKernelProjection(42),
-      {
-        message: /result must be an object/i,
-      }
-    )
+    expect(() => validateSkillKernelProjection(null)).toThrow(/result must be an object/i)
+    expect(() => validateSkillKernelProjection("not an object")).toThrow(/result must be an object/i)
+    expect(() => validateSkillKernelProjection(42)).toThrow(/result must be an object/i)
   })
 
   it("strict mode: rejects unexpected fields", () => {
@@ -183,17 +126,10 @@ describe("validateSkillKernelProjection", () => {
     }
 
     // Non-strict: accepts unexpected fields
-    assert.doesNotThrow(() => {
-      validateSkillKernelProjection(projectionWithUnexpected)
-    })
+    expect(() => validateSkillKernelProjection(projectionWithUnexpected)).not.toThrow()
 
     // Strict mode: rejects unexpected fields
-    assert.throws(
-      () => validateSkillKernelProjection(projectionWithUnexpected, { strict: true }),
-      {
-        message: /unexpected field "unexpected_field"/i,
-      }
-    )
+    expect(() => validateSkillKernelProjection(projectionWithUnexpected, { strict: true })).toThrow(/unexpected field "unexpected_field"/i)
   })
 
   it("strict mode: accepts all allowed fields", () => {
@@ -208,8 +144,6 @@ describe("validateSkillKernelProjection", () => {
     }
 
     // Should not throw even in strict mode
-    assert.doesNotThrow(() => {
-      validateSkillKernelProjection(completeProjection, { strict: true })
-    })
+    expect(() => validateSkillKernelProjection(completeProjection, { strict: true })).not.toThrow()
   })
 })

@@ -55,7 +55,11 @@ The first slice does not attempt to migrate all existing crossings or all SDKs.
 - Define the minimal policy shape for `preserves`, `renames`, `derived`, `drops`, and `forbidden`.
 - Decide whether policy is expressed as TypeScript values or decorators. Prefer plain typed values unless compiler metadata is required.
 
-**Checkpoint:** the protocol model can describe the Skill projection without JSON duplication.
+**Status:** Completed (`9dc09c9b`)
+- Defined protocol type system in [types.ts](file:///Users/shan/work/uploads/deepstrike/contracts/protocols/types.ts).
+- Declared skill host-to-kernel projection protocol in [skill-host-to-kernel.ts](file:///Users/shan/work/uploads/deepstrike/contracts/protocols/skill-host-to-kernel.ts).
+
+**Checkpoint:** Passed - Protocol model describes Skill projection without JSON duplication.
 
 ### Task 2: Type the Skill projection
 
@@ -64,7 +68,11 @@ The first slice does not attempt to migrate all existing crossings or all SDKs.
 - Keep the returned object explicitly constructed so extra source fields cannot leak by spread.
 - Add a serialization function only if the existing kernel call requires a record-shaped value.
 
-**Checkpoint:** existing skill loader and kernel projection tests still pass, and the adapter has no `Record<string, unknown>` return type.
+**Status:** Completed (`810f5e43`)
+- Added `KernelSkillMetadata` interface matching kernel wire vocabulary in [kernel-step.ts](file:///Users/shan/work/uploads/deepstrike/node/src/runtime/kernel-step.ts).
+- Updated `skillMetadataToKernel` to return `KernelSkillMetadata` using explicit construction.
+
+**Checkpoint:** Passed - Skill loader and kernel projection tests pass; no `Record<string, unknown>` return type.
 
 ### Task 3: Build type inspection for one adapter
 
@@ -73,7 +81,11 @@ The first slice does not attempt to migrate all existing crossings or all SDKs.
 - Resolve the property names and optionality of the source and target types.
 - Fail when the protocol declaration and adapter signature disagree.
 
-**Checkpoint:** deliberately changing the adapter return type to an unrelated type causes the checker to fail.
+**Status:** Completed (`79905fd0`)
+- Built contract checker script [check-boundary-contracts.mjs](file:///Users/shan/work/uploads/deepstrike/scripts/check-boundary-contracts.mjs).
+- Added `npm run contracts:check` command to workspace root.
+
+**Checkpoint:** Passed - Checker resolves signatures and properties through the TypeScript compiler API and validates the protocol declaration against the adapter signature.
 
 ### Task 4: Generate the first manifest and validator
 
@@ -81,13 +93,41 @@ The first slice does not attempt to migrate all existing crossings or all SDKs.
 - Generate a strict runtime validator that checks allowed keys, required preserved keys, and forbidden keys.
 - Add a test for a forbidden field leak and a test for an omitted preserved field.
 
-**Checkpoint:** the validator rejects an unsafe projection even when TypeScript compilation succeeds.
+**Status:** Completed (`e1d26641`)
+- Generated crossing manifest [skill-host-to-kernel.json](file:///Users/shan/work/uploads/deepstrike/contracts/manifests/skill-host-to-kernel.json).
+- Generates the runtime validator [skill-kernel-projection.ts](file:///Users/shan/work/uploads/deepstrike/node/src/runtime/validators/skill-kernel-projection.ts) from the protocol and target type.
+- Integrated validator into `skillMetadataToKernel` adapter function.
+- Added 12 validator unit tests in [skill-kernel-projection-validator.test.ts](file:///Users/shan/work/uploads/deepstrike/node/tests/skill-kernel-projection-validator.test.ts).
+
+**Checkpoint:** Passed - Validator enforces forbidden field policy and required preserved keys at runtime.
 
 ### Task 5: Evaluate before expanding
 
 - Compare the generated manifest with the old Skill contract only as a migration aid.
 - Record which facts were inferred and which required explicit metadata.
 - Decide whether the same mechanism is ready for Agent lowering and Usage settlement.
+
+**Status:** In Progress
+
+---
+
+## First Slice Execution Results & Evaluation
+
+### Results Summary
+
+1. **Protocol & Adapter Verification**: `skillMetadataToKernel` adapter correctly maps 7 source properties of `SkillMetadata` to 7 target properties of `KernelSkillMetadata`.
+2. **Inferred vs Explicit Facts**:
+   - Inferred Preserves: `name`, `description`, `effort`
+   - Inferred Renames: `whenToUse` → `when_to_use`, `estimatedTokens` → `estimated_tokens`, `allowedTools` → `allowed_tools`, `capabilityGrants` → `capability_grants`
+   - Inferred Drops: none (all fields preserved or renamed)
+   - Explicit Security Policy: `provider_credentials`, `activation_authority`, `storage_backend`, `user_storage_path`, `source_adapter` explicitly forbidden.
+3. **Runtime Enforcement**: Validator rejects unsafe projections even if TypeScript compilation succeeds (e.g. object spread leaks or dynamic properties).
+
+### Follow-up Refinements Identified
+
+1. **Protocol source loading**: remove the checked-in JavaScript mirror once the repository has a supported TypeScript protocol loading path.
+
+---
 
 ## Explicit non-goals for the first slice
 

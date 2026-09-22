@@ -2,6 +2,7 @@
   "name": "deepstrike-workspace",
   "version": "0.2.60",
   "private": true,
+  "type": "module",
   "description": "Agent OS microkernel for cross-language agent runtimes - workspace toolchain",
   "scripts": {
     "test:conformance": "node scripts/run-sdk-conformance.mjs",
@@ -14,7 +15,7 @@
     "docs:manifest": "node scripts/extract-symbol-manifest.mjs"
   },
   "devDependencies": {
-    "typescript": "^7.0.2",
+    "typescript": "^5.9.3",
     "vitepress": "^1.5.0",
     "vue": "^3.4.21"
   }

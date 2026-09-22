@@ -1,201 +1,96 @@
 #!/usr/bin/env node
-/**
- * Type-driven boundary contract checker (simplified).
- *
- * Validates that adapter implementations match their protocol declarations
- * by parsing TypeScript source code directly.
- *
- * Task 3: Build type inspection for the skill host-to-kernel adapter.
- */
+/** Check and generate the first type-driven boundary contract. */
 
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
+import ts from "typescript"
 
 const root = resolve(new URL("..", import.meta.url).pathname)
+const kernelStepPath = resolve(root, "node/src/runtime/kernel-step.ts")
+const protocolModule = await import("../contracts/protocols/skill-host-to-kernel.js")
+const protocol = protocolModule.SKILL_HOST_TO_KERNEL_PROTOCOL
 
-/**
- * Extract function signature from TypeScript source.
- */
-function extractFunctionSignature(sourceText, functionName) {
-  // Match: export function name(param: Type): ReturnType
-  // or: export const name = (param: Type): ReturnType =>
-  const patterns = [
-    new RegExp(`export\\s+function\\s+${functionName}\\s*\\(([^)]*)\\)\\s*:\\s*([^{;]+)`, 's'),
-    new RegExp(`export\\s+const\\s+${functionName}\\s*=\\s*\\(([^)]*)\\)\\s*:\\s*([^=>{]+)`, 's'),
-  ]
+function fail(message) { throw new Error(message) }
 
-  for (const pattern of patterns) {
-    const match = sourceText.match(pattern)
-    if (match) {
-      const paramsStr = match[1].trim()
-      const returnType = match[2].trim()
-
-      // Parse parameters
-      const parameters = []
-      if (paramsStr) {
-        // Simple parameter parsing (doesn't handle complex nested types)
-        const paramParts = paramsStr.split(',')
-        for (const part of paramParts) {
-          const colonIndex = part.indexOf(':')
-          if (colonIndex > 0) {
-            const name = part.slice(0, colonIndex).trim()
-            const type = part.slice(colonIndex + 1).trim()
-            parameters.push({ name, type })
-          }
-        }
-      }
-
-      return { parameters, returnType }
-    }
+function createTypeChecker() {
+  const configPath = resolve(root, "node/tsconfig.json")
+  const config = ts.readConfigFile(configPath, file => readFileSync(file, "utf8"))
+  if (config.error) fail(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"))
+  const parsed = ts.parseJsonConfigFileContent(config.config, ts.sys, resolve(root, "node"))
+  const program = ts.createProgram(parsed.fileNames, parsed.options)
+  const diagnostics = ts.getPreEmitDiagnostics(program)
+  if (diagnostics.length) {
+    fail(ts.formatDiagnosticsWithColorAndContext(diagnostics, {
+      getCanonicalFileName: fileName => fileName,
+      getCurrentDirectory: () => root,
+      getNewLine: () => "\n",
+    }))
   }
-
-  return null
+  return { program, checker: program.getTypeChecker() }
 }
 
-/**
- * Extract interface properties from TypeScript source.
- */
-function extractInterfaceProperties(sourceText, interfaceName) {
-  // Match: export interface Name { ... }
-  const pattern = new RegExp(`export\\s+interface\\s+${interfaceName}\\s*\\{([^}]+)\\}`, 's')
-  const match = sourceText.match(pattern)
-
-  if (!match) return null
-
-  const body = match[1]
-  const properties = []
-
-  // Match property lines: name?: type or name: type
-  const propPattern = /^\s*(\w+)(\??):\s*([^\n;]+)/gm
-  let propMatch
-
-  while ((propMatch = propPattern.exec(body)) !== null) {
-    const name = propMatch[1]
-    const optional = propMatch[2] === '?'
-    properties.push({ name, optional })
+function findAdapter(program, name) {
+  const sourceFile = program.getSourceFile(kernelStepPath)
+  if (!sourceFile) fail(`adapter file not found: ${kernelStepPath}`)
+  let found
+  const visit = node => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === name) found = node
+    ts.forEachChild(node, visit)
   }
-
-  return properties
+  visit(sourceFile)
+  if (!found) fail(`adapter function not found: ${name}`)
+  return found
 }
 
-/**
- * Check the skill host-to-kernel projection adapter.
- */
-async function checkSkillHostToKernelAdapter() {
-  console.log("Checking skill host-to-kernel adapter...")
+function propertyInfo(checker, type) {
+  return checker.getPropertiesOfType(type).map(symbol => {
+    const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0]
+    const optional = Boolean(declaration && ts.isPropertySignature(declaration) && declaration.questionToken)
+    return { name: symbol.getName(), optional, symbol }
+  })
+}
 
-  // Read source files
-  const kernelStepPath = resolve(root, "node/src/runtime/kernel-step.ts")
-  const loaderPath = resolve(root, "node/src/skills/loader.ts")
+function typeName(checker, type) {
+  return checker.typeToString(type, undefined, ts.TypeFormatFlags.NoTruncation)
+}
 
-  const kernelStepSource = readFileSync(kernelStepPath, "utf8")
-  const loaderSource = readFileSync(loaderPath, "utf8")
+function inspectFields(checker, declaration, sourceType, targetType) {
+  const sourceProperties = propertyInfo(checker, sourceType)
+  const targetProperties = propertyInfo(checker, targetType)
+  const sourceNames = new Set(sourceProperties.map(property => property.name))
+  const targetNames = new Set(targetProperties.map(property => property.name))
 
-  // Extract adapter signature
-  const signature = extractFunctionSignature(kernelStepSource, "skillMetadataToKernel")
-  if (!signature) {
-    throw new Error("skillMetadataToKernel function signature not found")
+  for (const field of protocol.fields.preserves ?? []) {
+    if (!sourceNames.has(field)) fail(`preserved field "${field}" is absent from source type`)
+    if (!targetNames.has(field)) fail(`preserved field "${field}" is absent from target type`)
+  }
+  for (const [sourceField, targetField] of Object.entries(protocol.fields.renames ?? {})) {
+    if (!sourceNames.has(sourceField)) fail(`rename source "${sourceField}" is absent from source type`)
+    if (!targetNames.has(targetField)) fail(`rename target "${targetField}" is absent from target type`)
+  }
+  for (const field of protocol.fields.derived ?? []) {
+    if (!targetNames.has(field)) fail(`derived field "${field}" is absent from target type`)
   }
 
-  console.log(`  Adapter signature: (${signature.parameters.map(p => `${p.name}: ${p.type}`).join(", ")}) => ${signature.returnType}`)
+  const inferredPreserves = sourceProperties.filter(sourceProperty => {
+    const targetProperty = targetProperties.find(candidate => candidate.name === sourceProperty.name)
+    if (!targetProperty) return false
+    const sourcePropertyType = checker.getTypeOfSymbolAtLocation(sourceProperty.symbol, declaration)
+    const targetPropertyType = checker.getTypeOfSymbolAtLocation(targetProperty.symbol, declaration)
+    return checker.isTypeAssignableTo(sourcePropertyType, targetPropertyType)
+  }).map(property => property.name)
 
-  // Verify parameter type
-  if (signature.parameters.length !== 1) {
-    throw new Error(`Expected 1 parameter, got ${signature.parameters.length}`)
-  }
-  if (signature.parameters[0].type !== "SkillMetadata") {
-    throw new Error(`Expected parameter type SkillMetadata, got ${signature.parameters[0].type}`)
-  }
+  const renamedSourceFields = new Set(Object.keys(protocol.fields.renames ?? {}))
+  const inferredDrops = sourceProperties
+    .filter(property => !targetNames.has(property.name) && !renamedSourceFields.has(property.name))
+    .map(property => property.name)
 
-  // Verify return type
-  if (signature.returnType !== "KernelSkillMetadata") {
-    throw new Error(`Expected return type KernelSkillMetadata, got ${signature.returnType}`)
-  }
+  return { sourceProperties, targetProperties, inferredPreserves, inferredDrops }
+}
 
-  // Extract type properties
-  const sourceProps = extractInterfaceProperties(loaderSource, "SkillMetadata")
-  if (!sourceProps) {
-    throw new Error("SkillMetadata interface not found")
-  }
-
-  const targetProps = extractInterfaceProperties(kernelStepSource, "KernelSkillMetadata")
-  if (!targetProps) {
-    throw new Error("KernelSkillMetadata interface not found")
-  }
-
-  console.log(`  Source type (SkillMetadata): ${sourceProps.length} properties`)
-  console.log(`    ${sourceProps.map(p => `${p.name}${p.optional ? '?' : ''}`).join(", ")}`)
-
-  console.log(`  Target type (KernelSkillMetadata): ${targetProps.length} properties`)
-  console.log(`    ${targetProps.map(p => `${p.name}${p.optional ? '?' : ''}`).join(", ")}`)
-
-  // Verify required fields
-  const requiredSourceFields = sourceProps.filter(p => !p.optional).map(p => p.name)
-  console.log(`  Required source fields: ${requiredSourceFields.join(", ")}`)
-
-  // Load the protocol declaration
-  const protocolModule = await import("../contracts/protocols/skill-host-to-kernel.js")
-  const protocol = protocolModule.SKILL_HOST_TO_KERNEL_PROTOCOL
-
-  // Verify preserves are present in both source and target
-  for (const field of protocol.fields.preserves || []) {
-    const inSource = sourceProps.some(p => p.name === field)
-    const inTarget = targetProps.some(p => p.name === field)
-
-    if (!inSource) {
-      throw new Error(`Protocol declares preserved field "${field}" but it's not in SkillMetadata`)
-    }
-    if (!inTarget) {
-      throw new Error(`Protocol declares preserved field "${field}" but it's not in KernelSkillMetadata`)
-    }
-  }
-
-  // Verify renames exist in source and target (with correct names)
-  for (const [sourceField, targetField] of Object.entries(protocol.fields.renames || {})) {
-    const inSource = sourceProps.some(p => p.name === sourceField)
-    const inTarget = targetProps.some(p => p.name === targetField)
-
-    if (!inSource) {
-      throw new Error(`Protocol declares rename from "${sourceField}" but it's not in SkillMetadata`)
-    }
-    if (!inTarget) {
-      throw new Error(`Protocol declares rename to "${targetField}" but it's not in KernelSkillMetadata`)
-    }
-  }
-
-  console.log("✅ Skill host-to-kernel adapter verified")
-
+function generateManifest(checker, declaration, signature, fields) {
+  const sourceType = checker.getTypeOfSymbolAtLocation(signature.parameters[0], declaration.parameters[0])
   return {
-    adapter: "skillMetadataToKernel",
-    signature,
-    sourceProps,
-    targetProps,
-    protocol,
-  }
-}
-
-/**
- * Generate crossing manifest from verification results.
- */
-function generateManifest(result) {
-  const { adapter, signature, sourceProps, targetProps, protocol } = result
-
-  // Infer exact preserves (fields with same name in both types)
-  const inferredPreserves = sourceProps
-    .filter(sp => targetProps.some(tp => tp.name === sp.name))
-    .map(p => p.name)
-
-  // Infer drops (fields in source but not in target, excluding renamed fields)
-  const renamedSourceFields = Object.keys(protocol.fields.renames || {})
-  const inferredDrops = sourceProps
-    .filter(sp => {
-      const inTarget = targetProps.some(tp => tp.name === sp.name)
-      const isRenamed = renamedSourceFields.includes(sp.name)
-      return !inTarget && !isRenamed
-    })
-    .map(p => p.name)
-
-  const manifest = {
     id: "skill.host-to-kernel",
     version: "0.2.74",
     protocol: {
@@ -207,46 +102,115 @@ function generateManifest(result) {
       lossiness: protocol.lossiness,
     },
     fields: {
-      preserves: {
-        declared: protocol.fields.preserves || [],
-        inferred: inferredPreserves,
-      },
-      renames: protocol.fields.renames || {},
-      drops: {
-        declared: protocol.fields.drops || [],
-        inferred: inferredDrops,
-      },
+      preserves: { declared: protocol.fields.preserves ?? [], inferred: fields.inferredPreserves },
+      renames: protocol.fields.renames ?? {},
+      drops: { declared: protocol.fields.drops ?? [], inferred: fields.inferredDrops },
+      derived: protocol.fields.derived ?? [],
       forbidden: protocol.fields.forbidden,
     },
     lazy: protocol.lazy,
     adapterSignature: {
-      parameters: signature.parameters,
-      returnType: signature.returnType,
+      parameters: signature.parameters.map((parameter, index) => ({
+        name: declaration.parameters[index].name.getText(),
+        type: typeName(checker, checker.getTypeOfSymbolAtLocation(parameter, declaration.parameters[index])),
+      })),
+      returnType: typeName(checker, signature.getReturnType()),
     },
-    generatedAt: new Date().toISOString(),
   }
-
-  return manifest
 }
 
-// Run the checker
-try {
-  const result = await checkSkillHostToKernelAdapter()
+function generateValidator(fields) {
+  const forbidden = JSON.stringify(protocol.fields.forbidden, null, 2)
+  const required = JSON.stringify(protocol.fields.preserves ?? [], null, 2)
+  const allowed = JSON.stringify(fields.targetProperties.map(property => property.name), null, 2)
+  return `/**
+ * Generated runtime validator for the skill host-to-kernel boundary.
+ * DO NOT EDIT BY HAND - regenerate with: npm run contracts:check
+ */
 
-  // Generate and save manifest
-  const manifest = generateManifest(result)
+import type { KernelSkillMetadata } from "../kernel-step.js"
+
+const FORBIDDEN_FIELDS = ${forbidden} as const
+const REQUIRED_PRESERVED_FIELDS = ${required} as const
+const ALLOWED_TARGET_FIELDS = ${allowed} as const
+
+export function validateSkillKernelProjection(
+  result: unknown,
+  options: { strict?: boolean } = {},
+): asserts result is KernelSkillMetadata {
+  if (typeof result !== "object" || result === null) {
+    throw new Error("Skill kernel projection validation failed: result must be an object")
+  }
+
+  const object = result as Record<string, unknown>
+  for (const field of FORBIDDEN_FIELDS) {
+    if (field in object) {
+      throw new Error(
+        \`Skill kernel projection validation failed: forbidden field "\${field}" leaked across boundary.\`,
+      )
+    }
+  }
+  for (const field of REQUIRED_PRESERVED_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(object, field)) {
+      throw new Error(
+        \`Skill kernel projection validation failed: required field "\${field}" is missing.\`,
+      )
+    }
+  }
+  if (options.strict) {
+    const allowed = new Set<string>(ALLOWED_TARGET_FIELDS)
+    for (const key of Object.keys(object)) {
+      if (!allowed.has(key)) {
+        throw new Error(
+          \`Skill kernel projection validation failed: unexpected field "\${key}" in result.\`,
+        )
+      }
+    }
+  }
+}
+
+export function isKernelSkillMetadata(value: unknown): value is KernelSkillMetadata {
+  try {
+    validateSkillKernelProjection(value)
+    return true
+  } catch {
+    return false
+  }
+}
+`
+}
+
+try {
+  console.log("Checking skill host-to-kernel adapter with the TypeScript compiler...")
+  const { program, checker } = createTypeChecker()
+  const declaration = findAdapter(program, "skillMetadataToKernel")
+  const signature = checker.getSignatureFromDeclaration(declaration)
+  if (!signature) fail("could not resolve adapter signature")
+  if (signature.parameters.length !== 1) fail(`expected one adapter parameter, got ${signature.parameters.length}`)
+
+  const sourceType = checker.getTypeOfSymbolAtLocation(signature.parameters[0], declaration.parameters[0])
+  const sourceName = typeName(checker, sourceType)
+  const targetType = signature.getReturnType()
+  const targetName = typeName(checker, targetType)
+  if (sourceName !== protocol.source.type) fail(`adapter source type is ${sourceName}, expected ${protocol.source.type}`)
+  if (targetName !== protocol.target.type) fail(`adapter target type is ${targetName}, expected ${protocol.target.type}`)
+
+  const fields = inspectFields(checker, declaration, sourceType, targetType)
+  const manifest = generateManifest(checker, declaration, signature, fields)
   const manifestPath = resolve(root, "contracts/manifests/skill-host-to-kernel.json")
-  const { mkdirSync, writeFileSync } = await import("node:fs")
   mkdirSync(resolve(root, "contracts/manifests"), { recursive: true })
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n")
+  writeFileSync(
+    resolve(root, "node/src/runtime/validators/skill-kernel-projection.ts"),
+    generateValidator(fields),
+  )
 
-  console.log(`\n📄 Generated manifest: contracts/manifests/skill-host-to-kernel.json`)
-  console.log(`   Inferred preserves: ${manifest.fields.preserves.inferred.join(", ")}`)
-  console.log(`   Inferred drops: ${manifest.fields.drops.inferred.join(", ") || "(none)"}`)
-  console.log("\n✅ All boundary contract checks passed")
-  process.exit(0)
+  console.log(`  Adapter: ${sourceName} → ${targetName}`)
+  console.log(`  Inferred preserves: ${fields.inferredPreserves.join(", ") || "(none)"}`)
+  console.log(`  Inferred drops: ${fields.inferredDrops.join(", ") || "(none)"}`)
+  console.log("✅ Boundary contract verified and manifest generated")
 } catch (error) {
-  console.error("\n❌ Boundary contract check failed:")
-  console.error(error.message)
-  process.exit(1)
+  console.error("❌ Boundary contract check failed:")
+  console.error(error instanceof Error ? error.stack : error)
+  process.exitCode = 1
 }
