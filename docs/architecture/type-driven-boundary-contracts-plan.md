@@ -148,6 +148,34 @@ The mechanism is validated for one crossing, but it is not ready to copy directl
 
 1. Add a second crossing only after its transformations and security policy are independently reviewed.
 
+## Live Agent path iterations (2026-09-23)
+
+This track follows the convergence decision in the [analysis](type-driven-boundary-contracts-analysis.md): extract the executable facade path and retire the unused formal IR. The completed Skill slice above remains unchanged.
+
+### First checkpoint: runtime options and provider behavior
+
+- [x] Extract `buildAgentRuntimeOptions` as the live configuration adapter consumed by the facade (`a2ef8e39`). Keep provider resolution and execution-plane lifecycle in the facade.
+- [x] Reproduce the missing tool surface, then bind the public Agent baseline after MCP discovery (`cfeefd8e`). Verify actual tool execution, custom planes, capability filtering, and MCP reuse.
+- [x] Reproduce dropped provider extensions and overwritten guardrails, then fix them in the adapter (`c6b049b6`). Cover run, stream, session, workflow, resume, combined vetoes, and approval denial.
+- [x] Replace vacuous negative-only tool assertions with exact visible-set assertions.
+- [x] Validate the Node build and offline regression suite: 181 suites / 1139 tests pass. `contracts:check` and `contracts:verify` pass. Six live-provider suites were excluded; no new tests are skipped.
+
+This checkpoint covers the tool/provider/governance part of iterations 0–2. It does not claim complete public Agent semantics: memory, target-agent dispatch, immutable declarations, and concurrent session handling still need their own reproduction tests and fixes.
+
+### Remaining iterations and acceptance gates
+
+| Iteration | Deliverable | Gate before moving on |
+|---|---|---|
+| 3 | Separate declarative configuration from runtime bindings; take an immutable declaration snapshot without freezing providers/stores | Caller mutation cannot alter later runs; serializable declaration excludes executable bindings; the facade keeps using the live adapter |
+| 4 | Bind declarative memory and route public memory operations through validated, governed, audited runtime operations | Model-origin and host-origin provenance remain distinct; denied writes never reach the store; recall and audit behavior have integration coverage |
+| 5 | Isolate active execution handles and result evidence by run/session | Interrupt affects only the intended session; concurrent sessions and resumed runs retain correct identity and evidence; define same-session admission semantics |
+| 6 | Resolve handoff/workflow target Agents at the host spawn boundary | A two-provider test proves the requested target executes; unknown targets fail explicitly; existing kernel identity and quota authority remain intact |
+| 7 | Extend the contract mechanism for multiple adapters, derived fields, and correlated protocol checks | Capability and configure-run families use the generic registry; structural validation is kept distinct from behavioral correlation tests |
+| 8 | Register the actual Agent adapter, then kernel projections/decode, provider semantic points, and subsystem crossings in separate slices | Each registered adapter is consumed by the runtime; generated validators cover missing/forbidden/invalid fields; check/verify and corresponding behavior tests pass |
+| 9 | Deprecate the formal IR and remove it at the agreed compatibility-window boundary | Node/WASM exports, conformance fixtures, vocabulary, and surface tests move together; no implementation is deleted before its consumers migrate |
+
+Each iteration should be split into small commits with a green checkpoint. Registration must not be used as a substitute for repairing the runtime behavior it is intended to protect. Runtime-internal Eval, provider wire specialization, and a Rust ABI redesign remain outside this track.
+
 ---
 
 ## Explicit non-goals for the first slice

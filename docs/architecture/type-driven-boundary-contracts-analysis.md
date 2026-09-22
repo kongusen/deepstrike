@@ -32,7 +32,7 @@
 |---|---|---|---|---|
 | 1 | `Agent → AgentSpec` | `lowerAgent` | agent-ir.ts:168 | ✅ 已强类型 |
 
-唯一入口；`createAgent` 只是句柄包装，真正的语义降级全在 `lowerAgent` + 5 个 `projectAgent*` 投影（run/context/capabilities/governance/delegation）。
+上表是最初设计的形式入口，不是实际运行入口；`lowerAgent` + 5 个 `projectAgent*` 投影（run/context/capabilities/governance/delegation）未被 facade 执行路径消费。2026-09-23 已提取真实配置转换到 `buildAgentRuntimeOptions`，进度见三点二。
 
 **⚠️ 现场警示（双降级分叉）**：`lowerAgent`/`projectAgent*` 在运行时路径上**没有消费方**——只有 conformance 与 advanced/runtime 公共再导出引用它们。真实 run 路径（`AgentRuntimeImpl`/`AgentSessionImpl`）直接读 `this.definition`（30 处），在构造 `RuntimeOptions` 时**手写内联降级**：`instructions+outputSchema→systemPrompt`、`skills→skillCatalog`、`knowledge→knowledgeSource`、`guardrails→governancePolicy`、`handoffs→delegate()` 内联消费、`memoryStore/memoryScope/maxTokens/capabilityFilter` 直通。两条降级链覆盖面已经分叉（`projectAgent*` 不管 memory/maxTokens；内联链不用 AgentSpec），正是契约系统要防的静默漂移。**P2 注册前必须先收敛**——已裁决：舍弃旁路、实路线提取（见图三后裁决）。
 
@@ -68,7 +68,7 @@
 
 ## 三、语言边界判定
 
-**Boundary A（public|host）**：声明与执行的分界。public 语言里唯一可执行的执行体是 `Agent`；`lowerAgent` 是唯一 crossing。权威从 public-agent 移交 host-runtime，此后 public 词不再出现在执行面（旧 checker 的"public 源禁 import kernel/runtime"规则属于此边界，应保留为 checker 全局规则）。
+**Boundary A（public|host）**：声明与执行的分界。目标是由唯一、被真实运行路径消费的 adapter 将 public-agent 声明转换为 host-runtime 配置；原先以 `lowerAgent` 为唯一 crossing 的设计未落地，按图三后的裁决退役。旧 checker 的"public 源禁 import kernel/runtime"规则属于此边界，需在定义与运行时绑定分离后落实，不能当作当前 facade 已满足的性质。
 
 **Boundary B（host|kernel）**：syscall 膜。两个方向语义不同：
 - project（host→kernel）：数据下沉为 kernel 事实。**身份铸造规则属于此边界**——`EffectId` 只能由 kernel 投影铸造（废弃分支 identity.json 的这条政策值得保留为 checker 规则，而非逐函数 JSON）。
@@ -80,7 +80,7 @@
 
 ## 三点一、真实运行路径审计（2026-09-22）
 
-本节记录对 Node facade、`RuntimeRunner` 和 provider 调用的现场核对结果。审计没有修改运行时代码；结论以源码和构建后 provider spy 的实际观察为准。
+本节保留 2026-09-22 对 Node facade、`RuntimeRunner` 和 provider 调用的审计基线。原审计没有修改运行时代码；结论以源码和构建后 provider spy 的实际观察为准。后续修复状态见三点二，以下原始故障及行号不代表修复后的当前状态。
 
 ### 1. 真实执行路径与形式 lowering 路径分叉
 
@@ -153,6 +153,24 @@ createAgent(definition)
 5. Boundary A 收敛后再注册 `agent.public-to-host`。当前 `contracts/protocols/registry.ts` 只注册 Skill 协议，直接注册 Agent 会让 checker 守护未被运行时消费的旁路。
 
 本次核验中，`npm run contracts:check`、`cd node && npm run build` 和四个目标测试套件（22 个测试）均为绿色；这些结果只能证明现有类型、构建和局部断言成立，不能证明 `createAgent().run()` 的端到端语义已经闭合。
+
+## 三点二、实路线首批修复（2026-09-23）
+
+已按“提取实路线、退役旁路”的裁决完成第一批可独立验证的改动。
+
+| 提交 | 内容 | 运行时证据 |
+|---|---|---|
+| `a2ef8e39` | 提取 `node/src/runtime/agent-runtime-options.ts` 的 `buildAgentRuntimeOptions`，统一组装 `RuntimeOptions` | 提取前后 5 个目标套件、25 个测试通过；provider 解析与执行面连接仍由 facade 管理 |
+| `cfeefd8e` | 公共 Agent 将已绑定工具设为初始 baseline；MCP 连接和工具发现完成后才创建 runner | 本地工具可见且执行；自定义执行面受 capability ceiling 限制；MCP 与本地工具可见，连续运行能执行 MCP 工具 |
+| `c6b049b6` | `providerOptions → extensions` 透传；避免宿主策略覆盖已合并 guardrails；保留 `ask_user` 默认动作 | run、stream、session、workflow、resume 均收到 extensions；宿主与 Agent veto 同时生效；拒绝审批后工具不执行 |
+
+真实路径现为 `createAgent → createRunner（解析 provider、准备 execution plane）→ buildAgentRuntimeOptions → RuntimeRunner`。本轮直接复用 `RuntimeOptions` 作为目标类型，没有新增一份不被执行消费的 IR。底层 RuntimeRunner 对缺省 baseline 的最小暴露语义保持不变，只有公共 Agent 显式选择已绑定的工具；capability ceiling 和治理过滤继续由既有执行链执行。
+
+配置优先级保持明确的局部规则：宿主 `skillCatalog`/`knowledgeSource` 覆盖声明式默认来源；治理策略合并后写入，避免尾部展开覆盖；默认动作保留 deny 优先、其次 ask_user；run 的 `onPermissionRequest` 优先于宿主回调。此轮没有重定义已有治理规则列表内部的匹配顺序。
+
+新增 `node/tests/agent-runtime-path.test.ts` 的 11 个运行路径测试，并将 facade 中两个只检查“不包含”的断言改为精确的可见工具集断言。工具暴露、extensions 和 guardrail 覆盖均先复现失败，再验证修复。校验结果为 Node 构建通过、181 个非在线测试套件 / 1139 个测试通过、`contracts:check` 与 `contracts:verify` 通过；六个需要在线 provider 的测试套件未运行。契约检查目前仍只覆盖已注册的 Skill 协议，不能据此宣称 Agent 契约已注册。
+
+后续仍需完成定义与 binding 分离、声明式 memory 绑定与审计入口、Run/Session 隔离、handoff target、Agent 协议注册和旧 IR 退役。上述原审计缺陷中的这些部分保持待办，后续次序记录于 companion plan。
 
 ## 四、协议注册表路线
 
