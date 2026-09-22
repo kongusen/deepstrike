@@ -9,18 +9,12 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from .base import RuntimePolicy
+from .protocols import GenerationProtocol
 
 ModelKind = Literal["generation", "embedding"]
 CapabilityState = Literal["supported", "unsupported", "unknown"]
 InputModality = Literal["text", "image", "audio", "video", "file"]
 OutputModality = Literal["text", "image", "audio", "embedding"]
-GenerationProtocol = Literal[
-    "anthropic-messages",
-    "openai-chat",
-    "openai-responses",
-    "gemini",
-    "ollama-chat",
-]
 EndpointProtocol = Literal[
     "anthropic-messages",
     "openai-chat",

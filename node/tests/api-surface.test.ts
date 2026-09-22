@@ -11,7 +11,7 @@ import { OpenAIProvider } from "../src/index.js"
 describe("root surface", () => {
   it("exposes the Tier-1 entry points", () => {
     for (const name of [
-      "createAgent", "collectText",
+      "createAgent",
       "tool", "streamingTool", "safeTool", "ok", "fail",
       "AnthropicProvider", "OpenAIProvider", "OpenAIResponsesProvider", "createProvider",
     ]) {

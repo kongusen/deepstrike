@@ -433,8 +433,7 @@ class RuntimePolicy:
         self.timeout_ms = timeout_ms
 
 
-# Wire protocols a provider can speak. Mirrors the Node/WASM GenerationProtocol union.
-GenerationProtocol = str  # "anthropic-messages" | "openai-chat" | "openai-responses" | "gemini"
+from .protocols import GenerationProtocol
 
 
 @dataclass

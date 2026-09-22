@@ -7,7 +7,8 @@ import type { Session } from "../src/session.js"
 import type { SessionData } from "../src/memory/protocols.js"
 import type { SessionLog } from "../src/runtime/session-log.js"
 import type { MCPServer } from "../src/mcp-server.js"
-import type { KnowledgeSourceRef, McpTransport } from "../src/index.js"
+import type { KnowledgeSourceRef } from "../src/knowledge/public.js"
+import type { McpTransport } from "../src/mcp-server.js"
 
 describe("spc_001: public descriptor provider options", () => {
   it("preserves vendor extensions on public descriptor contracts", () => {

@@ -22,15 +22,16 @@ test("SPC-028-05 Node declares exactly one public AgentDefinition", () => {
   expect(declarations(join(process.cwd(), "src"))).toEqual([join(process.cwd(), "src/agent-facade.ts")])
 })
 
-test("SPC-028-28 executable facade has one explicit runtime name", () => {
+test("SPC-028-28 executable facade has one public Agent name", () => {
   const source = readFileSync(join(process.cwd(), "src/agent-facade.ts"), "utf8")
-  expect(source).toMatch(/export interface AgentRuntime/)
+  expect(source).toMatch(/export interface Agent\s*\{/)
+  expect(source).toMatch(/export type AgentRuntime = Agent/)
   expect(source).not.toMatch(/export interface ExecutableAgent/)
 })
 
 test("SPC-028-05 normalization accepts the facade definition with its default identity", async () => {
   const agent = createAgent({
-    provider: new ReplayProvider([{ role: "assistant", content: "done" }]),
+    runtimeBinding: { provider: new ReplayProvider([{ role: "assistant", content: "done" }]) },
     instructions: "Keep the instruction",
     providerOptions: { openai: { temperature: 0 } },
   })
@@ -39,5 +40,6 @@ test("SPC-028-05 normalization accepts the facade definition with its default id
   expect(spec.instructions).toBe(agent.definition.instructions)
   expect(spec.extensions).toEqual(agent.definition.providerOptions)
   expect(spec).not.toHaveProperty("provider")
+  expect(agent.definition).toHaveProperty("runtimeBinding")
   await expect(agent.run("go")).resolves.toMatchObject({ output: "done" })
 })

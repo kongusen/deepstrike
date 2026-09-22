@@ -2557,7 +2557,7 @@ mod tests {
             serde_json::from_value::<HostEffectSupport>(json!({ "supported": ["load_payload"] }))
                 .is_ok()
         );
-        assert_eq!(EffectKindTag::ALL.len(), 11);
+        assert_eq!(EffectKindTag::ALL.len(), 10);
     }
 
     // -----------------------------------------------------------------------------------------

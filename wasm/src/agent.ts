@@ -1,6 +1,10 @@
 import type { AgentCapabilityFilter } from "./runtime/types/agent.js"
 import type { Memory, WorkingMemory } from "./memory/index.js"
 import type { RegisteredTool } from "./tools/index.js"
+import type { LLMProvider, StreamEvent } from "./types.js"
+import { RuntimeRunner, type RuntimeOptions } from "./runtime/runner.js"
+import { LocalExecutionPlane } from "./runtime/execution-plane.js"
+import { InMemorySessionLog } from "./runtime/session-log.js"
 
 type JsonSchema = Record<string, unknown>
 
@@ -105,6 +109,17 @@ export interface AgentOptions {
   outputSchema?: JsonSchema
   metadata?: Record<string, unknown>
   guardrails?: Guardrail[]
+  runtimeBinding?: {
+    provider?: LLMProvider
+    providerFor?: (model: string) => LLMProvider | undefined
+    runtimeOptions?: Partial<RuntimeOptions>
+  }
+}
+
+export interface AgentRunResult {
+  output: string
+  sessionId: string
+  status: "completed" | "partial" | "failed" | "cancelled"
 }
 
 export class Agent {
@@ -123,6 +138,7 @@ export class Agent {
   readonly outputSchema?: JsonSchema
   readonly metadata?: Record<string, unknown>
   readonly guardrails?: Guardrail[]
+  readonly runtimeBinding?: AgentOptions["runtimeBinding"]
 
   constructor(options: AgentOptions) {
     this.name = options.name
@@ -140,5 +156,44 @@ export class Agent {
     this.outputSchema = options.outputSchema
     this.metadata = options.metadata
     this.guardrails = options.guardrails
+    this.runtimeBinding = options.runtimeBinding
+  }
+
+  async run(goal: string, options: { sessionId?: string; maxTurns?: number } = {}): Promise<AgentRunResult> {
+    const binding = this.runtimeBinding
+    const provider = binding?.provider ?? (typeof this.model === "string" ? binding?.providerFor?.(this.model) : undefined)
+    if (!provider) throw new Error(`agent "${this.name}" has no runtime provider binding`)
+    const runtime = new RuntimeRunner({
+      provider,
+      executionPlane: new LocalExecutionPlane(),
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 32_000,
+      agentId: this.name,
+      ...(this.instructions ? { systemPrompt: this.instructions } : {}),
+      ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
+      ...(binding?.runtimeOptions ?? {}),
+    } as RuntimeOptions)
+    const sessionId = options.sessionId ?? `session-${crypto.randomUUID()}`
+    const events: StreamEvent[] = []
+    for await (const event of runtime.run({ sessionId, goal })) events.push(event)
+    const output = events.filter(event => event.type === "text_delta").map(event => ("delta" in event ? String(event.delta) : "")).join("")
+    const failed = events.some(event => event.type === "error")
+    return { output, sessionId, status: failed ? "failed" : "completed" }
+  }
+
+  stream(goal: string, options: { sessionId?: string } = {}): AsyncIterable<StreamEvent> {
+    const binding = this.runtimeBinding
+    const provider = binding?.provider ?? (typeof this.model === "string" ? binding?.providerFor?.(this.model) : undefined)
+    if (!provider) throw new Error(`agent "${this.name}" has no runtime provider binding`)
+    const runtime = new RuntimeRunner({
+      provider,
+      executionPlane: new LocalExecutionPlane(),
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 32_000,
+      agentId: this.name,
+      ...(this.instructions ? { systemPrompt: this.instructions } : {}),
+      ...(binding?.runtimeOptions ?? {}),
+    } as RuntimeOptions)
+    return runtime.run({ sessionId: options.sessionId ?? `session-${crypto.randomUUID()}`, goal })
   }
 }

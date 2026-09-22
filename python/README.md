@@ -28,40 +28,28 @@ maturin develop --manifest-path crates/deepstrike-py/Cargo.toml
 
 ```python
 import asyncio
-from deepstrike import (
-    FileSessionLog,
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    OpenAIProvider,
-    RuntimeOptions,
-    RuntimeRunner,
-    collect_text,
-    tool,
-)
+from deepstrike import OpenAIProvider, create_agent, tool
 
 @tool
 async def add(x: int, y: int) -> str:
     """Add two numbers."""
     return str(x + y)
 
-plane = LocalExecutionPlane().register(add)
-runner = RuntimeRunner(RuntimeOptions(
-    provider=OpenAIProvider(api_key="sk-...", model="gpt-5-mini"),
-    session_log=FileSessionLog(".deepstrike/sessions"),
-    execution_plane=plane,
-    max_tokens=4096,
-))
+agent = create_agent(
+    "math",
+    model="openai/gpt-5-mini",
+    runtime_binding={"provider": OpenAIProvider(api_key="sk-...", model="gpt-5-mini")},
+    tools=[add],
+)
 
-asyncio.run(collect_text(runner.run(
-    session_id="math-1",
-    goal="What is 17 + 28?",
-)))
+result = asyncio.run(agent.run("What is 17 + 28?", session_id="math-1"))
+print(result["output"])
 # => "45"
 ```
 
 ### Recipes — the canonical entry points
 
-Most apps need one of two shapes. Start with the facades; drop to `RuntimeRunner` for streaming, tools, signals, memory, or governance.
+Most apps start with `Agent`; use `RuntimeRunner` from the runtime submodule only for custom host control.
 
 ```python
 from deepstrike import run_agent, run_fanout

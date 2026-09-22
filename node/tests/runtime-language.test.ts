@@ -30,3 +30,14 @@ test("SPC-028-01 keeps documentation on the same vocabulary version and terms", 
     for (const verb of Object.keys(RUNTIME_VOCABULARY.verbs)) expect(doc).toContain(`**${verb}**`)
   }
 })
+
+test("SPC-028-01 rejects public terms that are absent from the registry", () => {
+  const docs = [
+    join(process.cwd(), "../docs/architecture/runtime-language.md"),
+    join(process.cwd(), "../docs/en/architecture/runtime-language.md"),
+  ].map(path => readFileSync(path, "utf8"))
+  for (const doc of docs) {
+    expect(doc).not.toContain("**AgentDefinition**")
+    expect(doc).not.toContain("**AgentRuntime**")
+  }
+})

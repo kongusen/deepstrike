@@ -10,7 +10,7 @@ The following registry is normative for the public, host, kernel, and provider b
 
 | Layer | Terms |
 | --- | --- |
-| Public Agent | **Agent**, **AgentDefinition**, **AgentRuntime**, **Model**, **Run**, **Session**, **Tool**, **Skill**, **Memory**, **Knowledge**, **MCPServer**, **Handoff**, **Workflow**, **Guardrail**, **Eval**, **Dataset**, **Evaluator**, **Output**, **Usage** |
+| Public Agent | **Agent**, **Model**, **Run**, **Session**, **Tool**, **Skill**, **Memory**, **Knowledge**, **MCPServer**, **Handoff**, **Workflow**, **Guardrail**, **Eval**, **Dataset**, **Evaluator**, **Output**, **Usage** |
 | Host Runtime | **AgentSpec**, **Context**, **ContextPlan**, **Capability**, **ModelRoute**, **Invocation**, **ProviderAttempt**, **Measurement**, **Evidence**, **Artifact**, **Evaluation**, **Promotion**, **ExecutionPlane** |
 | Kernel | **Operation**, **Intent**, **Decision**, **Effect**, **Fact**, **Settlement**, **Task**, **Capability**, **Budget**, **Journal**, **Checkpoint**, **StateTransition** |
 | Provider Boundary | **Model**, **Provider**, **Endpoint**, **Protocol**, **Route**, **Adapter**, **Request**, **Response**, **Usage**, **ReplayEvidence** |

@@ -25,7 +25,7 @@ test("SPC-028-29 resolves a model-first binding before constructing the runtime"
   const agent = createAgent({
     name: "researcher",
     model: "gpt-5.4",
-    runtimeOptions: { providerFor: model => model === "gpt-5.4" ? provider : undefined },
+    runtimeBinding: { providerFor: model => model === "gpt-5.4" ? provider : undefined },
   })
 
   await expect(agent.run("research")).resolves.toMatchObject({ output: "routed", status: "completed" })

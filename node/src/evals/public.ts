@@ -7,7 +7,7 @@ export interface Dataset { name?: string; cases: DatasetCase[] }
 export interface Evaluator { name: string; evaluate(input: { testCase: DatasetCase; output: string }): Promise<number> | number }
 export interface EvalResult { caseId: string; output: string; scores: Record<string, number> }
 export interface ExecutionEvidence {
-  contextBinding?: Record<string, unknown>
+  contextBinding?: unknown
   route?: unknown
   measurement?: unknown
   artifactSet?: unknown
@@ -16,7 +16,7 @@ export interface ExecutionEvidence {
 export interface EvalTrace {
   caseId: string
   executedInput: string
-  contextBinding?: Record<string, unknown>
+  contextBinding?: unknown
   route?: unknown
   measurement?: unknown
   artifactSet?: unknown

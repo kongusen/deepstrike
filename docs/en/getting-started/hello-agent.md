@@ -7,39 +7,17 @@ Run your first tool-using Agent in five minutes. This example gives an Agent a m
 ```python
 import asyncio
 import os
-from deepstrike import (
-    AnthropicProvider,
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    RuntimeOptions,
-    RuntimeRunner,
-    read_file,
-    TextDelta,
-    ToolCallEvent,
-    ToolResultEvent,
-    DoneEvent,
-)
+from deepstrike import AnthropicProvider, create_agent, read_file
 
 async def main(goal: str):
-    provider = AnthropicProvider(api_key=os.environ["ANTHROPIC_API_KEY"])
-    plane = LocalExecutionPlane().register(read_file)
-    runner = RuntimeRunner(RuntimeOptions(
-        provider=provider,
-        session_log=InMemorySessionLog(),
-        execution_plane=plane,
-        max_tokens=200_000,
-        max_turns=10,
-    ))
-
-    async for event in runner.run(goal):
-        if isinstance(event, TextDelta):
-            print(event.delta, end="", flush=True)
-        elif isinstance(event, ToolCallEvent):
-            print(f"\n[→ {event.name}]")
-        elif isinstance(event, ToolResultEvent):
-            print(f"[← {event.content[:80]}...]")
-        elif isinstance(event, DoneEvent):
-            print(f"\n[done in {event.iterations} turns]")
+    agent = create_agent(
+        "reader",
+        model="anthropic/claude",
+        runtime_binding={"provider": AnthropicProvider(api_key=os.environ["ANTHROPIC_API_KEY"])},
+        tools=[read_file],
+    )
+    result = await agent.run(goal)
+    print(result["output"])
 
 asyncio.run(main("Read README.md and summarize"))
 ```
@@ -60,18 +38,16 @@ ANTHROPIC_API_KEY=sk-... python examples/hello_agent/main.py "Read README.md and
 4. The Agent uses the result to write the answer while events stream to the application.
 5. The session ends with a `DoneEvent` that includes the run summary.
 
-## Simpler Alternative
+## Advanced host control
 
 If you do not need streaming events:
 
 ```python
-from deepstrike import run_agent, AnthropicProvider
+from deepstrike import create_agent, AnthropicProvider
 
-text = await run_agent(
-    provider=AnthropicProvider(api_key=...),
-    goal="Summarize README.md",
-)
-print(text)
+agent = create_agent("reader", model="anthropic/claude", runtime_binding={"provider": AnthropicProvider(api_key=...)})
+result = await agent.run("Summarize README.md")
+print(result["output"])
 ```
 
 ## Next Steps

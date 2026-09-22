@@ -6,7 +6,7 @@
  * queued. Omitting the recipient claims from the shared FIFO.
  */
 import { SignalGateway } from "../src/os/public.js"
-import type { RuntimeSignal } from "../src/index.js"
+import type { RuntimeSignal } from "../src/signals/types.js"
 
 const sig = (summary: string, recipient?: string): RuntimeSignal => ({
   source: "gateway",

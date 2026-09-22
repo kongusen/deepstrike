@@ -15,10 +15,8 @@
 // ③ dynamic loop agents: self-pacing rounds over the kernel pacing trap.
 export { createAgent } from "./agent-facade.js"
 export type {
-  AgentDefinition,
   AgentRunOptions,
   AgentSession,
-  AgentRuntime,
   DelegationRequest,
   DelegationResult,
   MemoryInput,
@@ -26,24 +24,7 @@ export type {
   RunResult,
   SessionRef,
 } from "./agent-facade.js"
-export { collectText } from "./runtime/runner.js"
-// Self-Harness H1 instruction/nudge surfaces named on `RuntimeOptions`; the full manifest API lives
-// on the `@deepstrike/sdk/harness` subpath.
-export type { InstructionProfile, NudgeRule, NudgeTrigger } from "./harness/public.js"
-export type { SignalPolicy } from "./runtime/os-profile.js"
-export {
-  DEFAULT_CONTEXT_POLICY,
-  PPM_SCALE,
-  contextPolicy,
-  normalizeContextPolicy,
-  ratioToPpm,
-} from "./runtime/context-policy.js"
-export type {
-  ContextPolicyOverrides,
-  ContextPolicy,
-  ContextPolicyWire,
-  ContextPressureThresholds,
-} from "./runtime/context-policy.js"
+export type { Agent } from "./agent-facade.js"
 
 // ── Tool authoring ──────────────────────────────────────────────────────────
 export { tool, streamingTool } from "./tools/index.js"
@@ -67,30 +48,15 @@ export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 // ── Multi-agent primitive ───────────────────────────────────────────────────
 // Parallel fan-out / sub-agent delegation. The full orchestration layer is in `@deepstrike/sdk/workflow`.
 // ── Ecosystem Surface Contract (spc_001) ────────────────────────────────────
-export { Agent } from "./agent.js"
-export type { AgentOptions, AgentMemory, MemoryReference, ModelRef, ModelRequirement } from "./agent.js"
-export { lowerAgent, normalizeAgent } from "./agent-ir.js"
-export type { AgentCapabilityIR, AgentLoweringInputs, AgentMemoryIR, AgentSpec, AgentToolDefinition, AgentToolIR } from "./agent-ir.js"
+export type { ModelRef, ModelRequirement } from "./agent.js"
 export type { Guardrail } from "./guardrail.js"
 export type { MCPServer, McpTransport } from "./mcp-server.js"
 export type { Knowledge, KnowledgeSourceRef } from "./knowledge/public.js"
-export { createTextKnowledgeSource } from "./knowledge/public.js"
-export type { TextKnowledgeDocument } from "./knowledge/public.js"
-export { agentRefName } from "./handoff-target.js"
 export type { AgentRef, Handoff } from "./handoff-target.js"
-export type { Session } from "./session.js"
 export { createWorkflow } from "./workflow/definition.js"
 export type { WorkflowDefinition, WorkflowStep, WorkflowResult } from "./workflow/definition.js"
 export { evaluate } from "./evals/public.js"
 export type { Dataset, DatasetCase, Evaluator, EvalResult, EvalRun, EvalTrace, ExecutionEvidence } from "./evals/public.js"
-
-// ── Signals (the `RuntimeOptions.signalSource` surface) ─────────────────────
-export type {
-  RuntimeSignal,
-  SignalClaim,
-  SignalDeliveryReceipt,
-  SignalSource,
-} from "./signals/types.js"
 
 // ── Core data types ─────────────────────────────────────────────────────────
 export type {
@@ -105,25 +71,3 @@ export type {
   LLMProvider, RetryConfig, TokenUsage,
   ProviderWireEvidence, ProviderTransportTelemetry,
 } from "./types.js"
-export {
-  DurableContentError,
-  decodeDurableContent,
-  decodeDurableToolResult,
-  encodeDurableContent,
-  encodeDurableToolResult,
-  toolOutputBlocksToDurable,
-  durableBlocksToToolOutput,
-} from "./runtime/durable-content.js"
-export type { DurableContent, DurableContentBlock, DurableSource, DurableToolResult } from "./runtime/durable-content.js"
-export type {
-  WorkflowSpec,
-  WorkflowNodeSpec,
-  SchedulingFactors,
-  WorkflowDependencyPolicy,
-  WorkflowContextInclude,
-  WorkflowDependencyMode,
-  WorkflowContextPolicy,
-  WorkflowNodeStatus,
-  WorkflowNodeOutcome,
-  WorkflowOutcome,
-} from "./types/agent.js"

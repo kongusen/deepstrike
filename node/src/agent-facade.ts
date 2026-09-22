@@ -19,15 +19,19 @@ export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
   /** Public model identity. Runtime resolves this through a provider binding. */
   model?: ModelRef
-  /** Optional host binding retained for local/custom execution. */
-  provider?: LLMProvider
   tools?: RegisteredTool[]
-  executionPlane?: ExecutionPlane
-  sessionLog?: SessionLog
   maxTokens?: number
   memoryStore?: MemoryStore
   memoryScope?: MemoryScope
-  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "providerFor" | "initialMemory" | "skillCatalog" | "knowledgeSource" | "contextManager">
+  runtimeBinding?: RuntimeBinding
+}
+
+export interface RuntimeBinding {
+  provider?: LLMProvider
+  providerFor?: RuntimeOptions["providerFor"]
+  executionPlane?: ExecutionPlane
+  sessionLog?: SessionLog
+  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "initialMemory" | "skillCatalog" | "knowledgeSource" | "contextManager" | "artifactSetDigest">
 }
 
 export interface AgentRunOptions {
@@ -53,7 +57,7 @@ export interface RunResult<T = string> {
   outputValidation?: { ok: boolean; errors: string[] }
   /** Host-owned execution evidence captured for evaluation and replay. */
   evidence?: {
-    contextBinding?: Record<string, unknown>
+    contextBinding?: unknown
     route?: unknown
     measurement?: unknown
     artifactSet?: unknown
@@ -96,8 +100,8 @@ export interface DelegationResult {
   nodeId?: string
 }
 
-/** The executable host handle created from an AgentDefinition. */
-export interface AgentRuntime {
+/** The executable public Agent handle created from an AgentDefinition. */
+export interface Agent {
   readonly name: string
   readonly definition: Readonly<AgentDefinition>
   run(goal: string, options?: AgentRunOptions): Promise<RunResult>
@@ -110,6 +114,9 @@ export interface AgentRuntime {
   listen(options?: { session?: SessionRef; leaseMs?: number }): Promise<RunResult | null>
   close(): Promise<void>
 }
+
+/** @internal Compatibility alias; public code should use `Agent`. */
+export type AgentRuntime = Agent
 
 function sessionId(ref?: SessionRef): string {
   return ref?.id ?? `session-${crypto.randomUUID()}`
@@ -160,7 +167,7 @@ class AgentSessionImpl {
   }
 }
 
-class AgentRuntimeImpl implements AgentRuntime {
+class AgentRuntimeImpl implements Agent {
   readonly name: string
   readonly definition: Readonly<AgentDefinition>
   private readonly sessionLog: SessionLog
@@ -171,7 +178,7 @@ class AgentRuntimeImpl implements AgentRuntime {
   constructor(definition: AgentDefinition) {
     this.definition = Object.freeze({ ...definition })
     this.name = normalizeAgent(definition).name
-    this.sessionLog = definition.sessionLog ?? new InMemorySessionLog()
+    this.sessionLog = definition.runtimeBinding?.sessionLog ?? new InMemorySessionLog()
   }
 
   session(id = `session-${crypto.randomUUID()}`): AgentSession {
@@ -257,7 +264,7 @@ class AgentRuntimeImpl implements AgentRuntime {
   }
 
   async listen(options: { session?: SessionRef; leaseMs?: number } = {}): Promise<RunResult | null> {
-    const source = this.definition.runtimeOptions?.signalSource
+    const source = this.definition.runtimeBinding?.runtimeOptions?.signalSource
     if (!source) throw new Error("agent signals require runtimeOptions.signalSource")
     const claim = await source.claimSignal(this.name, options.leaseMs)
     if (!claim) return null
@@ -304,6 +311,17 @@ class AgentRuntimeImpl implements AgentRuntime {
     const started = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
     const usageEvent = [...events].reverse().find(event => event.type === "usage") as (StreamEvent & Partial<TokenUsage>) | undefined
     const output = events.filter(event => event.type === "text_delta").map(event => String((event as { delta?: unknown }).delta ?? "")).join("")
+    const prepared = [...persisted].reverse().find(entry => entry.event.kind === "context_prepared")
+    const measured = [...persisted].reverse().find(entry => entry.event.kind === "prompt_measured")
+    const attempt = [...persisted].reverse().find(entry => entry.event.kind === "provider_attempt")
+    const runStarted = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
+    const binding = this.definition.runtimeBinding
+    const evidence = {
+      ...(prepared?.event.kind === "context_prepared" ? { contextBinding: prepared.event.preparation.binding } : {}),
+      ...(attempt?.event.kind === "provider_attempt" ? { route: attempt.event.route } : runStarted?.event.kind === "run_started" && runStarted.event.route ? { route: runStarted.event.route } : {}),
+      ...(measured?.event.kind === "prompt_measured" ? { measurement: measured.event.measurement } : {}),
+      ...(binding?.runtimeOptions?.artifactSetDigest ? { artifactSet: { digest: binding.runtimeOptions.artifactSetDigest } } : {}),
+    }
     const outputValidation = this.definition.outputSchema
       ? validateAgainstSchema(extractJsonValue(output), this.definition.outputSchema)
       : undefined
@@ -320,6 +338,7 @@ class AgentRuntimeImpl implements AgentRuntime {
           totalTokens: usageEvent.totalTokens,
         },
       } : {}),
+      ...(Object.keys(evidence).length ? { evidence } : {}),
     }
   }
 
@@ -352,15 +371,16 @@ class AgentRuntimeImpl implements AgentRuntime {
 
   private createRunner(options: AgentRunOptions): RuntimeRunner {
     const model = this.definition.model
-    const provider = this.definition.provider
-      ?? (typeof model === "string" ? this.definition.runtimeOptions?.providerFor?.(model) : undefined)
+    const binding = this.definition.runtimeBinding
+    const provider = binding?.provider
+      ?? (typeof model === "string" ? binding?.providerFor?.(model) : undefined)
     if (!provider) {
       throw new Error(`agent "${this.name}" has no runtime provider binding for model ${typeof this.definition.model === "string" ? this.definition.model : "(unresolved)"}`)
     }
-    if (this.definition.executionPlane && this.definition.mcpServers?.length) {
+    if (binding?.executionPlane && this.definition.mcpServers?.length) {
       throw new Error("agent mcpServers cannot be combined with a custom executionPlane")
     }
-    const plane = this.definition.executionPlane
+    const plane = binding?.executionPlane
       ?? (this.definition.mcpServers?.length
         ? (() => {
             const servers = Object.fromEntries(this.definition.mcpServers.map(server => {
@@ -384,8 +404,8 @@ class AgentRuntimeImpl implements AgentRuntime {
     }
     const runtime: RuntimeOptions = {
       provider,
-      ...(mergeGuardrailPolicies(this.definition.runtimeOptions?.governancePolicy, this.definition.guardrails)
-        ? { governancePolicy: mergeGuardrailPolicies(this.definition.runtimeOptions?.governancePolicy, this.definition.guardrails) }
+      ...(mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, this.definition.guardrails)
+        ? { governancePolicy: mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, this.definition.guardrails) }
         : {}),
       ...(this.definition.capabilityFilter ? { capabilityFilter: this.definition.capabilityFilter } : {}),
       executionPlane: plane,
@@ -401,13 +421,13 @@ class AgentRuntimeImpl implements AgentRuntime {
       ...(this.definition.memoryStore ? { memoryStore: this.definition.memoryStore } : {}),
       ...(this.definition.memoryScope ? { memoryScope: this.definition.memoryScope } : {}),
       ...(this.definition.skills?.length ? { skillCatalog: this.definition.skills } : {}),
-      ...(!this.definition.runtimeOptions?.knowledgeSource && this.definition.knowledge?.some(item => item.source.kind === "text") ? {
+      ...(!binding?.runtimeOptions?.knowledgeSource && this.definition.knowledge?.some(item => item.source.kind === "text") ? {
         knowledgeSource: createTextKnowledgeSource(this.definition.knowledge
           .filter((item): item is Knowledge & { source: { kind: "text"; content: string } } => item.source.kind === "text")
           .map(item => ({ id: item.id, name: item.name, content: item.source.content }))),
       } : {}),
       agentId: this.name,
-      ...(this.definition.runtimeOptions ?? {}),
+      ...(binding?.runtimeOptions ?? {}),
       ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
     }
     return new RuntimeRunner(runtime)
@@ -423,6 +443,6 @@ class AgentRuntimeImpl implements AgentRuntime {
   }
 }
 
-export function createAgent(definition: AgentDefinition): AgentRuntime {
+export function createAgent(definition: AgentDefinition): Agent {
   return new AgentRuntimeImpl(definition)
 }
