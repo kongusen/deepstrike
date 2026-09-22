@@ -32,6 +32,7 @@ export const SKILL_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol<
   SkillMetadataSource,
   KernelSkillMetadataTarget
 > = {
+  id: "skill.host-to-kernel",
   family: "host-to-kernel",
   direction: "project",
 

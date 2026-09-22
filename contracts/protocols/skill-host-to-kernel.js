@@ -14,6 +14,7 @@
  * Skill host-to-kernel projection protocol.
  */
 export const SKILL_HOST_TO_KERNEL_PROTOCOL = {
+    id: "skill.host-to-kernel",
     family: "host-to-kernel",
     direction: "project",
     source: {

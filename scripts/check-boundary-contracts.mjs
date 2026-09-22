@@ -6,9 +6,14 @@ import { resolve } from "node:path"
 import ts from "typescript"
 
 const root = resolve(new URL("..", import.meta.url).pathname)
-const kernelStepPath = resolve(root, "node/src/runtime/kernel-step.ts")
-const protocolModule = await import("../contracts/protocols/skill-host-to-kernel.js")
-const protocol = protocolModule.SKILL_HOST_TO_KERNEL_PROTOCOL
+const registryModule = await import("../contracts/protocols/registry.js")
+const protocols = registryModule.BOUNDARY_PROTOCOLS
+if (!Array.isArray(protocols) || protocols.length === 0) throw new Error("boundary protocol registry is empty")
+const protocol = protocols.find(candidate => candidate.id === "skill.host-to-kernel")
+if (!protocol) throw new Error("skill.host-to-kernel protocol is not registered")
+const [, adapterPath, adapterName] = protocol.adapter.match(/^([^:]+):(.+)$/) ?? []
+if (!adapterPath || !adapterName) throw new Error(`invalid adapter reference: ${protocol.adapter}`)
+const kernelStepPath = resolve(root, "node/src", `${adapterPath}.ts`)
 
 function fail(message) { throw new Error(message) }
 
@@ -29,8 +34,8 @@ function createTypeChecker() {
   return { program, checker: program.getTypeChecker() }
 }
 
-function findAdapter(program, name) {
-  const sourceFile = program.getSourceFile(kernelStepPath)
+function findAdapter(program, filePath, name) {
+  const sourceFile = program.getSourceFile(filePath)
   if (!sourceFile) fail(`adapter file not found: ${kernelStepPath}`)
   let found
   const visit = node => {
@@ -91,7 +96,7 @@ function inspectFields(checker, declaration, sourceType, targetType) {
 function generateManifest(checker, declaration, signature, fields) {
   const sourceType = checker.getTypeOfSymbolAtLocation(signature.parameters[0], declaration.parameters[0])
   return {
-    id: "skill.host-to-kernel",
+    id: protocol.id,
     version: "0.2.74",
     protocol: {
       family: protocol.family,
@@ -183,7 +188,7 @@ export function isKernelSkillMetadata(value: unknown): value is KernelSkillMetad
 try {
   console.log("Checking skill host-to-kernel adapter with the TypeScript compiler...")
   const { program, checker } = createTypeChecker()
-  const declaration = findAdapter(program, "skillMetadataToKernel")
+  const declaration = findAdapter(program, kernelStepPath, adapterName)
   const signature = checker.getSignatureFromDeclaration(declaration)
   if (!signature) fail("could not resolve adapter signature")
   if (signature.parameters.length !== 1) fail(`expected one adapter parameter, got ${signature.parameters.length}`)

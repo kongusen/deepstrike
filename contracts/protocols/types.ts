@@ -95,6 +95,9 @@ export interface LazyLoadingPolicy {
  * The actual type checking happens via the typed adapter signature.
  */
 export interface BoundaryProtocol<Source = string, Target = string> {
+  /** Stable protocol identity used by the registry and generated artifacts. */
+  id: string
+
   /** Protocol family this crossing belongs to. */
   family: ProtocolFamily
 
