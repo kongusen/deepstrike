@@ -25,6 +25,26 @@ const ALLOWED_TARGET_FIELDS = [
   "allowed_tools",
   "capability_grants"
 ] as const
+const TARGET_FIELD_SHAPES = {
+  "name": "string",
+  "description": "string",
+  "when_to_use": "string",
+  "effort": "number",
+  "estimated_tokens": "number",
+  "allowed_tools": "array:string",
+  "capability_grants": "array:object"
+} as const
+
+function matchesShape(value: unknown, shape: string): boolean {
+  if (shape === "string") return typeof value === "string"
+  if (shape === "number") return typeof value === "number" && Number.isFinite(value)
+  if (shape === "boolean") return typeof value === "boolean"
+  if (shape === "array:string") return Array.isArray(value) && value.every(item => typeof item === "string")
+  if (shape === "array:object") return Array.isArray(value) && value.every(item => typeof item === "object" && item !== null && !Array.isArray(item))
+  if (shape === "array") return Array.isArray(value)
+  if (shape === "object") return typeof value === "object" && value !== null && !Array.isArray(value)
+  return true
+}
 
 export function validateSkillKernelProjection(
   result: unknown,
@@ -47,6 +67,11 @@ export function validateSkillKernelProjection(
       throw new Error(
         `Skill kernel projection validation failed: required field "${field}" is missing.`,
       )
+    }
+  }
+  for (const field of Object.keys(TARGET_FIELD_SHAPES)) {
+    if (Object.prototype.hasOwnProperty.call(object, field) && !matchesShape(object[field], TARGET_FIELD_SHAPES[field as keyof typeof TARGET_FIELD_SHAPES])) {
+      throw new Error(`Skill kernel projection validation failed: field "${field}" has an invalid type.`)
     }
   }
   if (options.strict) {

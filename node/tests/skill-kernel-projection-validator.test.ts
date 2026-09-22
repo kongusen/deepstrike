@@ -111,6 +111,27 @@ describe("validateSkillKernelProjection", () => {
     expect(() => validateSkillKernelProjection(incompleteProjection)).toThrow(/required field "description" is missing/i)
   })
 
+  it("rejects an invalid inferred scalar type", () => {
+    const invalidProjection = {
+      name: "test-skill",
+      description: "A test skill",
+      estimated_tokens: "1000",
+    }
+
+    expect(() => validateSkillKernelProjection(invalidProjection)).toThrow(/field "estimated_tokens" has an invalid type/i)
+  })
+
+  it("rejects invalid inferred array element types", () => {
+    const invalidProjection = {
+      name: "test-skill",
+      description: "A test skill",
+      estimated_tokens: 1000,
+      allowed_tools: ["read", 42],
+    }
+
+    expect(() => validateSkillKernelProjection(invalidProjection)).toThrow(/field "allowed_tools" has an invalid type/i)
+  })
+
   it("rejects non-object input", () => {
     expect(() => validateSkillKernelProjection(null)).toThrow(/result must be an object/i)
     expect(() => validateSkillKernelProjection("not an object")).toThrow(/result must be an object/i)

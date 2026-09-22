@@ -109,11 +109,12 @@ function findAdapter(program, filePath, name) {
   return found
 }
 
-function propertyInfo(checker, type) {
+function propertyInfo(checker, type, context) {
   return checker.getPropertiesOfType(type).map(symbol => {
     const declaration = symbol.valueDeclaration ?? symbol.declarations?.[0]
     const optional = Boolean(declaration && ts.isPropertySignature(declaration) && declaration.questionToken)
-    return { name: symbol.getName(), optional, symbol }
+    const symbolType = checker.getTypeOfSymbolAtLocation(symbol, context)
+    return { name: symbol.getName(), optional, symbol, type: typeName(checker, symbolType) }
   })
 }
 
@@ -122,8 +123,8 @@ function typeName(checker, type) {
 }
 
 function inspectFields(checker, declaration, sourceType, targetType) {
-  const sourceProperties = propertyInfo(checker, sourceType)
-  const targetProperties = propertyInfo(checker, targetType)
+  const sourceProperties = propertyInfo(checker, sourceType, declaration)
+  const targetProperties = propertyInfo(checker, targetType, declaration)
   const sourceNames = new Set(sourceProperties.map(property => property.name))
   const targetNames = new Set(targetProperties.map(property => property.name))
 
@@ -195,6 +196,7 @@ function generateValidator(fields) {
   const forbidden = JSON.stringify(protocol.fields.forbidden, null, 2)
   const required = JSON.stringify(fields.requiredPreserves, null, 2)
   const allowed = JSON.stringify(fields.targetProperties.map(property => property.name), null, 2)
+  const shapes = JSON.stringify(Object.fromEntries(fields.targetProperties.map(property => [property.name, runtimeShape(property.type)])), null, 2)
   return `/**
  * Generated runtime validator for the skill host-to-kernel boundary.
  * DO NOT EDIT BY HAND - regenerate with: npm run contracts:check
@@ -205,6 +207,18 @@ import type { KernelSkillMetadata } from "../kernel-step.js"
 const FORBIDDEN_FIELDS = ${forbidden} as const
 const REQUIRED_PRESERVED_FIELDS = ${required} as const
 const ALLOWED_TARGET_FIELDS = ${allowed} as const
+const TARGET_FIELD_SHAPES = ${shapes} as const
+
+function matchesShape(value: unknown, shape: string): boolean {
+  if (shape === "string") return typeof value === "string"
+  if (shape === "number") return typeof value === "number" && Number.isFinite(value)
+  if (shape === "boolean") return typeof value === "boolean"
+  if (shape === "array:string") return Array.isArray(value) && value.every(item => typeof item === "string")
+  if (shape === "array:object") return Array.isArray(value) && value.every(item => typeof item === "object" && item !== null && !Array.isArray(item))
+  if (shape === "array") return Array.isArray(value)
+  if (shape === "object") return typeof value === "object" && value !== null && !Array.isArray(value)
+  return true
+}
 
 export function validateSkillKernelProjection(
   result: unknown,
@@ -229,6 +243,11 @@ export function validateSkillKernelProjection(
       )
     }
   }
+  for (const field of Object.keys(TARGET_FIELD_SHAPES)) {
+    if (Object.prototype.hasOwnProperty.call(object, field) && !matchesShape(object[field], TARGET_FIELD_SHAPES[field as keyof typeof TARGET_FIELD_SHAPES])) {
+      throw new Error(\`Skill kernel projection validation failed: field "\${field}" has an invalid type.\`)
+    }
+  }
   if (options.strict) {
     const allowed = new Set<string>(ALLOWED_TARGET_FIELDS)
     for (const key of Object.keys(object)) {
@@ -250,6 +269,20 @@ export function isKernelSkillMetadata(value: unknown): value is KernelSkillMetad
   }
 }
 `
+}
+
+function runtimeShape(type) {
+  const normalized = type.replace(/\s+/g, "").replace(/\|undefined/g, "")
+  if (normalized === "string") return "string"
+  if (normalized === "number") return "number"
+  if (normalized === "boolean") return "boolean"
+  if (normalized === "string[]" || normalized === "Array<string>") return "array:string"
+  if (normalized.endsWith("[]")) return /Record<|object|\{/.test(normalized.slice(0, -2)) ? "array:object" : "array"
+  if (/^(Array<|ReadonlyArray<)/.test(normalized)) {
+    return /Record<|object|\{/.test(normalized) ? "array:object" : "array"
+  }
+  if (normalized.startsWith("Record<") || normalized === "object" || normalized.startsWith("{")) return "object"
+  return "unknown"
 }
 
 try {
