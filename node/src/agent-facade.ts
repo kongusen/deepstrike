@@ -7,13 +7,11 @@ import type { LLMProvider, StreamEvent, DoneEvent, ErrorEvent, TokenUsage, Conte
 import type { RegisteredTool } from "./tools/index.js"
 import type { MemoryRecord, MemoryRecall, MemoryQuery, MemoryScope, MemoryStore, MemoryKind } from "./memory/protocols.js"
 import type { WorkflowSpec, WorkflowOutcome, KernelAgentRole } from "./types/agent.js"
-import { extractJsonValue, schemaInstruction, validateAgainstSchema } from "./runtime/output-schema.js"
-import type { GovernancePolicy } from "./governance.js"
+import { extractJsonValue, validateAgainstSchema } from "./runtime/output-schema.js"
 import { McpProxyPlane } from "./runtime/mcp-proxy-plane.js"
 import { EnvCredentialVault } from "./runtime/credential-vault.js"
 import { agentRefName } from "./handoff-target.js"
-import { createTextKnowledgeSource } from "./knowledge/public.js"
-import type { Knowledge } from "./knowledge/public.js"
+import { buildAgentRuntimeOptions } from "./runtime/agent-runtime-options.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -127,24 +125,6 @@ function statusFromDone(status: string): RunResult["status"] {
   if (status === "cancelled" || status === "user" || status === "deadline" || status === "lease_lost" || status === "host_shutdown") return "cancelled"
   if (status === "failed" || status === "error") return "failed"
   return "partial"
-}
-
-function mergeGuardrailPolicies(
-  base: GovernancePolicy | undefined,
-  guardrails: AgentDefinition["guardrails"] | undefined,
-): GovernancePolicy | undefined {
-  const policies = [base, ...(guardrails ?? []).map(guardrail => guardrail.policy)].filter(
-    (policy): policy is GovernancePolicy => policy !== undefined,
-  )
-  if (!policies.length) return undefined
-  return {
-    ...(policies.some(policy => policy.defaultAction === "deny") ? { defaultAction: "deny" as const } : {}),
-    rules: policies.flatMap(policy => policy.rules ?? []),
-    vetoes: [...new Set(policies.flatMap(policy => policy.vetoes ?? []))],
-    rateLimits: policies.flatMap(policy => policy.rateLimits ?? []),
-    constraints: policies.flatMap(policy => policy.constraints ?? []),
-    ...(policies.some(policy => policy.surfaceDeniedInSystem === false) ? { surfaceDeniedInSystem: false } : {}),
-  }
 }
 
 class AgentSessionImpl {
@@ -402,35 +382,12 @@ class AgentRuntimeImpl implements Agent {
     if (this.definition.mcpServers?.length && this.definition.tools?.length) {
       plane.register(...this.definition.tools)
     }
-    const runtime: RuntimeOptions = {
+    return new RuntimeRunner(buildAgentRuntimeOptions(this.definition, options, {
       provider,
-      ...(mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, this.definition.guardrails)
-        ? { governancePolicy: mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, this.definition.guardrails) }
-        : {}),
-      ...(this.definition.capabilityFilter ? { capabilityFilter: this.definition.capabilityFilter } : {}),
       executionPlane: plane,
       sessionLog: this.sessionLog,
-      maxTokens: this.definition.maxTokens ?? 32_000,
-      ...(this.definition.instructions || this.definition.outputSchema ? {
-        systemPrompt: [
-          this.definition.instructions,
-          this.definition.outputSchema ? schemaInstruction(this.definition.outputSchema) : undefined,
-        ].filter((part): part is string => Boolean(part)).join("\n\n"),
-      } : {}),
-      ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
-      ...(this.definition.memoryStore ? { memoryStore: this.definition.memoryStore } : {}),
-      ...(this.definition.memoryScope ? { memoryScope: this.definition.memoryScope } : {}),
-      ...(this.definition.skills?.length ? { skillCatalog: this.definition.skills } : {}),
-      ...(!binding?.runtimeOptions?.knowledgeSource && this.definition.knowledge?.some(item => item.source.kind === "text") ? {
-        knowledgeSource: createTextKnowledgeSource(this.definition.knowledge
-          .filter((item): item is Knowledge & { source: { kind: "text"; content: string } } => item.source.kind === "text")
-          .map(item => ({ id: item.id, name: item.name, content: item.source.content }))),
-      } : {}),
       agentId: this.name,
-      ...(binding?.runtimeOptions ?? {}),
-      ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
-    }
-    return new RuntimeRunner(runtime)
+    }))
   }
 
   private async *clearRunnerAfter(stream: AsyncIterable<StreamEvent>, signal?: AbortSignal, abort?: () => void): AsyncIterable<StreamEvent> {
