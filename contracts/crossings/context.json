@@ -1,11 +1,42 @@
 {
-  "id": "runtime.context",
-  "source": {"layer": "runtime", "type": "ContextCandidate", "authority": "host-runtime"},
-  "target": {"layer": "runtime", "type": "CanonicalContext", "authority": "host-runtime"},
-  "crossing": {"direction": "runtime_internal", "verb": "normalize", "function": "normalizeCanonicalContext"},
-  "preserves": ["ordered_messages", "tool_projection", "context_identity", "selection_policy"],
-  "drops": ["resident_payload_layout"],
-  "forbidden": ["provider_credentials", "kernel_journal_authority"],
-  "kernel": {"crosses": true, "via": "ContextExecutionInput"},
-  "lossiness": "intentional"
+  "id": "runtime.context-preparation",
+  "source": {
+    "layer": "runtime",
+    "type": "ContextProviderPreparationRequest",
+    "authority": "host-runtime"
+  },
+  "target": {
+    "layer": "runtime",
+    "type": "ContextPrepared",
+    "authority": "host-runtime"
+  },
+  "crossing": {
+    "direction": "runtime_internal",
+    "verb": "project",
+    "function": "createContextPreparationAdapter"
+  },
+  "preserves": [
+    "context_state",
+    "provider_route",
+    "prompt_measurement",
+    "execution_input",
+    "context_plan",
+    "evaluation_binding"
+  ],
+  "drops": [
+    "resident_payload_layout"
+  ],
+  "forbidden": [
+    "provider_credentials",
+    "kernel_journal_mutation"
+  ],
+  "kernel": {
+    "crosses": true,
+    "via": "contextPrepareJson"
+  },
+  "lossiness": "intentional",
+  "implementation": {
+    "file": "node/src/runtime/context.ts",
+    "symbol": "createContextPreparationAdapter"
+  }
 }

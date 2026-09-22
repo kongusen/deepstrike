@@ -11,9 +11,9 @@ import { OpenAIProvider } from "../src/index.js"
 describe("root surface", () => {
   it("matches the explicit runtime export allowlist", () => {
     expect(Object.keys(root).sort()).toEqual([
-      "AnthropicProvider", "InMemoryReactionCheckpointStore", "OpenAIProvider", "OpenAIResponsesProvider",
-      "SESSION_EVENT_KINDS", "ToolError", "UnsupportedModalityError", "createAgent", "createProvider",
-      "createProviderAsync", "createWorkflow", "evaluate", "fail", "formatToolError", "ok", "resolveProviderRuntime",
+      "AnthropicProvider", "DatabaseSkillCatalog", "DirectorySkillCatalog", "InMemoryReactionCheckpointStore", "InlineSkillCatalog", "OpenAIProvider", "OpenAIResponsesProvider",
+      "ResolverSkillCatalog", "SESSION_EVENT_KINDS", "ToolError", "UnsupportedModalityError", "createAgent", "createProvider",
+      "createProviderAsync", "createWorkflow", "evaluate", "fail", "formatToolError", "ok", "projectSkillMetadata", "resolveProviderRuntime",
       "resolveProviderRuntimeAsync", "safeTool", "streamingTool", "tool",
     ])
   })

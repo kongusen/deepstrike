@@ -1,11 +1,40 @@
 {
-  "id": "eval.run",
-  "source": {"layer": "public", "type": "Eval", "authority": "public-agent"},
-  "target": {"layer": "runtime", "type": "EvaluationRun", "authority": "host-runtime"},
-  "crossing": {"direction": "public_to_runtime", "verb": "project", "function": "buildEvalMessages"},
-  "preserves": ["dataset_identity", "criteria", "run_evidence_binding"],
-  "drops": ["score_as_kernel_authority"],
-  "forbidden": ["direct_kernel_state_mutation", "activation_without_promotion"],
-  "kernel": {"crosses": true, "via": "EvaluateMilestone"},
-  "lossiness": "intentional"
+  "id": "eval.public-run",
+  "source": {
+    "layer": "public",
+    "type": "Eval",
+    "authority": "public-agent"
+  },
+  "target": {
+    "layer": "runtime",
+    "type": "EvalRun",
+    "authority": "host-runtime"
+  },
+  "crossing": {
+    "direction": "public_to_runtime",
+    "verb": "project",
+    "function": "evaluate"
+  },
+  "preserves": [
+    "dataset_identity",
+    "criteria",
+    "run_identity",
+    "results",
+    "optional_traces"
+  ],
+  "drops": [
+    "score_as_kernel_authority"
+  ],
+  "forbidden": [
+    "direct_kernel_state_mutation",
+    "activation_without_promotion"
+  ],
+  "kernel": {
+    "crosses": false
+  },
+  "lossiness": "intentional",
+  "implementation": {
+    "file": "node/src/evals/public.ts",
+    "symbol": "evaluate"
+  }
 }

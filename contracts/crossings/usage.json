@@ -1,12 +1,49 @@
 {
   "id": "provider.usage",
-  "source": {"layer": "provider", "type": "ProviderUsage", "authority": "host-runtime"},
-  "target": {"layer": "runtime", "type": "Measurement", "authority": "host-runtime"},
-  "crossing": {"direction": "provider_to_runtime", "verb": "decode", "function": "normalizeProviderUsage"},
-  "preserves": ["observed_input", "observed_output", "provider_attempt_identity"],
-  "drops": ["vendor_display_metadata"],
-  "forbidden": ["currency", "billing_tier", "cache_discount", "vendor_reasoning_policy"],
-  "kernelProjection": {"type": "Settlement", "function": "settleUsage"},
-  "kernel": {"crosses": true, "via": "Settlement"},
-  "lossiness": "intentional"
+  "source": {
+    "layer": "provider",
+    "type": "ProviderUsage",
+    "authority": "host-runtime"
+  },
+  "target": {
+    "layer": "runtime",
+    "type": "Measurement",
+    "authority": "host-runtime"
+  },
+  "crossing": {
+    "direction": "provider_to_runtime",
+    "verb": "normalize",
+    "function": "normalizeProviderUsage"
+  },
+  "preserves": [
+    "observed_input",
+    "observed_output",
+    "provider_attempt_identity"
+  ],
+  "drops": [
+    "vendor_display_metadata"
+  ],
+  "forbidden": [
+    "currency",
+    "billing_tier",
+    "cache_discount",
+    "vendor_reasoning_policy"
+  ],
+  "kernelProjection": {
+    "type": "Settlement",
+    "authority": "kernel",
+    "implementation": {
+      "file": "node/src/runtime/execution-evidence.ts",
+      "symbol": "UsageAccountingPolicy.settle"
+    }
+  },
+  "kernel": {
+    "crosses": true,
+    "via": "Settlement"
+  },
+  "lossiness": "intentional",
+  "implementation": {
+    "file": "node/src/providers/request-plan.ts",
+    "symbol": "normalizeProviderUsage"
+  }
 }

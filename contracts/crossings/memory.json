@@ -1,11 +1,40 @@
 {
   "id": "agent.memory",
-  "source": {"layer": "public", "type": "Memory", "authority": "public-agent"},
-  "target": {"layer": "runtime", "type": "MemoryRecord", "authority": "host-runtime"},
-  "crossing": {"direction": "public_to_runtime", "verb": "normalize", "function": "parseExtractedMemories"},
-  "preserves": ["memory_identity", "content", "scope", "provenance"],
-  "drops": ["provider_wire_state"],
-  "forbidden": ["kernel_memory_authority", "implicit_promotion"],
-  "kernel": {"crosses": true, "via": "memory_write_effect"},
-  "lossiness": "intentional"
+  "source": {
+    "layer": "public",
+    "type": "Memory",
+    "authority": "public-agent"
+  },
+  "target": {
+    "layer": "runtime",
+    "type": "MemoryRecord",
+    "authority": "host-runtime"
+  },
+  "crossing": {
+    "direction": "public_to_runtime",
+    "verb": "normalize",
+    "function": "lowerMemory"
+  },
+  "preserves": [
+    "memory_identity",
+    "content",
+    "scope",
+    "provenance"
+  ],
+  "drops": [
+    "provider_wire_state"
+  ],
+  "forbidden": [
+    "kernel_memory_authority",
+    "implicit_promotion"
+  ],
+  "kernel": {
+    "crosses": true,
+    "via": "memory_write_effect"
+  },
+  "lossiness": "intentional",
+  "implementation": {
+    "file": "node/src/agent-ir.ts",
+    "symbol": "lowerMemory"
+  }
 }

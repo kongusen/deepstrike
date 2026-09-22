@@ -1,10 +1,78 @@
 {
-  "AgentId": {"mint": "public_or_host", "crosses": ["public_to_runtime"], "remint": false},
-  "RunId": {"mint": "host", "crosses": ["public_to_runtime"], "remint": false},
-  "SessionId": {"mint": "host", "crosses": ["public_to_runtime"], "remint": false},
-  "OperationId": {"mint": "host_then_kernel_bind", "crosses": ["runtime_to_kernel"], "remint": false},
-  "TaskId": {"mint": "kernel", "crosses": ["kernel_to_runtime"], "remint": false},
-  "EffectId": {"mint": "kernel", "crosses": ["kernel_to_runtime"], "remint": false},
-  "RequestFingerprint": {"mint": "runtime_content_addressed", "crosses": [], "remint": false},
-  "RouteId": {"mint": "runtime_content_addressed", "crosses": [], "remint": false}
+  "AgentId": {
+    "mint": "public_or_host",
+    "crosses": [
+      "public_to_runtime"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "public_or_host"
+    ]
+  },
+  "RunId": {
+    "mint": "host",
+    "crosses": [
+      "public_to_runtime"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "host"
+    ]
+  },
+  "SessionId": {
+    "mint": "host",
+    "crosses": [
+      "public_to_runtime"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "host"
+    ]
+  },
+  "OperationId": {
+    "mint": "host_then_kernel_bind",
+    "crosses": [
+      "runtime_to_kernel"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "host_then_kernel_bind"
+    ]
+  },
+  "TaskId": {
+    "mint": "kernel",
+    "crosses": [
+      "kernel_to_runtime"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "kernel"
+    ]
+  },
+  "EffectId": {
+    "mint": "kernel",
+    "crosses": [
+      "kernel_to_runtime"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "kernel"
+    ]
+  },
+  "RequestFingerprint": {
+    "mint": "runtime_content_addressed",
+    "crosses": [],
+    "remint": false,
+    "allowedMintSites": [
+      "runtime_content_addressed"
+    ]
+  },
+  "RouteId": {
+    "mint": "runtime_content_addressed",
+    "crosses": [],
+    "remint": false,
+    "allowedMintSites": [
+      "runtime_content_addressed"
+    ]
+  }
 }

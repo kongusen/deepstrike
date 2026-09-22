@@ -1,11 +1,39 @@
 {
   "id": "runtime.provider-call",
-  "source": {"layer": "runtime", "type": "Context", "authority": "host-runtime"},
-  "target": {"layer": "provider", "type": "Request", "authority": "provider"},
-  "crossing": {"direction": "runtime_to_provider", "verb": "encode", "function": "prepareProviderRequest"},
-  "preserves": ["rendered_messages", "tool_schema", "request_fingerprint", "continuation_state"],
-  "drops": ["kernel_effect_metadata"],
-  "forbidden": ["kernel_journal_mutation", "pricing_policy_in_wire"],
-  "kernel": {"crosses": false},
-  "lossiness": "intentional"
+  "source": {
+    "layer": "runtime",
+    "type": "Context",
+    "authority": "host-runtime"
+  },
+  "target": {
+    "layer": "provider",
+    "type": "Request",
+    "authority": "host-provider-adapter"
+  },
+  "crossing": {
+    "direction": "runtime_to_provider",
+    "verb": "encode",
+    "function": "prepareProviderRequest"
+  },
+  "preserves": [
+    "rendered_messages",
+    "tool_schema",
+    "request_fingerprint",
+    "continuation_state"
+  ],
+  "drops": [
+    "kernel_effect_metadata"
+  ],
+  "forbidden": [
+    "kernel_journal_mutation",
+    "pricing_policy_in_wire"
+  ],
+  "kernel": {
+    "crosses": false
+  },
+  "lossiness": "intentional",
+  "implementation": {
+    "file": "node/src/providers/prepared-request.ts",
+    "symbol": "prepareProviderRequest"
+  }
 }

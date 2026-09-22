@@ -1,10 +1,76 @@
 {
   "version": "0.2.74",
   "layers": {
-    "public": ["Agent", "Model", "Run", "Session", "Tool", "Skill", "Memory", "Workflow", "Eval"],
-    "runtime": ["AgentSpec", "Context", "Capability", "Route", "Invocation", "Attempt", "Measurement", "Evidence"],
-    "kernel": ["Operation", "Intent", "Decision", "Effect", "Fact", "Settlement", "Task", "Budget", "Journal", "Checkpoint"],
-    "provider": ["Request", "Response", "Usage", "WireEvidence"]
+    "public": [
+      "Agent",
+      "Model",
+      "Run",
+      "Session",
+      "Tool",
+      "Skill",
+      "Memory",
+      "Knowledge",
+      "MCPServer",
+      "Handoff",
+      "Workflow",
+      "Guardrail",
+      "Eval",
+      "Dataset",
+      "Evaluator",
+      "Output",
+      "Usage"
+    ],
+    "runtime": [
+      "AgentSpec",
+      "Context",
+      "ContextPlan",
+      "Capability",
+      "ModelRoute",
+      "Invocation",
+      "ProviderAttempt",
+      "Measurement",
+      "Evidence",
+      "Artifact",
+      "Evaluation",
+      "Promotion",
+      "ExecutionPlane"
+    ],
+    "kernel": [
+      "Operation",
+      "Intent",
+      "Decision",
+      "Effect",
+      "Fact",
+      "Settlement",
+      "Task",
+      "Capability",
+      "Budget",
+      "Journal",
+      "Checkpoint",
+      "StateTransition"
+    ],
+    "provider": [
+      "Model",
+      "Provider",
+      "Endpoint",
+      "Protocol",
+      "Route",
+      "Adapter",
+      "Request",
+      "Response",
+      "Usage",
+      "ReplayEvidence"
+    ]
   },
-  "verbs": ["normalize", "lower", "project", "bind", "encode", "decode", "settle"]
+  "verbs": [
+    "bind",
+    "decode",
+    "encode",
+    "lower",
+    "normalize",
+    "project",
+    "render",
+    "settle"
+  ],
+  "scope": "complete_runtime_language"
 }

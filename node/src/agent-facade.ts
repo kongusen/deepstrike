@@ -14,6 +14,7 @@ import { EnvCredentialVault } from "./runtime/credential-vault.js"
 import { agentRefName } from "./handoff-target.js"
 import { createTextKnowledgeSource } from "./knowledge/public.js"
 import type { Knowledge } from "./knowledge/public.js"
+import type { Skill, SkillCatalog, SkillDeclaration, SkillLoadContext, SkillRef } from "./skill.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -21,8 +22,7 @@ export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   model?: ModelRef
   tools?: RegisteredTool[]
   maxTokens?: number
-  memoryStore?: MemoryStore
-  memoryScope?: MemoryScope
+  skills?: SkillDeclaration[]
 }
 
 export interface RuntimeBinding {
@@ -30,7 +30,12 @@ export interface RuntimeBinding {
   providerFor?: RuntimeOptions["providerFor"]
   executionPlane?: ExecutionPlane
   sessionLog?: SessionLog
-  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "initialMemory" | "skillCatalog" | "knowledgeSource" | "contextManager" | "artifactSetDigest">
+  skillCatalog?: SkillCatalog
+  skillContext?: SkillLoadContext
+  memoryStore?: MemoryStore
+  memoryScope?: MemoryScope
+  maxTokens?: number
+  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "initialMemory" | "knowledgeSource" | "contextManager" | "artifactSetDigest">
 }
 
 export interface AgentRunOptions {
@@ -184,11 +189,15 @@ class AgentRuntimeImpl implements Agent {
   private readonly binding?: RuntimeBinding
   private readonly sessionLog: SessionLog
   private activeRunner: RuntimeRunner | null = null
+  private resolvedSkills?: Skill[]
   private mcpPlane?: McpProxyPlane
   private mcpConnection?: Promise<void>
 
   constructor(definition: AgentDefinition, binding?: RuntimeBinding) {
     if ("runtimeBinding" in definition) throw new Error("pass runtime binding as the second createAgent argument")
+    for (const legacyHostField of ["memoryStore", "memoryScope", "maxTokens"]) {
+      if (legacyHostField in definition) throw new Error(`${legacyHostField} belongs in the second createAgent binding argument`)
+    }
     this.definition = Object.freeze({ ...definition })
     this.binding = binding
     this.name = normalizeAgent(definition).name
@@ -200,8 +209,8 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async remember(input: MemoryInput): Promise<MemoryRecord> {
-    const store = this.definition.memoryStore
-    const scope = this.definition.memoryScope
+    const store = this.binding?.memoryStore
+    const scope = this.binding?.memoryScope
     if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
     const now = Date.now()
     const record: MemoryRecord = {
@@ -225,8 +234,8 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async recall(query: string, options: RecallOptions = {}): Promise<MemoryRecall[]> {
-    const store = this.definition.memoryStore
-    const scope = this.definition.memoryScope
+    const store = this.binding?.memoryStore
+    const scope = this.binding?.memoryScope
     if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
     const request: MemoryQuery = {
       scope,
@@ -302,6 +311,7 @@ class AgentRuntimeImpl implements Agent {
     const session = sessionId(options.session)
     const owner = this
     return (async function* () {
+      await owner.resolveSkills()
       const runner = owner.createRunner(options)
       await owner.prepareMcp()
       owner.activeRunner = runner
@@ -360,6 +370,7 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async *resume(id: string, options: Omit<AgentRunOptions, "session"> = {}): AsyncIterable<StreamEvent> {
+    await this.resolveSkills()
     const runner = this.createRunner(options)
     await this.prepareMcp()
     this.activeRunner = runner
@@ -427,7 +438,7 @@ class AgentRuntimeImpl implements Agent {
       ...(this.definition.capabilityFilter ? { capabilityFilter: this.definition.capabilityFilter } : {}),
       executionPlane: plane,
       sessionLog: this.sessionLog,
-      maxTokens: this.definition.maxTokens ?? 32_000,
+      maxTokens: binding?.maxTokens ?? 32_000,
       ...(this.definition.instructions || this.definition.outputSchema ? {
         systemPrompt: [
           this.definition.instructions,
@@ -435,9 +446,9 @@ class AgentRuntimeImpl implements Agent {
         ].filter((part): part is string => Boolean(part)).join("\n\n"),
       } : {}),
       ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
-      ...(this.definition.memoryStore ? { memoryStore: this.definition.memoryStore } : {}),
-      ...(this.definition.memoryScope ? { memoryScope: this.definition.memoryScope } : {}),
-      ...(this.definition.skills?.length ? { skillCatalog: this.definition.skills } : {}),
+      ...(binding?.memoryStore ? { memoryStore: binding.memoryStore } : {}),
+      ...(binding?.memoryScope ? { memoryScope: binding.memoryScope } : {}),
+      ...(this.resolvedSkills?.length ? { skillCatalog: this.resolvedSkills } : {}),
       ...(!binding?.runtimeOptions?.knowledgeSource && this.definition.knowledge?.some(item => item.source.kind === "text") ? {
         knowledgeSource: createTextKnowledgeSource(this.definition.knowledge
           .filter((item): item is Knowledge & { source: { kind: "text"; content: string } } => item.source.kind === "text")
@@ -448,6 +459,17 @@ class AgentRuntimeImpl implements Agent {
       ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
     }
     return new RuntimeRunner(runtime)
+  }
+
+  private async resolveSkills(): Promise<void> {
+    const declarations = this.definition.skills ?? []
+    const refs = declarations.filter((skill): skill is SkillRef => "version" in skill || "digest" in skill)
+    const inline = declarations.filter((skill): skill is Skill => !refs.includes(skill as SkillRef))
+    if (refs.length && !this.binding?.skillCatalog) throw new Error(`agent "${this.name}" declares external skills without a skill catalog binding`)
+    const loaded = this.binding?.skillCatalog && this.binding.skillContext
+      ? await Promise.all(refs.map(ref => this.binding!.skillCatalog!.resolve(ref, this.binding!.skillContext!)))
+      : []
+    this.resolvedSkills = [...inline, ...loaded]
   }
 
   private async *clearRunnerAfter(stream: AsyncIterable<StreamEvent>, signal?: AbortSignal, abort?: () => void): AsyncIterable<StreamEvent> {
