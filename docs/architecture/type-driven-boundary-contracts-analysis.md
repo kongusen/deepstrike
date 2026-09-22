@@ -29,6 +29,8 @@
 
 唯一入口；`createAgent` 只是句柄包装，真正的语义降级全在 `lowerAgent` + 5 个 `projectAgent*` 投影（run/context/capabilities/governance/delegation）。
 
+**⚠️ 现场警示（双降级分叉）**：`lowerAgent`/`projectAgent*` 在运行时路径上**没有消费方**——只有 conformance 与 advanced/runtime 公共再导出引用它们。真实 run 路径（`AgentRuntimeImpl`/`AgentSessionImpl`）直接读 `this.definition`（30 处），在构造 `RuntimeOptions` 时**手写内联降级**：`instructions+outputSchema→systemPrompt`、`skills→skillCatalog`、`knowledge→knowledgeSource`、`guardrails→governancePolicy`、`handoffs→delegate()` 内联消费、`memoryStore/memoryScope/maxTokens/capabilityFilter` 直通。两条降级链覆盖面已经分叉（`projectAgent*` 不管 memory/maxTokens；内联链不用 AgentSpec），正是契约系统要防的静默漂移。**P2 注册前必须先收敛**（见路线修订）。
+
 ### Boundary B：host → kernel（verb: project）
 
 | # | crossing | 函数 | 落点 | 类型化 |
@@ -78,7 +80,7 @@
 | 批次 | 协议 | 前置工作 |
 |---|---|---|
 | ✅ P1 | `skill.host-to-kernel` | 无（试点） |
-| P2 | `agent.public-to-host`（`lowerAgent`） | 已类型化，注册即可验证机制对 lower 方向的通用性 |
+| P2 | `agent.public-to-host` | **先收敛双降级**：把 facade 内联降级提取为唯一命名函数并让 run 路径真实消费它（或让 `lowerAgent` 成为唯一实现），再注册契约——否则契约守护的是旁路 |
 | P3 | kernel 投影族：`message` / `tool-schema` / `tool-result` / `task-update` | 每个需先补 `Kernel*` 命名目标类型（复制 `KernelSkillMetadata` 模式）；capability 族作为一个协议、五个 adapter，需先扩展机制支持多 adapter |
 | P4 | kernel 观察面：`entropy` decode；`kernelMessageToSdk`/`renderedContextToSdk` 视实际消费方决定 | 确认消费路径 |
 | P5 | provider 语义点：`usage-normalize` / `usage-settle` / `request-plan` | 已类型化；settle 的 forbidden（pricing_authority）直接沿用旧裁决 |
