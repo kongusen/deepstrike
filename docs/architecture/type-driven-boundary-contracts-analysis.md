@@ -4,7 +4,7 @@
  本文基于 v0.2.73（`70166972`）代码现场盘点，作为协议注册表的依据。结论先行：
 
 1. **语言边界只有三条**：public|host（lower）、host|kernel（project/decode）、host|provider（normalize/settle/plan）。runtime-internal 不是语言边界。
-2. **主流程真实的跨层函数共 16 处**（下表），其中 4 处已强类型化，12 处返回 `Record<string, unknown>`；子系统深化另查明 Memory/Context/Workflow/Events/Signals 的 crossing（M1–M5、CT1–CT4、WF1–WF2、EV1、S1–S5，见第八节）。
+2. **主流程真实的跨层函数共 16 处**（下表），其中 4 处已强类型化，12 处返回 `Record<string, unknown>`；子系统深化另查明 Memory/Context/Workflow/Events/Signals 的 crossing（M1–M5、CT1–CT4、WF1–WF2、EV1、S1–S6，见第八节）。
 3. **provider 线格式不是契约面**——encode/decode 是 adapter-local 的 vendor 特化（刻意设计）；契约落在类型化的 plan/normalize/settle 层。
 4. **废弃分支发明的 `SkillSource` 四阶阶梯（SkillDeclaration→SkillRef→SkillRevision→SkillPackage）在 v0.2.73 不存在**，不予注册。协议只覆盖真实存在的 crossing。
 5. **Boundary A 存在双降级分叉**：类型化的 `lowerAgent → AgentSpec → projectAgent*` 在运行时无消费方（仅 conformance），真实 run 路径手写内联降级且两链覆盖面已分叉。P2 必须先收敛再注册，否则契约守护旁路。
@@ -334,7 +334,7 @@ createAgent(definition)
 
 ## 八、子系统深化：Memory / Context / Workflow / Eval / Events（2026-09-22）
 
-主流程（run 循环）之外逐子系统盘点。总判定：**Memory 与 Context 是真实跨边界子系统**（新增 M1–M5、CT1–CT4）；Workflow 是 B 边界的批量 syscall（WF1–WF2，随 P3 收编）；**Eval 留在 runtime-internal**；Events 是 B 反向的宽面 decode（EV1，多 adapter 机制的极限用例）；Signals 是外部世界的入站正门（S1–S5，单实现双消费的防漂移样本）。
+主流程（run 循环）之外逐子系统盘点。总判定：**Memory 与 Context 是真实跨边界子系统**（新增 M1–M5、CT1–CT4）；Workflow 是 B 边界的批量 syscall（WF1–WF2，随 P3 收编）；**Eval 留在 runtime-internal**；Events 是 B 反向的宽面 decode（EV1，多 adapter 机制的极限用例）；Signals 是外部世界的入站正门（S1–S6，单实现双消费的防漂移样本）。
 
 ### 8.1 Memory：信任边界在过界瞬间盖章
 
@@ -395,7 +395,7 @@ createAgent(definition)
 
 kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）。方向上是 B 反向 decode 的变体，但目标直达 public 可见面、表面极宽。它是多 adapter 机制的**极限测试用例**——若机制在 capability(5)/configure_run(4)/events(19) 上都成立，才算真正通用。建议排在 P3 多 adapter 落地之后，不与本轮绑定。
 
-### 8.6 Signals：信号输入机制（S1–S5，"单实现双消费"的防漂移样本）
+### 8.6 Signals：信号输入机制（S1–S6，"单实现双消费"的防漂移样本）
 
 信号是外部世界进入运行中 agent 的唯一正门（对应 Agent OS 路线的 signals→interrupts 相位）。**权威分工与 Memory 正好对称：host 决定入队，kernel 决定处置**。
 
