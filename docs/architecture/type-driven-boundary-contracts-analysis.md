@@ -4,17 +4,20 @@
  本文基于 v0.2.73（`70166972`）代码现场盘点，作为协议注册表的依据。结论先行：
 
 1. **语言边界只有三条**：public|host（lower）、host|kernel（project/decode）、host|provider（normalize/settle/plan）。runtime-internal 不是语言边界。
-2. **真实的跨层函数共 16 处**（下表），其中 4 处已强类型化，12 处返回 `Record<string, unknown>`。
+2. **主流程真实的跨层函数共 16 处**（下表），其中 4 处已强类型化，12 处返回 `Record<string, unknown>`；子系统深化另查明 Memory/Context/Workflow/Events 的 crossing（M1–M5、CT1–CT4、WF1–WF2、EV1，见第八节）。
 3. **provider 线格式不是契约面**——encode/decode 是 adapter-local 的 vendor 特化（刻意设计）；契约落在类型化的 plan/normalize/settle 层。
 4. **废弃分支发明的 `SkillSource` 四阶阶梯（SkillDeclaration→SkillRef→SkillRevision→SkillPackage）在 v0.2.73 不存在**，不予注册。协议只覆盖真实存在的 crossing。
 5. **Boundary A 存在双降级分叉**：类型化的 `lowerAgent → AgentSpec → projectAgent*` 在运行时无消费方（仅 conformance），真实 run 路径手写内联降级且两链覆盖面已分叉。P2 必须先收敛再注册，否则契约守护旁路。
+6. **Memory 的信任边界在过界瞬间盖章**：`MemoryProvenance`（author/trust）不在 wire 也不在 public 参数里，由宿主在数据过界瞬间按来源赋值（model→`untrusted`，public 直写→`user_asserted`）——信任级是**路径属性**不是数据属性；协议模型的 `derived` 字段族需支持 crossing-time derivation（第八节 8.1）。
+7. **Context 渲染权威在 kernel**：`call_provider` effect 携带每 turn 渲染好的 context，host 解码后再 plan——⑩⑪ 是**每 turn 热路径**而非恢复/重放路径；`configure_run` 是**复合配置 crossing**（一次过界捆绑 governance/context_policy/reliability/signal_policy 四子政策）。
+8. **"一协议多 adapter"是机制级需求**：capability 族（1 协议 5 adapter）、`configure_run`（4 子政策）、events（约 19 个 yield 点）三个真实现场都要求多 adapter 支持，应在 P3 前升格为前置机制任务（第八节 8.6）。
 
 ## 一、四层语言 → 实际代码映射
 
 | 层 | 权威 | 实际落点（node SDK） |
 |---|---|---|
 | public | public-agent | `Agent`/`AgentDefinition`（agent-facade.ts）、`Skill`（skill.ts）、`Tool` 公共面、`Eval`/`Dataset`/`Evaluator`（evals） |
-| host | host-runtime | `AgentSpec`/`AgentLoweringInputs`（agent-ir.ts）、`RenderedContext`、`SkillMetadata`（skills/loader.ts）、`ProviderAttempt`/`ModelInvocation`/`ModelUsageSettlement`（execution-evidence.ts）、`NormalizedProviderUsage`/`ProviderRequestPlan`（providers/request-plan.ts） |
+| host | host-runtime | `AgentSpec`/`AgentLoweringInputs`（agent-ir.ts）、`RenderedContext`、`SkillMetadata`（skills/loader.ts）、`MemoryRecord`/`MemoryProvenance`/`MemoryTrustLevel`（memory/protocols.ts）、`ContextPolicy`/`ContextPolicyWire`（runtime/context-policy.ts）、`ProviderAttempt`/`ModelInvocation`/`ModelUsageSettlement`（execution-evidence.ts）、`NormalizedProviderUsage`/`ProviderRequestPlan`（providers/request-plan.ts） |
 | kernel | kernel | Rust canonical ABI——TS 侧**按设计**是无类型 wire（`Record<string, unknown>`）；`KernelObservation`、`EntropySample` 是反向观察面 |
 | provider | provider | vendor wire（adapter-local、opaque）；`LLMProvider.complete` 是膜本身 |
 
@@ -49,8 +52,8 @@
 | # | crossing | 函数 | 落点 | 类型化 |
 |---|---|---|---|---|
 | 9 | `KernelObservation → EntropySample` | `entropySampleFromObservation` | kernel-step.ts:421 | ✅ |
-| 10 | journal raw → `ModelMessage` | `kernelMessageToSdk` | kernel-step.ts:433 | Record→typed |
-| 11 | journal raw → `RenderedContext` | `renderedContextToSdk` | kernel-step.ts:505 | Record→typed |
+| 10 | journal raw → `ModelMessage` | `kernelMessageToSdk` | kernel-step.ts:433 | Record→typed（**热路径**：canonical-kernel-step.ts:178/262 每 turn 解码） |
+| 11 | journal raw → `RenderedContext` | `renderedContextToSdk` | kernel-step.ts:505 | Record→typed（**热路径**：`call_provider` effect 携带 kernel 渲染的 context，经 canonicalActionFromProjectionJson 解码） |
 
 ### Boundary C：host ↔ provider（verbs: normalize / settle / plan）
 
@@ -74,6 +77,82 @@
 
 **Runtime-internal 不是语言边界**：`SkillMetadata` 的 frontmatter 解析是同一权威内的 materialize，数据没有跨权威移动。废弃分支为它发明了四阶阶梯和三个 crossing JSON——那是"为契约造架构"的偏差根源，不重犯。
 
+## 三点一、真实运行路径审计（2026-09-22）
+
+本节记录对 Node facade、`RuntimeRunner` 和 provider 调用的现场核对结果。审计没有修改运行时代码；结论以源码和构建后 provider spy 的实际观察为准。
+
+### 1. 真实执行路径与形式 lowering 路径分叉
+
+真实的 `Agent.run()` 路径是：
+
+```text
+createAgent(definition)
+  → AgentRuntimeImpl
+  → run()/stream()
+  → createRunner() 内联拼接 RuntimeOptions
+  → RuntimeRunner.run()
+  → kernel set_tools / runSpec
+  → call_provider
+  → provider request
+  → SessionLog / RunResult
+```
+
+`createRunner()` 直接读取 `this.definition`，内联处理 `instructions`、`outputSchema`、`skills`、`knowledge`、`guardrails`、`memoryStore`、`memoryScope`、`maxTokens` 和 `capabilityFilter`（`node/src/agent-facade.ts:372-433`）。`lowerAgent()` 及其五个 `projectAgent*` 投影没有进入该路径，仍然只被 conformance、测试和 advanced/runtime 导出消费。
+
+因此，`AgentSpec` 目前不是运行时的权威中间表示。Boundary A 存在两套实现，任何只检查 `lowerAgent()` 的契约都可能守护旁路。
+
+### 2. 已复现的用户可见故障：声明的工具不会进入 provider schema
+
+`RuntimeRunner` 将未设置的 `baselineToolIds` 解释为最小初始暴露面（`node/src/runtime/runner.ts:536-549`），并在根 run spec 中写入空的 `exposureBaseline`（`node/src/runtime/runner.ts:2247-2276`）。facade 没有把 `AgentDefinition.tools` 转换为 `baselineToolIds`。
+
+`set_tools` 仍会把 execution plane 的全部 schema 装入 kernel（`node/src/runtime/runner.ts:2140-2143`），但 provider 看到的 schema 会经过 root exposure baseline 过滤。用构建后的 dist 创建一个带单个 `visible` 工具的 Agent，拦截 `ReplayProvider.stream()` 的第二个参数，实际结果为：
+
+```text
+[[]]
+```
+
+这说明公共 Agent 已注册工具，但 provider 请求中没有用户工具。现有 facade 测试只断言隐藏工具“不在列表中”，空数组也会通过（`node/tests/agent-facade.test.ts:30-49`、`:72-91`），所以测试目前无法发现这个回归。
+
+### 3. 声明语义在真实路径中丢失或被隐式覆盖
+
+- `lowerAgent()` 将 `providerOptions` 保存为 `extensions`（`node/src/agent-ir.ts:168-198`），但 facade 没有把 `definition.providerOptions` 放入 `RuntimeOptions.extensions`，也没有把它传给 `runner.run()`（`node/src/agent-facade.ts:405-432`、`:287-300`）。
+- `AgentOptions.memory` 会进入 IR，但真实 runner 只接收 `memoryStore` 和 `memoryScope`；声明式 memory 在公共 run 路径没有对应的绑定（`node/src/agent.ts:31-48`、`node/src/agent-facade.ts:421-422`）。
+- `runtimeBinding.runtimeOptions` 在 facade 已经合并 guardrail、skill 和 knowledge 后整体展开（`node/src/agent-facade.ts:407-430`），可以静默覆盖这些值。配置优先级没有单独的类型或契约表达。
+
+### 4. 设施 API 绕过统一 authority
+
+`remember()` 和 `recall()` 直接调用 `MemoryStore.put/search`（`node/src/agent-facade.ts:188-224`），没有经过 RuntimeRunner 的 kernel memory syscall、治理检查和审计事件。现有执行模型文档明确规定 memory 操作必须经过验证和治理（`docs/en/architecture/execution-model.md:83-85`）。
+
+`delegate()` 会校验 `request.target` 是否在 handoff allowlist 中，但随后仍通过当前 Agent 的 `workflow()` 创建 runner；target 没有成为实际的 provider 或 Agent 绑定（`node/src/agent-facade.ts:227-260`）。同样，`lowerWorkflowDefinition()` 会生成 `WorkflowNodeSpec.agent`，而 `workflowNodeSpecToKernel()` 不会发出这个字段（`node/src/workflow/definition.ts:21-43`、`node/src/types/agent.ts:567-589`）。如果目标语义是执行指定 Agent，这条绑定目前只停留在 host metadata。
+
+### 5. Run/Session 状态没有按 session 隔离
+
+`AgentRuntimeImpl` 只有一个 `activeRunner`（`node/src/agent-facade.ts:170-175`）。所有 `AgentSession.interrupt()` 最终调用 owner 的同一个 `interrupt()`，无法保证只中断当前 session（`node/src/agent-facade.ts:150-167`、`:352-354`）。`run()` 还会从整个 session log 反向寻找最近的 `run_started`、`context_prepared` 和 `provider_attempt`，没有按当前 run ID 关联证据（`node/src/agent-facade.ts:304-323`）。同一 session 并发运行时，这会造成中断目标和结果 evidence 的竞态。
+
+### 6. 配置归属与对象边界不符合既有规范
+
+`AgentDefinition` 同时携带声明式 Agent 字段和 provider、execution plane、session log、store 等运行时对象（`node/src/agent-facade.ts:18-35`）。构造函数只做浅层 `Object.freeze`（`:178-181`），嵌套数组、对象和运行时 binding 仍可变，也无法满足规范中“Agent 保持可序列化定义、执行状态放在 Session/Run”的目标（`docs/specs/unified-public-agent-model.md:167-176`、`:211-217`）。
+
+### 严重性排序
+
+| 等级 | 问题 | 影响 |
+|---|---|---|
+| P0/P1 | `baselineToolIds` 未从 facade 绑定，provider 收到空工具集 | Agent 的核心工具能力在公共入口失效 |
+| P1 | `providerOptions`、声明式 memory 未进入真实 run | 类型化声明与实际 provider/kernel 行为不一致 |
+| P1 | memory 直写、handoff 不切换 target | 绕过治理、审计和目标 Agent 语义 |
+| P1 | 单一 `activeRunner`、evidence 不按 run 关联 | 并发 session 的中断和结果可能串线 |
+| P2 | facade 内联降级、浅冻结、运行时对象混入 definition | 契约漂移、不可序列化和长期维护成本上升 |
+
+### 修复前置顺序
+
+1. 先补真实入口的行为测试：工具暴露、capability filter、provider extensions、guardrail 优先级、memory 审计、handoff target 和 session interrupt。
+2. 将 `AgentDefinition`（纯声明）与 `AgentRuntimeBinding`（运行时依赖）分开，生成不可变的规范化 `AgentSpec`。
+3. 提供唯一的 `bindAgent(spec, binding, runOptions)` 或等价 `RuntimePlan`，由真实 facade 消费；其中显式设置工具暴露面并传递 `extensions`。
+4. 将 memory、handoff 和 workflow target 接入同一套 runtime/kernel authority；为每个 run 保存独立执行句柄，按 `runId` 关联 evidence。
+5. Boundary A 收敛后再注册 `agent.public-to-host`。当前 `contracts/protocols/registry.ts` 只注册 Skill 协议，直接注册 Agent 会让 checker 守护未被运行时消费的旁路。
+
+本次核验中，`npm run contracts:check`、`cd node && npm run build` 和四个目标测试套件（22 个测试）均为绿色；这些结果只能证明现有类型、构建和局部断言成立，不能证明 `createAgent().run()` 的端到端语义已经闭合。
+
 ## 四、协议注册表路线
 
 机制已由协议 #1（skill.host-to-kernel）证明。扩展顺序按**类型化成本**递增：
@@ -83,8 +162,9 @@
 | ✅ P1 | `skill.host-to-kernel` | 无（试点） |
 | P2 | `agent.public-to-host` | **先收敛双降级**：把 facade 内联降级提取为唯一命名函数并让 run 路径真实消费它（或让 `lowerAgent` 成为唯一实现），再注册契约——否则契约守护的是旁路 |
 | P3 | kernel 投影族：`message` / `tool-schema` / `tool-result` / `task-update` | 每个需先补 `Kernel*` 命名目标类型（复制 `KernelSkillMetadata` 模式）；capability 族作为一个协议、五个 adapter，需先扩展机制支持多 adapter |
-| P4 | kernel 观察面：`entropy` decode；`kernelMessageToSdk`/`renderedContextToSdk` 视实际消费方决定 | 确认消费路径 |
+| P4 | kernel 观察面：`entropy` / `kernel-message` / `rendered-context` decode | ⑩⑪ 已确认为**每 turn 热路径**（8.2），必须契约化；需补 `Kernel*` 命名目标类型（同 P3 模式） |
 | P5 | provider 语义点：`usage-normalize` / `usage-settle` / `request-plan` | 已类型化；settle 的 forbidden（pricing_authority）直接沿用旧裁决 |
+| P6 | 子系统族：`memory.kernel-effect`（M1–M3）/ `run-config.configure-run`（CT2–CT3）/ workflow（WF1–WF2） | 前置 = 多 adapter 机制（与 P3 共享）+ `KernelMemory*` 命名 wire 类型；M4 直写旁路先按三点一.4 收编 |
 
 **每批的完成判据**：该批所有 crossing 通过 `contracts:check`（编译器验证推断）+ 生成验证器有泄漏/缺失/类型形状测试 + `contracts:verify` 绿。
 
@@ -186,7 +266,7 @@
 ┌─────────────────────────── HOST ─────────────────────────────┐
 │ RuntimeRunner 主循环（每 turn）：                             │
 │                                                              │
-│  render → RenderedContext ──→ createProviderRequestPlan ⑭   │
+│  kernel 渲染 context（effect）→ ⑪ decode → ⑭ request-plan    │
 │            │                              │                  │
 │            │            BOUNDARY C        ▼                  │
 │            │        vendor wire（opaque，不注册）             │
@@ -214,7 +294,7 @@
                                  ▼
                   entropySampleFromObservation ⑨ → EntropySample
                   （⑩⑪ journal→ModelMessage/RenderedContext
-                    = 恢复/重放路径的 decode）
+                    = 每 turn 热路径 decode，非仅恢复/重放）
 ```
 
 ### 图三：Boundary A 双降级分叉（P2 前置收敛的目标）
@@ -249,4 +329,74 @@
 1. **提取内联链**：把 facade 内联降级提取为唯一命名函数并让 run 路径真实消费（或让 `lowerAgent` 收编它）——改动集中在 agent-facade，中等工作量。
 2. **先注册 B/C 边界**：P3（kernel 投影族）与 P5（provider 语义点）不受分叉影响，先推进，Boundary A 收敛单独立项。
 
-倾向方向 1：契约系统的价值在守护真实路径，绕开最关键的 A 边界会让体系缺一角。
+倾向方向 1：契约系统的价值在守护真实路径，绕开最关键的 A 边界会让体系缺一角。三点一审计强化此判定：审计给出的修复前置顺序（1→5）即收敛路线，且 P0 级工具暴露缺陷（三点一.2）证明旁路已产生真实行为错误，不只是"漂移风险"。
+
+## 八、子系统深化：Memory / Context / Workflow / Eval / Events（2026-09-22）
+
+主流程（run 循环）之外逐子系统盘点。总判定：**Memory 与 Context 是真实跨边界子系统**（新增 M1–M5、CT1–CT4）；Workflow 是 B 边界的批量 syscall（WF1–WF2，随 P3 收编）；**Eval 留在 runtime-internal**；Events 是 B 反向的宽面 decode（EV1，多 adapter 机制的极限用例）。
+
+### 8.1 Memory：信任边界在过界瞬间盖章
+
+记忆的权威分工是**内核决策、宿主执行、过界盖章**：
+
+| # | crossing | 落点 | 方向 | 类型化 |
+|---|---|---|---|---|
+| M1 | kernel effect 请求（`persist_memory`/`query_memory`）→ host 解码执行 | runner.ts:2792-2860 | B 反向 decode | wire=Record；宿主侧已命名 `MemoryRecord` |
+| M2 | 执行回执（`memory_persist_result`/`memory_query_result`）→ kernel | runner.ts:2824/2852 | B 正向 project | Record |
+| M3 | 过界盖章：canonical wire → `MemoryRecord` 时铸 provenance | `author:"model", trust:"untrusted"`（runner.ts:2805）+ 宿主铸 `record_id = memory:${uuid}` | M1 内嵌 | 语义明确、无类型守护 |
+| M4 | public `agent.remember()` → `MemoryRecord`（`author:"host", trust:"user_asserted"`） | agent-facade.ts:188-224 | A 邻接（**直写旁路**） | ⚠️ 见三点一.4 |
+| M5 | memory recall → context 桥接（`applyHostMemoryRecallLifecycle` + token 计账，key=`memory:${record_id}`） | runner.ts:838-848 | runtime-internal | 不注册 |
+
+类型权威在 `memory/protocols.ts`：`MemoryKind / MemoryAuthor / MemoryTrustLevel / MemoryScope / MemoryProvenance / MemoryRecord`。
+
+**关键发现：provenance 是 crossing-time derived**。`MemoryProvenance` 既不在 kernel wire 里、也不在 public 参数里——它在数据过界的瞬间由宿主按**来源**赋值（model 来源→`untrusted`；public/宿主→`user_asserted`）。信任级不是数据的属性，是**路径的属性**。这对协议模型提出新需求：`derived` 字段族需支持"过界时派生"语义（值不由 source 字段决定，由 crossing 位置决定）。M4 直写旁路（不过 kernel syscall、不过治理、不过审计）正是这个模型的反例：同一 `MemoryRecord` 类型、不同路径、不同信任语义——契约应把"经 kernel 的 memory"与"public 直写"分成两个协议看待，而不是一个类型两种待遇。
+
+```
+  kernel 决策                host 执行（盖章）              回执
+┌────────────┐  M1 decode  ┌──────────────────┐ M2 project ┌───────────────┐
+│ persist_   │ ──────────▶ │ wire→MemoryRecord │ ─────────▶ │ memory_        │
+│ memory     │  Record     │ provenance 盖章：  │  result    │ persist_result │
+├────────────┤             │  model→untrusted  ├───────────▶│ memory_        │
+│ query_     │ ──────────▶ │ +铸 record_id     │            │ query_result   │
+│ memory     │             └────────┬─────────┘            └───────────────┘
+└────────────┘                      │ M5 桥接（runtime-internal）
+      ▲                             ▼
+      │ kernel syscall        context（memory 条目 + token 计账）
+      │
+      │       ⚠️ M4 直写旁路（三点一.4，P1）：public remember()/recall()
+┌─────┴──────┐       直接 MemoryStore.put/search，不过 kernel/治理/审计
+│ PUBLIC     │ ─────────────────────────────────────────────────────┘
+└────────────┘
+```
+
+### 8.2 Context：渲染权威在 kernel，host 是每 turn 热路径解码方
+
+**主流程分析的重大修正**：B 反向 decode 不是"恢复/重放专属"。kernel 拥有每 turn 上下文窗口的组装权——`call_provider` effect 直接携带渲染好的 `context`（kernel-step.ts:87），host 每 turn 经 `canonicalActionFromProjectionJson` → `renderedContextToSdk`（canonical-kernel-step.ts:178）解码成 `RenderedContext`，再走 ⑭ request-plan。**⑩⑪ 是每 turn 热路径**（图二尾注已同步修正）。
+
+| # | crossing | 落点 | 方向 | 类型化 |
+|---|---|---|---|---|
+| CT1 | `call_provider.context` raw → `RenderedContext` | = crossing ⑪ | B 反向 decode | Record→typed，每 turn 热路径 |
+| CT2 | run 初始化配置束 `configure_run`（K2） | runner.ts:1031-1123 | B 正向 project（**复合**） | Record |
+| CT3 | `ContextPolicy → wire`（ratio→ppm） | `normalizeContextPolicy`（context-policy.ts，CT2 内嵌） | CT2 内嵌 | rename+derived（×10⁶ 单位换算） |
+| CT4 | host `ContextManager`（6 类条目 + ledger 事件） | context-manager.ts | runtime-internal | 不注册 |
+
+**CT2 是复合 crossing**：`configure_run` 一次过界捆绑四个子政策——governance（`governancePolicyToKernelEvent`，去 kind 后挂 `config.governance`）、`context_policy`（CT3）、reliability、signal_policy。加上 ⑦ capability 族（1 协议 5 adapter）与 EV1（约 19 个 yield 点），**"一协议多 adapter"已有三个真实现场**，应从 P3 的附带说明升格为机制级前置任务。
+
+### 8.3 Workflow：B 边界的批量 syscall（WF1–WF2）
+
+`submit_workflow_nodes`（`nodes: Array<Record<string,unknown>>` + `budget: Record`）与 `start_workflow`（kernel-step.ts:70-71，runner.ts:2979-2984 拦截）。形态与 ④⑥ 同族（Record wire）。注册时随 P3 批量补 `Kernel*` 命名目标类型即可，无新机制需求；workflow target 绑定缺陷见三点一.4。
+
+### 8.4 Eval：全在 runtime-internal（不注册）
+
+`buildEvalMessages`（eval.ts:62）、`parseVerdict`（:73）、`verdictOutputSchema`（:84）——judge 的消息拼装与裁决解析都在 host 权威内部完成，无权威移动。与 `projectAgent*` 同判：不注册。
+
+### 8.5 Events：观察面 → public StreamEvent（EV1，宽面 decode）
+
+kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）。方向上是 B 反向 decode 的变体，但目标直达 public 可见面、表面极宽。它是多 adapter 机制的**极限测试用例**——若机制在 capability(5)/configure_run(4)/events(19) 上都成立，才算真正通用。建议排在 P3 多 adapter 落地之后，不与本轮绑定。
+
+### 8.6 对路线与模型的增量修订
+
+1. 结论新增 6/7/8；P4 行修正（⑩⑪ 热路径，原"视消费方决定"作废）；路线表新增 P6 子系统族。
+2. 协议模型 `derived` 语义扩展：支持 crossing-time derivation（M3 盖章：值由 crossing 位置决定）与单位换算（CT3：ratio×10⁶→ppm）。
+3. 多 adapter 从 P3 附带说明升格为机制级前置任务（三个真实现场：⑦、CT2、EV1）。
+4. M4 直写旁路与 workflow target 绑定缺陷回链三点一.4，随 P2/审计修复顺序收编后再注册对应协议。
