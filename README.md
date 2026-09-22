@@ -145,9 +145,8 @@ const add = tool("add", "Add two numbers.", {
 const agent = createAgent({
   name: "math",
   model: `openai/${model}`,
-  runtimeBinding: { provider: new OpenAIResponsesProvider(apiKey, model) },
   tools: [add],
-})
+}, { provider: new OpenAIResponsesProvider(apiKey, model) })
 
 const result = await agent.run("What is 17 + 28?")
 console.log(result.output)

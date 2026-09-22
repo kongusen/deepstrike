@@ -28,7 +28,7 @@ import {
   LocalExecutionPlane,
   AnthropicProvider,
   tool,
-} from "@deepstrike/wasm"
+} from "@deepstrike/wasm/advanced"
 
 const add = tool("add", "Add two numbers.", {
   type: "object",
@@ -72,7 +72,8 @@ for await (const event of runner.run({ sessionId: "demo", goal: "Summarize this 
 
 ```
 src/
-├── index.ts          # Public exports
+├── index.ts          # Semantic Agent/Provider/Tool exports
+├── advanced.ts       # Runtime and evaluation implementation exports
 ├── runtime/          # RuntimeRunner, SessionLog, ExecutionPlane
 ├── types.ts          # Shared type definitions
 ├── providers/        # LLM adapters (fetch-based SSE)
@@ -120,7 +121,7 @@ All providers use `fetch` — no Node.js `http` module.
 | `kimi(...)` | Moonshot Kimi API |
 
 ```typescript
-import { AnthropicProvider } from "@deepstrike/wasm"
+import { AnthropicProvider } from "@deepstrike/wasm/advanced"
 
 const provider = new AnthropicProvider("sk-...", "claude-opus-4-7")
 ```
@@ -144,7 +145,7 @@ for await (const event of runner.run({
 Tools must be pure functions — no shell, no filesystem.
 
 ```typescript
-import { tool, LocalExecutionPlane } from "@deepstrike/wasm"
+import { tool, LocalExecutionPlane } from "@deepstrike/wasm/advanced"
 
 const fetchUrl = tool("fetch_url", "Fetch a URL and return its text.", {
   type: "object",
@@ -185,7 +186,7 @@ See [docs/concepts/context-slots-compression.md](../docs/concepts/context-slots-
 ## Governance
 
 ```typescript
-import { RuntimeRunner, AnthropicProvider } from "@deepstrike/wasm"
+import { RuntimeRunner, AnthropicProvider } from "@deepstrike/wasm/advanced"
 
 const runner = new RuntimeRunner({
   provider: new AnthropicProvider(apiKey),
@@ -206,7 +207,7 @@ const runner = new RuntimeRunner({
 `WorkingMemory` is an SDK-side scratch pad — not the removed kernel `working` partition. Structured task state renders into Slot 3 (`turns[0]`).
 
 ```typescript
-import { WorkingMemory } from "@deepstrike/wasm"
+import { WorkingMemory } from "@deepstrike/wasm/advanced"
 
 const mem = new WorkingMemory()
 mem.set("step", 1)
@@ -222,7 +223,7 @@ For cross-session recall, implement `MemoryStore` and set `agentId` on `RuntimeR
 Runtime `knowledge(query)` results → **history** (tool results). Durable preload → Slot 2 via `initialMemory`.
 
 ```typescript
-import type { KnowledgeSource } from "@deepstrike/wasm"
+import type { KnowledgeSource } from "@deepstrike/wasm/advanced"
 
 class VectorSearch implements KnowledgeSource {
   async retrieve(goal: string, topK = 5): Promise<string[]> {
@@ -246,7 +247,7 @@ const runner = new RuntimeRunner({
 ## Attempt loop
 
 ```typescript
-import { AttemptLoop, RuntimeAttemptBody, LlmEvalJudge } from "@deepstrike/wasm"
+import { AttemptLoop, RuntimeAttemptBody, LlmEvalJudge } from "@deepstrike/wasm/advanced"
 
 const loop = new AttemptLoop({
   body: new RuntimeAttemptBody(runner),
@@ -274,8 +275,8 @@ Delivered signals fold into Slot 3 (`turns[0]`) and are consumed only after the 
 provider result commits, so retries see the same signal exactly once.
 
 ```typescript
-import { ScheduledPrompt } from "@deepstrike/wasm"
-import type { SignalSource, RuntimeSignal } from "@deepstrike/wasm"
+import { ScheduledPrompt } from "@deepstrike/wasm/advanced"
+import type { SignalSource, RuntimeSignal } from "@deepstrike/wasm/advanced"
 
 // Interrupt from a UI button
 document.getElementById("stop")!.onclick = () => runner.interrupt()
@@ -304,7 +305,7 @@ class PostMessageSource implements SignalSource {
 ## Permissions
 
 ```typescript
-import { PermissionManager, PermissionMode } from "@deepstrike/wasm"
+import { PermissionManager, PermissionMode } from "@deepstrike/wasm/advanced"
 
 const pm = new PermissionManager(PermissionMode.DEFAULT)
 pm.grant("fetch", "execute")
@@ -332,7 +333,7 @@ import {
   InMemorySessionLog,
   LocalExecutionPlane,
   AnthropicProvider,
-} from "@deepstrike/wasm"
+} from "@deepstrike/wasm/advanced"
 import wasmBinary from "@deepstrike/wasm-kernel/deepstrike_wasm_bg.wasm"
 
 export default {
@@ -358,7 +359,7 @@ export default {
 
 ```typescript
 import init from "@deepstrike/wasm-kernel"
-import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, AnthropicProvider } from "@deepstrike/wasm"
+import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane, AnthropicProvider } from "@deepstrike/wasm/advanced"
 
 await init()
 const runner = new RuntimeRunner({
