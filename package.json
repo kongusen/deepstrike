@@ -7,7 +7,7 @@
     "test:conformance": "node scripts/run-sdk-conformance.mjs",
     "test:conformance:runner": "node --test scripts/run-sdk-conformance.test.mjs",
     "contracts:check": "node scripts/check-boundary-contracts.mjs",
-    "contracts:verify": "node scripts/check-boundary-contracts.mjs && git diff --exit-code -- contracts/manifests node/src/runtime/validators",
+    "contracts:verify": "node scripts/check-boundary-contracts.mjs --verify",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",

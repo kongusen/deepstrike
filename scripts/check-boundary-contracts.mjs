@@ -324,12 +324,24 @@ try {
   const fields = inspectFields(checker, declaration, sourceType, targetType)
   const manifest = generateManifest(checker, declaration, signature, fields)
   const manifestPath = resolve(root, "contracts/manifests/skill-host-to-kernel.json")
-  mkdirSync(resolve(root, "contracts/manifests"), { recursive: true })
-  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n")
-  writeFileSync(
-    resolve(root, "node/src/runtime/validators/skill-kernel-projection.ts"),
-    generateValidator(fields),
-  )
+  const validatorPath = resolve(root, "node/src/runtime/validators/skill-kernel-projection.ts")
+  const manifestJson = JSON.stringify(manifest, null, 2) + "\n"
+  const validatorSource = generateValidator(fields)
+  // --verify compares generated content against disk without writing: the default mode
+  // regenerates artifacts, so a trailing git diff can never see hand-edited drift.
+  if (process.argv.includes("--verify")) {
+    if (readFileSync(manifestPath, "utf8") !== manifestJson) {
+      fail(`stale or hand-edited artifact: ${manifestPath} (run npm run contracts:check)`)
+    }
+    if (readFileSync(validatorPath, "utf8") !== validatorSource) {
+      fail(`stale or hand-edited artifact: ${validatorPath} (run npm run contracts:check)`)
+    }
+    console.log("✅ Generated artifacts are in sync with the registry")
+  } else {
+    mkdirSync(resolve(root, "contracts/manifests"), { recursive: true })
+    writeFileSync(manifestPath, manifestJson)
+    writeFileSync(validatorPath, validatorSource)
+  }
 
   console.log(`  Adapter: ${sourceName} → ${targetName}`)
   console.log(`  Inferred preserves: ${fields.inferredPreserves.join(", ") || "(none)"}`)
