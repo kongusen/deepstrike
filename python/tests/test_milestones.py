@@ -1,8 +1,5 @@
 import pytest
-from deepstrike import (
-    InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner,
-    MilestoneContract, MilestonePhase, MilestoneCheckResult,
-)
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, MilestoneContract, MilestonePhase, MilestoneCheckResult
 from deepstrike.providers.stream import TextDelta
 
 class FakeProvider:

@@ -1,13 +1,6 @@
 import pytest
 
-from deepstrike import (
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    RuntimeOptions,
-    RuntimeRunner,
-    WorkflowNodeSpec,
-    WorkflowSpec,
-)
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, WorkflowNodeSpec, WorkflowSpec
 from deepstrike.types.agent import workflow_node_spec_to_kernel
 
 

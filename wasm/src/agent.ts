@@ -117,7 +117,7 @@ export interface RuntimeBinding {
   runtimeOptions?: Partial<RuntimeOptions>
 }
 
-export type AgentOptions = AgentDefinition & { runtimeBinding?: RuntimeBinding }
+export type AgentOptions = AgentDefinition
 
 export interface AgentRunResult {
   output: string
@@ -145,9 +145,10 @@ export class Agent {
   private readonly binding?: RuntimeBinding
 
   constructor(options: AgentOptions, binding?: RuntimeBinding) {
-    const { runtimeBinding: legacyBinding, ...definition } = options
+    if ("runtimeBinding" in options) throw new Error("pass runtime binding as the second Agent argument")
+    const definition = options
     this.definition = Object.freeze({ ...definition })
-    this.binding = binding ?? legacyBinding
+    this.binding = binding
     this.name = options.name
     this.description = options.description
     this.instructions = options.instructions

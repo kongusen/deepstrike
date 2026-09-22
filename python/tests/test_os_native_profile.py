@@ -1,14 +1,7 @@
 import pytest
 
-from deepstrike import (
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    ModelMessage,
-    RuntimeOptions,
-    RuntimeRunner,
-    collect_text,
-    tool,
-)
+from deepstrike import ModelMessage, tool
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, collect_text
 from deepstrike.governance import GovernancePolicy, GovernancePolicyRule
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.runtime.os_profile import (

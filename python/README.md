@@ -38,7 +38,7 @@ async def add(x: int, y: int) -> str:
 agent = create_agent(
     "math",
     model="openai/gpt-5-mini",
-    runtime_binding={"provider": OpenAIProvider(api_key="sk-...", model="gpt-5-mini")},
+    binding={"provider": OpenAIProvider(api_key="sk-...", model="gpt-5-mini")},
     tools=[add],
 )
 

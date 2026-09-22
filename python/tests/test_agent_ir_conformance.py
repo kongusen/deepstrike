@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from deepstrike import Agent, lower_agent, normalize_agent
+from deepstrike import Agent
+from deepstrike.advanced import lower_agent, normalize_agent
 
 
 FIXTURE = json.loads(

@@ -24,7 +24,7 @@ FIXTURES_ROOT = (ROOT / "tests" / "fixtures").resolve()
 # freshly built wheel), keeping the process boundary identical to CI.
 
 try:
-  from deepstrike import (
+  from deepstrike.advanced import (
     create_native_context_preparation_adapter,
     InMemorySessionLog,
     SESSION_EVENT_KINDS,
@@ -45,7 +45,7 @@ try:
 except ModuleNotFoundError as error:
   if error.name != "deepstrike":
     raise
-  from deepstrike import (
+  from deepstrike.advanced import (
     create_native_context_preparation_adapter,
     InMemorySessionLog,
     SESSION_EVENT_KINDS,

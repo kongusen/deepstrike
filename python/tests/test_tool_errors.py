@@ -3,17 +3,8 @@ import warnings
 
 import pytest
 
-from deepstrike import (
-    LocalExecutionPlane,
-    ToolError,
-    execute_tools,
-    fail,
-    format_tool_error,
-    ok,
-    safe_tool,
-    streaming_tool,
-    tool,
-)
+from deepstrike import fail, format_tool_error, ok, safe_tool, streaming_tool, tool
+from deepstrike.advanced import LocalExecutionPlane, ToolError, execute_tools
 from deepstrike._kernel import ToolCall
 from deepstrike.providers.stream import ToolAuditFailedEvent, ToolResultEvent
 from deepstrike.runtime.execution_plane import RunContext

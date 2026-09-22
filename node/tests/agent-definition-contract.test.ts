@@ -30,11 +30,8 @@ test("SPC-028-28 executable facade has one public Agent name", () => {
 })
 
 test("SPC-028-05 normalization keeps the semantic definition free of runtime binding", async () => {
-  const agent = createAgent({
-    runtimeBinding: { provider: new ReplayProvider([{ role: "assistant", content: "done" }]) },
-    instructions: "Keep the instruction",
-    providerOptions: { openai: { temperature: 0 } },
-  })
+  const agent = createAgent({instructions: "Keep the instruction",
+providerOptions: { openai: { temperature: 0 } }}, { provider: new ReplayProvider([{ role: "assistant", content: "done" }]) })
   const spec = lowerAgent(normalizeAgent(agent.definition))
   expect(spec.name).toBe(agent.name)
   expect(spec.instructions).toBe(agent.definition.instructions)
@@ -51,4 +48,8 @@ test("SPC-028-29 binds host runtime separately from the semantic definition", as
   )
   expect(agent.definition).not.toHaveProperty("runtimeBinding")
   await expect(agent.run("go")).resolves.toMatchObject({ output: "bound" })
+})
+
+test("SPC-028-29 rejects runtime binding embedded in the semantic definition", () => {
+  expect(() => createAgent({ name: "legacy", runtimeBinding: {} } as never)).toThrow("second createAgent argument")
 })

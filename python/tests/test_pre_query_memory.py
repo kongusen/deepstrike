@@ -5,7 +5,7 @@ durable ``knowledge`` slot forever. Mirrors node/tests/pre-query-memory.test.ts.
 
 import pytest
 
-from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
 from deepstrike.memory.protocols import MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope

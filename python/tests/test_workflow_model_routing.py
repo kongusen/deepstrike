@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike import InMemorySessionLog
+from deepstrike.advanced import InMemorySessionLog
 from deepstrike.runtime.runner import RuntimeOptions
 from deepstrike.runtime.sub_agent_orchestrator import _resolve_provider
 from deepstrike.types.agent import (

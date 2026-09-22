@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike import InMemoryReactionCheckpointStore, ReactionRecord
+from deepstrike.advanced import InMemoryReactionCheckpointStore, ReactionRecord
 
 
 @pytest.mark.asyncio

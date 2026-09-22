@@ -33,10 +33,6 @@ export interface RuntimeBinding {
   runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "initialMemory" | "skillCatalog" | "knowledgeSource" | "contextManager" | "artifactSetDigest">
 }
 
-/** Transitional input shape. Runtime bindings are accepted here for source compatibility, but
- * they are removed before the public AgentDefinition is stored or exposed. */
-export type AgentInput = AgentDefinition & { runtimeBinding?: RuntimeBinding }
-
 export interface AgentRunOptions {
   session?: SessionRef
   maxTurns?: number
@@ -191,10 +187,10 @@ class AgentRuntimeImpl implements Agent {
   private mcpPlane?: McpProxyPlane
   private mcpConnection?: Promise<void>
 
-  constructor(input: AgentInput, binding?: RuntimeBinding) {
-    const { runtimeBinding: legacyBinding, ...definition } = input
+  constructor(definition: AgentDefinition, binding?: RuntimeBinding) {
+    if ("runtimeBinding" in definition) throw new Error("pass runtime binding as the second createAgent argument")
     this.definition = Object.freeze({ ...definition })
-    this.binding = binding ?? legacyBinding
+    this.binding = binding
     this.name = normalizeAgent(definition).name
     this.sessionLog = this.binding?.sessionLog ?? new InMemorySessionLog()
   }
@@ -464,6 +460,6 @@ class AgentRuntimeImpl implements Agent {
   }
 }
 
-export function createAgent(definition: AgentInput, binding?: RuntimeBinding): Agent {
+export function createAgent(definition: AgentDefinition, binding?: RuntimeBinding): Agent {
   return new AgentRuntimeImpl(definition, binding)
 }

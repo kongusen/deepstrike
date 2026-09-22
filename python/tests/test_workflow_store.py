@@ -1,6 +1,6 @@
 import pytest
 
-from deepstrike import FileWorkflowStore, WorkflowNodeSpec, WorkflowSpec
+from deepstrike.advanced import FileWorkflowStore, WorkflowNodeSpec, WorkflowSpec
 
 
 def test_file_workflow_store_roundtrips_lists_and_rejects_unsafe(tmp_path):

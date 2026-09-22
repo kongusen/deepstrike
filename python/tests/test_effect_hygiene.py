@@ -16,10 +16,7 @@ import asyncio
 
 import pytest
 
-from deepstrike import (
-    MILESTONE_UNVERIFIED_REASON, InMemorySessionLog, LocalExecutionPlane,
-    MilestoneContract, MilestonePhase, RuntimeOptions, RuntimeRunner,
-)
+from deepstrike.advanced import MILESTONE_UNVERIFIED_REASON, InMemorySessionLog, LocalExecutionPlane, MilestoneContract, MilestonePhase, RuntimeOptions, RuntimeRunner
 from deepstrike.providers.stream import TextDelta
 from deepstrike.runtime import runner as runner_module
 from deepstrike.runtime.kernel_step import KernelRunnerAction

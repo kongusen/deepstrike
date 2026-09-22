@@ -2,19 +2,7 @@
 
 import pytest
 
-from deepstrike import (
-    InMemoryGroupBudgetStore,
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    ReactiveSession,
-    RunGroup,
-    RuntimeOptions,
-    RuntimeRunner,
-    WorkflowNodeSpec,
-    WorkflowSpec,
-    WorkflowSpawnInfo,
-    workflow_node_spec_to_kernel,
-)
+from deepstrike.advanced import InMemoryGroupBudgetStore, InMemorySessionLog, LocalExecutionPlane, ReactiveSession, RunGroup, RuntimeOptions, RuntimeRunner, WorkflowNodeSpec, WorkflowSpec, WorkflowSpawnInfo, workflow_node_spec_to_kernel
 from deepstrike.providers.base import ModelMessage
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.runtime.run_group import GroupMember

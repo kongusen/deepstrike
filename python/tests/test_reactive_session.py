@@ -2,13 +2,7 @@
 
 import pytest
 
-from deepstrike import (
-    RuntimeRunner, RuntimeOptions, InMemorySessionLog, LocalExecutionPlane,
-    RunGroup, InMemoryGroupBudgetStore,
-    InMemoryEventStream, EventViewer, BlackboardEvent, is_visible_to,
-    PeerView, react_by_mention, director_driven, round_robin, first_non_empty,
-    InMemoryReactionCheckpointStore, ReactiveSession, read_recent_tool,
-)
+from deepstrike.advanced import RuntimeRunner, RuntimeOptions, InMemorySessionLog, LocalExecutionPlane, RunGroup, InMemoryGroupBudgetStore, InMemoryEventStream, EventViewer, BlackboardEvent, is_visible_to, PeerView, react_by_mention, director_driven, round_robin, first_non_empty, InMemoryReactionCheckpointStore, ReactiveSession, read_recent_tool
 from deepstrike.providers.base import ModelMessage
 from deepstrike.providers.stream import TextDelta
 

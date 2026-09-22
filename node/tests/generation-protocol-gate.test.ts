@@ -76,6 +76,6 @@ test("SPC-028 cross-SDK Agent surface exposes one executable model-first contrac
   expect(rust).toContain("pub struct Agent")
   expect(rust).toContain("pub struct AgentDefinition")
   expect(rust).toContain("pub async fn run")
-  expect(pythonRoot).toContain('"Agent", "create_agent"')
+  expect(pythonRoot).toContain("from deepstrike.agent import (Agent")
   expect(pythonRoot).not.toContain('"RuntimeRunner", "RuntimeOptions"')
 })
