@@ -16,6 +16,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Split semantic Agent definitions from host bindings across Node, WASM, Python, and Rust; legacy binding inputs are consumed at construction and never retained in the public definition.
 - Moved WASM runtime machinery behind the `advanced` subpath and made Python's semantic root `__all__` explicit, with advanced runtime imports available from `deepstrike.advanced`.
 - Added the Rust `Agent`/`AgentDefinition` facade with provider and execution authority bound through `RuntimeOptions`.
+- Removed embedded `runtimeBinding`/`runtime_binding` construction from Node, WASM, and Python; pass the host binding as the separate Agent binding argument.
+- Python and WASM runtime machinery now has an explicit advanced import surface, with conformance adapters and tests migrated to it.
 
 ## [0.2.73] - 2026-09-22
 
