@@ -1,0 +1,15 @@
+{
+  "version": "0.2.74",
+  "definitionFields": [
+    "name",
+    "description",
+    "instructions",
+    "model",
+    "memory",
+    "knowledge",
+    "handoffs",
+    "metadata",
+    "guardrails"
+  ],
+  "methods": ["run", "stream"]
+}

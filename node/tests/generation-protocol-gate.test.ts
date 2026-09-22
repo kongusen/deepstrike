@@ -79,3 +79,27 @@ test("SPC-028 cross-SDK Agent surface exposes one executable model-first contrac
   expect(pythonRoot).toContain("from deepstrike.agent import (Agent")
   expect(pythonRoot).not.toContain('"RuntimeRunner", "RuntimeOptions"')
 })
+
+test("SPC-028 Agent parity keeps the same portable capability set", () => {
+  const contract = JSON.parse(readSource(joinPath(process.cwd(), "../tests/fixtures/runtime-language/agent-contract.json"), "utf8")) as {
+    definitionFields: string[]
+    methods: string[]
+  }
+  const sources = {
+    node: readSource(joinPath(process.cwd(), "src/agent-facade.ts"), "utf8") + readSource(joinPath(process.cwd(), "src/agent.ts"), "utf8"),
+    wasm: readSource(joinPath(process.cwd(), "../wasm/src/agent.ts"), "utf8"),
+    python: readSource(joinPath(process.cwd(), "../python/deepstrike/agent.py"), "utf8"),
+    rust: readSource(joinPath(process.cwd(), "../rust/src/agent.rs"), "utf8"),
+  }
+  for (const [sdk, source] of Object.entries(sources)) {
+    for (const field of contract.definitionFields) expect(source).toContain(field)
+    for (const method of contract.methods) {
+      const patterns = sdk === "python"
+        ? [new RegExp(`(?:async )?def ${method}\\b`)]
+        : sdk === "rust"
+          ? [new RegExp(`pub async fn ${method}\\b`), new RegExp(`pub async fn ${method}_[a-z_]+\\b`)]
+          : [new RegExp(`(?:async )?${method}\\s*\\(`)]
+      expect(patterns.some(pattern => pattern.test(source))).toBe(true)
+    }
+  }
+})
