@@ -4,9 +4,9 @@
 //! binding and is consumed when the executable `Agent` is created; the definition never stores
 //! provider, session, or execution-plane authority.
 
-use crate::{Error, Result};
 use crate::runtime::{RuntimeOptions, RuntimeRunner};
 use crate::RunEvent;
+use crate::{Error, Result};
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AgentDefinition {
@@ -19,7 +19,10 @@ pub struct AgentDefinition {
 
 impl AgentDefinition {
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), ..Self::default() }
+        Self {
+            name: name.into(),
+            ..Self::default()
+        }
     }
 }
 
@@ -40,11 +43,18 @@ impl Agent {
         if binding.agent_id.is_none() {
             binding.agent_id = Some(definition.name.clone());
         }
-        Ok(Self { definition, runner: RuntimeRunner::new(binding) })
+        Ok(Self {
+            definition,
+            runner: RuntimeRunner::new(binding),
+        })
     }
 
-    pub fn definition(&self) -> &AgentDefinition { &self.definition }
-    pub fn name(&self) -> &str { &self.definition.name }
+    pub fn definition(&self) -> &AgentDefinition {
+        &self.definition
+    }
+    pub fn name(&self) -> &str {
+        &self.definition.name
+    }
 
     pub async fn run(&self, goal: &str) -> Result<String> {
         self.runner.execute(goal).await
