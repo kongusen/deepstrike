@@ -6,6 +6,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.74] - 2026-09-22
+
+### Fixed — invariant hardening
+
+- Made Node `providers/protocol-capabilities.ts` the sole `GenerationProtocol` authority; WASM and Python mirrors must keep an exact protocol set.
+- Scoped public Agent execution evidence to the active `run_started` boundary so reused sessions cannot attach stale evidence.
+- Added an exact Node root runtime export allowlist to prevent accidental implementation-surface leakage.
+
 ## [0.2.73] - 2026-09-22
 
 ### Breaking changes — semantic closure
