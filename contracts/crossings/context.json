@@ -1,0 +1,11 @@
+{
+  "id": "runtime.context",
+  "source": {"layer": "runtime", "type": "ContextCandidate", "authority": "host-runtime"},
+  "target": {"layer": "runtime", "type": "CanonicalContext", "authority": "host-runtime"},
+  "crossing": {"direction": "runtime_internal", "verb": "normalize", "function": "normalizeCanonicalContext"},
+  "preserves": ["ordered_messages", "tool_projection", "context_identity", "selection_policy"],
+  "drops": ["resident_payload_layout"],
+  "forbidden": ["provider_credentials", "kernel_journal_authority"],
+  "kernel": {"crosses": true, "via": "ContextExecutionInput"},
+  "lossiness": "intentional"
+}

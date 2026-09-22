@@ -1,0 +1,11 @@
+{
+  "id": "workflow.definition",
+  "source": {"layer": "public", "type": "Workflow", "authority": "public-agent"},
+  "target": {"layer": "runtime", "type": "WorkflowSpec", "authority": "host-runtime"},
+  "crossing": {"direction": "public_to_runtime", "verb": "lower", "function": "lowerWorkflowDefinition"},
+  "preserves": ["node_identity", "dependencies", "task_goals", "isolation_policy", "context_policy"],
+  "drops": ["display_metadata"],
+  "forbidden": ["kernel_decision", "effect_identity", "journal_position"],
+  "kernel": {"crosses": true, "via": "workflowSpecToKernel"},
+  "lossiness": "intentional"
+}

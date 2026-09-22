@@ -1,0 +1,11 @@
+{
+  "id": "agent.skill",
+  "source": {"layer": "public", "type": "Skill", "authority": "public-agent"},
+  "target": {"layer": "runtime", "type": "SkillMetadata", "authority": "host-runtime"},
+  "crossing": {"direction": "public_to_runtime", "verb": "normalize", "function": "scanSkillDir"},
+  "preserves": ["skill_name", "description", "instructions", "resource_references"],
+  "drops": ["skill_body_until_loaded"],
+  "forbidden": ["kernel_authority", "provider_credentials"],
+  "kernel": {"crosses": true, "via": "skillMetadataToKernel"},
+  "lossiness": "intentional"
+}
