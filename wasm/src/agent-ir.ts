@@ -1,7 +1,7 @@
 import {
   Agent,
+  type AgentDefinition,
   type AgentMemory,
-  type AgentOptions,
   type AgentToolDefinition,
   type Guardrail,
   type Handoff,
@@ -16,10 +16,6 @@ import type { AgentCapabilityFilter } from "./runtime/types/agent.js"
 import type { RegisteredTool } from "./tools/index.js"
 
 type JsonSchema = Record<string, unknown>
-
-export interface AgentDefinition extends Omit<AgentOptions, "tools"> {
-  tools?: Array<RegisteredTool | AgentToolDefinition>
-}
 
 export interface AgentToolIR {
   name: string

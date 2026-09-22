@@ -12,7 +12,7 @@ mirrors ``memory_recalled → record_recall`` and surfaces the kernel's edge-tri
 
 import pytest
 
-from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
 from deepstrike.runtime.runner import MemoryPolicy
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta

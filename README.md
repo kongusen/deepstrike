@@ -118,7 +118,7 @@ For a first application, follow [Hello Agent](./docs/en/getting-started/hello-ag
 Install the Node.js SDK and choose a model available to your account:
 
 ```bash
-npm install @deepstrike/sdk@0.2.73
+npm install @deepstrike/sdk@0.2.74
 export OPENAI_API_KEY="your-api-key"
 export OPENAI_MODEL="your-model-id"
 ```
@@ -145,9 +145,8 @@ const add = tool("add", "Add two numbers.", {
 const agent = createAgent({
   name: "math",
   model: `openai/${model}`,
-  runtimeBinding: { provider: new OpenAIResponsesProvider(apiKey, model) },
   tools: [add],
-})
+}, { provider: new OpenAIResponsesProvider(apiKey, model) })
 
 const result = await agent.run("What is 17 + 28?")
 console.log(result.output)

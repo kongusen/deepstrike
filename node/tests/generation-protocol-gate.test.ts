@@ -11,6 +11,17 @@ test("SPC-028-10 has one GenerationProtocol authority", () => {
   expect(GENERATION_PROTOCOLS).toEqual(expect.arrayContaining(["anthropic-messages", "openai-chat", "openai-responses", "gemini", "ollama-chat"]))
 })
 
+test("SPC-028-10 every SDK mirror has the exact canonical protocol set", () => {
+  const canonical = [...GENERATION_PROTOCOLS].sort()
+  const node = readSource(joinPath(process.cwd(), "src/providers/protocol-capabilities.ts"), "utf8")
+  const wasm = readSource(joinPath(process.cwd(), "../wasm/src/types.ts"), "utf8")
+  const python = readSource(joinPath(process.cwd(), "../python/deepstrike/providers/protocols.py"), "utf8")
+  const extract = (source: string) => [...new Set([...source.matchAll(/\b(?:anthropic-messages|openai-chat|openai-responses|gemini|ollama-chat)\b/g)].map(match => match[0]))].sort()
+  expect(extract(node)).toEqual(canonical)
+  expect(extract(wasm)).toEqual(canonical)
+  expect(extract(python)).toEqual(canonical)
+})
+
 test("SPC-028-10 scans every SDK surface for the retired ProviderProtocol vocabulary", () => {
   const roots = ["src", "../wasm/src", "../python/deepstrike"]
   const files: string[] = []
@@ -50,10 +61,45 @@ test("Python provider protocol has one strict shared authority", () => {
 test("SPC-028 cross-SDK Agent surface exposes one executable model-first contract", () => {
   const python = readSource(joinPath(process.cwd(), "../python/deepstrike/agent.py"), "utf8")
   const wasm = readSource(joinPath(process.cwd(), "../wasm/src/agent.ts"), "utf8")
+  const rust = readSource(joinPath(process.cwd(), "../rust/src/agent.rs"), "utf8")
+  const pythonRoot = readSource(joinPath(process.cwd(), "../python/deepstrike/__init__.py"), "utf8")
   expect(python).toContain("def create_agent")
   expect(python).toContain("async def run")
   expect(python).toContain("async def stream")
+  expect(python).toContain("self._binding")
+  expect(python).not.toMatch(/self\.runtime_binding\s*=/)
   expect(wasm).toContain("async run(")
   expect(wasm).toContain("stream(")
-  expect(wasm).toContain("runtimeBinding")
+  expect(wasm).toContain("export function createAgent")
+  expect(wasm).toContain("readonly definition")
+  expect(wasm).not.toMatch(/readonly runtimeBinding/)
+  expect(rust).toContain("pub struct Agent")
+  expect(rust).toContain("pub struct AgentDefinition")
+  expect(rust).toContain("pub async fn run")
+  expect(pythonRoot).toContain("from deepstrike.agent import (Agent")
+  expect(pythonRoot).not.toContain('"RuntimeRunner", "RuntimeOptions"')
+})
+
+test("SPC-028 Agent parity keeps the same portable capability set", () => {
+  const contract = JSON.parse(readSource(joinPath(process.cwd(), "../tests/fixtures/runtime-language/agent-contract.json"), "utf8")) as {
+    definitionFields: string[]
+    methods: string[]
+  }
+  const sources = {
+    node: readSource(joinPath(process.cwd(), "src/agent-facade.ts"), "utf8") + readSource(joinPath(process.cwd(), "src/agent.ts"), "utf8"),
+    wasm: readSource(joinPath(process.cwd(), "../wasm/src/agent.ts"), "utf8"),
+    python: readSource(joinPath(process.cwd(), "../python/deepstrike/agent.py"), "utf8"),
+    rust: readSource(joinPath(process.cwd(), "../rust/src/agent.rs"), "utf8"),
+  }
+  for (const [sdk, source] of Object.entries(sources)) {
+    for (const field of contract.definitionFields) expect(source).toContain(field)
+    for (const method of contract.methods) {
+      const patterns = sdk === "python"
+        ? [new RegExp(`(?:async )?def ${method}\\b`)]
+        : sdk === "rust"
+          ? [new RegExp(`pub async fn ${method}\\b`), new RegExp(`pub async fn ${method}_[a-z_]+\\b`)]
+          : [new RegExp(`(?:async )?${method}\\s*\\(`)]
+      expect(patterns.some(pattern => pattern.test(source))).toBe(true)
+    }
+  }
 })

@@ -2,22 +2,7 @@ import json
 
 import pytest
 
-from deepstrike import (
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    RuntimeOptions,
-    RuntimeRunner,
-    SubAgentResult,
-    LoopResult,
-    WorkflowSpec,
-    WorkflowNodeSpec,
-    workflow_node_spec_to_kernel,
-    loop_instruction,
-    classify_instruction,
-    judge_goal,
-    extract_classify_branch,
-    extract_judge_winner,
-)
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, SubAgentResult, LoopResult, WorkflowSpec, WorkflowNodeSpec, workflow_node_spec_to_kernel, loop_instruction, classify_instruction, judge_goal, extract_classify_branch, extract_judge_winner
 from deepstrike.types.agent import sub_agent_result_to_kernel
 from deepstrike._kernel import ModelMessage, ToolCall
 

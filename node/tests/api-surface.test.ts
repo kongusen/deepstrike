@@ -9,6 +9,15 @@ import * as os from "../src/os/public.js"
 import { OpenAIProvider } from "../src/index.js"
 
 describe("root surface", () => {
+  it("matches the explicit runtime export allowlist", () => {
+    expect(Object.keys(root).sort()).toEqual([
+      "AnthropicProvider", "DirectorySkillSource", "InMemoryReactionCheckpointStore", "InlineSkillSource", "OpenAIProvider", "OpenAIResponsesProvider",
+      "ResolverSkillSource", "SESSION_EVENT_KINDS", "ToolError", "UnsupportedModalityError", "activateSkill", "createAgent", "createProvider",
+      "createProviderAsync", "createWorkflow", "evaluate", "fail", "formatToolError", "normalizeSkillRef", "ok", "projectSkillMetadata", "projectSkillRequirement", "resolveProviderRuntime", "resolveProviderRuntimeAsync", "resolveSkillRevision",
+      "safeTool", "streamingTool", "tool",
+    ])
+  })
+
   it("exposes the Tier-1 entry points", () => {
     for (const name of [
       "createAgent",

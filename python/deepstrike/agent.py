@@ -6,8 +6,9 @@ The declaration stays provider-neutral; execution resolves a provider through th
 """
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping, Sequence, TypeAlias
+from typing import Any, AsyncIterator, Literal, Mapping, Protocol, Sequence, TypeAlias, TypedDict
 
 from deepstrike.types.agent import AgentCapabilityFilter
 
@@ -15,6 +16,22 @@ from deepstrike.types.agent import AgentCapabilityFilter
 ModelRef: TypeAlias = str | dict[str, Any]
 AgentDefinition: TypeAlias = Mapping[str, Any]
 AgentMemory: TypeAlias = Any
+
+
+class PortableRunResult(TypedDict):
+    """Cross-SDK minimum result shape. SDK-specific evidence may be added."""
+    output: str
+    session_id: str
+    status: Literal["completed", "partial", "failed", "cancelled"]
+
+
+class PortableSession(Protocol):
+    """Cross-SDK session capability contract implemented by host session handles."""
+    session_id: str
+    async def run(self, goal: str, **kwargs: Any) -> PortableRunResult: ...
+    def stream(self, goal: str, **kwargs: Any) -> AsyncIterator[Mapping[str, Any]]: ...
+    def resume(self, **kwargs: Any) -> AsyncIterator[Mapping[str, Any]]: ...
+    def interrupt(self, reason: str = "user") -> None: ...
 
 
 @dataclass(frozen=True)
@@ -30,6 +47,9 @@ class Agent:
 
     ``tools`` may contain executable ``RegisteredTool`` instances or JSON-safe tool descriptors.
     The latter carry schema only and do not create executable capabilities.
+
+    Canonical cross-SDK definition fields are capabilityFilter, mcpServers, providerOptions,
+    and outputSchema; snake_case constructor aliases remain the Python spelling.
     """
 
     def __init__(
@@ -50,7 +70,7 @@ class Agent:
         output_schema: Mapping[str, Any] | None = None,
         metadata: Mapping[str, Any] | None = None,
         guardrails: Sequence[Mapping[str, Any]] | None = None,
-        runtime_binding: Mapping[str, Any] | None = None,
+        binding: Mapping[str, Any] | None = None,
     ) -> None:
         if not name:
             raise ValueError("agent name is required")
@@ -69,47 +89,76 @@ class Agent:
         self.output_schema = dict(output_schema) if output_schema is not None else None
         self.metadata = dict(metadata) if metadata is not None else None
         self.guardrails = list(guardrails) if guardrails is not None else None
-        self.runtime_binding = dict(runtime_binding) if runtime_binding is not None else None
+        self._binding = dict(binding) if binding is not None else None
+        self.definition: Mapping[str, Any] = {
+            key: value for key, value in {
+                "name": self.name,
+                "description": self.description,
+                "instructions": self.instructions,
+                "model": self.model,
+                "capability_filter": self.capability_filter,
+                "tools": self.tools,
+                "mcp_servers": self.mcp_servers,
+                "skills": self.skills,
+                "memory": self.memory,
+                "knowledge": self.knowledge,
+                "handoffs": self.handoffs,
+                "provider_options": self.provider_options,
+                "output_schema": self.output_schema,
+                "metadata": self.metadata,
+                "guardrails": self.guardrails,
+            }.items() if value is not None
+        }
 
     async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> dict[str, Any]:
         """Execute one goal through the host binding and return a structured run result."""
-        if not self.runtime_binding:
-            raise RuntimeError(f'agent "{self.name}" has no runtime binding')
-        provider = self.runtime_binding.get("provider")
-        if provider is None:
-            provider_for = self.runtime_binding.get("provider_for")
-            provider = provider_for(self.model) if callable(provider_for) else None
-        if provider is None:
-            raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
-        from deepstrike.runtime.facade import run_agent
-        output = await run_agent(
-            provider=provider,
-            goal=goal,
-            system_prompt=self.instructions,
-            tools=list(self.tools or []),
-            session_id=session_id,
-            max_turns=max_turns,
-        )
-        return {"output": output, "status": "completed", "session_id": session_id}
+        session_id = session_id or f"agent-{uuid.uuid4()}"
+        output = []
+        status = "partial"
+        failed = False
+        async for event in self.stream(goal, session_id=session_id, max_turns=max_turns):
+            event_type = event.get("type") if isinstance(event, dict) else event.type
+            if event_type == "text_delta":
+                output.append(event.get("delta", "") if isinstance(event, dict) else event.delta)
+            elif event_type == "error":
+                failed = True
+            elif event_type == "done":
+                event_status = event.get("status") if isinstance(event, dict) else event.status
+                if event_status in ("completed", "done", "success"):
+                    status = "completed"
+                elif event_status in ("cancelled", "user_abort", "user", "deadline", "lease_lost", "host_shutdown"):
+                    status = "cancelled"
+                elif event_status in ("error", "failed"):
+                    status = "failed"
+        return {"output": "".join(output), "status": "failed" if failed else status, "session_id": session_id}
 
     async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None):
         """Stream host events for the same public Agent contract."""
-        if not self.runtime_binding:
+        if not self._binding:
             raise RuntimeError(f'agent "{self.name}" has no runtime binding')
-        provider = self.runtime_binding.get("provider")
+        provider = self._binding.get("provider")
         if provider is None:
-            provider_for = self.runtime_binding.get("provider_for")
+            provider_for = self._binding.get("provider_for")
             provider = provider_for(self.model) if callable(provider_for) else None
         if provider is None:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
         from deepstrike.runtime.execution_plane import LocalExecutionPlane
         from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner
         from deepstrike.runtime.session_log import InMemorySessionLog
-        options = self.runtime_binding.get("runtime_options", {})
+        options = dict(self._binding.get("runtime_options", {}))
+        plane = options.pop("execution_plane", None)
+        if plane is None:
+            plane = LocalExecutionPlane()
+            if self.tools:
+                plane.register(*self.tools)
+        if not hasattr(self, "_session_log"):
+            self._session_log = options.pop("session_log", None) or InMemorySessionLog()
+        else:
+            options.pop("session_log", None)
         runner = RuntimeRunner(RuntimeOptions(
             provider=provider,
-            execution_plane=LocalExecutionPlane(),
-            session_log=InMemorySessionLog(),
+            execution_plane=plane,
+            session_log=self._session_log,
             max_tokens=32_000,
             agent_id=self.name,
             **({"system_prompt": self.instructions} if self.instructions else {}),
@@ -120,6 +169,6 @@ class Agent:
             yield event
 
 
-def create_agent(name: str, **kwargs: Any) -> Agent:
-    """Create the executable public Agent handle."""
-    return Agent(name, **kwargs)
+def create_agent(name: str, *, binding: Mapping[str, Any] | None = None, **kwargs: Any) -> Agent:
+    """Create an Agent from a semantic definition and a separate host binding."""
+    return Agent(name, binding=binding, **kwargs)

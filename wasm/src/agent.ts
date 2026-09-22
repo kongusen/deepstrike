@@ -93,7 +93,7 @@ export interface Guardrail {
   metadata?: Record<string, unknown>
 }
 
-export interface AgentOptions {
+export interface AgentDefinition {
   name: string
   description?: string
   instructions?: string
@@ -109,17 +109,28 @@ export interface AgentOptions {
   outputSchema?: JsonSchema
   metadata?: Record<string, unknown>
   guardrails?: Guardrail[]
-  runtimeBinding?: {
-    provider?: LLMProvider
-    providerFor?: (model: string) => LLMProvider | undefined
-    runtimeOptions?: Partial<RuntimeOptions>
-  }
 }
 
-export interface AgentRunResult {
+export interface RuntimeBinding {
+  provider?: LLMProvider
+  providerFor?: (model: string) => LLMProvider | undefined
+  runtimeOptions?: Partial<RuntimeOptions>
+}
+
+export type AgentOptions = AgentDefinition
+
+export interface PortableRunResult {
   output: string
   sessionId: string
   status: "completed" | "partial" | "failed" | "cancelled"
+}
+export type AgentRunResult = PortableRunResult
+export interface PortableSession {
+  sessionId: string
+  run(goal: string, options?: { maxTurns?: number }): Promise<PortableRunResult>
+  stream(goal: string, options?: { maxTurns?: number }): AsyncIterable<unknown>
+  resume(options?: { maxTurns?: number }): AsyncIterable<unknown>
+  interrupt(reason?: string): void
 }
 
 export class Agent {
@@ -138,9 +149,14 @@ export class Agent {
   readonly outputSchema?: JsonSchema
   readonly metadata?: Record<string, unknown>
   readonly guardrails?: Guardrail[]
-  readonly runtimeBinding?: AgentOptions["runtimeBinding"]
+  readonly definition: Readonly<AgentDefinition>
+  private readonly binding?: RuntimeBinding
 
-  constructor(options: AgentOptions) {
+  constructor(options: AgentOptions, binding?: RuntimeBinding) {
+    if ("runtimeBinding" in options) throw new Error("pass runtime binding as the second Agent argument")
+    const definition = options
+    this.definition = Object.freeze({ ...definition })
+    this.binding = binding
     this.name = options.name
     this.description = options.description
     this.instructions = options.instructions
@@ -156,11 +172,10 @@ export class Agent {
     this.outputSchema = options.outputSchema
     this.metadata = options.metadata
     this.guardrails = options.guardrails
-    this.runtimeBinding = options.runtimeBinding
   }
 
   async run(goal: string, options: { sessionId?: string; maxTurns?: number } = {}): Promise<AgentRunResult> {
-    const binding = this.runtimeBinding
+    const binding = this.binding
     const provider = binding?.provider ?? (typeof this.model === "string" ? binding?.providerFor?.(this.model) : undefined)
     if (!provider) throw new Error(`agent "${this.name}" has no runtime provider binding`)
     const runtime = new RuntimeRunner({
@@ -182,7 +197,7 @@ export class Agent {
   }
 
   stream(goal: string, options: { sessionId?: string } = {}): AsyncIterable<StreamEvent> {
-    const binding = this.runtimeBinding
+    const binding = this.binding
     const provider = binding?.provider ?? (typeof this.model === "string" ? binding?.providerFor?.(this.model) : undefined)
     if (!provider) throw new Error(`agent "${this.name}" has no runtime provider binding`)
     const runtime = new RuntimeRunner({
@@ -196,4 +211,8 @@ export class Agent {
     } as RuntimeOptions)
     return runtime.run({ sessionId: options.sessionId ?? `session-${crypto.randomUUID()}`, goal })
   }
+}
+
+export function createAgent(options: AgentOptions, binding?: RuntimeBinding): Agent {
+  return new Agent(options, binding)
 }

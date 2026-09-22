@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from deepstrike import OperationContext
+from deepstrike.advanced import OperationContext
 from deepstrike.runtime import ProcessSandboxPlane, RunContext
 from deepstrike._kernel import ToolCall
 

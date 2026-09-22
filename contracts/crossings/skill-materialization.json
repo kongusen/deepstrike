@@ -1,0 +1,12 @@
+{
+  "id": "skill.materialization",
+  "source": { "layer": "runtime", "type": "SkillRevision", "authority": "host-runtime" },
+  "target": { "layer": "runtime", "type": "SkillPackage", "authority": "host-runtime" },
+  "crossing": { "direction": "runtime_internal", "verb": "project", "function": "SkillSource.load" },
+  "preserves": ["revision_digest", "descriptor", "instructions", "resource_manifest"],
+  "drops": ["storage_backend", "user_storage_path", "kernel_activation_state"],
+  "forbidden": ["kernel_authority", "provider_credentials"],
+  "kernel": { "crosses": false },
+  "lossiness": "intentional",
+  "implementation": { "file": "node/src/skill.ts", "symbol": "DirectorySkillSource" }
+}

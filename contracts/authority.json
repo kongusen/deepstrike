@@ -1,0 +1,19 @@
+{
+  "AgentDefinition": "public-agent",
+  "AgentSpec": "host-runtime",
+  "ResolvedProviderRoute": "host-runtime",
+  "ProviderUsage": "host-runtime",
+  "Measurement": "host-runtime",
+  "Operation": "kernel",
+  "Effect": "kernel",
+  "Fact": "kernel",
+  "Settlement": "kernel",
+  "Journal": "kernel",
+  "ProviderRequest": "host-provider-adapter",
+  "ModelMessage": "host-provider-adapter",
+  "SkillMetadata": "host-runtime",
+  "MemoryRecord": "host-runtime",
+  "RegisteredTool": "host-runtime",
+  "EvalRun": "host-runtime",
+  "ContextPrepared": "host-runtime"
+}

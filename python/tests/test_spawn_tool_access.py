@@ -3,11 +3,7 @@ from __future__ import annotations
 
 import warnings
 
-from deepstrike import (
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    RuntimeOptions,
-)
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions
 from deepstrike.providers.base import ModelMessage
 from deepstrike.providers.stream import TextDelta
 from deepstrike.runtime.sub_agent_orchestrator import (

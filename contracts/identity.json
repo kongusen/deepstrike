@@ -1,0 +1,80 @@
+{
+  "AgentId": {
+    "mint": "public_or_host",
+    "crosses": [
+      "public_to_runtime"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "node/src/agent-facade.ts#AgentRuntimeImpl.name"
+    ]
+  },
+  "RunId": {
+    "mint": "host",
+    "crosses": [
+      "public_to_runtime"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "node/src/agent-facade.ts#sessionId"
+    ]
+  },
+  "SessionId": {
+    "mint": "host",
+    "crosses": [
+      "public_to_runtime"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "node/src/agent-facade.ts#sessionId"
+    ]
+  },
+  "OperationId": {
+    "mint": "host_then_kernel_bind",
+    "crosses": [
+      "runtime_to_kernel"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "node/src/runtime/runner.ts#RuntimeRunner.run"
+    ]
+  },
+  "TaskId": {
+    "mint": "kernel",
+    "crosses": [
+      "kernel_to_runtime"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "rust:deepstrike_core::runtime::kernel::wire::CanonicalKernel::prepare",
+      "wasm:src/runtime/canonical-kernel-step.ts#CanonicalKernelStep.prepare"
+    ]
+  },
+  "EffectId": {
+    "mint": "kernel",
+    "crosses": [
+      "kernel_to_runtime"
+    ],
+    "remint": false,
+    "allowedMintSites": [
+      "rust:deepstrike_core::runtime::kernel::wire::CanonicalKernel::prepare",
+      "wasm:src/runtime/canonical-kernel-step.ts#CanonicalKernelStep.prepare"
+    ]
+  },
+  "RequestFingerprint": {
+    "mint": "runtime_content_addressed",
+    "crosses": [],
+    "remint": false,
+    "allowedMintSites": [
+      "node/src/providers/request-plan.ts#createProviderRequestPlan"
+    ]
+  },
+  "RouteId": {
+    "mint": "runtime_content_addressed",
+    "crosses": [],
+    "remint": false,
+    "allowedMintSites": [
+      "node/src/providers/request-plan.ts#resolveProviderRoute"
+    ]
+  }
+}

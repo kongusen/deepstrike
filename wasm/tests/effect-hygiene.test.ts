@@ -9,7 +9,7 @@ import { MILESTONE_UNVERIFIED_REASON } from "../src/runtime/types/agent.js"
 import type { LLMProvider } from "../src/types.js"
 import { wrapScriptedKernel } from "./helpers/scripted-canonical-runtime.js"
 import { tool } from "../src/tools/index.js"
-import type { WorkflowSpec } from "../src/index.js"
+import type { WorkflowSpec } from "../src/advanced.js"
 
 const idleProvider: LLMProvider = {
   async complete() {

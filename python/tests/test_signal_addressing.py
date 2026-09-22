@@ -7,7 +7,7 @@ the recipient claims from the shared FIFO.
 
 import pytest
 
-from deepstrike import RuntimeSignal, SignalGateway
+from deepstrike.advanced import RuntimeSignal, SignalGateway
 
 
 def _sig(summary: str, recipient: str | None = None) -> RuntimeSignal:

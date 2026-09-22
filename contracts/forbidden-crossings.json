@@ -1,0 +1,12 @@
+{
+  "ProviderCredential->Kernel": "forbidden",
+  "ProviderUsage->KernelRaw": "forbidden",
+  "ReasoningTrace->CanonicalContent": "forbidden",
+  "SessionLog->KernelRecoveryAuthority": "forbidden",
+  "Pricing->KernelState": "forbidden",
+  "AgentMetadata->Kernel": "forbidden",
+  "RuntimeRoute->KernelEffect": "forbidden",
+  "EvalScore->KernelState": "forbidden_unless_explicit_milestone_fact",
+  "Public->Kernel": "forbidden_direct_crossing",
+  "Provider->Kernel": "forbidden_direct_crossing"
+}

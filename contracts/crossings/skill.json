@@ -1,0 +1,41 @@
+{
+  "id": "agent.skill.requirement",
+  "source": {
+    "layer": "public",
+    "type": "SkillDeclaration",
+    "authority": "public-agent"
+  },
+  "target": {
+    "layer": "runtime",
+    "type": "SkillRef",
+    "authority": "host-runtime"
+  },
+  "crossing": {
+    "direction": "public_to_runtime",
+    "verb": "normalize",
+    "function": "projectSkillRequirement"
+  },
+  "preserves": [
+    "skill_name",
+    "version_constraint",
+    "digest_constraint"
+  ],
+  "drops": [
+    "instructions",
+    "bundled_resources",
+    "storage_source"
+  ],
+  "forbidden": [
+    "kernel_authority",
+    "provider_credentials"
+  ],
+  "kernel": {
+    "crosses": false
+  },
+  "lossiness": "intentional",
+  "implementation": {
+    "file": "node/src/skill.ts",
+    "symbol": "projectSkillRequirement"
+  },
+  "notes": "Normalization stops at a host-owned SkillRef. Kernel projection is a separate crossing."
+}

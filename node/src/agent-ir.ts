@@ -6,7 +6,7 @@ import type { Knowledge } from "./knowledge/public.js"
 import type { MCPServer } from "./mcp-server.js"
 import { WorkingMemory } from "./memory/public.js"
 import type { JsonSchema } from "./runtime/output-schema.js"
-import type { Skill } from "./skill.js"
+import type { SkillDeclaration } from "./skill.js"
 import type { RegisteredTool } from "./tools/index.js"
 import type { AgentCapabilityFilter } from "./types/agent.js"
 
@@ -53,7 +53,7 @@ export interface AgentLoweringInputs {
   capabilities: {
     tools: AgentToolIR[]
     mcpServers: MCPServer[]
-    skills: Skill[]
+    skills: SkillDeclaration[]
     effective: AgentCapabilityIR[]
   }
   memory?: AgentMemoryIR
@@ -71,7 +71,7 @@ export interface AgentSpec {
   tools: AgentToolIR[]
   outputSchema?: JsonSchema
   mcpServers?: MCPServer[]
-  skills?: Skill[]
+  skills?: SkillDeclaration[]
   memory?: AgentMemoryIR
   knowledge?: Knowledge[]
   handoffs?: Handoff[]
@@ -144,7 +144,7 @@ function lowerTool(tool: RegisteredTool): AgentToolIR {
   }
 }
 
-function lowerMemory(memory: AgentMemory | undefined): AgentMemoryIR | undefined {
+export function lowerMemory(memory: AgentMemory | undefined): AgentMemoryIR | undefined {
   if (!memory) return undefined
   if (memory instanceof WorkingMemory) return { kind: "working" }
   const reference = memory as { kind?: string; namespace?: string }
@@ -237,6 +237,6 @@ function declaredCapabilities(spec: AgentSpec): AgentCapabilityIR[] {
       id: server.name ?? server.transport.kind,
       description: server.name ?? `${server.transport.kind} MCP server`,
     })),
-    ...(spec.skills ?? []).map(skill => ({ kind: "skill" as const, id: skill.name, description: skill.description ?? "" })),
+    ...(spec.skills ?? []).map(skill => ({ kind: "skill" as const, id: typeof skill === "string" ? skill : skill.name, description: typeof skill === "object" && "description" in skill ? skill.description ?? "" : "" })),
   ]
 }

@@ -19,6 +19,8 @@ jobs:
         with: { node-version: 24 }
       - name: Check docs ↔ code drift
         run: node scripts/check-docs-drift.mjs
+      - name: Check semantic crossing contracts
+        run: npm run contracts:check
 
   rust:
     runs-on: ubuntu-latest

@@ -14,16 +14,14 @@ import { EnvCredentialVault } from "./runtime/credential-vault.js"
 import { agentRefName } from "./handoff-target.js"
 import { createTextKnowledgeSource } from "./knowledge/public.js"
 import type { Knowledge } from "./knowledge/public.js"
+import { InlineSkillSource, normalizeSkillRef, type Skill, type SkillDeclaration, type SkillLoadContext, type SkillPackage, type SkillRef, type SkillRevision, type SkillSource } from "./skill.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
   /** Public model identity. Runtime resolves this through a provider binding. */
   model?: ModelRef
   tools?: RegisteredTool[]
-  maxTokens?: number
-  memoryStore?: MemoryStore
-  memoryScope?: MemoryScope
-  runtimeBinding?: RuntimeBinding
+  skills?: SkillDeclaration[]
 }
 
 export interface RuntimeBinding {
@@ -31,7 +29,13 @@ export interface RuntimeBinding {
   providerFor?: RuntimeOptions["providerFor"]
   executionPlane?: ExecutionPlane
   sessionLog?: SessionLog
-  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "initialMemory" | "skillCatalog" | "knowledgeSource" | "contextManager" | "artifactSetDigest">
+  /** Canonical source-independent Skill resolution boundary. */
+  skillSources?: SkillSource[]
+  skillContext?: SkillLoadContext
+  memoryStore?: MemoryStore
+  memoryScope?: MemoryScope
+  maxTokens?: number
+  runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "initialMemory" | "knowledgeSource" | "contextManager" | "artifactSetDigest">
 }
 
 export interface AgentRunOptions {
@@ -46,6 +50,13 @@ export interface AgentRunOptions {
 
 export interface SessionRef {
   id: string
+}
+
+/** Cross-SDK minimum run result; SDK-specific results may add evidence and usage. */
+export interface PortableRunResult {
+  output: unknown
+  sessionId: string
+  status: "completed" | "partial" | "failed" | "cancelled"
 }
 
 export interface RunResult<T = string> {
@@ -70,6 +81,9 @@ export interface AgentSession extends SessionRef {
   resume(options?: Omit<AgentRunOptions, "session">): AsyncIterable<StreamEvent>
   interrupt(reason?: "user" | "deadline" | "lease_lost" | "host_shutdown"): void
 }
+
+/** Cross-SDK session capability contract. */
+export type PortableSession = AgentSession
 
 export interface MemoryInput {
   name: string
@@ -122,6 +136,18 @@ function sessionId(ref?: SessionRef): string {
   return ref?.id ?? `session-${crypto.randomUUID()}`
 }
 
+/** Return only the durable session entries belonging to one run. Evidence is run-scoped even
+ * when a Session is reused for multiple executions. */
+export function sessionEntriesForRun(
+  entries: Array<{ seq: number; event: import("./runtime/session-log.js").SessionEvent }>,
+  runId: string,
+): Array<{ seq: number; event: import("./runtime/session-log.js").SessionEvent }> {
+  const start = entries.findIndex(entry => entry.event.kind === "run_started" && entry.event.run_id === runId)
+  if (start < 0) return []
+  const end = entries.findIndex((entry, index) => index > start && entry.event.kind === "run_started")
+  return entries.slice(start, end < 0 ? entries.length : end)
+}
+
 function statusFromDone(status: string): RunResult["status"] {
   if (status === "completed" || status === "done") return "completed"
   if (status === "cancelled" || status === "user" || status === "deadline" || status === "lease_lost" || status === "host_shutdown") return "cancelled"
@@ -170,15 +196,23 @@ class AgentSessionImpl {
 class AgentRuntimeImpl implements Agent {
   readonly name: string
   readonly definition: Readonly<AgentDefinition>
+  private readonly binding?: RuntimeBinding
   private readonly sessionLog: SessionLog
   private activeRunner: RuntimeRunner | null = null
+  private resolvedSkills?: Skill[]
+  private resolvedSkillPackages = new Map<string, SkillPackage>()
   private mcpPlane?: McpProxyPlane
   private mcpConnection?: Promise<void>
 
-  constructor(definition: AgentDefinition) {
+  constructor(definition: AgentDefinition, binding?: RuntimeBinding) {
+    if ("runtimeBinding" in definition) throw new Error("pass runtime binding as the second createAgent argument")
+    for (const legacyHostField of ["memoryStore", "memoryScope", "maxTokens"]) {
+      if (legacyHostField in definition) throw new Error(`${legacyHostField} belongs in the second createAgent binding argument`)
+    }
     this.definition = Object.freeze({ ...definition })
+    this.binding = binding
     this.name = normalizeAgent(definition).name
-    this.sessionLog = definition.runtimeBinding?.sessionLog ?? new InMemorySessionLog()
+    this.sessionLog = this.binding?.sessionLog ?? new InMemorySessionLog()
   }
 
   session(id = `session-${crypto.randomUUID()}`): AgentSession {
@@ -186,8 +220,8 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async remember(input: MemoryInput): Promise<MemoryRecord> {
-    const store = this.definition.memoryStore
-    const scope = this.definition.memoryScope
+    const store = this.binding?.memoryStore
+    const scope = this.binding?.memoryScope
     if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
     const now = Date.now()
     const record: MemoryRecord = {
@@ -211,8 +245,8 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async recall(query: string, options: RecallOptions = {}): Promise<MemoryRecall[]> {
-    const store = this.definition.memoryStore
-    const scope = this.definition.memoryScope
+    const store = this.binding?.memoryStore
+    const scope = this.binding?.memoryScope
     if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
     const request: MemoryQuery = {
       scope,
@@ -264,7 +298,7 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async listen(options: { session?: SessionRef; leaseMs?: number } = {}): Promise<RunResult | null> {
-    const source = this.definition.runtimeBinding?.runtimeOptions?.signalSource
+    const source = this.binding?.runtimeOptions?.signalSource
     if (!source) throw new Error("agent signals require runtimeOptions.signalSource")
     const claim = await source.claimSignal(this.name, options.leaseMs)
     if (!claim) return null
@@ -288,6 +322,7 @@ class AgentRuntimeImpl implements Agent {
     const session = sessionId(options.session)
     const owner = this
     return (async function* () {
+      await owner.resolveSkills()
       const runner = owner.createRunner(options)
       await owner.prepareMcp()
       owner.activeRunner = runner
@@ -309,13 +344,16 @@ class AgentRuntimeImpl implements Agent {
     const error = [...events].reverse().find(event => event.type === "error") as ErrorEvent | undefined
     const persisted = await this.sessionLog.read(session)
     const started = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
+    const runEntries = started?.event.kind === "run_started"
+      ? sessionEntriesForRun(persisted, started.event.run_id)
+      : []
     const usageEvent = [...events].reverse().find(event => event.type === "usage") as (StreamEvent & Partial<TokenUsage>) | undefined
     const output = events.filter(event => event.type === "text_delta").map(event => String((event as { delta?: unknown }).delta ?? "")).join("")
-    const prepared = [...persisted].reverse().find(entry => entry.event.kind === "context_prepared")
-    const measured = [...persisted].reverse().find(entry => entry.event.kind === "prompt_measured")
-    const attempt = [...persisted].reverse().find(entry => entry.event.kind === "provider_attempt")
-    const runStarted = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
-    const binding = this.definition.runtimeBinding
+    const prepared = [...runEntries].reverse().find(entry => entry.event.kind === "context_prepared")
+    const measured = [...runEntries].reverse().find(entry => entry.event.kind === "prompt_measured")
+    const attempt = [...runEntries].reverse().find(entry => entry.event.kind === "provider_attempt")
+    const runStarted = [...runEntries].reverse().find(entry => entry.event.kind === "run_started")
+    const binding = this.binding
     const evidence = {
       ...(prepared?.event.kind === "context_prepared" ? { contextBinding: prepared.event.preparation.binding } : {}),
       ...(attempt?.event.kind === "provider_attempt" ? { route: attempt.event.route } : runStarted?.event.kind === "run_started" && runStarted.event.route ? { route: runStarted.event.route } : {}),
@@ -343,6 +381,7 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async *resume(id: string, options: Omit<AgentRunOptions, "session"> = {}): AsyncIterable<StreamEvent> {
+    await this.resolveSkills()
     const runner = this.createRunner(options)
     await this.prepareMcp()
     this.activeRunner = runner
@@ -371,7 +410,7 @@ class AgentRuntimeImpl implements Agent {
 
   private createRunner(options: AgentRunOptions): RuntimeRunner {
     const model = this.definition.model
-    const binding = this.definition.runtimeBinding
+    const binding = this.binding
     const provider = binding?.provider
       ?? (typeof model === "string" ? binding?.providerFor?.(model) : undefined)
     if (!provider) {
@@ -410,7 +449,7 @@ class AgentRuntimeImpl implements Agent {
       ...(this.definition.capabilityFilter ? { capabilityFilter: this.definition.capabilityFilter } : {}),
       executionPlane: plane,
       sessionLog: this.sessionLog,
-      maxTokens: this.definition.maxTokens ?? 32_000,
+      maxTokens: binding?.maxTokens ?? 32_000,
       ...(this.definition.instructions || this.definition.outputSchema ? {
         systemPrompt: [
           this.definition.instructions,
@@ -418,9 +457,9 @@ class AgentRuntimeImpl implements Agent {
         ].filter((part): part is string => Boolean(part)).join("\n\n"),
       } : {}),
       ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
-      ...(this.definition.memoryStore ? { memoryStore: this.definition.memoryStore } : {}),
-      ...(this.definition.memoryScope ? { memoryScope: this.definition.memoryScope } : {}),
-      ...(this.definition.skills?.length ? { skillCatalog: this.definition.skills } : {}),
+      ...(binding?.memoryStore ? { memoryStore: binding.memoryStore } : {}),
+      ...(binding?.memoryScope ? { memoryScope: binding.memoryScope } : {}),
+      ...(this.resolvedSkills?.length ? { skills: this.resolvedSkills } : {}),
       ...(!binding?.runtimeOptions?.knowledgeSource && this.definition.knowledge?.some(item => item.source.kind === "text") ? {
         knowledgeSource: createTextKnowledgeSource(this.definition.knowledge
           .filter((item): item is Knowledge & { source: { kind: "text"; content: string } } => item.source.kind === "text")
@@ -433,6 +472,46 @@ class AgentRuntimeImpl implements Agent {
     return new RuntimeRunner(runtime)
   }
 
+  private async resolveSkills(): Promise<void> {
+    const declarations = this.definition.skills ?? []
+    const refs = declarations.filter((skill): skill is string | SkillRef => typeof skill === "string" || !("instructions" in skill || "description" in skill || "resources" in skill || "scripts" in skill || "tools" in skill || "mcpServers" in skill || "knowledge" in skill || "metadata" in skill || "providerOptions" in skill || "requires" in skill))
+      .map(normalizeSkillRef)
+    const inline = declarations.filter((skill): skill is Skill => typeof skill === "object" && ["description", "instructions", "resources", "scripts", "tools", "mcpServers", "knowledge", "metadata", "providerOptions", "requires"].some(key => key in skill))
+    this.resolvedSkillPackages.clear()
+    const context = this.binding?.skillContext
+    const inlineSource = inline.length ? new InlineSkillSource(inline) : undefined
+    const sources = [
+      ...(inlineSource ? [inlineSource] : []),
+      ...(this.binding?.skillSources ?? []),
+    ]
+    if (refs.length && !sources.length) {
+      throw new Error(`agent "${this.name}" declares external skills without a skill source binding`)
+    }
+    const loaded: Skill[] = []
+    for (const ref of refs) {
+      let resolved: { revision: SkillRevision; pkg: SkillPackage } | undefined
+      for (const source of sources) {
+        try {
+          const revision = await source.resolve(ref, context ?? { userId: this.name })
+          resolved = { revision, pkg: await source.load(revision) }
+          break
+        } catch (error) {
+          if (source === sources[sources.length - 1]) throw error
+        }
+      }
+      if (resolved) {
+        this.resolvedSkillPackages.set(ref.name, resolved.pkg)
+        loaded.push({
+          name: resolved.pkg.descriptor.name,
+          description: resolved.pkg.descriptor.description,
+          instructions: resolved.pkg.instructions,
+          metadata: { version: resolved.pkg.descriptor.version, digest: resolved.pkg.descriptor.digest },
+        })
+      }
+    }
+    this.resolvedSkills = [...inline, ...loaded]
+  }
+
   private async *clearRunnerAfter(stream: AsyncIterable<StreamEvent>, signal?: AbortSignal, abort?: () => void): AsyncIterable<StreamEvent> {
     try {
       yield* stream
@@ -443,6 +522,6 @@ class AgentRuntimeImpl implements Agent {
   }
 }
 
-export function createAgent(definition: AgentDefinition): Agent {
-  return new AgentRuntimeImpl(definition)
+export function createAgent(definition: AgentDefinition, binding?: RuntimeBinding): Agent {
+  return new AgentRuntimeImpl(definition, binding)
 }

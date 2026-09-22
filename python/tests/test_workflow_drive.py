@@ -3,21 +3,7 @@ import re
 
 import pytest
 
-from deepstrike import (
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    RuntimeOptions,
-    RuntimeRunner,
-    SubAgentResult,
-    LoopResult,
-    WorkflowSpec,
-    WorkflowNodeSpec,
-    workflow_spec_to_kernel,
-    fanout_synthesize,
-    generate_and_filter,
-    run_fanout,
-    verify_rules,
-)
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, SubAgentResult, LoopResult, WorkflowSpec, WorkflowNodeSpec, workflow_spec_to_kernel, fanout_synthesize, generate_and_filter, run_fanout, verify_rules
 class _StubProvider:
     async def stream(self, context, tools, extensions=None, state=None):  # pragma: no cover
         from deepstrike.providers.stream import TextDelta
@@ -92,7 +78,7 @@ async def test_standalone_workflow_charges_node_count_to_group():
     """Gap-a: a standalone (bootstrapped) run_workflow under a RunGroup counts its nodes toward the
     cumulative spawn axis. Nodes are member runs whose own charge is 0 spawns; the envelope kernel's
     TaskTable holds one proc per node, so its local_subagents_spawned() is exactly the node count."""
-    from deepstrike import RunGroup, InMemoryGroupBudgetStore
+    from deepstrike.advanced import RunGroup, InMemoryGroupBudgetStore
 
     store = InMemoryGroupBudgetStore()
     group = RunGroup(id="wf-group", budget_store=store)
@@ -415,7 +401,7 @@ def test_g3_rejects_unsafe_attempt_bound():
 # ── G4 budget-as-signal ──────────────────────────────────────────────────────────────────────────
 
 def test_g4_workflow_budget_note_formats_and_omits():
-    from deepstrike import workflow_budget_note
+    from deepstrike.advanced import workflow_budget_note
 
     full = {
         "nodes_used": 1, "nodes_max": 5, "nodes_remaining": 4,
@@ -470,7 +456,7 @@ async def test_g4_run_workflow_surfaces_budget_into_node_goal():
 # ── G2 deterministic compute (reduce nodes) ──────────────────────────────────────────────────────
 
 def test_g2_builtin_reducers():
-    from deepstrike import builtin_reducers
+    from deepstrike.advanced import builtin_reducers
 
     assert builtin_reducers["dedupe_lines"]([
         {"agent_id": "a", "output": "x\ny\nx"},
@@ -487,7 +473,7 @@ def test_g2_builtin_reducers():
 
 
 def test_g2_reducer_lowers_to_kernel_node_kind():
-    from deepstrike import workflow_node_spec_to_kernel
+    from deepstrike.advanced import workflow_node_spec_to_kernel
 
     k = workflow_node_spec_to_kernel(WorkflowNodeSpec(task="merge", role="implement", reducer="dedupe_lines", depends_on=[0, 1]))
     assert k["kind"] == {"type": "reduce", "reducer": "dedupe_lines"}

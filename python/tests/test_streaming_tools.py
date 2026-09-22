@@ -1,6 +1,7 @@
 import pytest
 
-from deepstrike import InMemorySessionLog, LocalExecutionPlane, ModelMessage, RuntimeOptions, RuntimeRunner, streaming_tool
+from deepstrike import ModelMessage, streaming_tool
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta, ToolCallEvent, ToolDeltaEvent, ToolResultEvent
 

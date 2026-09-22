@@ -95,7 +95,7 @@ function checkSymbols(docs, manifest) {
     if (!refs) continue
     contracts++
     for (const sdk of ["node", "python", "rust", "wasm"]) {
-      const live = manifest[sdk]?.symbols ?? []
+      const live = [...(manifest[sdk]?.symbols ?? []), ...(manifest[sdk]?.advancedSymbols ?? [])]
       for (const sym of refs[sdk]) {
         count++
         if (!live.includes(sym)) fails.push({ doc, sdk, ref: sym })

@@ -1,0 +1,53 @@
+{
+  "id": "agent.tool",
+  "source": {
+    "layer": "public",
+    "type": "Tool",
+    "authority": "public-agent"
+  },
+  "target": {
+    "layer": "runtime",
+    "type": "AgentToolIR",
+    "authority": "host-runtime"
+  },
+  "crossing": {
+    "direction": "public_to_runtime",
+    "verb": "lower",
+    "function": "lowerTool"
+  },
+  "preserves": [
+    "tool_name",
+    "tool_schema",
+    "declared_input_contract"
+  ],
+  "drops": [
+    "none"
+  ],
+  "forbidden": [
+    "kernel_authorization_decision"
+  ],
+  "kernelProjection": {
+    "type": "ToolSchema",
+    "authority": "kernel",
+    "implementation": {
+      "file": "node/src/runtime/kernel-step.ts",
+      "symbol": "toolSchemaToKernel"
+    }
+  },
+  "authority": {
+    "definition": "public",
+    "executable_binding": "runtime",
+    "authorization": "kernel"
+  },
+  "kernel": {
+    "crosses": true,
+    "via": "ToolSchema"
+  },
+  "lossiness": "intentional",
+  "implementation": {
+    "file": "node/src/agent-ir.ts",
+    "symbol": "lowerTool",
+    "parameterTypes": ["RegisteredTool"],
+    "returnType": "AgentToolIR"
+  }
+}

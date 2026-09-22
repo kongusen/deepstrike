@@ -1,0 +1,12 @@
+{
+  "id": "skill.resolution",
+  "source": { "layer": "runtime", "type": "SkillRef", "authority": "host-runtime" },
+  "target": { "layer": "runtime", "type": "SkillRevision", "authority": "host-runtime" },
+  "crossing": { "direction": "runtime_internal", "verb": "resolve", "function": "SkillSource.resolve" },
+  "preserves": ["skill_name", "version_constraint", "digest_constraint", "revision_digest", "descriptor"],
+  "drops": ["storage_backend", "provider_credentials"],
+  "forbidden": ["kernel_authority", "identity_remint"],
+  "kernel": { "crosses": false },
+  "lossiness": "intentional",
+  "implementation": { "file": "node/src/skill.ts", "symbol": "DirectorySkillSource" }
+}

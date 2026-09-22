@@ -3,7 +3,7 @@ node carrying the kernel's verdict output_schema (the EvalPipeline successor). M
 `gen_eval` shape test + guards SDK/kernel verdict-schema single-sourcing."""
 import json
 
-from deepstrike import gen_eval
+from deepstrike.advanced import gen_eval
 from deepstrike._kernel import verdict_output_schema
 
 

@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod governance;
 pub mod harness;
 pub mod harness_loop;
@@ -34,6 +35,7 @@ pub use deepstrike_core::{EntropySample, EntropyTracker, EntropyWatchConfig};
 // spec with the templates, hold a `WorkflowRun` (a pure state machine), call `ready_batch()` /
 // `spawn_info()` / `record_completion()` from your own executor. Everything the drivers do is
 // reachable this way; a batteries-included Rust driver lands only when a real consumer needs it.
+pub use agent::{Agent, AgentDefinition, AgentRunResult, PortableRunResult, create_agent};
 pub use deepstrike_core::orchestration::workflow::{JudgeMatch, WorkflowRun, WorkflowSpawnInfo};
 pub use deepstrike_core::orchestration::workflow::{
     WorkflowNode, WorkflowSpec, fanout_synthesize, gen_eval, generate_and_filter, verify_rules,

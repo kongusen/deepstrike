@@ -3,7 +3,7 @@ import type { Memory, WorkingMemory } from "./memory/public.js"
 import type { MCPServer } from "./mcp-server.js"
 import type { JsonSchema } from "./runtime/output-schema.js"
 import type { Guardrail } from "./guardrail.js"
-import type { Skill } from "./skill.js"
+import type { SkillDeclaration } from "./skill.js"
 import type { Knowledge } from "./knowledge/public.js"
 import type { Handoff } from "./handoff-target.js"
 import type { AgentCapabilityFilter } from "./types/agent.js"
@@ -37,7 +37,7 @@ export interface AgentOptions {
   capabilityFilter?: AgentCapabilityFilter
   tools?: RegisteredTool[]
   mcpServers?: MCPServer[]
-  skills?: Skill[]
+  skills?: SkillDeclaration[]
   memory?: AgentMemory
   knowledge?: Knowledge[]
   handoffs?: Handoff[]
@@ -57,7 +57,7 @@ export class Agent {
   readonly capabilityFilter?: AgentCapabilityFilter
   readonly tools?: RegisteredTool[]
   readonly mcpServers?: MCPServer[]
-  readonly skills?: Skill[]
+  readonly skills?: SkillDeclaration[]
   readonly memory?: AgentMemory
   readonly knowledge?: Knowledge[]
   readonly handoffs?: Handoff[]

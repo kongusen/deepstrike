@@ -1,6 +1,6 @@
 import json
 
-from deepstrike import start_workflow_tool, submit_workflow_nodes_tool
+from deepstrike.advanced import start_workflow_tool, submit_workflow_nodes_tool
 
 
 def test_start_workflow_tool_shares_submit_node_schema():

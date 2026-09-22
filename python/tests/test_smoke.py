@@ -1,12 +1,6 @@
 import pytest
-from deepstrike import (
-    AnthropicProvider, InMemorySessionLog, LocalExecutionPlane, OpenAIProvider,
-    RuntimeOptions, RuntimeRunner, collect_text,
-    Governance,
-    ModelMessage, ToolSchema, ToolCall, ToolExecutionResult,
-    tool, read_file,
-    RetryConfig,
-)
+from deepstrike import AnthropicProvider, OpenAIProvider, ModelMessage, ToolSchema, ToolCall, ToolExecutionResult, tool
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, collect_text, Governance, read_file, RetryConfig
 from deepstrike.providers import gemini, ollama
 from deepstrike.kernel import CanonicalKernel, LoopPolicy, RuntimeTask, SignalRouter
 from deepstrike.governance import GovernancePolicy, GovernancePolicyRule
@@ -196,7 +190,8 @@ def test_validate_tool_arguments_oneof_polymorphic():
 @pytest.mark.asyncio
 async def test_execution_plane_repairs_arguments():
     import json
-    from deepstrike import LocalExecutionPlane, tool
+    from deepstrike import tool
+    from deepstrike.advanced import LocalExecutionPlane
     from deepstrike.runtime.execution_plane import RunContext
     from deepstrike.providers.stream import ToolArgumentRepairedEvent, ToolResultEvent
 

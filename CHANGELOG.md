@@ -6,6 +6,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.74] - 2026-09-22
+
+### Fixed — invariant hardening
+
+- Made Node `providers/protocol-capabilities.ts` the sole `GenerationProtocol` authority; WASM and Python mirrors must keep an exact protocol set.
+- Scoped public Agent execution evidence to the active `run_started` boundary so reused sessions cannot attach stale evidence.
+- Added an exact Node root runtime export allowlist to prevent accidental implementation-surface leakage.
+- Split semantic Agent definitions from host bindings across Node, WASM, Python, and Rust; legacy binding inputs are consumed at construction and never retained in the public definition.
+- Moved WASM runtime machinery behind the `advanced` subpath and made Python's semantic root `__all__` explicit, with advanced runtime imports available from `deepstrike.advanced`.
+- Added the Rust `Agent`/`AgentDefinition` facade with provider and execution authority bound through `RuntimeOptions`.
+- Closed the portable Agent API contract across Node, WASM, Python, and Rust: every SDK carries the same semantic definition fields and exposes structured `run` plus streaming `stream`; Rust now returns the same `{ output, session_id, status }` run shape and a `create_agent` constructor.
+- Removed embedded `runtimeBinding`/`runtime_binding` construction from Node, WASM, and Python; pass the host binding as the separate Agent binding argument.
+- Python and WASM runtime machinery now has an explicit advanced import surface, with conformance adapters and tests migrated to it.
+- Added the executable `contracts/` registry for named semantic crossings, authority ownership, identity remint rules, intentional lossiness, and forbidden direct Public/Provider-to-Kernel paths; `npm run contracts:check` enforces it.
+- Registered Skill, Memory, Workflow, Context, Provider Call, and Eval crossings alongside Agent, Model, Tool, and Usage using the same machine-checked contract format.
+
 ## [0.2.73] - 2026-09-22
 
 ### Breaking changes — semantic closure

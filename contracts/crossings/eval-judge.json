@@ -1,0 +1,12 @@
+{
+  "id": "eval.judge-input",
+  "source": {"layer": "runtime", "type": "EvalCase", "authority": "host-runtime"},
+  "target": {"layer": "provider", "type": "ModelMessage", "authority": "host-provider-adapter"},
+  "crossing": {"direction": "runtime_to_provider", "verb": "render", "function": "buildEvalMessages"},
+  "implementation": {"file": "node/src/runtime/eval.ts", "symbol": "buildEvalMessages"},
+  "preserves": ["goal", "criteria", "candidate_output"],
+  "drops": ["dataset_storage_metadata"],
+  "forbidden": ["kernel_authority", "provider_credentials"],
+  "kernel": {"crosses": false},
+  "lossiness": "intentional"
+}

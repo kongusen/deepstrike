@@ -7,13 +7,13 @@
  * `__mocks__/kernel.ts`, which mirrors the kernel's pacing trap (`run_spec.loop_round` → trapped
  * `pace` call → `pace_decision` on done).
  */
-import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog } from "../src/advanced.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
 import { tool } from "../src/tools/index.js"
 import {
   workflowNodeSpecToKernel, workflowNodeToSpec, subAgentResultToKernel,
 } from "../src/runtime/types/agent.js"
-import type { WorkflowSpec } from "../src/index.js"
+import type { WorkflowSpec } from "../src/advanced.js"
 import { dependencyOutputsNote } from "../src/runtime/workflow-control-flow.js"
 import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 import type { RegisteredTool } from "../src/tools/index.js"

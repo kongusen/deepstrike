@@ -56,9 +56,8 @@ const add = tool("add", "Add two numbers.", {
 const agent = createAgent({
   name: "math",
   model: "openai/gpt-5-mini",
-  runtimeBinding: { provider },
   tools: [add],
-})
+}, { provider })
 
 const result = await agent.run("What is 17 + 28?")
 console.log(result.output)
@@ -103,7 +102,7 @@ Most apps start with one executable Agent. Streaming, sessions, memory, delegati
 ```typescript
 import { createAgent } from "@deepstrike/sdk"
 
-const agent = createAgent({ name: "researcher", model: "openai/gpt-5-mini", runtimeBinding: { provider }, tools: [add] })
+const agent = createAgent({ name: "researcher", model: "openai/gpt-5-mini", tools: [add] }, { provider })
 const answer = await agent.run("What is 17 + 28?")
 console.log(answer.output)
 

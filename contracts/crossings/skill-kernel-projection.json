@@ -1,0 +1,12 @@
+{
+  "id": "skill.kernel-projection",
+  "source": { "layer": "runtime", "type": "SkillDescriptor", "authority": "host-runtime" },
+  "target": { "layer": "kernel", "type": "SkillMetadata", "authority": "kernel" },
+  "crossing": { "direction": "runtime_to_kernel", "verb": "project", "function": "skillMetadataToKernel" },
+  "preserves": ["name", "description", "when_to_use", "allowed_tools", "capability_grants"],
+  "drops": ["instructions", "resource_contents", "storage_backend"],
+  "forbidden": ["provider_credentials", "activation_authority"],
+  "kernel": { "crosses": true, "authority": "kernel" },
+  "lossiness": "intentional",
+  "implementation": { "file": "node/src/runtime/kernel-step.ts", "symbol": "skillMetadataToKernel" }
+}

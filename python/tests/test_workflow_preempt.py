@@ -7,19 +7,8 @@ Uses standalone ``run_workflow`` (no ``_active_kernel`` injection).
 import asyncio
 import pytest
 
-from deepstrike import (
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    LoopResult,
-    ModelMessage,
-    RuntimeOptions,
-    RuntimeRunner,
-    RuntimeSignal,
-    SignalClaim,
-    SubAgentResult,
-    WorkflowSpec,
-    WorkflowNodeSpec,
-)
+from deepstrike import ModelMessage
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, LoopResult, RuntimeOptions, RuntimeRunner, RuntimeSignal, SignalClaim, SubAgentResult, WorkflowSpec, WorkflowNodeSpec
 
 
 class _Stub:

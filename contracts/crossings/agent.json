@@ -1,0 +1,42 @@
+{
+  "id": "agent.definition",
+  "source": {
+    "layer": "public",
+    "type": "AgentDefinition",
+    "authority": "public-agent"
+  },
+  "target": {
+    "layer": "runtime",
+    "type": "AgentSpec",
+    "authority": "host-runtime"
+  },
+  "crossing": {
+    "direction": "public_to_runtime",
+    "verb": "lower",
+    "function": "lowerAgent"
+  },
+  "preserves": [
+    "agent_identity",
+    "instructions",
+    "capability_requirements",
+    "declared_tools",
+    "governance_inputs"
+  ],
+  "drops": [
+    "host_credentials",
+    "session_authority"
+  ],
+  "forbidden": [
+    "provider_credentials",
+    "endpoint_identity",
+    "protocol_wire_state"
+  ],
+  "kernel": {
+    "crosses": false
+  },
+  "lossiness": "intentional",
+  "implementation": {
+    "file": "node/src/agent-ir.ts",
+    "symbol": "lowerAgent"
+  }
+}

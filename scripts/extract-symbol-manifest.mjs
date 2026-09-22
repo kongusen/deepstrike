@@ -58,7 +58,15 @@ export function extractPython(root) {
       for (const m of text.slice(open, close).matchAll(/["']([A-Za-z0-9_]+)["']/g)) names.add(m[1])
     }
   }
-  return { source: "python/deepstrike/__init__.py", present: true, symbols: [...names].sort() }
+  const advancedText = read(root, "python/deepstrike/advanced.py") ?? ""
+  const advanced = new Set()
+  const advancedStart = advancedText.indexOf("__all__")
+  if (advancedStart !== -1) {
+    const open = advancedText.indexOf("[", advancedStart)
+    const close = advancedText.indexOf("]", open)
+    if (open !== -1 && close !== -1) for (const m of advancedText.slice(open, close).matchAll(/["']([A-Za-z0-9_]+)["']/g)) advanced.add(m[1])
+  }
+  return { source: "python/deepstrike/__init__.py", present: true, symbols: [...names].sort(), advancedSymbols: [...advanced].sort() }
 }
 
 /** Public names re-exported or declared in the core crate root. */

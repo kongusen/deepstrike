@@ -7,7 +7,7 @@ note is applied)."""
 
 import pytest
 
-from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.tools.registry import tool

@@ -1,0 +1,45 @@
+{
+  "id": "runtime.context-preparation",
+  "source": {
+    "layer": "runtime",
+    "type": "ContextProviderPreparationRequest",
+    "authority": "host-runtime"
+  },
+  "target": {
+    "layer": "runtime",
+    "type": "ContextPrepared",
+    "authority": "host-runtime"
+  },
+  "crossing": {
+    "direction": "runtime_internal",
+    "verb": "prepare",
+    "function": "ContextPreparationAdapter.prepare"
+  },
+  "preserves": [
+    "context_state",
+    "provider_route",
+    "prompt_measurement",
+    "execution_input",
+    "context_plan",
+    "evaluation_binding"
+  ],
+  "drops": [
+    "resident_payload_layout"
+  ],
+  "forbidden": [
+    "provider_credentials",
+    "kernel_journal_mutation"
+  ],
+  "kernel": {
+    "crosses": true,
+    "via": "contextPrepareJson"
+  },
+  "lossiness": "intentional",
+  "implementation": {
+    "file": "node/src/runtime/context.ts",
+    "symbol": "createContextPreparationAdapter",
+    "method": "prepare",
+    "parameterTypes": ["ContextProviderPreparationRequest"],
+    "returnType": "ContextPrepared"
+  }
+}

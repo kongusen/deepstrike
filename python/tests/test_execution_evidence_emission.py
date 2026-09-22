@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
 from deepstrike.providers.stream import TextDelta, UsageEvent
 from deepstrike.runtime.execution_evidence import (
     FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY,

@@ -6,7 +6,7 @@ and live-seeds it. Different attachments in a later same-session run are still s
 """
 import pytest
 
-from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
 

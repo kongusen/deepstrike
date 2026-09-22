@@ -1,0 +1,21 @@
+{
+  "version": "0.2.74",
+  "definitionFields": [
+    "name",
+    "description",
+    "instructions",
+    "model",
+    "capabilityFilter",
+    "tools",
+    "mcpServers",
+    "skills",
+    "memory",
+    "knowledge",
+    "handoffs",
+    "providerOptions",
+    "outputSchema",
+    "metadata",
+    "guardrails"
+  ],
+  "methods": ["run", "stream"]
+}

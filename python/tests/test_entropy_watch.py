@@ -5,7 +5,7 @@ one ``entropy_sample`` stream event per completed turn (unconditional), plus the
 
 import pytest
 
-from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import EntropyAlertEvent, EntropySampleEvent, TextDelta, ToolCallEvent
 from deepstrike.tools.registry import tool

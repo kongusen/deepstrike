@@ -17,7 +17,10 @@ const resolvedFixturesRoot = realpathSync(fixturesRoot)
 
 if (process.argv.length !== 3 || !isAbsolute(process.argv[2])) fail("usage: wasm.mjs <absolute-fixture-path>")
 
-const sdk = await import(pathToFileURL(join(root, "wasm", "dist", "index.js")))
+// The conformance surface spans the advanced public entry point. The package root intentionally
+// stays small for browser consumers, while `advanced` owns the runtime codecs and projections
+// pinned by the shared fixtures.
+const sdk = await import(pathToFileURL(join(root, "wasm", "dist", "advanced.js")))
 const stopReason = await import(pathToFileURL(join(root, "wasm", "dist", "providers", "stop-reason.js")))
 
 class StructuredError extends Error {

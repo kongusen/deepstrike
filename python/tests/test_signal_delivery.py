@@ -1,13 +1,6 @@
 import pytest
 
-from deepstrike import (
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    RuntimeOptions,
-    RuntimeRunner,
-    RuntimeSignal,
-    SignalClaim,
-)
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, RuntimeSignal, SignalClaim
 from deepstrike.providers.stream import TextDelta
 from deepstrike.runtime.runner import _signal_to_kernel_event
 

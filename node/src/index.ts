@@ -1,5 +1,5 @@
 // ╔══════════════════════════════════════════════════════════════════════════╗
-// ║ @deepstrike/sdk — root surface (v0.2.73).                                      ║
+// ║ @deepstrike/sdk — root surface (v0.2.74).                                      ║
 // ║                                                                            ║
 // ║ This is the intent layer: run an agent, run a workflow, author a tool,     ║
 // ║ pick a provider. Advanced machinery lives behind subpaths:                 ║
@@ -20,6 +20,8 @@ export type {
   DelegationRequest,
   DelegationResult,
   MemoryInput,
+  PortableRunResult,
+  PortableSession,
   RecallOptions,
   RunResult,
   SessionRef,
@@ -59,6 +61,8 @@ export type {
 // Parallel fan-out / sub-agent delegation. The full orchestration layer is in `@deepstrike/sdk/workflow`.
 // ── Ecosystem Surface Contract (spc_001) ────────────────────────────────────
 export type { ModelRef, ModelRequirement } from "./agent.js"
+export { activateSkill, DirectorySkillSource, InlineSkillSource, normalizeSkillRef, projectSkillMetadata, projectSkillRequirement, resolveSkillRevision, ResolverSkillSource } from "./skill.js"
+export type { ActivatedSkill, ResolvedSkillRevision, Skill, SkillDeclaration, SkillLoadContext, SkillPackage, SkillRef, SkillRefInput, SkillRevision, SkillSource } from "./skill.js"
 export type { Guardrail } from "./guardrail.js"
 export type { MCPServer, McpTransport } from "./mcp-server.js"
 export type { Knowledge, KnowledgeSourceRef } from "./knowledge/public.js"

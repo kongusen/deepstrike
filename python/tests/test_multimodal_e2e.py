@@ -15,13 +15,7 @@ import zlib
 
 import pytest
 
-from deepstrike import (
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    RuntimeOptions,
-    RuntimeRunner,
-    collect_text,
-)
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner, collect_text
 from deepstrike.providers import LLMProvider, minimax
 
 pytestmark = pytest.mark.skipif(

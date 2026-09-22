@@ -6,15 +6,8 @@ workflow bootstrap path.
 
 import pytest
 
-from deepstrike import (
-    InMemorySessionLog,
-    LocalExecutionPlane,
-    LoopResult,
-    ModelMessage,
-    RuntimeOptions,
-    RuntimeRunner,
-    SubAgentResult,
-)
+from deepstrike import ModelMessage
+from deepstrike.advanced import InMemorySessionLog, LocalExecutionPlane, LoopResult, RuntimeOptions, RuntimeRunner, SubAgentResult
 from deepstrike._kernel import ToolSchema
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
