@@ -1,0 +1,217 @@
+export {
+  RuntimeRunner,
+  collectText,
+  runAgent,
+  runFanout,
+  InMemorySessionLog,
+  assertCanonicalProviderAttemptRecord,
+  SESSION_EVENT_KINDS,
+  LocalExecutionPlane,
+  DEFAULT_NATIVE_SIGNAL_POLICY,
+  DEFAULT_NATIVE_GOVERNANCE_POLICY,
+  DEFAULT_SANDBOX_POLICY,
+  assertNativeProfile,
+  osProfile,
+  validateDeclarativePolicy,
+  ReplayProvider,
+  extractRecordedMessages,
+  judge,
+  buildEvalMessages,
+  parseVerdict,
+  verdictOutputSchema,
+} from "./runtime/index.js"
+// ── Durable transaction capability (Canonical Kernel ABI §9.1) ──────────────
+export {
+  DriverKernelJournal,
+  InMemoryJournalDriver,
+  InMemoryKernelJournal,
+  JournalCasConflictError,
+  JournalIntegrityError,
+  JournalIoError,
+} from "./runtime/kernel-journal.js"
+export type {
+  CheckpointCandidate,
+  InstalledCheckpoint,
+  JournalAppendReceipt,
+  JournalEntry,
+  JournalHead,
+  JournalPruneReceipt,
+  JournalRecordInput,
+  JournalStorageDriver,
+  KernelJournal,
+} from "./runtime/kernel-journal.js"
+// ── content-parts-v1 registered encoding (F14/B5; byte-pinned by sdk-conformance) ──
+export {
+  CANONICAL_CONTENT_PARTS_PREFIX,
+  encodeCanonicalContentParts,
+  decodeCanonicalContentParts,
+} from "./runtime/kernel-step.js"
+export type {
+  ReplayProviderOpts,
+  Criterion,
+  Verdict,
+  VerdictDetail,
+  JudgeArgs,
+} from "./runtime/index.js"
+export type {
+  NativeOsProfile,
+  OsProfileId,
+  MemoryPolicy,
+  MemoryWriteRateLimit,
+  ResourceQuota,
+  RuntimeOptions,
+  PromptBudget,
+  SchedulerPolicy,
+  SignalPolicy,
+  SessionEvent,
+  SessionEventKind,
+  SessionLog,
+  RunContext,
+  ExecutionPlane,
+  KernelEventCategory,
+  KernelPrimitive,
+} from "./runtime/index.js"
+export { primitiveForCategory, primitiveForKind } from "./runtime/index.js"
+export {
+  VERIFIABLE_REPORT_SCHEMA,
+  VERIFIABLE_FORK_SCHEMA,
+  assertVerifiableReportSchema,
+  createVerifiableRuntimeAdapter,
+  createNativeVerifiableRuntimeAdapter,
+  VerifiableOperation,
+} from "./runtime/verifiable-report.js"
+export type {
+  VerifiableCommand,
+  CheckVerdict,
+  VerifiableForkManifest,
+  ForkPlan,
+  VerifiableEvidence,
+  VerifyOptions,
+  ReplayOptions,
+  VerifiableRuntimeAdapter,
+  VerifiableReport,
+  VerifiableOperationJson,
+} from "./runtime/verifiable-report.js"
+export { FilteredExecutionPlane } from "./runtime/filtered-plane.js"
+export { SubAgentOrchestrator, defaultSubAgentOrchestrator, spawnStandalone } from "./runtime/sub-agent-orchestrator.js"
+export type { SubAgentRunContext } from "./runtime/sub-agent-orchestrator.js"
+export type {
+  AgentCapabilityFilter,
+  AgentIdentity,
+  AgentIsolation,
+  AgentRunSpec,
+  AgentProcessChangedObservation,
+  ContextInheritance,
+  KernelAgentRole,
+  LoopResult,
+  MilestoneCheckResult,
+  MilestoneContract,
+  MilestonePhase,
+  MilestonePolicy,
+  SubAgentResult,
+  TerminationReason,
+  WorkflowSpec,
+  WorkflowNodeSpec,
+  SchedulingFactors,
+  WorkflowDependencyPolicy,
+  WorkflowNodeStatus,
+  WorkflowNodeOutcome,
+  WorkflowOutcome,
+  WorkflowTaskSpec,
+  WorkflowSpawnInfo,
+} from "./runtime/types/agent.js"
+export { workflowSpecToKernel, workflowNodeSpecToKernel, submitWorkflowNodesTool, startWorkflowTool, fanoutSynthesize, generateAndFilter, genEval, verifyRules } from "./runtime/types/agent.js"
+export {
+  loopInstruction, classifyInstruction, judgeGoal,
+  extractClassifyBranch, extractJudgeWinner,
+} from "./runtime/workflow-control-flow.js"
+export { Agent } from "./agent.js"
+export type {
+  AgentMemory, AgentOptions, AgentRunResult, AgentToolDefinition, AgentRef, Guardrail, Handoff, Knowledge,
+  KnowledgeSourceRef, MCPServer, McpTransport, MemoryReference, ModelRef, ModelRequirement, Skill,
+} from "./agent.js"
+export { lowerAgent, normalizeAgent } from "./agent-ir.js"
+export type {
+  AgentCapabilityIR, AgentLoweringInputs, AgentMemoryIR, AgentSpec, AgentToolIR,
+} from "./agent-ir.js"
+export type { AgentDefinition, RuntimeBinding } from "./agent.js"
+export { AnthropicProvider } from "./providers/anthropic.js"
+export { OpenAIProvider, qwen, deepseek, minimax, kimi } from "./providers/openai.js"
+export type { OpenAIProviderOptions, BackendProviderOptions } from "./providers/openai.js"
+export { ProviderError, classifyProviderError } from "./providers/provider-error.js"
+export type { ProviderErrorKind, ProviderErrorOptions } from "./providers/provider-error.js"
+export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
+export { tool, executeTools } from "./tools/index.js"
+export type { RegisteredTool, ToolExecContext } from "./tools/index.js"
+export { safeTool, ok, fail, ToolError, formatToolError } from "./tools/errors.js"
+export type { ToolEnvelope, ToolEnvelopeOk, ToolEnvelopeFail } from "./tools/errors.js"
+export { WorkingMemory } from "./memory/index.js"
+export { DurableMemory } from "./memory/durable.js"
+export { InMemoryMemoryStore } from "./memory/in-memory-store.js"
+export type { InMemoryMemoryStoreOptions } from "./memory/in-memory-store.js"
+export { memoryRetentionScore } from "./memory/retention.js"
+export { rankMemories } from "./memory/ranking.js"
+export type { RankableMemory, RankedMemory, RankOptions } from "./memory/ranking.js"
+export { extractSessionMemories, parseExtractedMemories } from "./memory/extraction.js"
+export type {
+  MemoryStore, Memory, MemorySearchOptions, SessionStore, SessionData, SessionMessage, MemoryRecord, MemoryRecall, MemoryRecallLifecycle,
+  MemoryQuery, MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
+} from "./memory/index.js"
+export type { KnowledgeSource } from "./knowledge/index.js"
+export { createEvolutionRuntimeAdapter, createNativeEvolutionRuntimeAdapter, EvolutionRuntime } from "./runtime/evolution.js"
+export type {
+  ActivationBinding, ArtifactKind, ArtifactManifest, ArtifactRef, ArtifactSet, ArtifactVersion,
+  ContextEntryRef, ContextEntrySource, ContextExecutionInput, ContextPlan, ContextPlanAction, ContextPreparationRequest, ContextSelection, ContextState,
+  EvaluationContextBinding, EvaluationFact, EvaluationGate, EvaluationMetric, EvaluationRun, EvolutionBundle,
+  EvolutionProposal, EvolutionReport, EvolutionVerdict, PromotionDecision, PromotionOutcome,
+  EvolutionStore,
+} from "./runtime/evolution.js"
+export {
+  AttemptLoop, RuntimeAttemptBody, VerdictFnJudge, LlmEvalJudge, HybridJudge,
+  continueSession, freshWithFeedback, freshWithDigest,
+} from "./harness/index.js"
+export type {
+  AttemptBody, AttemptBodyContext, AttemptBodyEvent, AttemptBodyTerminal,
+  AttemptJudge, AttemptLoopEvent, AttemptLoopOptions, AttemptOutcome,
+  AttemptOutcomeKind, AttemptProgressEvent, AttemptRequest, CarryPolicy,
+  JudgeContext, JudgeResult, PreparedAttempt, StopPolicy, VerdictFn,
+} from "./harness/index.js"
+export { ScheduledPrompt } from "./signals/index.js"
+export type { RuntimeSignal, SignalSource } from "./signals/index.js"
+export { PermissionManager, PermissionMode } from "./safety/index.js"
+export { createProviderRequestPlan, createProviderRequestPlanForProvider, estimateProviderPromptTokens, measurementForPlan, normalizeProviderUsage, priceProviderUsage, recordPromptMeasurement } from "./providers/request-plan.js"
+export type { CostObservation, NormalizedProviderUsage, PricingSnapshot, ProviderRequestEndpoint, ProviderRequestPlan, ProviderUsage, RecordedPromptMeasurement, ResolvedProviderRoute } from "./providers/request-plan.js"
+export type {
+  ProviderAttempt,
+  ProviderAttemptRecord,
+  ProviderAttemptStatus,
+  ModelInvocation,
+  InvocationOutcome,
+  ModelUsageSettlement,
+  UsageAccountingPolicy,
+} from "./runtime/execution-evidence.js"
+export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY, providerAttemptToRecord, tryNormalizeProviderUsage } from "./runtime/execution-evidence.js"
+export { decodeCanonicalStopReason, normalizeProviderStopReason } from "./providers/stop-reason.js"
+export type { CanonicalStopReason } from "./providers/stop-reason.js"
+export { ContentPolicyError, contentDispositionFor, requireContentDisposition } from "./providers/content-policy.js"
+export type { ContentDisposition, ContentPlacement, InputModality } from "./providers/content-policy.js"
+export type { PermissionDecision } from "./safety/index.js"
+export type {
+  ModelMessage, ToolCall, ToolExecutionResult, ToolSchema,
+  RenderedContext, ProviderRunState,
+  StreamEvent, TextDelta, ThinkingDelta,
+  ToolCallEvent, ToolResultEvent, ToolAuditFailedEvent, DoneEvent, ErrorEvent,
+  PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
+  EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
+  LLMProvider,
+  CacheBreakpointStrategy,
+  ProviderWireEvidence,
+  ProviderTransportTelemetry,
+} from "./types.js"
+export { DurableContentError, decodeDurableContent, decodeDurableToolResult, encodeDurableContent, encodeDurableToolResult, toolOutputBlocksToDurable, durableBlocksToToolOutput } from "./runtime/durable-content.js"
+export type { DurableContent, DurableContentBlock, DurableSource, DurableToolResult } from "./runtime/durable-content.js"
+
+export { createContextPreparationAdapter, createNativeContextPreparationAdapter } from "./runtime/context.js"
+export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextProviderPreparationRequest } from "./runtime/context.js"
+
+export type { PreparedProviderRequest } from "./types.js"

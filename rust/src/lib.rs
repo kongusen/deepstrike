@@ -1,4 +1,5 @@
 pub mod governance;
+pub mod agent;
 pub mod harness;
 pub mod harness_loop;
 pub mod knowledge;
@@ -43,6 +44,7 @@ pub use deepstrike_core::runtime::verifiable::{
     ReplayReport, ReplayVerdict, VerifiableOperation, VerifyOptions, VerifyReport,
 };
 pub use governance::{Governance, GovernanceVerdict};
+pub use agent::{Agent, AgentDefinition};
 pub use harness::{Criterion, CriterionResult, Verdict};
 pub use harness_loop::{
     AttemptBody, AttemptBodyContext, AttemptBodyEvent, AttemptBodyStream, AttemptJudge,

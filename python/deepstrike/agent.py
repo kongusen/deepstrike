@@ -69,15 +69,34 @@ class Agent:
         self.output_schema = dict(output_schema) if output_schema is not None else None
         self.metadata = dict(metadata) if metadata is not None else None
         self.guardrails = list(guardrails) if guardrails is not None else None
-        self.runtime_binding = dict(runtime_binding) if runtime_binding is not None else None
+        self._binding = dict(runtime_binding) if runtime_binding is not None else None
+        self.definition: Mapping[str, Any] = {
+            key: value for key, value in {
+                "name": self.name,
+                "description": self.description,
+                "instructions": self.instructions,
+                "model": self.model,
+                "capability_filter": self.capability_filter,
+                "tools": self.tools,
+                "mcp_servers": self.mcp_servers,
+                "skills": self.skills,
+                "memory": self.memory,
+                "knowledge": self.knowledge,
+                "handoffs": self.handoffs,
+                "provider_options": self.provider_options,
+                "output_schema": self.output_schema,
+                "metadata": self.metadata,
+                "guardrails": self.guardrails,
+            }.items() if value is not None
+        }
 
     async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> dict[str, Any]:
         """Execute one goal through the host binding and return a structured run result."""
-        if not self.runtime_binding:
+        if not self._binding:
             raise RuntimeError(f'agent "{self.name}" has no runtime binding')
-        provider = self.runtime_binding.get("provider")
+        provider = self._binding.get("provider")
         if provider is None:
-            provider_for = self.runtime_binding.get("provider_for")
+            provider_for = self._binding.get("provider_for")
             provider = provider_for(self.model) if callable(provider_for) else None
         if provider is None:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
@@ -94,18 +113,18 @@ class Agent:
 
     async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None):
         """Stream host events for the same public Agent contract."""
-        if not self.runtime_binding:
+        if not self._binding:
             raise RuntimeError(f'agent "{self.name}" has no runtime binding')
-        provider = self.runtime_binding.get("provider")
+        provider = self._binding.get("provider")
         if provider is None:
-            provider_for = self.runtime_binding.get("provider_for")
+            provider_for = self._binding.get("provider_for")
             provider = provider_for(self.model) if callable(provider_for) else None
         if provider is None:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
         from deepstrike.runtime.execution_plane import LocalExecutionPlane
         from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner
         from deepstrike.runtime.session_log import InMemorySessionLog
-        options = self.runtime_binding.get("runtime_options", {})
+        options = self._binding.get("runtime_options", {})
         runner = RuntimeRunner(RuntimeOptions(
             provider=provider,
             execution_plane=LocalExecutionPlane(),

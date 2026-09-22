@@ -23,7 +23,6 @@ export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   maxTokens?: number
   memoryStore?: MemoryStore
   memoryScope?: MemoryScope
-  runtimeBinding?: RuntimeBinding
 }
 
 export interface RuntimeBinding {
@@ -33,6 +32,10 @@ export interface RuntimeBinding {
   sessionLog?: SessionLog
   runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "initialMemory" | "skillCatalog" | "knowledgeSource" | "contextManager" | "artifactSetDigest">
 }
+
+/** Transitional input shape. Runtime bindings are accepted here for source compatibility, but
+ * they are removed before the public AgentDefinition is stored or exposed. */
+export type AgentInput = AgentDefinition & { runtimeBinding?: RuntimeBinding }
 
 export interface AgentRunOptions {
   session?: SessionRef
@@ -182,15 +185,18 @@ class AgentSessionImpl {
 class AgentRuntimeImpl implements Agent {
   readonly name: string
   readonly definition: Readonly<AgentDefinition>
+  private readonly binding?: RuntimeBinding
   private readonly sessionLog: SessionLog
   private activeRunner: RuntimeRunner | null = null
   private mcpPlane?: McpProxyPlane
   private mcpConnection?: Promise<void>
 
-  constructor(definition: AgentDefinition) {
+  constructor(input: AgentInput, binding?: RuntimeBinding) {
+    const { runtimeBinding: legacyBinding, ...definition } = input
     this.definition = Object.freeze({ ...definition })
+    this.binding = binding ?? legacyBinding
     this.name = normalizeAgent(definition).name
-    this.sessionLog = definition.runtimeBinding?.sessionLog ?? new InMemorySessionLog()
+    this.sessionLog = this.binding?.sessionLog ?? new InMemorySessionLog()
   }
 
   session(id = `session-${crypto.randomUUID()}`): AgentSession {
@@ -276,7 +282,7 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async listen(options: { session?: SessionRef; leaseMs?: number } = {}): Promise<RunResult | null> {
-    const source = this.definition.runtimeBinding?.runtimeOptions?.signalSource
+    const source = this.binding?.runtimeOptions?.signalSource
     if (!source) throw new Error("agent signals require runtimeOptions.signalSource")
     const claim = await source.claimSignal(this.name, options.leaseMs)
     if (!claim) return null
@@ -330,7 +336,7 @@ class AgentRuntimeImpl implements Agent {
     const measured = [...runEntries].reverse().find(entry => entry.event.kind === "prompt_measured")
     const attempt = [...runEntries].reverse().find(entry => entry.event.kind === "provider_attempt")
     const runStarted = [...runEntries].reverse().find(entry => entry.event.kind === "run_started")
-    const binding = this.definition.runtimeBinding
+    const binding = this.binding
     const evidence = {
       ...(prepared?.event.kind === "context_prepared" ? { contextBinding: prepared.event.preparation.binding } : {}),
       ...(attempt?.event.kind === "provider_attempt" ? { route: attempt.event.route } : runStarted?.event.kind === "run_started" && runStarted.event.route ? { route: runStarted.event.route } : {}),
@@ -386,7 +392,7 @@ class AgentRuntimeImpl implements Agent {
 
   private createRunner(options: AgentRunOptions): RuntimeRunner {
     const model = this.definition.model
-    const binding = this.definition.runtimeBinding
+    const binding = this.binding
     const provider = binding?.provider
       ?? (typeof model === "string" ? binding?.providerFor?.(model) : undefined)
     if (!provider) {
@@ -458,6 +464,6 @@ class AgentRuntimeImpl implements Agent {
   }
 }
 
-export function createAgent(definition: AgentDefinition): Agent {
-  return new AgentRuntimeImpl(definition)
+export function createAgent(definition: AgentInput, binding?: RuntimeBinding): Agent {
+  return new AgentRuntimeImpl(definition, binding)
 }
