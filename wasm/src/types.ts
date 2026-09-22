@@ -168,6 +168,7 @@ export type GenerationProtocol =
   | "openai-chat"
   | "openai-responses"
   | "gemini"
+  | "ollama-chat"
 
 /**
  * Cache_control placement strategy for the Anthropic protocol. Pass via

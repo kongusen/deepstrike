@@ -1,4 +1,5 @@
 import type { WorkflowNodeSpec } from "./types/agent.js"
+import type { GenerationProtocol } from "./providers/protocol-capabilities.js"
 
 export interface TextPart {
   type: "text"
@@ -401,12 +402,6 @@ export interface RetryConfig {
  * Responses `previous_response_id` without leaking those semantics into the kernel.
  */
 export type ProviderRunState = Record<string, unknown>
-
-export type GenerationProtocol =
-  | "anthropic-messages"
-  | "openai-chat"
-  | "openai-responses"
-  | "gemini"
 
 /**
  * Strategy for placing Anthropic-protocol `cache_control` breakpoints across a request's

@@ -11,6 +11,17 @@ test("SPC-028-10 has one GenerationProtocol authority", () => {
   expect(GENERATION_PROTOCOLS).toEqual(expect.arrayContaining(["anthropic-messages", "openai-chat", "openai-responses", "gemini", "ollama-chat"]))
 })
 
+test("SPC-028-10 every SDK mirror has the exact canonical protocol set", () => {
+  const canonical = [...GENERATION_PROTOCOLS].sort()
+  const node = readSource(joinPath(process.cwd(), "src/providers/protocol-capabilities.ts"), "utf8")
+  const wasm = readSource(joinPath(process.cwd(), "../wasm/src/types.ts"), "utf8")
+  const python = readSource(joinPath(process.cwd(), "../python/deepstrike/providers/protocols.py"), "utf8")
+  const extract = (source: string) => [...new Set([...source.matchAll(/\b(?:anthropic-messages|openai-chat|openai-responses|gemini|ollama-chat)\b/g)].map(match => match[0]))].sort()
+  expect(extract(node)).toEqual(canonical)
+  expect(extract(wasm)).toEqual(canonical)
+  expect(extract(python)).toEqual(canonical)
+})
+
 test("SPC-028-10 scans every SDK surface for the retired ProviderProtocol vocabulary", () => {
   const roots = ["src", "../wasm/src", "../python/deepstrike"]
   const files: string[] = []
