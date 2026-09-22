@@ -11,7 +11,7 @@ import {
   SESSION_EVENT_KINDS,
   lowerAgent,
   normalizeAgent,
-} from "../../node/dist/index.js"
+} from "../../node/dist/conformance.js"
 import { createNativeContextPreparationAdapter, providerAttemptToRecord } from "../../node/dist/runtime/public.js"
 import { createProviderRequestPlan, recordPromptMeasurement } from "../../node/dist/providers/public.js"
 import { FileSessionLog, InMemorySessionLog } from "../../node/dist/advanced/public.js"

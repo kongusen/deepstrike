@@ -1,28 +1,27 @@
-# Choosing an API: run_agent vs RuntimeRunner vs run_fanout
+# Choosing an API: Agent vs RuntimeRunner
 
 Choose an entry point based on how much responsibility your Agent needs.
 
 ## Decision Tree
 
 ```
-Need streaming events / signals / memory / governance?
-├─ No → Single task?
-│        ├─ Yes → run_agent()
-│        └─ No (parallel + synthesis) → run_fanout()
-└─ Yes → RuntimeRunner
+Need the standard executable Agent contract?
+├─ Yes → create_agent() + agent.run()/agent.stream()
+└─ Need custom host control → RuntimeRunner
 ```
 
-## Level 1: `run_agent` — Simplest
+## Level 1: `Agent` — Standard public contract
 
 ```python
-from deepstrike import run_agent, AnthropicProvider, read_file
+from deepstrike import create_agent, AnthropicProvider, read_file
 
-text = await run_agent(
-    provider=AnthropicProvider(api_key=os.environ["ANTHROPIC_API_KEY"]),
-    goal="List files in the current directory",
+agent = create_agent(
+    "reader",
+    model="anthropic/claude",
+    runtime_binding={"provider": AnthropicProvider(api_key=os.environ["ANTHROPIC_API_KEY"])},
     tools=[read_file],
-    max_turns=10,
 )
+result = await agent.run("List files in the current directory", max_turns=10)
 ```
 
 Best for: HTTP handlers, scripts, one-off tasks.

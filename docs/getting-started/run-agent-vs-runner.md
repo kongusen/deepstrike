@@ -9,7 +9,8 @@ import { createAgent, OpenAIResponsesProvider } from "@deepstrike/sdk"
 
 const agent = createAgent({
   name: "researcher",
-  provider: new OpenAIResponsesProvider(process.env.OPENAI_API_KEY!, "gpt-5-mini"),
+  model: "openai/gpt-5-mini",
+  runtimeBinding: { provider: new OpenAIResponsesProvider(process.env.OPENAI_API_KEY!, "gpt-5-mini") },
   instructions: "查证事实并给出来源。",
 })
 

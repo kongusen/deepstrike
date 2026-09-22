@@ -3,6 +3,11 @@ import { join } from "node:path"
 import { createProviderRequestPlan, measurementForPlan, recordPromptMeasurement, resolveProviderRoute } from "../src/providers/request-plan.js"
 import { providerAttemptToRecord, FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY } from "../src/runtime/execution-evidence.js"
 import type { RenderedContext } from "../src/types.js"
+import { AnthropicMessagesAdapter } from "../src/providers/anthropic-adapter.js"
+import { OpenAIChatAdapter } from "../src/providers/openai-chat.js"
+import { OpenAIResponsesAdapter } from "../src/providers/openai-responses-adapter.js"
+import { GeminiAdapter } from "../src/providers/gemini-adapter.js"
+import { OllamaAdapter } from "../src/providers/ollama-adapter.js"
 
 const context: RenderedContext = { systemText: "", turns: [{ role: "user", content: "hello" }] }
 
@@ -34,4 +39,19 @@ test("SPC-028-58/60 shared provider conformance fixture lists every supported pr
   const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/runtime-language/provider-conformance.json"), "utf8")) as { protocols: Record<string, string[]>; measurementSources: string[] }
   expect(Object.keys(fixture.protocols)).toEqual(expect.arrayContaining(["anthropic-messages", "openai-chat", "openai-responses", "gemini", "ollama-chat"]))
   expect(fixture.measurementSources).toEqual(expect.arrayContaining(["native", "local_exact", "heuristic", "postflight", "unavailable"]))
+})
+
+test.each([
+  ["anthropic-messages", () => new AnthropicMessagesAdapter()],
+  ["openai-chat", () => new OpenAIChatAdapter()],
+  ["openai-responses", () => new OpenAIResponsesAdapter()],
+  ["gemini", () => new GeminiAdapter()],
+  ["ollama-chat", () => new OllamaAdapter()],
+])("SPC-028-58 adapter implements the declared protocol contract: %s", (protocol, create) => {
+  const adapter = create()
+  expect(adapter.protocol).toBe(protocol)
+  expect(adapter.protocolCapabilities).toBeDefined()
+  for (const method of ["buildRequest", "decodeComplete", "createStreamState", "pushStreamChunk", "finishStream", "normalizeUsage", "normalizeStopReason"]) {
+    expect(typeof adapter[method as keyof typeof adapter]).toBe("function")
+  }
 })

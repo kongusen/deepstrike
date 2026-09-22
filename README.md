@@ -144,7 +144,8 @@ const add = tool("add", "Add two numbers.", {
 
 const agent = createAgent({
   name: "math",
-  provider: new OpenAIResponsesProvider(apiKey, model),
+  model: `openai/${model}`,
+  runtimeBinding: { provider: new OpenAIResponsesProvider(apiKey, model) },
   tools: [add],
 })
 

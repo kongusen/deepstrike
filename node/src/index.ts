@@ -44,6 +44,16 @@ export { createProvider, createProviderAsync, resolveProviderRuntime, resolvePro
 export { UnsupportedModalityError } from "./providers/base.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
 export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
+export type { SessionEvent, SessionEventKind } from "./session-events.js"
+export { SESSION_EVENT_KINDS } from "./session-events.js"
+export { InMemoryReactionCheckpointStore } from "./reactions.js"
+export type {
+  ReactionCheckpointClaim,
+  ReactionCheckpointClaimResult,
+  ReactionCheckpointReceipt,
+  ReactionCheckpointStore,
+  InMemoryReactionCheckpointStoreOptions,
+} from "./reactions.js"
 
 // ── Multi-agent primitive ───────────────────────────────────────────────────
 // Parallel fan-out / sub-agent delegation. The full orchestration layer is in `@deepstrike/sdk/workflow`.
