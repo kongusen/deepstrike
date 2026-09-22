@@ -6,11 +6,73 @@ import { resolve } from "node:path"
 import ts from "typescript"
 
 const root = resolve(new URL("..", import.meta.url).pathname)
-const registryModule = await import("../contracts/protocols/registry.js")
-const protocols = registryModule.BOUNDARY_PROTOCOLS
-if (!Array.isArray(protocols) || protocols.length === 0) throw new Error("boundary protocol registry is empty")
-const protocol = protocols.find(candidate => candidate.id === "skill.host-to-kernel")
-if (!protocol) throw new Error("skill.host-to-kernel protocol is not registered")
+
+function unwrapExpression(expression) {
+  if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression) || ts.isParenthesizedExpression(expression)) return unwrapExpression(expression.expression)
+  return expression
+}
+
+function literalValue(expression, filePath) {
+  const value = unwrapExpression(expression)
+  if (ts.isStringLiteral(value) || ts.isNumericLiteral(value)) return value.text
+  if (value.kind === ts.SyntaxKind.TrueKeyword) return true
+  if (value.kind === ts.SyntaxKind.FalseKeyword) return false
+  if (ts.isArrayLiteralExpression(value)) return value.elements.map(element => literalValue(element, filePath))
+  if (ts.isObjectLiteralExpression(value)) {
+    const result = {}
+    for (const property of value.properties) {
+      if (!ts.isPropertyAssignment(property)) throw new Error(`${filePath}: protocol objects must use property assignments`)
+      const key = property.name.getText().replace(/^['"]|['"]$/g, "")
+      result[key] = literalValue(property.initializer, filePath)
+    }
+    return result
+  }
+  if (value.kind === ts.SyntaxKind.NullKeyword) return null
+  throw new Error(`${filePath}: unsupported protocol expression ${ts.SyntaxKind[value.kind]}`)
+}
+
+function exportedObject(filePath, exportName) {
+  const sourceFile = ts.createSourceFile(filePath, readFileSync(filePath, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  let initializer
+  const visit = node => {
+    if (ts.isVariableDeclaration(node) && node.name.getText() === exportName) initializer = node.initializer
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  if (!initializer) throw new Error(`${filePath}: exported protocol ${exportName} not found`)
+  return literalValue(initializer, filePath)
+}
+
+function loadProtocolRegistry() {
+  const registryPath = resolve(root, "contracts/protocols/registry.ts")
+  const sourceFile = ts.createSourceFile(registryPath, readFileSync(registryPath, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const imports = new Map()
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !statement.importClause?.namedBindings || !ts.isNamedImports(statement.importClause.namedBindings)) continue
+    const specifier = statement.moduleSpecifier.text.replace(/\.js$/, ".ts")
+    for (const element of statement.importClause.namedBindings.elements) imports.set(element.name.text, resolve(root, "contracts/protocols", specifier))
+  }
+  let elements
+  const visit = node => {
+    if (ts.isVariableDeclaration(node) && node.name.getText() === "BOUNDARY_PROTOCOLS") {
+      const initializer = unwrapExpression(node.initializer)
+      if (initializer && ts.isArrayLiteralExpression(initializer)) elements = initializer.elements
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  if (!elements) throw new Error("contracts/protocols/registry.ts: BOUNDARY_PROTOCOLS must be an array")
+  return elements.map(element => {
+    const name = unwrapExpression(element).getText()
+    const filePath = imports.get(name)
+    if (!filePath) throw new Error(`registry.ts: protocol ${name} is not an imported protocol`)
+    return exportedObject(filePath, name)
+  })
+}
+
+const protocols = loadProtocolRegistry()
+if (protocols.length !== 1) throw new Error(`expected one registered protocol during Skill migration, found ${protocols.length}`)
+const protocol = protocols[0]
 const [, adapterPath, adapterName] = protocol.adapter.match(/^([^:]+):(.+)$/) ?? []
 if (!adapterPath || !adapterName) throw new Error(`invalid adapter reference: ${protocol.adapter}`)
 const kernelStepPath = resolve(root, "node/src", `${adapterPath}.ts`)

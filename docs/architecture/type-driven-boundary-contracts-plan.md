@@ -129,22 +129,21 @@ The previous `skill-kernel-projection` contract described a broader `SkillDescri
 
 ### Expansion decision
 
-The mechanism is validated for one crossing, but it is not ready to copy directly to Agent lowering or Usage settlement. The checker and generator still select the Skill adapter explicitly, and the protocol runtime mirror remains a temporary loading mechanism. The next increment must make protocol registration and adapter discovery generic before a second crossing is added.
+The mechanism is validated for one crossing, but it is not ready to copy directly to Agent lowering or Usage settlement. The next increment must make protocol registration and adapter discovery generic before a second crossing is added.
 
 ### Task 6: Register protocols before expanding
 
-**Status:** Foundation completed
+**Status:** Completed
 
 - Added a single protocol registry containing the Skill crossing.
 - Added stable protocol identity and derived the adapter source path and symbol from the registered adapter reference.
-- Kept the checker limited to the Skill crossing while removing its hard-coded source file and function name.
+- The checker reads the TypeScript registry and protocol declarations directly through the compiler AST; no checked-in JavaScript protocol mirror is required.
 
 **Checkpoint:** `contracts:check` discovers the registered Skill protocol and passes compiler-resolved verification. Adding another crossing now has a registry entry point instead of another checker branch.
 
 ### Follow-up Refinements Identified
 
-1. **Generic protocol registry**: discover registered protocols and adapters from one registry instead of hard-coded Skill paths.
-2. **Protocol source loading**: remove the checked-in JavaScript mirror once the repository has a supported TypeScript protocol loading path.
+1. Add a second crossing only after its transformations and security policy are independently reviewed.
 
 ---
 
