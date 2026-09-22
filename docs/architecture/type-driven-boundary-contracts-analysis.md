@@ -4,13 +4,14 @@
  本文基于 v0.2.73（`70166972`）代码现场盘点，作为协议注册表的依据。结论先行：
 
 1. **语言边界只有三条**：public|host（lower）、host|kernel（project/decode）、host|provider（normalize/settle/plan）。runtime-internal 不是语言边界。
-2. **主流程真实的跨层函数共 16 处**（下表），其中 4 处已强类型化，12 处返回 `Record<string, unknown>`；子系统深化另查明 Memory/Context/Workflow/Events 的 crossing（M1–M5、CT1–CT4、WF1–WF2、EV1，见第八节）。
+2. **主流程真实的跨层函数共 16 处**（下表），其中 4 处已强类型化，12 处返回 `Record<string, unknown>`；子系统深化另查明 Memory/Context/Workflow/Events/Signals 的 crossing（M1–M5、CT1–CT4、WF1–WF2、EV1、S1–S5，见第八节）。
 3. **provider 线格式不是契约面**——encode/decode 是 adapter-local 的 vendor 特化（刻意设计）；契约落在类型化的 plan/normalize/settle 层。
 4. **废弃分支发明的 `SkillSource` 四阶阶梯（SkillDeclaration→SkillRef→SkillRevision→SkillPackage）在 v0.2.73 不存在**，不予注册。协议只覆盖真实存在的 crossing。
 5. **Boundary A 存在双降级分叉**：类型化的 `lowerAgent → AgentSpec → projectAgent*` 在运行时无消费方（仅 conformance），真实 run 路径手写内联降级且两链覆盖面已分叉。P2 必须先收敛再注册，否则契约守护旁路。
 6. **Memory 的信任边界在过界瞬间盖章**：`MemoryProvenance`（author/trust）不在 wire 也不在 public 参数里，由宿主在数据过界瞬间按来源赋值（model→`untrusted`，public 直写→`user_asserted`）——信任级是**路径属性**不是数据属性；协议模型的 `derived` 字段族需支持 crossing-time derivation（第八节 8.1）。
 7. **Context 渲染权威在 kernel**：`call_provider` effect 携带每 turn 渲染好的 context，host 解码后再 plan——⑩⑪ 是**每 turn 热路径**而非恢复/重放路径；`configure_run` 是**复合配置 crossing**（一次过界捆绑 governance/context_policy/reliability/signal_policy 四子政策）。
 8. **"一协议多 adapter"是机制级需求**：capability 族（1 协议 5 adapter）、`configure_run`（4 子政策）、events（约 19 个 yield 点）三个真实现场都要求多 adapter 支持，应在 P3 前升格为前置机制任务（第八节 8.6）。
+9. **信号输入机制是"单实现双消费"的防漂移样本**：`injectNote` 与 `signalSource` 两条入站通道汇入同一 drain（代码注释明言 "so they never drift"），`signalToKernelEvent` 被主循环 poll 与 workflow 抢占监视器共享；`deliver_signal ↔ signal_delivery_disposed` 的 (delivery_id, attempt) 恰一回执是字段形状之外的**会话级关联不变量**（第八节 8.6）。
 
 ## 一、四层语言 → 实际代码映射
 
@@ -164,7 +165,7 @@ createAgent(definition)
 | P3 | kernel 投影族：`message` / `tool-schema` / `tool-result` / `task-update` | 每个需先补 `Kernel*` 命名目标类型（复制 `KernelSkillMetadata` 模式）；capability 族作为一个协议、五个 adapter，需先扩展机制支持多 adapter |
 | P4 | kernel 观察面：`entropy` / `kernel-message` / `rendered-context` decode | ⑩⑪ 已确认为**每 turn 热路径**（8.2），必须契约化；需补 `Kernel*` 命名目标类型（同 P3 模式） |
 | P5 | provider 语义点：`usage-normalize` / `usage-settle` / `request-plan` | 已类型化；settle 的 forbidden（pricing_authority）直接沿用旧裁决 |
-| P6 | 子系统族：`memory.kernel-effect`（M1–M3）/ `run-config.configure-run`（CT2–CT3）/ workflow（WF1–WF2） | 前置 = 多 adapter 机制（与 P3 共享）+ `KernelMemory*` 命名 wire 类型；M4 直写旁路先按三点一.4 收编 |
+| P6 | 子系统族：`memory.kernel-effect`（M1–M3）/ `run-config.configure-run`（CT2–CT3）/ workflow（WF1–WF2）/ `signal.deliver`（S1–S2） | 前置 = 多 adapter 机制（与 P3 共享）+ `KernelMemory*`/`KernelSignalInput` 命名 wire 类型；M4 直写旁路先按三点一.4 收编 |
 
 **每批的完成判据**：该批所有 crossing 通过 `contracts:check`（编译器验证推断）+ 生成验证器有泄漏/缺失/类型形状测试 + `contracts:verify` 绿。
 
@@ -333,7 +334,7 @@ createAgent(definition)
 
 ## 八、子系统深化：Memory / Context / Workflow / Eval / Events（2026-09-22）
 
-主流程（run 循环）之外逐子系统盘点。总判定：**Memory 与 Context 是真实跨边界子系统**（新增 M1–M5、CT1–CT4）；Workflow 是 B 边界的批量 syscall（WF1–WF2，随 P3 收编）；**Eval 留在 runtime-internal**；Events 是 B 反向的宽面 decode（EV1，多 adapter 机制的极限用例）。
+主流程（run 循环）之外逐子系统盘点。总判定：**Memory 与 Context 是真实跨边界子系统**（新增 M1–M5、CT1–CT4）；Workflow 是 B 边界的批量 syscall（WF1–WF2，随 P3 收编）；**Eval 留在 runtime-internal**；Events 是 B 反向的宽面 decode（EV1，多 adapter 机制的极限用例）；Signals 是外部世界的入站正门（S1–S5，单实现双消费的防漂移样本）。
 
 ### 8.1 Memory：信任边界在过界瞬间盖章
 
@@ -394,9 +395,54 @@ createAgent(definition)
 
 kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）。方向上是 B 反向 decode 的变体，但目标直达 public 可见面、表面极宽。它是多 adapter 机制的**极限测试用例**——若机制在 capability(5)/configure_run(4)/events(19) 上都成立，才算真正通用。建议排在 P3 多 adapter 落地之后，不与本轮绑定。
 
-### 8.6 对路线与模型的增量修订
+### 8.6 Signals：信号输入机制（S1–S5，"单实现双消费"的防漂移样本）
 
-1. 结论新增 6/7/8；P4 行修正（⑩⑪ 热路径，原"视消费方决定"作废）；路线表新增 P6 子系统族。
+信号是外部世界进入运行中 agent 的唯一正门（对应 Agent OS 路线的 signals→interrupts 相位）。**权威分工与 Memory 正好对称：host 决定入队，kernel 决定处置**。
+
+| # | crossing | 落点 | 方向 | 类型化 |
+|---|---|---|---|---|
+| S1 | host `RuntimeSignal` → kernel 输入事件 `deliver_signal` | `signalToKernelEvent`（runner.ts:3970） | B 正向 project | Record wire；renames×6 + derived×4 |
+| S2 | kernel 处置回执 `signal_delivery_disposed` → host ack/nack | `consumeInboundSignal`（runner.ts:1870） | B 反向 decode→执行 | (delivery_id, attempt) 恰一关联 |
+| S3 | `SignalSource.claim/ack/nack` 租约协议（public 可实现接口；SDK 默认 `SignalGateway`：FIFO+lease+cron+ingest+broadcast） | signals/types.ts:21、signals/gateway.ts:38 | public→host 接口 | ✅ 类型化 |
+| S4 | public `injectNote(text, urgency)` → `RuntimeSignal{payload:{goal:text}}` | runner.ts:1822 | A 邻接 push | ✅ |
+| S5 | `SignalPolicy`（queueMax/ttlMs/deadlineEscalation）→ `configure_run.signal_policy` | runner.ts:1050-1052 | CT2 成员 | renames（queue_max/ttl_ms） |
+| S6 | kernel `preempt_sub_agents` action → host 抢占子 agent | kernel-step.ts:80 | B 反向（kernel 驱动的宿主动作） | 部分 |
+
+**关键发现一：防漂移动机已自我陈述在代码注释里**。`injectNote`（host push）与 `signalSource`（lease pull）两条入站通道汇入同一 `nextInboundSignal` drain，注释明言 "Keeps the two inbound channels on one code path so they never drift"（runner.ts:1839）；`signalToKernelEvent` 被主循环每 turn poll（:1609）与 workflow-batch 抢占监视器（:2359）共享，注释同样写明 "so the two never drift"（runner.ts:3968）。这是契约系统动机的活标本：人工纪律（共享实现）在重构压力下正是会漂移的东西——注册后由 checker 守护。
+
+**关键发现二：会话级关联不变量超出字段形状词表**。`deliver_signal` 提交后 kernel 必须返回**恰好一条**匹配 `(delivery_id, attempt)` 的 `signal_delivery_disposed`（0 或 >1 直接抛错，runner.ts:1877-1881）；ack 前租约丢失同样抛错；任何失败走 nack 释放租约重投递。这类"恰一回执"关联是协议层不变量，不是任何单字段的 preserves/renames——协议模型（或全局规则）需要新增**关联不变量**表达，与 EffectId 铸造禁令同级。
+
+**关键发现三：urgency 处置阶梯是 kernel 所有权**。`normal`→下 turn 边界排队（渲染一次 `[SIGNAL] <text>` 进 volatile state turn）、`high`→软中断、`critical`→抢占（injectNote docstring）；实际路由走 kernel attention policy——`signal_delivery_disposed` 注释即 "the correlated routing decision"（kernel-step.ts:171）。另有一个 derived 怪癖应显式登记：`summary` 由 `payload.goal` 派生（`String(payload.goal ?? "signal")`），goal 字段兼任摘要。
+
+```
+ 外部世界                    host（入队权）                  kernel（处置权）
+┌─────────┐ ingest/broadcast ┌────────────────────┐
+│ webhook │ ───────────────▶ │ SignalGateway FIFO  │─┐
+│ cron    │ schedule()       │ + lease 30s         │ │ claimSignal(session)
+└─────────┘ ───────────────▶ │ (runtime-internal)  │ │
+                             └────────────────────┘ ▼
+                               injectNote()   ┌────────────────────┐
+ PUBLIC ─────────────────────▶│ nextInboundSignal   │ 统一 drain
+ （S4 push）                   │ （两通道防漂移汇合） │
+                               └─────────┬──────────┘
+                                         │ S1 signalToKernelEvent
+                                         │   renames×6 + derived×4
+                                         ▼
+                            kernel 输入事件 deliver_signal
+                                         │
+                             kernel attention policy（urgency 阶梯）
+                             normal→下边界排队 / high→软中断 / critical→抢占
+                                         │
+                             ▼ 恰一回执 signal_delivery_disposed
+                            （delivery_id, attempt）关联
+                                         │
+                             host ack（租约确认）/ 失败 nack（重投递）
+```
+
+### 8.7 对路线与模型的增量修订
+
+1. 结论新增 6–9；P4 行修正（⑩⑪ 热路径，原"视消费方决定"作废）；路线表新增 P6 子系统族（含 `signal.deliver`）。
 2. 协议模型 `derived` 语义扩展：支持 crossing-time derivation（M3 盖章：值由 crossing 位置决定）与单位换算（CT3：ratio×10⁶→ppm）。
 3. 多 adapter 从 P3 附带说明升格为机制级前置任务（三个真实现场：⑦、CT2、EV1）。
 4. M4 直写旁路与 workflow target 绑定缺陷回链三点一.4，随 P2/审计修复顺序收编后再注册对应协议。
+5. 关联不变量（S2 恰一回执）列为协议/全局规则模型的新表达需求，与 EffectId 铸造禁令同级。
