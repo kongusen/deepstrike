@@ -11,6 +11,32 @@ import type {
 import type { SkillMetadata } from "../skills/loader.js"
 import type { RollbackReason } from "./session-log.js"
 
+/**
+ * Kernel projection of skill metadata (host-to-kernel crossing).
+ *
+ * This type represents the kernel's view of a skill: identity, capability hints,
+ * and cost estimates. The kernel does not receive storage details, full content,
+ * or activation authority — those remain host-side concerns.
+ *
+ * Wire vocabulary uses snake_case to match kernel conventions.
+ */
+export interface KernelSkillMetadata {
+  /** Skill identity (exact preserve from SkillMetadata). */
+  name: string
+  /** Human-readable description (exact preserve). */
+  description: string
+  /** Optional usage guidance (renamed from whenToUse). */
+  when_to_use?: string
+  /** Effort hint for context budgeting (0-5 scale). */
+  effort?: number
+  /** Estimated token cost (renamed from estimatedTokens). */
+  estimated_tokens: number
+  /** Tool IDs this skill requires (renamed from allowedTools). */
+  allowed_tools?: string[]
+  /** Structured capability grants (renamed from capabilityGrants). */
+  capability_grants?: Array<Record<string, unknown>>
+}
+
 export const CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts]]"
 
 export function encodeCanonicalContentParts(parts: unknown[]): string {
@@ -247,19 +273,34 @@ export function toolSchemaToKernel(schema: ToolSchema): Record<string, unknown> 
   }
 }
 
-export function skillMetadataToKernel(skill: SkillMetadata): Record<string, unknown> {
-  const out: Record<string, unknown> = {
+/**
+ * Project skill metadata from host runtime to kernel vocabulary.
+ *
+ * This implements the host-to-kernel boundary protocol for skills. The kernel receives
+ * identity, capability hints, and cost estimates, but not storage details or full content.
+ *
+ * Explicitly constructs the output to prevent field leakage via object spread.
+ * See: contracts/protocols/skill-host-to-kernel.ts
+ */
+export function skillMetadataToKernel(skill: SkillMetadata): KernelSkillMetadata {
+  // Required fields (exact preserves)
+  const projection: KernelSkillMetadata = {
     name: skill.name,
     description: skill.description,
     estimated_tokens: skill.estimatedTokens ?? 0,
   }
-  if (skill.whenToUse) out.when_to_use = skill.whenToUse
-  if (skill.effort !== undefined) out.effort = skill.effort
+
+  // Optional fields (conditionally preserved with renames)
+  if (skill.whenToUse) projection.when_to_use = skill.whenToUse
+  if (skill.effort !== undefined) projection.effort = skill.effort
+
   // P1-B: forward declared tool ids (additive; omitted when empty so existing skills' wire is unchanged).
-  if (skill.allowedTools?.length) out.allowed_tools = skill.allowedTools
+  if (skill.allowedTools?.length) projection.allowed_tools = skill.allowedTools
+
   // SPC-015-01: structured grants are caller-supplied rather than inferred from scalar frontmatter.
-  if (skill.capabilityGrants?.length) out.capability_grants = skill.capabilityGrants
-  return out
+  if (skill.capabilityGrants?.length) projection.capability_grants = skill.capabilityGrants
+
+  return projection
 }
 
 export function messageToKernelMessage(message: ModelMessage): Record<string, unknown> {
