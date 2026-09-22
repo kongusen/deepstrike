@@ -23,6 +23,8 @@ export function buildAgentRuntimeOptions(
       : {}),
     ...(definition.capabilityFilter ? { capabilityFilter: definition.capabilityFilter } : {}),
     executionPlane: resources.executionPlane,
+    // Declared/bound tools start visible; the kernel still applies the capability ceiling.
+    baselineToolIds: resources.executionPlane.schemas().map(schema => schema.name),
     sessionLog: resources.sessionLog,
     maxTokens: definition.maxTokens ?? 32_000,
     ...(definition.instructions || definition.outputSchema ? {

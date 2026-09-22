@@ -233,8 +233,7 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async workflow(spec: WorkflowSpec, options: { session?: SessionRef } = {}): Promise<WorkflowOutcome> {
-    const runner = this.createRunner({})
-    await this.prepareMcp()
+    const runner = await this.createRunner({})
     this.activeRunner = runner
     try {
       return await runner.runWorkflow(spec, { sessionId: sessionId(options.session) })
@@ -268,8 +267,7 @@ class AgentRuntimeImpl implements Agent {
     const session = sessionId(options.session)
     const owner = this
     return (async function* () {
-      const runner = owner.createRunner(options)
-      await owner.prepareMcp()
+      const runner = await owner.createRunner(options)
       owner.activeRunner = runner
       const abort = () => runner.interrupt("user")
       if (options.signal) {
@@ -323,8 +321,7 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async *resume(id: string, options: Omit<AgentRunOptions, "session"> = {}): AsyncIterable<StreamEvent> {
-    const runner = this.createRunner(options)
-    await this.prepareMcp()
+    const runner = await this.createRunner(options)
     this.activeRunner = runner
     yield* this.clearRunnerAfter(runner.wake(id), options.signal, () => runner.interrupt("user"))
   }
@@ -349,7 +346,7 @@ class AgentRuntimeImpl implements Agent {
     await this.mcpConnection
   }
 
-  private createRunner(options: AgentRunOptions): RuntimeRunner {
+  private async createRunner(options: AgentRunOptions): Promise<RuntimeRunner> {
     const model = this.definition.model
     const binding = this.definition.runtimeBinding
     const provider = binding?.provider
@@ -382,6 +379,8 @@ class AgentRuntimeImpl implements Agent {
     if (this.definition.mcpServers?.length && this.definition.tools?.length) {
       plane.register(...this.definition.tools)
     }
+    // MCP schemas are discovered during connect, before the adapter snapshots the baseline.
+    await this.prepareMcp()
     return new RuntimeRunner(buildAgentRuntimeOptions(this.definition, options, {
       provider,
       executionPlane: plane,

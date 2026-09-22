@@ -36,16 +36,17 @@ describe("createAgent", () => {
       yield* originalStream(...args)
     }) as typeof provider.stream
     const hidden = tool("hidden", "should not be exposed", { type: "object", properties: {} }, () => "hidden")
+    const visible = tool("visible", "should be exposed", { type: "object", properties: {} }, () => "visible")
     const agent = createAgent({
       name: "filtered",
       runtimeBinding: { provider },
-      tools: [hidden],
-      capabilityFilter: { allowedIds: ["other-tool"] },
+      tools: [hidden, visible],
+      capabilityFilter: { allowedIds: ["visible"] },
     })
 
     await agent.run("say done")
 
-    expect(seen[0]).not.toContain("hidden")
+    expect(seen).toEqual([["visible"]])
   })
 
   it("keeps inline skills and text knowledge out of the first context until activated", async () => {
@@ -78,16 +79,17 @@ describe("createAgent", () => {
       yield* originalStream(...args)
     }) as typeof provider.stream
     const blocked = tool("blocked", "must never be exposed", { type: "object", properties: {} }, () => "blocked")
+    const allowed = tool("allowed", "safe to expose", { type: "object", properties: {} }, () => "allowed")
     const agent = createAgent({
       name: "guarded",
       runtimeBinding: { provider },
-      tools: [blocked],
+      tools: [blocked, allowed],
       guardrails: [{ name: "deny-blocked", policy: { vetoes: ["blocked"] } }],
     })
 
     await agent.run("say done")
 
-    expect(seen[0]).not.toContain("blocked")
+    expect(seen).toEqual([["allowed"]])
   })
 
   it("runs a goal and returns a structured result", async () => {
