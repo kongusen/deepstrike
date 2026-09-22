@@ -122,6 +122,18 @@ function sessionId(ref?: SessionRef): string {
   return ref?.id ?? `session-${crypto.randomUUID()}`
 }
 
+/** Return only the durable session entries belonging to one run. Evidence is run-scoped even
+ * when a Session is reused for multiple executions. */
+export function sessionEntriesForRun(
+  entries: Array<{ seq: number; event: import("./runtime/session-log.js").SessionEvent }>,
+  runId: string,
+): Array<{ seq: number; event: import("./runtime/session-log.js").SessionEvent }> {
+  const start = entries.findIndex(entry => entry.event.kind === "run_started" && entry.event.run_id === runId)
+  if (start < 0) return []
+  const end = entries.findIndex((entry, index) => index > start && entry.event.kind === "run_started")
+  return entries.slice(start, end < 0 ? entries.length : end)
+}
+
 function statusFromDone(status: string): RunResult["status"] {
   if (status === "completed" || status === "done") return "completed"
   if (status === "cancelled" || status === "user" || status === "deadline" || status === "lease_lost" || status === "host_shutdown") return "cancelled"
@@ -309,12 +321,15 @@ class AgentRuntimeImpl implements Agent {
     const error = [...events].reverse().find(event => event.type === "error") as ErrorEvent | undefined
     const persisted = await this.sessionLog.read(session)
     const started = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
+    const runEntries = started?.event.kind === "run_started"
+      ? sessionEntriesForRun(persisted, started.event.run_id)
+      : []
     const usageEvent = [...events].reverse().find(event => event.type === "usage") as (StreamEvent & Partial<TokenUsage>) | undefined
     const output = events.filter(event => event.type === "text_delta").map(event => String((event as { delta?: unknown }).delta ?? "")).join("")
-    const prepared = [...persisted].reverse().find(entry => entry.event.kind === "context_prepared")
-    const measured = [...persisted].reverse().find(entry => entry.event.kind === "prompt_measured")
-    const attempt = [...persisted].reverse().find(entry => entry.event.kind === "provider_attempt")
-    const runStarted = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
+    const prepared = [...runEntries].reverse().find(entry => entry.event.kind === "context_prepared")
+    const measured = [...runEntries].reverse().find(entry => entry.event.kind === "prompt_measured")
+    const attempt = [...runEntries].reverse().find(entry => entry.event.kind === "provider_attempt")
+    const runStarted = [...runEntries].reverse().find(entry => entry.event.kind === "run_started")
     const binding = this.definition.runtimeBinding
     const evidence = {
       ...(prepared?.event.kind === "context_prepared" ? { contextBinding: prepared.event.preparation.binding } : {}),

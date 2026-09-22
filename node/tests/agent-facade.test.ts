@@ -1,10 +1,20 @@
-import { createAgent } from "../src/agent-facade.js"
+import { createAgent, sessionEntriesForRun } from "../src/agent-facade.js"
 import { ReplayProvider } from "../src/runtime/replay-provider.js"
 import { InMemoryMemoryStore } from "../src/memory/in-memory-store.js"
 import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { tool } from "../src/tools/index.js"
 
 describe("createAgent", () => {
+  it("scopes execution evidence to the current run boundary", () => {
+    const entries = [
+      { seq: 1, event: { kind: "context_prepared", turn: 1, effect_id: "old", preparation: { binding: { id: "old" } } } },
+      { seq: 2, event: { kind: "run_started", run_id: "current", goal: "now", criteria: [] } },
+      { seq: 3, event: { kind: "run_started", run_id: "later", goal: "later", criteria: [] } },
+    ] as never
+
+    expect(sessionEntriesForRun(entries, "current").map(entry => entry.seq)).toEqual([2])
+  })
+
   it("validates a structured Agent output with the shared schema validator", async () => {
     const valid = createAgent({
       name: "structured",
