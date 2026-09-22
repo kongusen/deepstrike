@@ -4,9 +4,9 @@
  * fake kernel reproduces the `agent_preempted` + `workflow_completed` the Rust kernel emits on preempt;
  * this exercises the SDK side — the concurrent monitor, per-node abort controller, and child abort.
  */
-import { RuntimeRunner, InMemorySessionLog } from "../src/index.js"
+import { RuntimeRunner, InMemorySessionLog } from "../src/advanced.js"
 import { LocalExecutionPlane } from "../src/runtime/execution-plane.js"
-import type { WorkflowSpec } from "../src/index.js"
+import type { WorkflowSpec } from "../src/advanced.js"
 import { wrapScriptedKernel } from "./helpers/scripted-canonical-runtime.js"
 
 type Obs = {

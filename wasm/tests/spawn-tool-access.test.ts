@@ -14,7 +14,7 @@ import { resolveToolGrants } from "../src/runtime/sub-agent-orchestrator.js"
 import type { SubAgentRunContext } from "../src/runtime/sub-agent-orchestrator.js"
 import type { RuntimeOptions } from "../src/runtime/runner.js"
 import type { ExecutionPlane } from "../src/runtime/execution-plane.js"
-import type { AgentRunSpec } from "../src/index.js"
+import type { AgentRunSpec } from "../src/advanced.js"
 
 const stubPlane = { register() { return this }, unregister() { return this }, schemas: () => [], async *executeAll() {} } as unknown as ExecutionPlane
 const parentOpts = { executionPlane: stubPlane } as unknown as RuntimeOptions

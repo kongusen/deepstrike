@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { Agent, lowerAgent, normalizeAgent, type AgentDefinition } from "../src/index.js"
+import { Agent, lowerAgent, normalizeAgent, type AgentDefinition } from "../src/advanced.js"
 
 function fixture(): AgentDefinition {
   return JSON.parse(readFileSync(
