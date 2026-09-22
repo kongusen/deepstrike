@@ -13,6 +13,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Made Node `providers/protocol-capabilities.ts` the sole `GenerationProtocol` authority; WASM and Python mirrors must keep an exact protocol set.
 - Scoped public Agent execution evidence to the active `run_started` boundary so reused sessions cannot attach stale evidence.
 - Added an exact Node root runtime export allowlist to prevent accidental implementation-surface leakage.
+- Split semantic Agent definitions from host bindings across Node, WASM, Python, and Rust; legacy binding inputs are consumed at construction and never retained in the public definition.
+- Moved WASM runtime machinery behind the `advanced` subpath and made Python's semantic root `__all__` explicit, with advanced runtime imports available from `deepstrike.advanced`.
+- Added the Rust `Agent`/`AgentDefinition` facade with provider and execution authority bound through `RuntimeOptions`.
 
 ## [0.2.73] - 2026-09-22
 
