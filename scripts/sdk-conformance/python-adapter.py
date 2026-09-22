@@ -16,10 +16,12 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES_ROOT = (ROOT / "tests" / "fixtures").resolve()
-# Conformance must exercise the checked-out SDK.  A globally installed package
-# can contain an older extension module named ``deepstrike`` and shadow the
-# source tree when this adapter is launched as a subprocess.
-sys.path.insert(0, str(ROOT / "python"))
+# The CI conformance job installs the wheel built from this checkout before
+# launching the adapter.  Do not prepend ``python/`` here: doing so shadows the
+# installed wheel with the pure-Python checkout and leaves its compiled
+# ``deepstrike._kernel`` extension unavailable.  Local runs should likewise use
+# an environment where the checkout is installed (``maturin develop`` or a
+# freshly built wheel), keeping the process boundary identical to CI.
 
 try:
   from deepstrike import (
