@@ -96,6 +96,7 @@ The first slice does not attempt to migrate all existing crossings or all SDKs.
 **Status:** Completed (`e1d26641`)
 - Generated crossing manifest [skill-host-to-kernel.json](file:///Users/shan/work/uploads/deepstrike/contracts/manifests/skill-host-to-kernel.json).
 - Generates the runtime validator [skill-kernel-projection.ts](file:///Users/shan/work/uploads/deepstrike/node/src/runtime/validators/skill-kernel-projection.ts) from the protocol and target type.
+- Generates runtime field-shape checks for primitive and array properties from the resolved target type.
 - Integrated validator into `skillMetadataToKernel` adapter function.
 - Added 12 validator unit tests in [skill-kernel-projection-validator.test.ts](file:///Users/shan/work/uploads/deepstrike/node/tests/skill-kernel-projection-validator.test.ts).
 
@@ -123,6 +124,7 @@ The first slice does not attempt to migrate all existing crossings or all SDKs.
    - Explicit Security Policy: `provider_credentials`, `activation_authority`, `storage_backend`, `user_storage_path`, `source_adapter` explicitly forbidden.
    - No `preserves` list is authored in the protocol; exact compatible fields and required preserved fields come from the types.
 3. **Runtime Enforcement**: Validator rejects unsafe projections even if TypeScript compilation succeeds (e.g. object spread leaks or dynamic properties).
+4. **Shape Enforcement**: Generated validation rejects incompatible scalar and array element types for kernel fields.
 
 ### Migration comparison
 
