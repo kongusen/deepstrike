@@ -6,6 +6,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.73] - 2026-09-22
+
+### Breaking changes — semantic closure
+
+- Removed the retired `MeasurePrompt` Kernel effect and its wire success/tag vocabulary. Prompt measurement remains host-side request preparation.
+- Unified Node, WASM, and Python provider protocol types under `GenerationProtocol`.
+- Evaluation traces now bind only to explicit host execution evidence; testcase metadata and legacy usage/artifact fields are no longer inferred as evidence.
+- Synced all published package manifests and runtime-language fixtures to 0.2.73.
+
+
 ## [0.2.70] - 2026-09-19
 
 ### Added — 0.2.70 Evolution Runtime hard cut

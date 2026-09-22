@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::driver::PlannedStep;
 use super::effect::{
     ArchivePageOutEffect, CallProviderEffect, EffectKind, EffectKindTag, EvaluateMilestoneEffect,
-    ExecuteToolsEffect, KernelEffect, LoadPayloadEffect, MeasurePromptEffect, PersistMemoryEffect,
+    ExecuteToolsEffect, KernelEffect, LoadPayloadEffect, PersistMemoryEffect,
     PreemptTasksEffect, QueryMemoryEffect, RequestApprovalEffect, SpawnTasksEffect,
 };
 use super::scalar::EffectId;
@@ -77,11 +77,6 @@ pub enum CanonicalHostAction {
         causation_input_id: super::scalar::InputId,
         payload: EvaluateMilestoneEffect,
     },
-    MeasurePrompt {
-        effect_id: EffectId,
-        causation_input_id: super::scalar::InputId,
-        payload: MeasurePromptEffect,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -148,11 +143,6 @@ pub fn project_effect(effect: &KernelEffect) -> CanonicalHostAction {
             payload: payload.clone(),
         },
         EffectKind::EvaluateMilestone(payload) => CanonicalHostAction::EvaluateMilestone {
-            effect_id,
-            causation_input_id,
-            payload: payload.clone(),
-        },
-        EffectKind::MeasurePrompt(payload) => CanonicalHostAction::MeasurePrompt {
             effect_id,
             causation_input_id,
             payload: payload.clone(),

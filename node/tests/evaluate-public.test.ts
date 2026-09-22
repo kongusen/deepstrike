@@ -12,9 +12,12 @@ test("SPC-028-43 public evaluate runs Dataset cases through Evaluators", async (
 test("SPC-028-44 keeps execution evidence in optional eval traces", async () => {
   const run = await evaluate({ run: async input => ({
     output: input.toUpperCase(),
-    route: { provider: "test" },
-    usage: { inputTokens: 2, outputTokens: 1 },
-    artifacts: ["artifact-1"],
+    evidence: {
+      contextBinding: { tenant: "demo" },
+      route: { provider: "test" },
+      measurement: { inputTokens: 2, outputTokens: 1 },
+      artifactSet: ["artifact-1"],
+    },
   }) }, {
     dataset: { cases: [{ id: "one", input: "hello", metadata: { tenant: "demo" } }] },
     evaluators: [],

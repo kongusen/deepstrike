@@ -1,5 +1,5 @@
 {
-  "version": "0.2.72",
+  "version": "0.2.73",
   "public": ["Agent", "Model", "Run", "Session", "Tool", "Skill", "Memory", "Knowledge", "MCPServer", "Handoff", "Workflow", "Guardrail", "Eval"],
   "host": ["AgentSpec", "Context", "ModelRoute", "Invocation", "ProviderAttempt", "Measurement", "Evidence"],
   "kernel": ["Operation", "Intent", "Decision", "Effect", "Fact", "Settlement", "Journal", "Checkpoint"],

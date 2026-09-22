@@ -1,5 +1,5 @@
 // ╔══════════════════════════════════════════════════════════════════════════╗
-// ║ @deepstrike/sdk — root surface (v0.2.72).                                      ║
+// ║ @deepstrike/sdk — root surface (v0.2.73).                                      ║
 // ║                                                                            ║
 // ║ This is the intent layer: run an agent, run a workflow, author a tool,     ║
 // ║ pick a provider. Advanced machinery lives behind subpaths:                 ║
@@ -45,39 +45,6 @@ export type {
   ContextPressureThresholds,
 } from "./runtime/context-policy.js"
 
-// ── Execution plane + session log (the defaults) ────────────────────────────
-export type { SessionEvent, SessionEventKind } from "./runtime/session-log.js"
-// Registered session-event vocabulary (F9/S3; manifest-pinned by sdk-conformance, P7-S4)
-export { SESSION_EVENT_KINDS } from "./runtime/session-log.js"
-// ── content-parts-v1 registered encoding (F14/B5; byte-pinned by sdk-conformance) ──
-export {
-  CANONICAL_CONTENT_PARTS_PREFIX,
-  encodeCanonicalContentParts,
-  decodeCanonicalContentParts,
-} from "./runtime/kernel-step.js"
-// ── Durable transaction capability (Canonical Kernel ABI §9.1) ──────────────
-export { InMemoryGroupBudgetStore, GroupBudgetScope } from "./runtime/run-group.js"
-export type {
-  RunGroup, GroupBudgetStore, GroupLedger, GroupCharge, GroupMember,
-  GroupBudgetRequest, GroupBudgetReservation,
-} from "./runtime/run-group.js"
-export { InMemoryEventStream, isVisibleTo } from "./runtime/event-stream.js"
-export type { EventStream, EventStreamOptions, BlackboardEvent, EventViewer } from "./runtime/event-stream.js"
-export type { ObserverFailure, ObserverErrorHandler } from "./runtime/reliability.js"
-export type { OperationContext, BackgroundTaskFailure, BackgroundTaskErrorHandler } from "./runtime/reliability.js"
-export { reactByMention, directorDriven, roundRobin, firstNonEmpty, union } from "./runtime/turn-policy.js"
-export type { TurnPolicy, PeerView } from "./runtime/turn-policy.js"
-export { ReactiveSession, readRecentTool } from "./runtime/reactive-session.js"
-export type { ReactiveSessionOptions, ReactivePeerSpec, EmitEvent, Reaction, ReactorTurn, ReactorContext } from "./runtime/reactive-session.js"
-export { InMemoryReactionCheckpointStore, ReactionInProgressError } from "./runtime/reaction-checkpoint.js"
-export type {
-  ReactionCheckpointClaim,
-  ReactionCheckpointClaimResult,
-  ReactionCheckpointReceipt,
-  ReactionCheckpointStore,
-  ReactionRecord,
-} from "./runtime/reaction-checkpoint.js"
-
 // ── Tool authoring ──────────────────────────────────────────────────────────
 export { tool, streamingTool } from "./tools/index.js"
 export type { RegisteredTool, ToolExecContext } from "./tools/index.js"
@@ -95,26 +62,6 @@ export { OpenAIResponsesProvider } from "./providers/openai-responses.js"
 export { createProvider, createProviderAsync, resolveProviderRuntime, resolveProviderRuntimeAsync } from "./providers/catalog.js"
 export { UnsupportedModalityError } from "./providers/base.js"
 export type { CreateProviderOptions, EndpointProfileId } from "./providers/catalog.js"
-export {
-  VERIFIABLE_REPORT_SCHEMA,
-  VERIFIABLE_FORK_SCHEMA,
-  assertVerifiableReportSchema,
-  createVerifiableRuntimeAdapter,
-  createNativeVerifiableRuntimeAdapter,
-  VerifiableOperation,
-} from "./runtime/verifiable-report.js"
-export type {
-  VerifiableCommand,
-  CheckVerdict,
-  VerifiableForkManifest,
-  ForkPlan,
-  VerifiableEvidence,
-  VerifyOptions,
-  ReplayOptions,
-  VerifiableRuntimeAdapter,
-  VerifiableReport,
-  VerifiableOperationJson,
-} from "./runtime/verifiable-report.js"
 export type { GovernancePolicy, GovernanceConstraint } from "./governance.js"
 
 // ── Multi-agent primitive ───────────────────────────────────────────────────
@@ -135,7 +82,7 @@ export type { Session } from "./session.js"
 export { createWorkflow } from "./workflow/definition.js"
 export type { WorkflowDefinition, WorkflowStep, WorkflowResult } from "./workflow/definition.js"
 export { evaluate } from "./evals/public.js"
-export type { Dataset, DatasetCase, Evaluator, EvalResult, EvalRun, EvalTrace } from "./evals/public.js"
+export type { Dataset, DatasetCase, Evaluator, EvalResult, EvalRun, EvalTrace, ExecutionEvidence } from "./evals/public.js"
 
 // ── Signals (the `RuntimeOptions.signalSource` surface) ─────────────────────
 export type {

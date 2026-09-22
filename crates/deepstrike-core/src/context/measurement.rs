@@ -2,8 +2,7 @@
 //! ("measure provider-visible input, never underestimate") requires between what a request is
 //! *estimated* to cost before it is sent (`PromptMeasurement`, this module), what the provider
 //! actually reports back (`ProviderUsage`, Node/Python Host layer — not this crate). This module
-//! only defines a preflight fact. The `MeasurePrompt` wire tag is reserved, but A-00R removed its
-//! scheduler producer until request fingerprinting and durable replay semantics are defined.
+//! only defines a host-side preflight fact for provider-visible request preparation.
 
 use serde::{Deserialize, Serialize};
 

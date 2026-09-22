@@ -26,7 +26,7 @@ use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::context::execution::ContextCandidate;
-use crate::context::measurement::{PromptMeasurement, ToolMeasurement};
+use crate::context::measurement::ToolMeasurement;
 use crate::types::durable_content::DurableContent;
 
 use super::root::{LogicalAgentSpec, MessageRole};
@@ -260,8 +260,6 @@ pub enum EffectKind {
     /// to it instead of scanning a session log for the original bytes (§7.10 rule 4).
     LoadPayload(LoadPayloadEffect),
     EvaluateMilestone(EvaluateMilestoneEffect),
-    /// spc_011-C-02: preflight prompt-token measurement — see [`MeasurePromptEffect`].
-    MeasurePrompt(MeasurePromptEffect),
 }
 
 impl EffectKind {
@@ -277,7 +275,6 @@ impl EffectKind {
             Self::ArchivePageOut(_) => EffectKindTag::ArchivePageOut,
             Self::LoadPayload(_) => EffectKindTag::LoadPayload,
             Self::EvaluateMilestone(_) => EffectKindTag::EvaluateMilestone,
-            Self::MeasurePrompt(_) => EffectKindTag::MeasurePrompt,
         }
     }
 }
@@ -301,12 +298,10 @@ pub enum EffectKindTag {
     ArchivePageOut,
     LoadPayload,
     EvaluateMilestone,
-    /// spc_011-C-02.
-    MeasurePrompt,
 }
 
 impl EffectKindTag {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 10] = [
         Self::CallProvider,
         Self::ExecuteTools,
         Self::RequestApproval,
@@ -317,7 +312,6 @@ impl EffectKindTag {
         Self::ArchivePageOut,
         Self::LoadPayload,
         Self::EvaluateMilestone,
-        Self::MeasurePrompt,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -332,7 +326,6 @@ impl EffectKindTag {
             Self::ArchivePageOut => "archive_page_out",
             Self::LoadPayload => "load_payload",
             Self::EvaluateMilestone => "evaluate_milestone",
-            Self::MeasurePrompt => "measure_prompt",
         }
     }
 
@@ -349,7 +342,6 @@ impl EffectKindTag {
             Self::ArchivePageOut => EffectSuccessTag::PageOutArchived,
             Self::LoadPayload => EffectSuccessTag::PayloadLoaded,
             Self::EvaluateMilestone => EffectSuccessTag::MilestoneEvaluated,
-            Self::MeasurePrompt => EffectSuccessTag::PromptMeasured,
         }
     }
 }
@@ -370,27 +362,6 @@ pub struct CallProviderEffect {
     /// Frozen kernel facts; the host binds its actual provider route and preflight measurement
     /// through the canonical Context ABI before dispatching this projection.
     pub context_candidate: Box<ContextCandidate>,
-    pub context: RenderedContext,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tools: Vec<ToolSchema>,
-}
-
-/// spc_011-C-02: a preflight token-count request. Reuses the same `RenderedContext`/`ToolSchema`
-/// shape `CallProviderEffect` already carries, rather than inventing a parallel candidate-request
-/// type — the kernel is asking "how many tokens would *this* request cost", the same request it
-/// would otherwise hand to `CallProvider`.
-///
-/// spc_011-C-06: no `provider`/`model` fields, matching `CallProviderEffect` exactly. An earlier
-/// draft of this struct carried both, reasoning that "the answer is meaningless without knowing
-/// which vendor should answer it" — but the kernel has no provider/model identity to put there:
-/// `OperationConfig` carries no such field, vendor selection is entirely a Host-side concern (the
-/// same Host that will execute `CallProvider` for this operation already knows which provider it
-/// dispatches to, the same way it already resolves that for `CallProviderEffect`, which has never
-/// carried these fields). This surfaced only when 011-C-06 tried to actually construct one inside
-/// the kernel and found nothing to put in `provider`/`model`.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MeasurePromptEffect {
     pub context: RenderedContext,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolSchema>,
@@ -777,8 +748,6 @@ pub enum EffectSuccess {
     PageOutArchived(PageOutArchivedSuccess),
     PayloadLoaded(PayloadLoadedSuccess),
     MilestoneEvaluated(MilestoneEvaluatedSuccess),
-    /// spc_011-C-02.
-    PromptMeasured(PromptMeasuredSuccess),
 }
 
 impl EffectSuccess {
@@ -794,7 +763,6 @@ impl EffectSuccess {
             Self::PageOutArchived(_) => EffectSuccessTag::PageOutArchived,
             Self::PayloadLoaded(_) => EffectSuccessTag::PayloadLoaded,
             Self::MilestoneEvaluated(_) => EffectSuccessTag::MilestoneEvaluated,
-            Self::PromptMeasured(_) => EffectSuccessTag::PromptMeasured,
         }
     }
 }
@@ -813,12 +781,10 @@ pub enum EffectSuccessTag {
     PageOutArchived,
     PayloadLoaded,
     MilestoneEvaluated,
-    /// spc_011-C-02.
-    PromptMeasured,
 }
 
 impl EffectSuccessTag {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 10] = [
         Self::Provider,
         Self::Tools,
         Self::Approval,
@@ -829,7 +795,6 @@ impl EffectSuccessTag {
         Self::PageOutArchived,
         Self::PayloadLoaded,
         Self::MilestoneEvaluated,
-        Self::PromptMeasured,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -844,7 +809,6 @@ impl EffectSuccessTag {
             Self::PageOutArchived => "page_out_archived",
             Self::PayloadLoaded => "payload_loaded",
             Self::MilestoneEvaluated => "milestone_evaluated",
-            Self::PromptMeasured => "prompt_measured",
         }
     }
 
@@ -862,7 +826,6 @@ impl EffectSuccessTag {
             Self::PageOutArchived => EffectKindTag::ArchivePageOut,
             Self::PayloadLoaded => EffectKindTag::LoadPayload,
             Self::MilestoneEvaluated => EffectKindTag::EvaluateMilestone,
-            Self::PromptMeasured => EffectKindTag::MeasurePrompt,
         }
     }
 }
@@ -1153,14 +1116,6 @@ pub struct MilestoneCheckResult {
     pub notes: String,
 }
 
-/// spc_011-C-02: the answer to a `MeasurePrompt` effect — one [`PromptMeasurement`] fact, wrapped
-/// the same way every other effect wraps its one matching success payload.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PromptMeasuredSuccess {
-    pub measurement: PromptMeasurement,
-}
-
 // ---------------------------------------------------------------------------------------------
 // §7.10 · inline / external payload
 // ---------------------------------------------------------------------------------------------
@@ -1354,9 +1309,7 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use crate::context::measurement::{
-        MeasurementConfidence, MeasurementSource, PromptMeasurement, ToolMeasurement,
-    };
+    use crate::context::measurement::ToolMeasurement;
 
     use super::super::*;
 
@@ -1551,10 +1504,6 @@ mod tests {
                     phase_id: "phase-2".to_string(),
                 },
             }),
-            EffectKind::MeasurePrompt(MeasurePromptEffect {
-                context: RenderedContext::default(),
-                tools: Vec::new(),
-            }),
         ]
     }
 
@@ -1657,15 +1606,6 @@ mod tests {
                     notes: String::new(),
                 },
             }),
-            EffectSuccess::PromptMeasured(PromptMeasuredSuccess {
-                measurement: PromptMeasurement {
-                    input_tokens: 4200,
-                    source: MeasurementSource::Native {
-                        provider: "anthropic".to_string(),
-                    },
-                    confidence: MeasurementConfidence::Exact,
-                },
-            }),
         ]
     }
 
@@ -1682,7 +1622,7 @@ mod tests {
     // -----------------------------------------------------------------------------------------
 
     #[test]
-    fn the_effect_union_is_exactly_the_eleven_host_executable_actions() {
+    fn the_effect_union_is_exactly_the_ten_host_executable_actions() {
         let tags: BTreeSet<&str> = EffectKindTag::ALL.iter().map(|tag| tag.as_str()).collect();
         assert_eq!(
             tags,
@@ -1697,10 +1637,9 @@ mod tests {
                 "archive_page_out",
                 "load_payload",
                 "evaluate_milestone",
-                "measure_prompt",
             ])
         );
-        assert_eq!(EffectKindTag::ALL.len(), 11);
+        assert_eq!(EffectKindTag::ALL.len(), 10);
 
         let sampled: Vec<EffectKindTag> = effect_samples().iter().map(EffectKind::tag).collect();
         assert_eq!(

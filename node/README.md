@@ -4,7 +4,7 @@
   </a>
 </p>
 
-# DeepStrike Node.js SDK (0.2.72)
+# DeepStrike Node.js SDK (0.2.73)
 
 Build Node.js Agents with providers, typed tools, memory, Skills, delegation, workflows, and durable sessions. The SDK keeps the Agent's long-running work explicit through stream events, SessionLog evidence, tool policies, and host-provided integrations.
 
@@ -91,7 +91,7 @@ The root export is the **Agent intent layer** — what you reach for to define a
 | `@deepstrike/sdk/evals` | Public evaluation language: `judge`, criteria, verdicts, and schemas |
 | `@deepstrike/sdk/advanced` | Kernel diagnostics and low-level orchestration escape hatches |
 
-> **Migration from 0.2.71:** see [`MIGRATION-v0.2.71-to-v0.2.72.md`](../MIGRATION-v0.2.71-to-v0.2.72.md) for the AgentDefinition, message, runtime binding, workflow and package changes.
+> **Migration from 0.2.71:** see [`MIGRATION-v0.2.71-to-v0.2.73.md`](../MIGRATION-v0.2.71-to-v0.2.73.md) for the AgentDefinition, message, runtime binding, workflow and package changes.
 
 The recipes below the Agent section that mention `RuntimeRunner` are advanced implementation examples. Import it from `@deepstrike/sdk/advanced`; application code should use the Agent and Session methods shown above.
 

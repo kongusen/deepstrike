@@ -25,3 +25,14 @@ test("SPC-028-10 scans every SDK surface for the retired ProviderProtocol vocabu
   const offenders = files.filter((file) => /\bProviderProtocol\b/.test(readSource(joinPath(process.cwd(), file), "utf8")))
   expect(offenders).toEqual([])
 })
+
+test("SPC-028 kernel effect vocabulary has no MeasurePrompt command or tag", () => {
+  const files = [
+    "../crates/deepstrike-core/src/runtime/kernel/wire/effect.rs",
+    "../crates/deepstrike-core/src/runtime/kernel/wire/projection.rs",
+    "../crates/deepstrike-core/src/runtime/kernel/wire/driver/effects.rs",
+    "../rust/src/runtime/canonical_runner_runtime.rs",
+  ]
+  const offenders = files.filter((file) => /MeasurePrompt|measure_prompt|PromptMeasured/.test(readSource(joinPath(process.cwd(), file), "utf8")))
+  expect(offenders).toEqual([])
+})

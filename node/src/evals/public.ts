@@ -6,6 +6,12 @@ export interface DatasetCase { id: string; input: string; expected?: unknown; me
 export interface Dataset { name?: string; cases: DatasetCase[] }
 export interface Evaluator { name: string; evaluate(input: { testCase: DatasetCase; output: string }): Promise<number> | number }
 export interface EvalResult { caseId: string; output: string; scores: Record<string, number> }
+export interface ExecutionEvidence {
+  contextBinding?: Record<string, unknown>
+  route?: unknown
+  measurement?: unknown
+  artifactSet?: unknown
+}
 /** Optional execution evidence kept separate from the stable score/result contract. */
 export interface EvalTrace {
   caseId: string
@@ -18,7 +24,7 @@ export interface EvalTrace {
 export interface EvalRun { runId: string; results: EvalResult[]; completed: boolean; traces?: EvalTrace[] }
 
 export async function evaluate(
-  agent: { run(input: string): Promise<{ output: string }> },
+  agent: { run(input: string): Promise<{ output: string; evidence?: ExecutionEvidence }> },
   options: { dataset: Dataset; evaluators: Evaluator[]; runId?: string; includeTrace?: boolean },
 ): Promise<EvalRun> {
   const results: EvalResult[] = []
@@ -29,14 +35,13 @@ export async function evaluate(
     for (const evaluator of options.evaluators) scores[evaluator.name] = await evaluator.evaluate({ testCase, output: output.output })
     results.push({ caseId: testCase.id, output: output.output, scores })
     if (options.includeTrace) {
-      const evidence = output as { route?: unknown; usage?: unknown; artifacts?: unknown }
       traces.push({
         caseId: testCase.id,
         executedInput: testCase.input,
-        ...(testCase.metadata ? { contextBinding: testCase.metadata } : {}),
-        ...(evidence.route !== undefined ? { route: evidence.route } : {}),
-        ...(evidence.usage !== undefined ? { measurement: evidence.usage } : {}),
-        ...(evidence.artifacts !== undefined ? { artifactSet: evidence.artifacts } : {}),
+        ...(output.evidence?.contextBinding !== undefined ? { contextBinding: output.evidence.contextBinding } : {}),
+        ...(output.evidence?.route !== undefined ? { route: output.evidence.route } : {}),
+        ...(output.evidence?.measurement !== undefined ? { measurement: output.evidence.measurement } : {}),
+        ...(output.evidence?.artifactSet !== undefined ? { artifactSet: output.evidence.artifactSet } : {}),
       })
     }
   }

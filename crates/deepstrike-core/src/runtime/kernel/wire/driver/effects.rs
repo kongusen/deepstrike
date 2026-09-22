@@ -220,10 +220,6 @@ impl CanonicalOperationDriver {
             EffectSuccess::PayloadLoaded(loaded) => {
                 self.commit_payload_load(context, effect_id, loaded)
             }
-            EffectSuccess::PromptMeasured(_) => Err(KernelFault::new(
-                KernelFaultCode::UnexpectedEffectOutcome,
-                "prompt measurement outcomes are reserved but adaptive measurement has no scheduler producer",
-            )),
         }
     }
 
@@ -462,10 +458,6 @@ impl CanonicalOperationDriver {
                 step.focus = self.focus.clone();
                 Ok(step)
             }
-            EffectKindTag::MeasurePrompt => Err(KernelFault::new(
-                KernelFaultCode::UnexpectedEffectOutcome,
-                "prompt measurement failures are reserved but adaptive measurement has no scheduler producer",
-            )),
         }
     }
 

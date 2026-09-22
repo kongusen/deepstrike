@@ -51,6 +51,13 @@ export interface RunResult<T = string> {
   status: "completed" | "partial" | "failed" | "cancelled"
   usage?: TokenUsage
   outputValidation?: { ok: boolean; errors: string[] }
+  /** Host-owned execution evidence captured for evaluation and replay. */
+  evidence?: {
+    contextBinding?: Record<string, unknown>
+    route?: unknown
+    measurement?: unknown
+    artifactSet?: unknown
+  }
 }
 
 export interface AgentSession extends SessionRef {

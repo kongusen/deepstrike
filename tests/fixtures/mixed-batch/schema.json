@@ -60,7 +60,7 @@
                 "description": "The step's exact ordered publication, as EffectKindTag snake_case strings.",
                 "items": {
                   "type": "string",
-                  "enum": ["call_provider", "execute_tools", "request_approval", "spawn_tasks", "preempt_tasks", "persist_memory", "query_memory", "archive_page_out", "load_payload", "evaluate_milestone", "measure_prompt"]
+                  "enum": ["call_provider", "execute_tools", "request_approval", "spawn_tasks", "preempt_tasks", "persist_memory", "query_memory", "archive_page_out", "load_payload", "evaluate_milestone"]
                 }
               },
               "withheld_kinds": {
@@ -68,7 +68,7 @@
                 "description": "M3: kinds the step dispatched but must not co-publish.",
                 "items": {
                   "type": "string",
-                  "enum": ["call_provider", "execute_tools", "request_approval", "spawn_tasks", "preempt_tasks", "persist_memory", "query_memory", "archive_page_out", "load_payload", "evaluate_milestone", "measure_prompt"]
+                  "enum": ["call_provider", "execute_tools", "request_approval", "spawn_tasks", "preempt_tasks", "persist_memory", "query_memory", "archive_page_out", "load_payload", "evaluate_milestone"]
                 }
               },
               "rederived": {
@@ -76,7 +76,7 @@
                 "description": "M3/M4: kinds published by this step that an earlier step withheld.",
                 "items": {
                   "type": "string",
-                  "enum": ["call_provider", "execute_tools", "request_approval", "spawn_tasks", "preempt_tasks", "persist_memory", "query_memory", "archive_page_out", "load_payload", "evaluate_milestone", "measure_prompt"]
+                  "enum": ["call_provider", "execute_tools", "request_approval", "spawn_tasks", "preempt_tasks", "persist_memory", "query_memory", "archive_page_out", "load_payload", "evaluate_milestone"]
                 }
               }
             }

@@ -2926,17 +2926,12 @@ mod tests {
         // required kind from the
         // support declaration must be refused — and the rejection must name the kind, because a
         // host reading it has to know which declaration to fix. Iterating `ALL` also means a new
-        // effect kind cannot be added without deciding what switches it on. `MeasurePrompt` is a
-        // reserved wire shape with no scheduler producer after SPC-013 A-00R, so it deliberately
-        // imposes no host-support requirement.
+        // effect kind cannot be added without deciding what switches it on.
         let full = fully_populated_config();
         full.resolve(&defaults())
             .expect("declaring every kind satisfies every trigger");
 
-        for dropped in EffectKindTag::ALL
-            .into_iter()
-            .filter(|kind| *kind != EffectKindTag::MeasurePrompt)
-        {
+        for dropped in EffectKindTag::ALL {
             let mut config = full.clone();
             config.host_effect_support = HostEffectSupport::new(
                 EffectKindTag::ALL

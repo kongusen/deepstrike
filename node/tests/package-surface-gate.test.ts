@@ -15,6 +15,10 @@ test("SPC-028-46 root keeps runtime internals behind subpaths", () => {
     "ProviderAttempt",
     "ContextPrepared",
     "EvolutionRuntime",
+    "ReactiveSession",
+    "InMemoryEventStream",
+    "InMemoryGroupBudgetStore",
+    "VerifiableOperation",
   ]) {
     expect(root).not.toMatch(new RegExp(`\\b${internal}\\b`))
   }
