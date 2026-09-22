@@ -16,6 +16,6 @@ from deepstrike.memory import (WorkingMemory, MemoryStore, Memory, MemoryScope)
 
 from deepstrike.knowledge import (KnowledgeSource)
 
-from deepstrike.agent import (Agent, AgentMemory, MemoryReference, ModelRef, create_agent)
+from deepstrike.agent import (Agent, AgentMemory, MemoryReference, ModelRef, PortableRunResult, PortableSession, create_agent)
 
-__all__ = ['Agent', 'create_agent', 'AgentMemory', 'MemoryReference', 'ModelRef', 'WorkingMemory', 'Memory', 'MemoryStore', 'MemoryScope', 'KnowledgeSource', 'LLMProvider', 'AnthropicProvider', 'OpenAIProvider', 'OpenAIResponsesProvider', 'RegisteredTool', 'tool', 'streaming_tool', 'safe_tool', 'ok', 'fail', 'format_tool_error', 'ModelMessage', 'ToolCall', 'ToolExecutionResult', 'ToolSchema', 'SkillMetadata', '__version__']
+__all__ = ['Agent', 'create_agent', 'AgentMemory', 'MemoryReference', 'ModelRef', 'PortableRunResult', 'PortableSession', 'WorkingMemory', 'Memory', 'MemoryStore', 'MemoryScope', 'KnowledgeSource', 'LLMProvider', 'AnthropicProvider', 'OpenAIProvider', 'OpenAIResponsesProvider', 'RegisteredTool', 'tool', 'streaming_tool', 'safe_tool', 'ok', 'fail', 'format_tool_error', 'ModelMessage', 'ToolCall', 'ToolExecutionResult', 'ToolSchema', 'SkillMetadata', '__version__']

@@ -1,4 +1,5 @@
-{
+/** Generated from contracts/vocabulary.json. Do not edit by hand. */
+export const RUNTIME_VOCABULARY = {
   "version": "0.2.74",
   "public": [
     "Agent",
@@ -78,4 +79,16 @@
     "render": "project semantic state into model-facing input",
     "settle": "apply accounting policy to an observed measurement"
   }
+} as const
+
+export type RuntimeLanguage = typeof RUNTIME_VOCABULARY
+export type RuntimeLanguageDomain = "public" | "host" | "kernel" | "provider"
+
+export function runtimeVocabularyTerms(): readonly string[] {
+  return [
+    ...RUNTIME_VOCABULARY.public,
+    ...RUNTIME_VOCABULARY.host,
+    ...RUNTIME_VOCABULARY.kernel,
+    ...RUNTIME_VOCABULARY.provider,
+  ]
 }

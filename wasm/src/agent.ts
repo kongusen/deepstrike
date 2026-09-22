@@ -119,10 +119,18 @@ export interface RuntimeBinding {
 
 export type AgentOptions = AgentDefinition
 
-export interface AgentRunResult {
+export interface PortableRunResult {
   output: string
   sessionId: string
   status: "completed" | "partial" | "failed" | "cancelled"
+}
+export type AgentRunResult = PortableRunResult
+export interface PortableSession {
+  sessionId: string
+  run(goal: string, options?: { maxTurns?: number }): Promise<PortableRunResult>
+  stream(goal: string, options?: { maxTurns?: number }): AsyncIterable<unknown>
+  resume(options?: { maxTurns?: number }): AsyncIterable<unknown>
+  interrupt(reason?: string): void
 }
 
 export class Agent {

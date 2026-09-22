@@ -1,0 +1,18 @@
+{
+  "id": "usage.settlement",
+  "source": { "layer": "runtime", "type": "NormalizedProviderUsage", "authority": "host-runtime" },
+  "target": { "layer": "kernel", "type": "ModelUsageSettlement", "authority": "kernel" },
+  "crossing": { "direction": "runtime_to_kernel", "verb": "settle", "function": "UsageAccountingPolicy.settle" },
+  "preserves": ["input_tokens", "uncached_input_tokens", "output_tokens", "reasoning_tokens"],
+  "drops": ["vendor_display_metadata"],
+  "forbidden": ["provider_credentials", "pricing_authority"],
+  "kernel": { "crosses": true, "authority": "kernel" },
+  "lossiness": "intentional",
+  "implementation": {
+    "file": "node/src/runtime/execution-evidence.ts",
+    "symbol": "UsageAccountingPolicy.settle",
+    "method": "settle",
+    "parameterTypes": ["NormalizedProviderUsage"],
+    "returnType": "ModelUsageSettlement"
+  }
+}

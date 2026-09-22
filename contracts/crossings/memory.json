@@ -7,7 +7,7 @@
   },
   "target": {
     "layer": "runtime",
-    "type": "MemoryRecord",
+    "type": "AgentMemoryIR",
     "authority": "host-runtime"
   },
   "crossing": {
@@ -35,6 +35,8 @@
   "lossiness": "intentional",
   "implementation": {
     "file": "node/src/agent-ir.ts",
-    "symbol": "lowerMemory"
+    "symbol": "lowerMemory",
+    "parameterTypes": ["AgentMemory | undefined"],
+    "returnType": "AgentMemoryIR | undefined"
   }
 }

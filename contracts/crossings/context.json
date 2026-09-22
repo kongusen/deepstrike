@@ -12,8 +12,8 @@
   },
   "crossing": {
     "direction": "runtime_internal",
-    "verb": "project",
-    "function": "createContextPreparationAdapter"
+    "verb": "prepare",
+    "function": "ContextPreparationAdapter.prepare"
   },
   "preserves": [
     "context_state",
@@ -37,6 +37,9 @@
   "lossiness": "intentional",
   "implementation": {
     "file": "node/src/runtime/context.ts",
-    "symbol": "createContextPreparationAdapter"
+    "symbol": "createContextPreparationAdapter",
+    "method": "prepare",
+    "parameterTypes": ["ContextProviderPreparationRequest"],
+    "returnType": "ContextPrepared"
   }
 }

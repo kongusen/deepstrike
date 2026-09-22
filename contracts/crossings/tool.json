@@ -7,7 +7,7 @@
   },
   "target": {
     "layer": "runtime",
-    "type": "RegisteredTool",
+    "type": "AgentToolIR",
     "authority": "host-runtime"
   },
   "crossing": {
@@ -46,6 +46,8 @@
   "lossiness": "intentional",
   "implementation": {
     "file": "node/src/agent-ir.ts",
-    "symbol": "lowerTool"
+    "symbol": "lowerTool",
+    "parameterTypes": ["RegisteredTool"],
+    "returnType": "AgentToolIR"
   }
 }

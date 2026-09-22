@@ -15,7 +15,7 @@ The following registry is normative for the public, host, kernel, and provider b
 | Kernel | **Operation**, **Intent**, **Decision**, **Effect**, **Fact**, **Settlement**, **Task**, **Capability**, **Budget**, **Journal**, **Checkpoint**, **StateTransition** |
 | Provider Boundary | **Model**, **Provider**, **Endpoint**, **Protocol**, **Route**, **Adapter**, **Request**, **Response**, **Usage**, **ReplayEvidence** |
 
-The normative verbs are **resolve**, **render**, **encode**, **execute**, **decode**, **normalize**, and **settle**. Their definitions are kept in the shared vocabulary fixture at `tests/fixtures/runtime-language/vocabulary.json`.
+    The normative verbs are **bind**, **resolve**, **render**, **encode**, **execute**, **decode**, **lower**, **normalize**, **prepare**, **project**, and **settle**. Their definitions are kept in the shared vocabulary fixture at `tests/fixtures/runtime-language/vocabulary.json`.
 
 ## Kernel boundary
 

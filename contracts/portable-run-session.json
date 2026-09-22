@@ -1,0 +1,16 @@
+{
+  "version": "0.2.74",
+  "runResult": {
+    "required": { "output": "unknown", "session": "string", "status": "completed|partial|failed|cancelled" },
+    "optional": { "run": "string", "usage": "Usage", "evidence": "object" }
+  },
+  "session": {
+    "required": ["session", "run", "stream", "resume", "interrupt"],
+    "run": "goal -> PortableRunResult",
+    "stream": "goal -> event stream",
+    "resume": "options -> event stream",
+    "interrupt": "reason -> void"
+  },
+  "authority": "host-runtime",
+  "crossSdk": ["node", "python", "wasm", "rust"]
+}

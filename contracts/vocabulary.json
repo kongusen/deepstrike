@@ -62,16 +62,18 @@
       "ReplayEvidence"
     ]
   },
-  "verbs": [
-    "bind",
-    "decode",
-    "encode",
-    "lower",
-    "normalize",
-    "project",
-    "resolve",
-    "render",
-    "settle"
-  ],
+  "primaryDomain": { "Model": "public", "Usage": "public", "Capability": "host", "Route": "host" },
+  "verbs": {
+    "bind": "establish and freeze an identity relationship",
+    "decode": "extract semantic output and retained wire evidence",
+    "encode": "map semantic input into a wire request",
+    "lower": "convert a public declaration into host runtime form",
+    "normalize": "map vendor data into the controlled runtime vocabulary",
+    "prepare": "materialize a validated runtime preparation through the kernel adapter",
+    "project": "produce a read-only representation for another authority",
+    "resolve": "select or answer a runtime object at a boundary",
+    "render": "project semantic state into model-facing input",
+    "settle": "apply accounting policy to an observed measurement"
+  },
   "scope": "complete_runtime_language"
 }

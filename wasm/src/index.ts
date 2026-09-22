@@ -1,7 +1,7 @@
 // @deepstrike/wasm — semantic public root. Runtime machinery lives in ./advanced.
 export { Agent, createAgent } from "./agent.js"
 export type {
-  AgentDefinition, AgentOptions, AgentRunResult, AgentToolDefinition, AgentMemory, AgentRef,
+  AgentDefinition, AgentOptions, AgentRunResult, PortableRunResult, PortableSession, AgentToolDefinition, AgentMemory, AgentRef,
   Guardrail, Handoff, Knowledge, KnowledgeSourceRef, MCPServer, McpTransport, MemoryReference,
   ModelRef, ModelRequirement, RuntimeBinding, Skill,
 } from "./agent.js"

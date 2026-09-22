@@ -11,7 +11,8 @@
     "docs:preview": "vitepress preview docs",
     "docs:drift": "node scripts/check-docs-drift.mjs",
     "docs:manifest": "node scripts/extract-symbol-manifest.mjs",
-    "contracts:check": "node scripts/check-semantic-contracts.mjs"
+    "contracts:check": "npm run contracts:generate && node scripts/check-semantic-contracts.mjs",
+    "contracts:generate": "node scripts/generate-contract-projections.mjs"
   },
   "devDependencies": {
     "vitepress": "^1.5.0",

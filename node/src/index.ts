@@ -20,6 +20,8 @@ export type {
   DelegationRequest,
   DelegationResult,
   MemoryInput,
+  PortableRunResult,
+  PortableSession,
   RecallOptions,
   RunResult,
   SessionRef,

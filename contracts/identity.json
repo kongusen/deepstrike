@@ -6,7 +6,7 @@
     ],
     "remint": false,
     "allowedMintSites": [
-      "public_or_host"
+      "node/src/agent-facade.ts#AgentRuntimeImpl.name"
     ]
   },
   "RunId": {
@@ -16,7 +16,7 @@
     ],
     "remint": false,
     "allowedMintSites": [
-      "host"
+      "node/src/agent-facade.ts#sessionId"
     ]
   },
   "SessionId": {
@@ -26,7 +26,7 @@
     ],
     "remint": false,
     "allowedMintSites": [
-      "host"
+      "node/src/agent-facade.ts#sessionId"
     ]
   },
   "OperationId": {
@@ -36,7 +36,7 @@
     ],
     "remint": false,
     "allowedMintSites": [
-      "host_then_kernel_bind"
+      "node/src/runtime/runner.ts#RuntimeRunner.run"
     ]
   },
   "TaskId": {
@@ -46,7 +46,8 @@
     ],
     "remint": false,
     "allowedMintSites": [
-      "kernel"
+      "rust:deepstrike_core::runtime::kernel::wire::CanonicalKernel::prepare",
+      "wasm:src/runtime/canonical-kernel-step.ts#CanonicalKernelStep.prepare"
     ]
   },
   "EffectId": {
@@ -56,7 +57,8 @@
     ],
     "remint": false,
     "allowedMintSites": [
-      "kernel"
+      "rust:deepstrike_core::runtime::kernel::wire::CanonicalKernel::prepare",
+      "wasm:src/runtime/canonical-kernel-step.ts#CanonicalKernelStep.prepare"
     ]
   },
   "RequestFingerprint": {
@@ -64,7 +66,7 @@
     "crosses": [],
     "remint": false,
     "allowedMintSites": [
-      "runtime_content_addressed"
+      "node/src/providers/request-plan.ts#createProviderRequestPlan"
     ]
   },
   "RouteId": {
@@ -72,7 +74,7 @@
     "crosses": [],
     "remint": false,
     "allowedMintSites": [
-      "runtime_content_addressed"
+      "node/src/providers/request-plan.ts#resolveProviderRoute"
     ]
   }
 }

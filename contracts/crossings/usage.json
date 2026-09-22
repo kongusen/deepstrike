@@ -7,7 +7,7 @@
   },
   "target": {
     "layer": "runtime",
-    "type": "Measurement",
+    "type": "NormalizedProviderUsage",
     "authority": "host-runtime"
   },
   "crossing": {
@@ -44,6 +44,8 @@
   "lossiness": "intentional",
   "implementation": {
     "file": "node/src/providers/request-plan.ts",
-    "symbol": "normalizeProviderUsage"
+    "symbol": "normalizeProviderUsage",
+    "parameterTypes": ["ProviderUsage"],
+    "returnType": "NormalizedProviderUsage"
   }
 }

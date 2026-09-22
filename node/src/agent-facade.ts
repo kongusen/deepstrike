@@ -21,7 +21,6 @@ export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   /** Public model identity. Runtime resolves this through a provider binding. */
   model?: ModelRef
   tools?: RegisteredTool[]
-  maxTokens?: number
   skills?: SkillDeclaration[]
 }
 
@@ -53,6 +52,13 @@ export interface SessionRef {
   id: string
 }
 
+/** Cross-SDK minimum run result; SDK-specific results may add evidence and usage. */
+export interface PortableRunResult {
+  output: unknown
+  sessionId: string
+  status: "completed" | "partial" | "failed" | "cancelled"
+}
+
 export interface RunResult<T = string> {
   output: T
   runId: string
@@ -75,6 +81,9 @@ export interface AgentSession extends SessionRef {
   resume(options?: Omit<AgentRunOptions, "session">): AsyncIterable<StreamEvent>
   interrupt(reason?: "user" | "deadline" | "lease_lost" | "host_shutdown"): void
 }
+
+/** Cross-SDK session capability contract. */
+export type PortableSession = AgentSession
 
 export interface MemoryInput {
   name: string

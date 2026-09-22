@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping, Sequence, TypeAlias
+from typing import Any, AsyncIterator, Literal, Mapping, Protocol, Sequence, TypeAlias, TypedDict
 
 from deepstrike.types.agent import AgentCapabilityFilter
 
@@ -16,6 +16,22 @@ from deepstrike.types.agent import AgentCapabilityFilter
 ModelRef: TypeAlias = str | dict[str, Any]
 AgentDefinition: TypeAlias = Mapping[str, Any]
 AgentMemory: TypeAlias = Any
+
+
+class PortableRunResult(TypedDict):
+    """Cross-SDK minimum result shape. SDK-specific evidence may be added."""
+    output: str
+    session_id: str
+    status: Literal["completed", "partial", "failed", "cancelled"]
+
+
+class PortableSession(Protocol):
+    """Cross-SDK session capability contract implemented by host session handles."""
+    session_id: str
+    async def run(self, goal: str, **kwargs: Any) -> PortableRunResult: ...
+    def stream(self, goal: str, **kwargs: Any) -> AsyncIterator[Mapping[str, Any]]: ...
+    def resume(self, **kwargs: Any) -> AsyncIterator[Mapping[str, Any]]: ...
+    def interrupt(self, reason: str = "user") -> None: ...
 
 
 @dataclass(frozen=True)
@@ -31,6 +47,9 @@ class Agent:
 
     ``tools`` may contain executable ``RegisteredTool`` instances or JSON-safe tool descriptors.
     The latter carry schema only and do not create executable capabilities.
+
+    Canonical cross-SDK definition fields are capabilityFilter, mcpServers, providerOptions,
+    and outputSchema; snake_case constructor aliases remain the Python spelling.
     """
 
     def __init__(

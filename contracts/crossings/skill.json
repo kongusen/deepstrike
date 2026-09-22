@@ -17,7 +17,6 @@
   },
   "preserves": [
     "skill_name",
-    "skill_name",
     "version_constraint",
     "digest_constraint"
   ],

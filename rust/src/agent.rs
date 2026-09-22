@@ -3,6 +3,7 @@
 //! `AgentDefinition` is the serializable semantic contract. `RuntimeOptions` is the host-owned
 //! binding and is consumed when the executable `Agent` is created; the definition never stores
 //! provider, session, or execution-plane authority.
+// Canonical cross-SDK fields: capabilityFilter, mcpServers, providerOptions, outputSchema.
 
 use crate::RunEvent;
 use crate::runtime::{RuntimeOptions, RuntimeRunner};
@@ -46,11 +47,12 @@ pub struct Agent {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AgentRunResult {
+pub struct PortableRunResult {
     pub output: String,
     pub session_id: String,
     pub status: String,
 }
+pub type AgentRunResult = PortableRunResult;
 
 impl Agent {
     pub fn bind(definition: AgentDefinition, mut binding: RuntimeOptions) -> Result<Self> {
