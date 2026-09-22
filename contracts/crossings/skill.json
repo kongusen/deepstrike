@@ -31,20 +31,12 @@
     "provider_credentials"
   ],
   "kernel": {
-    "crosses": true,
-    "via": "skillMetadataToKernel"
+    "crosses": false
   },
   "lossiness": "intentional",
   "implementation": {
     "file": "node/src/skill.ts",
     "symbol": "projectSkillRequirement"
   },
-  "kernelProjection": {
-    "type": "SkillMetadata",
-    "authority": "kernel",
-    "implementation": {
-      "file": "node/src/runtime/kernel-step.ts",
-      "symbol": "skillMetadataToKernel"
-    }
-  }
+  "notes": "Normalization stops at a host-owned SkillRef. Kernel projection is a separate crossing."
 }

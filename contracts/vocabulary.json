@@ -69,6 +69,7 @@
     "lower",
     "normalize",
     "project",
+    "resolve",
     "render",
     "settle"
   ],

@@ -67,6 +67,28 @@ knowledge: [{ name: "facts", source: { kind: "text", content: "Project code: K-4
     expect(knowledge).not.toContain("Project code: K-42")
   })
 
+  it("resolves external declarations through SkillSource before creating the runner", async () => {
+    const provider = new ReplayProvider([{ role: "assistant", content: "done" }])
+    const calls: string[] = []
+    const source = {
+      async list() { return [{ name: "remote", description: "Remote skill", digest: "sha256:remote" }] },
+      async resolve(ref: { name: string }) {
+        calls.push(`resolve:${ref.name}`)
+        return { ref, digest: "sha256:remote", descriptor: { name: ref.name, description: "Remote skill", digest: "sha256:remote" } }
+      },
+      async load(revision: { ref: { name: string } }) {
+        calls.push(`load:${revision.ref.name}`)
+        return { descriptor: { name: revision.ref.name, description: "Remote skill", digest: "sha256:remote" }, instructions: "Remote instructions", resources: { scripts: [], references: [], assets: [] } }
+      },
+      async readResource() { return new Uint8Array() },
+    }
+    const agent = createAgent({ name: "researcher", skills: ["remote"] }, { provider, skillSources: [source] })
+
+    await agent.run("say done")
+
+    expect(calls).toEqual(["resolve:remote", "load:remote"])
+  })
+
   it("lowers executable guardrails into the existing governance policy", async () => {
     const provider = new ReplayProvider([{ role: "assistant", content: "done" }])
     const seen: string[][] = []

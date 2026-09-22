@@ -1,23 +1,17 @@
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { activateSkill, DirectorySkillCatalog, DirectorySkillSource, InlineSkillCatalog, projectSkillRequirement, ResolverSkillCatalog } from "../src/skill.js"
+import { DirectorySkillSource, InlineSkillSource, projectSkillRequirement, resolveSkillRevision, ResolverSkillSource } from "../src/skill.js"
 
-test("inline and resolver catalogs share one source-independent Skill contract", async () => {
+test("inline and resolver sources share one source-independent Skill contract", async () => {
   const skill = { name: "research", instructions: "compare sources" }
   const context = { userId: "u1" }
-  await expect(new InlineSkillCatalog([skill]).resolve({ name: "research" }, context)).resolves.toEqual(skill)
-  await expect(new ResolverSkillCatalog(async ref => ({ ...skill, name: ref.name }), async () => [{ name: "research" }]).resolve({ name: "research" }, context)).resolves.toEqual(skill)
-})
-
-test("directory catalog is user-scoped and rejects unsafe scope segments", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "deepstrike-skills-"))
-  const dir = path.join(root, "default", "u1")
-  await mkdir(dir, { recursive: true })
-  await writeFile(path.join(dir, "research.md"), "---\ndescription: Compare sources\n---\nUse citations")
-  const catalog = new DirectorySkillCatalog(root)
-  await expect(catalog.resolve({ name: "research" }, { userId: "u1" })).resolves.toMatchObject({ name: "research", instructions: "Use citations" })
-  await expect(catalog.list({ userId: "../other" })).rejects.toThrow("unsafe segment")
+  const inline = new InlineSkillSource([skill])
+  const inlineRevision = await inline.resolve({ name: "research" }, context)
+  await expect(inline.load(inlineRevision)).resolves.toMatchObject({ instructions: "compare sources" })
+  const remote = new ResolverSkillSource(async ref => ({ descriptor: { name: ref.name, description: "" }, instructions: "compare sources", resources: { scripts: [], references: [], assets: [] } }), async () => [{ name: "research", description: "" }])
+  const remoteRevision = await remote.resolve({ name: "research" }, context)
+  await expect(remote.load(remoteRevision)).resolves.toMatchObject({ instructions: "compare sources" })
 })
 
 test("directory source loads Claude-compatible package anatomy with lazy resources", async () => {
@@ -42,13 +36,13 @@ test("skill declarations accept source-independent string and object references"
   expect(projectSkillRequirement({ name: "financial-report", version: "v1" })).toEqual({ name: "financial-report", version: "v1" })
 })
 
-test("activation preserves package identity and narrows declared tools", () => {
-  const activated = activateSkill({
+test("resolved revision preserves package identity without claiming kernel activation", () => {
+  const resolved = resolveSkillRevision({
     descriptor: { name: "financial-report", description: "", version: "v1", digest: "sha256:x", allowedTools: ["read"] },
     instructions: "",
     resources: { scripts: [], references: [], assets: [] },
-    root: "/tmp/skill",
   }, { name: "financial-report", version: "v1" })
-  expect(activated).toMatchObject({ ref: { name: "financial-report", version: "v1" }, digest: "sha256:x", allowedTools: ["read"] })
-  expect(Object.isFrozen(activated)).toBe(true)
+  expect(resolved).toMatchObject({ ref: { name: "financial-report", version: "v1" }, digest: "sha256:x", allowedTools: ["read"] })
+  expect(resolved).not.toHaveProperty("activationId")
+  expect(Object.isFrozen(resolved)).toBe(true)
 })

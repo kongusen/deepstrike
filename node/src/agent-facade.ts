@@ -14,7 +14,7 @@ import { EnvCredentialVault } from "./runtime/credential-vault.js"
 import { agentRefName } from "./handoff-target.js"
 import { createTextKnowledgeSource } from "./knowledge/public.js"
 import type { Knowledge } from "./knowledge/public.js"
-import { normalizeSkillRef, type Skill, type SkillCatalog, type SkillDeclaration, type SkillLoadContext, type SkillRef } from "./skill.js"
+import { InlineSkillSource, normalizeSkillRef, type Skill, type SkillDeclaration, type SkillLoadContext, type SkillPackage, type SkillRef, type SkillRevision, type SkillSource } from "./skill.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -30,7 +30,8 @@ export interface RuntimeBinding {
   providerFor?: RuntimeOptions["providerFor"]
   executionPlane?: ExecutionPlane
   sessionLog?: SessionLog
-  skillCatalog?: SkillCatalog
+  /** Canonical source-independent Skill resolution boundary. */
+  skillSources?: SkillSource[]
   skillContext?: SkillLoadContext
   memoryStore?: MemoryStore
   memoryScope?: MemoryScope
@@ -190,6 +191,7 @@ class AgentRuntimeImpl implements Agent {
   private readonly sessionLog: SessionLog
   private activeRunner: RuntimeRunner | null = null
   private resolvedSkills?: Skill[]
+  private resolvedSkillPackages = new Map<string, SkillPackage>()
   private mcpPlane?: McpProxyPlane
   private mcpConnection?: Promise<void>
 
@@ -448,7 +450,7 @@ class AgentRuntimeImpl implements Agent {
       ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
       ...(binding?.memoryStore ? { memoryStore: binding.memoryStore } : {}),
       ...(binding?.memoryScope ? { memoryScope: binding.memoryScope } : {}),
-      ...(this.resolvedSkills?.length ? { skillCatalog: this.resolvedSkills } : {}),
+      ...(this.resolvedSkills?.length ? { skills: this.resolvedSkills } : {}),
       ...(!binding?.runtimeOptions?.knowledgeSource && this.definition.knowledge?.some(item => item.source.kind === "text") ? {
         knowledgeSource: createTextKnowledgeSource(this.definition.knowledge
           .filter((item): item is Knowledge & { source: { kind: "text"; content: string } } => item.source.kind === "text")
@@ -466,10 +468,38 @@ class AgentRuntimeImpl implements Agent {
     const refs = declarations.filter((skill): skill is string | SkillRef => typeof skill === "string" || !("instructions" in skill || "description" in skill || "resources" in skill || "scripts" in skill || "tools" in skill || "mcpServers" in skill || "knowledge" in skill || "metadata" in skill || "providerOptions" in skill || "requires" in skill))
       .map(normalizeSkillRef)
     const inline = declarations.filter((skill): skill is Skill => typeof skill === "object" && ["description", "instructions", "resources", "scripts", "tools", "mcpServers", "knowledge", "metadata", "providerOptions", "requires"].some(key => key in skill))
-    if (refs.length && !this.binding?.skillCatalog) throw new Error(`agent "${this.name}" declares external skills without a skill catalog binding`)
-    const loaded = this.binding?.skillCatalog && this.binding.skillContext
-      ? await Promise.all(refs.map(ref => this.binding!.skillCatalog!.resolve(ref, this.binding!.skillContext!)))
-      : []
+    this.resolvedSkillPackages.clear()
+    const context = this.binding?.skillContext
+    const inlineSource = inline.length ? new InlineSkillSource(inline) : undefined
+    const sources = [
+      ...(inlineSource ? [inlineSource] : []),
+      ...(this.binding?.skillSources ?? []),
+    ]
+    if (refs.length && !sources.length) {
+      throw new Error(`agent "${this.name}" declares external skills without a skill source binding`)
+    }
+    const loaded: Skill[] = []
+    for (const ref of refs) {
+      let resolved: { revision: SkillRevision; pkg: SkillPackage } | undefined
+      for (const source of sources) {
+        try {
+          const revision = await source.resolve(ref, context ?? { userId: this.name })
+          resolved = { revision, pkg: await source.load(revision) }
+          break
+        } catch (error) {
+          if (source === sources[sources.length - 1]) throw error
+        }
+      }
+      if (resolved) {
+        this.resolvedSkillPackages.set(ref.name, resolved.pkg)
+        loaded.push({
+          name: resolved.pkg.descriptor.name,
+          description: resolved.pkg.descriptor.description,
+          instructions: resolved.pkg.instructions,
+          metadata: { version: resolved.pkg.descriptor.version, digest: resolved.pkg.descriptor.digest },
+        })
+      }
+    }
     this.resolvedSkills = [...inline, ...loaded]
   }
 

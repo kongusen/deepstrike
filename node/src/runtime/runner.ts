@@ -371,8 +371,8 @@ export interface RuntimeOptions {
   /** Optional host ledger that admits dynamic context before kernel insertion. */
   contextManager?: ContextManager
   skillDir?: string
-  /** Inline skill catalog. Metadata is exposed at run start; content is loaded only on activation. */
-  skillCatalog?: Skill[]
+  /** Resolved skill material supplied by the host source boundary. Metadata is exposed at run start; content is loaded only on activation. */
+  skills?: Skill[]
   /** Host-layer allowlist over the `skillDir` catalog by skill NAME. When set, only scanned skills
    *  whose name is listed are fed to the kernel via `set_available_skills` (the manifest layer
    *  intersects onto this host baseline in `applyManifest`). Absent ⇒ zero behavior difference (all
@@ -2156,11 +2156,11 @@ export class RuntimeRunner {
       }
     }
 
-    if (this.opts.skillDir || this.opts.skillCatalog?.length) {
+    if (this.opts.skillDir || this.opts.skills?.length) {
       const { scanSkillDir } = await import("../skills/loader.js")
       const metas: SkillMetadata[] = [
         ...(this.opts.skillDir ? await scanSkillDir(this.opts.skillDir) : []),
-        ...(this.opts.skillCatalog ?? []).map(skill => ({
+        ...(this.opts.skills ?? []).map(skill => ({
           name: skill.name,
           description: skill.description ?? "",
           ...(skill.metadata?.whenToUse ? { whenToUse: String(skill.metadata.whenToUse) } : {}),
@@ -2170,7 +2170,7 @@ export class RuntimeRunner {
         })),
       ]
       // S2 host-layer skill allowlist: keep only scanned skills named in `skillFilter` before feeding
-      // the catalog. Absent ⇒ feed all (identical to the pre-feature message); empty ⇒ feed none. The
+      // the runtime. Absent ⇒ feed all (identical to the pre-feature message); empty ⇒ feed none. The
       // `set_available_skills` message is ALWAYS sent when a skillDir exists (shape preserved) — only
       // the list narrows; the no-skillDir path stays untouched.
       const filter = this.opts.skillFilter
@@ -2689,7 +2689,7 @@ export class RuntimeRunner {
           ...(turnOutputTokens > 0 ? { observed_output_tokens: settlement?.observed_output_tokens ?? turnOutputTokens } : {}),
           ...(turnStopReason ? { stop_reason: turnStopReason } : {}),
         }
-        if (this.opts.skillDir || this.opts.skillCatalog?.length) {
+        if (this.opts.skillDir || this.opts.skills?.length) {
           const skillCalls = finalToolCalls.filter(call => call.name === "skill")
           if (skillCalls.length > 0) {
             const { readSkillFile } = await import("../skills/loader.js")
@@ -2698,7 +2698,7 @@ export class RuntimeRunner {
                 const name = String((JSON.parse(call.arguments || "{}") as { name?: unknown }).name ?? "")
                 if (!name) continue
                 if (this.opts.skillFilter && !this.opts.skillFilter.includes(name)) continue
-                const inline = this.opts.skillCatalog?.find(skill => skill.name === name)
+                const inline = this.opts.skills?.find(skill => skill.name === name)
                 const content = inline?.instructions
                   ?? (this.opts.skillDir ? await readSkillFile(this.opts.skillDir, name) : null)
                 if (!content) continue

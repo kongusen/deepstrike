@@ -11,10 +11,10 @@ import { OpenAIProvider } from "../src/index.js"
 describe("root surface", () => {
   it("matches the explicit runtime export allowlist", () => {
     expect(Object.keys(root).sort()).toEqual([
-      "AnthropicProvider", "DatabaseSkillCatalog", "DirectorySkillCatalog", "DirectorySkillSource", "InMemoryReactionCheckpointStore", "InlineSkillCatalog", "OpenAIProvider", "OpenAIResponsesProvider",
-      "ResolverSkillCatalog", "SESSION_EVENT_KINDS", "ToolError", "UnsupportedModalityError", "activateSkill", "createAgent", "createProvider",
-      "createProviderAsync", "createWorkflow", "evaluate", "fail", "formatToolError", "normalizeSkillRef", "ok", "projectSkillMetadata", "projectSkillRequirement", "resolveProviderRuntime",
-      "resolveProviderRuntimeAsync", "safeTool", "streamingTool", "tool",
+      "AnthropicProvider", "DirectorySkillSource", "InMemoryReactionCheckpointStore", "InlineSkillSource", "OpenAIProvider", "OpenAIResponsesProvider",
+      "ResolverSkillSource", "SESSION_EVENT_KINDS", "ToolError", "UnsupportedModalityError", "activateSkill", "createAgent", "createProvider",
+      "createProviderAsync", "createWorkflow", "evaluate", "fail", "formatToolError", "normalizeSkillRef", "ok", "projectSkillMetadata", "projectSkillRequirement", "resolveProviderRuntime", "resolveProviderRuntimeAsync", "resolveSkillRevision",
+      "safeTool", "streamingTool", "tool",
     ])
   })
 
