@@ -16,11 +16,10 @@ export function buildAgentRuntimeOptions(
   resources: AgentRuntimeResources,
 ): RuntimeOptions {
   const binding = definition.runtimeBinding
+  const governancePolicy = mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, definition.guardrails)
   return {
     provider: resources.provider,
-    ...(mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, definition.guardrails)
-      ? { governancePolicy: mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, definition.guardrails) }
-      : {}),
+    ...(definition.providerOptions ? { extensions: definition.providerOptions } : {}),
     ...(definition.capabilityFilter ? { capabilityFilter: definition.capabilityFilter } : {}),
     executionPlane: resources.executionPlane,
     // Declared/bound tools start visible; the kernel still applies the capability ceiling.
@@ -44,6 +43,8 @@ export function buildAgentRuntimeOptions(
     } : {}),
     agentId: resources.agentId,
     ...(binding?.runtimeOptions ?? {}),
+    // Host facilities may override catalogs, but must not discard the merged Agent guardrails.
+    ...(governancePolicy ? { governancePolicy } : {}),
     ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
   }
 }
@@ -57,7 +58,11 @@ function mergeGuardrailPolicies(
   )
   if (!policies.length) return undefined
   return {
-    ...(policies.some(policy => policy.defaultAction === "deny") ? { defaultAction: "deny" as const } : {}),
+    ...(policies.some(policy => policy.defaultAction === "deny")
+      ? { defaultAction: "deny" as const }
+      : policies.some(policy => policy.defaultAction === "ask_user")
+        ? { defaultAction: "ask_user" as const }
+        : {}),
     rules: policies.flatMap(policy => policy.rules ?? []),
     vetoes: [...new Set(policies.flatMap(policy => policy.vetoes ?? []))],
     rateLimits: policies.flatMap(policy => policy.rateLimits ?? []),
