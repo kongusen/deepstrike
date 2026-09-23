@@ -9,10 +9,6 @@ use std::path::{Component, Path, PathBuf};
 
 use deepstrike_core::runtime::kernel::wire::ProviderStopReason;
 use deepstrike_core::runtime::session::SessionEvent;
-use deepstrike_core::types::agent::{
-    AgentCapabilityFilter, AgentIdentity, AgentRole, AgentRunSpec,
-};
-use deepstrike_core::types::capability::{CapabilityDescriptor, CapabilityKind};
 use deepstrike_core::types::durable_content::{
     DurableContent, DurableContentBlock, DurableToolResult,
 };
@@ -148,152 +144,12 @@ fn project(fixture: &Fixture) -> Result<Value, AdapterError> {
                 "plan_digest": prepared.plan.plan_id, "verified": true }),
             )
         }
-        "agent_ir" => project_agent_ir(&fixture.input),
         "provider_request_plan" => project_request_plan(&fixture.input),
         "durable_tool_result" => project_durable_tool_result(&fixture.input),
         "prompt_measurement" => project_prompt_measurement(&fixture.input),
         "provider_error" => project_provider_error(&fixture.input),
         "session_event" => project_session_event(&fixture.input),
         domain => Err(AdapterError::unsupported_domain(domain)),
-    }
-}
-
-fn project_agent_ir(input: &Value) -> Result<Value, AdapterError> {
-    let source = read_referenced_fixture(required_value_str(input, "fixture", "/input/fixture")?)?;
-    let source = source
-        .as_object()
-        .ok_or_else(|| AdapterError::failure("agent declaration must be an object"))?;
-    let name = required_map_str(source, "name", "/input/fixture/name")?;
-    let raw_filter = source
-        .get("capabilityFilter")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    let raw_filter = raw_filter
-        .as_object()
-        .ok_or_else(|| AdapterError::failure("agent capabilityFilter must be an object"))?;
-    let filter: AgentCapabilityFilter = serde_json::from_value(json!({
-        "allowed_kinds": raw_filter.get("allowedKinds").cloned().unwrap_or_else(|| json!([])),
-        "allowed_ids": raw_filter.get("allowedIds").cloned().unwrap_or_else(|| json!([])),
-    }))
-    .map_err(|error| AdapterError::failure(error.to_string()))?;
-    let run_spec = AgentRunSpec::new(
-        AgentIdentity::new("spc-017", "conformance"),
-        AgentRole::Custom,
-        name,
-    )
-    .with_capability_filter(filter.clone());
-
-    let mut effective = Vec::new();
-    for candidate in agent_capabilities(source)? {
-        let descriptor = CapabilityDescriptor::marker(
-            candidate.kind,
-            candidate.id.clone(),
-            candidate.description.clone(),
-        );
-        if run_spec.capability_filter.allows(&descriptor) {
-            effective.push(json!({
-                "kind": capability_kind_name(candidate.kind),
-                "id": candidate.id,
-                "description": candidate.description,
-            }));
-        }
-    }
-
-    Ok(json!({
-        "name": name,
-        "capabilityFilter": {
-            "allowedKinds": filter.allowed_kinds.iter().copied().map(capability_kind_name).collect::<Vec<_>>(),
-            "allowedIds": filter.allowed_ids.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        },
-        "effectiveCapabilities": effective,
-    }))
-}
-
-#[derive(Debug)]
-struct AgentCapability {
-    kind: CapabilityKind,
-    id: String,
-    description: String,
-}
-
-fn agent_capabilities(
-    source: &serde_json::Map<String, Value>,
-) -> Result<Vec<AgentCapability>, AdapterError> {
-    let mut capabilities = Vec::new();
-    for tool in object_array(source, "tools")? {
-        capabilities.push(AgentCapability {
-            kind: CapabilityKind::Tool,
-            id: required_map_str(tool, "name", "/input/fixture/tools/name")?.to_string(),
-            description: tool
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        });
-    }
-    for server in object_array(source, "mcpServers")? {
-        let id = server
-            .get("name")
-            .and_then(Value::as_str)
-            .or_else(|| {
-                server
-                    .get("transport")
-                    .and_then(Value::as_object)
-                    .and_then(|transport| transport.get("kind"))
-                    .and_then(Value::as_str)
-            })
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| AdapterError::failure("MCP server requires name or transport kind"))?;
-        capabilities.push(AgentCapability {
-            kind: CapabilityKind::McpServer,
-            id: id.to_string(),
-            description: id.to_string(),
-        });
-    }
-    for skill in object_array(source, "skills")? {
-        capabilities.push(AgentCapability {
-            kind: CapabilityKind::Skill,
-            id: required_map_str(skill, "name", "/input/fixture/skills/name")?.to_string(),
-            description: skill
-                .get("description")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        });
-    }
-    Ok(capabilities)
-}
-
-fn object_array<'a>(
-    source: &'a serde_json::Map<String, Value>,
-    key: &str,
-) -> Result<Vec<&'a serde_json::Map<String, Value>>, AdapterError> {
-    source
-        .get(key)
-        .map(|value| {
-            value
-                .as_array()
-                .ok_or_else(|| AdapterError::failure(format!("{key} must be an array")))?
-                .iter()
-                .map(|value| {
-                    value.as_object().ok_or_else(|| {
-                        AdapterError::failure(format!("{key} items must be objects"))
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_else(|| Ok(Vec::new()))
-}
-
-fn capability_kind_name(kind: CapabilityKind) -> &'static str {
-    match kind {
-        CapabilityKind::Tool => "tool",
-        CapabilityKind::Skill => "skill",
-        CapabilityKind::Memory => "memory",
-        CapabilityKind::Knowledge => "knowledge",
-        CapabilityKind::McpServer => "mcp_server",
-        CapabilityKind::Command => "command",
-        CapabilityKind::Agent => "agent",
     }
 }
 
@@ -599,19 +455,6 @@ mod tests {
     }
 
     #[test]
-    fn projects_agent_ir_through_the_rust_agent_capability_contract() {
-        let ir = project(&fixture("agent-ir-basic")).expect("agent IR projects");
-        assert_eq!(ir["name"], "researcher");
-        assert_eq!(
-            ir["effectiveCapabilities"],
-            json!([
-                { "kind": "tool", "id": "web_search", "description": "Search the web for source material." },
-                { "kind": "skill", "id": "citations", "description": "Citation policy." },
-            ])
-        );
-    }
-
-    #[test]
     fn command_line_requires_exactly_one_absolute_fixture_path() {
         assert!(fixture_path_from_args(Vec::<String>::new()).is_err());
         assert!(fixture_path_from_args(vec!["relative.json".into()]).is_err());
@@ -627,7 +470,7 @@ mod tests {
         for reference in [
             "",
             ".",
-            "agent-ir/../agent-ir/canonical-agent.json",
+            "provider-request-plan/../provider-request-plan.json",
             "/tmp/agent.json",
         ] {
             let error = read_referenced_fixture(reference).expect_err("reference must reject");

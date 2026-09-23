@@ -130,10 +130,6 @@ export type {
   AgentMemory, AgentOptions, AgentRunResult, AgentToolDefinition, AgentRef, Guardrail, Handoff, Knowledge,
   KnowledgeSourceRef, MCPServer, McpTransport, MemoryReference, ModelRef, ModelRequirement, Skill,
 } from "./agent.js"
-export { lowerAgent, normalizeAgent } from "./agent-ir.js"
-export type {
-  AgentCapabilityIR, AgentDefinition, AgentLoweringInputs, AgentMemoryIR, AgentSpec, AgentToolIR,
-} from "./agent-ir.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
 export { OpenAIProvider, qwen, deepseek, minimax, kimi } from "./providers/openai.js"
 export type { OpenAIProviderOptions, BackendProviderOptions } from "./providers/openai.js"

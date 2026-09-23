@@ -37,7 +37,7 @@ const result = await agent.run("研究这个问题")
 3. `RuntimeRunner` 同时承担 Runtime、Run、Session、Workflow 宿主和大量基础设施职责。
 4. `tools`、`model`、`memory`、`sessionLog` 等配置在 `AgentOptions`、`RunAgentOptions`、`RuntimeOptions` 和 workflow spec 之间重复出现。
 5. `runFanout`、`runLoop`、`AgentPool`、`ReactiveSession` 属于不同编排模型，却和单 Agent 入口处于同一认知层级。
-6. `Agent -> AgentSpec -> Kernel` 的 lowering 路径存在，但只是转换层，没有成为用户的主执行路径。
+6. `Agent` 通过 facade 直接进入 host runtime；kernel projection 只在明确的边界适配器中发生。
 7. 根入口同时暴露意图 API、运行时 API、内核证据 API 和演进 API，根入口的“简单入口”定位与实际导出规模不一致。
 
 ## 目标公开层次
@@ -183,7 +183,7 @@ export interface AgentSession {
 
 1. 新增并推广 `createAgent`、`Agent.run`、`Agent.stream`、`Agent.session` 和 `RunResult`。
 2. 删除 `runAgent`、`runFanout`、`RuntimeRunner` 作为根入口的公开导出；底层实现可以保留在内部模块。
-3. `Agent` 现有字段迁移到新的 `AgentDefinition`，`lowerAgent` 只作为内部 provider-neutral lowering，不再作为普通用户 API。
+3. `Agent` 现有字段迁移到新的 `AgentDefinition`，由 facade 的 typed runtime-options adapter 直接消费。
 4. `runFanout` 迁移为 `agent.workflow(...)` 或 `agent.delegate(...)` 的实现，不再要求用户构造字符串任务 DAG。
 5. 根入口只导出 Agent、Run、Session、工具、Provider 工厂和场景化高级能力；journal、kernel、evolution、harness 等保留在内部或明确的开发者 subpath。
 

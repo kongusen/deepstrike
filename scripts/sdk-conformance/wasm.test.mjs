@@ -9,10 +9,7 @@ function run(fixture) {
   return spawnSync(process.execPath, ["scripts/sdk-conformance/wasm.mjs", resolve(`tests/fixtures/sdk-conformance/canonical/${fixture}.json`)], { encoding: "utf8" })
 }
 
-test("WASM adapter projects Agent IR and durable tool result", () => {
-  const agent = run("agent-ir-basic")
-  assert.equal(agent.status, 0, agent.stderr)
-  assert.equal(JSON.parse(agent.stdout).canonical.name, "researcher")
+test("WASM adapter projects durable tool result", () => {
   const durable = run("durable-tool-result")
   assert.equal(durable.status, 0, durable.stderr)
   assert.deepEqual(JSON.parse(durable.stdout).canonical.blockTypes, ["text", "image", "file", "video"])
@@ -52,13 +49,13 @@ test("WASM adapter matches the session-event vocabulary manifest", () => {
 })
 
 test("WASM adapter requires one absolute fixture path", () => {
-  const result = spawnSync(process.execPath, ["scripts/sdk-conformance/wasm.mjs", "tests/fixtures/sdk-conformance/canonical/agent-ir-basic.json"], { encoding: "utf8" })
+  const result = spawnSync(process.execPath, ["scripts/sdk-conformance/wasm.mjs", "tests/fixtures/sdk-conformance/canonical/prompt-measurement.json"], { encoding: "utf8" })
   assert.notEqual(result.status, 0)
   assert.match(result.stdout, /absolute-fixture-path/)
 
   const extra = spawnSync(process.execPath, [
     "scripts/sdk-conformance/wasm.mjs",
-    resolve("tests/fixtures/sdk-conformance/canonical/agent-ir-basic.json"),
+    resolve("tests/fixtures/sdk-conformance/canonical/prompt-measurement.json"),
     "unexpected",
   ], { encoding: "utf8" })
   assert.notEqual(extra.status, 0)
@@ -88,51 +85,5 @@ test("WASM adapter matches content-parts-v1 byte fixtures", () => {
     const envelope = JSON.parse(result.stdout)
     assert.equal(envelope.ok, true, `${name}: ${JSON.stringify(envelope)}`)
     assert.deepEqual(envelope.canonical, fixture.expected.canonical, name)
-  }
-})
-
-test("WASM adapter rejects fixture references outside tests/fixtures", () => {
-  const path = resolve(tmpdir(), `deepstrike-wasm-conformance-${process.pid}.json`)
-  try {
-    writeFileSync(path, JSON.stringify({
-      id: "outside-fixture-reference",
-      domain: "agent_ir",
-      input: { fixture: "../sdk-conformance/canonical/agent-ir-basic.json" },
-      expected: { error: { code: "invalid_fixture_reference", path: "/input/fixture" } },
-    }))
-    const result = spawnSync(process.execPath, ["scripts/sdk-conformance/wasm.mjs", path], { encoding: "utf8" })
-    assert.equal(result.status, 0, result.stderr)
-    const envelope = JSON.parse(result.stdout)
-    assert.equal(envelope.ok, false)
-    assert.equal(envelope.error.code, "invalid_fixture_reference")
-    assert.equal(envelope.error.path, "/input/fixture")
-  } finally {
-    rmSync(path, { force: true })
-  }
-})
-
-test("WASM adapter rejects in-bound traversal and symlink fixture references", () => {
-  const path = resolve(tmpdir(), `deepstrike-wasm-conformance-${process.pid}.json`)
-  const fixture = (reference) => ({
-    id: "outside-fixture-reference",
-    domain: "agent_ir",
-    input: { fixture: reference },
-    expected: { error: { code: "invalid_fixture_reference", path: "/input/fixture" } },
-  })
-  const runFixture = reference => {
-    writeFileSync(path, JSON.stringify(fixture(reference)))
-    return JSON.parse(spawnSync(process.execPath, ["scripts/sdk-conformance/wasm.mjs", path], { encoding: "utf8" }).stdout)
-  }
-  const source = mkdtempSync(resolve(tmpdir(), "deepstrike-wasm-conformance-source-"))
-  const link = resolve("tests", "fixtures", `.sdk-conformance-escape-${process.pid}-${Date.now()}.json`)
-  try {
-    assert.equal(runFixture("agent-ir/../agent-ir/canonical-agent.json").error.code, "invalid_fixture_reference")
-    writeFileSync(resolve(source, "agent.json"), readFileSync(resolve("tests/fixtures/agent-ir/canonical-agent.json")))
-    symlinkSync(resolve(source, "agent.json"), link)
-    assert.equal(runFixture(link.slice(resolve("tests/fixtures").length + 1)).error.code, "invalid_fixture_reference")
-  } finally {
-    unlinkSync(link)
-    rmSync(path, { force: true })
-    rmSync(source, { recursive: true, force: true })
   }
 })

@@ -366,6 +366,8 @@ createAgent(definition)
 
 裁决理由：漂移源是"存在两个实现"，不是行进方向。删除未用实现使漂移在**构造上不可能**；吸收式收敛反而要先扩 `lowerAgent` 覆盖面（memory/maxTokens/capabilityFilter/handoffs 内联）再改写热路径，是侵入性最高的路。保留死的形式 IR 即"为契约造架构"，正是本次重做要根除的偏差模式；且 P0 级缺陷（三点一.2）证明修复精力应全部投在实路线。
 
+**退役已落地（2026-09-23）**：Node/WASM 的 `agent-ir` 模块、五个投影 helper、conformance/runtime/advanced 再导出、Agent IR 专用测试和共享 conformance fixture/domain 已一并删除。运行时分类把 host 侧语义改为不可变 `AgentDeclaration` 快照；内核仍保留正在使用的 `LogicalAgentSpec` wire DTO，它不是被删除的 host formal IR。
+
 ## 八、子系统深化：Memory / Context / Workflow / Eval / Events（2026-09-22）
 
 主流程（run 循环）之外逐子系统盘点。总判定：**Memory 与 Context 是真实跨边界子系统**（新增 M1–M5、CT1–CT4）；Workflow 是 B 边界的批量 syscall（WF1–WF2，随 P3 收编）；**Eval 留在 runtime-internal**；Events 是 B 反向的宽面 decode（EV1，多 adapter 机制的极限用例）；Signals 是外部世界的入站正门（S1–S6，单实现双消费的防漂移样本）。

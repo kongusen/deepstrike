@@ -5,8 +5,10 @@ This document records implementation progress; release approval is a separate ga
 
 ## Implemented increments
 
-- The Node public surface has one `AgentDefinition`, with model-first binding and
-  detached run, context, capability, governance, and delegation projections.
+- The Node public surface has one `AgentDefinition`, with model-first binding and an
+  immutable `AgentDeclaration` snapshot. The unused formal `AgentSpec`/`agent-ir`
+  lowering surface and detached projection helpers have been removed; runtime binding
+  decisions stay in the live facade adapter.
 - Provider runtime vocabulary is separated into Model, Provider, Endpoint, Protocol,
   Route, Adapter, measurement, usage, settlement, and evidence.
 - Root exports are reduced to the public Agent language. Runtime, provider, evaluation,

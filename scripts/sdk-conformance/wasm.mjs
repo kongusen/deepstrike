@@ -46,15 +46,6 @@ async function project(value) {
         verified: adapter.verify(value.input.request.effect, prepared),
       }
     }
-    case "agent_ir": {
-      const raw = readReferenced(value.input.fixture)
-      const spec = sdk.lowerAgent(sdk.normalizeAgent(raw))
-      return {
-        name: spec.name,
-        ...(spec.capabilityFilter ? { capabilityFilter: spec.capabilityFilter } : {}),
-        effectiveCapabilities: spec.effectiveCapabilities,
-      }
-    }
     case "durable_tool_result": {
       const input = value.input.fixture ? readReferenced(value.input.fixture) : value.input.value
       const result = sdk.decodeDurableToolResult(input)

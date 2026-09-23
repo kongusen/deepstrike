@@ -9,7 +9,7 @@ test("SPC-028-47/49 package declares runtime and evals subpaths", () => {
 
 test("SPC-028-46 root keeps runtime internals behind subpaths", () => {
   const root = readFileSync(join(process.cwd(), "src/index.ts"), "utf8")
-  for (const forbiddenModule of ["./runtime/", "./agent-ir.js", "./signals/"]) {
+  for (const forbiddenModule of ["./runtime/", "./signals/"]) {
     expect(root).not.toContain(`from \"${forbiddenModule}`)
   }
   for (const internal of [

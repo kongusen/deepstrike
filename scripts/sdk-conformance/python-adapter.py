@@ -32,8 +32,6 @@ try:
     decode_durable_content,
     decode_durable_tool_result,
     encode_canonical_content_parts,
-    lower_agent,
-    normalize_agent,
   )
   from deepstrike.providers import (
     ProviderRequestEndpoint,
@@ -53,8 +51,6 @@ except ModuleNotFoundError as error:
     decode_durable_content,
     decode_durable_tool_result,
     encode_canonical_content_parts,
-    lower_agent,
-    normalize_agent,
   )
   from deepstrike.providers import (
     ProviderRequestEndpoint,
@@ -161,15 +157,6 @@ def canonical_for(fixture: dict[str, Any]) -> dict[str, Any]:
       "plan_digest": prepared["plan"]["plan_id"],
       "verified": adapter.verify(input_value["request"]["effect"], prepared),
     }
-  if domain == "agent_ir":
-    source = json.loads(fixture_path_for(input_value.get("fixture")).read_text(encoding="utf-8"))
-    lowered = lower_agent(normalize_agent(source))
-    return {
-      "name": lowered["name"],
-      **({"capabilityFilter": lowered["capabilityFilter"]} if "capabilityFilter" in lowered else {}),
-      "effectiveCapabilities": lowered["effectiveCapabilities"],
-    }
-
   if domain == "provider_request_plan":
     source = json.loads(fixture_path_for(input_value.get("fixture")).read_text(encoding="utf-8"))
     source = source["input"]

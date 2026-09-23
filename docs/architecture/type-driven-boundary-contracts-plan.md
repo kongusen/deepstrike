@@ -216,7 +216,7 @@ Three gaps remain before Iteration 8 can be called complete:
 2. Only the Skill projection has a generated runtime validator. The newly registered kernel, event, and provider adapters have structural manifests but no missing/forbidden/invalid field validators. Each protocol must either gain an appropriate validator or declare a reviewed reason why compiler checking plus behavioral tests are sufficient.
 3. Union and open input boundaries remain weakly described. `SessionEvent | null` has no useful common field inference, and provider usage decoders intentionally accept `unknown`. These boundaries need explicit behavioral correlation tests and stronger named input types where the wire shape is known.
 
-The next sequence is therefore contract quality hardening, one subsystem crossing family at a time, followed by the formal IR removal work. The no-compatibility constraint allows Iteration 9 to move forward as soon as remaining internal `agent-ir` consumers and public runtime exports are migrated; it does not require preserving the current IR surface.
+The next sequence is therefore contract quality hardening, one subsystem crossing family at a time, followed by removal of the retired formal IR. Because this version has not shipped, the IR removal can land atomically with its conformance fixtures and public exports.
 
 The envelope distinction checkpoint now records transport wrapper fields separately from semantic drops. Kernel event, OpenAI request, stream chunk, and stream finish protocols validate their declared envelope fields and exclude them from inferred semantic drops. The first nested semantic path mappings now describe canonical input to provider params and stream input/state to emitted `AdapterOutput` events; deeper target shape checks remain open for provider-specific params and event unions.
 
@@ -225,6 +225,8 @@ The first subsystem crossing checkpoint registers `memoryPolicyToKernel` as `Mem
 The signal subsystem checkpoint registers `signalToKernelEvent` as a data-only `KernelSignalDeliveryRequest → KernelSignalDeliveryEvent` projection. Lease acknowledgement callbacks remain host-owned, while delivery identity, signal payload, deadline, and coalescing metadata cross into the kernel event shape. Both live signal consumption paths use the projection and direct tests cover its mapping.
 
 The first workflow subsystem checkpoint registers `workflowNodeSpecToKernel` and `workflowSpecToKernel` with named `KernelWorkflowNode` and `KernelWorkflowSpec` targets. Host-only node identity and agent bindings are dropped explicitly, control-flow kinds are derived, and the same node projection feeds both workflow start and dynamic submission paths.
+
+Iteration 9 is now complete for the Node/WASM/SDK conformance surfaces. The unused `agent-ir` modules, projection helpers, public runtime/advanced/conformance exports, agent IR fixtures, and cross-SDK conformance domain were removed together. Runtime object classification and documentation now describe the immutable `AgentDeclaration` snapshot and the live typed facade adapter; the kernel's own `LogicalAgentSpec` wire DTO remains because it is an active kernel boundary type.
 
 ---
 

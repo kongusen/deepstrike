@@ -45,14 +45,6 @@ def prompt_measurement_fixture(expected_canonical: dict) -> dict:
   }
 
 
-def agent_ir_fixture(reference: str) -> dict:
-  return {
-    "id": "adapter-focused",
-    "domain": "agent_ir",
-    "input": {"fixture": reference},
-    "expected": {"canonical": {}},
-  }
-
 
 @pytest.mark.parametrize("fixture_path", sorted(FIXTURES.glob("*.json")), ids=lambda path: path.stem)
 def test_python_adapter_matches_shared_conformance_fixture(fixture_path: Path) -> None:
@@ -103,35 +95,3 @@ def test_python_adapter_derives_canonical_output_from_sdk_not_expected_shape() -
       "confidence": "low_confidence",
     },
   }
-
-
-@pytest.mark.parametrize("reference", [
-  str(ROOT / "tests" / "fixtures" / "agent-ir" / "canonical-agent.json"),
-  r"\\server\share\agent.json",
-  ".",
-  "agent-ir/../agent-ir/canonical-agent.json",
-], ids=["absolute", "unc", "fixtures-root", "parent-traversal"])
-def test_python_adapter_rejects_out_of_boundary_fixture_reference(reference: str) -> None:
-  envelope = run_adapter_fixture(agent_ir_fixture(reference))
-
-  assert envelope["ok"] is False
-  assert envelope["sdk"] == "python"
-  assert envelope["fixture"] == "adapter-focused"
-  assert envelope["error"]["code"] == "invalid_fixture_reference"
-  assert envelope["error"]["path"] == "/input/fixture"
-
-
-def test_python_adapter_rejects_fixture_symlink_that_escapes_tests_fixtures(tmp_path: Path) -> None:
-  outside = tmp_path / "agent.json"
-  outside.write_text((ROOT / "tests" / "fixtures" / "agent-ir" / "canonical-agent.json").read_text(encoding="utf-8"), encoding="utf-8")
-  link = ROOT / "tests" / "fixtures" / f".sdk-conformance-escape-{os.getpid()}-{uuid4().hex}.json"
-  link.symlink_to(outside)
-  try:
-    envelope = run_adapter_fixture(agent_ir_fixture(link.name))
-    assert envelope["ok"] is False
-    assert envelope["sdk"] == "python"
-    assert envelope["fixture"] == "adapter-focused"
-    assert envelope["error"]["code"] == "invalid_fixture_reference"
-    assert envelope["error"]["path"] == "/input/fixture"
-  finally:
-    link.unlink(missing_ok=True)

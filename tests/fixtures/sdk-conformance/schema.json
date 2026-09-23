@@ -9,7 +9,6 @@
     "domain": {
       "type": "string",
       "enum": [
-        "agent_ir",
         "context_execution",
         "provider_request_plan",
         "durable_tool_result",

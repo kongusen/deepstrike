@@ -10,7 +10,7 @@ test("SPC-028-02 classification registry matches the shared fixture", () => {
 
 test("SPC-028-02 every required core object has a complete classification", () => {
   const required = [
-    "AgentDefinition", "AgentSpec", "StoredMessageState", "ProviderRequestPlan", "PromptMeasurement",
+    "AgentDefinition", "StoredMessageState", "ProviderRequestPlan", "PromptMeasurement",
     "ProviderUsage", "ResolvedProviderRoute", "ProviderAttempt", "KernelInput", "KernelEffect",
     "BudgetLedger", "Journal", "Checkpoint", "SessionLog", "EvaluationRun",
   ] as const

@@ -41,12 +41,12 @@ function promptMeasurementFixture(expectedCanonical: Record<string, unknown>): R
   }
 }
 
-function agentIrFixture(reference: string): Record<string, unknown> {
+function providerPlanFixture(reference: string): Record<string, unknown> {
   return {
     id: "adapter-focused",
-    domain: "agent_ir",
+    domain: "provider_request_plan",
     input: { fixture: reference },
-    expected: { canonical: {} },
+    expected: { canonical: { fingerprint: "" } },
   }
 }
 
@@ -104,12 +104,12 @@ describe("spc_017 Node SDK conformance adapter", () => {
   })
 
   it.each([
-    ["absolute path", resolve(root, "tests", "fixtures", "agent-ir", "canonical-agent.json")],
+    ["absolute path", resolve(root, "tests", "fixtures", "provider-request-plan", "canonical.json")],
     ["UNC path", "\\\\server\\share\\agent.json"],
     ["fixtures root", "."],
-    ["parent traversal", "agent-ir/../agent-ir/canonical-agent.json"],
+    ["parent traversal", "provider-request-plan/../provider-request-plan.json"],
   ])("rejects an input.fixture %s", (_label, reference) => {
-    const envelope = runAdapterFixture(agentIrFixture(reference))
+    const envelope = runAdapterFixture(providerPlanFixture(reference))
 
     expect(envelope).toMatchObject({
       ok: false,
@@ -123,10 +123,10 @@ describe("spc_017 Node SDK conformance adapter", () => {
     const directory = mkdtempSync(join(tmpdir(), "deepstrike-sdk-conformance-source-"))
     const outside = join(directory, "agent.json")
     const link = join(root, "tests", "fixtures", `.sdk-conformance-escape-${process.pid}-${Date.now()}.json`)
-    writeFileSync(outside, readFileSync(join(root, "tests", "fixtures", "agent-ir", "canonical-agent.json")))
+    writeFileSync(outside, readFileSync(join(root, "tests", "fixtures", "provider-request-plan", "canonical.json")))
     symlinkSync(outside, link)
     try {
-      const envelope = runAdapterFixture(agentIrFixture(link.slice(join(root, "tests", "fixtures").length + 1)))
+      const envelope = runAdapterFixture(providerPlanFixture(link.slice(join(root, "tests", "fixtures").length + 1)))
       expect(envelope).toMatchObject({
         ok: false,
         sdk: "node",

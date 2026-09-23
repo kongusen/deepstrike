@@ -38,7 +38,7 @@ test("SPC-017 fixture selection fails with an actionable selector error", () => 
 
 test("SPC-017 rejects fixture fields disallowed by the checked-in schema", () => {
   const fixtureDir = join(root, "tests", "fixtures", "sdk-conformance", "canonical")
-  const source = JSON.parse(readFileSync(join(fixtureDir, "agent-ir-basic.json"), "utf8"))
+  const source = JSON.parse(readFileSync(join(fixtureDir, "prompt-measurement.json"), "utf8"))
   const id = `schema-validation-${process.pid}`
   const path = join(fixtureDir, `${id}.json`)
   source.id = id
@@ -89,7 +89,7 @@ test("SPC-017 rejects malformed JSON Pointers in structured errors", () => {
 
 test("SPC-017 enforces every constrained fixture schema field", () => {
   const fixtureDir = join(root, "tests", "fixtures", "sdk-conformance", "canonical")
-  const source = JSON.parse(readFileSync(join(fixtureDir, "agent-ir-basic.json"), "utf8"))
+  const source = JSON.parse(readFileSync(join(fixtureDir, "prompt-measurement.json"), "utf8"))
   const cases = [
     {
       name: "input type",

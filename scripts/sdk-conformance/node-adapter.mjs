@@ -9,8 +9,6 @@ import {
   decodeCanonicalContentParts,
   encodeCanonicalContentParts,
   SESSION_EVENT_KINDS,
-  lowerAgent,
-  normalizeAgent,
 } from "../../node/dist/conformance.js"
 import { createNativeContextPreparationAdapter, providerAttemptToRecord } from "../../node/dist/runtime/public.js"
 import { createProviderRequestPlan, recordPromptMeasurement } from "../../node/dist/providers/public.js"
@@ -65,15 +63,6 @@ async function canonicalFor(fixture) {
         input_digest: prepared.execution_input.input_digest,
         plan_digest: prepared.plan.plan_id,
         verified: adapter.verify(input.request.effect, prepared),
-      }
-    }
-    case "agent_ir": {
-      const source = JSON.parse(await readFile(await inputFixturePath(input.fixture), "utf8"))
-      const lowered = lowerAgent(normalizeAgent(source))
-      return {
-        name: lowered.name,
-        ...(lowered.capabilityFilter ? { capabilityFilter: lowered.capabilityFilter } : {}),
-        effectiveCapabilities: lowered.effectiveCapabilities,
       }
     }
     case "provider_request_plan": {

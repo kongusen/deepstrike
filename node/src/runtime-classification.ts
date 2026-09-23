@@ -17,11 +17,7 @@ export interface RuntimeObjectClassification {
 export const RUNTIME_OBJECT_CLASSIFICATIONS = {
   AgentDefinition: {
     domain: "public", authority: "public-agent", representation: "semantic", durability: "rebuildable",
-    identity: "agent name or host-assigned agent identity", causation: "agent declaration", replay: "input to AgentSpec projection",
-  },
-  AgentSpec: {
-    domain: "host", authority: "host-runtime", representation: "semantic", durability: "rebuildable",
-    identity: "agent identity", causation: "AgentDefinition plus host bindings", replay: "re-derived from public definition and runtime bindings",
+    identity: "agent name or host-assigned agent identity", causation: "agent declaration", replay: "input to the immutable AgentDeclaration snapshot",
   },
   StoredMessageState: {
     domain: "host", authority: "host-runtime", representation: "state-truth", durability: "durable",

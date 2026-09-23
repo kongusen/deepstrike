@@ -12,7 +12,7 @@ export const RUNTIME_VOCABULARY = {
     "Output", "Usage",
   ],
   host: [
-    "AgentSpec", "Context", "ContextPlan", "Capability", "ModelRoute", "Invocation",
+    "Context", "ContextPlan", "Capability", "ModelRoute", "Invocation",
     "ProviderAttempt", "Measurement", "Evidence", "Artifact", "Evaluation", "Promotion",
     "ExecutionPlane",
   ],
