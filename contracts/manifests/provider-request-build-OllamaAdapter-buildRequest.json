@@ -1,0 +1,49 @@
+{
+  "id": "provider-request.build.OllamaAdapter.buildRequest",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-provider",
+    "direction": "encode",
+    "source": {
+      "type": "CanonicalAdapterInput",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "OllamaRequest",
+      "layer": "provider",
+      "authority": "provider"
+    },
+    "adapter": "providers/ollama-adapter:OllamaAdapter.buildRequest",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": [
+        "context",
+        "resolved",
+        "extensions"
+      ]
+    },
+    "derived": [],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "input",
+        "type": "CanonicalAdapterInput"
+      }
+    ],
+    "returnType": "OllamaRequest"
+  }
+}

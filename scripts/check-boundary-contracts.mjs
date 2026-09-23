@@ -94,9 +94,16 @@ function createTypeChecker() {
 function findAdapter(program, filePath, name) {
   const sourceFile = program.getSourceFile(filePath)
   if (!sourceFile) fail(`adapter file not found: ${filePath}`)
+  const [className, methodName] = name.split(".")
   let found
   const visit = node => {
-    if (ts.isFunctionDeclaration(node) && node.name?.text === name) found = node
+    if (methodName && ts.isMethodDeclaration(node)
+      && node.name?.getText() === methodName
+      && node.parent?.name?.text === className) {
+      found = node
+    } else if (!methodName && ts.isFunctionDeclaration(node) && node.name?.text === name) {
+      found = node
+    }
     ts.forEachChild(node, visit)
   }
   visit(sourceFile)

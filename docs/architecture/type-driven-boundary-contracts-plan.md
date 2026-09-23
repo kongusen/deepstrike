@@ -198,6 +198,8 @@ The next event-decode checkpoint registers the live `KernelObservation → Sessi
 
 The first provider semantic checkpoint registers the four live wire-usage decoders as one `host-provider` decode family. OpenAI, Anthropic, Gemini, and Ollama each resolve through the same compiler-checked `unknown → ProviderUsage | undefined` target; their existing provider adapter call sites and usage-normalizer tests remain the behavioral gate. Request-body and stream-event codecs stay separate because they carry protocol-specific state and error semantics.
 
+The request encoding checkpoint now supports class method adapters in the checker and registers the live Anthropic, Gemini, and Ollama `buildRequest` methods. Each crosses `CanonicalAdapterInput` into its protocol-specific request plan on the existing adapter instance; OpenAI builders remain separate because their dialect or continuation state adds a second method parameter.
+
 ---
 
 ## Explicit non-goals for the first slice
