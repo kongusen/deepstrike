@@ -230,6 +230,60 @@ Iteration 9 is now complete for the Node/WASM/SDK conformance surfaces. The unus
 
 The next workflow checkpoint is also complete: `spawn_workflow` actions now expose named `KernelWorkflowSpawnNode` and `KernelWorkflowBudget` types, and the runner consumes them through explicit kernel-to-host adapters. Kernel bookkeeping fields (`task_id`, `attempt_id`, `launch_token`, and `node_id`) are dropped at the crossing by policy rather than by an unchecked cast. The registry and generated manifests now cover both workflow directions.
 
+## Anthropic 动态工作流迭代计划
+
+目标是 Anthropic 官方文档描述的 provider-neutral 产品机制：可重跑的 JavaScript 编排脚本，脚本变量保存中间结果，runtime 在后台执行 agent。kernel 继续是 spawn、quota、trust、取消和持久事实的唯一权威。
+
+### Slice A：公共动态词汇（当前分支已完成）
+
+- [x] 增加 `DynamicWorkflowExecutor`，提供 `agent`、`parallel`、`pipeline`、`phase`、`log`、`args`。
+- [x] 增加 metadata、script artifact、limits、progress 和 agent result 命名类型。
+- [x] 在 host 提交前强制默认 16 并发、最大 256 并发、单批 4096 项、单次运行 1000 agents。
+- [x] 每个 `agent()` 仍经注入的 `runWorkflow` host callback 进入现有 kernel。
+- [x] 覆盖 args 不可变、结果顺序、phase/log 进度、结构化输出、并发限制和超限拒绝。
+
+**检查点：** Node 构建和动态工作流定向测试通过。此 slice 是 API/runtime adapter，不是任意源码执行器。
+
+### Slice B：单一 kernel-owned 动态运行
+
+- [ ] 在 `RuntimeRunner` 内引入 `DynamicWorkflowController`，让一个脚本运行共享一个 session/run id、RunGroup reservation 和 kernel workflow operation。
+- [ ] 将 `agent`/`parallel`/`pipeline` 编译为动态 DAG append，而不是每次启动独立的单节点 workflow。
+- [ ] 在 host spawn boundary 解析 `modelHint`、目标 Agent、tool access 和 trust；不能把 host-only `agent` metadata 伪装成 kernel 字段。
+
+**门槛：** 并行脚本共享同一 quota ledger、取消路径和审计/session log；被拒绝的 append 以 typed rejection 返回给脚本。
+
+### Slice C：隔离脚本 artifact
+
+- [ ] 按 project/personal 位置持久化 `DynamicWorkflowScript`，做安全路径检查和不可变 run snapshot。
+- [ ] 在隔离 worker/VM 中只提供 `agent`、`parallel`、`pipeline`、`phase`、`log`、`args` globals。
+- [ ] 在脚本边界拒绝 module loading、直接 filesystem/shell、非确定性时间/随机数和运行中用户输入。
+
+**门槛：** 同一脚本和 args 产生相同的 agent invocation 序列；脚本不能读取 host credentials 或任意 process API。
+
+### Slice D：进度、审批和成本控制
+
+- [ ] 增加 phase start/end、agent start/end、log、approval、pause、resume、cancellation 的 typed lifecycle events。
+- [ ] 增加 pre-run approval，携带 workflow metadata、phases、raw-script reference、size guideline 和 projected cost。
+- [ ] 增加 phase progress 查询和 large-workflow advisory，不削弱 kernel quota。
+
+**门槛：** 拒绝审批不会启动 child；pause/resume/cancel 只留下一个 terminal run state；重挂载后仍可读取进度。
+
+### Slice E：确定性 replay 与结果复用
+
+- [ ] 持久化每个 agent invocation key、prompt fingerprint、输入依赖、结果和 terminal status。
+- [ ] fingerprint 未变时复用完成结果；第一个变更/失败 invocation 及其后继重新执行。
+- [ ] run artifact 或 saved result 缺失时拒绝 relaunch，resume 不得静默从头开始。
+
+**门槛：** 只修改上游 prompt 时仅使其 suffix 失效；中间 fan-out 失败时重跑文档规定的 suffix；缺失结果返回 typed `nothing_to_resume` rejection。
+
+### Slice F：编排与分发
+
+- [ ] 增加 project/user workflow store、名称冲突优先级和 plugin/package discovery。
+- [ ] 校验字面量 `meta.name`/`meta.description` 与 phase title 一致性。
+- [ ] 增加 `workflowSizeGuideline` 配置和 disable switch，并与 kernel quota 分开保存。
+
+**门槛：** saved script 可列出、检查、用结构化 `args` 启动，也可关闭而不改 Rust kernel ABI。
+
 ---
 
 ## Explicit non-goals for the first slice

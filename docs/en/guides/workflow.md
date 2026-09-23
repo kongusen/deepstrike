@@ -170,6 +170,34 @@ WorkflowNodeSpec(
 
 Register custom reducers: `RuntimeOptions(reducers={**builtin_reducers(), "my_merge": fn})`
 
+## Node dynamic script vocabulary (first slice)
+
+Anthropic-style dynamic orchestration is available through `DynamicWorkflowExecutor` from
+`@deepstrike/sdk/workflow`. In this slice the script is a TypeScript/JavaScript function. Every
+`agent()` call still enters the kernel through the supplied `runWorkflow`; isolated source-file
+execution and resumable replay are later slices.
+
+```ts
+import { DynamicWorkflowExecutor } from "@deepstrike/sdk/workflow"
+
+const dynamic = new DynamicWorkflowExecutor(
+  { runWorkflow: spec => runner.runWorkflow(spec) },
+  { args: { files: ["a.ts", "b.ts"] } },
+)
+
+const run = await dynamic.run(async ({ args, phase, pipeline, agent, log }) => {
+  const files = args.files as string[]
+  log("audit started", { count: files.length })
+  return phase("audit", () => pipeline(files, file =>
+    agent(`Audit ${file} for authentication issues`, { label: file, role: "verify" }),
+  ))
+})
+```
+
+`parallel` preserves input order and uses a default concurrency of 16, `pipeline` runs in order;
+one call accepts at most 4096 items and one run at most 1000 agents. Kernel quota, governance, and
+cancellation remain authoritative.
+
 ---
 
 ## Runtime behavior

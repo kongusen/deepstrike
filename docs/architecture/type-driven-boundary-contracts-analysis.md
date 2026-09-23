@@ -482,3 +482,40 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 3. 多 adapter 从 P3 附带说明升格为机制级前置任务（三个真实现场：⑦、CT2、EV1）。
 4. M4 直写旁路与 workflow target 绑定缺陷回链三点一.4，随 P2/审计修复顺序收编后再注册对应协议。
 5. 关联不变量（S2 恰一回执）列为协议/全局规则模型的新表达需求，与 EffectId 铸造禁令同级。
+
+## 九、Anthropic Dynamic Workflows 对齐审计（2026-09-23）
+
+这里对齐的是 Anthropic/Claude Code 官方文档所描述的产品机制，不是某个 provider 的请求格式。官方定义的动态工作流是由运行时执行的 JavaScript 编排脚本：脚本决定下一步，脚本变量保存中间结果，`agent`、`parallel`、`pipeline` 组合出 fan-out 与顺序流水线，`phase` 和 `log` 产生进度视图，运行结果可以保存并在同一会话内恢复。[官方文档](https://code.claude.com/docs/en/workflows) 还明确规定了审批、隔离执行、并发/批次/总 agent 限制以及失败后的重放规则。
+
+### 9.1 当前实现已经覆盖的底座
+
+| 官方机制 | DeepStrike 当前能力 | 判定 |
+|---|---|---|
+| 动态决定后续工作 | `submit_workflow_nodes`、`start_workflow` | 已有，但入口仍是模型工具，不是脚本变量驱动 |
+| 并行 fan-out | kernel workflow batch + runner `Promise.all` | 已有，受 kernel quota 和调度器控制 |
+| 结果传给后续节点 | DAG 依赖、`dependency_outputs`、reducers | 已有 |
+| 质量复核 | classify、generate/filter、tournament、verify 模板 | 已有 |
+| 长任务证据与恢复 | SessionLog、kernel journal、workflow node completion | 已有底座 |
+| provider/工具 I/O | host runner 执行，kernel 只裁决 effect | 已有且边界正确 |
+
+### 9.2 当前缺口
+
+1. **没有脚本运行时**：没有可保存的 `meta + body` 工作流 artifact，也没有在隔离环境中提供 `agent/parallel/pipeline/phase/log/args` 的执行上下文。
+2. **没有动态运行进度模型**：现有 session events 能记录节点完成，但没有按 phase 聚合 agent 数、token、耗时和当前状态的统一查询面。
+3. **恢复语义不等价**：现有 workflow 能从 journal/session log 恢复 DAG；尚未按“已完成结果复用、首个 prompt 变化及其后继重跑、失败节点及后继重跑、缺失结果拒绝静默重启”的脚本重放规则建模。
+4. **启动审批与成本提示缺失**：kernel governance 能拒绝 effect，但工作流启动前还没有展示阶段、原始脚本、规模提示并等待一次性批准的控制面。
+5. **边界仍有一个真实缺陷**：`WorkflowNodeSpec.agent` 是 host metadata，`workflowNodeSpecToKernel` 会明确丢弃它，动态脚本调用必须先通过 host spawn boundary 解析目标 Agent，不能把它伪装成 kernel 字段。
+6. **限制没有形成独立的 workflow contract**：kernel 已有 `max_concurrent_subagents`、`max_workflow_nodes` 等 quota，但尚未有文章语义对应的单次 `parallel/pipeline` 4096 项、默认 16 并发、单次运行 1000 agents 和 size guideline/large warning 模型。
+
+### 9.3 第一阶段实现边界
+
+当前分支新增 provider-neutral 的 `DynamicWorkflowExecutor`（`node/src/workflow/dynamic.ts`）。它提供：
+
+- `agent(prompt, options)`：构造单节点 `WorkflowSpec`，仍通过注入的 `runWorkflow` 进入现有 kernel；
+- `parallel(items, worker)`：按默认 16（可调至 256）的并发上限运行 worker，并保持输入顺序；
+- `pipeline(items, worker)`：顺序运行，保留每个位置的结果；
+- `phase(name, body)`、`log(message, fields)`、`args` 快照和 typed progress；
+- 单次运行 1000 agents、单批 4096 items 的 host guardrail；kernel quota 仍是最终权威；
+- `DynamicWorkflowScript` 元数据/源码类型，为后续保存与隔离执行留下稳定输入契约。
+
+这一步刻意不执行任意源码、不允许 workflow 脚本直接读文件或 shell，也不声称已经实现脚本重放。这样可以先把动态工作流的公共词汇与 kernel 入口固定下来，再引入隔离 VM 和持久化 replay，而不会复制一套绕过 kernel 的执行器。

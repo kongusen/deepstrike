@@ -34,3 +34,39 @@ Memory trust is assigned when data crosses into the governed path; provenance is
 ## Validation status
 
 The Node runtime, WASM conformance tests, Rust conformance tests, contract generation, and generated-artifact verification pass on the current branch. Python conformance requires a locally built extension; a system-installed extension can fail with a `PyInit_deepstrike` loader error unrelated to these boundary changes.
+
+## Anthropic dynamic-workflow alignment (2026-09-23)
+
+This alignment targets the product mechanism described in Anthropic's official Claude Code documentation, not a provider request format. Anthropic defines a dynamic workflow as a JavaScript orchestration script: the script decides what runs next, script variables hold intermediate results, `agent`, `parallel`, and `pipeline` compose fan-out and sequential work, while `phase` and `log` feed a progress view. The documented runtime also covers approval, isolation, concurrency/batch/total-agent limits, and replay after failure or interruption. See the [official workflow documentation](https://code.claude.com/docs/en/workflows).
+
+### What DeepStrike already has
+
+| Documented mechanism | DeepStrike substrate | Status |
+| --- | --- | --- |
+| Dynamic next-step planning | `submit_workflow_nodes`, `start_workflow` | Present, but model-tool driven rather than script-variable driven |
+| Parallel fan-out | Kernel workflow batches and the runner's parallel driver | Present and quota-gated |
+| Passing results downstream | DAG dependencies, `dependency_outputs`, reducers | Present |
+| Verification patterns | classify, generate/filter, tournament, and verify templates | Present |
+| Durable evidence and recovery | SessionLog, kernel journal, workflow completion records | Substrate present |
+| Provider and tool I/O | Host runner executes; kernel adjudicates effects | Boundary is correct |
+
+### Missing contracts
+
+1. There is no script runtime or saved `meta + body` artifact exposing `agent`, `parallel`, `pipeline`, `phase`, `log`, and `args` in an isolated context.
+2. Session events record node completion, but there is no phase-level progress view with agent counts, tokens, elapsed time, and status.
+3. Journal recovery is not yet the documented script replay rule: reuse completed results, rerun the first changed prompt and its descendants, rerun failed nodes and later nodes, and refuse a silent restart when saved results are missing.
+4. Workflow launch has no pre-run approval card, raw-script inspection path, or advisory large-run warning.
+5. `WorkflowNodeSpec.agent` is host metadata and `workflowNodeSpecToKernel` intentionally drops it. A dynamic script must resolve a target Agent at the host spawn boundary instead of inventing a kernel field.
+6. Kernel quotas exist, but the article-level workflow contract does not yet model the default 16 concurrency, 256 ceiling, 4096 items per `parallel`/`pipeline`, 1000 agents per run, or size-guideline warnings.
+
+### First implementation slice
+
+The branch now adds a provider-neutral `DynamicWorkflowExecutor` in `node/src/workflow/dynamic.ts`. It provides:
+
+- `agent(prompt, options)`, which creates a one-node `WorkflowSpec` and enters the existing kernel through an injected `runWorkflow` host;
+- bounded, order-preserving `parallel` (default 16, configurable up to 256) and sequential `pipeline`;
+- `phase`, `log`, an immutable `args` snapshot, and typed progress;
+- host guardrails for 1000 agents per run and 4096 items per batch, with kernel quotas remaining authoritative;
+- `DynamicWorkflowScript` metadata/source types as the stable input contract for persistence and isolated execution.
+
+This slice deliberately does not execute arbitrary source text, grant scripts direct filesystem or shell access, or claim replay parity. It fixes the public vocabulary and kernel entry point first, then adds an isolated script VM and durable replay without creating a second execution authority.

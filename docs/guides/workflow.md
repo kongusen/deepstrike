@@ -164,6 +164,33 @@ WorkflowNodeSpec(
 
 注册自定义 reducer：`RuntimeOptions(reducers={**builtin_reducers(), "my_merge": fn})`
 
+## Node 动态脚本词汇（第一阶段）
+
+Anthropic 风格的动态编排现在可以通过 `@deepstrike/sdk/workflow` 的
+`DynamicWorkflowExecutor` 使用。这个阶段的脚本体是 TypeScript/JavaScript 函数，所有
+`agent()` 调用仍由传入的 `runWorkflow` 进入 kernel；源码文件隔离执行和可恢复 replay
+属于后续迭代。
+
+```ts
+import { DynamicWorkflowExecutor } from "@deepstrike/sdk/workflow"
+
+const dynamic = new DynamicWorkflowExecutor(
+  { runWorkflow: spec => runner.runWorkflow(spec) },
+  { args: { files: ["a.ts", "b.ts"] } },
+)
+
+const run = await dynamic.run(async ({ args, phase, pipeline, agent, log }) => {
+  const files = args.files as string[]
+  log("audit started", { count: files.length })
+  return phase("audit", () => pipeline(files, file =>
+    agent(`检查 ${file} 的鉴权问题`, { label: file, role: "verify" }),
+  ))
+})
+```
+
+`parallel` 保持输入顺序并受默认 16 并发限制，`pipeline` 顺序执行；单批最多 4096 项，
+单次运行最多 1000 个 agent。kernel 自己的 quota、治理和取消路径仍然是最终裁决。
+
 ---
 
 ## 延伸阅读

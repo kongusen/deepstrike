@@ -9,6 +9,28 @@ export type { Reducer, ReducerRegistry, ReducerInput } from "../runtime/reducers
 export { FileWorkflowStore } from "../runtime/workflow-store.js"
 export { createWorkflow, lowerWorkflowDefinition } from "./definition.js"
 export type { WorkflowDefinition, WorkflowStep, WorkflowResult } from "./definition.js"
+export {
+  DEFAULT_DYNAMIC_WORKFLOW_LIMITS,
+  DynamicWorkflowExecutor,
+  DynamicWorkflowLimitError,
+  resolveDynamicWorkflowLimits,
+} from "./dynamic.js"
+export type {
+  DynamicWorkflowAgentOptions,
+  DynamicWorkflowAgentResult,
+  DynamicWorkflowContext,
+  DynamicWorkflowHost,
+  DynamicWorkflowLimits,
+  DynamicWorkflowLogEntry,
+  DynamicWorkflowMeta,
+  DynamicWorkflowPhaseProgress,
+  DynamicWorkflowProgress,
+  DynamicWorkflowRun,
+  DynamicWorkflowRunOptions,
+  DynamicWorkflowScript,
+  DynamicWorkflowSizeGuideline,
+  DynamicWorkflowStatus,
+} from "./dynamic.js"
 
 export {
   submitWorkflowNodesTool,
