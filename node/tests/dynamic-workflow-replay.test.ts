@@ -1,6 +1,9 @@
 import { DynamicWorkflowExecutor, dynamicAgentTask } from "../src/workflow/dynamic.js"
-import { InMemoryDynamicWorkflowReplayStore } from "../src/workflow/dynamic-replay.js"
+import { FileDynamicWorkflowReplayStore, InMemoryDynamicWorkflowReplayStore } from "../src/workflow/dynamic-replay.js"
 import type { DynamicWorkflowHost } from "../src/workflow/dynamic.js"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 function hostWithCalls(calls: string[]): DynamicWorkflowHost {
   return {
@@ -89,5 +92,25 @@ describe("dynamic workflow replay", () => {
     expect(calls).toEqual(["inspect"])
     expect(run.progress.agentsReused).toBe(1)
     expect(run.progress.agentsStarted).toBe(1)
+  })
+
+  it("serializes concurrent file replay writes without losing completed items", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dynamic-wf-replay-"))
+    try {
+      const store = new FileDynamicWorkflowReplayStore({ rootDir: root })
+      await Promise.all(["a", "b", "c"].map((nodeId, index) => store.save("run-1", {
+        nodeId,
+        promptFingerprint: `${String(index).repeat(64)}`,
+        text: `done:${nodeId}`,
+        status: "completed",
+      })))
+
+      await expect(store.find("run-1", "a", "0".repeat(64))).resolves.toMatchObject({ text: "done:a" })
+      await expect(store.find("run-1", "b", "1".repeat(64))).resolves.toMatchObject({ text: "done:b" })
+      await expect(store.find("run-1", "c", "2".repeat(64))).resolves.toMatchObject({ text: "done:c" })
+      await expect(readFile(join(root, "run-1.json"), "utf8")).resolves.toContain('"version": 1')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

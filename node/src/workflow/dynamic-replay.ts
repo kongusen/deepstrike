@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto"
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises"
+import { createHash, randomUUID } from "node:crypto"
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { DynamicWorkflowAgentOptions } from "./dynamic.js"
@@ -61,25 +61,31 @@ function safeRunId(runId: string): string {
 /** File-backed completed invocation results. Failed or running calls are never reused. */
 export class FileDynamicWorkflowReplayStore implements DynamicWorkflowReplayStore {
   private readonly root: string
+  private readonly runTails = new Map<string, Promise<void>>()
 
   constructor(opts?: { rootDir?: string }) {
     this.root = opts?.rootDir ?? defaultRoot()
   }
 
   async find(runId: string, nodeId: string, promptFingerprint: string): Promise<DynamicWorkflowInvocationRecord | undefined> {
-    const records = await this.readRun(runId)
-    return records.find(record => record.nodeId === nodeId && record.promptFingerprint === promptFingerprint)
+    const safe = safeRunId(runId)
+    return this.withRunLock(safe, async () => {
+      const records = await this.readRun(safe)
+      return records.find(record => record.nodeId === nodeId && record.promptFingerprint === promptFingerprint)
+    })
   }
 
   async save(runId: string, record: DynamicWorkflowInvocationRecord): Promise<void> {
     const safe = safeRunId(runId)
-    await this.ensureRoot()
-    await rejectSymlink(this.pathFor(safe), "dynamic workflow replay file")
-    const records = await this.readRun(safe)
-    const index = records.findIndex(existing => existing.nodeId === record.nodeId)
-    if (index >= 0) records[index] = { ...record }
-    else records.push({ ...record })
-    await writeFile(this.pathFor(safe), JSON.stringify({ version: 1, records }, null, 2), "utf8")
+    await this.withRunLock(safe, async () => {
+      await this.ensureRoot()
+      await rejectSymlink(this.pathFor(safe), "dynamic workflow replay file")
+      const records = await this.readRun(safe)
+      const index = records.findIndex(existing => existing.nodeId === record.nodeId)
+      if (index >= 0) records[index] = { ...record }
+      else records.push({ ...record })
+      await this.writeRun(safe, records)
+    })
   }
 
   private pathFor(runId: string): string {
@@ -99,9 +105,31 @@ export class FileDynamicWorkflowReplayStore implements DynamicWorkflowReplayStor
     }
   }
 
+  private async writeRun(runId: string, records: DynamicWorkflowInvocationRecord[]): Promise<void> {
+    const path = this.pathFor(runId)
+    const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`
+    try {
+      await writeFile(temporary, JSON.stringify({ version: 1, records }, null, 2), "utf8")
+      await rename(temporary, path)
+    } finally {
+      await rm(temporary, { force: true })
+    }
+  }
+
+  private async withRunLock<T>(runId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.runTails.get(runId) ?? Promise.resolve()
+    const current = previous.catch(() => undefined).then(operation)
+    const settled = current.then(() => undefined, () => undefined)
+    this.runTails.set(runId, settled)
+    try {
+      return await current
+    } finally {
+      if (this.runTails.get(runId) === settled) this.runTails.delete(runId)
+    }
+  }
+
   private async ensureRoot(): Promise<void> {
     await rejectSymlink(this.root, "dynamic workflow replay store")
     await mkdir(this.root, { recursive: true })
   }
 }
-
