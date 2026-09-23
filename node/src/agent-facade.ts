@@ -5,7 +5,7 @@ import { RuntimeRunner, type RuntimeOptions } from "./runtime/runner.js"
 import type { LLMProvider, StreamEvent, DoneEvent, ErrorEvent, TokenUsage, ContentPart } from "./types.js"
 import type { RegisteredTool } from "./tools/index.js"
 import type { MemoryRecord, MemoryRecall, MemoryQuery, MemoryScope, MemoryStore, MemoryKind } from "./memory/protocols.js"
-import type { WorkflowSpec, WorkflowOutcome, KernelAgentRole } from "./types/agent.js"
+import type { WorkflowSpec, WorkflowOutcome } from "./types/agent.js"
 import { extractJsonValue, validateAgainstSchema } from "./runtime/output-schema.js"
 import { McpProxyPlane } from "./runtime/mcp-proxy-plane.js"
 import { EnvCredentialVault } from "./runtime/credential-vault.js"
@@ -91,7 +91,6 @@ export interface RecallOptions {
 
 export interface DelegationRequest {
   goal: string
-  role?: KernelAgentRole
   /** Declared handoff target resolved by the host at the spawn boundary. */
   target: import("./handoff-target.js").AgentRef
 }
@@ -99,7 +98,6 @@ export interface DelegationRequest {
 export interface DelegationResult {
   output: string
   status: "completed" | "partial" | "failed"
-  nodeId?: string
 }
 
 /** The executable public Agent handle created from an AgentDefinition. */

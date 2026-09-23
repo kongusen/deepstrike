@@ -148,9 +148,11 @@ export interface Workflow {
   run(options?: WorkflowRunOptions): Promise<WorkflowResult>
 }
 
+export type AgentRef = string | { name: string }
+
 export interface DelegationRequest {
   goal: string
-  role?: KernelAgentRole
+  target: AgentRef
 }
 
 export interface AgentSession {
