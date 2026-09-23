@@ -395,6 +395,30 @@ impl CanonicalOperationDriver {
                     disposition,
                 })
             }
+            RootEntry::DynamicWorkflow(_) => {
+                // A dynamic root intentionally publishes no first spawn effect. The host script
+                // supplies its first batch through `AppendWorkflowNodes`; the explicit open bit
+                // prevents the empty DAG from self-terminating in the state machine.
+                let workflow_id = mint_workflow_id(&context.input.operation_id, context.step_seq);
+                let engine = self.engine_mut()?;
+                seed_initial_context(engine, initial);
+                engine.set_root_workflow(true);
+                engine.set_dynamic_workflow_open(true);
+                let action = engine.load_workflow_as(
+                    crate::orchestration::workflow::WorkflowSpec::default(),
+                    ROOT_TASK_ID,
+                );
+                debug_assert!(matches!(action, LoopAction::AwaitingResume));
+                self.node_ids.clear();
+                self.workflow_nodes.clear();
+                self.workflow_id = Some(workflow_id.clone());
+                Ok(PlannedStep {
+                    root_kind: Some(RootKind::Workflow),
+                    focus: Some(ExecutionFocus::workflow_controller(workflow_id, None)),
+                    observations: Vec::new(),
+                    disposition: self.quiet_step().disposition,
+                })
+            }
         }
     }
 }

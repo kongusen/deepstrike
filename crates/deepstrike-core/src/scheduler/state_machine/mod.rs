@@ -386,6 +386,9 @@ pub struct LoopStateMachine {
     /// agent with another provider call. `true` makes that completion the operation's terminal
     /// instead, which is what deletes the host-side `CompleteRun` race (§10.1 现状注记).
     pub(super) root_workflow: bool,
+    /// A host-driven dynamic root remains active after its current DAG drains so the script can
+    /// append another batch. It is cleared only by the explicit host close command.
+    pub(super) dynamic_workflow_open: bool,
     /// Spec §10.4 / §15.3 · whether a spawned child waits for the host's launch acknowledgement
     /// before it counts as `Running`.
     ///
@@ -483,6 +486,7 @@ impl LoopStateMachine {
             pending_tool_measurements: HashMap::new(),
             workflow: None,
             root_workflow: false,
+            dynamic_workflow_open: false,
             pending_workflow_spawn: None,
             pending_preempt: None,
             pending_host_effects: VecDeque::new(),
@@ -533,6 +537,24 @@ impl LoopStateMachine {
     /// Whether the in-flight workflow is this operation's root.
     pub fn is_root_workflow(&self) -> bool {
         self.root_workflow
+    }
+
+    /// Keep a root workflow open between host-driven dynamic submissions.
+    pub fn set_dynamic_workflow_open(&mut self, open: bool) {
+        self.dynamic_workflow_open = open;
+    }
+
+    /// Whether this root is waiting for another host append rather than ready to terminal.
+    pub fn is_dynamic_workflow_open(&self) -> bool {
+        self.dynamic_workflow_open
+    }
+
+    /// Close a dynamic root after the host script has finished submitting work. The normal
+    /// workflow driver then either emits the terminal immediately or returns the next spawn action
+    /// if the caller violated the close-after-settle contract.
+    pub fn close_dynamic_workflow(&mut self) -> LoopAction {
+        self.dynamic_workflow_open = false;
+        self.drive_workflow(None, None)
     }
 
     /// The schedulability state of one task, for host projections and tests.

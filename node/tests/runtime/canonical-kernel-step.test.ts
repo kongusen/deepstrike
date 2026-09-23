@@ -412,6 +412,19 @@ describe("workflow scheduling-factor boundary", () => {
     expect(phases.join("\n")).toContain('"scheduling_factors":{"deadline_urgency":4,"process_priority":3}')
 
   })
+
+  it("uses a distinct dynamic root entry and explicit close control", async () => {
+    const phases: string[] = []
+    const runtime = new CanonicalRunnerRuntime(fakeKernel(phases), new InMemoryKernelJournal(), OPERATION_ID, {
+      maxContextTokens: 8_192,
+    })
+
+    await runtime.startDynamicWorkflow()
+    await runtime.applyHostEvent({ kind: "complete_dynamic_workflow" })
+
+    expect(phases.join("\n")).toContain('"entry":{"kind":"dynamic_workflow"}')
+    expect(phases.join("\n")).toContain('"command":{"kind":"complete_dynamic_workflow"}')
+  })
 })
 
 describe("multi-effect planned step projection", () => {

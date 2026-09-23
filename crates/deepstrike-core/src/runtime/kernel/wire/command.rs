@@ -27,6 +27,8 @@ pub enum HostCommand {
     /// spawn facts. This is intentionally separate from the model-facing append syscall: it has
     /// host authority and no caller-supplied agent identity.
     AppendWorkflowNodes(AppendWorkflowNodesCommand),
+    /// Close a host-driven dynamic workflow after its script and all submitted batches settle.
+    CompleteDynamicWorkflow(CompleteDynamicWorkflowCommand),
     ApplyCapabilityPatch(ApplyCapabilityPatchCommand),
     ApplyKnowledgeMutation(ApplyKnowledgeMutationCommand),
     /// DEC-9: the host seeding entries into the knowledge partition. Named apart from the P1
@@ -77,6 +79,10 @@ pub struct UpdateTaskCommand {
 pub struct AppendWorkflowNodesCommand {
     pub nodes: Vec<WorkflowNode>,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompleteDynamicWorkflowCommand {}
 
 /// A partial edit of the task state. Every field is optional; absent ⇒ unchanged.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

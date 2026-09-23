@@ -20,13 +20,17 @@ use super::scalar::{BoundedJson, CallId, NodeId, TaskId, WireU64, WorkflowId};
 pub enum RootEntry {
     Agent(RootAgentEntry),
     Workflow(RootWorkflowEntry),
+    /// A host-driven workflow root that stays open while the dynamic script appends nodes.
+    /// The host must close it explicitly with `CompleteDynamicWorkflow` before the operation can
+    /// commit its workflow terminal.
+    DynamicWorkflow(RootDynamicWorkflowEntry),
 }
 
 impl RootEntry {
     pub fn root_kind(&self) -> RootKind {
         match self {
             Self::Agent(_) => RootKind::Agent,
-            Self::Workflow(_) => RootKind::Workflow,
+            Self::Workflow(_) | Self::DynamicWorkflow(_) => RootKind::Workflow,
         }
     }
 }
@@ -47,6 +51,13 @@ pub struct RootAgentEntry {
 pub struct RootWorkflowEntry {
     pub spec: WorkflowSpec,
 }
+
+/// Dynamic workflow roots start with an empty DAG and accept host-authorized appends until the
+/// script calls the close transition. Keeping this as a separate root entry makes the lifecycle
+/// distinction explicit instead of overloading an ordinary workflow with an empty spec.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootDynamicWorkflowEntry {}
 
 /// Immutable for the whole operation lifetime (§6.1.5/§6.1.6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

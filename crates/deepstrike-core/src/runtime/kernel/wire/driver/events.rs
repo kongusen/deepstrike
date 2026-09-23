@@ -407,6 +407,9 @@ impl CanonicalOperationDriver {
             HostCommand::AppendWorkflowNodes(append) => {
                 self.plan_dynamic_workflow_append(context, append)
             }
+            HostCommand::CompleteDynamicWorkflow(_) => {
+                self.plan_dynamic_workflow_complete(context)
+            }
             HostCommand::ApplyCapabilityPatch(patch) => self.plan_capability_patch(patch),
             HostCommand::ApplyKnowledgeMutation(mutation) => self.plan_knowledge_mutation(mutation),
             HostCommand::SeedKnowledge(seed) => self.plan_seed_knowledge(seed),
@@ -461,6 +464,23 @@ impl CanonicalOperationDriver {
             self.node_ids.extend(node_ids);
             self.workflow_nodes.extend(append.nodes.clone());
         }
+        self.continue_after(context, action, RootKind::Workflow)
+    }
+
+    pub(super) fn plan_dynamic_workflow_complete(
+        &mut self,
+        context: &PlanContext<'_>,
+    ) -> Result<PlannedStep, KernelFault> {
+        if self.root_kind != Some(RootKind::Workflow)
+            || !self.engine().is_some_and(LoopStateMachine::workflow_active)
+            || !self.engine().is_some_and(LoopStateMachine::is_dynamic_workflow_open)
+        {
+            return Err(KernelFault::new(
+                KernelFaultCode::InvalidAuthority,
+                "dynamic workflow close requires an active host-driven dynamic root",
+            ));
+        }
+        let action = self.engine_mut()?.close_dynamic_workflow();
         self.continue_after(context, action, RootKind::Workflow)
     }
 

@@ -517,7 +517,7 @@ impl LoopStateMachine {
     /// for the slowest sibling in its dependency layer. For DAGs with no intra-layer skew
     /// (fanout/linear) the spawn sequence is identical to the old batch path. `just_completed` is the
     /// node whose completion triggered this round (`None` on the initial install).
-    fn drive_workflow(
+    pub(super) fn drive_workflow(
         &mut self,
         just_completed: Option<String>,
         caller: Option<crate::scheduler::tcb::TaskId>,
@@ -580,6 +580,9 @@ impl LoopStateMachine {
         // Nothing running and nothing newly spawned → close every remaining node and resume the
         // parent loop. Dependency propagation normally closes blocked descendants before this;
         // `finish_workflow` performs the final invariant sweep.
+        if self.root_workflow && self.dynamic_workflow_open {
+            return LoopAction::AwaitingResume;
+        }
         self.suspend_state = None;
         if let Some(id) = just_completed {
             self.observations.push(KernelObservation::Resumed {

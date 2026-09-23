@@ -25,7 +25,7 @@ use crate::runtime::kernel::wire::fault::PrepareToken;
 use crate::runtime::kernel::wire::record::{KernelRecord, RecordPreparation, verify_record_chain};
 use crate::runtime::kernel::wire::restore::{RestoreCost, RestoredOperation, restore_operation};
 use crate::runtime::kernel::wire::root::{
-    RootAgentEntry, RootWorkflowEntry, WorkflowNode as WireNode,
+    RootAgentEntry, RootDynamicWorkflowEntry, RootWorkflowEntry, WorkflowNode as WireNode,
 };
 use crate::runtime::kernel::wire::scalar::{
     AttemptId as WireAttemptId, DeliveryId, InputId, Ppm, SignalId,
@@ -302,6 +302,17 @@ fn workflow_start(id: &str, observed_at_ms: u64, spec: WireSpec) -> WireEnvelope
         observed_at_ms,
         KernelInput::StartOperation(StartOperation {
             entry: RootEntry::Workflow(RootWorkflowEntry { spec }),
+            initial_context: InitialContext::default(),
+        }),
+    )
+}
+
+fn dynamic_workflow_start(id: &str, observed_at_ms: u64) -> WireEnvelope {
+    envelope(
+        id,
+        observed_at_ms,
+        KernelInput::StartOperation(StartOperation {
+            entry: RootEntry::DynamicWorkflow(RootDynamicWorkflowEntry {}),
             initial_context: InitialContext::default(),
         }),
     )
@@ -912,6 +923,49 @@ fn a_dynamic_host_append_grows_the_existing_workflow_and_uses_kernel_spawn_gatin
     assert_eq!(spawn.tasks.len(), 1);
     assert_eq!(spawn.tasks[0].node_id.as_str(), "extra");
     assert_eq!(initial_effect.tag(), EffectKindTag::SpawnTasks);
+}
+
+#[test]
+fn a_dynamic_workflow_root_stays_open_until_host_closes_it() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&configure());
+
+    let started = runtime.submit(&dynamic_workflow_start("dynamic-start", 1_700_000_001_000));
+    assert_eq!(started.step.root_kind, Some(RootKind::Workflow));
+    assert!(started.published_effects().is_empty(), "dynamic root waits for its first append");
+    assert!(runtime.tx.terminal().is_none());
+
+    let appended = runtime.submit(&control(
+        "dynamic-append",
+        1_700_000_002_000,
+        HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
+            nodes: vec![wire_node("dynamic-node", "dynamic work", &[])],
+        }),
+    ));
+    let append_effect = sole_effect(&appended);
+    assert_eq!(append_effect.tag(), EffectKindTag::SpawnTasks);
+    runtime.submit(&spawned(
+        "dynamic-ack",
+        1_700_000_003_000,
+        &effect_id(appended.step_seq),
+        &["wf-node0"],
+    ));
+    let completed = runtime.submit(&child_done(
+        "dynamic-done",
+        1_700_000_004_000,
+        "wf-node0",
+        "dynamic result",
+    ));
+    assert!(completed.published_effects().is_empty());
+    assert!(runtime.tx.terminal().is_none(), "the script may append another batch after this result");
+
+    let closed = runtime.submit(&control(
+        "dynamic-close",
+        1_700_000_005_000,
+        HostCommand::CompleteDynamicWorkflow(CompleteDynamicWorkflowCommand {}),
+    ));
+    assert!(closed.step.disposition.is_terminal());
+    assert!(runtime.tx.terminal().is_some());
 }
 
 #[test]

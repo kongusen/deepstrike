@@ -939,6 +939,18 @@ export class CanonicalRunnerRuntime {
     return action
   }
 
+  /** Start a host-driven dynamic workflow root that stays open until an explicit close command. */
+  async startDynamicWorkflow(): Promise<KernelRunnerAction | null> {
+    await this.ensureConfigured()
+    const action = await this.commit({
+      kind: "start_operation",
+      entry: { kind: "dynamic_workflow" },
+      initial_context: this.initialContext,
+    })
+    this.started = true
+    return action
+  }
+
   /** Append dynamic workflow nodes to this active root workflow through host authority. */
   async appendWorkflowNodes(specValue: Record<string, unknown>): Promise<KernelRunnerAction | null> {
     await this.ensureConfigured()
@@ -1270,6 +1282,9 @@ export class CanonicalRunnerRuntime {
         break
       case "capability_command":
         input = { kind: "host_control", command: this.canonicalCapabilityCommand(asObject(event.command)) }
+        break
+      case "complete_dynamic_workflow":
+        input = { kind: "host_control", command: { kind: "complete_dynamic_workflow" } }
         break
       case "add_history_message":
         throw new Error("running ABI operations accept history only through effects or external events")
@@ -1694,6 +1709,15 @@ export async function canonicalStartWorkflow(
   spec: Record<string, unknown>,
 ): Promise<KernelRunnerAction | null> {
   const action = await runtime.startWorkflow(spec)
+  pending.push(...runtime.drainHostObservations())
+  return action
+}
+
+export async function canonicalStartDynamicWorkflow(
+  runtime: CanonicalRunnerRuntime,
+  pending: KernelObservationLike[],
+): Promise<KernelRunnerAction | null> {
+  const action = await runtime.startDynamicWorkflow()
   pending.push(...runtime.drainHostObservations())
   return action
 }

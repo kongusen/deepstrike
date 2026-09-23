@@ -70,6 +70,7 @@ import {
   canonicalKernelApply,
   canonicalKernelMaybeAction,
   canonicalStartAgent,
+  canonicalStartDynamicWorkflow,
   canonicalStartWorkflow,
 } from "./canonical-kernel-step.js"
 import type {
@@ -1590,6 +1591,18 @@ export class RuntimeRunner {
         baseIndex: submitted.base,
       }))
     }
+    return action
+  }
+
+  /** Close an active host-driven dynamic workflow and let the kernel commit its terminal. */
+  async completeDynamicWorkflow(): Promise<KernelRunnerAction | null> {
+    const runtime = this.activeKernel
+    const sessionId = this.currentSessionId
+    if (!runtime || !sessionId) {
+      throw new Error("cannot complete dynamic workflow without an active workflow session")
+    }
+    const action = await runtime.applyHostEvent({ kind: "complete_dynamic_workflow" })
+    this.pendingObservations.push(...runtime.drainHostObservations())
     return action
   }
 
