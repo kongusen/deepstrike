@@ -74,6 +74,12 @@ function loadProtocolRegistry() {
 
 const protocols = loadProtocolRegistry()
 
+function loadGlobalInvariants() {
+  return exportedObject(resolve(root, "contracts/invariants.ts"), "GLOBAL_INVARIANTS")
+}
+
+const globalInvariants = loadGlobalInvariants()
+
 function fail(message) { throw new Error(message) }
 
 function createTypeChecker() {
@@ -361,6 +367,41 @@ function artifactPath(path) {
   return resolve(root, path)
 }
 
+function checkGlobalInvariants() {
+  if (!Array.isArray(globalInvariants) || globalInvariants.length === 0) fail("contracts/invariants.ts: GLOBAL_INVARIANTS must not be empty")
+  const ids = new Set()
+  for (const invariant of globalInvariants) {
+    if (!invariant || typeof invariant.id !== "string" || !invariant.id) fail("global invariant id is required")
+    if (ids.has(invariant.id)) fail(`duplicate global invariant id: ${invariant.id}`)
+    ids.add(invariant.id)
+    if (typeof invariant.rule !== "string" || !invariant.rule) fail(`${invariant.id}: invariant rule is required`)
+    if (typeof invariant.enforcement !== "string" || !invariant.enforcement) fail(`${invariant.id}: invariant enforcement is required`)
+    if (!Array.isArray(invariant.testRefs) || invariant.testRefs.length === 0) fail(`${invariant.id}: at least one testRefs entry is required`)
+    for (const testRef of invariant.testRefs) {
+      if (typeof testRef !== "string" || !testRef) fail(`${invariant.id}: testRefs entries must be non-empty paths`)
+      const testPath = artifactPath(testRef)
+      if (!existsSync(testPath)) fail(`${invariant.id}: test reference does not exist: ${testRef}`)
+      if (!/\b(?:describe|it|test)\s*\(/.test(readFileSync(testPath, "utf8"))) {
+        fail(`${invariant.id}: test reference has no test declaration: ${testRef}`)
+      }
+    }
+  }
+  return globalInvariants
+}
+
+function writeGlobalInvariantManifest(invariants) {
+  const manifestPath = artifactPath("contracts/manifests/global-invariants.json")
+  const manifestJson = JSON.stringify({ version: canonicalVersion, invariants }, null, 2) + "\n"
+  if (process.argv.includes("--verify")) {
+    if (!existsSync(manifestPath) || readFileSync(manifestPath, "utf8") !== manifestJson) {
+      fail(`stale or hand-edited artifact: ${manifestPath} (run npm run contracts:check)`)
+    }
+  } else {
+    mkdirSync(resolve(manifestPath, ".."), { recursive: true })
+    writeFileSync(manifestPath, manifestJson)
+  }
+}
+
 function expandProtocol(protocol) {
   if (Array.isArray(protocol.adapters)) {
     return protocol.adapters.map(adapter => ({
@@ -445,6 +486,9 @@ try {
   console.log(`Checking ${adapters.length} registered boundary adapter${adapters.length === 1 ? "" : "s"} with the TypeScript compiler...`)
   const { program, checker } = createTypeChecker()
   for (const protocol of adapters) processProtocol(program, checker, protocol)
+  const invariants = checkGlobalInvariants()
+  writeGlobalInvariantManifest(invariants)
+  console.log(`Checked ${invariants.length} global relational invariant${invariants.length === 1 ? "" : "s"}`)
   if (process.argv.includes("--verify")) console.log("✅ Generated artifacts are in sync with the registry")
   else console.log("✅ Boundary contracts verified and artifacts generated")
 } catch (error) {

@@ -1,0 +1,25 @@
+/** Cross-boundary invariants that relate multiple effects/events and cannot be expressed as fields. */
+
+export const GLOBAL_INVARIANTS = [
+  {
+    id: "effect-id-kernel-minted",
+    scope: "operation",
+    rule: "Every host evidence record carrying effect_id must reference a kernel-minted pending effect; hosts may propagate an id but never mint a replacement.",
+    enforcement: "canonical-kernel-and-session-log",
+    testRefs: ["node/tests/effect-hygiene.test.ts", "node/tests/canonical-binding.test.ts"],
+  },
+  {
+    id: "signal-disposal-one-to-one",
+    scope: "operation",
+    rule: "Each (delivery_id, attempt) has exactly one signal_delivery_disposed receipt before ack or nack completes.",
+    enforcement: "canonical-kernel-and-signal-drain",
+    testRefs: ["node/tests/signal-boundary.test.ts", "node/tests/signal-addressing.test.ts"],
+  },
+  {
+    id: "run-context-isolation",
+    scope: "run-session-operation",
+    rule: "Evidence, background work, and callbacks retain the originating runId and sessionId; a receipt from another operation cannot resolve the current pending effect.",
+    enforcement: "OperationContext-and-session-log",
+    testRefs: ["node/tests/runtime/reliability.test.ts", "node/tests/agent-session-isolation.test.ts"],
+  },
+] as const
