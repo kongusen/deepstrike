@@ -513,6 +513,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 
 - `agent(prompt, options)`：构造单节点 `WorkflowSpec`，仍通过注入的 `runWorkflow` 进入现有 kernel；
 - `parallel(items, worker)`：按默认 16（可调至 256）的并发上限运行 worker，并保持输入顺序；
+- `parallelAgents(items, worker)`：把声明式 agent 请求按并发窗口组成 kernel workflow batch，保持结果顺序；
 - `pipeline(items, worker)`：顺序运行，保留每个位置的结果；
 - `phase(name, body)`、`log(message, fields)`、`args` 快照和 typed progress；
 - 单次运行 1000 agents、单批 4096 items 的 host guardrail；kernel quota 仍是最终权威；

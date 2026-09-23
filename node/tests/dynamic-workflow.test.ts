@@ -1,6 +1,7 @@
 import {
   DynamicWorkflowExecutor,
   DynamicWorkflowLimitError,
+  dynamicAgentTask,
   resolveDynamicWorkflowLimits,
 } from "../src/workflow/dynamic.js"
 import type { DynamicWorkflowHost } from "../src/workflow/dynamic.js"
@@ -88,6 +89,28 @@ describe("DynamicWorkflowExecutor", () => {
     ))
 
     expect(peak).toBeLessThanOrEqual(2)
+  })
+
+  it("admits declarative parallel agent tasks as kernel batches", async () => {
+    const batchSizes: number[] = []
+    const host: DynamicWorkflowHost = {
+      async runWorkflow(spec) {
+        batchSizes.push(spec.nodes.length)
+        return {
+          nodeOutcomes: spec.nodes.map(node => ({
+            nodeId: node.nodeId!,
+            status: "completed" as const,
+            output: { role: "assistant" as const, content: `batch:${node.task as string}` },
+          })),
+          outputs: Object.fromEntries(spec.nodes.map(node => [node.nodeId!, `batch:${node.task as string}`])),
+        }
+      },
+    }
+    const executor = new DynamicWorkflowExecutor(host, { limits: { maxConcurrentAgents: 3 } })
+    const run = await executor.run(ctx => ctx.parallelAgents(["a", "b", "c"], item => dynamicAgentTask(`task:${item}`)))
+
+    expect(batchSizes).toEqual([3])
+    expect(run.value.map(result => result?.text)).toEqual(["batch:task:a", "batch:task:b", "batch:task:c"])
   })
 
   it("rejects unsafe limits and oversized batches before spawning", async () => {

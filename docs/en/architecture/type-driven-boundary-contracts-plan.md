@@ -37,6 +37,7 @@ The target is the provider-neutral product mechanism documented by Anthropic: a 
 - [x] Add named metadata, script artifact, limits, progress, and agent-result types.
 - [x] Enforce default 16 concurrency, maximum 256 concurrency, 4096 items per batch, and 1000 agents per run before host submission.
 - [x] Route every `agent()` call through the existing `runWorkflow` host callback.
+- [x] Add `parallelAgents` to submit preconstructed fan-out requests as kernel workflow batches within the concurrency window.
 - [x] Cover immutable args, ordering, phase/log progress, structured output, bounded fan-out, and limit rejection.
 
 **Checkpoint:** The Node build and focused dynamic-workflow suite pass. This slice is an API/runtime adapter, not arbitrary source execution.

@@ -191,6 +191,18 @@ const run = await dynamic.run(async ({ args, phase, pipeline, agent, log }) => {
 `parallel` 保持输入顺序并受默认 16 并发限制，`pipeline` 顺序执行；单批最多 4096 项，
 单次运行最多 1000 个 agent。kernel 自己的 quota、治理和取消路径仍然是最终裁决。
 
+如果 fan-out 的任务可以先生成 prompt，可以使用 `parallelAgents` 将一批请求直接提交给
+kernel workflow：
+
+```ts
+const reviews = await dynamic.run(async ({ args, parallelAgents }) =>
+  parallelAgents(args.files as string[], file => ({
+    prompt: `检查 ${file} 的鉴权问题`,
+    options: { role: "verify", label: file },
+  })),
+)
+```
+
 ---
 
 ## 延伸阅读

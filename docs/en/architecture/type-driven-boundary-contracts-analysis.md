@@ -65,6 +65,7 @@ The branch now adds a provider-neutral `DynamicWorkflowExecutor` in `node/src/wo
 
 - `agent(prompt, options)`, which creates a one-node `WorkflowSpec` and enters the existing kernel through an injected `runWorkflow` host;
 - bounded, order-preserving `parallel` (default 16, configurable up to 256) and sequential `pipeline`;
+- `parallelAgents`, which groups declarative agent requests into kernel workflow batches while preserving order;
 - `phase`, `log`, an immutable `args` snapshot, and typed progress;
 - host guardrails for 1000 agents per run and 4096 items per batch, with kernel quotas remaining authoritative;
 - `DynamicWorkflowScript` metadata/source types as the stable input contract for persistence and isolated execution.

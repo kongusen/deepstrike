@@ -240,6 +240,7 @@ The next workflow checkpoint is also complete: `spawn_workflow` actions now expo
 - [x] 增加 metadata、script artifact、limits、progress 和 agent result 命名类型。
 - [x] 在 host 提交前强制默认 16 并发、最大 256 并发、单批 4096 项、单次运行 1000 agents。
 - [x] 每个 `agent()` 仍经注入的 `runWorkflow` host callback 进入现有 kernel。
+- [x] 增加 `parallelAgents`，把可预先构造的 fan-out 请求按并发窗口提交为 kernel workflow batch。
 - [x] 覆盖 args 不可变、结果顺序、phase/log 进度、结构化输出、并发限制和超限拒绝。
 
 **检查点：** Node 构建和动态工作流定向测试通过。此 slice 是 API/runtime adapter，不是任意源码执行器。

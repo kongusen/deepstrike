@@ -82,6 +82,12 @@ export interface DynamicWorkflowAgentOptions {
   maxWallMs?: number
 }
 
+/** A declarative agent request that can be admitted as one kernel workflow batch. */
+export interface DynamicWorkflowAgentRequest {
+  prompt: string
+  options?: DynamicWorkflowAgentOptions
+}
+
 export interface DynamicWorkflowAgentResult<T = string> {
   value: T
   text: string
@@ -106,6 +112,7 @@ export interface DynamicWorkflowContext<TArgs extends Record<string, unknown> = 
   readonly progress: DynamicWorkflowProgress
   agent<T = string>(prompt: string, options?: DynamicWorkflowAgentOptions): Promise<DynamicWorkflowAgentResult<T> | null>
   parallel<T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R> | R): Promise<R[]>
+  parallelAgents<T>(items: readonly T[], worker: (item: T, index: number) => DynamicWorkflowAgentRequest): Promise<Array<DynamicWorkflowAgentResult | null>>
   pipeline<T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R> | R): Promise<R[]>
   phase<T>(name: string, body: () => Promise<T> | T): Promise<T>
   log(message: string, fields?: Record<string, unknown>): void
@@ -116,6 +123,11 @@ export interface DynamicWorkflowRunOptions<TArgs extends Record<string, unknown>
   args?: TArgs
   limits?: DynamicWorkflowLimits
   onProgress?: (progress: DynamicWorkflowProgress) => void
+}
+
+export function dynamicAgentTask(prompt: string, options?: DynamicWorkflowAgentOptions): DynamicWorkflowAgentRequest {
+  if (!prompt.trim()) throw new Error("dynamic workflow agent prompt must not be empty")
+  return { prompt, ...(options ? { options: { ...options } } : {}) }
 }
 
 export class DynamicWorkflowLimitError extends Error {
@@ -215,6 +227,21 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
 
   agent<T = string>(prompt: string, options: DynamicWorkflowAgentOptions = {}): Promise<DynamicWorkflowAgentResult<T> | null> {
     return this.runAgent<T>(prompt, options)
+  }
+
+  async parallelAgents<T>(
+    items: readonly T[],
+    worker: (item: T, index: number) => DynamicWorkflowAgentRequest,
+  ): Promise<Array<DynamicWorkflowAgentResult | null>> {
+    this.assertBatchSize(items.length, "parallelAgents")
+    const requests = items.map(worker)
+    const chunks: DynamicWorkflowAgentRequest[][] = []
+    for (let index = 0; index < requests.length; index += this.limits.maxConcurrentAgents) {
+      chunks.push(requests.slice(index, index + this.limits.maxConcurrentAgents))
+    }
+    const results: Array<DynamicWorkflowAgentResult | null> = []
+    for (const chunk of chunks) results.push(...await this.runAgentBatch(chunk))
+    return results
   }
 
   async parallel<T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R> | R): Promise<R[]> {
@@ -319,6 +346,61 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     } finally {
       this.progress.activeAgents -= 1
       this.releaseAgentSlot()
+      this.emit()
+    }
+  }
+
+  private async runAgentBatch(requests: readonly DynamicWorkflowAgentRequest[]): Promise<Array<DynamicWorkflowAgentResult | null>> {
+    if (requests.length === 0) return []
+    if (this.agentCount + requests.length > this.limits.maxAgentsPerRun) {
+      throw new DynamicWorkflowLimitError(
+        `dynamic workflow exceeded maxAgentsPerRun (${this.limits.maxAgentsPerRun})`,
+      )
+    }
+    const nodes = requests.map((request, index) => {
+      const options = request.options ?? {}
+      const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
+      return {
+        nodeId,
+        request,
+        options,
+        node: {
+          nodeId,
+          task: request.prompt,
+          role: options.role ?? "implement",
+          ...(options.modelHint ? { modelHint: options.modelHint } : {}),
+          ...(options.isolation ? { isolation: options.isolation } : {}),
+          ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
+          ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
+          ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
+          ...(options.maxWallMs !== undefined ? { maxWallMs: options.maxWallMs } : {}),
+        } satisfies WorkflowNodeSpec,
+      }
+    })
+    this.agentCount += nodes.length
+    this.progress.agentsStarted = this.agentCount
+    this.progress.activeAgents += nodes.length
+    const currentPhase = this.phaseStack.at(-1)
+    if (currentPhase) currentPhase.agentsStarted += nodes.length
+    this.emit()
+    try {
+      const outcome = await this.host.runWorkflow({ nodes: nodes.map(entry => entry.node) })
+      if (outcome.rejection) return nodes.map(() => null)
+      return nodes.map(entry => {
+        const node = outcome.nodeOutcomes.find(candidate => candidate.nodeId === entry.nodeId)
+        const text = node?.output?.content ?? outcome.outputs[entry.nodeId] ?? ""
+        this.progress.agentsCompleted += 1
+        if (currentPhase) currentPhase.agentsCompleted += 1
+        return {
+          value: entry.options.outputSchema ? parseStructuredValue(text) : text,
+          text,
+          nodeId: node?.nodeId ?? entry.nodeId,
+          status: node?.status ?? "completed_partial",
+          ...(node?.termination ? { termination: node.termination } : {}),
+        }
+      })
+    } finally {
+      this.progress.activeAgents -= nodes.length
       this.emit()
     }
   }

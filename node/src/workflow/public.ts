@@ -14,10 +14,12 @@ export {
   DEFAULT_DYNAMIC_WORKFLOW_LIMITS,
   DynamicWorkflowExecutor,
   DynamicWorkflowLimitError,
+  dynamicAgentTask,
   resolveDynamicWorkflowLimits,
 } from "./dynamic.js"
 export type {
   DynamicWorkflowAgentOptions,
+  DynamicWorkflowAgentRequest,
   DynamicWorkflowAgentResult,
   DynamicWorkflowContext,
   DynamicWorkflowHost,

@@ -198,6 +198,18 @@ const run = await dynamic.run(async ({ args, phase, pipeline, agent, log }) => {
 one call accepts at most 4096 items and one run at most 1000 agents. Kernel quota, governance, and
 cancellation remain authoritative.
 
+When fan-out prompts can be constructed up front, `parallelAgents` submits declarative requests as
+kernel workflow batches:
+
+```ts
+const reviews = await dynamic.run(async ({ args, parallelAgents }) =>
+  parallelAgents(args.files as string[], file => ({
+    prompt: `Audit ${file} for authentication issues`,
+    options: { role: "verify", label: file },
+  })),
+)
+```
+
 ---
 
 ## Runtime behavior
