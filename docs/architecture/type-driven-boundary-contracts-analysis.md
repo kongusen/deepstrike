@@ -508,6 +508,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 6. **限制没有形成独立的 workflow contract**：kernel 已有 `max_concurrent_subagents`、`max_workflow_nodes` 等 quota，但尚未有文章语义对应的单次 `parallel/pipeline` 4096 项、默认 16 并发、单次运行 1000 agents 和 size guideline/large warning 模型。
 7. **kernel 追加入口与 RuntimeRunner controller 已接通**：`DynamicWorkflow` root entry 可以在空 DAG 上保持 active，`HostCommand::AppendWorkflowNodes`、`CanonicalRunnerRuntime.appendWorkflowNodes()` 和 `RuntimeRunner.appendDynamicWorkflowNodes()` 把动态追加放回同一个 kernel operation，`CompleteDynamicWorkflow` 明确关闭生命周期；`DynamicWorkflowController` 提供 typed submission queue，`RuntimeRunner.runDynamicWorkflow()` 现在负责启动、消费 submission、回填 outcome、显式 close 和 RunGroup 结算。
 8. **动态节点限制已完成跨界投影**：`tokenBudget`、`maxTurns`、`maxWallMs` 通过 canonical metadata 进入 Rust DAG，再由 spawn descriptor 返回给 child runner；host append 的配额拒绝统一使用 `submit_workflow_nodes`，不会再伪装成新的 `start_workflow`。
+9. **动态失败拥有终止路径**：脚本或 child driver 抛错时，`RuntimeRunner` 通过 canonical cancel/preempt 链路提交唯一的 `operation_cancelled` 事实，再清理 host 状态；不会留下只在 host 侧消失、kernel 侧仍 active 的半截运行。
 
 ### 9.3 第一阶段实现边界
 

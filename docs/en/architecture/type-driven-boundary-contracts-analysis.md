@@ -60,6 +60,7 @@ This alignment targets the product mechanism described in Anthropic's official C
 6. Kernel quotas exist, but the article-level workflow contract does not yet model the default 16 concurrency, 256 ceiling, 4096 items per `parallel`/`pipeline`, 1000 agents per run, or size-guideline warnings.
 7. The kernel append entry and the RuntimeRunner controller are now connected: a distinct `DynamicWorkflow` root entry keeps an empty DAG active, `HostCommand::AppendWorkflowNodes`, `CanonicalRunnerRuntime.appendWorkflowNodes()`, and `RuntimeRunner.appendDynamicWorkflowNodes()` grow the same kernel operation, and `CompleteDynamicWorkflow` closes it explicitly; `DynamicWorkflowController` provides the typed submission handoff, while `RuntimeRunner.runDynamicWorkflow()` owns startup, submission consumption, outcome completion, explicit close, and RunGroup settlement.
 8. Per-node limits now cross the boundary end to end: `tokenBudget`, `maxTurns`, and `maxWallMs` travel through canonical metadata into the Rust DAG and back out on the spawn descriptor to the child runner. Host append quota denials use `submit_workflow_nodes` consistently instead of being mislabeled as a new `start_workflow`.
+9. Dynamic failures now have a terminal path: when the script or child driver throws, `RuntimeRunner` commits the canonical cancel/preempt sequence and one `operation_cancelled` fact before clearing host state, so a failed run cannot disappear from the host while remaining active in the kernel.
 
 ### First implementation slice
 
