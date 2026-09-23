@@ -37,6 +37,11 @@ export interface OpenAIResponsesRequestPlan {
   params: Record<string, unknown>
 }
 
+export interface OpenAIResponsesRequestBuildRequest {
+  input: CanonicalAdapterInput
+  state?: OpenAIResponsesRunState
+}
+
 export type OpenAIResponsesStreamChunk = Record<string, any>
 
 export interface OpenAIResponsesStreamState {
@@ -239,6 +244,10 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
         ...(tools.length ? { tools } : {}),
       },
     }
+  }
+
+  buildRequestAtBoundary(request: OpenAIResponsesRequestBuildRequest): OpenAIResponsesRequestPlan {
+    return this.buildRequest(request.input, request.state)
   }
 
   decodeComplete(raw: Record<string, any>, _input: AdapterDecodeInput): { message: ModelMessage } {

@@ -60,6 +60,11 @@ export interface OpenAIChatRequestPlan {
   dialect: OpenAIChatWireDialect
 }
 
+export interface OpenAIChatRequestBuildRequest {
+  input: CanonicalAdapterInput
+  dialect: OpenAIChatWireDialect
+}
+
 export type OpenAIChatStreamChunk = Record<string, any>
 
 export interface OpenAIChatStreamState {
@@ -312,6 +317,10 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
         ...(tools.length ? { tools } : {}),
       },
     }
+  }
+
+  buildRequestAtBoundary(request: OpenAIChatRequestBuildRequest): OpenAIChatRequestPlan {
+    return this.buildRequest(request.input, request.dialect)
   }
 
   decodeComplete(

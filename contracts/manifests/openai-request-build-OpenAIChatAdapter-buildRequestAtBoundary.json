@@ -1,0 +1,49 @@
+{
+  "id": "openai-request.build.OpenAIChatAdapter.buildRequestAtBoundary",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-provider",
+    "direction": "encode",
+    "source": {
+      "type": "OpenAIChatRequestBuildRequest",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "OpenAIChatRequestPlan",
+      "layer": "provider",
+      "authority": "provider"
+    },
+    "adapter": "providers/openai-chat:OpenAIChatAdapter.buildRequestAtBoundary",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": [
+        "dialect"
+      ]
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": [
+        "input"
+      ]
+    },
+    "derived": [],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "request",
+        "type": "OpenAIChatRequestBuildRequest"
+      }
+    ],
+    "returnType": "OpenAIChatRequestPlan"
+  }
+}

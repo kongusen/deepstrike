@@ -129,7 +129,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
     let plan: ReturnType<OpenAIResponsesAdapter["buildRequest"]>
     try {
       input = this.adapterInput(context, tools, extensions)
-      plan = this.responses.buildRequest(input)
+      plan = this.responses.buildRequestAtBoundary({ input })
     } catch (error) {
       throw classifyProviderError("openai", error)
     }
@@ -166,7 +166,10 @@ export class OpenAIResponsesProvider implements LLMProvider {
     extensions?: Record<string, unknown>,
     state?: ProviderRunState,
   ): Promise<PromptMeasurement> {
-    return this.countPlan(this.responses.buildRequest(this.adapterInput(context, tools, extensions), this.asRunState(state)))
+    return this.countPlan(this.responses.buildRequestAtBoundary({
+      input: this.adapterInput(context, tools, extensions),
+      state: this.asRunState(state),
+    }))
   }
 
   private async countPlan(plan: ReturnType<OpenAIResponsesAdapter["buildRequest"]>): Promise<PromptMeasurement> {
@@ -195,7 +198,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
   prepareRequest(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState): PreparedProviderRequest {
     const runState = requestSnapshot(this.asRunState(state))
     const input = this.adapterInput(context, tools, extensions)
-    const plan = requestSnapshot(this.responses.buildRequest(input, runState))
+    const plan = requestSnapshot(this.responses.buildRequestAtBoundary({ input, state: runState }))
     plan.params.stream = true
     return {
       scope: "encoded_body", request: requestSnapshot(plan.params), state: requestSnapshot(state ?? null),

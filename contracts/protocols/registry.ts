@@ -6,6 +6,7 @@ import { KERNEL_PROJECTION_HOST_TO_KERNEL_PROTOCOL } from "./kernel-projection-h
 import { KERNEL_OBSERVATION_TO_SESSION_EVENT_PROTOCOL } from "./kernel-observation-to-session-event.js"
 import { PROVIDER_USAGE_DECODE_PROTOCOL } from "./provider-usage-decode.js"
 import { PROVIDER_REQUEST_BUILD_PROTOCOL } from "./provider-request-build.js"
+import { OPENAI_REQUEST_BUILD_PROTOCOL } from "./openai-request-build.js"
 import { SKILL_HOST_TO_KERNEL_PROTOCOL } from "./skill-host-to-kernel.js"
 
 /** Single source of registered boundary protocols. */
@@ -17,5 +18,6 @@ export const BOUNDARY_PROTOCOLS: readonly BoundaryProtocol[] = [
   KERNEL_OBSERVATION_TO_SESSION_EVENT_PROTOCOL,
   PROVIDER_USAGE_DECODE_PROTOCOL,
   PROVIDER_REQUEST_BUILD_PROTOCOL,
+  OPENAI_REQUEST_BUILD_PROTOCOL,
   SKILL_HOST_TO_KERNEL_PROTOCOL,
 ]

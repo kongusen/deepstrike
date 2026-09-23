@@ -1,0 +1,48 @@
+{
+  "id": "openai-request.build.OpenAIResponsesAdapter.buildRequestAtBoundary",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-provider",
+    "direction": "encode",
+    "source": {
+      "type": "OpenAIResponsesRequestBuildRequest",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "OpenAIResponsesRequestPlan",
+      "layer": "provider",
+      "authority": "provider"
+    },
+    "adapter": "providers/openai-responses-adapter:OpenAIResponsesAdapter.buildRequestAtBoundary",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": [
+        "input",
+        "state"
+      ]
+    },
+    "derived": [],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "request",
+        "type": "OpenAIResponsesRequestBuildRequest"
+      }
+    ],
+    "returnType": "OpenAIResponsesRequestPlan"
+  }
+}

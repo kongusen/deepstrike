@@ -200,7 +200,7 @@ export class OpenAIChatProvider implements LLMProvider {
     let plan: ReturnType<OpenAIChatAdapter["buildRequest"]>
     try {
       input = this.adapterInput(context, tools, extensions)
-      plan = this.chat.buildRequest(input, this.dialect)
+      plan = this.chat.buildRequestAtBoundary({ input, dialect: this.dialect })
     } catch (error) {
       throw classifyProviderError(provider, error)
     }
@@ -234,7 +234,7 @@ export class OpenAIChatProvider implements LLMProvider {
 
   prepareRequest(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: PreparedRunState): PreparedProviderRequest {
     const input = this.adapterInput(context, tools, extensions)
-    const plan = requestSnapshot(this.chat.buildRequest(input, this.dialect))
+    const plan = requestSnapshot(this.chat.buildRequestAtBoundary({ input, dialect: this.dialect }))
     Object.assign(plan.params, { stream: true, stream_options: { include_usage: true } })
     return {
       scope: "encoded_body", request: requestSnapshot(plan.params), state: requestSnapshot(state ?? null),

@@ -200,6 +200,8 @@ The first provider semantic checkpoint registers the four live wire-usage decode
 
 The request encoding checkpoint now supports class method adapters in the checker and registers the live Anthropic, Gemini, and Ollama `buildRequest` methods. Each crosses `CanonicalAdapterInput` into its protocol-specific request plan on the existing adapter instance; OpenAI builders remain separate because their dialect or continuation state adds a second method parameter.
 
+The OpenAI request checkpoint now wraps those extra inputs in named boundary requests. Chat carries its resolved wire dialect, while Responses carries its optional continuation state; complete, stream, and native token-count paths use the new methods directly. Both OpenAI request plans are now registered without flattening their stateful semantics.
+
 ---
 
 ## Explicit non-goals for the first slice
