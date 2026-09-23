@@ -391,6 +391,44 @@ export interface WorkflowSpec {
   nodes: WorkflowNodeSpec[]
 }
 
+export interface KernelWorkflowTask {
+  [key: string]: unknown
+  goal: string
+  criteria: string[]
+  lane?: string
+}
+
+export interface KernelWorkflowNode {
+  [key: string]: unknown
+  task: KernelWorkflowTask
+  role: KernelAgentRole
+  isolation: AgentIsolation
+  context_inheritance: ContextInheritance
+  model_hint?: string
+  trust?: NodeTrust
+  output_schema?: Record<string, unknown>
+  kind?: Record<string, unknown>
+  token_budget?: number
+  max_turns?: number
+  max_wall_ms?: number
+  scheduling_factors?: KernelSchedulingFactors
+  depends_on?: number[]
+  dep_policy: WorkflowDependencyPolicy
+}
+
+export interface KernelWorkflowSpec {
+  [key: string]: unknown
+  nodes: KernelWorkflowNode[]
+}
+
+export interface KernelSchedulingFactors {
+  [key: string]: unknown
+  deadline_urgency?: number
+  process_priority?: number
+  resource_pressure?: number
+  budget_pressure?: number
+}
+
 export interface KernelWorkflowNodeOutcome {
   node_id: string
   status: WorkflowNodeStatus
@@ -535,7 +573,7 @@ export function workflowBudgetNote(budget: WorkflowBudget | undefined): string {
 }
 
 /** Normalize a `WorkflowTaskSpec` (object or bare goal string) to the kernel's `RuntimeTask` JSON. */
-function workflowTaskToKernel(t: WorkflowTaskSpec): Record<string, unknown> {
+function workflowTaskToKernel(t: WorkflowTaskSpec): KernelWorkflowTask {
   const task = typeof t === "string" ? { goal: t } : t
   return {
     goal: task.goal,
@@ -564,7 +602,7 @@ function nodeKindToKernel(n: WorkflowNodeSpec): Record<string, unknown> | undefi
 
 /** Map one host `WorkflowNodeSpec` to its snake_case canonical JSON. Shared by the workflow root (the
  *  whole spec) and `submit_workflow_nodes` (R3-1 runtime append) so the two encodings never drift. */
-export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, unknown> {
+export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): KernelWorkflowNode {
   const kind = nodeKindToKernel(n)
   const schedulingFactors = schedulingFactorsToKernel(n.schedulingFactors)
   return {
@@ -589,12 +627,12 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, un
   }
 }
 
-function schedulingFactorsToKernel(factors: SchedulingFactors | undefined): Record<string, number> | undefined {
+function schedulingFactorsToKernel(factors: SchedulingFactors | undefined): KernelSchedulingFactors | undefined {
   if (factors === undefined) return undefined
   const allowed = new Set(["deadlineUrgency", "processPriority", "resourcePressure", "budgetPressure"])
   const unknown = Object.keys(factors).filter(key => !allowed.has(key))
   if (unknown.length > 0) throw new TypeError(`unknown scheduling factor(s): ${unknown.join(", ")}`)
-  const out: Record<string, number> = {}
+  const out: KernelSchedulingFactors = {}
   for (const [host, kernel] of Object.entries({
     deadlineUrgency: "deadline_urgency",
     processPriority: "process_priority",
@@ -613,7 +651,7 @@ function schedulingFactorsToKernel(factors: SchedulingFactors | undefined): Reco
 }
 
 /** Map a host `WorkflowSpec` to the canonical workflow-root JSON. */
-export function workflowSpecToKernel(spec: WorkflowSpec): Record<string, unknown> {
+export function workflowSpecToKernel(spec: WorkflowSpec): KernelWorkflowSpec {
   return { nodes: spec.nodes.map(workflowNodeSpecToKernel) }
 }
 

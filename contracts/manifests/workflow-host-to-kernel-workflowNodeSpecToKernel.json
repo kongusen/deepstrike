@@ -1,0 +1,97 @@
+{
+  "id": "workflow.host-to-kernel.workflowNodeSpecToKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "WorkflowNodeSpec",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelWorkflowNode",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "types/agent:workflowNodeSpecToKernel",
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Workflow ABI and control-flow tests cover node lowering, snake_case fields, and root composition."
+    }
+  },
+  "fields": {
+    "preserves": {
+      "declared": [
+        "role",
+        "isolation"
+      ],
+      "inferred": [
+        "role",
+        "trust"
+      ]
+    },
+    "renames": {
+      "contextInheritance": "context_inheritance",
+      "modelHint": "model_hint",
+      "outputSchema": "output_schema",
+      "tokenBudget": "token_budget",
+      "maxTurns": "max_turns",
+      "maxWallMs": "max_wall_ms",
+      "dependsOn": "depends_on",
+      "depPolicy": "dep_policy"
+    },
+    "drops": {
+      "declared": [
+        "nodeId",
+        "agent",
+        "context"
+      ],
+      "inferred": [
+        "nodeId",
+        "agent",
+        "context",
+        "reducer",
+        "loop",
+        "classify",
+        "tournament",
+        "schedulingFactors"
+      ]
+    },
+    "derived": [
+      "kind"
+    ],
+    "forbidden": [],
+    "envelope": {
+      "source": [],
+      "target": []
+    },
+    "nested": [
+      {
+        "source": "task",
+        "target": "task",
+        "kind": "project",
+        "note": "Bare goals normalize to RuntimeTask JSON with criteria defaulted."
+      },
+      {
+        "source": "schedulingFactors",
+        "target": "scheduling_factors",
+        "kind": "project",
+        "note": "Host scheduling inputs are validated and lowered to snake_case kernel fields."
+      }
+    ]
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "n",
+        "type": "WorkflowNodeSpec"
+      }
+    ],
+    "returnType": "KernelWorkflowNode"
+  }
+}

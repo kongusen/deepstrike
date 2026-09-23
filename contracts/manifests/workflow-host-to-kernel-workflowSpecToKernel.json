@@ -1,0 +1,56 @@
+{
+  "id": "workflow.host-to-kernel.workflowSpecToKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "WorkflowSpec",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelWorkflowSpec",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "types/agent:workflowSpecToKernel",
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Workflow ABI and control-flow tests cover node lowering, snake_case fields, and root composition."
+    }
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": []
+    },
+    "derived": [
+      "nodes"
+    ],
+    "forbidden": [],
+    "envelope": {
+      "source": [],
+      "target": []
+    },
+    "nested": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "spec",
+        "type": "WorkflowSpec"
+      }
+    ],
+    "returnType": "KernelWorkflowSpec"
+  }
+}

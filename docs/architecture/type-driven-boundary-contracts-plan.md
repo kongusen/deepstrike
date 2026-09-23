@@ -224,6 +224,8 @@ The first subsystem crossing checkpoint registers `memoryPolicyToKernel` as `Mem
 
 The signal subsystem checkpoint registers `signalToKernelEvent` as a data-only `KernelSignalDeliveryRequest → KernelSignalDeliveryEvent` projection. Lease acknowledgement callbacks remain host-owned, while delivery identity, signal payload, deadline, and coalescing metadata cross into the kernel event shape. Both live signal consumption paths use the projection and direct tests cover its mapping.
 
+The first workflow subsystem checkpoint registers `workflowNodeSpecToKernel` and `workflowSpecToKernel` with named `KernelWorkflowNode` and `KernelWorkflowSpec` targets. Host-only node identity and agent bindings are dropped explicitly, control-flow kinds are derived, and the same node projection feeds both workflow start and dynamic submission paths.
+
 ---
 
 ## Explicit non-goals for the first slice
