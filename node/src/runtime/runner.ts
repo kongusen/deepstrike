@@ -1973,9 +1973,17 @@ export class RuntimeRunner {
       const controllers = new Map(nodes.map(n => [n.agent_id, new AbortController()] as const))
       const batchState = { settled: false }
       const monitor = this.monitorWorkflowPreemption(runtime, controllers, batchState)
-      const results = await Promise.all(
-        nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs, controllers.get(node.agent_id)?.signal, contextPolicies)),
-      )
+      let results: SubAgentResult[]
+      try {
+        results = await Promise.all(
+          nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs, controllers.get(node.agent_id)?.signal, contextPolicies)),
+        )
+      } catch (error) {
+        batchState.settled = true
+        for (const controller of controllers.values()) controller.abort()
+        await monitor
+        throw error
+      }
       batchState.settled = true
       const preempted = await monitor
       if (preempted !== null) {

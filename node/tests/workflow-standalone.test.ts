@@ -105,6 +105,32 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
       .some(entry => entry.event.kind === "operation_cancelled")).toBe(true)
   })
 
+  it("aborts sibling dynamic children before cancelling the kernel root", async () => {
+    let siblingAborted = false
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      subAgentOrchestrator: {
+        async run(ctx: { spec: { goal: string }; abortSignal?: AbortSignal }) {
+          if (ctx.spec.goal === "fail") throw new Error("batch child failed")
+          await new Promise<void>((_resolve, reject) => {
+            ctx.abortSignal?.addEventListener("abort", () => {
+              siblingAborted = true
+              reject(new Error("sibling aborted"))
+            }, { once: true })
+          })
+          throw new Error("sibling did not abort")
+        },
+      } as never,
+    } as never)
+
+    await expect(runner.runDynamicWorkflow(ctx => ctx.parallelAgents(
+      ["fail", "sibling"],
+      item => ({ prompt: item, options: { label: item } }),
+    ))).rejects.toThrow("batch child failed")
+    expect(siblingAborted).toBe(true)
+  })
+
   it("runFanout executes the public system-only/full template instead of returning empty success", async () => {
     const provider: LLMProvider = {
       async complete(): Promise<ModelMessage> {
