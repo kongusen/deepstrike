@@ -155,7 +155,7 @@ class AgentSessionImpl {
   }
 
   interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user"): void {
-    this.owner.interrupt(reason)
+    this.owner.interrupt(reason, this.id)
   }
 }
 
@@ -164,7 +164,7 @@ class AgentRuntimeImpl implements Agent {
   readonly declaration: AgentDeclaration
   private readonly bindings: AgentHostBindings
   private readonly sessionLog: SessionLog
-  private activeRunner: RuntimeRunner | null = null
+  private readonly activeRunners = new Map<string, RuntimeRunner>()
   private mcpPlane?: McpProxyPlane
   private mcpConnection?: Promise<void>
 
@@ -256,12 +256,13 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async workflow(spec: WorkflowSpec, options: { session?: SessionRef } = {}): Promise<WorkflowOutcome> {
+    const id = sessionId(options.session)
     const runner = await this.createRunner({})
-    this.activeRunner = runner
+    this.registerRunner(id, runner)
     try {
-      return await runner.runWorkflow(spec, { sessionId: sessionId(options.session) })
+      return await runner.runWorkflow(spec, { sessionId: id })
     } finally {
-      this.activeRunner = null
+      this.releaseRunner(id, runner)
     }
   }
 
@@ -291,14 +292,14 @@ class AgentRuntimeImpl implements Agent {
     const owner = this
     return (async function* () {
       const runner = await owner.createRunner(options)
-      owner.activeRunner = runner
+      owner.registerRunner(session, runner)
       const abort = () => runner.interrupt("user")
       if (options.signal) {
         if (options.signal.aborted) runner.interrupt("user")
         else options.signal.addEventListener("abort", abort, { once: true })
       }
       const stream = runner.run({ sessionId: session, goal, ...(options.attachments?.length ? { attachments: options.attachments } : {}) })
-      yield* owner.clearRunnerAfter(stream, options.signal, abort)
+      yield* owner.clearRunnerAfter(stream, options.signal, abort, session, runner)
     })()
   }
 
@@ -345,12 +346,16 @@ class AgentRuntimeImpl implements Agent {
 
   async *resume(id: string, options: Omit<AgentRunOptions, "session"> = {}): AsyncIterable<StreamEvent> {
     const runner = await this.createRunner(options)
-    this.activeRunner = runner
-    yield* this.clearRunnerAfter(runner.wake(id), options.signal, () => runner.interrupt("user"))
+    this.registerRunner(id, runner)
+    yield* this.clearRunnerAfter(runner.wake(id), options.signal, () => runner.interrupt("user"), id, runner)
   }
 
-  interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user"): void {
-    this.activeRunner?.interrupt(reason)
+  interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user", targetSession?: string): void {
+    if (targetSession) {
+      this.activeRunners.get(targetSession)?.interrupt(reason)
+      return
+    }
+    for (const runner of this.activeRunners.values()) runner.interrupt(reason)
   }
 
   async close(): Promise<void> {
@@ -412,12 +417,29 @@ class AgentRuntimeImpl implements Agent {
     }))
   }
 
-  private async *clearRunnerAfter(stream: AsyncIterable<StreamEvent>, signal?: AbortSignal, abort?: () => void): AsyncIterable<StreamEvent> {
+  private registerRunner(session: string, runner: RuntimeRunner): void {
+    if (this.activeRunners.has(session)) {
+      throw new Error(`agent session "${session}" already has an active run`)
+    }
+    this.activeRunners.set(session, runner)
+  }
+
+  private releaseRunner(session: string, runner: RuntimeRunner): void {
+    if (this.activeRunners.get(session) === runner) this.activeRunners.delete(session)
+  }
+
+  private async *clearRunnerAfter(
+    stream: AsyncIterable<StreamEvent>,
+    signal: AbortSignal | undefined,
+    abort: (() => void) | undefined,
+    session: string,
+    runner: RuntimeRunner,
+  ): AsyncIterable<StreamEvent> {
     try {
       yield* stream
     } finally {
       if (signal && abort) signal.removeEventListener("abort", abort)
-      this.activeRunner = null
+      this.releaseRunner(session, runner)
     }
   }
 }

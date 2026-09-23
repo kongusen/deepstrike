@@ -180,6 +180,8 @@ Iteration 3 is complete in the current branch. `createAgent` now captures a deep
 
 Iteration 4 is complete in the current branch. Public `remember` and `recall` now use the RuntimeRunner memory gateway, so policy validation, memory lifecycle updates, and session-log audit records apply to facade calls as well as kernel-driven paths. Host writes carry `host/user_asserted` provenance, model writes retain `model/untrusted` provenance, rejected writes stop before `MemoryStore.put`, retrieval breadth honors `memoryPolicy.retrievalTopK`, and memory-only Agents can operate without a provider binding.
 
+Iteration 5 is complete in the current branch. The facade tracks active runners by session id, routes `AgentSession.interrupt` only to that session, and releases the matching runner after stream, resume, or workflow completion. Concurrent different sessions remain independent, while overlapping runs for the same session are rejected explicitly so session history and result evidence cannot interleave.
+
 ---
 
 ## Explicit non-goals for the first slice
