@@ -1,7 +1,18 @@
 import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import type { DynamicWorkflowScript } from "./dynamic.js"
+import { createDynamicWorkflowArtifact, fingerprintDynamicWorkflowScript, type DynamicWorkflowArtifact, type DynamicWorkflowScript } from "./dynamic.js"
+
+export interface DynamicWorkflowArtifactBundle {
+  version: 1
+  artifact: DynamicWorkflowArtifact
+}
+
+export interface DynamicWorkflowArtifactDescriptor {
+  name: string
+  digest: string
+  origin: string
+}
 
 function defaultRoot(): string {
   return join(homedir(), ".deepstrike", "workflows", "dynamic")
@@ -92,3 +103,67 @@ export class FileDynamicWorkflowStore {
   }
 }
 
+/** A read-through catalog over ordered artifact stores; earlier stores win on duplicate names. */
+export class DynamicWorkflowArtifactCatalog {
+  constructor(private readonly stores: readonly FileDynamicWorkflowStore[]) {
+    if (stores.length === 0) throw new Error("dynamic workflow artifact catalog requires at least one store")
+  }
+
+  async discover(): Promise<DynamicWorkflowArtifactDescriptor[]> {
+    const seen = new Set<string>()
+    const descriptors: DynamicWorkflowArtifactDescriptor[] = []
+    for (const store of this.stores) {
+      for (const name of await store.list()) {
+        if (seen.has(name)) continue
+        const artifact = await this.load(name)
+        seen.add(name)
+        descriptors.push({ name, digest: artifact.digest, origin: artifact.origin ?? "store" })
+      }
+    }
+    return descriptors.sort((left, right) => left.name.localeCompare(right.name))
+  }
+
+  async load(name: string, expectedDigest?: string): Promise<DynamicWorkflowArtifact> {
+    for (const store of this.stores) {
+      if (!(await store.list()).includes(name)) continue
+      const script = await store.load(name)
+      const artifact = createDynamicWorkflowArtifact(script, "file-store")
+      if (expectedDigest && artifact.digest !== expectedDigest) {
+        throw new Error(`dynamic workflow artifact "${name}" digest mismatch`)
+      }
+      return artifact
+    }
+    throw new Error(`dynamic workflow artifact "${name}" was not found`)
+  }
+
+  async distribute(name: string, destination: FileDynamicWorkflowStore): Promise<string> {
+    const artifact = await this.load(name)
+    return destination.save(artifact.name, artifact.script)
+  }
+}
+
+export function encodeDynamicWorkflowArtifact(artifact: DynamicWorkflowArtifact): string {
+  const expected = fingerprintDynamicWorkflowScript(artifact.script)
+  if (artifact.name !== artifact.script.meta.name || artifact.digest !== expected) {
+    throw new Error(`dynamic workflow artifact "${artifact.name}" has an invalid digest`)
+  }
+  return JSON.stringify({ version: 1, artifact }, null, 2)
+}
+
+export function decodeDynamicWorkflowArtifact(serialized: string): DynamicWorkflowArtifact {
+  let bundle: unknown
+  try { bundle = JSON.parse(serialized) as unknown } catch (error) { throw new Error("invalid dynamic workflow artifact bundle", { cause: error }) }
+  if (!bundle || typeof bundle !== "object" || (bundle as { version?: unknown }).version !== 1) {
+    throw new Error("unsupported dynamic workflow artifact bundle version")
+  }
+  const artifact = (bundle as { artifact?: unknown }).artifact
+  if (!artifact || typeof artifact !== "object") throw new Error("dynamic workflow artifact bundle is missing artifact")
+  const value = artifact as Partial<DynamicWorkflowArtifact>
+  if (typeof value.name !== "string" || typeof value.digest !== "string" || !value.script || typeof value.script !== "object") {
+    throw new Error("invalid dynamic workflow artifact bundle")
+  }
+  const script = value.script as DynamicWorkflowScript
+  const expected = fingerprintDynamicWorkflowScript(script)
+  if (value.name !== script.meta.name || value.digest !== expected) throw new Error("dynamic workflow artifact bundle digest mismatch")
+  return createDynamicWorkflowArtifact(script, typeof value.origin === "string" ? value.origin : undefined)
+}

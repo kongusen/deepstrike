@@ -9,6 +9,7 @@ import {
   fingerprintDynamicWorkflowInvocation,
   type DynamicWorkflowReplayStore,
 } from "./dynamic-replay.js"
+import { createHash } from "node:crypto"
 
 /** The sizing hint sent to a workflow author. It is guidance, not a hard agent count. */
 export type DynamicWorkflowSizeGuideline = "small" | "medium" | "large" | "unrestricted"
@@ -70,6 +71,21 @@ export interface DynamicWorkflowApprovalRequest<TArgs extends Record<string, unk
 export interface DynamicWorkflowScript {
   meta: DynamicWorkflowMeta
   source: string
+}
+
+export interface DynamicWorkflowArtifact {
+  name: string
+  digest: string
+  script: DynamicWorkflowScript
+  origin?: string
+}
+
+export function fingerprintDynamicWorkflowScript(script: DynamicWorkflowScript): string {
+  return createHash("sha256").update(JSON.stringify(script)).digest("hex")
+}
+
+export function createDynamicWorkflowArtifact(script: DynamicWorkflowScript, origin?: string): DynamicWorkflowArtifact {
+  return { name: script.meta.name, digest: fingerprintDynamicWorkflowScript(script), script, ...(origin ? { origin } : {}) }
 }
 
 export interface DynamicWorkflowLogEntry {

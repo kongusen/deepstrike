@@ -1,4 +1,10 @@
-import { FileDynamicWorkflowStore } from "../src/workflow/dynamic-store.js"
+import {
+  DynamicWorkflowArtifactCatalog,
+  FileDynamicWorkflowStore,
+  decodeDynamicWorkflowArtifact,
+  encodeDynamicWorkflowArtifact,
+} from "../src/workflow/dynamic-store.js"
+import { createDynamicWorkflowArtifact } from "../src/workflow/dynamic.js"
 import type { DynamicWorkflowScript } from "../src/workflow/dynamic.js"
 import { lstat, symlink, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -45,5 +51,28 @@ describe("FileDynamicWorkflowStore", () => {
       await rm(target, { recursive: true, force: true })
     }
   })
-})
 
+  it("discovers across roots and distributes digest-checked bundles", async () => {
+    const firstRoot = await mkdtemp(join(tmpdir(), "dynamic-wf-store-first-"))
+    const secondRoot = await mkdtemp(join(tmpdir(), "dynamic-wf-store-second-"))
+    try {
+      const first = new FileDynamicWorkflowStore({ rootDir: firstRoot })
+      const second = new FileDynamicWorkflowStore({ rootDir: secondRoot })
+      await first.save("audit", script)
+      const catalog = new DynamicWorkflowArtifactCatalog([first, second])
+      const found = await catalog.discover()
+      expect(found).toHaveLength(1)
+      expect(found[0]).toMatchObject({ name: "audit", origin: "file-store" })
+      const artifact = await catalog.load("audit", found[0].digest)
+      const bundle = encodeDynamicWorkflowArtifact(artifact)
+      expect(decodeDynamicWorkflowArtifact(bundle)).toMatchObject({ name: "audit", digest: found[0].digest })
+      await catalog.distribute("audit", second)
+      await expect(second.load("audit")).resolves.toEqual(script)
+      expect(() => decodeDynamicWorkflowArtifact(bundle.replace(found[0].digest, "0".repeat(64)))).toThrow(/digest mismatch/)
+      expect(createDynamicWorkflowArtifact(script).digest).toBe(found[0].digest)
+    } finally {
+      await rm(firstRoot, { recursive: true, force: true })
+      await rm(secondRoot, { recursive: true, force: true })
+    }
+  })
+})
