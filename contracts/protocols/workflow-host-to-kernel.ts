@@ -49,5 +49,6 @@ export const WORKFLOW_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
   validation: {
     mode: "behavioral-tests",
     reason: "Workflow ABI and control-flow tests cover node lowering, snake_case fields, and root composition.",
+    testRefs: ["node/tests/workflow-boundary.test.ts", "node/tests/workflow-control-flow.test.ts", "node/tests/workflow-optimization.test.ts"],
   },
 }

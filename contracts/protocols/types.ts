@@ -126,6 +126,8 @@ export interface BoundaryValidation {
   mode: "runtime-validator" | "behavioral-tests"
   /** Short reviewable explanation of the selected enforcement mode. */
   reason: string
+  /** Repository-relative test files that exercise this crossing's runtime semantics. */
+  testRefs?: readonly string[]
 }
 
 /** One typed implementation inside a protocol family. */

@@ -18,7 +18,10 @@
     "lossiness": "intentional",
     "validation": {
       "mode": "behavioral-tests",
-      "reason": "Kernel event-log tests cover representative persistence and intentionally dropped observations."
+      "reason": "Kernel event-log tests cover representative persistence and intentionally dropped observations.",
+      "testRefs": [
+        "node/tests/kernel-observation-decode-boundary.test.ts"
+      ]
     }
   },
   "fields": {

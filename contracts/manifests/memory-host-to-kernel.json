@@ -18,7 +18,10 @@
     "lossiness": "intentional",
     "validation": {
       "mode": "behavioral-tests",
-      "reason": "Memory policy boundary tests cover snake-case projection and unknown-field rejection."
+      "reason": "Memory policy boundary tests cover snake-case projection and unknown-field rejection.",
+      "testRefs": [
+        "node/tests/memory-policy-boundary.test.ts"
+      ]
     }
   },
   "fields": {

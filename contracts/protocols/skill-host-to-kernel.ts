@@ -104,5 +104,5 @@ export const SKILL_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol<
   },
 
   lossiness: "intentional",
-  validation: { mode: "runtime-validator", reason: "Generated validator enforces forbidden, required, unexpected, and target-shape fields at runtime." },
+  validation: { mode: "runtime-validator", reason: "Generated validator enforces forbidden, required, unexpected, and target-shape fields at runtime.", testRefs: ["node/tests/skill-kernel-projection-validator.test.ts"] },
 }

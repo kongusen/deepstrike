@@ -18,7 +18,10 @@
     "lossiness": "intentional",
     "validation": {
       "mode": "behavioral-tests",
-      "reason": "Kernel projection tests cover snake-case fields, parsed arguments, and optional data handling."
+      "reason": "Kernel projection tests cover snake-case fields, parsed arguments, and optional data handling.",
+      "testRefs": [
+        "node/tests/kernel-projection-boundary.test.ts"
+      ]
     }
   },
   "fields": {

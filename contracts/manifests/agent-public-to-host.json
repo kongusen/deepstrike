@@ -18,7 +18,11 @@
     "lossiness": "intentional",
     "validation": {
       "mode": "behavioral-tests",
-      "reason": "Facade runtime-path tests cover provider, tool, governance, and binding behavior."
+      "reason": "Facade runtime-path tests cover provider, tool, governance, and binding behavior.",
+      "testRefs": [
+        "node/tests/agent-runtime-path.test.ts",
+        "node/tests/agent-declaration.test.ts"
+      ]
     }
   },
   "fields": {

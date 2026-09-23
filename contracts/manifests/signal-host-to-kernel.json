@@ -18,7 +18,10 @@
     "lossiness": "intentional",
     "validation": {
       "mode": "behavioral-tests",
-      "reason": "Signal delivery tests cover leased acknowledgement and the kernel event projection shape."
+      "reason": "Signal delivery tests cover leased acknowledgement and the kernel event projection shape.",
+      "testRefs": [
+        "node/tests/signal-boundary.test.ts"
+      ]
     }
   },
   "fields": {

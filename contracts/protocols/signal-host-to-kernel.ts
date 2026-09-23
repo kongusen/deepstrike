@@ -22,5 +22,6 @@ export const SIGNAL_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
   validation: {
     mode: "behavioral-tests",
     reason: "Signal delivery tests cover leased acknowledgement and the kernel event projection shape.",
+    testRefs: ["node/tests/signal-boundary.test.ts"],
   },
 }

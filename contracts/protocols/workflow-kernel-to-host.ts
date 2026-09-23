@@ -64,5 +64,6 @@ export const WORKFLOW_KERNEL_TO_HOST_PROTOCOL: BoundaryProtocol = {
   validation: {
     mode: "behavioral-tests",
     reason: "Workflow action boundary tests cover kernel bookkeeping drops and host runner projections.",
+    testRefs: ["node/tests/workflow-abi.test.ts", "node/tests/workflow-run-queue.test.ts"],
   },
 }

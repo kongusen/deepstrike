@@ -26,5 +26,6 @@ export const MEMORY_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
   validation: {
     mode: "behavioral-tests",
     reason: "Memory policy boundary tests cover snake-case projection and unknown-field rejection.",
+    testRefs: ["node/tests/memory-policy-boundary.test.ts"],
   },
 }

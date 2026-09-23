@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Check and generate the first type-driven boundary contract. */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import ts from "typescript"
 import { readCanonicalVersion } from "./release-version.mjs"
@@ -126,6 +126,32 @@ function typeName(checker, type) {
   return checker.typeToString(type, undefined, ts.TypeFormatFlags.NoTruncation)
 }
 
+function nestedPathType(checker, rootType, path, context) {
+  const segments = path.split(".").filter(Boolean)
+  if (!segments.length) return rootType
+
+  const visit = (type, index) => {
+    const current = checker.getNonNullableType(type)
+    if (current.isUnion()) {
+      const branches = current.types.map(branch => visit(branch, index))
+      return branches.every(Boolean) ? branches.find(Boolean) : undefined
+    }
+    if (index === segments.length) return current
+    const segment = segments[index]
+    if (segment === "[]" || segment === "*") {
+      if (!checker.isArrayType(current) && !checker.isTupleType(current)) return undefined
+      const element = checker.isArrayType(current)
+        ? checker.getTypeArguments(current)[0]
+        : checker.getTypeArguments(current)[0]
+      return element ? visit(element, index + 1) : undefined
+    }
+    const property = checker.getPropertyOfType(checker.getApparentType(current), segment)
+    if (!property) return undefined
+    return visit(checker.getTypeOfSymbolAtLocation(property, context), index + 1)
+  }
+  return visit(rootType, 0)
+}
+
 function inspectFields(checker, declaration, sourceType, targetType, protocol) {
   const sourceProperties = propertyInfo(checker, sourceType, declaration)
   const targetProperties = propertyInfo(checker, targetType, declaration)
@@ -159,10 +185,12 @@ function inspectFields(checker, declaration, sourceType, targetType, protocol) {
     if (!targetNames.has(field)) fail(`envelope target field "${field}" is absent from target type`)
   }
   for (const mapping of protocol.fields.nested ?? []) {
-    const sourceRoot = mapping.source.split(".")[0]
-    const targetRoot = mapping.target.split(".")[0]
-    if (!sourceNames.has(sourceRoot)) fail(`nested source root "${sourceRoot}" is absent from source type`)
-    if (!targetNames.has(targetRoot)) fail(`nested target root "${targetRoot}" is absent from target type`)
+    if (!nestedPathType(checker, sourceType, mapping.source, declaration)) {
+      fail(`nested source path "${mapping.source}" is absent from source type`)
+    }
+    if (!nestedPathType(checker, targetType, mapping.target, declaration)) {
+      fail(`nested target path "${mapping.target}" is absent from target type`)
+    }
   }
 
   const inferredPreserves = sourceProperties.filter(sourceProperty => {
@@ -353,6 +381,19 @@ function expandProtocol(protocol) {
 function processProtocol(program, checker, protocol) {
   if (!protocol.validation?.mode || !protocol.validation?.reason) {
     fail(`${protocol.id}: validation mode and reason are required`)
+  }
+  const testRefs = protocol.validation.testRefs ?? []
+  if (protocol.validation.mode === "behavioral-tests" && testRefs.length === 0) {
+    fail(`${protocol.id}: behavioral-tests validation requires at least one testRefs entry`)
+  }
+  for (const testRef of testRefs) {
+    if (typeof testRef !== "string" || !testRef) fail(`${protocol.id}: testRefs entries must be non-empty paths`)
+    const testPath = artifactPath(testRef)
+    if (!existsSync(testPath)) fail(`${protocol.id}: behavioral test reference does not exist: ${testRef}`)
+    const testSource = readFileSync(testPath, "utf8")
+    if (!/\b(?:describe|it|test)\s*\(/.test(testSource)) {
+      fail(`${protocol.id}: behavioral test reference has no test declaration: ${testRef}`)
+    }
   }
   const [, adapterPath, adapterName] = protocol.adapter.match(/^([^:]+):(.+)$/) ?? []
   if (!adapterPath || !adapterName) fail(`invalid adapter reference: ${protocol.adapter}`)

@@ -18,7 +18,11 @@
     "lossiness": "intentional",
     "validation": {
       "mode": "behavioral-tests",
-      "reason": "Capability boundary tests cover tool, skill, marker, mount, and unmount projections."
+      "reason": "Capability boundary tests cover tool, skill, marker, mount, and unmount projections.",
+      "testRefs": [
+        "node/tests/capability-boundary.test.ts",
+        "node/tests/skill-kernel-projection-validator.test.ts"
+      ]
     }
   },
   "fields": {
