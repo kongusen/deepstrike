@@ -1,7 +1,7 @@
 import { governancePolicyToKernelEvent } from "../src/governance.js"
 import { normalizeContextPolicy, contextPolicy } from "../src/runtime/context-policy.js"
-import { kernelReliabilityToKernel } from "../src/runtime/runner.js"
-import { signalPolicyToKernel } from "../src/runtime/os-profile.js"
+import { buildConfigureRunPolicyConfig, kernelReliabilityToKernel } from "../src/runtime/runner.js"
+import { assertNativeProfile, signalPolicyToKernel } from "../src/runtime/os-profile.js"
 
 describe("configure_run policy adapters", () => {
   it("projects governance and context policies into kernel vocabulary", () => {
@@ -34,6 +34,22 @@ describe("configure_run policy adapters", () => {
       queue_max: 8,
       ttl_ms: 5000,
       deadline_escalation: true,
+    })
+  })
+
+  it("correlates child policy adapters into one configure_run policy config", () => {
+    const config = buildConfigureRunPolicyConfig({
+      governancePolicy: { vetoes: ["shell"] },
+      signalPolicy: { queueMax: 8 },
+      contextPolicy: { preserveRecentTurns: 3 },
+      kernelReliability: { maxInputBytes: 4096 },
+    }, assertNativeProfile())
+
+    expect(config).toMatchObject({
+      governance: { vetoed_tools: ["shell"] },
+      signal_policy: { queue_max: 8 },
+      context_policy: { preserve_recent_turns: 3 },
+      reliability: { max_input_bytes: 4096 },
     })
   })
 })

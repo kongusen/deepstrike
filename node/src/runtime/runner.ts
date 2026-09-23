@@ -598,6 +598,32 @@ export interface RuntimeOptions {
   enableDiagnosticsDashboard?: boolean
 }
 
+export type ConfigureRunPolicyOptions = Pick<
+  RuntimeOptions,
+  "governancePolicy" | "signalPolicy" | "contextPolicy" | "kernelReliability"
+>
+
+/** Build the policy portion of the composite configure_run crossing. */
+export function buildConfigureRunPolicyConfig(
+  options: ConfigureRunPolicyOptions,
+  osProfile: NativeOsProfile,
+): Record<string, unknown> {
+  const signalPolicy = options.signalPolicy ?? osProfile.signalPolicy
+  const governancePolicy = options.governancePolicy ?? osProfile.governancePolicy
+  const { kind: _governanceKind, ...governance } = governancePolicyToKernelEvent(governancePolicy)
+  const config: Record<string, unknown> = {
+    governance,
+    signal_policy: signalPolicyToKernel(signalPolicy),
+  }
+  if (options.contextPolicy) {
+    config.context_policy = normalizeContextPolicy(contextPolicy(options.contextPolicy))
+  }
+  if (options.kernelReliability) {
+    config.reliability = kernelReliabilityToKernel(options.kernelReliability)
+  }
+  return config
+}
+
 function controlRequestRejection(
   observations: KernelObservation[],
   operation?: string,
@@ -1046,21 +1072,7 @@ export class RuntimeRunner {
     // present field via the same path its granular event uses; absent fields are left untouched.
     // (Requires the 0.2.30 core that ships `configure_run`.)
     const osProfile = assertNativeProfile(this.opts.osProfile ?? "native")
-    const signalPolicy = this.opts.signalPolicy ?? osProfile.signalPolicy
-    const governancePolicy = this.opts.governancePolicy ?? osProfile.governancePolicy
-
-    // Strip the event `kind` off the governance event — `configure_run.config.governance` carries the
-    // bare policy fields (default_action / rules / vetoed_tools / rate_limits / constraints).
-    const { kind: _govKind, ...governance } = governancePolicyToKernelEvent(governancePolicy) as Record<string, unknown>
-
-    const config: Record<string, unknown> = { governance }
-    if (this.opts.contextPolicy) {
-      config.context_policy = normalizeContextPolicy(contextPolicy(this.opts.contextPolicy))
-    }
-    if (this.opts.kernelReliability) {
-      config.reliability = kernelReliabilityToKernel(this.opts.kernelReliability)
-    }
-    config.signal_policy = signalPolicyToKernel(signalPolicy)
+    const config = buildConfigureRunPolicyConfig(this.opts, osProfile)
     if (this.opts.promptBudget) {
       config.prompt_budget = {
         prompt_overhead_tokens: this.opts.promptBudget.promptOverheadTokens,
