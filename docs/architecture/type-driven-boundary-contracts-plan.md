@@ -178,6 +178,8 @@ Each iteration should be split into small commits with a green checkpoint. Regis
 
 Iteration 3 is complete in the current branch. `createAgent` now captures a deeply frozen `agent.declaration` containing JSON data, while provider, execution plane, memory store, vector retriever, and bound tool executors remain in private host bindings. The legacy `agent.definition` view is materialized from those two parts for compatibility and is no longer the runtime source of truth. The regression suite covers caller mutation, serialization, and reassignment of provider/tool inputs.
 
+Iteration 4 is complete in the current branch. Public `remember` and `recall` now use the RuntimeRunner memory gateway, so policy validation, memory lifecycle updates, and session-log audit records apply to facade calls as well as kernel-driven paths. Host writes carry `host/user_asserted` provenance, model writes retain `model/untrusted` provenance, rejected writes stop before `MemoryStore.put`, retrieval breadth honors `memoryPolicy.retrievalTopK`, and memory-only Agents can operate without a provider binding.
+
 ---
 
 ## Explicit non-goals for the first slice

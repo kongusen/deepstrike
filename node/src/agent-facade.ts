@@ -130,6 +130,15 @@ function statusFromDone(status: string): RunResult["status"] {
   return "partial"
 }
 
+const memoryOnlyProvider: LLMProvider = {
+  async complete() {
+    throw new Error("memory-only agent cannot perform a model completion")
+  },
+  async *stream() {
+    throw new Error("memory-only agent cannot perform a model stream")
+  },
+}
+
 class AgentSessionImpl {
   constructor(private readonly owner: AgentRuntimeImpl, public readonly id: string) {}
 
@@ -179,6 +188,7 @@ class AgentRuntimeImpl implements Agent {
     const store = this.bindings.memoryStore
     const scope = this.bindings.memoryScope
     if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
+    const session = `memory-${crypto.randomUUID()}`
     const now = Date.now()
     const record: MemoryRecord = {
       record_id: crypto.randomUUID(),
@@ -186,8 +196,8 @@ class AgentRuntimeImpl implements Agent {
       name: input.name,
       kind: input.kind ?? "reference",
       content: input.content,
-      description: input.description ?? "",
-      provenance: { author: "host", trust: "user_asserted", evidence_refs: [] },
+      description: input.description ?? input.name,
+      provenance: { session_id: session, author: "host", trust: "user_asserted", evidence_refs: [] },
       created_at: now,
       updated_at: now,
       recall_count: 0,
@@ -196,7 +206,9 @@ class AgentRuntimeImpl implements Agent {
       pinned: input.pinned ?? false,
       ...(input.ttlDays !== undefined ? { ttl_days: input.ttlDays } : {}),
     }
-    await store.put(this.name, record)
+    const runner = await this.createRunner({}, true)
+    const accepted = await runner.writeMemory(record, { sessionId: session })
+    if (!accepted) throw new Error(`agent "${this.name}" memory write denied`)
     return record
   }
 
@@ -211,7 +223,8 @@ class AgentRuntimeImpl implements Agent {
       kinds: options.kinds ?? [],
       ...(options.minScore !== undefined ? { min_score: options.minScore } : {}),
     }
-    return store.search(this.name, request)
+    const runner = await this.createRunner({}, true)
+    return runner.queryMemory(request, { sessionId: `memory-${crypto.randomUUID()}` })
   }
 
   async delegate(request: DelegationRequest): Promise<DelegationResult> {
@@ -356,12 +369,12 @@ class AgentRuntimeImpl implements Agent {
     await this.mcpConnection
   }
 
-  private async createRunner(options: AgentRunOptions): Promise<RuntimeRunner> {
+  private async createRunner(options: AgentRunOptions, allowUnboundProvider = false): Promise<RuntimeRunner> {
     const model = this.declaration.model
     const binding = this.bindings.runtimeBinding
     const provider = binding?.provider
       ?? (typeof model === "string" ? binding?.providerFor?.(model) : undefined)
-    if (!provider) {
+    if (!provider && !allowUnboundProvider) {
       throw new Error(`agent "${this.name}" has no runtime provider binding for model ${typeof model === "string" ? model : "(unresolved)"}`)
     }
     if (binding?.executionPlane && this.declaration.mcpServers?.length) {
@@ -392,7 +405,7 @@ class AgentRuntimeImpl implements Agent {
     // MCP schemas are discovered during connect, before the adapter snapshots the baseline.
     await this.prepareMcp()
     return new RuntimeRunner(buildAgentRuntimeOptions(materializeAgentDefinition(this.declaration, this.bindings), options, {
-      provider,
+      provider: provider ?? memoryOnlyProvider,
       executionPlane: plane,
       sessionLog: this.sessionLog,
       agentId: this.name,

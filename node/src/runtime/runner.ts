@@ -17,6 +17,7 @@ import type {
   MemoryQuery,
 } from "../memory/protocols.js"
 import { extractSessionMemories } from "../memory/extraction.js"
+import { validateMemory } from "../memory/agent.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { Skill } from "../skill.js"
 import type { SkillMetadata } from "../skills/loader.js"
@@ -802,8 +803,11 @@ export class RuntimeRunner {
     agentId: string,
   ): Promise<MemoryRecall[]> {
     if (!this.opts.memoryStore) throw new Error("memory queries require memoryStore")
-    return (await this.opts.memoryStore.search(agentId, { ...query, top_k: requestedK }))
-      .slice(0, requestedK)
+    const policyLimit = this.opts.memoryPolicy?.retrievalTopK
+    const limit = policyLimit === undefined ? requestedK : Math.min(requestedK, policyLimit)
+    if (limit <= 0) return []
+    return (await this.opts.memoryStore.search(agentId, { ...query, top_k: limit }))
+      .slice(0, limit)
   }
 
   /**
@@ -850,19 +854,20 @@ export class RuntimeRunner {
   async writeMemory(
     memory: MemoryRecord,
     opts: { sessionId?: string; agentId?: string } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     const sessionId = opts.sessionId ?? this.currentSessionId
     const agentId = opts.agentId ?? this.opts.agentId
-    if (!this.opts.memoryStore || !agentId) return
+    if (!this.opts.memoryStore || !agentId) return false
     const policy = this.opts.memoryPolicy
     if (policy?.validationEnabled !== false) {
-      const error = !memory.name.trim()
+      const configuredError = !memory.name.trim()
         ? "memory name must not be empty"
         : memory.name.length > (policy?.maxNameLength ?? 100)
           ? `memory name exceeds ${policy?.maxNameLength ?? 100} characters`
           : Buffer.byteLength(memory.content, "utf8") > (policy?.maxContentBytes ?? 10_000)
             ? `memory content exceeds ${policy?.maxContentBytes ?? 10_000} bytes`
             : undefined
+      const error = configuredError ?? validateMemory(memory).error
       if (error) {
         if (sessionId) {
           await this.opts.sessionLog.append(sessionId, {
@@ -872,7 +877,7 @@ export class RuntimeRunner {
             error,
           })
         }
-        return
+        return false
       }
     }
     await this.persistMemoryToStore(memory, agentId)
@@ -887,6 +892,7 @@ export class RuntimeRunner {
         size_bytes: Buffer.byteLength(memory.content, "utf8"),
       })
     }
+    return true
   }
 
   async queryMemory(
