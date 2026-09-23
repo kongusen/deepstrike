@@ -5,13 +5,14 @@ import {
 } from "../src/workflow/dynamic.js"
 import type { DynamicWorkflowHost } from "../src/workflow/dynamic.js"
 
-function fakeHost(delayMs = 0, onRun?: (goal: string) => void): DynamicWorkflowHost {
+function fakeHost(delayMs = 0, onRun?: (goal: string) => void, onDone?: (goal: string) => void): DynamicWorkflowHost {
   return {
     async runWorkflow(spec) {
       const node = spec.nodes[0]
       const goal = typeof node.task === "string" ? node.task : node.task.goal
       onRun?.(goal)
       if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs))
+      onDone?.(goal)
       const content = goal.startsWith("json:") ? JSON.stringify({ goal }) : `done:${goal}`
       return {
         nodeOutcomes: [{
@@ -65,13 +66,27 @@ describe("DynamicWorkflowExecutor", () => {
     const host = fakeHost(5, () => {
       active += 1
       peak = Math.max(peak, active)
-      setTimeout(() => { active -= 1 }, 5)
-    })
+    }, () => { active -= 1 })
     const executor = new DynamicWorkflowExecutor(host, { limits: { maxConcurrentAgents: 2 } })
     const run = await executor.run(ctx => ctx.parallel([1, 2, 3, 4], async item => (await ctx.agent(`item:${item}`))?.text))
 
     expect(run.value).toEqual(["done:item:1", "done:item:2", "done:item:3", "done:item:4"])
     expect(run.progress.agentsStarted).toBe(4)
+    expect(peak).toBeLessThanOrEqual(2)
+  })
+
+  it("bounds nested agent calls by real agent concurrency, not worker count", async () => {
+    let active = 0
+    let peak = 0
+    const host = fakeHost(5, () => {
+      active += 1
+      peak = Math.max(peak, active)
+    }, () => { active -= 1 })
+    const executor = new DynamicWorkflowExecutor(host, { limits: { maxConcurrentAgents: 2 } })
+    await executor.run(ctx => ctx.parallel([1, 2], async item =>
+      Promise.all([ctx.agent(`nested:${item}:a`), ctx.agent(`nested:${item}:b`)]),
+    ))
+
     expect(peak).toBeLessThanOrEqual(2)
   })
 

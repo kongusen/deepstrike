@@ -195,6 +195,8 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
   private agentCount = 0
   private nextNode = 0
   private readonly phaseStack: DynamicWorkflowPhaseProgress[] = []
+  private activeAgentSlots = 0
+  private readonly waitingAgentSlots: Array<() => void> = []
 
   constructor(
     private readonly host: DynamicWorkflowHost,
@@ -278,6 +280,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     }
     const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
     this.agentCount += 1
+    await this.acquireAgentSlot()
     this.progress.agentsStarted = this.agentCount
     this.progress.activeAgents += 1
     const currentPhase = this.phaseStack.at(-1)
@@ -315,8 +318,23 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       }
     } finally {
       this.progress.activeAgents -= 1
+      this.releaseAgentSlot()
       this.emit()
     }
+  }
+
+  private async acquireAgentSlot(): Promise<void> {
+    if (this.activeAgentSlots < this.limits.maxConcurrentAgents) {
+      this.activeAgentSlots += 1
+      return
+    }
+    await new Promise<void>(resolve => this.waitingAgentSlots.push(resolve))
+    this.activeAgentSlots += 1
+  }
+
+  private releaseAgentSlot(): void {
+    this.activeAgentSlots -= 1
+    this.waitingAgentSlots.shift()?.()
   }
 
   private assertBatchSize(size: number, operation: string): void {
