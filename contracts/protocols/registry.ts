@@ -4,6 +4,7 @@ import { CAPABILITY_HOST_TO_KERNEL_PROTOCOL } from "./capability-host-to-kernel.
 import { CONFIGURE_RUN_HOST_TO_KERNEL_PROTOCOL } from "./configure-run-host-to-kernel.js"
 import { KERNEL_PROJECTION_HOST_TO_KERNEL_PROTOCOL } from "./kernel-projection-host-to-kernel.js"
 import { KERNEL_OBSERVATION_TO_SESSION_EVENT_PROTOCOL } from "./kernel-observation-to-session-event.js"
+import { PROVIDER_USAGE_DECODE_PROTOCOL } from "./provider-usage-decode.js"
 import { SKILL_HOST_TO_KERNEL_PROTOCOL } from "./skill-host-to-kernel.js"
 
 /** Single source of registered boundary protocols. */
@@ -13,5 +14,6 @@ export const BOUNDARY_PROTOCOLS: readonly BoundaryProtocol[] = [
   CONFIGURE_RUN_HOST_TO_KERNEL_PROTOCOL,
   KERNEL_PROJECTION_HOST_TO_KERNEL_PROTOCOL,
   KERNEL_OBSERVATION_TO_SESSION_EVENT_PROTOCOL,
+  PROVIDER_USAGE_DECODE_PROTOCOL,
   SKILL_HOST_TO_KERNEL_PROTOCOL,
 ]

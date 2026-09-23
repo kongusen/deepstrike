@@ -196,6 +196,8 @@ The same iteration now registers four live kernel projections: message, tool sch
 
 The next event-decode checkpoint registers the live `KernelObservation → SessionEvent | null` crossing. `kernelObservationToSessionEventAtBoundary` makes the turn and archive context explicit in a one-argument request, and `runner.appendObservations` consumes that adapter directly. The first behavior slice covers entropy samples, compressed archive context, and the intentionally non-persisted page-in request; the remaining observation branches stay behind the same adapter until their individual semantic tests are split out.
 
+The first provider semantic checkpoint registers the four live wire-usage decoders as one `host-provider` decode family. OpenAI, Anthropic, Gemini, and Ollama each resolve through the same compiler-checked `unknown → ProviderUsage | undefined` target; their existing provider adapter call sites and usage-normalizer tests remain the behavioral gate. Request-body and stream-event codecs stay separate because they carry protocol-specific state and error semantics.
+
 ---
 
 ## Explicit non-goals for the first slice

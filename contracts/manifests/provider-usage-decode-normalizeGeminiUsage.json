@@ -1,0 +1,45 @@
+{
+  "id": "provider-usage.decode.normalizeGeminiUsage",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-provider",
+    "direction": "decode",
+    "source": {
+      "type": "unknown",
+      "layer": "provider",
+      "authority": "provider"
+    },
+    "target": {
+      "type": "ProviderUsage | undefined",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "adapter": "providers/usage-normalizer:normalizeGeminiUsage",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": []
+    },
+    "derived": [],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "usage",
+        "type": "unknown"
+      }
+    ],
+    "returnType": "ProviderUsage | undefined"
+  }
+}
