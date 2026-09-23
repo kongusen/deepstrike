@@ -1,0 +1,62 @@
+{
+  "id": "agent.public-to-host",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "public-to-host",
+    "direction": "lower",
+    "source": {
+      "type": "AgentRuntimeOptionsRequest",
+      "layer": "public",
+      "authority": "public-agent"
+    },
+    "target": {
+      "type": "RuntimeOptions",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "adapter": "runtime/agent-runtime-options:buildAgentRuntimeOptions",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "declaration",
+        "bindings",
+        "options",
+        "resources"
+      ],
+      "inferred": [
+        "declaration",
+        "bindings",
+        "options",
+        "resources"
+      ]
+    },
+    "derived": [
+      "provider",
+      "executionPlane",
+      "sessionLog",
+      "maxTokens",
+      "systemPrompt",
+      "agentId"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "request",
+        "type": "AgentRuntimeOptionsRequest"
+      }
+    ],
+    "returnType": "RuntimeOptions"
+  }
+}

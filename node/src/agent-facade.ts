@@ -395,11 +395,16 @@ class AgentRuntimeImpl implements Agent {
     }
     // MCP schemas are discovered during connect, before the adapter snapshots the baseline.
     await this.prepareMcp()
-    return new RuntimeRunner(buildAgentRuntimeOptions(this.declaration, this.bindings, options, {
-      provider: provider ?? memoryOnlyProvider,
-      executionPlane: plane,
-      sessionLog: this.sessionLog,
-      agentId: this.name,
+    return new RuntimeRunner(buildAgentRuntimeOptions({
+      declaration: this.declaration,
+      bindings: this.bindings,
+      options,
+      resources: {
+        provider: provider ?? memoryOnlyProvider,
+        executionPlane: plane,
+        sessionLog: this.sessionLog,
+        agentId: this.name,
+      },
     }))
   }
 

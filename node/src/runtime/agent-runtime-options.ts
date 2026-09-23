@@ -11,13 +11,18 @@ export type AgentRuntimeResources = Pick<RuntimeOptions, "provider" | "execution
   agentId: string
 }
 
+export interface AgentRuntimeOptionsRequest {
+  declaration: AgentDeclaration
+  bindings: AgentHostBindings
+  options: AgentRunOptions
+  resources: AgentRuntimeResources
+}
+
 /** The live public-to-host configuration adapter, shared by all facade execution entry points. */
 export function buildAgentRuntimeOptions(
-  declaration: AgentDeclaration,
-  bindings: AgentHostBindings,
-  options: AgentRunOptions,
-  resources: AgentRuntimeResources,
+  request: AgentRuntimeOptionsRequest,
 ): RuntimeOptions {
+  const { declaration, bindings, options, resources } = request
   const binding = bindings.runtimeBinding
   const governancePolicy = mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, declaration.guardrails)
   return {

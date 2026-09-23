@@ -190,6 +190,8 @@ Iteration 7 now also registers the five capability host-to-kernel adapters: tool
 
 The configure-run family is now registered as four typed child adapters for governance, context policy, reliability, and signal policy. Their existing runtime conversion functions are the checked crossings, while `buildConfigureRunPolicyConfig` is the named composite consumed by the runner; direct tests cover snake-case projection, policy defaults, and correlation into one `configure_run` config.
 
+Iteration 8 has its first live-path checkpoint. `buildAgentRuntimeOptions` now accepts one typed `AgentRuntimeOptionsRequest`, and the actual facade call is registered as `agent.public-to-host` with a compiler-resolved `AgentRuntimeOptionsRequest → RuntimeOptions` signature. Existing facade behavior tests remain the behavioral gate for this adapter.
+
 ---
 
 ## Explicit non-goals for the first slice
