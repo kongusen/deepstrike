@@ -143,11 +143,12 @@ export class DynamicWorkflowArtifactCatalog {
 }
 
 export function encodeDynamicWorkflowArtifact(artifact: DynamicWorkflowArtifact): string {
-  const expected = fingerprintDynamicWorkflowScript(artifact.script)
-  if (artifact.name !== artifact.script.meta.name || artifact.digest !== expected) {
+  const script = validateScript(artifact.script)
+  const expected = fingerprintDynamicWorkflowScript(script)
+  if (artifact.name !== script.meta.name || artifact.digest !== expected) {
     throw new Error(`dynamic workflow artifact "${artifact.name}" has an invalid digest`)
   }
-  return JSON.stringify({ version: 1, artifact }, null, 2)
+  return JSON.stringify({ version: 1, artifact: { ...artifact, script } }, null, 2)
 }
 
 export function decodeDynamicWorkflowArtifact(serialized: string): DynamicWorkflowArtifact {
@@ -162,7 +163,7 @@ export function decodeDynamicWorkflowArtifact(serialized: string): DynamicWorkfl
   if (typeof value.name !== "string" || typeof value.digest !== "string" || !value.script || typeof value.script !== "object") {
     throw new Error("invalid dynamic workflow artifact bundle")
   }
-  const script = value.script as DynamicWorkflowScript
+  const script = validateScript(value.script)
   const expected = fingerprintDynamicWorkflowScript(script)
   if (value.name !== script.meta.name || value.digest !== expected) throw new Error("dynamic workflow artifact bundle digest mismatch")
   return createDynamicWorkflowArtifact(script, typeof value.origin === "string" ? value.origin : undefined)

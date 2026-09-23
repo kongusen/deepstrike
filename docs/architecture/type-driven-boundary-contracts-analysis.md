@@ -491,7 +491,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 
 | 官方机制 | DeepStrike 当前能力 | 判定 |
 |---|---|---|
-| 动态决定后续工作 | `submit_workflow_nodes`、`start_workflow` | 已有，但入口仍是模型工具，不是脚本变量驱动 |
+| 动态决定后续工作 | `DynamicWorkflowVmExecutor` + host workflow facade | 已有，脚本变量驱动的提交仍通过 kernel workflow boundary |
 | 并行 fan-out | kernel workflow batch + runner `Promise.all` | 已有，受 kernel quota 和调度器控制 |
 | 结果传给后续节点 | DAG 依赖、`dependency_outputs`、reducers | 已有 |
 | 质量复核 | classify、generate/filter、tournament、verify 模板 | 已有 |
@@ -500,12 +500,12 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 
 ### 9.2 当前缺口
 
-1. **没有脚本运行时**：现在已有 `FileDynamicWorkflowStore` 保存并校验 `meta + source` artifact，但还没有在隔离环境中执行它，也没有提供 `agent/parallel/pipeline/phase/log/args` 的源码执行上下文。
-2. **没有动态运行进度模型**：现有 session events 能记录节点完成，但没有按 phase 聚合 agent 数、token、耗时和当前状态的统一查询面。
-3. **恢复语义不等价**：现在已有可插拔的 invocation fingerprint 和 replay store，能复用同一 `runId + nodeId + prompt/options` 的完成结果；但还没有把失败后缀、依赖后继和缺失 artifact 的拒绝语义接入 kernel workflow replay。
-4. **启动审批与成本提示缺失**：kernel governance 能拒绝 effect，但工作流启动前还没有展示阶段、原始脚本、规模提示并等待一次性批准的控制面。
+1. **脚本运行时已补齐**：`DynamicWorkflowVmExecutor` 在 `node:vm` 的无原型上下文中执行 artifact，只暴露 `agent/parallel/parallelAgents/pipeline/phase/log/args/progress`，并拒绝模块加载、进程/网络原语和动态代码生成。它仍是 host 隔离边界，不能替代 OS sandbox。
+2. **动态运行进度与生命周期已补齐**：`DynamicWorkflowProgress` 聚合 phase、agent、并发和日志状态；`DynamicWorkflowLifecycleEvent` 提供有序的 run、approval、phase、agent、log、终止事件，并可由调用方持久化。
+3. **恢复语义已补齐**：replay snapshot 持久化 run identity、artifact digest、args/limits fingerprint、生命周期事件和 invocation records；只重用 completed/completed_partial，失败和取消尾部保留用于诊断；输入或 artifact 改变会拒绝继续复用。
+4. **启动审批已补齐**：脚本提交任何 kernel workflow 前必须经过一次 approval callback；拒绝会产生 ordered cancellation event 且不会提交节点。成本提示仍由调用方根据 args、limits 和 artifact metadata 展示。
 5. **边界约束已经补齐**：`WorkflowNodeSpec.agent` 继续作为 host metadata，`workflowNodeSpecToKernel` 明确丢弃它；runner 在 host spawn boundary 通过 resolver 解析目标 Agent，并使用目标 Agent 自己的 provider、工具和 memory binding，不能把它伪装成 kernel 字段。
-6. **限制没有形成独立的 workflow contract**：kernel 已有 `max_concurrent_subagents`、`max_workflow_nodes` 等 quota，但尚未有文章语义对应的单次 `parallel/pipeline` 4096 项、默认 16 并发、单次运行 1000 agents 和 size guideline/large warning 模型。
+6. **限制 contract 已补齐，提示面仍可扩展**：`DynamicWorkflowLimits` 已表达单次 `parallel/pipeline` 4096 项、默认 16 并发和单次运行 1000 agents，并与 kernel quota 双重约束；size guideline/large warning 仍由 artifact UI 自行呈现。
 7. **kernel 追加入口与 RuntimeRunner controller 已接通**：`DynamicWorkflow` root entry 可以在空 DAG 上保持 active，`HostCommand::AppendWorkflowNodes`、`CanonicalRunnerRuntime.appendWorkflowNodes()` 和 `RuntimeRunner.appendDynamicWorkflowNodes()` 把动态追加放回同一个 kernel operation，`CompleteDynamicWorkflow` 明确关闭生命周期；`DynamicWorkflowController` 提供 typed submission queue，`RuntimeRunner.runDynamicWorkflow()` 现在负责启动、消费 submission、回填 outcome、显式 close 和 RunGroup 结算。
 8. **动态节点限制已完成跨界投影**：`tokenBudget`、`maxTurns`、`maxWallMs` 通过 canonical metadata 进入 Rust DAG，再由 spawn descriptor 返回给 child runner；host append 的配额拒绝统一使用 `submit_workflow_nodes`，不会再伪装成新的 `start_workflow`。
 9. **动态失败拥有终止路径**：脚本或 child driver 抛错时，`RuntimeRunner` 通过 canonical cancel/preempt 链路提交唯一的 `operation_cancelled` 事实，再清理 host 状态；不会留下只在 host 侧消失、kernel 侧仍 active 的半截运行。
@@ -522,9 +522,9 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 6. **Handoff payload**：allowlisted handoff 的 `inputSchema`、`metadata`、`providerOptions` 已进入 `delegate()` 的执行路径；输入在 resolver 前验证，metadata 写入目标 run 的 `run_started` 事实，provider options 作为该次目标调用的扩展覆盖。
 7. **Global invariants**：新增独立的 `contracts/invariants.ts` 与 `global-invariants.json`，登记 EffectId 铸造、signal disposal 一对一、RunContext 隔离三类关系规则；它们由 `contracts:verify` 检查引用测试，不再伪装成单字段映射。
 
-这几项修复后，声明层、host 执行层和 kernel wire 的职责边界已经分别可见。仍未完成的是跨事件关联不变量（EffectId、signal disposal、run/session 隔离）以及动态脚本的隔离 VM、恢复审批和进度查询；它们属于下一阶段的 relational contract 与 execution-control 工作，不应继续用字段映射规则代替。
+这几项修复后，声明层、host 执行层和 kernel wire 的职责边界已经分别可见。跨事件关联规则已进入 global invariants，动态脚本的 VM、artifact 分发、审批、生命周期和 replay 控制面也已落地；后续若需要更强租户隔离或跨进程统一查询，应在现有 host boundary 之外增加 OS sandbox 与 SessionLog 投影，不应把这些职责重新塞进字段映射规则。
 
-### 9.3 第一阶段实现边界
+### 9.3 执行控制与 replay 实现边界
 
 当前分支新增 provider-neutral 的 `DynamicWorkflowExecutor`（`node/src/workflow/dynamic.ts`）。它提供：
 
@@ -538,5 +538,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 - `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` 和 invocation fingerprint，为后续 replay 提供结果缓存边界；fan-out 会保留未变化 item，只提交 fingerprint miss。
 - `DynamicWorkflowController` 提供 typed submission queue：脚本暂停在 host workflow submission，外部 driver 通过 `nextSubmission()` 消费，再用 `completeSubmission()` 或 `failSubmission()` 回填；这一层把异步 handoff 固定成可测试协议。
 - `RuntimeRunner.runDynamicWorkflow()` 现在拥有这一 controller，并在一个 `DynamicWorkflow` root 上完成 submission 驱动、结果回填、显式 close、session log 与 RunGroup 结算；`WorkflowNodeSpec.nodeId` 仍只在 host 侧通过 batch base 映射回动态结果。
+- `DynamicWorkflowArtifactCatalog` 按配置顺序发现多个文件根，稳定解析 name/digest/origin，并通过 bundle 编解码和目标 store 分发；`DynamicWorkflowVmExecutor.runArtifact()` 自动把 artifact digest 绑定到 replay identity。
+- `DynamicWorkflowExecutor` 在 host boundary 完成 approval 和 lifecycle 记录；`FileDynamicWorkflowReplayStore` 以每个 run 的原子 JSON 快照保存事件、状态和 invocation records，跨进程重启仍可继续检查 replay 输入。
 
-这一步刻意不执行任意源码、不允许 workflow 脚本直接读文件或 shell，也不声称已经实现脚本重放。这样可以先把动态工作流的公共词汇与 kernel 入口固定下来，再引入隔离 VM 和持久化 replay，而不会复制一套绕过 kernel 的执行器。
+这条实现刻意不把脚本源码直接接入 provider 或 kernel，也不把 `node:vm` 当成 OS 级安全边界。脚本只能通过 host workflow facade 产生 kernel-owned submission；文件、shell、网络和模块加载仍不可达。若未来需要强对抗租户隔离，应在 VM 之外增加独立 worker/OS sandbox，并把生命周期事件接入统一 SessionLog 查询面。

@@ -21,6 +21,7 @@ export {
   DynamicWorkflowExecutor,
   DynamicWorkflowApprovalError,
   DynamicWorkflowLimitError,
+  DynamicWorkflowReplayMismatchError,
   dynamicAgentTask,
   resolveDynamicWorkflowLimits,
 } from "./dynamic.js"
@@ -52,9 +53,11 @@ export {
   FileDynamicWorkflowReplayStore,
   InMemoryDynamicWorkflowReplayStore,
   fingerprintDynamicWorkflowInvocation,
+  fingerprintDynamicWorkflowRun,
 } from "./dynamic-replay.js"
 export type {
   DynamicWorkflowInvocationRecord,
+  DynamicWorkflowReplayRun,
   DynamicWorkflowReplayStore,
 } from "./dynamic-replay.js"
 

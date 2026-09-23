@@ -3,18 +3,48 @@ import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { DynamicWorkflowAgentOptions } from "./dynamic.js"
+import type { DynamicWorkflowLifecycleEvent, DynamicWorkflowLimits } from "./dynamic.js"
+import type { WorkflowNodeStatus } from "../types/agent.js"
 
 export interface DynamicWorkflowInvocationRecord {
   nodeId: string
   promptFingerprint: string
   text: string
-  status: "completed" | "completed_partial"
+  status: WorkflowNodeStatus | "cancelled"
   termination?: string
+  error?: string
+}
+
+export interface DynamicWorkflowReplayRun {
+  version: 2
+  runId: string
+  inputFingerprint?: string
+  artifactDigest?: string
+  argsFingerprint?: string
+  limits?: Required<DynamicWorkflowLimits>
+  status: "planning" | "running" | "completed" | "failed" | "cancelled"
+  events: DynamicWorkflowLifecycleEvent[]
+  records: DynamicWorkflowInvocationRecord[]
 }
 
 export interface DynamicWorkflowReplayStore {
   find(runId: string, nodeId: string, promptFingerprint: string): Promise<DynamicWorkflowInvocationRecord | undefined>
   save(runId: string, record: DynamicWorkflowInvocationRecord): Promise<void>
+  loadRun?(runId: string): Promise<DynamicWorkflowReplayRun | undefined>
+  saveRun?(runId: string, run: DynamicWorkflowReplayRun): Promise<void>
+  appendEvent?(runId: string, event: DynamicWorkflowLifecycleEvent): Promise<void>
+}
+
+export function fingerprintDynamicWorkflowRun(input: {
+  artifactDigest?: string
+  args: Record<string, unknown>
+  limits: Required<DynamicWorkflowLimits>
+}): string {
+  return createHash("sha256").update(JSON.stringify({
+    artifactDigest: input.artifactDigest ?? "inline",
+    args: input.args,
+    limits: input.limits,
+  })).digest("hex")
 }
 
 export function fingerprintDynamicWorkflowInvocation(prompt: string, options: DynamicWorkflowAgentOptions): string {
@@ -26,18 +56,33 @@ export function fingerprintDynamicWorkflowInvocation(prompt: string, options: Dy
 }
 
 export class InMemoryDynamicWorkflowReplayStore implements DynamicWorkflowReplayStore {
-  private readonly runs = new Map<string, DynamicWorkflowInvocationRecord[]>()
+  private readonly runs = new Map<string, DynamicWorkflowReplayRun>()
 
   async find(runId: string, nodeId: string, promptFingerprint: string): Promise<DynamicWorkflowInvocationRecord | undefined> {
-    return this.runs.get(runId)?.find(record => record.nodeId === nodeId && record.promptFingerprint === promptFingerprint)
+    return this.runs.get(runId)?.records.find(record => (record.status === "completed" || record.status === "completed_partial") && record.nodeId === nodeId && record.promptFingerprint === promptFingerprint)
   }
 
   async save(runId: string, record: DynamicWorkflowInvocationRecord): Promise<void> {
-    const records = this.runs.get(runId) ?? []
-    const index = records.findIndex(existing => existing.nodeId === record.nodeId)
-    if (index >= 0) records[index] = { ...record }
-    else records.push({ ...record })
-    this.runs.set(runId, records)
+    const run = this.runs.get(runId) ?? { version: 2, runId, status: "running", events: [], records: [] }
+    const index = run.records.findIndex(existing => existing.nodeId === record.nodeId)
+    if (index >= 0) run.records[index] = { ...record }
+    else run.records.push({ ...record })
+    this.runs.set(runId, run)
+  }
+
+  async loadRun(runId: string): Promise<DynamicWorkflowReplayRun | undefined> {
+    const run = this.runs.get(runId)
+    return run ? structuredClone(run) : undefined
+  }
+
+  async saveRun(runId: string, run: DynamicWorkflowReplayRun): Promise<void> {
+    this.runs.set(runId, structuredClone(run))
+  }
+
+  async appendEvent(runId: string, event: DynamicWorkflowLifecycleEvent): Promise<void> {
+    const run = this.runs.get(runId) ?? { version: 2, runId, status: "running", events: [], records: [] }
+    run.events.push(structuredClone(event))
+    this.runs.set(runId, run)
   }
 }
 
@@ -70,8 +115,8 @@ export class FileDynamicWorkflowReplayStore implements DynamicWorkflowReplayStor
   async find(runId: string, nodeId: string, promptFingerprint: string): Promise<DynamicWorkflowInvocationRecord | undefined> {
     const safe = safeRunId(runId)
     return this.withRunLock(safe, async () => {
-      const records = await this.readRun(safe)
-      return records.find(record => record.nodeId === nodeId && record.promptFingerprint === promptFingerprint)
+      const run = await this.readRun(safe)
+      return run.records.find(record => (record.status === "completed" || record.status === "completed_partial") && record.nodeId === nodeId && record.promptFingerprint === promptFingerprint)
     })
   }
 
@@ -80,11 +125,38 @@ export class FileDynamicWorkflowReplayStore implements DynamicWorkflowReplayStor
     await this.withRunLock(safe, async () => {
       await this.ensureRoot()
       await rejectSymlink(this.pathFor(safe), "dynamic workflow replay file")
-      const records = await this.readRun(safe)
-      const index = records.findIndex(existing => existing.nodeId === record.nodeId)
-      if (index >= 0) records[index] = { ...record }
-      else records.push({ ...record })
-      await this.writeRun(safe, records)
+      const run = await this.readRun(safe)
+      const index = run.records.findIndex(existing => existing.nodeId === record.nodeId)
+      if (index >= 0) run.records[index] = { ...record }
+      else run.records.push({ ...record })
+      await this.writeRun(safe, run)
+    })
+  }
+
+  async loadRun(runId: string): Promise<DynamicWorkflowReplayRun | undefined> {
+    const safe = safeRunId(runId)
+    return this.withRunLock(safe, async () => {
+      const run = await this.readRun(safe)
+      return run.records.length || run.events.length || run.inputFingerprint ? run : undefined
+    })
+  }
+
+  async saveRun(runId: string, run: DynamicWorkflowReplayRun): Promise<void> {
+    const safe = safeRunId(runId)
+    await this.withRunLock(safe, async () => {
+      await this.ensureRoot()
+      await rejectSymlink(this.pathFor(safe), "dynamic workflow replay file")
+      await this.writeRun(safe, structuredClone(run))
+    })
+  }
+
+  async appendEvent(runId: string, event: DynamicWorkflowLifecycleEvent): Promise<void> {
+    const safe = safeRunId(runId)
+    await this.withRunLock(safe, async () => {
+      await this.ensureRoot()
+      const run = await this.readRun(safe)
+      run.events.push(event)
+      await this.writeRun(safe, run)
     })
   }
 
@@ -92,24 +164,24 @@ export class FileDynamicWorkflowReplayStore implements DynamicWorkflowReplayStor
     return join(this.root, `${runId}.json`)
   }
 
-  private async readRun(runId: string): Promise<DynamicWorkflowInvocationRecord[]> {
+  private async readRun(runId: string): Promise<DynamicWorkflowReplayRun> {
     const safe = safeRunId(runId)
     await rejectSymlink(this.root, "dynamic workflow replay store")
     try {
-      const raw = JSON.parse(await readFile(this.pathFor(safe), "utf8")) as { version?: unknown; records?: unknown }
-      if (raw.version !== 1 || !Array.isArray(raw.records)) throw new Error(`invalid dynamic workflow replay file: ${this.pathFor(safe)}`)
-      return raw.records as DynamicWorkflowInvocationRecord[]
+      const raw = JSON.parse(await readFile(this.pathFor(safe), "utf8")) as { version?: unknown; records?: unknown; events?: unknown }
+      if (raw.version !== 2 || !Array.isArray(raw.records) || !Array.isArray(raw.events)) throw new Error(`invalid dynamic workflow replay file: ${this.pathFor(safe)}`)
+      return raw as DynamicWorkflowReplayRun
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 2, runId, status: "running", events: [], records: [] }
       throw error
     }
   }
 
-  private async writeRun(runId: string, records: DynamicWorkflowInvocationRecord[]): Promise<void> {
+  private async writeRun(runId: string, run: DynamicWorkflowReplayRun): Promise<void> {
     const path = this.pathFor(runId)
     const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`
     try {
-      await writeFile(temporary, JSON.stringify({ version: 1, records }, null, 2), "utf8")
+      await writeFile(temporary, JSON.stringify(run, null, 2), "utf8")
       await rename(temporary, path)
     } finally {
       await rm(temporary, { force: true })

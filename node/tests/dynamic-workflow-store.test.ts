@@ -70,6 +70,10 @@ describe("FileDynamicWorkflowStore", () => {
       await expect(second.load("audit")).resolves.toEqual(script)
       expect(() => decodeDynamicWorkflowArtifact(bundle.replace(found[0].digest, "0".repeat(64)))).toThrow(/digest mismatch/)
       expect(createDynamicWorkflowArtifact(script).digest).toBe(found[0].digest)
+      expect(() => decodeDynamicWorkflowArtifact(JSON.stringify({
+        version: 1,
+        artifact: { name: "audit", digest: found[0].digest, script: { meta: { name: "audit" }, source: "return 1" } },
+      }))).toThrow(/description must be a non-empty string/)
     } finally {
       await rm(firstRoot, { recursive: true, force: true })
       await rm(secondRoot, { recursive: true, force: true })

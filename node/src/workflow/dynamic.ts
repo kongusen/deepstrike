@@ -6,7 +6,10 @@ import type {
   WorkflowSpec,
 } from "../types/agent.js"
 import {
+  fingerprintDynamicWorkflowRun,
   fingerprintDynamicWorkflowInvocation,
+  type DynamicWorkflowInvocationRecord,
+  type DynamicWorkflowReplayRun,
   type DynamicWorkflowReplayStore,
 } from "./dynamic-replay.js"
 import { createHash } from "node:crypto"
@@ -169,6 +172,7 @@ export interface DynamicWorkflowRunOptions<TArgs extends Record<string, unknown>
   replayStore?: DynamicWorkflowReplayStore
   approval?: (request: DynamicWorkflowApprovalRequest<TArgs>) => boolean | Promise<boolean> | { approved: boolean; reason?: string } | Promise<{ approved: boolean; reason?: string }>
   onLifecycleEvent?: (event: DynamicWorkflowLifecycleEvent) => void
+  artifactDigest?: string
 }
 
 export function dynamicAgentTask(prompt: string, options?: DynamicWorkflowAgentOptions): DynamicWorkflowAgentRequest {
@@ -191,6 +195,15 @@ export class DynamicWorkflowApprovalError extends Error {
   constructor(message = "dynamic workflow execution was not approved") {
     super(message)
     this.name = "DynamicWorkflowApprovalError"
+  }
+}
+
+export class DynamicWorkflowReplayMismatchError extends Error {
+  readonly code = "DYNAMIC_WORKFLOW_REPLAY_MISMATCH"
+
+  constructor(message = "dynamic workflow replay inputs do not match the stored run") {
+    super(message)
+    this.name = "DynamicWorkflowReplayMismatchError"
   }
 }
 
@@ -229,10 +242,30 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
 
   async run<T>(program: (context: DynamicWorkflowContext<TArgs>) => Promise<T> | T): Promise<DynamicWorkflowRun<T>> {
     const runId = this.options.runId ?? `dw-${crypto.randomUUID()}`
+    const args = structuredClone(this.options.args ?? {} as TArgs) as Record<string, unknown>
+    const inputFingerprint = fingerprintDynamicWorkflowRun({ artifactDigest: this.options.artifactDigest, args, limits: this.limits })
+    const existing = await this.options.replayStore?.loadRun?.(runId)
+    if (existing?.inputFingerprint && existing.inputFingerprint !== inputFingerprint) {
+      throw new DynamicWorkflowReplayMismatchError(`dynamic workflow replay inputs changed for run "${runId}"`)
+    }
+    const replayRun: DynamicWorkflowReplayRun = {
+      version: 2,
+      runId,
+      inputFingerprint,
+      ...(this.options.artifactDigest ? { artifactDigest: this.options.artifactDigest } : {}),
+      argsFingerprint: fingerprintDynamicWorkflowRun({ args, limits: this.limits }),
+      limits: this.limits,
+      status: "planning",
+      events: existing?.events ? [...existing.events] : [],
+      records: existing?.records ?? [],
+    }
+    if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
     const events: DynamicWorkflowLifecycleEvent[] = []
     const emitLifecycle = (event: DynamicWorkflowLifecycleEvent): void => {
       events.push(event)
+      replayRun.events.push(event)
       this.options.onLifecycleEvent?.(event)
+      void this.options.replayStore?.appendEvent?.(runId, event)
     }
     emitLifecycle({ kind: "run_started", runId })
     const progress: DynamicWorkflowProgress = {
@@ -265,17 +298,29 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
     if (!approved) {
       context.setStatus("cancelled")
       emitLifecycle({ kind: "run_cancelled", runId, reason: reason ?? "approval denied" })
+      replayRun.status = "cancelled"
+      replayRun.events = [...replayRun.events]
+      if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
       throw new DynamicWorkflowApprovalError(reason ?? undefined)
     }
     context.setStatus("running")
+    replayRun.status = "running"
     try {
       const value = await program(context)
       context.setStatus("completed")
       emitLifecycle({ kind: "run_completed", runId })
+      replayRun.status = "completed"
+      replayRun.events = [...replayRun.events]
+      replayRun.records = (await this.options.replayStore?.loadRun?.(runId))?.records ?? replayRun.records
+      if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
       return { runId, value, progress, events }
     } catch (error) {
       context.setStatus("failed")
       emitLifecycle({ kind: "run_failed", runId, error: error instanceof Error ? error.message : String(error) })
+      replayRun.status = "failed"
+      replayRun.events = [...events]
+      replayRun.records = (await this.options.replayStore?.loadRun?.(runId))?.records ?? replayRun.records
+      if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
       throw error
     }
   }
@@ -403,7 +448,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         value: options.outputSchema ? parseStructuredValue<T>(cached.text) : cached.text as T,
         text: cached.text,
         nodeId: cached.nodeId,
-        status: cached.status,
+        status: replayStatus(cached.status),
         ...(cached.termination ? { termination: cached.termination } : {}),
       }
     }
@@ -436,28 +481,52 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           ...(options.maxWallMs !== undefined ? { maxWallMs: options.maxWallMs } : {}),
         }],
       }
-      const outcome = await this.host.runWorkflow(spec)
-      if (outcome.rejection) return null
-      const node = outcome.nodeOutcomes.find(candidate => candidate.nodeId === nodeId) ?? outcome.nodeOutcomes[0]
-      const text = node?.output?.content ?? Object.values(outcome.outputs)[0] ?? ""
-      const value = options.outputSchema ? parseStructuredValue<T>(text) : (text as T)
-      if (node?.status === "completed" || node?.status === "completed_partial") {
+      let outcome: WorkflowOutcome
+      try {
+        outcome = await this.host.runWorkflow(spec)
+      } catch (error) {
         await this.replayStore?.save(this.runId, {
           nodeId,
           promptFingerprint,
-          text,
-          status: node?.status ?? "completed_partial",
-          ...(node?.termination ? { termination: node.termination } : {}),
+          text: "",
+          status: "failed",
+          termination: "host_error",
+          error: error instanceof Error ? error.message : String(error),
         })
+        this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status: "failed", termination: "host_error" })
+        throw error
       }
-      this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status: node?.status ?? "completed_partial", ...(node?.termination ? { termination: node.termination } : {}) })
+      if (outcome.rejection) {
+        await this.replayStore?.save(this.runId, {
+          nodeId,
+          promptFingerprint,
+          text: "",
+          status: "cancelled",
+          termination: "workflow_rejected",
+        })
+        this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status: "failed", termination: "workflow_rejected" })
+        return null
+      }
+      const node = outcome.nodeOutcomes.find(candidate => candidate.nodeId === nodeId) ?? outcome.nodeOutcomes[0]
+      const text = node?.output?.content ?? Object.values(outcome.outputs)[0] ?? ""
+      const value = options.outputSchema ? parseStructuredValue<T>(text) : (text as T)
+      const status = node?.status ?? "failed"
+      await this.replayStore?.save(this.runId, {
+        nodeId,
+        promptFingerprint,
+        text,
+        status,
+        ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }),
+        ...(node ? {} : { error: "workflow returned no matching node outcome" }),
+      })
+      this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status, ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }) })
       this.progress.agentsCompleted += 1
       if (currentPhase) currentPhase.agentsCompleted += 1
       return {
         value,
         text,
         nodeId: node?.nodeId ?? nodeId,
-        status: node?.status ?? "completed_partial",
+        status,
         ...(node?.termination ? { termination: node.termination } : {}),
       }
     } finally {
@@ -524,32 +593,54 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     if (currentPhase) currentPhase.agentsStarted += misses.length
     this.emit()
     try {
-      const outcome = await this.host.runWorkflow({ nodes: misses.map(entry => entry.node) })
+      let outcome: WorkflowOutcome
+      try {
+        outcome = await this.host.runWorkflow({ nodes: misses.map(entry => entry.node) })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        await Promise.all(misses.map(entry => this.replayStore?.save(this.runId, {
+          nodeId: entry.nodeId,
+          promptFingerprint: entry.promptFingerprint,
+          text: "",
+          status: "failed",
+          termination: "host_error",
+          error: message,
+        })))
+        for (const entry of misses) this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId: entry.nodeId, status: "failed", termination: "host_error" })
+        throw error
+      }
       if (outcome.rejection) {
+        await Promise.all(misses.map(entry => this.replayStore?.save(this.runId, {
+          nodeId: entry.nodeId,
+          promptFingerprint: entry.promptFingerprint,
+          text: "",
+          status: "cancelled",
+          termination: "workflow_rejected",
+        })))
         return cached.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
       }
       const results = new Map<string, DynamicWorkflowAgentResult | null>()
       for (const entry of misses) {
         const node = outcome.nodeOutcomes.find(candidate => candidate.nodeId === entry.nodeId)
         const text = node?.output?.content ?? outcome.outputs[entry.nodeId] ?? ""
+        const status = node?.status ?? "failed"
         const result: DynamicWorkflowAgentResult = {
           value: entry.options.outputSchema ? parseStructuredValue(text) : text,
           text,
           nodeId: node?.nodeId ?? entry.nodeId,
-          status: node?.status ?? "completed_partial",
+          status,
           ...(node?.termination ? { termination: node.termination } : {}),
         }
         results.set(entry.nodeId, result)
-        if (node?.status === "completed" || node?.status === "completed_partial") {
-          await this.replayStore?.save(this.runId, {
-            nodeId: entry.nodeId,
-            promptFingerprint: entry.promptFingerprint,
-            text,
-            status: node.status,
-            ...(node.termination ? { termination: node.termination } : {}),
-          })
-        }
-        this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId: entry.nodeId, status: node?.status ?? "completed_partial", ...(node?.termination ? { termination: node.termination } : {}) })
+        await this.replayStore?.save(this.runId, {
+          nodeId: entry.nodeId,
+          promptFingerprint: entry.promptFingerprint,
+          text,
+          status,
+          ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }),
+          ...(node ? {} : { error: "workflow returned no matching node outcome" }),
+        })
+        this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId: entry.nodeId, status, ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }) })
         this.progress.agentsCompleted += 1
         if (currentPhase) currentPhase.agentsCompleted += 1
       }
@@ -563,14 +654,14 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
   private replayResult(options: DynamicWorkflowAgentOptions, record: {
     nodeId: string
     text: string
-    status: WorkflowNodeStatus
+    status: DynamicWorkflowInvocationRecord["status"]
     termination?: string
   }): DynamicWorkflowAgentResult {
     return {
       value: options.outputSchema ? parseStructuredValue(record.text) : record.text,
       text: record.text,
       nodeId: record.nodeId,
-      status: record.status,
+      status: replayStatus(record.status),
       ...(record.termination ? { termination: record.termination } : {}),
     }
   }
@@ -608,6 +699,11 @@ function parseStructuredValue<T>(text: string): T {
   } catch {
     return text as T
   }
+}
+
+function replayStatus(status: DynamicWorkflowInvocationRecord["status"]): WorkflowNodeStatus {
+  if (status === "completed" || status === "completed_partial" || status === "failed" || status === "skipped_upstream_failed") return status
+  return "failed"
 }
 
 function snapshotArgs<T extends Record<string, unknown>>(args: T): Readonly<T> {

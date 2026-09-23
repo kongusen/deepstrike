@@ -1,4 +1,6 @@
 import { DynamicWorkflowScriptError, DynamicWorkflowVmExecutor } from "../src/workflow/dynamic-vm.js"
+import { createDynamicWorkflowArtifact } from "../src/workflow/dynamic.js"
+import { InMemoryDynamicWorkflowReplayStore } from "../src/workflow/dynamic-replay.js"
 import type { DynamicWorkflowHost, DynamicWorkflowScript } from "../src/workflow/dynamic.js"
 
 function host(calls: string[]): DynamicWorkflowHost {
@@ -32,6 +34,19 @@ describe("DynamicWorkflowVmExecutor", () => {
     expect(calls).toEqual(["inspect"])
     expect(run.value).toBe("done:inspect")
     expect(run.events.map(event => event.kind)).toContain("phase_completed")
+  })
+
+  it("binds the artifact digest into replay identity", async () => {
+    const calls: string[] = []
+    const store = new InMemoryDynamicWorkflowReplayStore()
+    const executor = new DynamicWorkflowVmExecutor(host(calls))
+    const artifact = createDynamicWorkflowArtifact(script)
+    await executor.runArtifact(artifact, { runId: "artifact-replay", replayStore: store })
+    await expect(executor.runArtifact({
+      ...artifact,
+      digest: "changed-digest",
+    }, { runId: "artifact-replay", replayStore: store })).rejects.toMatchObject({ code: "DYNAMIC_WORKFLOW_REPLAY_MISMATCH" })
+    expect(calls).toEqual(["inspect"])
   })
 
   it.each(["process", "require", "import", "eval", "Function"])("rejects forbidden capability %s", async capability => {

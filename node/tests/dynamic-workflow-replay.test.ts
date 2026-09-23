@@ -1,4 +1,4 @@
-import { DynamicWorkflowExecutor, dynamicAgentTask } from "../src/workflow/dynamic.js"
+import { DynamicWorkflowExecutor, DynamicWorkflowReplayMismatchError, dynamicAgentTask } from "../src/workflow/dynamic.js"
 import { FileDynamicWorkflowReplayStore, InMemoryDynamicWorkflowReplayStore } from "../src/workflow/dynamic-replay.js"
 import type { DynamicWorkflowHost } from "../src/workflow/dynamic.js"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
@@ -54,6 +54,56 @@ describe("dynamic workflow replay", () => {
     const changed = new DynamicWorkflowExecutor(hostWithCalls(calls), { runId: "replay-1", replayStore: store })
     await changed.run(ctx => ctx.agent("inspect again", { label: "inspect" }))
     expect(calls).toEqual(["inspect", "inspect again"])
+  })
+
+  it("rejects replay when run inputs or artifact identity change", async () => {
+    const store = new InMemoryDynamicWorkflowReplayStore()
+    await new DynamicWorkflowExecutor(hostWithCalls([]), {
+      runId: "input-mismatch-1",
+      replayStore: store,
+      args: { target: "a" },
+      artifactDigest: "sha-a",
+    }).run(ctx => ctx.agent("inspect", { label: "inspect" }))
+
+    await expect(new DynamicWorkflowExecutor(hostWithCalls([]), {
+      runId: "input-mismatch-1",
+      replayStore: store,
+      args: { target: "b" },
+      artifactDigest: "sha-a",
+    }).run(ctx => ctx.agent("inspect", { label: "inspect" }))).rejects.toBeInstanceOf(DynamicWorkflowReplayMismatchError)
+
+    await expect(new DynamicWorkflowExecutor(hostWithCalls([]), {
+      runId: "input-mismatch-1",
+      replayStore: store,
+      args: { target: "a" },
+      artifactDigest: "sha-b",
+    }).run(ctx => ctx.agent("inspect", { label: "inspect" }))).rejects.toBeInstanceOf(DynamicWorkflowReplayMismatchError)
+  })
+
+  it("persists failed and cancelled invocation records without replaying them", async () => {
+    const store = new InMemoryDynamicWorkflowReplayStore()
+    await store.save("failed-1", {
+      nodeId: "failed-node",
+      promptFingerprint: "f".repeat(64),
+      text: "partial",
+      status: "failed",
+      termination: "provider_error",
+      error: "provider unavailable",
+    })
+    await store.save("failed-1", {
+      nodeId: "cancelled-node",
+      promptFingerprint: "c".repeat(64),
+      text: "",
+      status: "cancelled",
+      termination: "workflow_rejected",
+    })
+
+    await expect(store.find("failed-1", "failed-node", "f".repeat(64))).resolves.toBeUndefined()
+    await expect(store.find("failed-1", "cancelled-node", "c".repeat(64))).resolves.toBeUndefined()
+    await expect(store.loadRun("failed-1")).resolves.toMatchObject({ records: [
+      expect.objectContaining({ status: "failed", error: "provider unavailable" }),
+      expect.objectContaining({ status: "cancelled" }),
+    ] })
   })
 
   it("returns lifecycle events for approved runs and phases", async () => {
@@ -133,7 +183,7 @@ describe("dynamic workflow replay", () => {
       await expect(store.find("run-1", "a", "0".repeat(64))).resolves.toMatchObject({ text: "done:a" })
       await expect(store.find("run-1", "b", "1".repeat(64))).resolves.toMatchObject({ text: "done:b" })
       await expect(store.find("run-1", "c", "2".repeat(64))).resolves.toMatchObject({ text: "done:c" })
-      await expect(readFile(join(root, "run-1.json"), "utf8")).resolves.toContain('"version": 1')
+      await expect(readFile(join(root, "run-1.json"), "utf8")).resolves.toContain('"version": 2')
     } finally {
       await rm(root, { recursive: true, force: true })
     }

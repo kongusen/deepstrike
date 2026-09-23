@@ -1,12 +1,18 @@
 import vm from "node:vm"
 import type {
+  DynamicWorkflowArtifact,
   DynamicWorkflowContext,
   DynamicWorkflowHost,
   DynamicWorkflowRun,
   DynamicWorkflowRunOptions,
   DynamicWorkflowScript,
 } from "./dynamic.js"
-import { DynamicWorkflowExecutor } from "./dynamic.js"
+import {
+  DynamicWorkflowApprovalError,
+  DynamicWorkflowExecutor,
+  DynamicWorkflowLimitError,
+  DynamicWorkflowReplayMismatchError,
+} from "./dynamic.js"
 
 export interface DynamicWorkflowVmOptions {
   /** Maximum source bytes accepted from an artifact. */
@@ -76,9 +82,20 @@ export class DynamicWorkflowVmExecutor {
     try {
       return await run
     } catch (error) {
-      if (error instanceof DynamicWorkflowScriptError) throw error
+      if (error instanceof DynamicWorkflowScriptError || error instanceof DynamicWorkflowApprovalError || error instanceof DynamicWorkflowLimitError || error instanceof DynamicWorkflowReplayMismatchError) throw error
       throw new DynamicWorkflowScriptError(`dynamic workflow "${script.meta.name}" failed`, { cause: error })
     }
+  }
+
+  /** Execute a catalogued artifact and bind its digest to replay identity. */
+  async runArtifact<TArgs extends Record<string, unknown>, T>(
+    artifact: DynamicWorkflowArtifact,
+    options: DynamicWorkflowRunOptions<TArgs> = {},
+  ): Promise<DynamicWorkflowRun<T>> {
+    return this.runScript<TArgs, T>(artifact.script, {
+      ...options,
+      artifactDigest: options.artifactDigest ?? artifact.digest,
+    })
   }
 }
 
