@@ -25,6 +25,7 @@ export type {
   SessionRef,
 } from "./agent-facade.js"
 export type { Agent } from "./agent-facade.js"
+export type { AgentDeclaration } from "./agent-facade.js"
 
 // ── Tool authoring ──────────────────────────────────────────────────────────
 export { tool, streamingTool } from "./tools/index.js"

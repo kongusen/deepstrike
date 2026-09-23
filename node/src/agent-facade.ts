@@ -1,4 +1,3 @@
-import { normalizeAgent } from "./agent-ir.js"
 import { type AgentOptions, type ModelRef } from "./agent.js"
 import { InMemorySessionLog, type SessionLog } from "./runtime/session-log.js"
 import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-plane.js"
@@ -12,6 +11,9 @@ import { McpProxyPlane } from "./runtime/mcp-proxy-plane.js"
 import { EnvCredentialVault } from "./runtime/credential-vault.js"
 import { agentRefName } from "./handoff-target.js"
 import { buildAgentRuntimeOptions } from "./runtime/agent-runtime-options.js"
+import { captureAgentDeclaration, materializeAgentDefinition, type AgentDeclaration, type AgentHostBindings } from "./runtime/agent-declaration.js"
+
+export type { AgentDeclaration } from "./runtime/agent-declaration.js"
 
 export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
   name?: string
@@ -101,6 +103,7 @@ export interface DelegationResult {
 /** The executable public Agent handle created from an AgentDefinition. */
 export interface Agent {
   readonly name: string
+  readonly declaration: AgentDeclaration
   readonly definition: Readonly<AgentDefinition>
   run(goal: string, options?: AgentRunOptions): Promise<RunResult>
   stream(goal: string, options?: AgentRunOptions): AsyncIterable<StreamEvent>
@@ -149,16 +152,23 @@ class AgentSessionImpl {
 
 class AgentRuntimeImpl implements Agent {
   readonly name: string
-  readonly definition: Readonly<AgentDefinition>
+  readonly declaration: AgentDeclaration
+  private readonly bindings: AgentHostBindings
   private readonly sessionLog: SessionLog
   private activeRunner: RuntimeRunner | null = null
   private mcpPlane?: McpProxyPlane
   private mcpConnection?: Promise<void>
 
   constructor(definition: AgentDefinition) {
-    this.definition = Object.freeze({ ...definition })
-    this.name = normalizeAgent(definition).name
-    this.sessionLog = definition.runtimeBinding?.sessionLog ?? new InMemorySessionLog()
+    const captured = captureAgentDeclaration(definition)
+    this.declaration = captured.declaration
+    this.bindings = captured.bindings
+    this.name = this.declaration.name
+    this.sessionLog = this.bindings.runtimeBinding?.sessionLog ?? new InMemorySessionLog()
+  }
+
+  get definition(): Readonly<AgentDefinition> {
+    return Object.freeze(materializeAgentDefinition(this.declaration, this.bindings))
   }
 
   session(id = `session-${crypto.randomUUID()}`): AgentSession {
@@ -166,8 +176,8 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async remember(input: MemoryInput): Promise<MemoryRecord> {
-    const store = this.definition.memoryStore
-    const scope = this.definition.memoryScope
+    const store = this.bindings.memoryStore
+    const scope = this.bindings.memoryScope
     if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
     const now = Date.now()
     const record: MemoryRecord = {
@@ -191,8 +201,8 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async recall(query: string, options: RecallOptions = {}): Promise<MemoryRecall[]> {
-    const store = this.definition.memoryStore
-    const scope = this.definition.memoryScope
+    const store = this.bindings.memoryStore
+    const scope = this.bindings.memoryScope
     if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
     const request: MemoryQuery = {
       scope,
@@ -205,7 +215,7 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async delegate(request: DelegationRequest): Promise<DelegationResult> {
-    const handoffs = this.definition.handoffs ?? []
+    const handoffs = this.declaration.handoffs ?? []
     if (handoffs.length) {
       if (!request.target) throw new Error(`agent "${this.name}" requires an explicit handoff target`)
       const targetName = agentRefName(request.target)
@@ -243,7 +253,7 @@ class AgentRuntimeImpl implements Agent {
   }
 
   async listen(options: { session?: SessionRef; leaseMs?: number } = {}): Promise<RunResult | null> {
-    const source = this.definition.runtimeBinding?.runtimeOptions?.signalSource
+    const source = this.bindings.runtimeBinding?.runtimeOptions?.signalSource
     if (!source) throw new Error("agent signals require runtimeOptions.signalSource")
     const claim = await source.claimSignal(this.name, options.leaseMs)
     if (!claim) return null
@@ -293,15 +303,15 @@ class AgentRuntimeImpl implements Agent {
     const measured = [...persisted].reverse().find(entry => entry.event.kind === "prompt_measured")
     const attempt = [...persisted].reverse().find(entry => entry.event.kind === "provider_attempt")
     const runStarted = [...persisted].reverse().find(entry => entry.event.kind === "run_started")
-    const binding = this.definition.runtimeBinding
+    const binding = this.bindings.runtimeBinding
     const evidence = {
       ...(prepared?.event.kind === "context_prepared" ? { contextBinding: prepared.event.preparation.binding } : {}),
       ...(attempt?.event.kind === "provider_attempt" ? { route: attempt.event.route } : runStarted?.event.kind === "run_started" && runStarted.event.route ? { route: runStarted.event.route } : {}),
       ...(measured?.event.kind === "prompt_measured" ? { measurement: measured.event.measurement } : {}),
       ...(binding?.runtimeOptions?.artifactSetDigest ? { artifactSet: { digest: binding.runtimeOptions.artifactSetDigest } } : {}),
     }
-    const outputValidation = this.definition.outputSchema
-      ? validateAgainstSchema(extractJsonValue(output), this.definition.outputSchema)
+    const outputValidation = this.declaration.outputSchema
+      ? validateAgainstSchema(extractJsonValue(output), materializeAgentDefinition(this.declaration, this.bindings).outputSchema!)
       : undefined
     return {
       output,
@@ -347,20 +357,20 @@ class AgentRuntimeImpl implements Agent {
   }
 
   private async createRunner(options: AgentRunOptions): Promise<RuntimeRunner> {
-    const model = this.definition.model
-    const binding = this.definition.runtimeBinding
+    const model = this.declaration.model
+    const binding = this.bindings.runtimeBinding
     const provider = binding?.provider
       ?? (typeof model === "string" ? binding?.providerFor?.(model) : undefined)
     if (!provider) {
-      throw new Error(`agent "${this.name}" has no runtime provider binding for model ${typeof this.definition.model === "string" ? this.definition.model : "(unresolved)"}`)
+      throw new Error(`agent "${this.name}" has no runtime provider binding for model ${typeof model === "string" ? model : "(unresolved)"}`)
     }
-    if (binding?.executionPlane && this.definition.mcpServers?.length) {
+    if (binding?.executionPlane && this.declaration.mcpServers?.length) {
       throw new Error("agent mcpServers cannot be combined with a custom executionPlane")
     }
     const plane = binding?.executionPlane
-      ?? (this.definition.mcpServers?.length
+      ?? (this.declaration.mcpServers?.length
         ? (() => {
-            const servers = Object.fromEntries(this.definition.mcpServers.map(server => {
+            const servers = Object.fromEntries(this.declaration.mcpServers.map(server => {
               if (server.transport.kind !== "stdio") {
                 throw new Error(`agent MCP transport "${server.transport.kind}" is not supported by the local runtime`)
               }
@@ -369,19 +379,19 @@ class AgentRuntimeImpl implements Agent {
               }
               return [server.name ?? server.transport.command, {
                 command: server.transport.command,
-                ...(server.transport.args ? { args: server.transport.args } : {}),
+                ...(server.transport.args ? { args: [...server.transport.args] } : {}),
               }]
             }))
             this.mcpPlane ??= new McpProxyPlane({ servers, vault: new EnvCredentialVault() })
             return this.mcpPlane
           })()
-        : (this.definition.tools ?? []).reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane()))
-    if (this.definition.mcpServers?.length && this.definition.tools?.length) {
-      plane.register(...this.definition.tools)
+        : this.bindings.tools.reduce((current, currentTool) => current.register(currentTool), new LocalExecutionPlane()))
+    if (this.declaration.mcpServers?.length && this.bindings.tools.length) {
+      plane.register(...this.bindings.tools)
     }
     // MCP schemas are discovered during connect, before the adapter snapshots the baseline.
     await this.prepareMcp()
-    return new RuntimeRunner(buildAgentRuntimeOptions(this.definition, options, {
+    return new RuntimeRunner(buildAgentRuntimeOptions(materializeAgentDefinition(this.declaration, this.bindings), options, {
       provider,
       executionPlane: plane,
       sessionLog: this.sessionLog,

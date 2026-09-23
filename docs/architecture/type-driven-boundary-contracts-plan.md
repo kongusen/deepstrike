@@ -176,6 +176,8 @@ This checkpoint covers the tool/provider/governance part of iterations 0–2. It
 
 Each iteration should be split into small commits with a green checkpoint. Registration must not be used as a substitute for repairing the runtime behavior it is intended to protect. Runtime-internal Eval, provider wire specialization, and a Rust ABI redesign remain outside this track.
 
+Iteration 3 is complete in the current branch. `createAgent` now captures a deeply frozen `agent.declaration` containing JSON data, while provider, execution plane, memory store, vector retriever, and bound tool executors remain in private host bindings. The legacy `agent.definition` view is materialized from those two parts for compatibility and is no longer the runtime source of truth. The regression suite covers caller mutation, serialization, and reassignment of provider/tool inputs.
+
 ---
 
 ## Explicit non-goals for the first slice
