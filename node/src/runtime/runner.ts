@@ -1566,6 +1566,34 @@ export class RuntimeRunner {
   }
 
   /**
+   * Append nodes to an already active root dynamic workflow. The operation must have been
+   * started by the same runner; this method deliberately exposes the kernel action rather than
+   * starting a second standalone workflow, so the caller can continue the existing spawn loop.
+   */
+  async appendDynamicWorkflowNodes(spec: WorkflowSpec): Promise<KernelRunnerAction | null> {
+    const runtime = this.activeKernel
+    const sessionId = this.currentSessionId
+    if (!runtime || !sessionId) {
+      throw new Error("cannot append dynamic workflow nodes without an active workflow session")
+    }
+    const observationStart = this.pendingObservations.length
+    const action = await runtime.appendWorkflowNodes(workflowSpecToKernel(spec))
+    this.pendingObservations.push(...runtime.drainHostObservations())
+    const observations = this.pendingObservations.slice(observationStart)
+    const submitted = observations.find(observation => observation.kind === "workflow_nodes_submitted") as
+      | { base?: number }
+      | undefined
+    if (submitted) {
+      await this.opts.sessionLog.append(sessionId, buildWorkflowNodesSubmittedEvent({
+        turn: runtime.turn(),
+        nodes: spec.nodes.map(workflowNodeSpecToKernel),
+        baseIndex: submitted.base,
+      }))
+    }
+    return action
+  }
+
+  /**
    * Bootstrap a standalone kernel for a host-driven workflow with NO active parent run — the path a
    * stateless request handler takes when it calls `runWorkflow(spec)` directly. Mirrors `execute()`'s
    * pre-run kernel setup (governance / attention / quota via `applyKernelPolicies`, then root start)
