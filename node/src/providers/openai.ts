@@ -261,7 +261,7 @@ export class OpenAIChatProvider implements LLMProvider {
         if (this.lastTelemetry.responseId === undefined && typeof chunk.id === "string") {
           this.lastTelemetry = { rungs: 1, responseId: chunk.id }
         }
-        const output = this.chat.pushStreamChunk(chunk, state)
+        const output = this.chat.pushStreamChunkAtBoundary({ chunk, state })
         if (output.replay) {
           this.rememberReplay({
             content: state.accumulatedContent,

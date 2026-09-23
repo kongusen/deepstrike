@@ -280,7 +280,7 @@ export class AnthropicProvider implements LLMProvider {
           const id = (chunk as Record<string, any>).message?.id
           if (typeof id === "string") this.lastTelemetry = { rungs: 1, responseId: id }
         }
-        for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
+        for (const event of this.adapter.pushStreamChunkAtBoundary({ chunk, state }).events) yield event
       }
       const final = this.adapter.finishStream(state)
       for (const event of final.events) yield event

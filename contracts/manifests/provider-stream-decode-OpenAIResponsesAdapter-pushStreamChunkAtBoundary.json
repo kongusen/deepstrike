@@ -1,0 +1,48 @@
+{
+  "id": "provider-stream.decode.OpenAIResponsesAdapter.pushStreamChunkAtBoundary",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-provider",
+    "direction": "decode",
+    "source": {
+      "type": "OpenAIResponsesStreamChunkRequest",
+      "layer": "provider",
+      "authority": "provider"
+    },
+    "target": {
+      "type": "AdapterOutput",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "adapter": "providers/openai-responses-adapter:OpenAIResponsesAdapter.pushStreamChunkAtBoundary",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": [
+        "chunk",
+        "state"
+      ]
+    },
+    "derived": [],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "request",
+        "type": "OpenAIResponsesStreamChunkRequest"
+      }
+    ],
+    "returnType": "AdapterOutput"
+  }
+}

@@ -166,7 +166,7 @@ export class GeminiProvider implements LLMProvider {
       this.lastTelemetry = { rungs: 1 }
 
       for await (const chunk of result.stream) {
-        for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
+        for (const event of this.adapter.pushStreamChunkAtBoundary({ chunk, state }).events) yield event
       }
 
       const finalResponse = await result.response

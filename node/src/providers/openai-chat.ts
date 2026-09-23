@@ -84,6 +84,11 @@ export interface OpenAIChatStreamState {
   rawUsage?: unknown
 }
 
+export interface OpenAIChatStreamChunkRequest {
+  chunk: OpenAIChatStreamChunk
+  state: OpenAIChatStreamState
+}
+
 const COMPATIBILITY_REPLAY = new WeakMap<OpenAIChatAdapter, Map<string, ProviderReplay>>()
 
 function compatibilityReplayStore(adapter: OpenAIChatAdapter): Map<string, ProviderReplay> {
@@ -420,6 +425,10 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
       return { events, ...(replay ? { replay } : {}) }
     }
     return { events }
+  }
+
+  pushStreamChunkAtBoundary(request: OpenAIChatStreamChunkRequest): AdapterOutput {
+    return this.pushStreamChunk(request.chunk, request.state)
   }
 
   finishStream(state: OpenAIChatStreamState): AdapterOutput {

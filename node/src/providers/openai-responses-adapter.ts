@@ -49,6 +49,11 @@ export interface OpenAIResponsesStreamState {
   readonly functionCalls: Map<number, { id: string; name: string; argsBuffer: string }>
 }
 
+export interface OpenAIResponsesStreamChunkRequest {
+  chunk: OpenAIResponsesStreamChunk
+  state: OpenAIResponsesStreamState
+}
+
 function numberField(raw: Record<string, unknown>, field: string): number | undefined {
   const value = raw[field]
   if (value === undefined || value === null) return undefined
@@ -339,6 +344,10 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
       }
     }
     return { events, ...(runStatePatch ? { runStatePatch } : {}) }
+  }
+
+  pushStreamChunkAtBoundary(request: OpenAIResponsesStreamChunkRequest): AdapterOutput {
+    return this.pushStreamChunk(request.chunk, request.state)
   }
 
   finishStream(_state: OpenAIResponsesStreamState): AdapterOutput {

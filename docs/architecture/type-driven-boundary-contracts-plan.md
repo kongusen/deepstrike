@@ -202,6 +202,8 @@ The request encoding checkpoint now supports class method adapters in the checke
 
 The OpenAI request checkpoint now wraps those extra inputs in named boundary requests. Chat carries its resolved wire dialect, while Responses carries its optional continuation state; complete, stream, and native token-count paths use the new methods directly. Both OpenAI request plans are now registered without flattening their stateful semantics.
 
+The stream decode checkpoint adds one typed `{ chunk, state }` request for each provider adapter. Anthropic, Gemini, Ollama, OpenAI Chat, and OpenAI Responses streaming paths now call their boundary methods directly, so state updates and emitted `StreamEvent` values are covered by the same registered provider decode family.
+
 ---
 
 ## Explicit non-goals for the first slice

@@ -138,11 +138,11 @@ export class OllamaProvider implements LLMProvider {
         const { done, value } = await reader.read()
         if (done) break
         for (const chunk of ndjson.push(decoder.decode(value, { stream: true }))) {
-          for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
+          for (const event of this.adapter.pushStreamChunkAtBoundary({ chunk, state }).events) yield event
         }
       }
       for (const chunk of ndjson.finish(decoder.decode())) {
-        for (const event of this.adapter.pushStreamChunk(chunk, state).events) yield event
+        for (const event of this.adapter.pushStreamChunkAtBoundary({ chunk, state }).events) yield event
       }
       for (const event of this.adapter.finishStream(state, state.finalChunk).events) yield event
     } catch (error) {

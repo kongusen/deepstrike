@@ -226,7 +226,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
           const id = (chunk as Record<string, any>).response?.id
           if (typeof id === "string") this.lastTelemetry = { rungs: 1, responseId: id }
         }
-        const output = this.responses.pushStreamChunk(chunk, streamState)
+        const output = this.responses.pushStreamChunkAtBoundary({ chunk, state: streamState })
         for (const event of output.events) yield event
         if (output.runStatePatch) {
           Object.assign(runState, output.runStatePatch)
