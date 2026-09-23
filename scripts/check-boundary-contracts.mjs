@@ -71,11 +71,6 @@ function loadProtocolRegistry() {
 }
 
 const protocols = loadProtocolRegistry()
-if (protocols.length !== 1) throw new Error(`expected one registered protocol during Skill migration, found ${protocols.length}`)
-const protocol = protocols[0]
-const [, adapterPath, adapterName] = protocol.adapter.match(/^([^:]+):(.+)$/) ?? []
-if (!adapterPath || !adapterName) throw new Error(`invalid adapter reference: ${protocol.adapter}`)
-const kernelStepPath = resolve(root, "node/src", `${adapterPath}.ts`)
 
 function fail(message) { throw new Error(message) }
 
@@ -98,7 +93,7 @@ function createTypeChecker() {
 
 function findAdapter(program, filePath, name) {
   const sourceFile = program.getSourceFile(filePath)
-  if (!sourceFile) fail(`adapter file not found: ${kernelStepPath}`)
+  if (!sourceFile) fail(`adapter file not found: ${filePath}`)
   let found
   const visit = node => {
     if (ts.isFunctionDeclaration(node) && node.name?.text === name) found = node
@@ -122,7 +117,7 @@ function typeName(checker, type) {
   return checker.typeToString(type, undefined, ts.TypeFormatFlags.NoTruncation)
 }
 
-function inspectFields(checker, declaration, sourceType, targetType) {
+function inspectFields(checker, declaration, sourceType, targetType, protocol) {
   const sourceProperties = propertyInfo(checker, sourceType, declaration)
   const targetProperties = propertyInfo(checker, targetType, declaration)
   const sourceNames = new Set(sourceProperties.map(property => property.name))
@@ -170,7 +165,7 @@ function inspectFields(checker, declaration, sourceType, targetType) {
   return { sourceProperties, targetProperties, inferredPreserves, requiredPreserves, inferredDrops }
 }
 
-function generateManifest(checker, declaration, signature, fields) {
+function generateManifest(checker, declaration, signature, fields, protocol) {
   const sourceType = checker.getTypeOfSymbolAtLocation(signature.parameters[0], declaration.parameters[0])
   return {
     id: protocol.id,
@@ -201,7 +196,9 @@ function generateManifest(checker, declaration, signature, fields) {
   }
 }
 
-function generateValidator(fields) {
+function generateValidator(fields, protocol) {
+  const validator = protocol.artifacts?.validator
+  if (!validator) return undefined
   const forbidden = JSON.stringify(protocol.fields.forbidden, null, 2)
   const required = JSON.stringify(fields.requiredPreserves, null, 2)
   const allowed = JSON.stringify(fields.targetProperties.map(property => property.name), null, 2)
@@ -211,11 +208,11 @@ function generateValidator(fields) {
   const lazyFields = protocol.lazy.lazySemantics === "preserve" ? (protocol.lazy.lazyFields ?? []) : []
   const lazy = JSON.stringify(lazyFields, null, 2)
   return `/**
- * Generated runtime validator for the skill host-to-kernel boundary.
+ * Generated runtime validator for the ${validator.label} boundary.
  * DO NOT EDIT BY HAND - regenerate with: npm run contracts:check
  */
 
-import type { KernelSkillMetadata } from "../kernel-step.js"
+import type { ${validator.targetType} } from "${validator.targetImport}"
 
 const FORBIDDEN_FIELDS = ${forbidden} as const
 const LAZY_FIELDS = ${lazy} as const
@@ -234,39 +231,39 @@ function matchesShape(value: unknown, shape: string): boolean {
   return true
 }
 
-export function validateSkillKernelProjection(
+export function ${validator.exportName}(
   result: unknown,
   options: { strict?: boolean } = {},
-): asserts result is KernelSkillMetadata {
+): asserts result is ${validator.targetType} {
   if (typeof result !== "object" || result === null) {
-    throw new Error("Skill kernel projection validation failed: result must be an object")
+    throw new Error("${validator.label} validation failed: result must be an object")
   }
 
   const object = result as Record<string, unknown>
   for (const field of FORBIDDEN_FIELDS) {
     if (field in object) {
       throw new Error(
-        \`Skill kernel projection validation failed: forbidden field "\${field}" leaked across boundary.\`,
+        \`${validator.label} validation failed: forbidden field "\${field}" leaked across boundary.\`,
       )
     }
   }
   for (const field of LAZY_FIELDS) {
     if (field in object) {
       throw new Error(
-        \`Skill kernel projection validation failed: lazy field "\${field}" must not be materialized in the kernel metadata projection (progressive disclosure).\`,
+        \`${validator.label} validation failed: lazy field "\${field}" must not be materialized in the projection (progressive disclosure).\`,
       )
     }
   }
   for (const field of REQUIRED_PRESERVED_FIELDS) {
     if (!Object.prototype.hasOwnProperty.call(object, field)) {
       throw new Error(
-        \`Skill kernel projection validation failed: required field "\${field}" is missing.\`,
+        \`${validator.label} validation failed: required field "\${field}" is missing.\`,
       )
     }
   }
   for (const field of Object.keys(TARGET_FIELD_SHAPES)) {
     if (Object.prototype.hasOwnProperty.call(object, field) && !matchesShape(object[field], TARGET_FIELD_SHAPES[field as keyof typeof TARGET_FIELD_SHAPES])) {
-      throw new Error(\`Skill kernel projection validation failed: field "\${field}" has an invalid type.\`)
+      throw new Error(\`${validator.label} validation failed: field "\${field}" has an invalid type.\`)
     }
   }
   if (options.strict) {
@@ -274,16 +271,16 @@ export function validateSkillKernelProjection(
     for (const key of Object.keys(object)) {
       if (!allowed.has(key)) {
         throw new Error(
-          \`Skill kernel projection validation failed: unexpected field "\${key}" in result.\`,
+          \`${validator.label} validation failed: unexpected field "\${key}" in result.\`,
         )
       }
     }
   }
 }
 
-export function isKernelSkillMetadata(value: unknown): value is KernelSkillMetadata {
+export function ${validator.predicateName}(value: unknown): value is ${validator.targetType} {
   try {
-    validateSkillKernelProjection(value)
+    ${validator.exportName}(value)
     return true
   } catch {
     return false
@@ -306,47 +303,62 @@ function runtimeShape(type) {
   return "unknown"
 }
 
-try {
-  console.log("Checking skill host-to-kernel adapter with the TypeScript compiler...")
-  const { program, checker } = createTypeChecker()
-  const declaration = findAdapter(program, kernelStepPath, adapterName)
+function artifactPath(path) {
+  return resolve(root, path)
+}
+
+function processProtocol(program, checker, protocol) {
+  const [, adapterPath, adapterName] = protocol.adapter.match(/^([^:]+):(.+)$/) ?? []
+  if (!adapterPath || !adapterName) fail(`invalid adapter reference: ${protocol.adapter}`)
+  const adapterFilePath = resolve(root, "node/src", `${adapterPath}.ts`)
+  const declaration = findAdapter(program, adapterFilePath, adapterName)
   const signature = checker.getSignatureFromDeclaration(declaration)
-  if (!signature) fail("could not resolve adapter signature")
-  if (signature.parameters.length !== 1) fail(`expected one adapter parameter, got ${signature.parameters.length}`)
+  if (!signature) fail(`could not resolve adapter signature for ${protocol.id}`)
+  if (signature.parameters.length !== 1) fail(`${protocol.id}: expected one adapter parameter, got ${signature.parameters.length}`)
 
   const sourceType = checker.getTypeOfSymbolAtLocation(signature.parameters[0], declaration.parameters[0])
   const sourceName = typeName(checker, sourceType)
   const targetType = signature.getReturnType()
   const targetName = typeName(checker, targetType)
-  if (sourceName !== protocol.source.type) fail(`adapter source type is ${sourceName}, expected ${protocol.source.type}`)
-  if (targetName !== protocol.target.type) fail(`adapter target type is ${targetName}, expected ${protocol.target.type}`)
+  if (sourceName !== protocol.source.type) fail(`${protocol.id}: adapter source type is ${sourceName}, expected ${protocol.source.type}`)
+  if (targetName !== protocol.target.type) fail(`${protocol.id}: adapter target type is ${targetName}, expected ${protocol.target.type}`)
 
-  const fields = inspectFields(checker, declaration, sourceType, targetType)
-  const manifest = generateManifest(checker, declaration, signature, fields)
-  const manifestPath = resolve(root, "contracts/manifests/skill-host-to-kernel.json")
-  const validatorPath = resolve(root, "node/src/runtime/validators/skill-kernel-projection.ts")
+  const fields = inspectFields(checker, declaration, sourceType, targetType, protocol)
+  const manifest = generateManifest(checker, declaration, signature, fields, protocol)
+  const manifestPath = artifactPath(protocol.artifacts?.manifest ?? `contracts/manifests/${protocol.id.replace(/[^a-z0-9]+/gi, "-")}.json`)
+  const validator = protocol.artifacts?.validator
+  const validatorPath = validator ? artifactPath(validator.path) : undefined
   const manifestJson = JSON.stringify(manifest, null, 2) + "\n"
-  const validatorSource = generateValidator(fields)
-  // --verify compares generated content against disk without writing: the default mode
-  // regenerates artifacts, so a trailing git diff can never see hand-edited drift.
+  const validatorSource = generateValidator(fields, protocol)
+  // --verify compares generated content against disk without writing: the default
+  // mode regenerates artifacts, so a trailing git diff cannot hide hand-edited drift.
   if (process.argv.includes("--verify")) {
     if (readFileSync(manifestPath, "utf8") !== manifestJson) {
       fail(`stale or hand-edited artifact: ${manifestPath} (run npm run contracts:check)`)
     }
-    if (readFileSync(validatorPath, "utf8") !== validatorSource) {
+    if (validatorPath && validatorSource !== undefined && readFileSync(validatorPath, "utf8") !== validatorSource) {
       fail(`stale or hand-edited artifact: ${validatorPath} (run npm run contracts:check)`)
     }
-    console.log("✅ Generated artifacts are in sync with the registry")
   } else {
-    mkdirSync(resolve(root, "contracts/manifests"), { recursive: true })
+    mkdirSync(resolve(manifestPath, ".."), { recursive: true })
     writeFileSync(manifestPath, manifestJson)
-    writeFileSync(validatorPath, validatorSource)
+    if (validatorPath && validatorSource !== undefined) {
+      mkdirSync(resolve(validatorPath, ".."), { recursive: true })
+      writeFileSync(validatorPath, validatorSource)
+    }
   }
 
-  console.log(`  Adapter: ${sourceName} → ${targetName}`)
-  console.log(`  Inferred preserves: ${fields.inferredPreserves.join(", ") || "(none)"}`)
-  console.log(`  Inferred drops: ${fields.inferredDrops.join(", ") || "(none)"}`)
-  console.log("✅ Boundary contract verified and manifest generated")
+  console.log(`  [${protocol.id}] ${sourceName} → ${targetName}`)
+  console.log(`    Inferred preserves: ${fields.inferredPreserves.join(", ") || "(none)"}`)
+  console.log(`    Inferred drops: ${fields.inferredDrops.join(", ") || "(none)"}`)
+}
+
+try {
+  console.log(`Checking ${protocols.length} registered boundary adapter${protocols.length === 1 ? "" : "s"} with the TypeScript compiler...`)
+  const { program, checker } = createTypeChecker()
+  for (const protocol of protocols) processProtocol(program, checker, protocol)
+  if (process.argv.includes("--verify")) console.log("✅ Generated artifacts are in sync with the registry")
+  else console.log("✅ Boundary contracts verified and artifacts generated")
 } catch (error) {
   console.error("❌ Boundary contract check failed:")
   console.error(error instanceof Error ? error.stack : error)

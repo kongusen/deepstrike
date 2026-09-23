@@ -184,6 +184,8 @@ Iteration 5 is complete in the current branch. The facade tracks active runners 
 
 Iteration 6 has an initial host resolution checkpoint in the current branch. Every delegation now requires an explicit target declared in the source Agent's handoff allowlist and a host `resolveAgent` binding; the resolved target Agent executes with its own runtime provider, and a missing registry entry fails explicitly. `Agent.delegate` no longer falls back to an implicit workflow node; workflow execution remains an explicit `Agent.workflow` operation while workflow node target propagation is migrated to the same host spawn boundary.
 
+Iteration 7 has its first structural checkpoint in the current branch. The boundary checker now processes every registered protocol, resolves each adapter independently through the TypeScript compiler, and takes manifest and validator destinations from protocol metadata instead of hardcoded Skill paths. The existing Skill projection keeps its generated validator and regression coverage; adding capability/configure-run protocols and correlated behavioral checks remains the next slice.
+
 ---
 
 ## Explicit non-goals for the first slice

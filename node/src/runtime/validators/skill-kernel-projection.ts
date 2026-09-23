@@ -1,5 +1,5 @@
 /**
- * Generated runtime validator for the skill host-to-kernel boundary.
+ * Generated runtime validator for the Skill kernel projection boundary.
  * DO NOT EDIT BY HAND - regenerate with: npm run contracts:check
  */
 
@@ -71,7 +71,7 @@ export function validateSkillKernelProjection(
   for (const field of LAZY_FIELDS) {
     if (field in object) {
       throw new Error(
-        `Skill kernel projection validation failed: lazy field "${field}" must not be materialized in the kernel metadata projection (progressive disclosure).`,
+        `Skill kernel projection validation failed: lazy field "${field}" must not be materialized in the projection (progressive disclosure).`,
       )
     }
   }

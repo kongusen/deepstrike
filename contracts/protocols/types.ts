@@ -134,6 +134,19 @@ export interface BoundaryProtocol<Source = string, Target = string> {
    */
   adapter: string
 
+  /** Generated artifact destinations for this protocol. Paths are repository-relative. */
+  artifacts?: {
+    manifest: string
+    validator?: {
+      path: string
+      exportName: string
+      predicateName: string
+      targetImport: string
+      targetType: string
+      label: string
+    }
+  }
+
   /**
    * Whether this crossing is lossy by design.
    * "intentional" means drops are expected; "lossless" means source ≈ target.

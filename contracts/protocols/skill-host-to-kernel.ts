@@ -91,5 +91,17 @@ export const SKILL_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol<
 
   adapter: "runtime/kernel-step:skillMetadataToKernel",
 
+  artifacts: {
+    manifest: "contracts/manifests/skill-host-to-kernel.json",
+    validator: {
+      path: "node/src/runtime/validators/skill-kernel-projection.ts",
+      exportName: "validateSkillKernelProjection",
+      predicateName: "isKernelSkillMetadata",
+      targetImport: "../kernel-step.js",
+      targetType: "KernelSkillMetadata",
+      label: "Skill kernel projection",
+    },
+  },
+
   lossiness: "intentional",
 }
