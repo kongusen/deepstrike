@@ -151,16 +151,13 @@ describe("createAgent", () => {
     expect(recalled[0]?.record.record_id).toBe(saved.record_id)
   })
 
-  it("delegates a focused task without exposing a runner", async () => {
+  it("requires declared host-resolved handoffs", async () => {
     const agent = createAgent({
       name: "researcher",
       runtimeBinding: { provider: new ReplayProvider([{ role: "assistant", content: "delegated" }]) },
     })
 
-    await expect(agent.delegate({ goal: "inspect the module" })).resolves.toMatchObject({
-      output: "delegated",
-      status: "completed",
-    })
+    await expect(agent.delegate({ goal: "inspect the module", target: "reviewer" })).rejects.toThrow("cannot hand off")
   })
 
   it("turns a claimed signal into an agent run", async () => {
@@ -203,11 +200,7 @@ describe("createAgent", () => {
     })
 
     await expect(agent.delegate({ goal: "review", target: "unknown" })).rejects.toThrow("cannot hand off")
-    await expect(agent.delegate({ goal: "review" })).rejects.toThrow("requires an explicit handoff target")
-    await expect(agent.delegate({ goal: "review", target: "reviewer" })).resolves.toMatchObject({
-      output: "reviewed",
-      status: "completed",
-    })
+    await expect(agent.delegate({ goal: "review", target: "reviewer" })).rejects.toThrow("requires a host target resolver")
   })
 
   it("fails explicitly for MCP transports without a local execution binding", async () => {

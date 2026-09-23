@@ -11,7 +11,7 @@ import { McpProxyPlane } from "./runtime/mcp-proxy-plane.js"
 import { EnvCredentialVault } from "./runtime/credential-vault.js"
 import { agentRefName } from "./handoff-target.js"
 import { buildAgentRuntimeOptions } from "./runtime/agent-runtime-options.js"
-import { captureAgentDeclaration, materializeAgentDefinition, type AgentDeclaration, type AgentHostBindings } from "./runtime/agent-declaration.js"
+import { captureAgentDeclaration, type AgentDeclaration, type AgentHostBindings } from "./runtime/agent-declaration.js"
 
 export type { AgentDeclaration } from "./runtime/agent-declaration.js"
 
@@ -92,8 +92,8 @@ export interface RecallOptions {
 export interface DelegationRequest {
   goal: string
   role?: KernelAgentRole
-  /** Optional declared handoff target. When handoffs are declared, this is required and allowlisted. */
-  target?: import("./handoff-target.js").AgentRef
+  /** Declared handoff target resolved by the host at the spawn boundary. */
+  target: import("./handoff-target.js").AgentRef
 }
 
 export interface DelegationResult {
@@ -106,7 +106,6 @@ export interface DelegationResult {
 export interface Agent {
   readonly name: string
   readonly declaration: AgentDeclaration
-  readonly definition: Readonly<AgentDefinition>
   run(goal: string, options?: AgentRunOptions): Promise<RunResult>
   stream(goal: string, options?: AgentRunOptions): AsyncIterable<StreamEvent>
   session(id?: string): AgentSession
@@ -178,10 +177,6 @@ class AgentRuntimeImpl implements Agent {
     this.sessionLog = this.bindings.runtimeBinding?.sessionLog ?? new InMemorySessionLog()
   }
 
-  get definition(): Readonly<AgentDefinition> {
-    return Object.freeze(materializeAgentDefinition(this.declaration, this.bindings))
-  }
-
   session(id = `session-${crypto.randomUUID()}`): AgentSession {
     return new AgentSessionImpl(this, id)
   }
@@ -231,38 +226,20 @@ class AgentRuntimeImpl implements Agent {
 
   async delegate(request: DelegationRequest): Promise<DelegationResult> {
     const handoffs = this.declaration.handoffs ?? []
-    if (handoffs.length) {
-      if (!request.target) throw new Error(`agent "${this.name}" requires an explicit handoff target`)
-      const targetName = agentRefName(request.target)
-      const allowed = handoffs.some(handoff => {
-        return agentRefName(handoff.agent) === targetName
-      })
-      if (!allowed) throw new Error(`agent "${this.name}" cannot hand off to "${targetName}"`)
-      if (this.bindings.runtimeBinding?.resolveAgent) {
-        const target = await this.bindings.runtimeBinding.resolveAgent(targetName)
-        if (!target) throw new Error(`target agent "${targetName}" is not registered`)
-        const result = await target.run(request.goal)
-        return {
-          output: result.output,
-          status: result.status === "completed" ? "completed" : result.status === "failed" ? "failed" : "partial",
-        }
-      }
+    const targetName = agentRefName(request.target)
+    const allowed = handoffs.some(handoff => {
+      return agentRefName(handoff.agent) === targetName
+    })
+    if (!allowed) throw new Error(`agent "${this.name}" cannot hand off to "${targetName}"`)
+    if (!this.bindings.runtimeBinding?.resolveAgent) {
+      throw new Error(`agent "${this.name}" requires a host target resolver`)
     }
-    const spec: WorkflowSpec = {
-      nodes: [{
-        task: { goal: request.goal },
-        role: request.role ?? "explore",
-        isolation: "read_only",
-        contextInheritance: "system_only",
-      }],
-    }
-    const outcome = await this.workflow(spec)
-    const node = outcome.nodeOutcomes[0]
-    const nodeId = node?.nodeId
+    const target = await this.bindings.runtimeBinding.resolveAgent(targetName)
+    if (!target) throw new Error(`target agent "${targetName}" is not registered`)
+    const result = await target.run(request.goal)
     return {
-      output: nodeId ? outcome.outputs[nodeId] ?? "" : "",
-      status: node?.status === "completed" ? "completed" : node?.status === "failed" ? "failed" : "partial",
-      ...(nodeId ? { nodeId } : {}),
+      output: result.output,
+      status: result.status === "completed" ? "completed" : result.status === "failed" ? "failed" : "partial",
     }
   }
 
@@ -336,7 +313,7 @@ class AgentRuntimeImpl implements Agent {
       ...(binding?.runtimeOptions?.artifactSetDigest ? { artifactSet: { digest: binding.runtimeOptions.artifactSetDigest } } : {}),
     }
     const outputValidation = this.declaration.outputSchema
-      ? validateAgainstSchema(extractJsonValue(output), materializeAgentDefinition(this.declaration, this.bindings).outputSchema!)
+      ? validateAgainstSchema(extractJsonValue(output), this.declaration.outputSchema as Record<string, unknown>)
       : undefined
     return {
       output,
@@ -420,7 +397,7 @@ class AgentRuntimeImpl implements Agent {
     }
     // MCP schemas are discovered during connect, before the adapter snapshots the baseline.
     await this.prepareMcp()
-    return new RuntimeRunner(buildAgentRuntimeOptions(materializeAgentDefinition(this.declaration, this.bindings), options, {
+    return new RuntimeRunner(buildAgentRuntimeOptions(this.declaration, this.bindings, options, {
       provider: provider ?? memoryOnlyProvider,
       executionPlane: plane,
       sessionLog: this.sessionLog,

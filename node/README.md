@@ -103,7 +103,14 @@ Most apps start with one executable Agent. Streaming, sessions, memory, delegati
 ```typescript
 import { createAgent } from "@deepstrike/sdk"
 
-const agent = createAgent({ name: "researcher", model: "openai/gpt-5-mini", runtimeBinding: { provider }, tools: [add] })
+const reviewer = createAgent({ name: "reviewer", model: "openai/gpt-5-mini", runtimeBinding: { provider } })
+const agent = createAgent({
+  name: "researcher",
+  model: "openai/gpt-5-mini",
+  runtimeBinding: { provider, resolveAgent: name => name === "reviewer" ? reviewer : undefined },
+  handoffs: [{ agent: "reviewer" }],
+  tools: [add],
+})
 const answer = await agent.run("What is 17 + 28?")
 console.log(answer.output)
 
@@ -111,7 +118,7 @@ for await (const event of agent.stream("Summarize the auth module")) {
   if (event.type === "text_delta") process.stdout.write(event.delta)
 }
 
-const delegated = await agent.delegate({ goal: "Check the data-retention posture" })
+const delegated = await agent.delegate({ goal: "Check the data-retention posture", target: "reviewer" })
 console.log(delegated.output)
 ```
 

@@ -2,7 +2,6 @@ import { readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
 import ts from "typescript"
 import { createAgent } from "../src/agent-facade.js"
-import { normalizeAgent, lowerAgent } from "../src/agent-ir.js"
 import { ReplayProvider } from "../src/runtime/replay-provider.js"
 
 function declarations(directory: string): string[] {
@@ -29,17 +28,15 @@ test("SPC-028-28 executable facade has one public Agent name", () => {
   expect(source).not.toMatch(/export interface ExecutableAgent/)
 })
 
-test("SPC-028-05 normalization accepts the facade definition with its default identity", async () => {
+test("SPC-028-05 facade exposes only its immutable declaration", async () => {
   const agent = createAgent({
     runtimeBinding: { provider: new ReplayProvider([{ role: "assistant", content: "done" }]) },
     instructions: "Keep the instruction",
     providerOptions: { openai: { temperature: 0 } },
   })
-  const spec = lowerAgent(normalizeAgent(agent.definition))
-  expect(spec.name).toBe(agent.name)
-  expect(spec.instructions).toBe(agent.definition.instructions)
-  expect(spec.extensions).toEqual(agent.definition.providerOptions)
-  expect(spec).not.toHaveProperty("provider")
-  expect(agent.definition).toHaveProperty("runtimeBinding")
+  expect(agent.declaration.name).toBe(agent.name)
+  expect(agent.declaration.instructions).toBe("Keep the instruction")
+  expect(agent.declaration.providerOptions).toEqual({ openai: { temperature: 0 } })
+  expect(agent.declaration).not.toHaveProperty("runtimeBinding")
   await expect(agent.run("go")).resolves.toMatchObject({ output: "done" })
 })

@@ -1,8 +1,10 @@
-import type { AgentDefinition, AgentRunOptions } from "../agent-facade.js"
+import type { AgentRunOptions } from "../agent-facade.js"
 import type { GovernancePolicy } from "../governance.js"
 import { createTextKnowledgeSource, type Knowledge } from "../knowledge/public.js"
 import type { RuntimeOptions } from "./runner.js"
 import { schemaInstruction } from "./output-schema.js"
+import type { AgentDeclaration, AgentHostBindings } from "./agent-declaration.js"
+import type { Skill } from "../skill.js"
 
 /** Resources already resolved by the facade; connection ownership stays with the Agent. */
 export type AgentRuntimeResources = Pick<RuntimeOptions, "provider" | "executionPlane" | "sessionLog"> & {
@@ -11,33 +13,34 @@ export type AgentRuntimeResources = Pick<RuntimeOptions, "provider" | "execution
 
 /** The live public-to-host configuration adapter, shared by all facade execution entry points. */
 export function buildAgentRuntimeOptions(
-  definition: Readonly<AgentDefinition>,
+  declaration: AgentDeclaration,
+  bindings: AgentHostBindings,
   options: AgentRunOptions,
   resources: AgentRuntimeResources,
 ): RuntimeOptions {
-  const binding = definition.runtimeBinding
-  const governancePolicy = mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, definition.guardrails)
+  const binding = bindings.runtimeBinding
+  const governancePolicy = mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, declaration.guardrails)
   return {
     provider: resources.provider,
-    ...(definition.providerOptions ? { extensions: definition.providerOptions } : {}),
-    ...(definition.capabilityFilter ? { capabilityFilter: definition.capabilityFilter } : {}),
+    ...(declaration.providerOptions ? { extensions: declaration.providerOptions } : {}),
+    ...(declaration.capabilityFilter ? { capabilityFilter: declaration.capabilityFilter as RuntimeOptions["capabilityFilter"] } : {}),
     executionPlane: resources.executionPlane,
     // Declared/bound tools start visible; the kernel still applies the capability ceiling.
     baselineToolIds: resources.executionPlane.schemas().map(schema => schema.name),
     sessionLog: resources.sessionLog,
-    maxTokens: definition.maxTokens ?? 32_000,
-    ...(definition.instructions || definition.outputSchema ? {
+    maxTokens: declaration.maxTokens ?? 32_000,
+    ...(declaration.instructions || declaration.outputSchema ? {
       systemPrompt: [
-        definition.instructions,
-        definition.outputSchema ? schemaInstruction(definition.outputSchema) : undefined,
+        declaration.instructions,
+        declaration.outputSchema ? schemaInstruction(declaration.outputSchema) : undefined,
       ].filter((part): part is string => Boolean(part)).join("\n\n"),
     } : {}),
     ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
-    ...(definition.memoryStore ? { memoryStore: definition.memoryStore } : {}),
-    ...(definition.memoryScope ? { memoryScope: definition.memoryScope } : {}),
-    ...(definition.skills?.length ? { skillCatalog: definition.skills } : {}),
-    ...(!binding?.runtimeOptions?.knowledgeSource && definition.knowledge?.some(item => item.source.kind === "text") ? {
-      knowledgeSource: createTextKnowledgeSource(definition.knowledge
+    ...(bindings.memoryStore ? { memoryStore: bindings.memoryStore } : {}),
+    ...(bindings.memoryScope ? { memoryScope: bindings.memoryScope } : {}),
+    ...(declaration.skills?.length ? { skillCatalog: declaration.skills as unknown as Skill[] } : {}),
+    ...(!binding?.runtimeOptions?.knowledgeSource && declaration.knowledge?.some(item => item.source.kind === "text") ? {
+      knowledgeSource: createTextKnowledgeSource((declaration.knowledge as Knowledge[])
         .filter((item): item is Knowledge & { source: { kind: "text"; content: string } } => item.source.kind === "text")
         .map(item => ({ id: item.id, name: item.name, content: item.source.content }))),
     } : {}),
@@ -51,7 +54,7 @@ export function buildAgentRuntimeOptions(
 
 function mergeGuardrailPolicies(
   base: GovernancePolicy | undefined,
-  guardrails: AgentDefinition["guardrails"] | undefined,
+  guardrails: AgentDeclaration["guardrails"] | undefined,
 ): GovernancePolicy | undefined {
   const policies = [base, ...(guardrails ?? []).map(guardrail => guardrail.policy)].filter(
     (policy): policy is GovernancePolicy => policy !== undefined,

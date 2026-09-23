@@ -1,6 +1,8 @@
 import { WorkingMemory } from "../memory/working.js"
 import type { AgentDefinition, RuntimeBinding } from "../agent-facade.js"
 import type { RegisteredTool } from "../tools/index.js"
+import type { AgentMemory } from "../agent.js"
+import type { MemoryScope, MemoryStore } from "../memory/protocols.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 
 type DeepReadonly<T> = T extends (...args: never[]) => unknown ? never
@@ -23,9 +25,9 @@ export type AgentDeclaration = DeepReadonly<DeclarationData>
 /** Executable and host-owned objects are held apart from the public declaration. */
 export interface AgentHostBindings {
   runtimeBinding?: RuntimeBinding
-  memoryStore?: AgentDefinition["memoryStore"]
-  memoryScope?: AgentDefinition["memoryScope"]
-  memory?: AgentDefinition["memory"]
+  memoryStore?: MemoryStore
+  memoryScope?: MemoryScope
+  memory?: AgentMemory
   tools: RegisteredTool[]
   vectorRetrievers: Map<number, KnowledgeSource>
 }
@@ -123,24 +125,4 @@ export function captureAgentDeclaration(input: AgentDefinition): { declaration: 
     vectorRetrievers,
   }
   return { declaration, bindings }
-}
-
-/** Compatibility input for the current runtime adapter; always detached from the snapshot. */
-export function materializeAgentDefinition(declaration: AgentDeclaration, bindings: AgentHostBindings): AgentDefinition {
-  const data = copyData(declaration) as DeclarationData
-  return {
-    ...data,
-    ...(bindings.memory ? { memory: bindings.memory } : {}),
-    ...(data.knowledge ? { knowledge: data.knowledge.map((item, index) => {
-      const retriever = bindings.vectorRetrievers.get(index)
-      return retriever ? { ...item, source: { kind: "vector" as const, retriever } } : item
-    }) as AgentDefinition["knowledge"] } : {}),
-    ...(data.tools ? { tools: data.tools.map((item, index) => ({
-      ...item,
-      execute: bindings.tools[index].execute,
-    })) as RegisteredTool[] } : {}),
-    ...(bindings.memoryStore ? { memoryStore: bindings.memoryStore } : {}),
-    ...(bindings.memoryScope ? { memoryScope: copyData(bindings.memoryScope) } : {}),
-    ...(bindings.runtimeBinding ? { runtimeBinding: captureBinding(bindings.runtimeBinding) } : {}),
-  } as AgentDefinition
 }
