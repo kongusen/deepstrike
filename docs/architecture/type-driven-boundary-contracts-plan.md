@@ -228,6 +228,8 @@ The first workflow subsystem checkpoint registers `workflowNodeSpecToKernel` and
 
 Iteration 9 is now complete for the Node/WASM/SDK conformance surfaces. The unused `agent-ir` modules, projection helpers, public runtime/advanced/conformance exports, agent IR fixtures, and cross-SDK conformance domain were removed together. Runtime object classification and documentation now describe the immutable `AgentDeclaration` snapshot and the live typed facade adapter; the kernel's own `LogicalAgentSpec` wire DTO remains because it is an active kernel boundary type.
 
+The next workflow checkpoint is also complete: `spawn_workflow` actions now expose named `KernelWorkflowSpawnNode` and `KernelWorkflowBudget` types, and the runner consumes them through explicit kernel-to-host adapters. Kernel bookkeeping fields (`task_id`, `attempt_id`, `launch_token`, and `node_id`) are dropped at the crossing by policy rather than by an unchecked cast. The registry and generated manifests now cover both workflow directions.
+
 ---
 
 ## Explicit non-goals for the first slice

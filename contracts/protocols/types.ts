@@ -12,7 +12,7 @@
  * Four protocol families covering all semantic crossings in the runtime.
  */
 export type ProtocolFamily =
-  | "public-to-host"    // User-facing API → Runtime execution (Agent → AgentSpec)
+  | "public-to-host"    // User-facing API → Runtime execution (declaration → runtime options)
   | "host-to-kernel"    // Runtime → Kernel ABI (SkillMetadata → KernelSkillMetadata)
   | "kernel-to-host"    // Kernel observations → Host event log (KernelObservation → SessionEvent)
   | "host-provider"     // Runtime ↔ Vendor wire (ProviderAttempt ↔ VendorRequest)
@@ -22,7 +22,7 @@ export type ProtocolFamily =
  * Direction of a protocol crossing.
  */
 export type CrossingDirection =
-  | "lower"      // Public to host (Agent → AgentSpec)
+  | "lower"      // Public to host (declaration → runtime options)
   | "project"    // Host to kernel (SkillMetadata → kernel projection)
   | "encode"     // Host to provider (ProviderAttempt → VendorRequest)
   | "decode"     // Provider to host (VendorResponse → Evidence)

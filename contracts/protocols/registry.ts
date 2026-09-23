@@ -13,6 +13,7 @@ import { PROVIDER_STREAM_FINISH_PROTOCOL } from "./provider-stream-finish.js"
 import { SKILL_HOST_TO_KERNEL_PROTOCOL } from "./skill-host-to-kernel.js"
 import { SIGNAL_HOST_TO_KERNEL_PROTOCOL } from "./signal-host-to-kernel.js"
 import { WORKFLOW_HOST_TO_KERNEL_PROTOCOL } from "./workflow-host-to-kernel.js"
+import { WORKFLOW_KERNEL_TO_HOST_PROTOCOL } from "./workflow-kernel-to-host.js"
 
 /** Single source of registered boundary protocols. */
 export const BOUNDARY_PROTOCOLS: readonly BoundaryProtocol[] = [
@@ -30,4 +31,5 @@ export const BOUNDARY_PROTOCOLS: readonly BoundaryProtocol[] = [
   SKILL_HOST_TO_KERNEL_PROTOCOL,
   SIGNAL_HOST_TO_KERNEL_PROTOCOL,
   WORKFLOW_HOST_TO_KERNEL_PROTOCOL,
+  WORKFLOW_KERNEL_TO_HOST_PROTOCOL,
 ]

@@ -421,7 +421,7 @@ createAgent(definition)
 
 ### 8.3 Workflow：B 边界的批量 syscall（WF1–WF2）
 
-`submit_workflow_nodes`（`nodes: Array<Record<string,unknown>>` + `budget: Record`）与 `start_workflow`（kernel-step.ts:70-71，runner.ts:2979-2984 拦截）。形态与 ④⑥ 同族（Record wire）。注册时随 P3 批量补 `Kernel*` 命名目标类型即可，无新机制需求；workflow target 绑定缺陷见三点一.4。
+`submit_workflow_nodes` 与 `start_workflow` 的 action 现在使用命名的 `KernelWorkflowSpawnNode` / `KernelWorkflowBudget` DTO。runner 通过 `workflowSpawnNodeFromKernel` 与 `workflowBudgetFromKernel` 显式投影到 `WorkflowSpawnInfo` / `WorkflowBudget`，并在契约中记录 kernel 的 task/attempt/launch/node bookkeeping 丢弃策略；这把原先的匿名 `Record` action 面收敛为可检查的 kernel→host crossing。workflow target 绑定缺陷见三点一.4。
 
 ### 8.4 Eval：全在 runtime-internal（不注册）
 

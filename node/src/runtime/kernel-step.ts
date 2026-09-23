@@ -10,6 +10,7 @@ import type {
 } from "../types.js"
 import type { SkillMetadata } from "../skills/loader.js"
 import type { RollbackReason } from "./session-log.js"
+import type { WorkflowBudget, WorkflowSpawnInfo } from "../types/agent.js"
 import { validateSkillKernelProjection } from "./validators/skill-kernel-projection.js"
 
 /**
@@ -83,6 +84,88 @@ export type MilestoneVerifierKind =
   | { kind: "human_approval" }
   | { kind: "external_command"; cmd: string }
 
+/** Kernel-owned workflow spawn descriptor carried by a `spawn_workflow` action. */
+export interface KernelWorkflowSpawnNode {
+  agent_id: string
+  goal: string
+  role: string
+  isolation: string
+  context_inheritance: string
+  task_id?: string
+  attempt_id?: string
+  launch_token?: string
+  node_id?: string
+  model_hint?: string
+  trust?: string
+  output_schema?: Record<string, unknown>
+  reducer?: string
+  input_agent_ids?: string[]
+  dependency_outputs?: Record<string, string>
+  judge_match?: { left: string; right: string }
+  loop_max_iters?: number
+  classify_labels?: string[]
+  token_budget?: number
+  max_turns?: number
+  max_wall_ms?: number
+}
+
+/** Kernel-owned workflow budget snapshot carried by a `spawn_workflow` action. */
+export interface KernelWorkflowBudget {
+  nodes_used?: number
+  nodes_max?: number
+  nodes_remaining?: number
+  running_subagents?: number
+  max_concurrent_subagents?: number
+  concurrency_remaining?: number
+  tokens_used?: number
+  tokens_max?: number
+  tokens_remaining?: number
+  max_total_tokens?: string | number
+  max_turns?: number
+  max_concurrency?: number
+}
+
+/** Project one kernel spawn descriptor into the host workflow runner DTO. */
+export function workflowSpawnNodeFromKernel(node: KernelWorkflowSpawnNode): WorkflowSpawnInfo {
+  return {
+    agent_id: node.agent_id,
+    goal: node.goal,
+    role: node.role,
+    isolation: node.isolation,
+    context_inheritance: node.context_inheritance,
+    ...(node.model_hint !== undefined ? { model_hint: node.model_hint } : {}),
+    ...(node.trust !== undefined ? { trust: node.trust } : {}),
+    ...(node.output_schema !== undefined ? { output_schema: node.output_schema } : {}),
+    ...(node.reducer !== undefined ? { reducer: node.reducer } : {}),
+    ...(node.input_agent_ids !== undefined ? { input_agent_ids: node.input_agent_ids } : {}),
+    ...(node.dependency_outputs !== undefined ? { dependency_outputs: node.dependency_outputs } : {}),
+    ...(node.judge_match !== undefined ? { judge_match: node.judge_match } : {}),
+    ...(node.loop_max_iters !== undefined ? { loop_max_iters: node.loop_max_iters } : {}),
+    ...(node.classify_labels !== undefined ? { classify_labels: node.classify_labels } : {}),
+    ...(node.token_budget !== undefined ? { token_budget: node.token_budget } : {}),
+    ...(node.max_turns !== undefined ? { max_turns: node.max_turns } : {}),
+    ...(node.max_wall_ms !== undefined ? { max_wall_ms: node.max_wall_ms } : {}),
+  }
+}
+
+/** Project the kernel budget snapshot into the host workflow runner DTO. */
+export function workflowBudgetFromKernel(budget: KernelWorkflowBudget): WorkflowBudget {
+  return {
+    ...(budget.nodes_used !== undefined ? { nodes_used: budget.nodes_used } : {}),
+    ...(budget.nodes_max !== undefined ? { nodes_max: budget.nodes_max } : {}),
+    ...(budget.nodes_remaining !== undefined ? { nodes_remaining: budget.nodes_remaining } : {}),
+    ...(budget.running_subagents !== undefined ? { running_subagents: budget.running_subagents } : {}),
+    ...(budget.max_concurrent_subagents !== undefined ? { max_concurrent_subagents: budget.max_concurrent_subagents } : {}),
+    ...(budget.concurrency_remaining !== undefined ? { concurrency_remaining: budget.concurrency_remaining } : {}),
+    ...(budget.tokens_used !== undefined ? { tokens_used: budget.tokens_used } : {}),
+    ...(budget.tokens_max !== undefined ? { tokens_max: budget.tokens_max } : {}),
+    ...(budget.tokens_remaining !== undefined ? { tokens_remaining: budget.tokens_remaining } : {}),
+    ...(budget.max_total_tokens !== undefined ? { max_total_tokens: budget.max_total_tokens } : {}),
+    ...(budget.max_turns !== undefined ? { max_turns: budget.max_turns } : {}),
+    ...(budget.max_concurrency !== undefined ? { max_concurrency: budget.max_concurrency } : {}),
+  }
+}
+
 export type KernelRunnerAction =
   | { kind: "call_provider"; effectId: string; context: RenderedContext; tools: ToolSchema[]; contextEffect: Record<string, unknown> }
   | { kind: "execute_tool"; effectId: string; calls: ToolCall[] }
@@ -94,8 +177,8 @@ export type KernelRunnerAction =
   | {
       kind: "spawn_workflow"
       effectId: string
-      nodes: Array<Record<string, unknown>>
-      budget?: Record<string, unknown>
+      nodes: KernelWorkflowSpawnNode[]
+      budget?: KernelWorkflowBudget
     }
   | {
       kind: "preempt_sub_agents"

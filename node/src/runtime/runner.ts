@@ -58,6 +58,8 @@ import {
   taskUpdateToKernel,
   toolResultToKernel,
   toolSchemaToKernel,
+  workflowBudgetFromKernel,
+  workflowSpawnNodeFromKernel,
   type KernelObservation,
   type KernelRunnerAction,
 } from "./kernel-step.js"
@@ -1746,8 +1748,8 @@ export class RuntimeRunner {
     if (initialAction.kind !== "spawn_workflow") {
       throw new Error(`workflow load returned unexpected kernel effect: ${initialAction.kind}`)
     }
-    let nodes = initialAction.nodes as unknown as WorkflowSpawnInfo[]
-    let budget = initialAction.budget as unknown as WorkflowBudget | undefined
+    let nodes = initialAction.nodes.map(workflowSpawnNodeFromKernel)
+    let budget = initialAction.budget ? workflowBudgetFromKernel(initialAction.budget) : undefined
     observations = await acceptSpawn(initialAction)
     done = findDone(observations)
     // G2: each completed node's output, keyed by agent id — a reduce node reads its dependencies'
@@ -1814,8 +1816,8 @@ export class RuntimeRunner {
         })
         let obs = this.pendingObservations.slice(observationStart)
         if (completionAction?.kind === "spawn_workflow") {
-          nextNodes.push(...completionAction.nodes as unknown as WorkflowSpawnInfo[])
-          budget = completionAction.budget as unknown as WorkflowBudget | undefined ?? budget
+          nextNodes.push(...completionAction.nodes.map(workflowSpawnNodeFromKernel))
+          budget = completionAction.budget ? workflowBudgetFromKernel(completionAction.budget) : budget
           obs = [...obs, ...await acceptSpawn(completionAction)]
         } else if (completionAction?.kind === "call_provider") {
           this.workflowContinuation = completionAction

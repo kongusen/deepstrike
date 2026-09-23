@@ -1,0 +1,80 @@
+{
+  "id": "workflow.kernel-to-host.workflowBudgetFromKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "kernel-to-host",
+    "direction": "decode",
+    "source": {
+      "type": "KernelWorkflowBudget",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "target": {
+      "type": "WorkflowBudget",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "adapter": "runtime/kernel-step:workflowBudgetFromKernel",
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Workflow action boundary tests cover kernel bookkeeping drops and host runner projections."
+    }
+  },
+  "fields": {
+    "preserves": {
+      "declared": [
+        "nodes_used",
+        "nodes_max",
+        "nodes_remaining",
+        "running_subagents",
+        "max_concurrent_subagents",
+        "concurrency_remaining",
+        "tokens_used",
+        "tokens_max",
+        "tokens_remaining",
+        "max_total_tokens",
+        "max_turns",
+        "max_concurrency"
+      ],
+      "inferred": [
+        "nodes_used",
+        "nodes_max",
+        "nodes_remaining",
+        "running_subagents",
+        "max_concurrent_subagents",
+        "concurrency_remaining",
+        "tokens_used",
+        "tokens_max",
+        "tokens_remaining",
+        "max_total_tokens",
+        "max_turns",
+        "max_concurrency"
+      ]
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": []
+    },
+    "derived": [],
+    "forbidden": [],
+    "envelope": {
+      "source": [],
+      "target": []
+    },
+    "nested": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "budget",
+        "type": "KernelWorkflowBudget"
+      }
+    ],
+    "returnType": "WorkflowBudget"
+  }
+}
