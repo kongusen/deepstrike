@@ -43,7 +43,11 @@
       "kind",
       "command"
     ],
-    "forbidden": []
+    "forbidden": [],
+    "envelope": {
+      "source": [],
+      "target": []
+    }
   },
   "lazy": {
     "lazySemantics": "none"

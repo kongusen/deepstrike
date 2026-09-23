@@ -45,7 +45,11 @@
     "derived": [
       "parameters"
     ],
-    "forbidden": []
+    "forbidden": [],
+    "envelope": {
+      "source": [],
+      "target": []
+    }
   },
   "lazy": {
     "lazySemantics": "none"

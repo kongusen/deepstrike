@@ -218,6 +218,8 @@ Three gaps remain before Iteration 8 can be called complete:
 
 The next sequence is therefore contract quality hardening, one subsystem crossing family at a time, followed by the formal IR removal work. The no-compatibility constraint allows Iteration 9 to move forward as soon as remaining internal `agent-ir` consumers and public runtime exports are migrated; it does not require preserving the current IR surface.
 
+The envelope distinction checkpoint now records transport wrapper fields separately from semantic drops. Kernel event, OpenAI request, stream chunk, and stream finish protocols validate their declared envelope fields and exclude them from inferred semantic drops. Nested semantic path mapping remains the next refinement for targets such as provider `params` and emitted `AdapterOutput` events.
+
 ---
 
 ## Explicit non-goals for the first slice

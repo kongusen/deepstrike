@@ -150,6 +150,12 @@ function inspectFields(checker, declaration, sourceType, targetType, protocol) {
   for (const field of protocol.fields.derived ?? []) {
     if (!targetNames.has(field)) fail(`derived field "${field}" is absent from target type`)
   }
+  for (const field of protocol.fields.envelope?.source ?? []) {
+    if (!sourceNames.has(field)) fail(`envelope source field "${field}" is absent from source type`)
+  }
+  for (const field of protocol.fields.envelope?.target ?? []) {
+    if (!targetNames.has(field)) fail(`envelope target field "${field}" is absent from target type`)
+  }
 
   const inferredPreserves = sourceProperties.filter(sourceProperty => {
     const targetProperty = targetProperties.find(candidate => candidate.name === sourceProperty.name)
@@ -161,7 +167,9 @@ function inspectFields(checker, declaration, sourceType, targetType, protocol) {
 
   const renamedSourceFields = new Set(Object.keys(protocol.fields.renames ?? {}))
   const inferredDrops = sourceProperties
-    .filter(property => !targetNames.has(property.name) && !renamedSourceFields.has(property.name))
+    .filter(property => !targetNames.has(property.name)
+      && !renamedSourceFields.has(property.name)
+      && !(protocol.fields.envelope?.source ?? []).includes(property.name))
     .map(property => property.name)
 
   const requiredPreserves = inferredPreserves.filter(name => {
@@ -192,6 +200,7 @@ function generateManifest(checker, declaration, signature, fields, protocol) {
       drops: { declared: protocol.fields.drops ?? [], inferred: fields.inferredDrops },
       derived: protocol.fields.derived ?? [],
       forbidden: protocol.fields.forbidden,
+      envelope: protocol.fields.envelope ?? { source: [], target: [] },
     },
     lazy: protocol.lazy,
     adapterSignature: {

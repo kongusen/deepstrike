@@ -56,6 +56,12 @@ export interface FieldPolicy {
    */
   drops?: readonly string[]
 
+  /** Fields used only to carry a nested semantic request through an adapter boundary. */
+  envelope?: {
+    source: readonly string[]
+    target?: readonly string[]
+  }
+
   /**
    * Fields that MUST NOT cross this boundary (security/encapsulation policy).
    * Runtime validator rejects if any forbidden field appears in the result.

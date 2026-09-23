@@ -44,7 +44,11 @@
       "ttl_ms",
       "deadline_escalation"
     ],
-    "forbidden": []
+    "forbidden": [],
+    "envelope": {
+      "source": [],
+      "target": []
+    }
   },
   "lazy": {
     "lazySemantics": "none"

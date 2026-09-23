@@ -54,7 +54,11 @@
       "blocked_on",
       "preserved_refs"
     ],
-    "forbidden": []
+    "forbidden": [],
+    "envelope": {
+      "source": [],
+      "target": []
+    }
   },
   "lazy": {
     "lazySemantics": "none"

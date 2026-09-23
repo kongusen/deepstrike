@@ -47,7 +47,11 @@
       "storage_backend",
       "user_storage_path",
       "source_adapter"
-    ]
+    ],
+    "envelope": {
+      "source": [],
+      "target": []
+    }
   },
   "lazy": {
     "lazyFields": [

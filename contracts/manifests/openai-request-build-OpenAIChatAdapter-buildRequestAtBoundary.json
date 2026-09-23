@@ -31,12 +31,18 @@
     "renames": {},
     "drops": {
       "declared": [],
-      "inferred": [
-        "input"
-      ]
+      "inferred": []
     },
     "derived": [],
-    "forbidden": []
+    "forbidden": [],
+    "envelope": {
+      "source": [
+        "input"
+      ],
+      "target": [
+        "params"
+      ]
+    }
   },
   "lazy": {
     "lazySemantics": "none"

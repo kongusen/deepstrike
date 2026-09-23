@@ -53,7 +53,11 @@
       "collapse_old_assistant_narration",
       "idle_micro_compact_minutes"
     ],
-    "forbidden": []
+    "forbidden": [],
+    "envelope": {
+      "source": [],
+      "target": []
+    }
   },
   "lazy": {
     "lazySemantics": "none"

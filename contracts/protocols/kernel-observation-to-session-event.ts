@@ -7,6 +7,7 @@ export const KERNEL_OBSERVATION_TO_SESSION_EVENT_PROTOCOL: BoundaryProtocol = {
   family: "kernel-to-host",
   direction: "decode",
   fields: {
+    envelope: { source: ["observation", "turn", "options"] },
     forbidden: [],
   },
   lazy: { lazySemantics: "none" },

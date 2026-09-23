@@ -29,12 +29,20 @@
     "renames": {},
     "drops": {
       "declared": [],
-      "inferred": [
-        "state"
-      ]
+      "inferred": []
     },
     "derived": [],
-    "forbidden": []
+    "forbidden": [],
+    "envelope": {
+      "source": [
+        "state"
+      ],
+      "target": [
+        "events",
+        "replay",
+        "runStatePatch"
+      ]
+    }
   },
   "lazy": {
     "lazySemantics": "none"

@@ -29,13 +29,21 @@
     "renames": {},
     "drops": {
       "declared": [],
-      "inferred": [
-        "chunk",
-        "state"
-      ]
+      "inferred": []
     },
     "derived": [],
-    "forbidden": []
+    "forbidden": [],
+    "envelope": {
+      "source": [
+        "chunk",
+        "state"
+      ],
+      "target": [
+        "events",
+        "replay",
+        "runStatePatch"
+      ]
+    }
   },
   "lazy": {
     "lazySemantics": "none"

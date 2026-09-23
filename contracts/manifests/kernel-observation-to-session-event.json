@@ -29,14 +29,17 @@
     "renames": {},
     "drops": {
       "declared": [],
-      "inferred": [
+      "inferred": []
+    },
+    "derived": [],
+    "forbidden": [],
+    "envelope": {
+      "source": [
         "observation",
         "turn",
         "options"
       ]
-    },
-    "derived": [],
-    "forbidden": []
+    }
   },
   "lazy": {
     "lazySemantics": "none"

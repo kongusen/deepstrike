@@ -44,7 +44,11 @@
       "output_recovery_attempts",
       "max_input_bytes"
     ],
-    "forbidden": []
+    "forbidden": [],
+    "envelope": {
+      "source": [],
+      "target": []
+    }
   },
   "lazy": {
     "lazySemantics": "none"
