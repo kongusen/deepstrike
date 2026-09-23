@@ -372,7 +372,64 @@ export function taskUpdateToKernel(update: TaskUpdate): Record<string, unknown> 
   }
 }
 
-export function capabilityTool(schema: ToolSchema): Record<string, unknown> {
+export interface KernelCapabilityTool {
+  [key: string]: unknown
+  id: string
+  kind: "tool"
+  description: string
+  tool_schema: Record<string, unknown>
+}
+
+export interface KernelCapabilitySkill {
+  [key: string]: unknown
+  id: string
+  kind: "skill"
+  description: string
+  skill: KernelSkillMetadata
+}
+
+export interface KernelCapabilityMarker {
+  [key: string]: unknown
+  id: string
+  kind: string
+  description: string
+}
+
+export interface KernelCapabilityMountCommand {
+  [key: string]: unknown
+  kind: "capability_command"
+  command: {
+    action: "mount"
+    capability: Record<string, unknown>
+    mounted_by: string
+    mount_reason: string
+  }
+}
+
+export interface KernelCapabilityUnmountCommand {
+  [key: string]: unknown
+  kind: "capability_command"
+  command: { action: "unmount"; kind: string; id: string }
+}
+
+export interface CapabilityMarkerRequest {
+  kind: string
+  id: string
+  description: string
+}
+
+export interface CapabilityMountRequest {
+  capability: Record<string, unknown>
+  mountedBy?: string
+  mountReason?: string
+}
+
+export interface CapabilityUnmountRequest {
+  capabilityKind: string
+  id: string
+}
+
+export function capabilityTool(schema: ToolSchema): KernelCapabilityTool {
   return {
     id: schema.name,
     kind: "tool",
@@ -381,7 +438,7 @@ export function capabilityTool(schema: ToolSchema): Record<string, unknown> {
   }
 }
 
-export function capabilitySkill(skill: SkillMetadata): Record<string, unknown> {
+export function capabilitySkill(skill: SkillMetadata): KernelCapabilitySkill {
   return {
     id: skill.name,
     kind: "skill",
@@ -390,15 +447,19 @@ export function capabilitySkill(skill: SkillMetadata): Record<string, unknown> {
   }
 }
 
-export function capabilityMarker(kind: string, id: string, description: string): Record<string, unknown> {
+export function capabilityMarker(kind: string, id: string, description: string): KernelCapabilityMarker {
   return { id, kind, description }
+}
+
+export function capabilityMarkerToKernel(input: CapabilityMarkerRequest): KernelCapabilityMarker {
+  return capabilityMarker(input.kind, input.id, input.description)
 }
 
 export function capabilityCommandMount(
   capability: Record<string, unknown>,
   mountedBy = "sdk:runtime",
   mountReason = "dynamic_register",
-): Record<string, unknown> {
+): KernelCapabilityMountCommand {
   return {
     kind: "capability_command",
     command: {
@@ -410,11 +471,19 @@ export function capabilityCommandMount(
   }
 }
 
-export function capabilityCommandUnmount(capabilityKind: string, id: string): Record<string, unknown> {
+export function capabilityMountToKernel(input: CapabilityMountRequest): KernelCapabilityMountCommand {
+  return capabilityCommandMount(input.capability, input.mountedBy, input.mountReason)
+}
+
+export function capabilityCommandUnmount(capabilityKind: string, id: string): KernelCapabilityUnmountCommand {
   return {
     kind: "capability_command",
     command: { action: "unmount", kind: capabilityKind, id },
   }
+}
+
+export function capabilityUnmountToKernel(input: CapabilityUnmountRequest): KernelCapabilityUnmountCommand {
+  return capabilityCommandUnmount(input.capabilityKind, input.id)
 }
 
 /** Camel-case an `entropy_sample` kernel observation into the SDK's `EntropySample`. */

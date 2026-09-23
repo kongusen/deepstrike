@@ -1,0 +1,53 @@
+{
+  "id": "capability.host-to-kernel.capabilityMarkerToKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "CapabilityMarkerRequest",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelCapabilityMarker",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/kernel-step:capabilityMarkerToKernel",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [
+        "kind",
+        "id",
+        "description"
+      ],
+      "inferred": [
+        "kind",
+        "id",
+        "description"
+      ]
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": []
+    },
+    "derived": [],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "input",
+        "type": "CapabilityMarkerRequest"
+      }
+    ],
+    "returnType": "KernelCapabilityMarker"
+  }
+}

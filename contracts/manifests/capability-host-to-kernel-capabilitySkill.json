@@ -1,0 +1,67 @@
+{
+  "id": "capability.host-to-kernel.capabilitySkill",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "SkillMetadata",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelCapabilitySkill",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/kernel-step:capabilitySkill",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [
+        "description"
+      ],
+      "inferred": [
+        "description"
+      ]
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "name",
+        "whenToUse",
+        "effort",
+        "estimatedTokens",
+        "capabilityGrants",
+        "allowedTools"
+      ],
+      "inferred": [
+        "name",
+        "whenToUse",
+        "effort",
+        "estimatedTokens",
+        "capabilityGrants",
+        "allowedTools"
+      ]
+    },
+    "derived": [
+      "id",
+      "kind",
+      "skill"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "skill",
+        "type": "SkillMetadata"
+      }
+    ],
+    "returnType": "KernelCapabilitySkill"
+  }
+}

@@ -307,6 +307,23 @@ function artifactPath(path) {
   return resolve(root, path)
 }
 
+function expandProtocol(protocol) {
+  if (Array.isArray(protocol.adapters)) {
+    return protocol.adapters.map(adapter => ({
+      ...protocol,
+      id: `${protocol.id}.${adapter.adapter.split(":").at(-1)}`,
+      adapter: adapter.adapter,
+      source: adapter.source,
+      target: adapter.target,
+      fields: adapter.fields ?? protocol.fields,
+      artifacts: adapter.artifacts ?? protocol.artifacts,
+      adapters: undefined,
+    }))
+  }
+  if (protocol.adapter && protocol.source && protocol.target) return [protocol]
+  fail(`protocol ${protocol.id} must declare adapter/source/target or adapters[]`)
+}
+
 function processProtocol(program, checker, protocol) {
   const [, adapterPath, adapterName] = protocol.adapter.match(/^([^:]+):(.+)$/) ?? []
   if (!adapterPath || !adapterName) fail(`invalid adapter reference: ${protocol.adapter}`)
@@ -354,9 +371,10 @@ function processProtocol(program, checker, protocol) {
 }
 
 try {
-  console.log(`Checking ${protocols.length} registered boundary adapter${protocols.length === 1 ? "" : "s"} with the TypeScript compiler...`)
+  const adapters = protocols.flatMap(expandProtocol)
+  console.log(`Checking ${adapters.length} registered boundary adapter${adapters.length === 1 ? "" : "s"} with the TypeScript compiler...`)
   const { program, checker } = createTypeChecker()
-  for (const protocol of protocols) processProtocol(program, checker, protocol)
+  for (const protocol of adapters) processProtocol(program, checker, protocol)
   if (process.argv.includes("--verify")) console.log("✅ Generated artifacts are in sync with the registry")
   else console.log("✅ Boundary contracts verified and artifacts generated")
 } catch (error) {

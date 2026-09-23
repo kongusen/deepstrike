@@ -1,0 +1,56 @@
+{
+  "id": "capability.host-to-kernel.capabilityMountToKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "CapabilityMountRequest",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelCapabilityMountCommand",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/kernel-step:capabilityMountToKernel",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "capability",
+        "mountedBy",
+        "mountReason"
+      ],
+      "inferred": [
+        "capability",
+        "mountedBy",
+        "mountReason"
+      ]
+    },
+    "derived": [
+      "kind",
+      "command"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "input",
+        "type": "CapabilityMountRequest"
+      }
+    ],
+    "returnType": "KernelCapabilityMountCommand"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "id": "capability.host-to-kernel.capabilityTool",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "ToolSchema",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelCapabilityTool",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/kernel-step:capabilityTool",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [
+        "description"
+      ],
+      "inferred": [
+        "description"
+      ]
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "name",
+        "parameters",
+        "providerOptions"
+      ],
+      "inferred": [
+        "name",
+        "parameters",
+        "providerOptions"
+      ]
+    },
+    "derived": [
+      "id",
+      "kind",
+      "tool_schema"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "schema",
+        "type": "ToolSchema"
+      }
+    ],
+    "returnType": "KernelCapabilityTool"
+  }
+}

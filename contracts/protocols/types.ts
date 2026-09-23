@@ -88,6 +88,33 @@ export interface LazyLoadingPolicy {
   lazySemantics: "preserve" | "materialize" | "none"
 }
 
+export interface BoundaryEndpoint {
+  type: string
+  layer: "public" | "host" | "kernel" | "provider"
+  authority: "public-agent" | "host-runtime" | "kernel" | "provider"
+}
+
+export interface BoundaryArtifacts {
+  manifest: string
+  validator?: {
+    path: string
+    exportName: string
+    predicateName: string
+    targetImport: string
+    targetType: string
+    label: string
+  }
+}
+
+/** One typed implementation inside a protocol family. */
+export interface BoundaryAdapter {
+  adapter: string
+  source: BoundaryEndpoint
+  target: BoundaryEndpoint
+  fields?: FieldPolicy
+  artifacts?: BoundaryArtifacts
+}
+
 /**
  * A boundary protocol declaration.
  *
@@ -105,21 +132,10 @@ export interface BoundaryProtocol<Source = string, Target = string> {
   direction: CrossingDirection
 
   /** Source type name (for manifest generation). */
-  source: {
-    /** Type name, e.g., "SkillMetadata" */
-    type: Source extends string ? Source : string
-    /** Architectural layer: "public" | "host" | "kernel" | "provider" */
-    layer: "public" | "host" | "kernel" | "provider"
-    /** Authority domain that owns this type. */
-    authority: "public-agent" | "host-runtime" | "kernel" | "provider"
-  }
+  source?: BoundaryEndpoint & { type: Source extends string ? Source : string }
 
   /** Target type name (for manifest generation). */
-  target: {
-    type: Target extends string ? Target : string
-    layer: "public" | "host" | "kernel" | "provider"
-    authority: "public-agent" | "host-runtime" | "kernel" | "provider"
-  }
+  target?: BoundaryEndpoint & { type: Target extends string ? Target : string }
 
   /** Field preservation and security policy. */
   fields: FieldPolicy
@@ -132,20 +148,13 @@ export interface BoundaryProtocol<Source = string, Target = string> {
    * Format: "modulePath:functionName" or just "functionName" for well-known adapters.
    * Example: "runtime/kernel-step:skillMetadataToKernel"
    */
-  adapter: string
+  adapter?: string
 
   /** Generated artifact destinations for this protocol. Paths are repository-relative. */
-  artifacts?: {
-    manifest: string
-    validator?: {
-      path: string
-      exportName: string
-      predicateName: string
-      targetImport: string
-      targetType: string
-      label: string
-    }
-  }
+  artifacts?: BoundaryArtifacts
+
+  /** Multiple typed adapters that share this protocol family and policy. */
+  adapters?: readonly BoundaryAdapter[]
 
   /**
    * Whether this crossing is lossy by design.

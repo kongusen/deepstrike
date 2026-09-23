@@ -1,0 +1,54 @@
+{
+  "id": "capability.host-to-kernel.capabilityUnmountToKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "CapabilityUnmountRequest",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelCapabilityUnmountCommand",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/kernel-step:capabilityUnmountToKernel",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "capabilityKind",
+        "id"
+      ],
+      "inferred": [
+        "capabilityKind",
+        "id"
+      ]
+    },
+    "derived": [
+      "kind",
+      "command"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "input",
+        "type": "CapabilityUnmountRequest"
+      }
+    ],
+    "returnType": "KernelCapabilityUnmountCommand"
+  }
+}
