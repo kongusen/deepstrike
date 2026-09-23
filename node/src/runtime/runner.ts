@@ -211,6 +211,34 @@ interface InboundSignalDelivery {
   nack(): Promise<boolean>
 }
 
+export interface KernelSignalDeliveryRequest {
+  signalId: string
+  deliveryId: string
+  deliveryAttempt: number
+  signal: RuntimeSignal
+}
+
+export interface KernelSignalDeliveryEvent {
+  [key: string]: unknown
+  kind: "deliver_signal"
+  delivery_id: string
+  attempt: number
+  signal: {
+    id: string
+    source: RuntimeSignal["source"]
+    signal_type: RuntimeSignal["signalType"]
+    urgency: RuntimeSignal["urgency"]
+    summary: string
+    payload: Record<string, unknown>
+    dedupe_key?: string
+    recipient?: string
+    deadline_ms?: number
+    coalesce_key?: string
+    coalesced_count: number
+    timestamp_ms: number
+  }
+}
+
 /** P0-C tool-gating telemetry: per-LLM-turn metrics, emitted via `RuntimeOptions.onTurnMetrics`.
  *  Pure observation — no behavior change. Feeds the go/no-go analysis for epoch skill gating (P1-B):
  *  - `toolsExposed` vs `toolsCalled` quantifies over-exposure.
@@ -1634,7 +1662,12 @@ export class RuntimeRunner {
       if (!delivery) { await new Promise(resolve => setTimeout(resolve, 5)); continue }
       const observationStart = this.pendingObservations.length
       const signalAction = await this.consumeInboundSignal(delivery, sig =>
-        this.commitKernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig)))
+        this.commitKernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent({
+          signalId: sig.signalId,
+          deliveryId: sig.deliveryId,
+          deliveryAttempt: sig.deliveryAttempt,
+          signal: sig.signal,
+        })))
       let observations = this.pendingObservations.slice(observationStart)
       if (signalAction?.kind === "preempt_sub_agents") {
         for (const id of signalAction.agentIds) controllers.get(id)?.abort()
@@ -2384,7 +2417,12 @@ export class RuntimeRunner {
           // `signal_delivery_disposed`. An actionable disposition yields a new action to adopt; queued/observed/
           // ignored yields none (kernel buffers).
           const sigAction = await this.consumeInboundSignal(delivery, sig =>
-            this.commitKernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent(sig)))
+            this.commitKernelMaybeAction(runtime, this.pendingObservations, signalToKernelEvent({
+              signalId: sig.signalId,
+              deliveryId: sig.deliveryId,
+              deliveryAttempt: sig.deliveryAttempt,
+              signal: sig.signal,
+            })))
           if (sigAction) action = sigAction
           // A critical signal is a kernel attention/preemption decision, not operation cancellation.
         }
@@ -3999,7 +4037,7 @@ function parseUpdatePlanArgs(argsStr: string): import("../types.js").TaskUpdate 
 
 /** Lower a host `RuntimeSignal` to the kernel's snake_case `signal` input event. Shared by the main
  *  loop's per-turn poll and #2-B-ii's workflow-batch preemption monitor (so the two never drift). */
-function signalToKernelEvent(delivery: InboundSignalDelivery): Record<string, unknown> {
+export function signalToKernelEvent(delivery: KernelSignalDeliveryRequest): KernelSignalDeliveryEvent {
   const sig = delivery.signal
   return {
     kind: "deliver_signal",

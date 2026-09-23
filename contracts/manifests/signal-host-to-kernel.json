@@ -1,0 +1,65 @@
+{
+  "id": "signal.host-to-kernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "KernelSignalDeliveryRequest",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelSignalDeliveryEvent",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/runner:signalToKernelEvent",
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Signal delivery tests cover leased acknowledgement and the kernel event projection shape."
+    }
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": []
+    },
+    "derived": [],
+    "forbidden": [],
+    "envelope": {
+      "source": [
+        "signalId",
+        "deliveryId",
+        "deliveryAttempt",
+        "signal"
+      ]
+    },
+    "nested": [
+      {
+        "source": "signal",
+        "target": "signal",
+        "kind": "project",
+        "note": "Runtime signal fields are lowered to kernel snake_case."
+      }
+    ]
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "delivery",
+        "type": "KernelSignalDeliveryRequest"
+      }
+    ],
+    "returnType": "KernelSignalDeliveryEvent"
+  }
+}

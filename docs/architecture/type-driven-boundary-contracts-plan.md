@@ -222,6 +222,8 @@ The envelope distinction checkpoint now records transport wrapper fields separat
 
 The first subsystem crossing checkpoint registers `memoryPolicyToKernel` as `MemoryPolicy → KernelMemoryPolicy`. The live runner uses the named target type, the boundary declares all camelCase-to-snake_case renames, and direct tests cover omission and unknown-field rejection.
 
+The signal subsystem checkpoint registers `signalToKernelEvent` as a data-only `KernelSignalDeliveryRequest → KernelSignalDeliveryEvent` projection. Lease acknowledgement callbacks remain host-owned, while delivery identity, signal payload, deadline, and coalescing metadata cross into the kernel event shape. Both live signal consumption paths use the projection and direct tests cover its mapping.
+
 ---
 
 ## Explicit non-goals for the first slice
