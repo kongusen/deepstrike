@@ -66,6 +66,11 @@ export interface OllamaStreamChunkRequest {
   state: OllamaStreamState
 }
 
+export interface OllamaStreamFinishRequest {
+  state: OllamaStreamState
+  final?: OllamaChunk
+}
+
 function messageContent(message: CanonicalMessage): OllamaMessage {
   const text: string[] = []
   const images: string[] = []
@@ -252,6 +257,10 @@ export class OllamaAdapter implements ProtocolAdapter<
       } as UsageEvent)
     }
     return { events }
+  }
+
+  finishStreamAtBoundary(request: OllamaStreamFinishRequest): AdapterOutput {
+    return this.finishStream(request.state, request.final)
   }
 
   normalizeUsage(raw: unknown): ProviderUsage | undefined {

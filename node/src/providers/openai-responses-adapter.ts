@@ -54,6 +54,10 @@ export interface OpenAIResponsesStreamChunkRequest {
   state: OpenAIResponsesStreamState
 }
 
+export interface OpenAIResponsesStreamFinishRequest {
+  state: OpenAIResponsesStreamState
+}
+
 function numberField(raw: Record<string, unknown>, field: string): number | undefined {
   const value = raw[field]
   if (value === undefined || value === null) return undefined
@@ -352,6 +356,10 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
 
   finishStream(_state: OpenAIResponsesStreamState): AdapterOutput {
     return { events: [] }
+  }
+
+  finishStreamAtBoundary(request: OpenAIResponsesStreamFinishRequest): AdapterOutput {
+    return this.finishStream(request.state)
   }
 
   normalizeUsage(raw: unknown): ProviderUsage | undefined {

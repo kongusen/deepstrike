@@ -172,7 +172,7 @@ export class GeminiProvider implements LLMProvider {
       const finalResponse = await result.response
       const responseId = (finalResponse as unknown as Record<string, unknown>).responseId
       if (typeof responseId === "string") this.lastTelemetry = { rungs: 1, responseId }
-      for (const event of this.adapter.finishStream(state, finalResponse).events) yield event
+      for (const event of this.adapter.finishStreamAtBoundary({ state, final: finalResponse }).events) yield event
     } catch (error) {
       throw classifyProviderError("gemini", error)
     }

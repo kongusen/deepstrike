@@ -1,0 +1,48 @@
+{
+  "id": "provider-stream.finish.OllamaAdapter.finishStreamAtBoundary",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-provider",
+    "direction": "decode",
+    "source": {
+      "type": "OllamaStreamFinishRequest",
+      "layer": "provider",
+      "authority": "provider"
+    },
+    "target": {
+      "type": "AdapterOutput",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "adapter": "providers/ollama-adapter:OllamaAdapter.finishStreamAtBoundary",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": [
+        "state",
+        "final"
+      ]
+    },
+    "derived": [],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "request",
+        "type": "OllamaStreamFinishRequest"
+      }
+    ],
+    "returnType": "AdapterOutput"
+  }
+}

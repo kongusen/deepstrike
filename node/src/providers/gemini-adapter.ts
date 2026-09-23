@@ -49,6 +49,11 @@ export interface GeminiStreamChunkRequest {
   state: GeminiStreamState
 }
 
+export interface GeminiStreamFinishRequest {
+  state: GeminiStreamState
+  final: GenerateContentResponse
+}
+
 // Google Generate Content streams response chunks, while @google/generative-ai 0.24.1 exposes
 // a separate promise for the aggregated response. Candidate finishReason and aggregate usage are
 // therefore decoded only by finishStream.
@@ -308,6 +313,10 @@ export class GeminiAdapter implements ProtocolAdapter<
       } as UsageEvent)
     }
     return { events }
+  }
+
+  finishStreamAtBoundary(request: GeminiStreamFinishRequest): AdapterOutput {
+    return this.finishStream(request.state, request.final)
   }
 
   normalizeUsage(raw: unknown): ProviderUsage | undefined {

@@ -204,6 +204,8 @@ The OpenAI request checkpoint now wraps those extra inputs in named boundary req
 
 The stream decode checkpoint adds one typed `{ chunk, state }` request for each provider adapter. Anthropic, Gemini, Ollama, OpenAI Chat, and OpenAI Responses streaming paths now call their boundary methods directly, so state updates and emitted `StreamEvent` values are covered by the same registered provider decode family.
 
+The stream finish checkpoint adds the corresponding finalization requests. Providers with a terminal response block keep that block in the request, while providers that only need accumulated state expose a state-only request; every live stream path now uses the typed finalizer before returning its terminal events.
+
 ---
 
 ## Explicit non-goals for the first slice

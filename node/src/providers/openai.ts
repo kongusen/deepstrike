@@ -274,7 +274,7 @@ export class OpenAIChatProvider implements LLMProvider {
         }
         for (const event of output.events) yield event
       }
-      const final = this.chat.finishStream(state)
+      const final = this.chat.finishStreamAtBoundary({ state })
       for (const event of final.events) yield event
       this.rememberReplay({
         content: state.accumulatedContent,

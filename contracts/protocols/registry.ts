@@ -8,6 +8,7 @@ import { PROVIDER_USAGE_DECODE_PROTOCOL } from "./provider-usage-decode.js"
 import { PROVIDER_REQUEST_BUILD_PROTOCOL } from "./provider-request-build.js"
 import { OPENAI_REQUEST_BUILD_PROTOCOL } from "./openai-request-build.js"
 import { PROVIDER_STREAM_DECODE_PROTOCOL } from "./provider-stream-decode.js"
+import { PROVIDER_STREAM_FINISH_PROTOCOL } from "./provider-stream-finish.js"
 import { SKILL_HOST_TO_KERNEL_PROTOCOL } from "./skill-host-to-kernel.js"
 
 /** Single source of registered boundary protocols. */
@@ -21,5 +22,6 @@ export const BOUNDARY_PROTOCOLS: readonly BoundaryProtocol[] = [
   PROVIDER_REQUEST_BUILD_PROTOCOL,
   OPENAI_REQUEST_BUILD_PROTOCOL,
   PROVIDER_STREAM_DECODE_PROTOCOL,
+  PROVIDER_STREAM_FINISH_PROTOCOL,
   SKILL_HOST_TO_KERNEL_PROTOCOL,
 ]

@@ -68,6 +68,10 @@ export interface AnthropicStreamChunkRequest {
   state: AnthropicStreamState
 }
 
+export interface AnthropicStreamFinishRequest {
+  state: AnthropicStreamState
+}
+
 const CACHE_BREAKPOINT_STRATEGIES = new Set<CacheBreakpointStrategy>([
   "default", "tools-only", "system-only", "frozen-prefix", "none",
 ])
@@ -570,6 +574,10 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
       events,
       ...(blocks.length ? { replay: { protocol: "anthropic-messages" as const, native_blocks: blocks } } : {}),
     }
+  }
+
+  finishStreamAtBoundary(request: AnthropicStreamFinishRequest): AdapterOutput {
+    return this.finishStream(request.state)
   }
 
   normalizeUsage(raw: unknown): ProviderUsage | undefined {

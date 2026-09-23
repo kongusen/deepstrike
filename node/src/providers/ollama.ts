@@ -144,7 +144,7 @@ export class OllamaProvider implements LLMProvider {
       for (const chunk of ndjson.finish(decoder.decode())) {
         for (const event of this.adapter.pushStreamChunkAtBoundary({ chunk, state }).events) yield event
       }
-      for (const event of this.adapter.finishStream(state, state.finalChunk).events) yield event
+      for (const event of this.adapter.finishStreamAtBoundary({ state, final: state.finalChunk }).events) yield event
     } catch (error) {
       throw classifyProviderError("ollama", error)
     }

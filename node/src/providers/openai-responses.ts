@@ -234,7 +234,7 @@ export class OpenAIResponsesProvider implements LLMProvider {
         }
       }
 
-      const final = this.responses.finishStream(streamState)
+      const final = this.responses.finishStreamAtBoundary({ state: streamState })
       for (const event of final.events) yield event
       if (final.runStatePatch) {
         Object.assign(runState, final.runStatePatch)

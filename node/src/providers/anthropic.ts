@@ -282,7 +282,7 @@ export class AnthropicProvider implements LLMProvider {
         }
         for (const event of this.adapter.pushStreamChunkAtBoundary({ chunk, state }).events) yield event
       }
-      const final = this.adapter.finishStream(state)
+      const final = this.adapter.finishStreamAtBoundary({ state })
       for (const event of final.events) yield event
       if (final.replay?.native_blocks) {
         this.rememberNativeBlocks(
