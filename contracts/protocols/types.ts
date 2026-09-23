@@ -14,6 +14,7 @@
 export type ProtocolFamily =
   | "public-to-host"    // User-facing API → Runtime execution (Agent → AgentSpec)
   | "host-to-kernel"    // Runtime → Kernel ABI (SkillMetadata → KernelSkillMetadata)
+  | "kernel-to-host"    // Kernel observations → Host event log (KernelObservation → SessionEvent)
   | "host-provider"     // Runtime ↔ Vendor wire (ProviderAttempt ↔ VendorRequest)
   | "runtime-internal"  // Host layer transformations (SkillRevision → SkillPackage)
 

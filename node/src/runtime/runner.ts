@@ -148,7 +148,7 @@ import {
   type ProviderAttempt,
   type UsageAccountingPolicy,
 } from "./execution-evidence.js"
-import { kernelObservationToSessionEvent } from "./kernel-event-log.js"
+import { kernelObservationToSessionEventAtBoundary } from "./kernel-event-log.js"
 import { assertNativeProfile, signalPolicyToKernel, type NativeOsProfile, type OsProfileId, type SignalPolicy } from "./os-profile.js"
 import { PayloadStore } from "./payload-store.js"
 import { formatToolError } from "../tools/errors.js"
@@ -3535,11 +3535,15 @@ export class RuntimeRunner {
 
       const latest =
         obs.kind === "compressed" ? await this.opts.sessionLog.latestSeq(sessionId) : undefined
-      const event = kernelObservationToSessionEvent(obs, turn, {
-        nextArchiveStart,
-        latestSeq: latest,
-        preservedRefs,
-        compressionAction,
+      const event = kernelObservationToSessionEventAtBoundary({
+        observation: obs,
+        turn,
+        options: {
+          nextArchiveStart,
+          latestSeq: latest,
+          preservedRefs,
+          compressionAction,
+        },
       })
       if (!event) continue
 

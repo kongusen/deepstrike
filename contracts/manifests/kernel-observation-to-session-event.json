@@ -1,0 +1,49 @@
+{
+  "id": "kernel-observation.to-session-event",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "kernel-to-host",
+    "direction": "decode",
+    "source": {
+      "type": "KernelObservationSessionEventRequest",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "target": {
+      "type": "SessionEvent | null",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "adapter": "runtime/kernel-event-log:kernelObservationToSessionEventAtBoundary",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [],
+      "inferred": [
+        "observation",
+        "turn",
+        "options"
+      ]
+    },
+    "derived": [],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "request",
+        "type": "KernelObservationSessionEventRequest"
+      }
+    ],
+    "returnType": "SessionEvent | null"
+  }
+}

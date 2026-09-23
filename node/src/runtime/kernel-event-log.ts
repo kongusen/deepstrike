@@ -28,7 +28,18 @@ export function categoryForKind(kind: string): KernelEventCategory {
   }
 }
 
-type CompressionAction = Extract<SessionEvent, { kind: "compressed" }>["action"]
+export type CompressionAction = Extract<SessionEvent, { kind: "compressed" }>["action"]
+
+export interface KernelObservationSessionEventRequest {
+  observation: KernelObservation
+  turn: number
+  options?: {
+    nextArchiveStart?: number
+    latestSeq?: number
+    preservedRefs?: string[]
+    compressionAction?: (action?: string) => CompressionAction
+  }
+}
 
 export function kernelObservationToSessionEvent(
   obs: KernelObservation,
@@ -277,6 +288,13 @@ export function kernelObservationToSessionEvent(
         raw: { ...obs },
       }
   }
+}
+
+/** Typed kernel-to-host adapter used by the live session-log append path. */
+export function kernelObservationToSessionEventAtBoundary(
+  request: KernelObservationSessionEventRequest,
+): SessionEvent | null {
+  return kernelObservationToSessionEvent(request.observation, request.turn, request.options)
 }
 
 export type KernelPrimitive = "syscall" | "sched" | "mm"

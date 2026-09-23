@@ -51,7 +51,7 @@ The first slice does not attempt to migrate all existing crossings or all SDKs.
 
 ### Task 1: Define the protocol vocabulary
 
-- Add names for the four protocol families: public-to-host lowering, host-to-kernel projection, host-provider codec, and runtime materialization.
+- Add names for the protocol families: public-to-host lowering, host-to-kernel projection, kernel-to-host event decode, host-provider codec, and runtime materialization.
 - Define the minimal policy shape for `preserves`, `renames`, `derived`, `drops`, and `forbidden`.
 - Decide whether policy is expressed as TypeScript values or decorators. Prefer plain typed values unless compiler metadata is required.
 
@@ -193,6 +193,8 @@ The configure-run family is now registered as four typed child adapters for gove
 Iteration 8 has its first live-path checkpoint. `buildAgentRuntimeOptions` now accepts one typed `AgentRuntimeOptionsRequest`, and the actual facade call is registered as `agent.public-to-host` with a compiler-resolved `AgentRuntimeOptionsRequest → RuntimeOptions` signature. Existing facade behavior tests remain the behavioral gate for this adapter.
 
 The same iteration now registers four live kernel projections: message, tool schema, tool result, and task update. Their return types are named kernel structures, the runner continues to consume the same functions, and direct tests cover parsed arguments, snake-case fields, optional error data, and task progress projection.
+
+The next event-decode checkpoint registers the live `KernelObservation → SessionEvent | null` crossing. `kernelObservationToSessionEventAtBoundary` makes the turn and archive context explicit in a one-argument request, and `runner.appendObservations` consumes that adapter directly. The first behavior slice covers entropy samples, compressed archive context, and the intentionally non-persisted page-in request; the remaining observation branches stay behind the same adapter until their individual semantic tests are split out.
 
 ---
 
