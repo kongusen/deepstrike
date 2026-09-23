@@ -1,4 +1,3 @@
-import type { AgentDefinition } from "./agent-facade.js"
 import { Agent, type AgentMemory, type AgentOptions, type ModelRef } from "./agent.js"
 import type { Guardrail } from "./guardrail.js"
 import type { Handoff } from "./handoff-target.js"
@@ -119,7 +118,7 @@ function isRegisteredTool(tool: RegisteredTool | AgentToolDefinition): tool is R
 
 /** Normalizes native Agents and JSON-safe descriptor objects into the one public surface used by
  * lowering. It does not interpret provider namespaces or create executable capabilities. */
-export function normalizeAgent(agent: Agent | AgentDefinition | AgentDescriptor): Agent {
+export function normalizeAgent(agent: Agent | AgentDescriptor): Agent {
   if (agent instanceof Agent) return agent
   const tools = agent.tools?.map(tool => isRegisteredTool(tool) ? tool : toolDefinitionToRegisteredTool(tool))
   const { tools: _rawTools, ...options } = agent
