@@ -122,7 +122,7 @@ import {
   workflowNodeToSpec,
   workflowSpecToKernel,
 } from "../types/agent.js"
-import { defaultSubAgentOrchestrator, type SubAgentOrchestrator } from "./sub-agent-orchestrator.js"
+import { defaultSubAgentOrchestrator, type SubAgentOrchestrator, type SubAgentRunContext } from "./sub-agent-orchestrator.js"
 import {
   extractJsonValue,
   schemaInstruction,
@@ -374,6 +374,9 @@ export interface RuntimeOptions {
    *  node carrying `model_hint` runs against the resolved provider; without this hook the hint is a
    *  no-op (the kernel still carries it for audit). */
   providerFor?: (modelHint: string) => LLMProvider | undefined
+  /** Host-owned workflow target resolution. The kernel carries only scheduling data; a public
+   * workflow node's `agent` binding is resolved here before its child run starts. */
+  workflowAgentResolver?: (name: string, context: SubAgentRunContext) => Promise<SubAgentResult | undefined> | SubAgentResult | undefined
   /** M3/G4 worktree isolation: when set, an `isolation: "worktree"` sub-agent runs inside a git
    *  worktree this manager creates (and removes on completion), injected as `RunContext.cwd`.
    *  Undefined ⇒ worktree nodes fall back to the inherited plane (no isolation). */
@@ -1340,6 +1343,7 @@ export class RuntimeRunner {
     outputs?: Map<string, string>,
     abortSignal?: AbortSignal,
     contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
+    workflowAgentTargets?: Map<string, string>,
   ): Promise<SubAgentResult> {
     // G2: a reduce node runs no LLM — execute the registered pure function over its dependency
     // outputs and feed the result back as an ordinary completion. Deterministic; no agent burned.
@@ -1366,7 +1370,7 @@ export class RuntimeRunner {
       : ""
     const withBudget = (goal: string) =>
       [goal, depsNote, budgetNote].filter(Boolean).join("\n\n")
-    const mkCtx = (goal: string) => ({
+    const mkCtx = (goal: string): SubAgentRunContext => ({
       parentOpts: this.opts,
       parentSessionId,
       spec: { ...baseSpec, goal: withBudget(goal) },
@@ -1383,6 +1387,20 @@ export class RuntimeRunner {
       ...(abortSignal ? { abortSignal } : {}),
       ...(this.opts.subAgentHarness ? { harness: this.opts.subAgentHarness } : {}),
     })
+    const targetName = workflowAgentTargets?.get(node.agent_id)
+      ?? workflowAgentTargets?.get(node.agent_id.replace(/-i\d+$/, ""))
+    const runNode = async (goal: string): Promise<SubAgentResult> => {
+      const context = mkCtx(goal)
+      if (targetName) {
+        if (!this.opts.workflowAgentResolver) {
+          throw new Error(`workflow node "${node.agent_id}" targets agent "${targetName}" but no host resolver is configured`)
+        }
+        const resolved = await this.opts.workflowAgentResolver(targetName, context)
+        if (!resolved) throw new Error(`workflow target agent "${targetName}" is not registered`)
+        return resolved
+      }
+      return orchestrator.run(context)
+    }
     const textOf = (r: SubAgentResult): string => {
       const c = r.result.finalMessage?.content
       return typeof c === "string" ? c : c != null ? JSON.stringify(c) : ""
@@ -1397,7 +1415,7 @@ export class RuntimeRunner {
       const out = outputs ?? new Map<string, string>()
       const left = out.get(node.judge_match.left) ?? ""
       const right = out.get(node.judge_match.right) ?? ""
-      const result = await orchestrator.run(mkCtx(judgeGoal(baseSpec.goal, left, right)))
+      const result = await runNode(judgeGoal(baseSpec.goal, left, right))
       const winner = extractJudgeWinner(textOf(result))
       const winnerId = winner === "right" ? node.judge_match.right : node.judge_match.left
       return withSignal(result, { tournamentWinner: winnerId })
@@ -1409,9 +1427,7 @@ export class RuntimeRunner {
     // decision completes the loop.
     if (node.loop_max_iters != null) {
       const iteration = Number(/-i(\d+)$/.exec(node.agent_id)?.[1] ?? "0")
-      const result = await orchestrator.run(
-        mkCtx(`${baseSpec.goal}\n\n${loopInstruction(node.loop_max_iters, iteration)}`),
-      )
+      const result = await runNode(`${baseSpec.goal}\n\n${loopInstruction(node.loop_max_iters, iteration)}`)
       const pace = result.result.paceDecision
       return withSignal(result, { loopContinue: pace?.action === "continue" })
     }
@@ -1420,13 +1436,13 @@ export class RuntimeRunner {
     // branch and prunes the rest. No recognizable choice ⇒ leave unset (kernel prunes all branches).
     if (node.classify_labels && node.classify_labels.length) {
       const labels = node.classify_labels
-      const result = await orchestrator.run(mkCtx(`${baseSpec.goal}\n\n${classifyInstruction(labels)}`))
+      const result = await runNode(`${baseSpec.goal}\n\n${classifyInstruction(labels)}`)
       const branch = extractClassifyBranch(textOf(result), labels)
       return branch === undefined ? result : withSignal(result, { classifyBranch: branch })
     }
 
     const schema = node.output_schema
-    if (!schema) return orchestrator.run(mkCtx(baseSpec.goal))
+    if (!schema) return runNode(baseSpec.goal)
 
     const maxAttempts = this.opts.workflowSchemaValidationAttempts ?? 2
     let last: SubAgentResult | undefined
@@ -1436,7 +1452,7 @@ export class RuntimeRunner {
         attempt === 1
           ? `${baseSpec.goal}\n\n${schemaInstruction(schema)}`
           : `${baseSpec.goal}\n\n${schemaRetryInstruction(schema, lastErrors)}`
-      const result = await orchestrator.run(mkCtx(goal))
+      const result = await runNode(goal)
       const content = result.result.finalMessage?.content
       const text = typeof content === "string" ? content : content != null ? JSON.stringify(content) : ""
       const v = validateAgainstSchema(extractJsonValue(text), schema)
@@ -1553,6 +1569,8 @@ export class RuntimeRunner {
         runtime,
         new Map(),
         new Map(spec.nodes.flatMap((node, index) => node.context ? [[`wf-node${index}`, node.context] as const] : [])),
+        spec.nodes,
+        0,
       )
       if (bootstrapped) {
         let terminal = runtime.resumeAction()
@@ -1658,6 +1676,8 @@ export class RuntimeRunner {
                   new Map(submission.spec.nodes.flatMap((node, index) => node.context
                     ? [[`wf-node${index}`, node.context] as const]
                     : [])),
+                  submission.spec.nodes,
+                  ((observations.find(observation => observation.kind === "workflow_nodes_submitted") as { base?: number } | undefined)?.base ?? 0),
                 ),
                 submission.spec,
                 observations,
@@ -1901,6 +1921,8 @@ export class RuntimeRunner {
     runtime: CanonicalRunnerRuntime,
     seedOutputs?: Map<string, string>,
     contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
+    workflowNodes?: import("../types/agent.js").WorkflowNodeSpec[],
+    workflowNodeBase = 0,
   ): Promise<WorkflowOutcome> {
     let observations = initial
     const orchestrator = this.opts.subAgentOrchestrator ?? defaultSubAgentOrchestrator
@@ -1939,6 +1961,12 @@ export class RuntimeRunner {
     if (initialAction.kind !== "spawn_workflow") {
       throw new Error(`workflow load returned unexpected kernel effect: ${initialAction.kind}`)
     }
+    const workflowAgentTargets = new Map<string, string>()
+    if (workflowNodes?.length) {
+      workflowNodes.forEach((node, index) => {
+        if (node.agent) workflowAgentTargets.set(`wf-node${workflowNodeBase + index}`, node.agent)
+      })
+    }
     let nodes = initialAction.nodes.map(workflowSpawnNodeFromKernel)
     let budget = initialAction.budget ? workflowBudgetFromKernel(initialAction.budget) : undefined
     observations = await acceptSpawn(initialAction)
@@ -1976,7 +2004,7 @@ export class RuntimeRunner {
       let results: SubAgentResult[]
       try {
         results = await Promise.all(
-          nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs, controllers.get(node.agent_id)?.signal, contextPolicies)),
+          nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs, controllers.get(node.agent_id)?.signal, contextPolicies, workflowAgentTargets)),
         )
       } catch (error) {
         batchState.settled = true
@@ -2040,6 +2068,10 @@ export class RuntimeRunner {
             | { base?: number }
             | undefined
           if (submitted) {
+            const base = typeof submitted.base === "number" ? submitted.base : 0
+            result.submittedNodes.forEach((node, index) => {
+              if (node.agent) workflowAgentTargets.set(`wf-node${base + index}`, node.agent)
+            })
             await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodesSubmittedEvent({
               turn: runtime.turn(),
               nodes: result.submittedNodes.map(workflowNodeSpecToKernel),

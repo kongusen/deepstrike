@@ -31,6 +31,38 @@ const fanoutSpec: WorkflowSpec = {
 }
 
 describe("runWorkflow bootstraps standalone (no active parent run)", () => {
+  it("resolves a workflow node's declared agent at the host boundary", async () => {
+    const resolved: string[] = []
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      subAgentOrchestrator: {
+        async run() {
+          throw new Error("workflow target resolver was bypassed")
+        },
+      } as never,
+      workflowAgentResolver: async (name: string, context: { spec: { identity: { agentId: string } } }) => {
+        resolved.push(name)
+        return {
+          agentId: context.spec.identity.agentId,
+          result: {
+            termination: "completed",
+            finalMessage: { role: "assistant", content: `handled by ${name}`, toolCalls: [] },
+            turnsUsed: 1,
+            totalTokensUsed: 1,
+          },
+        }
+      },
+    } as never)
+
+    const outcome = await runner.runWorkflow({
+      nodes: [{ task: "use the reviewer", role: "verify", agent: "reviewer" }],
+    }, { sessionId: "workflow-target" })
+
+    expect(resolved).toEqual(["reviewer"])
+    expect(outcome.outputs["wf-node0"]).toBe("handled by reviewer")
+  })
+
   it("runs sequential and parallel dynamic submissions through one kernel operation", async () => {
     const sessionLog = new InMemorySessionLog()
     let calls = 0

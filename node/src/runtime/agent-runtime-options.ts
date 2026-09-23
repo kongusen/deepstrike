@@ -5,6 +5,8 @@ import type { RuntimeOptions } from "./runner.js"
 import { schemaInstruction } from "./output-schema.js"
 import type { AgentDeclaration, AgentHostBindings } from "./agent-declaration.js"
 import type { Skill } from "../skill.js"
+import type { SubAgentRunContext } from "./sub-agent-orchestrator.js"
+import type { SubAgentResult } from "../types/agent.js"
 
 /** Resources already resolved by the facade; connection ownership stays with the Agent. */
 export type AgentRuntimeResources = Pick<RuntimeOptions, "provider" | "executionPlane" | "sessionLog"> & {
@@ -54,6 +56,26 @@ export function buildAgentRuntimeOptions(
     // Host facilities may override catalogs, but must not discard the merged Agent guardrails.
     ...(governancePolicy ? { governancePolicy } : {}),
     ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
+    ...(binding?.resolveAgent ? {
+      workflowAgentResolver: async (name: string, context: SubAgentRunContext): Promise<SubAgentResult | undefined> => {
+        const target = await binding.resolveAgent?.(name)
+        if (!target) return undefined
+        const result = await target.run(context.spec.goal, {
+          session: { id: context.spec.identity.sessionId },
+          ...(context.abortSignal ? { signal: context.abortSignal } : {}),
+        })
+        return {
+          agentId: context.spec.identity.agentId,
+          result: {
+            termination: result.status === "completed" ? "completed"
+              : result.status === "cancelled" ? "user_abort" : "error",
+            finalMessage: { role: "assistant", content: result.output, toolCalls: [] },
+            turnsUsed: 0,
+            totalTokensUsed: result.usage?.totalTokens ?? 0,
+          },
+        }
+      },
+    } : {}),
   }
 }
 
