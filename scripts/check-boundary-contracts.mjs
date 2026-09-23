@@ -4,8 +4,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 import ts from "typescript"
+import { readCanonicalVersion } from "./release-version.mjs"
 
 const root = resolve(new URL("..", import.meta.url).pathname)
+const canonicalVersion = readCanonicalVersion(root)
 
 function unwrapExpression(expression) {
   if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression) || ts.isParenthesizedExpression(expression)) return unwrapExpression(expression.expression)
@@ -190,7 +192,7 @@ function generateManifest(checker, declaration, signature, fields, protocol) {
   const sourceType = checker.getTypeOfSymbolAtLocation(signature.parameters[0], declaration.parameters[0])
   return {
     id: protocol.id,
-    version: "0.2.74",
+    version: canonicalVersion,
     protocol: {
       family: protocol.family,
       direction: protocol.direction,

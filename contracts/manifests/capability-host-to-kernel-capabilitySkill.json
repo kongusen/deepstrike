@@ -1,6 +1,6 @@
 {
   "id": "capability.host-to-kernel.capabilitySkill",
-  "version": "0.2.74",
+  "version": "0.2.73",
   "protocol": {
     "family": "host-to-kernel",
     "direction": "project",

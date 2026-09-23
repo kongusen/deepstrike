@@ -1,6 +1,6 @@
 {
   "id": "workflow.host-to-kernel.workflowSpecToKernel",
-  "version": "0.2.74",
+  "version": "0.2.73",
   "protocol": {
     "family": "host-to-kernel",
     "direction": "project",
