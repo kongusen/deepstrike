@@ -39,6 +39,8 @@ export type {
 } from "./dynamic.js"
 export { DynamicWorkflowController } from "./dynamic-controller.js"
 export type { DynamicWorkflowSubmission } from "./dynamic-controller.js"
+export { DynamicWorkflowScriptError, DynamicWorkflowVmExecutor } from "./dynamic-vm.js"
+export type { DynamicWorkflowVmOptions } from "./dynamic-vm.js"
 export {
   FileDynamicWorkflowReplayStore,
   InMemoryDynamicWorkflowReplayStore,
