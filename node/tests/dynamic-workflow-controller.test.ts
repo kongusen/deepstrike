@@ -1,4 +1,5 @@
 import { DynamicWorkflowController } from "../src/workflow/dynamic-controller.js"
+import { DynamicWorkflowApprovalError } from "../src/workflow/dynamic.js"
 import type { WorkflowOutcome, WorkflowSpec } from "../src/types/agent.js"
 
 function outcome(spec: WorkflowSpec, suffix: string): WorkflowOutcome {
@@ -59,5 +60,23 @@ describe("DynamicWorkflowController", () => {
 
     await expect(runPromise).rejects.toThrow("kernel unavailable")
     await expect(controller.nextSubmission()).resolves.toBeUndefined()
+  })
+
+  it("requires approval before creating a submission and emits ordered lifecycle events", async () => {
+    const controller = new DynamicWorkflowController()
+    const events: string[] = []
+    const runPromise = controller.start(ctx => ctx.agent("must not run"), {
+      approval: () => false,
+      onLifecycleEvent: event => events.push(event.kind),
+    })
+
+    await expect(runPromise).rejects.toBeInstanceOf(DynamicWorkflowApprovalError)
+    await expect(controller.nextSubmission()).resolves.toBeUndefined()
+    expect(events).toEqual([
+      "run_started",
+      "approval_requested",
+      "approval_resolved",
+      "run_cancelled",
+    ])
   })
 })

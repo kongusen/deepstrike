@@ -56,6 +56,31 @@ describe("dynamic workflow replay", () => {
     expect(calls).toEqual(["inspect", "inspect again"])
   })
 
+  it("returns lifecycle events for approved runs and phases", async () => {
+    const events: string[] = []
+    const executor = new DynamicWorkflowExecutor(hostWithCalls([]), {
+      runId: "lifecycle-1",
+      onLifecycleEvent: event => events.push(event.kind),
+    })
+    const run = await executor.run(async ctx => ctx.phase("inspect", async () => {
+      ctx.log("starting")
+      return (await ctx.agent("inspect", { label: "inspect" }))?.text
+    }))
+
+    expect(run.events.map(event => event.kind)).toEqual([
+      "run_started",
+      "approval_requested",
+      "approval_resolved",
+      "phase_started",
+      "log",
+      "agent_started",
+      "agent_completed",
+      "phase_completed",
+      "run_completed",
+    ])
+    expect(events).toEqual(run.events.map(event => event.kind))
+  })
+
   it("reuses unchanged fanout items and submits only the changed suffix", async () => {
     const store = new InMemoryDynamicWorkflowReplayStore()
     const batches: string[][] = []

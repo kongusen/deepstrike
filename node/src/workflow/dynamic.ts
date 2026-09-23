@@ -45,6 +45,27 @@ export interface DynamicWorkflowMeta {
   sizeGuideline?: DynamicWorkflowSizeGuideline
 }
 
+export type DynamicWorkflowLifecycleEvent =
+  | { kind: "run_started"; runId: string }
+  | { kind: "approval_requested"; runId: string }
+  | { kind: "approval_resolved"; runId: string; approved: boolean; reason?: string }
+  | { kind: "phase_started"; runId: string; name: string }
+  | { kind: "phase_completed"; runId: string; name: string }
+  | { kind: "phase_failed"; runId: string; name: string; error: string }
+  | { kind: "agent_started"; runId: string; nodeId: string; promptFingerprint: string }
+  | { kind: "agent_reused"; runId: string; nodeId: string; promptFingerprint: string }
+  | { kind: "agent_completed"; runId: string; nodeId: string; status: WorkflowNodeStatus; termination?: string }
+  | { kind: "log"; runId: string; message: string; fields?: Record<string, unknown> }
+  | { kind: "run_completed"; runId: string }
+  | { kind: "run_failed"; runId: string; error: string }
+  | { kind: "run_cancelled"; runId: string; reason: string }
+
+export interface DynamicWorkflowApprovalRequest<TArgs extends Record<string, unknown> = Record<string, unknown>> {
+  runId: string
+  args: Readonly<TArgs>
+  limits: Required<DynamicWorkflowLimits>
+}
+
 /** A persisted script artifact. Execution of source text is intentionally a later, isolated slice. */
 export interface DynamicWorkflowScript {
   meta: DynamicWorkflowMeta
@@ -110,6 +131,7 @@ export interface DynamicWorkflowRun<T> {
   runId: string
   value: T
   progress: DynamicWorkflowProgress
+  events: readonly DynamicWorkflowLifecycleEvent[]
 }
 
 export interface DynamicWorkflowContext<TArgs extends Record<string, unknown> = Record<string, unknown>> {
@@ -129,6 +151,8 @@ export interface DynamicWorkflowRunOptions<TArgs extends Record<string, unknown>
   limits?: DynamicWorkflowLimits
   onProgress?: (progress: DynamicWorkflowProgress) => void
   replayStore?: DynamicWorkflowReplayStore
+  approval?: (request: DynamicWorkflowApprovalRequest<TArgs>) => boolean | Promise<boolean> | { approved: boolean; reason?: string } | Promise<{ approved: boolean; reason?: string }>
+  onLifecycleEvent?: (event: DynamicWorkflowLifecycleEvent) => void
 }
 
 export function dynamicAgentTask(prompt: string, options?: DynamicWorkflowAgentOptions): DynamicWorkflowAgentRequest {
@@ -142,6 +166,15 @@ export class DynamicWorkflowLimitError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "DynamicWorkflowLimitError"
+  }
+}
+
+export class DynamicWorkflowApprovalError extends Error {
+  readonly code = "DYNAMIC_WORKFLOW_APPROVAL_REQUIRED"
+
+  constructor(message = "dynamic workflow execution was not approved") {
+    super(message)
+    this.name = "DynamicWorkflowApprovalError"
   }
 }
 
@@ -180,6 +213,12 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
 
   async run<T>(program: (context: DynamicWorkflowContext<TArgs>) => Promise<T> | T): Promise<DynamicWorkflowRun<T>> {
     const runId = this.options.runId ?? `dw-${crypto.randomUUID()}`
+    const events: DynamicWorkflowLifecycleEvent[] = []
+    const emitLifecycle = (event: DynamicWorkflowLifecycleEvent): void => {
+      events.push(event)
+      this.options.onLifecycleEvent?.(event)
+    }
+    emitLifecycle({ kind: "run_started", runId })
     const progress: DynamicWorkflowProgress = {
       runId,
       status: "planning",
@@ -198,14 +237,29 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       runId,
       this.options.replayStore,
       this.options.onProgress,
+      emitLifecycle,
     )
+    emitLifecycle({ kind: "approval_requested", runId })
+    const approval = this.options.approval
+      ? await this.options.approval({ runId, args: context.args, limits: this.limits })
+      : true
+    const approved = typeof approval === "boolean" ? approval : approval.approved
+    const reason = typeof approval === "boolean" ? undefined : approval.reason
+    emitLifecycle({ kind: "approval_resolved", runId, approved, ...(reason ? { reason } : {}) })
+    if (!approved) {
+      context.setStatus("cancelled")
+      emitLifecycle({ kind: "run_cancelled", runId, reason: reason ?? "approval denied" })
+      throw new DynamicWorkflowApprovalError(reason ?? undefined)
+    }
     context.setStatus("running")
     try {
       const value = await program(context)
       context.setStatus("completed")
-      return { runId, value, progress }
+      emitLifecycle({ kind: "run_completed", runId })
+      return { runId, value, progress, events }
     } catch (error) {
       context.setStatus("failed")
+      emitLifecycle({ kind: "run_failed", runId, error: error instanceof Error ? error.message : String(error) })
       throw error
     }
   }
@@ -227,6 +281,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     private readonly runId: string,
     private readonly replayStore: DynamicWorkflowReplayStore | undefined,
     private readonly onProgress?: (progress: DynamicWorkflowProgress) => void,
+    private readonly emitLifecycle?: (event: DynamicWorkflowLifecycleEvent) => void,
   ) {
     this.args = snapshotArgs(args)
   }
@@ -274,14 +329,17 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     const phase: DynamicWorkflowPhaseProgress = { name, status: "running", agentsStarted: 0, agentsCompleted: 0 }
     this.progress.phases.push(phase)
     this.phaseStack.push(phase)
-    this.progress.phase = name
+      this.progress.phase = name
+    this.emitLifecycle?.({ kind: "phase_started", runId: this.runId, name })
     this.emit()
     try {
       const result = await body()
       phase.status = "completed"
+      this.emitLifecycle?.({ kind: "phase_completed", runId: this.runId, name })
       return result
     } catch (error) {
       phase.status = "failed"
+      this.emitLifecycle?.({ kind: "phase_failed", runId: this.runId, name, error: error instanceof Error ? error.message : String(error) })
       throw error
     } finally {
       this.phaseStack.pop()
@@ -292,6 +350,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
 
   log(message: string, fields?: Record<string, unknown>): void {
     this.progress.logs.push({ message, ...(fields ? { fields: { ...fields } } : {}), timestamp: Date.now() })
+    this.emitLifecycle?.({ kind: "log", runId: this.runId, message, ...(fields ? { fields: { ...fields } } : {}) })
     this.emit()
   }
 
@@ -315,6 +374,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     const promptFingerprint = fingerprintDynamicWorkflowInvocation(prompt, options)
     const cached = await this.replayStore?.find(this.runId, nodeId, promptFingerprint)
     if (cached) {
+      this.emitLifecycle?.({ kind: "agent_reused", runId: this.runId, nodeId, promptFingerprint })
       this.progress.agentsReused += 1
       this.progress.agentsCompleted += 1
       const currentPhase = this.phaseStack.at(-1)
@@ -337,6 +397,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       )
     }
     this.agentCount += 1
+    this.emitLifecycle?.({ kind: "agent_started", runId: this.runId, nodeId, promptFingerprint })
     await this.acquireAgentSlot()
     this.progress.agentsStarted = this.agentCount
     this.progress.activeAgents += 1
@@ -373,6 +434,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           ...(node?.termination ? { termination: node.termination } : {}),
         })
       }
+      this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status: node?.status ?? "completed_partial", ...(node?.termination ? { termination: node.termination } : {}) })
       this.progress.agentsCompleted += 1
       if (currentPhase) currentPhase.agentsCompleted += 1
       return {
@@ -435,6 +497,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         currentPhase.agentsCompleted += replayed.length
       }
       this.emit()
+      for (const entry of replayed) this.emitLifecycle?.({ kind: "agent_reused", runId: this.runId, nodeId: entry.nodeId, promptFingerprint: entry.promptFingerprint })
     }
     if (misses.length === 0) {
       return cached.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
@@ -470,6 +533,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
             ...(node.termination ? { termination: node.termination } : {}),
           })
         }
+        this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId: entry.nodeId, status: node?.status ?? "completed_partial", ...(node?.termination ? { termination: node.termination } : {}) })
         this.progress.agentsCompleted += 1
         if (currentPhase) currentPhase.agentsCompleted += 1
       }
