@@ -64,6 +64,26 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
     expect((runner as never as { activeKernel: unknown }).activeKernel).toBeNull()
   })
 
+  it("surfaces a kernel submit-nodes quota denial as a typed null result", async () => {
+    let calls = 0
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      resourceQuota: { maxWorkflowNodes: 1 },
+      subAgentOrchestrator: stubOrchestrator(() => { calls++ }) as never,
+    } as never)
+
+    const run = await runner.runDynamicWorkflow(async ctx => [
+      await ctx.agent("admitted", { label: "admitted" }),
+      await ctx.agent("denied", { label: "denied" }),
+    ])
+
+    expect(run.value[0]?.nodeId).toBe("admitted")
+    expect(run.value[1]).toBeNull()
+    expect(calls).toBe(1)
+    expect((runner as never as { activeKernel: unknown }).activeKernel).toBeNull()
+  })
+
   it("runFanout executes the public system-only/full template instead of returning empty success", async () => {
     const provider: LLMProvider = {
       async complete(): Promise<ModelMessage> {

@@ -933,7 +933,10 @@ fn a_dynamic_workflow_root_stays_open_until_host_closes_it() {
 
     let started = runtime.submit(&dynamic_workflow_start("dynamic-start", 1_700_000_001_000));
     assert_eq!(started.step.root_kind, Some(RootKind::Workflow));
-    assert!(started.published_effects().is_empty(), "dynamic root waits for its first append");
+    assert!(
+        started.published_effects().is_empty(),
+        "dynamic root waits for its first append"
+    );
     assert!(runtime.tx.terminal().is_none());
 
     let appended = runtime.submit(&control(
@@ -958,7 +961,10 @@ fn a_dynamic_workflow_root_stays_open_until_host_closes_it() {
         "dynamic result",
     ));
     assert!(completed.published_effects().is_empty());
-    assert!(runtime.tx.terminal().is_none(), "the script may append another batch after this result");
+    assert!(
+        runtime.tx.terminal().is_none(),
+        "the script may append another batch after this result"
+    );
 
     let closed = runtime.submit(&control(
         "dynamic-close",
@@ -967,6 +973,85 @@ fn a_dynamic_workflow_root_stays_open_until_host_closes_it() {
     ));
     assert!(closed.step.disposition.is_terminal());
     assert!(runtime.tx.terminal().is_some());
+}
+
+#[test]
+fn a_dynamic_host_append_reports_submit_nodes_quota_rejections() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config());
+
+    let started = runtime.submit(&dynamic_workflow_start(
+        "dynamic-quota-start",
+        1_700_000_001_000,
+    ));
+    let first = runtime.submit(&control(
+        "dynamic-quota-first",
+        1_700_000_002_000,
+        HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
+            nodes: vec![wire_node("first", "first", &[])],
+        }),
+    ));
+    let first_effect = sole_effect(&first);
+    runtime.submit(&spawned(
+        "dynamic-quota-ack-first",
+        1_700_000_003_000,
+        &first_effect.effect_id,
+        &["wf-node0"],
+    ));
+    runtime.submit(&child_done(
+        "dynamic-quota-done-first",
+        1_700_000_004_000,
+        "wf-node0",
+        "first result",
+    ));
+
+    let second = runtime.submit(&control(
+        "dynamic-quota-second",
+        1_700_000_005_000,
+        HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
+            nodes: vec![
+                wire_node("second", "second", &[]),
+                wire_node("third", "third", &[]),
+            ],
+        }),
+    ));
+    let second_effect = sole_effect(&second);
+    runtime.submit(&spawned(
+        "dynamic-quota-ack-second",
+        1_700_000_006_000,
+        &second_effect.effect_id,
+        &["wf-node1", "wf-node2"],
+    ));
+    runtime.submit(&child_done(
+        "dynamic-quota-done-second",
+        1_700_000_007_000,
+        "wf-node1",
+        "second result",
+    ));
+    runtime.submit(&child_done(
+        "dynamic-quota-done-third",
+        1_700_000_008_000,
+        "wf-node2",
+        "third result",
+    ));
+
+    let denied = runtime.submit(&control(
+        "dynamic-quota-denied",
+        1_700_000_009_000,
+        HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
+            nodes: vec![wire_node("fourth", "fourth", &[])],
+        }),
+    ));
+    assert!(denied.published_effects().is_empty());
+    assert_eq!(
+        rejections(&runtime),
+        vec![(
+            "submit_workflow_nodes".to_string(),
+            None,
+            "submit_nodes would grow workflow to 4 nodes (max 3)".to_string(),
+        )]
+    );
+    assert_eq!(started.step.root_kind, Some(RootKind::Workflow));
 }
 
 #[test]

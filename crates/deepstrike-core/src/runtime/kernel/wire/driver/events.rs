@@ -451,7 +451,13 @@ impl CanonicalOperationDriver {
         };
         let core_spec = build_core_spec(&wire_spec)?;
         let node_ids = wire_node_ids(&wire_spec);
-        let action = self.engine_mut()?.submit_workflow(core_spec, None);
+        // A host append is the explicit append operation, even though the underlying DAG is the
+        // same one used by model-authored workflow growth. Keeping the `SubmitNodes` gate and
+        // `submit_workflow_nodes` label here preserves the kernel→host action contract: a quota
+        // denial must come back as a dynamic append rejection, not as a fresh workflow start.
+        let action = self
+            .engine_mut()?
+            .submit_workflow_nodes(core_spec.nodes, None);
         let appended = self.engine().is_some_and(|engine| {
             engine.observations.iter().any(|observation| {
                 matches!(
