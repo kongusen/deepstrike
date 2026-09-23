@@ -198,6 +198,10 @@ const run = await dynamic.run(async ({ args, phase, pipeline, agent, log }) => {
 one call accepts at most 4096 items and one run at most 1000 agents. Kernel quota, governance, and
 cancellation remain authoritative.
 
+With a fixed `runId` and `replayStore`, completed single-agent invocations are reused when their
+prompt and options fingerprint is unchanged; changing the prompt runs it again. Kernel replay of
+failed suffixes and dependent descendants is a later slice.
+
 When fan-out prompts can be constructed up front, `parallelAgents` submits declarative requests as
 kernel workflow batches:
 

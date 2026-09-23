@@ -54,7 +54,7 @@ This alignment targets the product mechanism described in Anthropic's official C
 
 1. A `FileDynamicWorkflowStore` now saves and validates a `meta + source` artifact, but there is still no isolated script runtime exposing `agent`, `parallel`, `pipeline`, `phase`, `log`, and `args` to source text.
 2. Session events record node completion, but there is no phase-level progress view with agent counts, tokens, elapsed time, and status.
-3. Journal recovery is not yet the documented script replay rule: reuse completed results, rerun the first changed prompt and its descendants, rerun failed nodes and later nodes, and refuse a silent restart when saved results are missing.
+3. Invocation fingerprints and pluggable replay stores now reuse a completed result for the same `runId + nodeId + prompt/options`, but kernel workflow replay still lacks failed-suffix invalidation, dependent descendants, and typed refusal when artifacts are missing.
 4. Workflow launch has no pre-run approval card, raw-script inspection path, or advisory large-run warning.
 5. `WorkflowNodeSpec.agent` is host metadata and `workflowNodeSpecToKernel` intentionally drops it. A dynamic script must resolve a target Agent at the host spawn boundary instead of inventing a kernel field.
 6. Kernel quotas exist, but the article-level workflow contract does not yet model the default 16 concurrency, 256 ceiling, 4096 items per `parallel`/`pipeline`, 1000 agents per run, or size-guideline warnings.
@@ -69,5 +69,6 @@ The branch now adds a provider-neutral `DynamicWorkflowExecutor` in `node/src/wo
 - `phase`, `log`, an immutable `args` snapshot, and typed progress;
 - host guardrails for 1000 agents per run and 4096 items per batch, with kernel quotas remaining authoritative;
 - `DynamicWorkflowScript` metadata/source types as the stable input contract for persistence and isolated execution.
+- `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` and invocation fingerprints as the replay cache boundary.
 
 This slice deliberately does not execute arbitrary source text, grant scripts direct filesystem or shell access, or claim replay parity. It fixes the public vocabulary and kernel entry point first, then adds an isolated script VM and durable replay without creating a second execution authority.

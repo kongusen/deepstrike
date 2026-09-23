@@ -272,7 +272,8 @@ The next workflow checkpoint is also complete: `spawn_workflow` actions now expo
 
 ### Slice E：确定性 replay 与结果复用
 
-- [ ] 持久化每个 agent invocation key、prompt fingerprint、输入依赖、结果和 terminal status。
+- [x] 增加 invocation fingerprint、可插拔 replay store，以及内存/文件实现；相同 run/node/prompt/options 会复用完成结果。
+- [ ] 持久化输入依赖和 terminal status，并把 replay 记录接入 kernel workflow/session log。
 - [ ] fingerprint 未变时复用完成结果；第一个变更/失败 invocation 及其后继重新执行。
 - [ ] run artifact 或 saved result 缺失时拒绝 relaunch，resume 不得静默从头开始。
 

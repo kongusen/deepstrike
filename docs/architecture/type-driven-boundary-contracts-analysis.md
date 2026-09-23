@@ -502,7 +502,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 
 1. **没有脚本运行时**：现在已有 `FileDynamicWorkflowStore` 保存并校验 `meta + source` artifact，但还没有在隔离环境中执行它，也没有提供 `agent/parallel/pipeline/phase/log/args` 的源码执行上下文。
 2. **没有动态运行进度模型**：现有 session events 能记录节点完成，但没有按 phase 聚合 agent 数、token、耗时和当前状态的统一查询面。
-3. **恢复语义不等价**：现有 workflow 能从 journal/session log 恢复 DAG；尚未按“已完成结果复用、首个 prompt 变化及其后继重跑、失败节点及后继重跑、缺失结果拒绝静默重启”的脚本重放规则建模。
+3. **恢复语义不等价**：现在已有可插拔的 invocation fingerprint 和 replay store，能复用同一 `runId + nodeId + prompt/options` 的完成结果；但还没有把失败后缀、依赖后继和缺失 artifact 的拒绝语义接入 kernel workflow replay。
 4. **启动审批与成本提示缺失**：kernel governance 能拒绝 effect，但工作流启动前还没有展示阶段、原始脚本、规模提示并等待一次性批准的控制面。
 5. **边界仍有一个真实缺陷**：`WorkflowNodeSpec.agent` 是 host metadata，`workflowNodeSpecToKernel` 会明确丢弃它，动态脚本调用必须先通过 host spawn boundary 解析目标 Agent，不能把它伪装成 kernel 字段。
 6. **限制没有形成独立的 workflow contract**：kernel 已有 `max_concurrent_subagents`、`max_workflow_nodes` 等 quota，但尚未有文章语义对应的单次 `parallel/pipeline` 4096 项、默认 16 并发、单次运行 1000 agents 和 size guideline/large warning 模型。
@@ -518,5 +518,6 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 - `phase(name, body)`、`log(message, fields)`、`args` 快照和 typed progress；
 - 单次运行 1000 agents、单批 4096 items 的 host guardrail；kernel quota 仍是最终权威；
 - `DynamicWorkflowScript` 元数据/源码类型，为后续保存与隔离执行留下稳定输入契约。
+- `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` 和 invocation fingerprint，为后续 replay 提供结果缓存边界。
 
 这一步刻意不执行任意源码、不允许 workflow 脚本直接读文件或 shell，也不声称已经实现脚本重放。这样可以先把动态工作流的公共词汇与 kernel 入口固定下来，再引入隔离 VM 和持久化 replay，而不会复制一套绕过 kernel 的执行器。

@@ -191,6 +191,9 @@ const run = await dynamic.run(async ({ args, phase, pipeline, agent, log }) => {
 `parallel` 保持输入顺序并受默认 16 并发限制，`pipeline` 顺序执行；单批最多 4096 项，
 单次运行最多 1000 个 agent。kernel 自己的 quota、治理和取消路径仍然是最终裁决。
 
+传入固定的 `runId` 和 `replayStore` 后，完成的单 agent invocation 会按 prompt 与 options
+指纹复用；prompt 变化会重新执行。失败后缀和依赖后继的 kernel replay 仍在后续迭代。
+
 如果 fan-out 的任务可以先生成 prompt，可以使用 `parallelAgents` 将一批请求直接提交给
 kernel workflow：
 

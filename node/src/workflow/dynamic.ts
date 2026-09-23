@@ -5,6 +5,10 @@ import type {
   WorkflowOutcome,
   WorkflowSpec,
 } from "../types/agent.js"
+import {
+  fingerprintDynamicWorkflowInvocation,
+  type DynamicWorkflowReplayStore,
+} from "./dynamic-replay.js"
 
 /** The sizing hint sent to a workflow author. It is guidance, not a hard agent count. */
 export type DynamicWorkflowSizeGuideline = "small" | "medium" | "large" | "unrestricted"
@@ -67,6 +71,7 @@ export interface DynamicWorkflowProgress {
   agentsStarted: number
   agentsCompleted: number
   activeAgents: number
+  agentsReused: number
   phases: DynamicWorkflowPhaseProgress[]
   logs: DynamicWorkflowLogEntry[]
 }
@@ -123,6 +128,7 @@ export interface DynamicWorkflowRunOptions<TArgs extends Record<string, unknown>
   args?: TArgs
   limits?: DynamicWorkflowLimits
   onProgress?: (progress: DynamicWorkflowProgress) => void
+  replayStore?: DynamicWorkflowReplayStore
 }
 
 export function dynamicAgentTask(prompt: string, options?: DynamicWorkflowAgentOptions): DynamicWorkflowAgentRequest {
@@ -180,6 +186,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       agentsStarted: 0,
       agentsCompleted: 0,
       activeAgents: 0,
+      agentsReused: 0,
       phases: [],
       logs: [],
     }
@@ -188,6 +195,8 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       this.limits,
       progress,
       this.options.args ?? {} as TArgs,
+      runId,
+      this.options.replayStore,
       this.options.onProgress,
     )
     context.setStatus("running")
@@ -215,6 +224,8 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     private readonly limits: Required<DynamicWorkflowLimits>,
     readonly progress: DynamicWorkflowProgress,
     args: TArgs,
+    private readonly runId: string,
+    private readonly replayStore: DynamicWorkflowReplayStore | undefined,
     private readonly onProgress?: (progress: DynamicWorkflowProgress) => void,
   ) {
     this.args = snapshotArgs(args)
@@ -306,6 +317,25 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       )
     }
     const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
+    const promptFingerprint = fingerprintDynamicWorkflowInvocation(prompt, options)
+    const cached = await this.replayStore?.find(this.runId, nodeId, promptFingerprint)
+    if (cached) {
+      this.progress.agentsReused += 1
+      this.progress.agentsCompleted += 1
+      const currentPhase = this.phaseStack.at(-1)
+      if (currentPhase) {
+        currentPhase.agentsStarted += 1
+        currentPhase.agentsCompleted += 1
+      }
+      this.emit()
+      return {
+        value: options.outputSchema ? parseStructuredValue<T>(cached.text) : cached.text as T,
+        text: cached.text,
+        nodeId: cached.nodeId,
+        status: cached.status,
+        ...(cached.termination ? { termination: cached.termination } : {}),
+      }
+    }
     this.agentCount += 1
     await this.acquireAgentSlot()
     this.progress.agentsStarted = this.agentCount
@@ -334,6 +364,15 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       const node = outcome.nodeOutcomes.find(candidate => candidate.nodeId === nodeId) ?? outcome.nodeOutcomes[0]
       const text = node?.output?.content ?? Object.values(outcome.outputs)[0] ?? ""
       const value = options.outputSchema ? parseStructuredValue<T>(text) : (text as T)
+      if (node?.status === "completed" || node?.status === "completed_partial") {
+        await this.replayStore?.save(this.runId, {
+          nodeId,
+          promptFingerprint,
+          text,
+          status: node?.status ?? "completed_partial",
+          ...(node?.termination ? { termination: node.termination } : {}),
+        })
+      }
       this.progress.agentsCompleted += 1
       if (currentPhase) currentPhase.agentsCompleted += 1
       return {

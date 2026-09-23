@@ -34,6 +34,15 @@ export type {
   DynamicWorkflowSizeGuideline,
   DynamicWorkflowStatus,
 } from "./dynamic.js"
+export {
+  FileDynamicWorkflowReplayStore,
+  InMemoryDynamicWorkflowReplayStore,
+  fingerprintDynamicWorkflowInvocation,
+} from "./dynamic-replay.js"
+export type {
+  DynamicWorkflowInvocationRecord,
+  DynamicWorkflowReplayStore,
+} from "./dynamic-replay.js"
 
 export {
   submitWorkflowNodesTool,
