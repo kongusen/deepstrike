@@ -25,7 +25,7 @@ export type RollbackReason =
 export type SessionEvent =
   // P4-S1: `route` is the runner-construction ResolvedProviderRoute snapshot (P4 §0.2: one
   // fixed route per run today). Older logs simply lack it — C7 degrades, never fails.
-  | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: ContentPart[]; route?: ResolvedProviderRoute }
+  | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: ContentPart[]; route?: ResolvedProviderRoute; metadata?: Record<string, unknown> }
   // P3-S2 + P4-S1: `effect_id` (G4) + `invocation_id` (P4 §3) join this evidence projection to
   // the journal effect chain; `wire_evidence` (D1) is the sole ProviderWireEvidence bundle.
   | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }

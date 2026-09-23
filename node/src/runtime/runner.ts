@@ -377,6 +377,8 @@ export interface RuntimeOptions {
   /** Host-owned workflow target resolution. The kernel carries only scheduling data; a public
    * workflow node's `agent` binding is resolved here before its child run starts. */
   workflowAgentResolver?: (name: string, context: SubAgentRunContext) => Promise<SubAgentResult | undefined> | SubAgentResult | undefined
+  /** Host metadata attached to the durable run-start fact. */
+  runMetadata?: Record<string, unknown>
   /** M3/G4 worktree isolation: when set, an `isolation: "worktree"` sub-agent runs inside a git
    *  worktree this manager creates (and removes on completion), injected as `RunContext.cwd`.
    *  Undefined ⇒ worktree nodes fall back to the inherited plane (no isolation). */
@@ -1537,6 +1539,7 @@ export class RuntimeRunner {
           criteria: [],
           agent_id: this.opts.agentId,
           route: this.providerRoute,
+          ...(this.opts.runMetadata ? { metadata: this.opts.runMetadata } : {}),
         })
         await this.initializeWorkflowKernel(sessionId, runId, groupBudgetScope)
       }
@@ -1648,6 +1651,7 @@ export class RuntimeRunner {
         criteria: [],
         agent_id: this.opts.agentId,
         route: this.providerRoute,
+        ...(this.opts.runMetadata ? { metadata: this.opts.runMetadata } : {}),
       })
       await this.initializeWorkflowKernel(sessionId, runId, groupBudgetScope)
       const runtime = this.activeKernel!
@@ -2235,6 +2239,7 @@ export class RuntimeRunner {
         system_prompt: this.composedSystemPrompt,
         ...(attachments ? { attachments } : {}),
         route: this.providerRoute,
+        ...(this.opts.runMetadata ? { metadata: this.opts.runMetadata } : {}),
       })
     }
     yield* this.execute(

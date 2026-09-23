@@ -41,6 +41,7 @@ export interface AgentRunOptions {
   maxTurns?: number
   signal?: AbortSignal
   metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
   onPermissionRequest?: RuntimeOptions["onPermissionRequest"]
   /** Multimodal user input attached to this run and persisted in the session log. */
   attachments?: ContentPart[]
@@ -93,6 +94,10 @@ export interface DelegationRequest {
   goal: string
   /** Declared handoff target resolved by the host at the spawn boundary. */
   target: import("./handoff-target.js").AgentRef
+  /** Structured handoff input validated against the declared target schema. */
+  input?: unknown
+  metadata?: Record<string, unknown>
+  providerOptions?: Record<string, unknown>
 }
 
 export interface DelegationResult {
@@ -225,16 +230,21 @@ class AgentRuntimeImpl implements Agent {
   async delegate(request: DelegationRequest): Promise<DelegationResult> {
     const handoffs = this.declaration.handoffs ?? []
     const targetName = agentRefName(request.target)
-    const allowed = handoffs.some(handoff => {
-      return agentRefName(handoff.agent) === targetName
-    })
-    if (!allowed) throw new Error(`agent "${this.name}" cannot hand off to "${targetName}"`)
+    const handoff = handoffs.find(candidate => agentRefName(candidate.agent) === targetName)
+    if (!handoff) throw new Error(`agent "${this.name}" cannot hand off to "${targetName}"`)
+    if (handoff.inputSchema) {
+      const validation = validateAgainstSchema(request.input, handoff.inputSchema as Record<string, unknown>)
+      if (!validation.ok) throw new Error(`handoff input for "${targetName}" failed schema validation: ${validation.errors.join("; ")}`)
+    }
     if (!this.bindings.runtimeBinding?.resolveAgent) {
       throw new Error(`agent "${this.name}" requires a host target resolver`)
     }
     const target = await this.bindings.runtimeBinding.resolveAgent(targetName)
     if (!target) throw new Error(`target agent "${targetName}" is not registered`)
-    const result = await target.run(request.goal)
+    const result = await target.run(request.goal, {
+      ...(request.metadata || handoff.metadata ? { metadata: { ...(handoff.metadata ?? {}), ...(request.metadata ?? {}) } } : {}),
+      ...(request.providerOptions || handoff.providerOptions ? { providerOptions: { ...(handoff.providerOptions ?? {}), ...(request.providerOptions ?? {}) } } : {}),
+    })
     return {
       output: result.output,
       status: result.status === "completed" ? "completed" : result.status === "failed" ? "failed" : "partial",

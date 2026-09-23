@@ -519,6 +519,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 3. **Nested contract paths**：checker 按完整点路径遍历 TypeScript 类型，逐段检查 union、nullable 和数组路径，不再只验证根字段。当前 `input.context`、`input.tools` 等映射会在 `contracts:check` 中被实际解析。
 4. **Behavioral test references**：`behavioral-tests` 必须声明 `validation.testRefs`；checker 验证引用文件存在并含有测试声明。41 个 adapter 已绑定到现有 boundary/provider/workflow 测试文件，`contracts:verify` 会阻止引用漂移。
 5. **Manifest version**：契约 manifest 从根目录 `VERSION` 读取 canonical version，不再硬编码旧版本；生成产物已统一到当前版本。
+6. **Handoff payload**：allowlisted handoff 的 `inputSchema`、`metadata`、`providerOptions` 已进入 `delegate()` 的执行路径；输入在 resolver 前验证，metadata 写入目标 run 的 `run_started` 事实，provider options 作为该次目标调用的扩展覆盖。
 
 这几项修复后，声明层、host 执行层和 kernel wire 的职责边界已经分别可见。仍未完成的是跨事件关联不变量（EffectId、signal disposal、run/session 隔离）以及动态脚本的隔离 VM、恢复审批和进度查询；它们属于下一阶段的 relational contract 与 execution-control 工作，不应继续用字段映射规则代替。
 

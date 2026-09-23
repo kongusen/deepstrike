@@ -29,7 +29,9 @@ export function buildAgentRuntimeOptions(
   const governancePolicy = mergeGuardrailPolicies(binding?.runtimeOptions?.governancePolicy, declaration.guardrails)
   return {
     provider: resources.provider,
-    ...(declaration.providerOptions ? { extensions: declaration.providerOptions } : {}),
+    ...((declaration.providerOptions || options.providerOptions) ? {
+      extensions: { ...(declaration.providerOptions ?? {}), ...(options.providerOptions ?? {}) },
+    } : {}),
     ...(declaration.capabilityFilter ? { capabilityFilter: declaration.capabilityFilter as RuntimeOptions["capabilityFilter"] } : {}),
     executionPlane: resources.executionPlane,
     // Declared/bound tools start visible; the kernel still applies the capability ceiling.
@@ -56,6 +58,7 @@ export function buildAgentRuntimeOptions(
     // Host facilities may override catalogs, but must not discard the merged Agent guardrails.
     ...(governancePolicy ? { governancePolicy } : {}),
     ...(options.onPermissionRequest ? { onPermissionRequest: options.onPermissionRequest } : {}),
+    ...(options.metadata ? { runMetadata: options.metadata } : {}),
     ...(binding?.resolveAgent ? {
       workflowAgentResolver: async (name: string, context: SubAgentRunContext): Promise<SubAgentResult | undefined> => {
         const target = await binding.resolveAgent?.(name)
