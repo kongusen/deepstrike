@@ -116,7 +116,7 @@ createAgent(definition)
 
 ### 3. 声明语义在真实路径中丢失或被隐式覆盖
 
-- `lowerAgent()` 将 `providerOptions` 保存为 `extensions`（`node/src/agent-ir.ts:168-198`），但 facade 没有把 `definition.providerOptions` 放入 `RuntimeOptions.extensions`，也没有把它传给 `runner.run()`（`node/src/agent-facade.ts:405-432`、`:287-300`）。
+- 历史上的 formal IR 曾将 `providerOptions` 保存为 `extensions`，但 facade 没有把 `definition.providerOptions` 放入 `RuntimeOptions.extensions`，也没有把它传给 `runner.run()`（`node/src/agent-facade.ts:405-432`、`:287-300`）。该旁路已在 0.2.74 退役，当前 live facade adapter 负责这条语义。
 - `AgentOptions.memory` 会进入 IR，但真实 runner 只接收 `memoryStore` 和 `memoryScope`；声明式 memory 在公共 run 路径没有对应的绑定（`node/src/agent.ts:31-48`、`node/src/agent-facade.ts:421-422`）。
 - `runtimeBinding.runtimeOptions` 在 facade 已经合并 guardrail、skill 和 knowledge 后整体展开（`node/src/agent-facade.ts:407-430`），可以静默覆盖这些值。配置优先级没有单独的类型或契约表达。
 
