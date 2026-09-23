@@ -34,6 +34,8 @@ export type {
   DynamicWorkflowSizeGuideline,
   DynamicWorkflowStatus,
 } from "./dynamic.js"
+export { DynamicWorkflowController } from "./dynamic-controller.js"
+export type { DynamicWorkflowSubmission } from "./dynamic-controller.js"
 export {
   FileDynamicWorkflowReplayStore,
   InMemoryDynamicWorkflowReplayStore,
