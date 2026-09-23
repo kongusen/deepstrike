@@ -182,6 +182,8 @@ Iteration 4 is complete in the current branch. Public `remember` and `recall` no
 
 Iteration 5 is complete in the current branch. The facade tracks active runners by session id, routes `AgentSession.interrupt` only to that session, and releases the matching runner after stream, resume, or workflow completion. Concurrent different sessions remain independent, while overlapping runs for the same session are rejected explicitly so session history and result evidence cannot interleave.
 
+Iteration 6 has an initial host resolution checkpoint in the current branch. A declared handoff can provide a host `resolveAgent` binding; the resolved target Agent executes with its own runtime provider, and a missing registry entry fails explicitly. The existing workflow fallback remains available while workflow node target propagation is migrated to the same host spawn boundary.
+
 ---
 
 ## Explicit non-goals for the first slice

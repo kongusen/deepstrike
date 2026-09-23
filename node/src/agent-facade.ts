@@ -29,6 +29,8 @@ export interface AgentDefinition extends Omit<AgentOptions, "model" | "name"> {
 export interface RuntimeBinding {
   provider?: LLMProvider
   providerFor?: RuntimeOptions["providerFor"]
+  /** Host-owned target lookup used at the handoff spawn boundary. */
+  resolveAgent?: (name: string) => Agent | undefined | Promise<Agent | undefined>
   executionPlane?: ExecutionPlane
   sessionLog?: SessionLog
   runtimeOptions?: Pick<RuntimeOptions, "memoryPolicy" | "governancePolicy" | "signalSource" | "signalPolicy" | "resourceQuota" | "onPermissionRequest" | "payloadStore" | "runGroup" | "subAgentOrchestrator" | "reducers" | "initialMemory" | "skillCatalog" | "knowledgeSource" | "contextManager" | "artifactSetDigest">
@@ -236,6 +238,15 @@ class AgentRuntimeImpl implements Agent {
         return agentRefName(handoff.agent) === targetName
       })
       if (!allowed) throw new Error(`agent "${this.name}" cannot hand off to "${targetName}"`)
+      if (this.bindings.runtimeBinding?.resolveAgent) {
+        const target = await this.bindings.runtimeBinding.resolveAgent(targetName)
+        if (!target) throw new Error(`target agent "${targetName}" is not registered`)
+        const result = await target.run(request.goal)
+        return {
+          output: result.output,
+          status: result.status === "completed" ? "completed" : result.status === "failed" ? "failed" : "partial",
+        }
+      }
     }
     const spec: WorkflowSpec = {
       nodes: [{
