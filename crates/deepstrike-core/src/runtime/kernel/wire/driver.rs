@@ -1927,6 +1927,45 @@ fn build_core_spec(spec: &WireSpec) -> Result<CoreWorkflowSpec, KernelFault> {
             if let Some(output_schema) = metadata.get("output_schema") {
                 core = core.with_output_schema(output_schema.clone());
             }
+            if let Some(token_budget) = metadata.get("token_budget") {
+                let tokens = token_budget.as_u64().ok_or_else(|| {
+                    KernelFault::new(
+                        KernelFaultCode::InvalidConfig,
+                        format!(
+                            "workflow node {:?} metadata.token_budget must be a non-negative integer",
+                            node.node_id
+                        ),
+                    )
+                })?;
+                core = core.with_token_budget(tokens);
+            }
+            if let Some(max_turns) = metadata.get("max_turns") {
+                let turns = max_turns
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        KernelFault::new(
+                            KernelFaultCode::InvalidConfig,
+                            format!(
+                                "workflow node {:?} metadata.max_turns must be a 32-bit non-negative integer",
+                                node.node_id
+                            ),
+                        )
+                    })?;
+                core = core.with_max_turns(turns);
+            }
+            if let Some(max_wall_ms) = metadata.get("max_wall_ms") {
+                let millis = max_wall_ms.as_u64().ok_or_else(|| {
+                    KernelFault::new(
+                        KernelFaultCode::InvalidConfig,
+                        format!(
+                            "workflow node {:?} metadata.max_wall_ms must be a non-negative integer",
+                            node.node_id
+                        ),
+                    )
+                })?;
+                core = core.with_max_wall_ms(millis);
+            }
             // spc_008-01: fine-grained capability requests, smuggled through the same generic
             // `metadata` escape hatch `model_hint`/`output_schema` already use rather than a new
             // dedicated wire field. Fails closed on malformed input rather than silently treating

@@ -1,6 +1,8 @@
 /** Dynamic-workflow optimization batch: node-observable kernel behavior and per-node caps. */
 import { workflowNodeSpecToKernel, workflowNodeToSpec } from "../src/types/agent.js"
 import { dependencyOutputsNote } from "../src/runtime/workflow-control-flow.js"
+import { RuntimeRunner } from "../src/runtime/runner.js"
+import { InMemorySessionLog } from "../src/runtime/session-log.js"
 import { createRunner, tool } from "./runtime/helpers.js"
 import { ReactiveSession } from "../src/runtime/reactive-session.js"
 import { InMemoryGroupBudgetStore } from "../src/runtime/run-group.js"
@@ -24,6 +26,36 @@ describe("W-N2 / W-N7: spawn descriptors carry data edges and per-node caps", ()
     expect(spec.maxTurns).toBe(4)
     expect(spec.maxWallMs).toBe(30_000)
     expect(spec.tokenBudget).toBe(5000)
+  })
+
+  it("carries dynamic per-node caps through the canonical kernel to the child runner", async () => {
+    const seen: Array<{ tokenBudget?: number; maxTurns?: number; maxWallMs?: number }> = []
+    const sessionLog = new InMemorySessionLog()
+    const runner = new RuntimeRunner({
+      sessionLog,
+      maxTokens: 8000,
+      subAgentOrchestrator: {
+        async run(ctx: { spec: { tokenBudget?: number; maxTurns?: number; maxWallMs?: number }; manifest: { agent_id: string } }) {
+          seen.push({ tokenBudget: ctx.spec.tokenBudget, maxTurns: ctx.spec.maxTurns, maxWallMs: ctx.spec.maxWallMs })
+          return {
+            agentId: ctx.manifest.agent_id,
+            result: {
+              termination: "completed",
+              finalMessage: { role: "assistant", content: "bounded", toolCalls: [] },
+              turnsUsed: 1,
+              totalTokensUsed: 1,
+            },
+          }
+        },
+      } as never,
+    } as never)
+
+    const outcome = await runner.runWorkflow({
+      nodes: [{ task: "bounded", role: "implement", tokenBudget: 5000, maxTurns: 4, maxWallMs: 30_000 }],
+    }, { sessionId: "caps-debug" })
+
+    expect(outcome.nodeOutcomes[0]?.status).toBe("completed")
+    expect(seen).toEqual([{ tokenBudget: 5000, maxTurns: 4, maxWallMs: 30_000 }])
   })
 
   it("dependencyOutputsNote formats, clips, and skips empty outputs", () => {

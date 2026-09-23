@@ -688,9 +688,6 @@ function canonicalWorkflowSpec(
       if (node.trust !== undefined && node.trust !== "trusted") unsupported.push("trust")
       const depPolicy = node.dep_policy ?? node.depPolicy
       if (depPolicy !== undefined && depPolicy !== "all_success") unsupported.push("dep_policy")
-      if (node.token_budget !== undefined || node.tokenBudget !== undefined) unsupported.push("token_budget")
-      if (node.max_turns !== undefined || node.maxTurns !== undefined) unsupported.push("max_turns")
-      if (node.max_wall_ms !== undefined || node.maxWallMs !== undefined) unsupported.push("max_wall_ms")
       const schedulingFactors = node.scheduling_factors ?? node.schedulingFactors
       if (schedulingFactors !== undefined && !allowHostSchedulingFactors) unsupported.push("scheduling_factors")
       const inheritance = node.context_inheritance ?? node.contextInheritance
@@ -713,6 +710,9 @@ function canonicalWorkflowSpec(
         : []
       const modelHint = node.model_hint ?? node.modelHint
       const outputSchema = node.output_schema ?? node.outputSchema
+      const tokenBudget = node.token_budget ?? node.tokenBudget
+      const maxTurns = node.max_turns ?? node.maxTurns
+      const maxWallMs = node.max_wall_ms ?? node.maxWallMs
       const canonicalSchedulingFactors = schedulingFactors === undefined
         ? undefined
         : canonicalSchedulingFactorsForHost(schedulingFactors)
@@ -721,11 +721,15 @@ function canonicalWorkflowSpec(
         ...(node.role ? { role: node.role } : {}),
         ...(node.isolation ? { isolation: node.isolation } : {}),
         ...(inheritance ? { context_inheritance: inheritance } : {}),
-        ...((modelHint !== undefined || outputSchema !== undefined || canonicalSchedulingFactors !== undefined)
+        ...((modelHint !== undefined || outputSchema !== undefined || tokenBudget !== undefined
+          || maxTurns !== undefined || maxWallMs !== undefined || canonicalSchedulingFactors !== undefined)
           ? {
               metadata: {
                 ...(modelHint !== undefined ? { model_hint: modelHint } : {}),
                 ...(outputSchema !== undefined ? { output_schema: outputSchema } : {}),
+                ...(tokenBudget !== undefined ? { token_budget: tokenBudget } : {}),
+                ...(maxTurns !== undefined ? { max_turns: maxTurns } : {}),
+                ...(maxWallMs !== undefined ? { max_wall_ms: maxWallMs } : {}),
                 ...(canonicalSchedulingFactors !== undefined ? { scheduling_factors: canonicalSchedulingFactors } : {}),
               },
             }

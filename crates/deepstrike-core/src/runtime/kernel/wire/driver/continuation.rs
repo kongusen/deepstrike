@@ -412,6 +412,24 @@ impl CanonicalOperationDriver {
         if let Some(output_schema) = &info.output_schema {
             metadata.insert("output_schema".to_string(), output_schema.clone());
         }
+        if let Some(token_budget) = info.token_budget {
+            metadata.insert(
+                "token_budget".to_string(),
+                serde_json::Value::Number(token_budget.into()),
+            );
+        }
+        if let Some(max_turns) = info.max_turns {
+            metadata.insert(
+                "max_turns".to_string(),
+                serde_json::Value::Number(max_turns.into()),
+            );
+        }
+        if let Some(max_wall_ms) = info.max_wall_ms {
+            metadata.insert(
+                "max_wall_ms".to_string(),
+                serde_json::Value::Number(max_wall_ms.into()),
+            );
+        }
         if !info.input_agent_ids.is_empty() {
             metadata.insert(
                 "input_agent_ids".to_string(),
