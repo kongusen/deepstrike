@@ -206,6 +206,18 @@ The stream decode checkpoint adds one typed `{ chunk, state }` request for each 
 
 The stream finish checkpoint adds the corresponding finalization requests. Providers with a terminal response block keep that block in the request, while providers that only need accumulated state expose a state-only request; every live stream path now uses the typed finalizer before returning its terminal events.
 
+### Review checkpoint after provider stream registration
+
+The runtime migration is ahead of the contract quality gate. The registry now contains 35 compiler-checked adapters, and the Agent facade, kernel projections, kernel event persistence, provider usage decoding, request building, stream chunk decoding, and stream finalization all run through registered boundary methods. The full offline suite remains green at 189 suites / 1158 tests.
+
+Three gaps remain before Iteration 8 can be called complete:
+
+1. Generated manifests currently describe the outer request envelopes. For wrapper requests such as `{ chunk, state }` and `{ input, dialect }`, inferred drops describe envelope fields rather than the nested semantic mapping. The checker needs either nested path inspection or an explicit distinction between transport envelope fields and semantic projection fields.
+2. Only the Skill projection has a generated runtime validator. The newly registered kernel, event, and provider adapters have structural manifests but no missing/forbidden/invalid field validators. Each protocol must either gain an appropriate validator or declare a reviewed reason why compiler checking plus behavioral tests are sufficient.
+3. Union and open input boundaries remain weakly described. `SessionEvent | null` has no useful common field inference, and provider usage decoders intentionally accept `unknown`. These boundaries need explicit behavioral correlation tests and stronger named input types where the wire shape is known.
+
+The next sequence is therefore contract quality hardening, one subsystem crossing family at a time, followed by the formal IR removal work. The no-compatibility constraint allows Iteration 9 to move forward as soon as remaining internal `agent-ir` consumers and public runtime exports are migrated; it does not require preserving the current IR surface.
+
 ---
 
 ## Explicit non-goals for the first slice
