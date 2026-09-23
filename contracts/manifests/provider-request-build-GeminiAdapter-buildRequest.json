@@ -41,7 +41,33 @@
     "envelope": {
       "source": [],
       "target": []
-    }
+    },
+    "nested": [
+      {
+        "source": "context",
+        "target": "request",
+        "kind": "project",
+        "note": "canonical turns become Gemini contents."
+      },
+      {
+        "source": "tools",
+        "target": "request",
+        "kind": "project",
+        "note": "canonical tools become function declarations."
+      },
+      {
+        "source": "resolved",
+        "target": "modelParams",
+        "kind": "project",
+        "note": "resolved model identity configures generation."
+      },
+      {
+        "source": "extensions",
+        "target": "modelParams",
+        "kind": "project",
+        "note": "provider extensions configure generation."
+      }
+    ]
   },
   "lazy": {
     "lazySemantics": "none"

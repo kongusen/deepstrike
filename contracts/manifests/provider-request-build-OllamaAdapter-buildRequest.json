@@ -40,7 +40,33 @@
     "envelope": {
       "source": [],
       "target": []
-    }
+    },
+    "nested": [
+      {
+        "source": "context",
+        "target": "messages",
+        "kind": "project",
+        "note": "system and turns become Ollama messages."
+      },
+      {
+        "source": "tools",
+        "target": "tools",
+        "kind": "project",
+        "note": "canonical tools become Ollama function tools."
+      },
+      {
+        "source": "resolved",
+        "target": "model",
+        "kind": "project",
+        "note": "resolved model identity selects the wire model."
+      },
+      {
+        "source": "extensions",
+        "target": "messages",
+        "kind": "project",
+        "note": "provider extensions are merged into the request."
+      }
+    ]
   },
   "lazy": {
     "lazySemantics": "none"

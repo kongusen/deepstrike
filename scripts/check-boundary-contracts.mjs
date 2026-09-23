@@ -156,6 +156,12 @@ function inspectFields(checker, declaration, sourceType, targetType, protocol) {
   for (const field of protocol.fields.envelope?.target ?? []) {
     if (!targetNames.has(field)) fail(`envelope target field "${field}" is absent from target type`)
   }
+  for (const mapping of protocol.fields.nested ?? []) {
+    const sourceRoot = mapping.source.split(".")[0]
+    const targetRoot = mapping.target.split(".")[0]
+    if (!sourceNames.has(sourceRoot)) fail(`nested source root "${sourceRoot}" is absent from source type`)
+    if (!targetNames.has(targetRoot)) fail(`nested target root "${targetRoot}" is absent from target type`)
+  }
 
   const inferredPreserves = sourceProperties.filter(sourceProperty => {
     const targetProperty = targetProperties.find(candidate => candidate.name === sourceProperty.name)
@@ -201,6 +207,7 @@ function generateManifest(checker, declaration, signature, fields, protocol) {
       derived: protocol.fields.derived ?? [],
       forbidden: protocol.fields.forbidden,
       envelope: protocol.fields.envelope ?? { source: [], target: [] },
+      nested: protocol.fields.nested ?? [],
     },
     lazy: protocol.lazy,
     adapterSignature: {

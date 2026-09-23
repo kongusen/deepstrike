@@ -41,7 +41,33 @@
       "target": [
         "params"
       ]
-    }
+    },
+    "nested": [
+      {
+        "source": "input.context",
+        "target": "params",
+        "kind": "project",
+        "note": "canonical messages become Responses input items."
+      },
+      {
+        "source": "input.tools",
+        "target": "params",
+        "kind": "project",
+        "note": "canonical tools and built-ins become Responses tools."
+      },
+      {
+        "source": "input.extensions",
+        "target": "params",
+        "kind": "project",
+        "note": "provider extensions become Responses params."
+      },
+      {
+        "source": "state",
+        "target": "params",
+        "kind": "state-effect",
+        "note": "previous response state becomes continuation params."
+      }
+    ]
   },
   "lazy": {
     "lazySemantics": "none"

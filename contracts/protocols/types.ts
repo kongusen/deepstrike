@@ -62,6 +62,14 @@ export interface FieldPolicy {
     target?: readonly string[]
   }
 
+  /** Explicit mapping for semantics carried inside an adapter request envelope. */
+  nested?: readonly {
+    source: string
+    target: string
+    kind: "project" | "state-effect"
+    note?: string
+  }[]
+
   /**
    * Fields that MUST NOT cross this boundary (security/encapsulation policy).
    * Runtime validator rejects if any forbidden field appears in the result.

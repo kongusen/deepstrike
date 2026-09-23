@@ -41,7 +41,33 @@
     "envelope": {
       "source": [],
       "target": []
-    }
+    },
+    "nested": [
+      {
+        "source": "context",
+        "target": "params",
+        "kind": "project",
+        "note": "system and turn messages become Anthropic params."
+      },
+      {
+        "source": "tools",
+        "target": "params",
+        "kind": "project",
+        "note": "canonical tools become provider tool blocks."
+      },
+      {
+        "source": "resolved",
+        "target": "params",
+        "kind": "project",
+        "note": "resolved model identity selects the wire model."
+      },
+      {
+        "source": "extensions",
+        "target": "params",
+        "kind": "project",
+        "note": "provider extensions are filtered into wire params."
+      }
+    ]
   },
   "lazy": {
     "lazySemantics": "none"

@@ -58,7 +58,8 @@
     "envelope": {
       "source": [],
       "target": []
-    }
+    },
+    "nested": []
   },
   "lazy": {
     "lazySemantics": "none"

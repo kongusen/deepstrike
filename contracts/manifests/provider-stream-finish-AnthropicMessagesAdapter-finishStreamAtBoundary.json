@@ -42,7 +42,14 @@
         "replay",
         "runStatePatch"
       ]
-    }
+    },
+    "nested": [
+      {
+        "source": "state",
+        "target": "events",
+        "kind": "state-effect"
+      }
+    ]
   },
   "lazy": {
     "lazySemantics": "none"

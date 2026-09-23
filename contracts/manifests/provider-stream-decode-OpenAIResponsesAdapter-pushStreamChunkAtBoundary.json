@@ -43,7 +43,19 @@
         "replay",
         "runStatePatch"
       ]
-    }
+    },
+    "nested": [
+      {
+        "source": "chunk",
+        "target": "events",
+        "kind": "project"
+      },
+      {
+        "source": "state",
+        "target": "events",
+        "kind": "state-effect"
+      }
+    ]
   },
   "lazy": {
     "lazySemantics": "none"

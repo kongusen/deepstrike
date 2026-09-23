@@ -39,7 +39,8 @@
         "turn",
         "options"
       ]
-    }
+    },
+    "nested": []
   },
   "lazy": {
     "lazySemantics": "none"

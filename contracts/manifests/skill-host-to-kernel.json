@@ -51,7 +51,8 @@
     "envelope": {
       "source": [],
       "target": []
-    }
+    },
+    "nested": []
   },
   "lazy": {
     "lazyFields": [
