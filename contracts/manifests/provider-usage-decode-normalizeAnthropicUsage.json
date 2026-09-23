@@ -15,7 +15,11 @@
       "authority": "host-runtime"
     },
     "adapter": "providers/usage-normalizer:normalizeAnthropicUsage",
-    "lossiness": "intentional"
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Usage tests cover provider-specific fields, invalid values, and missing usage."
+    }
   },
   "fields": {
     "preserves": {

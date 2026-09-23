@@ -41,4 +41,5 @@ export const PROVIDER_STREAM_DECODE_PROTOCOL: BoundaryProtocol = {
     },
   ],
   lossiness: "intentional",
+  validation: { mode: "behavioral-tests", reason: "Streaming tests cover emitted deltas, tool calls, usage, and provider state updates." },
 }

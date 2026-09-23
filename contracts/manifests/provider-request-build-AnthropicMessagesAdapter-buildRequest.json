@@ -15,7 +15,11 @@
       "authority": "provider"
     },
     "adapter": "providers/anthropic-adapter:AnthropicMessagesAdapter.buildRequest",
-    "lossiness": "intentional"
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Provider semantic tests cover protocol-specific request plans and wire extensions."
+    }
   },
   "fields": {
     "preserves": {

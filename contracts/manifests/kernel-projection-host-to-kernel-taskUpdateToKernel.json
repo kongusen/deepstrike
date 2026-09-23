@@ -15,7 +15,11 @@
       "authority": "kernel"
     },
     "adapter": "runtime/kernel-step:taskUpdateToKernel",
-    "lossiness": "intentional"
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Kernel projection tests cover snake-case fields, parsed arguments, and optional data handling."
+    }
   },
   "fields": {
     "preserves": {

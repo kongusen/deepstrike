@@ -53,4 +53,5 @@ export const KERNEL_PROJECTION_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
     },
   ],
   lossiness: "intentional",
+  validation: { mode: "behavioral-tests", reason: "Kernel projection tests cover snake-case fields, parsed arguments, and optional data handling." },
 }

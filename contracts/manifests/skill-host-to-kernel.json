@@ -15,7 +15,11 @@
       "authority": "kernel"
     },
     "adapter": "runtime/kernel-step:skillMetadataToKernel",
-    "lossiness": "intentional"
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "runtime-validator",
+      "reason": "Generated validator enforces forbidden, required, unexpected, and target-shape fields at runtime."
+    }
   },
   "fields": {
     "preserves": {

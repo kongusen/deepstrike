@@ -184,6 +184,7 @@ function generateManifest(checker, declaration, signature, fields, protocol) {
       target: protocol.target,
       adapter: protocol.adapter,
       lossiness: protocol.lossiness,
+      validation: protocol.validation,
     },
     fields: {
       preserves: { declared: protocol.fields.preserves ?? [], inferred: fields.inferredPreserves },
@@ -332,6 +333,9 @@ function expandProtocol(protocol) {
 }
 
 function processProtocol(program, checker, protocol) {
+  if (!protocol.validation?.mode || !protocol.validation?.reason) {
+    fail(`${protocol.id}: validation mode and reason are required`)
+  }
   const [, adapterPath, adapterName] = protocol.adapter.match(/^([^:]+):(.+)$/) ?? []
   if (!adapterPath || !adapterName) fail(`invalid adapter reference: ${protocol.adapter}`)
   const adapterFilePath = resolve(root, "node/src", `${adapterPath}.ts`)

@@ -29,4 +29,5 @@ export const PROVIDER_REQUEST_BUILD_PROTOCOL: BoundaryProtocol = {
     },
   ],
   lossiness: "intentional",
+  validation: { mode: "behavioral-tests", reason: "Provider semantic tests cover protocol-specific request plans and wire extensions." },
 }

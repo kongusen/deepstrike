@@ -55,4 +55,5 @@ export const CAPABILITY_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
     },
   ],
   lossiness: "intentional",
+  validation: { mode: "behavioral-tests", reason: "Capability boundary tests cover tool, skill, marker, mount, and unmount projections." },
 }

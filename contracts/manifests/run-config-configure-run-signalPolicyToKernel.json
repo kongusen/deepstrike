@@ -15,7 +15,11 @@
       "authority": "kernel"
     },
     "adapter": "runtime/os-profile:signalPolicyToKernel",
-    "lossiness": "intentional"
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Configure-run tests cover defaults, snake-case projection, and composite policy correlation."
+    }
   },
   "fields": {
     "preserves": {

@@ -41,4 +41,5 @@ export const PROVIDER_STREAM_FINISH_PROTOCOL: BoundaryProtocol = {
     },
   ],
   lossiness: "intentional",
+  validation: { mode: "behavioral-tests", reason: "Streaming tests cover terminal tool calls, usage, stop reasons, replay, and flush behavior." },
 }

@@ -107,6 +107,13 @@ export interface BoundaryArtifacts {
   }
 }
 
+export interface BoundaryValidation {
+  /** How the crossing is enforced beyond compiler-resolved structural checks. */
+  mode: "runtime-validator" | "behavioral-tests"
+  /** Short reviewable explanation of the selected enforcement mode. */
+  reason: string
+}
+
 /** One typed implementation inside a protocol family. */
 export interface BoundaryAdapter {
   adapter: string
@@ -153,6 +160,9 @@ export interface BoundaryProtocol<Source = string, Target = string> {
 
   /** Generated artifact destinations for this protocol. Paths are repository-relative. */
   artifacts?: BoundaryArtifacts
+
+  /** Explicit verification mode for the crossing's runtime semantics. */
+  validation: BoundaryValidation
 
   /** Multiple typed adapters that share this protocol family and policy. */
   adapters?: readonly BoundaryAdapter[]

@@ -15,7 +15,11 @@
       "authority": "kernel"
     },
     "adapter": "runtime/kernel-step:capabilityMarkerToKernel",
-    "lossiness": "intentional"
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Capability boundary tests cover tool, skill, marker, mount, and unmount projections."
+    }
   },
   "fields": {
     "preserves": {

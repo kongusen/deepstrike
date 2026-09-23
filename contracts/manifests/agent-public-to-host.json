@@ -15,7 +15,11 @@
       "authority": "host-runtime"
     },
     "adapter": "runtime/agent-runtime-options:buildAgentRuntimeOptions",
-    "lossiness": "intentional"
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Facade runtime-path tests cover provider, tool, governance, and binding behavior."
+    }
   },
   "fields": {
     "preserves": {

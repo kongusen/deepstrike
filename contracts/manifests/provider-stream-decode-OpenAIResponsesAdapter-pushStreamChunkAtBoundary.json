@@ -15,7 +15,11 @@
       "authority": "host-runtime"
     },
     "adapter": "providers/openai-responses-adapter:OpenAIResponsesAdapter.pushStreamChunkAtBoundary",
-    "lossiness": "intentional"
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Streaming tests cover emitted deltas, tool calls, usage, and provider state updates."
+    }
   },
   "fields": {
     "preserves": {
