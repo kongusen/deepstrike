@@ -52,7 +52,7 @@ This alignment targets the product mechanism described in Anthropic's official C
 
 ### Missing contracts
 
-1. There is no script runtime or saved `meta + body` artifact exposing `agent`, `parallel`, `pipeline`, `phase`, `log`, and `args` in an isolated context.
+1. A `FileDynamicWorkflowStore` now saves and validates a `meta + source` artifact, but there is still no isolated script runtime exposing `agent`, `parallel`, `pipeline`, `phase`, `log`, and `args` to source text.
 2. Session events record node completion, but there is no phase-level progress view with agent counts, tokens, elapsed time, and status.
 3. Journal recovery is not yet the documented script replay rule: reuse completed results, rerun the first changed prompt and its descendants, rerun failed nodes and later nodes, and refuse a silent restart when saved results are missing.
 4. Workflow launch has no pre-run approval card, raw-script inspection path, or advisory large-run warning.

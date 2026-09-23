@@ -51,7 +51,8 @@ The target is the provider-neutral product mechanism documented by Anthropic: a 
 
 ### Slice C — isolated script artifact
 
-- [ ] Persist `DynamicWorkflowScript` as a project/personal artifact with safe path checks and immutable run snapshots.
+- [x] Add `FileDynamicWorkflowStore` to save and validate `DynamicWorkflowScript` in a configurable directory, rejecting unsafe names and symlinks.
+- [ ] Add project/personal discovery, precedence, and immutable run snapshots for saved artifacts.
 - [ ] Execute plain JavaScript in an isolated worker/VM with only the documented globals (`agent`, `parallel`, `pipeline`, `phase`, `log`, `args`).
 - [ ] Reject module loading, direct filesystem/shell access, nondeterministic time/randomness, and mid-run user input at the script boundary.
 

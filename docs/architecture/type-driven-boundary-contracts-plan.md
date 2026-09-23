@@ -254,7 +254,8 @@ The next workflow checkpoint is also complete: `spawn_workflow` actions now expo
 
 ### Slice C：隔离脚本 artifact
 
-- [ ] 按 project/personal 位置持久化 `DynamicWorkflowScript`，做安全路径检查和不可变 run snapshot。
+- [x] 增加 `FileDynamicWorkflowStore`，以可配置目录保存并校验 `DynamicWorkflowScript`，拒绝不安全名称和 symlink。
+- [ ] 按 project/personal 位置补齐 artifact 发现、优先级和不可变 run snapshot。
 - [ ] 在隔离 worker/VM 中只提供 `agent`、`parallel`、`pipeline`、`phase`、`log`、`args` globals。
 - [ ] 在脚本边界拒绝 module loading、直接 filesystem/shell、非确定性时间/随机数和运行中用户输入。
 

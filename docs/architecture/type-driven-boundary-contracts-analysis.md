@@ -500,7 +500,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 
 ### 9.2 当前缺口
 
-1. **没有脚本运行时**：没有可保存的 `meta + body` 工作流 artifact，也没有在隔离环境中提供 `agent/parallel/pipeline/phase/log/args` 的执行上下文。
+1. **没有脚本运行时**：现在已有 `FileDynamicWorkflowStore` 保存并校验 `meta + source` artifact，但还没有在隔离环境中执行它，也没有提供 `agent/parallel/pipeline/phase/log/args` 的源码执行上下文。
 2. **没有动态运行进度模型**：现有 session events 能记录节点完成，但没有按 phase 聚合 agent 数、token、耗时和当前状态的统一查询面。
 3. **恢复语义不等价**：现有 workflow 能从 journal/session log 恢复 DAG；尚未按“已完成结果复用、首个 prompt 变化及其后继重跑、失败节点及后继重跑、缺失结果拒绝静默重启”的脚本重放规则建模。
 4. **启动审批与成本提示缺失**：kernel governance 能拒绝 effect，但工作流启动前还没有展示阶段、原始脚本、规模提示并等待一次性批准的控制面。
