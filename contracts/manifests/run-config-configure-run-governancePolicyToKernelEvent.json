@@ -1,0 +1,64 @@
+{
+  "id": "run-config.configure-run.governancePolicyToKernelEvent",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "GovernancePolicy",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelGovernancePolicy",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "governance:governancePolicyToKernelEvent",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "defaultAction",
+        "rules",
+        "vetoes",
+        "rateLimits",
+        "constraints",
+        "surfaceDeniedInSystem"
+      ],
+      "inferred": [
+        "defaultAction",
+        "vetoes",
+        "rateLimits",
+        "surfaceDeniedInSystem"
+      ]
+    },
+    "derived": [
+      "kind",
+      "default_action",
+      "rules",
+      "vetoed_tools",
+      "rate_limits",
+      "constraints"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "policy",
+        "type": "GovernancePolicy"
+      }
+    ],
+    "returnType": "KernelGovernancePolicy"
+  }
+}

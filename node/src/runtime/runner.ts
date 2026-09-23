@@ -149,7 +149,7 @@ import {
   type UsageAccountingPolicy,
 } from "./execution-evidence.js"
 import { kernelObservationToSessionEvent } from "./kernel-event-log.js"
-import { assertNativeProfile, type NativeOsProfile, type OsProfileId, type SignalPolicy } from "./os-profile.js"
+import { assertNativeProfile, signalPolicyToKernel, type NativeOsProfile, type OsProfileId, type SignalPolicy } from "./os-profile.js"
 import { PayloadStore } from "./payload-store.js"
 import { formatToolError } from "../tools/errors.js"
 import { ManagedTaskScope } from "./reliability.js"
@@ -266,7 +266,14 @@ export interface KernelReliabilityOptions {
   maxInputBytes?: number
 }
 
-function kernelReliabilityToKernel(policy: KernelReliabilityOptions): Record<string, number> {
+export interface KernelReliabilityPolicy {
+  [key: string]: number | undefined
+  provider_recovery_attempts?: number
+  output_recovery_attempts?: number
+  max_input_bytes?: number
+}
+
+export function kernelReliabilityToKernel(policy: KernelReliabilityOptions): KernelReliabilityPolicy {
   const allowed = new Set(["providerRecoveryAttempts", "outputRecoveryAttempts", "maxInputBytes"])
   const unknown = Object.keys(policy).filter(key => !allowed.has(key))
   if (unknown.length > 0) {
@@ -1053,13 +1060,7 @@ export class RuntimeRunner {
     if (this.opts.kernelReliability) {
       config.reliability = kernelReliabilityToKernel(this.opts.kernelReliability)
     }
-    config.signal_policy = {
-      queue_max: signalPolicy.queueMax,
-      ...(signalPolicy.ttlMs !== undefined ? { ttl_ms: signalPolicy.ttlMs } : {}),
-      ...(signalPolicy.deadlineEscalation !== undefined
-        ? { deadline_escalation: signalPolicy.deadlineEscalation }
-        : {}),
-    }
+    config.signal_policy = signalPolicyToKernel(signalPolicy)
     if (this.opts.promptBudget) {
       config.prompt_budget = {
         prompt_overhead_tokens: this.opts.promptBudget.promptOverheadTokens,

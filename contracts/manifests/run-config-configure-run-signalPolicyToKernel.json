@@ -1,0 +1,57 @@
+{
+  "id": "run-config.configure-run.signalPolicyToKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "SignalPolicy",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelSignalPolicy",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/os-profile:signalPolicyToKernel",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "queueMax",
+        "ttlMs",
+        "deadlineEscalation"
+      ],
+      "inferred": [
+        "queueMax",
+        "ttlMs",
+        "deadlineEscalation"
+      ]
+    },
+    "derived": [
+      "queue_max",
+      "ttl_ms",
+      "deadline_escalation"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "policy",
+        "type": "SignalPolicy"
+      }
+    ],
+    "returnType": "KernelSignalPolicy"
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "id": "run-config.configure-run.kernelReliabilityToKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "KernelReliabilityOptions",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelReliabilityPolicy",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/runner:kernelReliabilityToKernel",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "providerRecoveryAttempts",
+        "outputRecoveryAttempts",
+        "maxInputBytes"
+      ],
+      "inferred": [
+        "providerRecoveryAttempts",
+        "outputRecoveryAttempts",
+        "maxInputBytes"
+      ]
+    },
+    "derived": [
+      "provider_recovery_attempts",
+      "output_recovery_attempts",
+      "max_input_bytes"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "policy",
+        "type": "KernelReliabilityOptions"
+      }
+    ],
+    "returnType": "KernelReliabilityPolicy"
+  }
+}

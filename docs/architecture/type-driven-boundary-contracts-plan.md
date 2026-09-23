@@ -188,6 +188,8 @@ Iteration 7 has its first structural checkpoint in the current branch. The bound
 
 Iteration 7 now also registers the five capability host-to-kernel adapters: tool, skill, marker, mount, and unmount. Each adapter has a compiler-resolved source and target type, an independent generated manifest, and direct projection tests; field policies distinguish preserved, derived, and intentionally dropped values. Configure-run remains the next multi-adapter family.
 
+The configure-run family is now registered as four typed child adapters for governance, context policy, reliability, and signal policy. Their existing runtime conversion functions are the checked crossings, with direct tests for snake-case projection and policy defaults; the composite `configure_run` event still remains the behavioral correlation point.
+
 ---
 
 ## Explicit non-goals for the first slice

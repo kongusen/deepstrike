@@ -8,6 +8,13 @@ export interface SignalPolicy {
   deadlineEscalation?: boolean
 }
 
+export interface KernelSignalPolicy {
+  [key: string]: unknown
+  queue_max: number
+  ttl_ms?: number
+  deadline_escalation?: boolean
+}
+
 export interface NativeOsProfile {
   id: OsProfileId
   signalPolicy: SignalPolicy
@@ -16,6 +23,14 @@ export interface NativeOsProfile {
 
 /** Default signal policy for native profile smoke tests. */
 export const DEFAULT_NATIVE_SIGNAL_POLICY: SignalPolicy = { queueMax: 64 }
+
+export function signalPolicyToKernel(policy: SignalPolicy): KernelSignalPolicy {
+  return {
+    queue_max: policy.queueMax,
+    ...(policy.ttlMs !== undefined ? { ttl_ms: policy.ttlMs } : {}),
+    ...(policy.deadlineEscalation !== undefined ? { deadline_escalation: policy.deadlineEscalation } : {}),
+  }
+}
 
 /** Permissive governance policy for native runs that do not need AskUser. */
 export const DEFAULT_NATIVE_GOVERNANCE_POLICY: GovernancePolicy = {

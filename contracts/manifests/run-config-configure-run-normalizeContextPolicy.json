@@ -1,0 +1,66 @@
+{
+  "id": "run-config.configure-run.normalizeContextPolicy",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "ContextPolicy",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "ContextPolicyWire",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/context-policy:normalizeContextPolicy",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "pressureThresholds",
+        "targetAfterCompress",
+        "preserveRecentTurns",
+        "renewalCarryover",
+        "collapseOldAssistantNarration",
+        "idleMicroCompactMinutes"
+      ],
+      "inferred": [
+        "pressureThresholds",
+        "targetAfterCompress",
+        "preserveRecentTurns",
+        "renewalCarryover",
+        "collapseOldAssistantNarration",
+        "idleMicroCompactMinutes"
+      ]
+    },
+    "derived": [
+      "pressure_thresholds_ppm",
+      "target_after_compress_ppm",
+      "preserve_recent_turns",
+      "renewal_carryover_ppm",
+      "collapse_old_assistant_narration",
+      "idle_micro_compact_minutes"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "policy",
+        "type": "ContextPolicy"
+      }
+    ],
+    "returnType": "ContextPolicyWire"
+  }
+}

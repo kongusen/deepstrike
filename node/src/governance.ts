@@ -51,11 +51,21 @@ export type GovernanceConstraint =
   | { kind: "enum"; tool: string; path: string; values: string[] }
   | { kind: "range"; tool: string; path: string; min?: number; max?: number }
 
+export interface KernelGovernancePolicy {
+  [key: string]: unknown
+  kind: "load_governance_policy"
+  default_action?: GovernancePolicyAction
+  rules: Array<{ tool_pattern: string; action: GovernancePolicyAction }>
+  vetoed_tools: string[]
+  rate_limits: Array<{ tool: string; max_calls: number; window_ms: number }>
+  constraints: Array<Record<string, unknown>>
+}
+
 /**
  * Convert a declarative {@link GovernancePolicy} into the `load_governance_policy`
  * kernel event payload (snake_case wire fields). Pure — no side effects.
  */
-export function governancePolicyToKernelEvent(policy: GovernancePolicy): Record<string, unknown> {
+export function governancePolicyToKernelEvent(policy: GovernancePolicy): KernelGovernancePolicy {
   return {
     kind: "load_governance_policy",
     ...(policy.defaultAction ? { default_action: policy.defaultAction } : {}),
