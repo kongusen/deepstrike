@@ -44,6 +44,7 @@ The target is the provider-neutral product mechanism documented by Anthropic: a 
 
 ### Slice B — one kernel-owned dynamic run
 
+- [x] Add `HostCommand::AppendWorkflowNodes` and `CanonicalRunnerRuntime.appendWorkflowNodes()` so a dynamic controller can append to an active root workflow through host authority while the kernel retains DAG, quota, trust, and spawn ownership.
 - [ ] Introduce a `DynamicWorkflowController` owned by `RuntimeRunner` so one script run has one session/run id, one RunGroup reservation, and one kernel workflow operation.
 - [ ] Compile `agent`/`parallel`/`pipeline` calls into dynamic DAG additions instead of starting a separate one-node workflow per call.
 - [ ] Resolve `modelHint`, target Agent, tool access, and trust at the host spawn boundary before submission; never carry host-only `agent` metadata as an invented kernel field.

@@ -878,6 +878,43 @@ fn a_workflow_root_start_spawns_tasks_and_never_calls_the_provider() {
 }
 
 #[test]
+fn a_dynamic_host_append_grows_the_existing_workflow_and_uses_kernel_spawn_gating() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&configure());
+    let started = runtime.submit(&workflow_start(
+        "in-start",
+        1_700_000_001_000,
+        two_node_spec(),
+    ));
+    let initial_effect = sole_effect(&started);
+    let initial_spawn = effect_id(started.step_seq);
+    runtime.submit(&spawned(
+        "in-ack",
+        1_700_000_002_000,
+        &initial_spawn,
+        &["wf-node0"],
+    ));
+
+    let appended = runtime.submit(&control(
+        "in-dynamic-append",
+        1_700_000_003_000,
+        HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
+            nodes: vec![wire_node("extra", "extra work", &[])],
+        }),
+    ));
+
+    assert_eq!(appended.step.root_kind, Some(RootKind::Workflow));
+    let effect = sole_effect(&appended);
+    assert_eq!(effect.tag(), EffectKindTag::SpawnTasks);
+    let EffectKind::SpawnTasks(spawn) = &effect.effect else {
+        panic!("expected a dynamic append spawn effect");
+    };
+    assert_eq!(spawn.tasks.len(), 1);
+    assert_eq!(spawn.tasks[0].node_id.as_str(), "extra");
+    assert_eq!(initial_effect.tag(), EffectKindTag::SpawnTasks);
+}
+
+#[test]
 fn a_workflow_launch_preserves_logical_context_inheritance() {
     let mut spec = two_node_spec();
     spec.nodes[0].run_spec = Some(LogicalAgentSpec {

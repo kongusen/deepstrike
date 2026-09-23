@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::root::{CapabilityGrant, CapabilityRef, KnowledgeEntry};
+use super::root::{CapabilityGrant, CapabilityRef, KnowledgeEntry, WorkflowNode};
 use super::scalar::{CallId, WireU64};
 
 /// Live commands a host may issue against a running operation.
@@ -22,6 +22,11 @@ pub enum HostCommand {
     Cancel(CancelCommand),
     ForceCompact(ForceCompactCommand),
     UpdateTask(UpdateTaskCommand),
+    /// Dynamic workflow controller growth. The host remains the author of the request, while the
+    /// kernel still owns DAG validation, quota gating, trust coercion, scheduling, and durable
+    /// spawn facts. This is intentionally separate from the model-facing append syscall: it has
+    /// host authority and no caller-supplied agent identity.
+    AppendWorkflowNodes(AppendWorkflowNodesCommand),
     ApplyCapabilityPatch(ApplyCapabilityPatchCommand),
     ApplyKnowledgeMutation(ApplyKnowledgeMutationCommand),
     /// DEC-9: the host seeding entries into the knowledge partition. Named apart from the P1
@@ -65,6 +70,12 @@ pub struct ForceCompactCommand {}
 #[serde(deny_unknown_fields)]
 pub struct UpdateTaskCommand {
     pub update: TaskUpdate,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppendWorkflowNodesCommand {
+    pub nodes: Vec<WorkflowNode>,
 }
 
 /// A partial edit of the task state. Every field is optional; absent ⇒ unchanged.

@@ -404,6 +404,9 @@ impl CanonicalOperationDriver {
                 self.continue_after(context, LoopAction::AwaitingResume, root_kind)
             }
             HostCommand::UpdateTask(update) => self.plan_host_task_update(update),
+            HostCommand::AppendWorkflowNodes(append) => {
+                self.plan_dynamic_workflow_append(context, append)
+            }
             HostCommand::ApplyCapabilityPatch(patch) => self.plan_capability_patch(patch),
             HostCommand::ApplyKnowledgeMutation(mutation) => self.plan_knowledge_mutation(mutation),
             HostCommand::SeedKnowledge(seed) => self.plan_seed_knowledge(seed),
@@ -411,6 +414,54 @@ impl CanonicalOperationDriver {
             HostCommand::ApplyPolicyPatch(patch) => self.plan_policy_patch(patch),
             HostCommand::UpdateDeadline(deadline) => self.plan_update_deadline(deadline),
         }
+    }
+
+    /// Grow a root dynamic workflow from the host controller while keeping the same kernel-owned
+    /// DAG, quota ledger, trust coercion, and spawn queue as model-authored workflow growth. The
+    /// host command is only admitted for an active root workflow; it cannot bootstrap or stack a
+    /// second operation.
+    pub(super) fn plan_dynamic_workflow_append(
+        &mut self,
+        context: &PlanContext<'_>,
+        append: &AppendWorkflowNodesCommand,
+    ) -> Result<PlannedStep, KernelFault> {
+        if append.nodes.is_empty() {
+            return Err(KernelFault::new(
+                KernelFaultCode::InvalidConfig,
+                "a dynamic workflow append must contain at least one node",
+            ));
+        }
+        if self.root_kind != Some(RootKind::Workflow)
+            || !self.engine().is_some_and(LoopStateMachine::workflow_active)
+        {
+            return Err(KernelFault::new(
+                KernelFaultCode::InvalidAuthority,
+                "dynamic workflow nodes may only be appended to an active root workflow",
+            ));
+        }
+        for node in &append.nodes {
+            self.require_known_contract(context.config, node.run_spec.as_ref())?;
+        }
+        let wire_spec = WireSpec {
+            name: String::new(),
+            nodes: append.nodes.clone(),
+        };
+        let core_spec = build_core_spec(&wire_spec)?;
+        let node_ids = wire_node_ids(&wire_spec);
+        let action = self.engine_mut()?.submit_workflow(core_spec, None);
+        let appended = self.engine().is_some_and(|engine| {
+            engine.observations.iter().any(|observation| {
+                matches!(
+                    observation,
+                    KernelObservation::WorkflowNodesSubmitted { .. }
+                )
+            })
+        });
+        if appended {
+            self.node_ids.extend(node_ids);
+            self.workflow_nodes.extend(append.nodes.clone());
+        }
+        self.continue_after(context, action, RootKind::Workflow)
     }
 
     /// §11.1 · the cancellation ladder, and the only path an operation is cancelled through.

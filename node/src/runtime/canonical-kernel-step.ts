@@ -939,6 +939,19 @@ export class CanonicalRunnerRuntime {
     return action
   }
 
+  /** Append dynamic workflow nodes to this active root workflow through host authority. */
+  async appendWorkflowNodes(specValue: Record<string, unknown>): Promise<KernelRunnerAction | null> {
+    await this.ensureConfigured()
+    if (!this.started) throw new Error("cannot append dynamic workflow nodes before operation start")
+    return this.commit({
+      kind: "host_control",
+      command: {
+        kind: "append_workflow_nodes",
+        nodes: canonicalWorkflowSpec(specValue, true).nodes,
+      },
+    })
+  }
+
   async applyHostEvent(event: Record<string, unknown>): Promise<KernelRunnerAction | null> {
     if (!this.started && this.applyBootstrapEvent(event)) return null
 
@@ -1205,6 +1218,17 @@ export class CanonicalRunnerRuntime {
         break
       case "update_task":
         input = { kind: "host_control", command: { kind: "update_task", update: event.update } }
+        break
+      case "dynamic_workflow_append":
+        input = {
+          kind: "host_control",
+          command: {
+            kind: "append_workflow_nodes",
+            nodes: canonicalWorkflowSpec({
+              nodes: Array.isArray(event.nodes) ? event.nodes : [],
+            }, true).nodes,
+          },
+        }
         break
       case "add_knowledge_message":
         input = {

@@ -58,9 +58,10 @@ use super::checkpoint::{
     TaskWaitConditionState, TaskWaitSetState, WorkflowGraphState, WorkflowNodeState,
 };
 use super::command::{
-    ApplyCapabilityPatchCommand, ApplyKnowledgeMutationCommand, ApplyPolicyPatchCommand,
-    ApplySkillActivationCommand, CancelCommand, CancellationReason, HostCommand, LivePolicyState,
-    SeedKnowledgeCommand, TaskUpdate as WireTaskUpdate, UpdateDeadlineCommand, UpdateTaskCommand,
+    AppendWorkflowNodesCommand, ApplyCapabilityPatchCommand, ApplyKnowledgeMutationCommand,
+    ApplyPolicyPatchCommand, ApplySkillActivationCommand, CancelCommand, CancellationReason,
+    HostCommand, LivePolicyState, SeedKnowledgeCommand, TaskUpdate as WireTaskUpdate,
+    UpdateDeadlineCommand, UpdateTaskCommand,
 };
 use super::config::ResolvedOperationConfig;
 use super::effect::{

@@ -247,6 +247,7 @@ The next workflow checkpoint is also complete: `spawn_workflow` actions now expo
 
 ### Slice B：单一 kernel-owned 动态运行
 
+- [x] 增加 `HostCommand::AppendWorkflowNodes` 与 `CanonicalRunnerRuntime.appendWorkflowNodes()`，让动态控制器可以通过 host authority 追加到活动 root workflow；kernel 继续负责 DAG、quota、trust 和 spawn。
 - [ ] 在 `RuntimeRunner` 内引入 `DynamicWorkflowController`，让一个脚本运行共享一个 session/run id、RunGroup reservation 和 kernel workflow operation。
 - [ ] 将 `agent`/`parallel`/`pipeline` 编译为动态 DAG append，而不是每次启动独立的单节点 workflow。
 - [ ] 在 host spawn boundary 解析 `modelHint`、目标 Agent、tool access 和 trust；不能把 host-only `agent` metadata 伪装成 kernel 字段。

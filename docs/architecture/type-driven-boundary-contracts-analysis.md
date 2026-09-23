@@ -506,6 +506,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 4. **启动审批与成本提示缺失**：kernel governance 能拒绝 effect，但工作流启动前还没有展示阶段、原始脚本、规模提示并等待一次性批准的控制面。
 5. **边界仍有一个真实缺陷**：`WorkflowNodeSpec.agent` 是 host metadata，`workflowNodeSpecToKernel` 会明确丢弃它，动态脚本调用必须先通过 host spawn boundary 解析目标 Agent，不能把它伪装成 kernel 字段。
 6. **限制没有形成独立的 workflow contract**：kernel 已有 `max_concurrent_subagents`、`max_workflow_nodes` 等 quota，但尚未有文章语义对应的单次 `parallel/pipeline` 4096 项、默认 16 并发、单次运行 1000 agents 和 size guideline/large warning 模型。
+7. **kernel 追加入口刚已补齐但尚未接 controller**：`HostCommand::AppendWorkflowNodes` 和 `CanonicalRunnerRuntime.appendWorkflowNodes()` 已经把动态追加放回同一个 kernel operation；`RuntimeRunner` 仍未用它驱动完整脚本生命周期。
 
 ### 9.3 第一阶段实现边界
 

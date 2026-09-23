@@ -58,6 +58,7 @@ This alignment targets the product mechanism described in Anthropic's official C
 4. Workflow launch has no pre-run approval card, raw-script inspection path, or advisory large-run warning.
 5. `WorkflowNodeSpec.agent` is host metadata and `workflowNodeSpecToKernel` intentionally drops it. A dynamic script must resolve a target Agent at the host spawn boundary instead of inventing a kernel field.
 6. Kernel quotas exist, but the article-level workflow contract does not yet model the default 16 concurrency, 256 ceiling, 4096 items per `parallel`/`pipeline`, 1000 agents per run, or size-guideline warnings.
+7. The kernel append entry now exists but the controller does not use it yet: `HostCommand::AppendWorkflowNodes` and `CanonicalRunnerRuntime.appendWorkflowNodes()` grow the same kernel operation, while `RuntimeRunner` still lacks the complete script lifecycle around that entry.
 
 ### First implementation slice
 
