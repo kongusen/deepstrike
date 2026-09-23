@@ -290,7 +290,16 @@ export function kernelReliabilityToKernel(policy: KernelReliabilityOptions): Ker
   }
 }
 
-function memoryPolicyToKernel(policy: MemoryPolicy): Record<string, unknown> {
+export interface KernelMemoryPolicy {
+  stale_warning_days?: number
+  retrieval_top_k?: number
+  validation_enabled?: boolean
+  max_content_bytes?: number
+  max_name_length?: number
+  promotion_recall_threshold?: number
+}
+
+export function memoryPolicyToKernel(policy: MemoryPolicy): KernelMemoryPolicy {
   const allowed = new Set([
     "staleWarningDays",
     "retrievalTopK",

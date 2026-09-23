@@ -1,0 +1,61 @@
+{
+  "id": "memory.host-to-kernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "MemoryPolicy",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelMemoryPolicy",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/runner:memoryPolicyToKernel",
+    "lossiness": "intentional",
+    "validation": {
+      "mode": "behavioral-tests",
+      "reason": "Memory policy boundary tests cover snake-case projection and unknown-field rejection."
+    }
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": []
+    },
+    "renames": {
+      "staleWarningDays": "stale_warning_days",
+      "retrievalTopK": "retrieval_top_k",
+      "validationEnabled": "validation_enabled",
+      "maxContentBytes": "max_content_bytes",
+      "maxNameLength": "max_name_length",
+      "promotionRecallThreshold": "promotion_recall_threshold"
+    },
+    "drops": {
+      "declared": [],
+      "inferred": []
+    },
+    "derived": [],
+    "forbidden": [],
+    "envelope": {
+      "source": [],
+      "target": []
+    },
+    "nested": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "policy",
+        "type": "MemoryPolicy"
+      }
+    ],
+    "returnType": "KernelMemoryPolicy"
+  }
+}

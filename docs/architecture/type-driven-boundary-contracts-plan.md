@@ -220,6 +220,8 @@ The next sequence is therefore contract quality hardening, one subsystem crossin
 
 The envelope distinction checkpoint now records transport wrapper fields separately from semantic drops. Kernel event, OpenAI request, stream chunk, and stream finish protocols validate their declared envelope fields and exclude them from inferred semantic drops. The first nested semantic path mappings now describe canonical input to provider params and stream input/state to emitted `AdapterOutput` events; deeper target shape checks remain open for provider-specific params and event unions.
 
+The first subsystem crossing checkpoint registers `memoryPolicyToKernel` as `MemoryPolicy → KernelMemoryPolicy`. The live runner uses the named target type, the boundary declares all camelCase-to-snake_case renames, and direct tests cover omission and unknown-field rejection.
+
 ---
 
 ## Explicit non-goals for the first slice

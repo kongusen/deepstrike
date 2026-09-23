@@ -3,6 +3,7 @@ import { AGENT_PUBLIC_TO_HOST_PROTOCOL } from "./agent-public-to-host.js"
 import { CAPABILITY_HOST_TO_KERNEL_PROTOCOL } from "./capability-host-to-kernel.js"
 import { CONFIGURE_RUN_HOST_TO_KERNEL_PROTOCOL } from "./configure-run-host-to-kernel.js"
 import { KERNEL_PROJECTION_HOST_TO_KERNEL_PROTOCOL } from "./kernel-projection-host-to-kernel.js"
+import { MEMORY_HOST_TO_KERNEL_PROTOCOL } from "./memory-host-to-kernel.js"
 import { KERNEL_OBSERVATION_TO_SESSION_EVENT_PROTOCOL } from "./kernel-observation-to-session-event.js"
 import { PROVIDER_USAGE_DECODE_PROTOCOL } from "./provider-usage-decode.js"
 import { PROVIDER_REQUEST_BUILD_PROTOCOL } from "./provider-request-build.js"
@@ -17,6 +18,7 @@ export const BOUNDARY_PROTOCOLS: readonly BoundaryProtocol[] = [
   CAPABILITY_HOST_TO_KERNEL_PROTOCOL,
   CONFIGURE_RUN_HOST_TO_KERNEL_PROTOCOL,
   KERNEL_PROJECTION_HOST_TO_KERNEL_PROTOCOL,
+  MEMORY_HOST_TO_KERNEL_PROTOCOL,
   KERNEL_OBSERVATION_TO_SESSION_EVENT_PROTOCOL,
   PROVIDER_USAGE_DECODE_PROTOCOL,
   PROVIDER_REQUEST_BUILD_PROTOCOL,
