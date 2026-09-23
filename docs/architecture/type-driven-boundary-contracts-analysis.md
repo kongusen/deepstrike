@@ -421,7 +421,7 @@ createAgent(definition)
 
 ### 8.3 Workflow：B 边界的批量 syscall（WF1–WF2）
 
-`submit_workflow_nodes` 与 `start_workflow` 的 action 现在使用命名的 `KernelWorkflowSpawnNode` / `KernelWorkflowBudget` DTO。runner 通过 `workflowSpawnNodeFromKernel` 与 `workflowBudgetFromKernel` 显式投影到 `WorkflowSpawnInfo` / `WorkflowBudget`，并在契约中记录 kernel 的 task/attempt/launch/node bookkeeping 丢弃策略；这把原先的匿名 `Record` action 面收敛为可检查的 kernel→host crossing。workflow target 绑定缺陷见三点一.4。
+`submit_workflow_nodes` 与 `start_workflow` 的 action 现在使用命名的 `KernelWorkflowSpawnNode` / `KernelWorkflowBudget` DTO。runner 通过 `workflowSpawnNodeFromKernel` 与 `workflowBudgetFromKernel` 显式投影到 `WorkflowSpawnInfo` / `WorkflowBudget`，并在契约中记录 kernel 的 task/attempt/launch/node bookkeeping 丢弃策略；这把原先的匿名 `Record` action 面收敛为可检查的 kernel→host crossing。Workflow target 仍然不进入 kernel wire，但 runner 会按 host 保留的节点索引解析 `WorkflowNodeSpec.agent`，通过与 handoff 共用的 resolver 执行目标 Agent，因此声明字段已经有真实运行语义。
 
 ### 8.4 Eval：全在 runtime-internal（不注册）
 
@@ -504,11 +504,23 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 2. **没有动态运行进度模型**：现有 session events 能记录节点完成，但没有按 phase 聚合 agent 数、token、耗时和当前状态的统一查询面。
 3. **恢复语义不等价**：现在已有可插拔的 invocation fingerprint 和 replay store，能复用同一 `runId + nodeId + prompt/options` 的完成结果；但还没有把失败后缀、依赖后继和缺失 artifact 的拒绝语义接入 kernel workflow replay。
 4. **启动审批与成本提示缺失**：kernel governance 能拒绝 effect，但工作流启动前还没有展示阶段、原始脚本、规模提示并等待一次性批准的控制面。
-5. **边界仍有一个真实缺陷**：`WorkflowNodeSpec.agent` 是 host metadata，`workflowNodeSpecToKernel` 会明确丢弃它，动态脚本调用必须先通过 host spawn boundary 解析目标 Agent，不能把它伪装成 kernel 字段。
+5. **边界约束已经补齐**：`WorkflowNodeSpec.agent` 继续作为 host metadata，`workflowNodeSpecToKernel` 明确丢弃它；runner 在 host spawn boundary 通过 resolver 解析目标 Agent，并使用目标 Agent 自己的 provider、工具和 memory binding，不能把它伪装成 kernel 字段。
 6. **限制没有形成独立的 workflow contract**：kernel 已有 `max_concurrent_subagents`、`max_workflow_nodes` 等 quota，但尚未有文章语义对应的单次 `parallel/pipeline` 4096 项、默认 16 并发、单次运行 1000 agents 和 size guideline/large warning 模型。
 7. **kernel 追加入口与 RuntimeRunner controller 已接通**：`DynamicWorkflow` root entry 可以在空 DAG 上保持 active，`HostCommand::AppendWorkflowNodes`、`CanonicalRunnerRuntime.appendWorkflowNodes()` 和 `RuntimeRunner.appendDynamicWorkflowNodes()` 把动态追加放回同一个 kernel operation，`CompleteDynamicWorkflow` 明确关闭生命周期；`DynamicWorkflowController` 提供 typed submission queue，`RuntimeRunner.runDynamicWorkflow()` 现在负责启动、消费 submission、回填 outcome、显式 close 和 RunGroup 结算。
 8. **动态节点限制已完成跨界投影**：`tokenBudget`、`maxTurns`、`maxWallMs` 通过 canonical metadata 进入 Rust DAG，再由 spawn descriptor 返回给 child runner；host append 的配额拒绝统一使用 `submit_workflow_nodes`，不会再伪装成新的 `start_workflow`。
 9. **动态失败拥有终止路径**：脚本或 child driver 抛错时，`RuntimeRunner` 通过 canonical cancel/preempt 链路提交唯一的 `operation_cancelled` 事实，再清理 host 状态；不会留下只在 host 侧消失、kernel 侧仍 active 的半截运行。
+
+### 9.4 本轮边界收敛记录
+
+本轮把前述四个高风险点落成了可运行的约束。
+
+1. **Workflow target**：`RuntimeRunner` 在 host 侧维护 kernel 节点 id 到 public agent 名称的映射，使用现有 `resolveAgent` 解析目标并执行目标 Agent；动态追加节点和 loop iteration 也沿用同一映射。kernel DTO 不增加 provider 或 public Agent 引用。
+2. **Memory binding**：声明快照在存在 `memoryStore + memoryScope` 时记录 `memory: { kind: "durable", namespace, binding: "runtime" }`；缺少任一绑定会在 `createAgent` 阶段失败。`remember/recall` 继续只经由 `RuntimeRunner`，声明与实际 binding 的关系可被审计。
+3. **Nested contract paths**：checker 按完整点路径遍历 TypeScript 类型，逐段检查 union、nullable 和数组路径，不再只验证根字段。当前 `input.context`、`input.tools` 等映射会在 `contracts:check` 中被实际解析。
+4. **Behavioral test references**：`behavioral-tests` 必须声明 `validation.testRefs`；checker 验证引用文件存在并含有测试声明。41 个 adapter 已绑定到现有 boundary/provider/workflow 测试文件，`contracts:verify` 会阻止引用漂移。
+5. **Manifest version**：契约 manifest 从根目录 `VERSION` 读取 canonical version，不再硬编码旧版本；生成产物已统一到当前版本。
+
+这几项修复后，声明层、host 执行层和 kernel wire 的职责边界已经分别可见。仍未完成的是跨事件关联不变量（EffectId、signal disposal、run/session 隔离）以及动态脚本的隔离 VM、恢复审批和进度查询；它们属于下一阶段的 relational contract 与 execution-control 工作，不应继续用字段映射规则代替。
 
 ### 9.3 第一阶段实现边界
 

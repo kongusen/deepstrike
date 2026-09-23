@@ -13,7 +13,7 @@ type DeepReadonly<T> = T extends (...args: never[]) => unknown ? never
 type DeclarationData = Omit<AgentDefinition, "runtimeBinding" | "memoryStore" | "memoryScope" | "tools" | "memory" | "knowledge"> & {
   name: string
   tools?: Pick<RegisteredTool, "schema" | "providerOptions">[]
-  memory?: { kind: "working" } | { kind: "durable"; namespace?: string }
+  memory?: { kind: "working"; binding?: "runtime" } | { kind: "durable"; namespace?: string; binding?: "runtime" }
   knowledge?: Array<Omit<NonNullable<AgentDefinition["knowledge"]>[number], "source"> & {
     source: Exclude<NonNullable<AgentDefinition["knowledge"]>[number]["source"], { kind: "vector" }> | { kind: "vector" }
   }>
@@ -82,6 +82,9 @@ function captureBinding(binding: RuntimeBinding | undefined): RuntimeBinding | u
 }
 
 export function captureAgentDeclaration(input: AgentDefinition): { declaration: AgentDeclaration; bindings: AgentHostBindings } {
+  if (Boolean(input.memoryStore) !== Boolean(input.memoryScope)) {
+    throw new TypeError("agent memory requires memoryStore and memoryScope to be bound together")
+  }
   const vectorRetrievers = new Map<number, KnowledgeSource>()
   const knowledge = input.knowledge?.map((item, index) => {
     if (item.source.kind !== "vector") return item
@@ -89,10 +92,12 @@ export function captureAgentDeclaration(input: AgentDefinition): { declaration: 
     return { ...item, source: { kind: "vector" as const } }
   })
   const memory = input.memory
-    ? input.memory instanceof WorkingMemory ? { kind: "working" as const }
-      : "search" in input.memory ? { kind: "durable" as const, ...("namespace" in input.memory ? { namespace: input.memory.namespace } : {}) }
-        : { kind: "durable" as const, ...(input.memory.namespace ? { namespace: input.memory.namespace } : {}) }
-    : undefined
+    ? input.memory instanceof WorkingMemory ? { kind: "working" as const, ...(input.memoryStore ? { binding: "runtime" as const } : {}) }
+      : "search" in input.memory ? { kind: "durable" as const, ...("namespace" in input.memory ? { namespace: input.memory.namespace } : {}), ...(input.memoryStore ? { binding: "runtime" as const } : {}) }
+        : { kind: "durable" as const, ...(input.memory.namespace ? { namespace: input.memory.namespace } : {}), ...(input.memoryStore ? { binding: "runtime" as const } : {}) }
+    : input.memoryStore && input.memoryScope
+      ? { kind: "durable" as const, namespace: input.memoryScope.namespace, binding: "runtime" as const }
+      : undefined
   const raw: DeclarationData = {
     name: input.name ?? "agent",
     description: input.description,

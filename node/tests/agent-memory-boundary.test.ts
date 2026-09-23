@@ -26,6 +26,14 @@ function record(name: string): MemoryRecord {
 }
 
 describe("public Agent memory boundary", () => {
+  it("captures the runtime memory binding in the declaration and rejects partial bindings", () => {
+    const store = new InMemoryMemoryStore()
+    const agent = createAgent({ memoryStore: store, memoryScope: scope })
+    expect(agent.declaration.memory).toEqual({ kind: "durable", namespace: scope.namespace, binding: "runtime" })
+    expect(() => createAgent({ memoryStore: store })).toThrow(/memoryStore and memoryScope/i)
+    expect(() => createAgent({ memoryScope: scope })).toThrow(/memoryStore and memoryScope/i)
+  })
+
   it("routes host writes through validation and rejects denied writes before the store", async () => {
     const store = new InMemoryMemoryStore()
     const agent = createAgent({
