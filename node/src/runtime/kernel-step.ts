@@ -266,11 +266,47 @@ function tryParseJson(s: string): unknown {
   }
 }
 
-export function toolSchemaToKernel(schema: ToolSchema): Record<string, unknown> {
+export interface KernelToolSchema {
+  [key: string]: unknown
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+}
+
+export interface KernelMessage {
+  [key: string]: unknown
+  role: ModelMessage["role"]
+  content: string | Array<Record<string, unknown>>
+  tool_calls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>
+}
+
+export interface KernelToolResult {
+  [key: string]: unknown
+  call_id: string
+  output: string
+  is_error: boolean
+  is_fatal: boolean
+  error_kind?: string
+}
+
+export interface KernelTaskUpdate {
+  [key: string]: unknown
+  plan?: string[]
+  current_step?: number
+  progress?: string
+  scratchpad?: string
+  blocked_on?: string[]
+  preserved_refs?: string[]
+}
+
+export function toolSchemaToKernel(schema: ToolSchema): KernelToolSchema {
+  const parsed = tryParseJson(schema.parameters)
   return {
     name: schema.name,
     description: schema.description,
-    parameters: tryParseJson(schema.parameters) ?? {},
+    parameters: parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {},
   }
 }
 
@@ -308,14 +344,20 @@ export function skillMetadataToKernel(skill: SkillMetadata): KernelSkillMetadata
   return projection
 }
 
-export function messageToKernelMessage(message: ModelMessage): Record<string, unknown> {
-  const out: Record<string, unknown> = {
+export function messageToKernelMessage(message: ModelMessage): KernelMessage {
+  const out: KernelMessage = {
     role: message.role,
-    tool_calls: (message.toolCalls ?? []).map(tc => ({
-      id: tc.id,
-      name: tc.name,
-      arguments: tryParseJson(tc.arguments) ?? {},
-    })),
+    content: message.content,
+    tool_calls: (message.toolCalls ?? []).map(tc => {
+      const parsed = tryParseJson(tc.arguments)
+      return {
+        id: tc.id,
+        name: tc.name,
+        arguments: parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? parsed as Record<string, unknown>
+          : {},
+      }
+    }),
   }
   if (message.contentParts && message.contentParts.length > 0) {
     out.content = message.contentParts.map(part => {
@@ -347,9 +389,9 @@ export function messageToKernelMessage(message: ModelMessage): Record<string, un
   return out
 }
 
-export function toolResultToKernel(result: ToolExecutionResult): Record<string, unknown> {
+export function toolResultToKernel(result: ToolExecutionResult): KernelToolResult {
   // Usage evidence enters through the host event contract; content alone cannot establish usage.
-  const out: Record<string, unknown> = {
+  const out: KernelToolResult = {
     call_id: result.callId,
     output: result.output,
     is_error: result.isError,
@@ -361,7 +403,7 @@ export function toolResultToKernel(result: ToolExecutionResult): Record<string, 
   return out
 }
 
-export function taskUpdateToKernel(update: TaskUpdate): Record<string, unknown> {
+export function taskUpdateToKernel(update: TaskUpdate): KernelTaskUpdate {
   return {
     plan: update.plan,
     current_step: update.currentStep,

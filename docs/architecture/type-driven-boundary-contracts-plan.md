@@ -192,6 +192,8 @@ The configure-run family is now registered as four typed child adapters for gove
 
 Iteration 8 has its first live-path checkpoint. `buildAgentRuntimeOptions` now accepts one typed `AgentRuntimeOptionsRequest`, and the actual facade call is registered as `agent.public-to-host` with a compiler-resolved `AgentRuntimeOptionsRequest → RuntimeOptions` signature. Existing facade behavior tests remain the behavioral gate for this adapter.
 
+The same iteration now registers four live kernel projections: message, tool schema, tool result, and task update. Their return types are named kernel structures, the runner continues to consume the same functions, and direct tests cover parsed arguments, snake-case fields, optional error data, and task progress projection.
+
 ---
 
 ## Explicit non-goals for the first slice

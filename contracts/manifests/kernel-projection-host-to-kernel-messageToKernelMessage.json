@@ -1,0 +1,59 @@
+{
+  "id": "kernel-projection.host-to-kernel.messageToKernelMessage",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "ModelMessage",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelMessage",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/kernel-step:messageToKernelMessage",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [
+        "role",
+        "content"
+      ],
+      "inferred": [
+        "role",
+        "content"
+      ]
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "contentParts",
+        "toolCalls"
+      ],
+      "inferred": [
+        "contentParts",
+        "toolCalls"
+      ]
+    },
+    "derived": [
+      "tool_calls"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "message",
+        "type": "ModelMessage"
+      }
+    ],
+    "returnType": "KernelMessage"
+  }
+}

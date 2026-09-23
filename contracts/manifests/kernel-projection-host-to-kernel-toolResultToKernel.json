@@ -1,0 +1,66 @@
+{
+  "id": "kernel-projection.host-to-kernel.toolResultToKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "ToolExecutionResult",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelToolResult",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/kernel-step:toolResultToKernel",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": [
+        "output"
+      ]
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "callId",
+        "output",
+        "isError",
+        "isFatal",
+        "errorKind",
+        "contentParts"
+      ],
+      "inferred": [
+        "callId",
+        "isError",
+        "isFatal",
+        "errorKind",
+        "contentParts"
+      ]
+    },
+    "derived": [
+      "call_id",
+      "output",
+      "is_error",
+      "is_fatal",
+      "error_kind"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "result",
+        "type": "ToolExecutionResult"
+      }
+    ],
+    "returnType": "KernelToolResult"
+  }
+}

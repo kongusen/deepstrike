@@ -1,0 +1,67 @@
+{
+  "id": "kernel-projection.host-to-kernel.taskUpdateToKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "TaskUpdate",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelTaskUpdate",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/kernel-step:taskUpdateToKernel",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [],
+      "inferred": [
+        "plan",
+        "progress",
+        "scratchpad"
+      ]
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "plan",
+        "currentStep",
+        "progress",
+        "scratchpad",
+        "blockedOn",
+        "preservedRefs"
+      ],
+      "inferred": [
+        "currentStep",
+        "blockedOn",
+        "preservedRefs"
+      ]
+    },
+    "derived": [
+      "plan",
+      "current_step",
+      "progress",
+      "scratchpad",
+      "blocked_on",
+      "preserved_refs"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "update",
+        "type": "TaskUpdate"
+      }
+    ],
+    "returnType": "KernelTaskUpdate"
+  }
+}

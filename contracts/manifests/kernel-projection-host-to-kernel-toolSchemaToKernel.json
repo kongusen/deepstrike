@@ -1,0 +1,58 @@
+{
+  "id": "kernel-projection.host-to-kernel.toolSchemaToKernel",
+  "version": "0.2.74",
+  "protocol": {
+    "family": "host-to-kernel",
+    "direction": "project",
+    "source": {
+      "type": "ToolSchema",
+      "layer": "host",
+      "authority": "host-runtime"
+    },
+    "target": {
+      "type": "KernelToolSchema",
+      "layer": "kernel",
+      "authority": "kernel"
+    },
+    "adapter": "runtime/kernel-step:toolSchemaToKernel",
+    "lossiness": "intentional"
+  },
+  "fields": {
+    "preserves": {
+      "declared": [
+        "name",
+        "description"
+      ],
+      "inferred": [
+        "name",
+        "description"
+      ]
+    },
+    "renames": {},
+    "drops": {
+      "declared": [
+        "parameters",
+        "providerOptions"
+      ],
+      "inferred": [
+        "providerOptions"
+      ]
+    },
+    "derived": [
+      "parameters"
+    ],
+    "forbidden": []
+  },
+  "lazy": {
+    "lazySemantics": "none"
+  },
+  "adapterSignature": {
+    "parameters": [
+      {
+        "name": "schema",
+        "type": "ToolSchema"
+      }
+    ],
+    "returnType": "KernelToolSchema"
+  }
+}
