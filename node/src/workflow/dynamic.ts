@@ -311,11 +311,6 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
 
   private async runAgent<T>(prompt: string, options: DynamicWorkflowAgentOptions): Promise<DynamicWorkflowAgentResult<T> | null> {
     if (!prompt.trim()) throw new Error("dynamic workflow agent prompt must not be empty")
-    if (this.agentCount >= this.limits.maxAgentsPerRun) {
-      throw new DynamicWorkflowLimitError(
-        `dynamic workflow exceeded maxAgentsPerRun (${this.limits.maxAgentsPerRun})`,
-      )
-    }
     const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
     const promptFingerprint = fingerprintDynamicWorkflowInvocation(prompt, options)
     const cached = await this.replayStore?.find(this.runId, nodeId, promptFingerprint)
@@ -335,6 +330,11 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         status: cached.status,
         ...(cached.termination ? { termination: cached.termination } : {}),
       }
+    }
+    if (this.agentCount >= this.limits.maxAgentsPerRun) {
+      throw new DynamicWorkflowLimitError(
+        `dynamic workflow exceeded maxAgentsPerRun (${this.limits.maxAgentsPerRun})`,
+      )
     }
     this.agentCount += 1
     await this.acquireAgentSlot()
@@ -391,11 +391,6 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
 
   private async runAgentBatch(requests: readonly DynamicWorkflowAgentRequest[]): Promise<Array<DynamicWorkflowAgentResult | null>> {
     if (requests.length === 0) return []
-    if (this.agentCount + requests.length > this.limits.maxAgentsPerRun) {
-      throw new DynamicWorkflowLimitError(
-        `dynamic workflow exceeded maxAgentsPerRun (${this.limits.maxAgentsPerRun})`,
-      )
-    }
     const nodes = requests.map((request, index) => {
       const options = request.options ?? {}
       const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
@@ -416,31 +411,87 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         } satisfies WorkflowNodeSpec,
       }
     })
-    this.agentCount += nodes.length
-    this.progress.agentsStarted = this.agentCount
-    this.progress.activeAgents += nodes.length
+    const cached = await Promise.all(nodes.map(async entry => {
+      const promptFingerprint = fingerprintDynamicWorkflowInvocation(entry.request.prompt, entry.options)
+      return {
+        ...entry,
+        promptFingerprint,
+        record: await this.replayStore?.find(this.runId, entry.nodeId, promptFingerprint),
+      }
+    }))
+    const misses = cached.filter(entry => !entry.record)
+    if (this.agentCount + misses.length > this.limits.maxAgentsPerRun) {
+      throw new DynamicWorkflowLimitError(
+        `dynamic workflow exceeded maxAgentsPerRun (${this.limits.maxAgentsPerRun})`,
+      )
+    }
     const currentPhase = this.phaseStack.at(-1)
-    if (currentPhase) currentPhase.agentsStarted += nodes.length
+    const replayed = cached.filter(entry => entry.record)
+    if (replayed.length > 0) {
+      this.progress.agentsReused += replayed.length
+      this.progress.agentsCompleted += replayed.length
+      if (currentPhase) {
+        currentPhase.agentsStarted += replayed.length
+        currentPhase.agentsCompleted += replayed.length
+      }
+      this.emit()
+    }
+    if (misses.length === 0) {
+      return cached.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
+    }
+    this.agentCount += misses.length
+    this.progress.agentsStarted = this.agentCount
+    this.progress.activeAgents += misses.length
+    if (currentPhase) currentPhase.agentsStarted += misses.length
     this.emit()
     try {
-      const outcome = await this.host.runWorkflow({ nodes: nodes.map(entry => entry.node) })
-      if (outcome.rejection) return nodes.map(() => null)
-      return nodes.map(entry => {
+      const outcome = await this.host.runWorkflow({ nodes: misses.map(entry => entry.node) })
+      if (outcome.rejection) {
+        return cached.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
+      }
+      const results = new Map<string, DynamicWorkflowAgentResult | null>()
+      for (const entry of misses) {
         const node = outcome.nodeOutcomes.find(candidate => candidate.nodeId === entry.nodeId)
         const text = node?.output?.content ?? outcome.outputs[entry.nodeId] ?? ""
-        this.progress.agentsCompleted += 1
-        if (currentPhase) currentPhase.agentsCompleted += 1
-        return {
+        const result: DynamicWorkflowAgentResult = {
           value: entry.options.outputSchema ? parseStructuredValue(text) : text,
           text,
           nodeId: node?.nodeId ?? entry.nodeId,
           status: node?.status ?? "completed_partial",
           ...(node?.termination ? { termination: node.termination } : {}),
         }
-      })
+        results.set(entry.nodeId, result)
+        if (node?.status === "completed" || node?.status === "completed_partial") {
+          await this.replayStore?.save(this.runId, {
+            nodeId: entry.nodeId,
+            promptFingerprint: entry.promptFingerprint,
+            text,
+            status: node.status,
+            ...(node.termination ? { termination: node.termination } : {}),
+          })
+        }
+        this.progress.agentsCompleted += 1
+        if (currentPhase) currentPhase.agentsCompleted += 1
+      }
+      return cached.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : results.get(entry.nodeId) ?? null)
     } finally {
-      this.progress.activeAgents -= nodes.length
+      this.progress.activeAgents -= misses.length
       this.emit()
+    }
+  }
+
+  private replayResult(options: DynamicWorkflowAgentOptions, record: {
+    nodeId: string
+    text: string
+    status: WorkflowNodeStatus
+    termination?: string
+  }): DynamicWorkflowAgentResult {
+    return {
+      value: options.outputSchema ? parseStructuredValue(record.text) : record.text,
+      text: record.text,
+      nodeId: record.nodeId,
+      status: record.status,
+      ...(record.termination ? { termination: record.termination } : {}),
     }
   }
 

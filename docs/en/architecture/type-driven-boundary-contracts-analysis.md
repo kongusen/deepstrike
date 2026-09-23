@@ -69,6 +69,6 @@ The branch now adds a provider-neutral `DynamicWorkflowExecutor` in `node/src/wo
 - `phase`, `log`, an immutable `args` snapshot, and typed progress;
 - host guardrails for 1000 agents per run and 4096 items per batch, with kernel quotas remaining authoritative;
 - `DynamicWorkflowScript` metadata/source types as the stable input contract for persistence and isolated execution.
-- `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` and invocation fingerprints as the replay cache boundary.
+- `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` and invocation fingerprints as the replay cache boundary; fan-out preserves unchanged items and submits only fingerprint misses.
 
 This slice deliberately does not execute arbitrary source text, grant scripts direct filesystem or shell access, or claim replay parity. It fixes the public vocabulary and kernel entry point first, then adds an isolated script VM and durable replay without creating a second execution authority.

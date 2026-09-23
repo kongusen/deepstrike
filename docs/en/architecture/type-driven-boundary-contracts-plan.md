@@ -70,6 +70,7 @@ The target is the provider-neutral product mechanism documented by Anthropic: a 
 ### Slice E — deterministic replay and reuse
 
 - [x] Add invocation fingerprints, a pluggable replay store, and in-memory/file implementations; reuse completed results for the same run/node/prompt/options.
+- [x] Make `parallelAgents` replay partial fan-outs: preserve result order, submit only fingerprint misses, and report reused items.
 - [ ] Persist input dependencies and terminal status, and connect replay records to the kernel workflow/session log.
 - [ ] Reuse completed results when the invocation fingerprint is unchanged; rerun the first changed/failed invocation and its descendants.
 - [ ] Refuse relaunch when the referenced run artifact or saved result set is missing; never silently start over under a resume operation.

@@ -518,6 +518,6 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 - `phase(name, body)`、`log(message, fields)`、`args` 快照和 typed progress；
 - 单次运行 1000 agents、单批 4096 items 的 host guardrail；kernel quota 仍是最终权威；
 - `DynamicWorkflowScript` 元数据/源码类型，为后续保存与隔离执行留下稳定输入契约。
-- `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` 和 invocation fingerprint，为后续 replay 提供结果缓存边界。
+- `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` 和 invocation fingerprint，为后续 replay 提供结果缓存边界；fan-out 会保留未变化 item，只提交 fingerprint miss。
 
 这一步刻意不执行任意源码、不允许 workflow 脚本直接读文件或 shell，也不声称已经实现脚本重放。这样可以先把动态工作流的公共词汇与 kernel 入口固定下来，再引入隔离 VM 和持久化 replay，而不会复制一套绕过 kernel 的执行器。

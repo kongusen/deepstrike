@@ -1,4 +1,4 @@
-import { DynamicWorkflowExecutor } from "../src/workflow/dynamic.js"
+import { DynamicWorkflowExecutor, dynamicAgentTask } from "../src/workflow/dynamic.js"
 import { InMemoryDynamicWorkflowReplayStore } from "../src/workflow/dynamic-replay.js"
 import type { DynamicWorkflowHost } from "../src/workflow/dynamic.js"
 
@@ -11,6 +11,26 @@ function hostWithCalls(calls: string[]): DynamicWorkflowHost {
       return {
         nodeOutcomes: [{ nodeId: node.nodeId!, status: "completed", output: { role: "assistant", content: `done:${goal}` } }],
         outputs: { [node.nodeId!]: `done:${goal}` },
+      }
+    },
+  }
+}
+
+function batchHostWithCalls(batches: string[][]): DynamicWorkflowHost {
+  return {
+    async runWorkflow(spec) {
+      const goals = spec.nodes.map(node => typeof node.task === "string" ? node.task : node.task.goal)
+      batches.push(goals)
+      return {
+        nodeOutcomes: spec.nodes.map(node => ({
+          nodeId: node.nodeId!,
+          status: "completed" as const,
+          output: { role: "assistant" as const, content: `done:${typeof node.task === "string" ? node.task : node.task.goal}` },
+        })),
+        outputs: Object.fromEntries(spec.nodes.map(node => {
+          const goal = typeof node.task === "string" ? node.task : node.task.goal
+          return [node.nodeId!, `done:${goal}`]
+        })),
       }
     },
   }
@@ -32,5 +52,42 @@ describe("dynamic workflow replay", () => {
     await changed.run(ctx => ctx.agent("inspect again", { label: "inspect" }))
     expect(calls).toEqual(["inspect", "inspect again"])
   })
-})
 
+  it("reuses unchanged fanout items and submits only the changed suffix", async () => {
+    const store = new InMemoryDynamicWorkflowReplayStore()
+    const batches: string[][] = []
+    const first = new DynamicWorkflowExecutor(batchHostWithCalls(batches), { runId: "fanout-1", replayStore: store })
+    await first.run(ctx => ctx.parallelAgents(["a", "b", "c"], (item, index) =>
+      dynamicAgentTask(`task:${item}`, { label: `slot-${index}` }),
+    ))
+
+    const second = new DynamicWorkflowExecutor(batchHostWithCalls(batches), { runId: "fanout-1", replayStore: store })
+    const replayed = await second.run(ctx => ctx.parallelAgents(["a", "changed", "c"], (item, index) =>
+      dynamicAgentTask(`task:${item}`, { label: `slot-${index}` }),
+    ))
+
+    expect(batches).toEqual([["task:a", "task:b", "task:c"], ["task:changed"]])
+    expect(replayed.value.map(result => result?.text)).toEqual(["done:task:a", "done:task:changed", "done:task:c"])
+    expect(replayed.progress.agentsReused).toBe(2)
+    expect(replayed.progress.agentsStarted).toBe(1)
+  })
+
+  it("does not consume the agent limit for a replay hit", async () => {
+    const store = new InMemoryDynamicWorkflowReplayStore()
+    const calls: string[] = []
+    const executor = new DynamicWorkflowExecutor(hostWithCalls(calls), {
+      runId: "limit-replay-1",
+      replayStore: store,
+      limits: { maxAgentsPerRun: 1 },
+    })
+
+    const run = await executor.run(async ctx => [
+      await ctx.agent("inspect", { label: "inspect" }),
+      await ctx.agent("inspect", { label: "inspect" }),
+    ])
+
+    expect(calls).toEqual(["inspect"])
+    expect(run.progress.agentsReused).toBe(1)
+    expect(run.progress.agentsStarted).toBe(1)
+  })
+})
