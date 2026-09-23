@@ -31,6 +31,39 @@ const fanoutSpec: WorkflowSpec = {
 }
 
 describe("runWorkflow bootstraps standalone (no active parent run)", () => {
+  it("runs sequential and parallel dynamic submissions through one kernel operation", async () => {
+    const sessionLog = new InMemorySessionLog()
+    let calls = 0
+    const runner = new RuntimeRunner({
+      sessionLog,
+      maxTokens: 8000,
+      subAgentOrchestrator: stubOrchestrator(() => { calls++ }) as never,
+    } as never)
+
+    const run = await runner.runDynamicWorkflow(async ctx => {
+      const first = await ctx.agent("first", { label: "first" })
+      const rest = await ctx.parallel(["a", "b"], item => ctx.agent(`task:${item}`, { label: item }))
+      return [first?.text, ...rest.map(result => result?.text)]
+    }, { sessionId: "dynamic-operation" })
+
+    expect(run.value).toEqual(["wf-node0", "wf-node1", "wf-node2"])
+    expect(calls).toBe(3)
+    const starts = (await sessionLog.read("dynamic-operation"))
+      .filter(entry => entry.event.kind === "run_started")
+    expect(starts).toHaveLength(1)
+    const runId = starts[0].event.kind === "run_started" ? starts[0].event.run_id : ""
+    const journal = await sessionLog.kernelJournal.readFrom(`node-operation-${runId}`)
+    expect(journal.some(entry => {
+      const record = JSON.parse(Buffer.from(entry.record_bytes).toString("utf8")) as {
+        canonical_input?: { data?: string }
+      }
+      return record.canonical_input?.data
+        ? Buffer.from(record.canonical_input.data, "base64").toString("utf8").includes('"dynamic_workflow"')
+        : false
+    })).toBe(true)
+    expect((runner as never as { activeKernel: unknown }).activeKernel).toBeNull()
+  })
+
   it("runFanout executes the public system-only/full template instead of returning empty success", async () => {
     const provider: LLMProvider = {
       async complete(): Promise<ModelMessage> {

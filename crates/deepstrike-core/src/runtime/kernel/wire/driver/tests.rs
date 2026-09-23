@@ -7,6 +7,7 @@ use super::*;
 use crate::runtime::kernel::wire::checkpoint::{
     CanonicalInput, CheckpointCandidate, CheckpointDraft, KernelCheckpoint,
 };
+use crate::runtime::kernel::wire::command::CompleteDynamicWorkflowCommand;
 use crate::runtime::kernel::wire::config::ConfigDefaults;
 use crate::runtime::kernel::wire::config::TailBounds;
 use crate::runtime::kernel::wire::config::{

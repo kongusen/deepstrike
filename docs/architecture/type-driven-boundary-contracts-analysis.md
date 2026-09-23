@@ -506,7 +506,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 4. **启动审批与成本提示缺失**：kernel governance 能拒绝 effect，但工作流启动前还没有展示阶段、原始脚本、规模提示并等待一次性批准的控制面。
 5. **边界仍有一个真实缺陷**：`WorkflowNodeSpec.agent` 是 host metadata，`workflowNodeSpecToKernel` 会明确丢弃它，动态脚本调用必须先通过 host spawn boundary 解析目标 Agent，不能把它伪装成 kernel 字段。
 6. **限制没有形成独立的 workflow contract**：kernel 已有 `max_concurrent_subagents`、`max_workflow_nodes` 等 quota，但尚未有文章语义对应的单次 `parallel/pipeline` 4096 项、默认 16 并发、单次运行 1000 agents 和 size guideline/large warning 模型。
-7. **kernel 追加入口已接到 runner，但 RuntimeRunner 尚未接完整 controller**：`DynamicWorkflow` root entry 现在可以在空 DAG 上保持 active，`HostCommand::AppendWorkflowNodes`、`CanonicalRunnerRuntime.appendWorkflowNodes()` 和 `RuntimeRunner.appendDynamicWorkflowNodes()` 把动态追加放回同一个 kernel operation，`CompleteDynamicWorkflow` 明确关闭生命周期；`DynamicWorkflowController` 已提供 typed submission queue，脚本 executor 与外部 driver 已能异步交接，但 `RuntimeRunner` 仍未用它驱动完整脚本生命周期。
+7. **kernel 追加入口与 RuntimeRunner controller 已接通**：`DynamicWorkflow` root entry 可以在空 DAG 上保持 active，`HostCommand::AppendWorkflowNodes`、`CanonicalRunnerRuntime.appendWorkflowNodes()` 和 `RuntimeRunner.appendDynamicWorkflowNodes()` 把动态追加放回同一个 kernel operation，`CompleteDynamicWorkflow` 明确关闭生命周期；`DynamicWorkflowController` 提供 typed submission queue，`RuntimeRunner.runDynamicWorkflow()` 现在负责启动、消费 submission、回填 outcome、显式 close 和 RunGroup 结算。
 
 ### 9.3 第一阶段实现边界
 
@@ -520,6 +520,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 - 单次运行 1000 agents、单批 4096 items 的 host guardrail；kernel quota 仍是最终权威；
 - `DynamicWorkflowScript` 元数据/源码类型，为后续保存与隔离执行留下稳定输入契约。
 - `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` 和 invocation fingerprint，为后续 replay 提供结果缓存边界；fan-out 会保留未变化 item，只提交 fingerprint miss。
-- `DynamicWorkflowController` 提供 typed submission queue：脚本暂停在 host workflow submission，外部 driver 通过 `nextSubmission()` 消费，再用 `completeSubmission()` 或 `failSubmission()` 回填；这一步仍不等于 RuntimeRunner 已拥有完整生命周期。
+- `DynamicWorkflowController` 提供 typed submission queue：脚本暂停在 host workflow submission，外部 driver 通过 `nextSubmission()` 消费，再用 `completeSubmission()` 或 `failSubmission()` 回填；这一层把异步 handoff 固定成可测试协议。
+- `RuntimeRunner.runDynamicWorkflow()` 现在拥有这一 controller，并在一个 `DynamicWorkflow` root 上完成 submission 驱动、结果回填、显式 close、session log 与 RunGroup 结算；`WorkflowNodeSpec.nodeId` 仍只在 host 侧通过 batch base 映射回动态结果。
 
 这一步刻意不执行任意源码、不允许 workflow 脚本直接读文件或 shell，也不声称已经实现脚本重放。这样可以先把动态工作流的公共词汇与 kernel 入口固定下来，再引入隔离 VM 和持久化 replay，而不会复制一套绕过 kernel 的执行器。

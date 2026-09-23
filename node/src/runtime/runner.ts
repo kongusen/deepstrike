@@ -79,6 +79,8 @@ import type {
   WorkflowNodeOutcome, KernelWorkflowNodeOutcome,
 } from "../types/agent.js"
 import type { AgentCapabilityFilter } from "../types/agent.js"
+import { DynamicWorkflowController } from "../workflow/dynamic-controller.js"
+import type { DynamicWorkflowContext, DynamicWorkflowRun, DynamicWorkflowRunOptions } from "../workflow/dynamic.js"
 
 function intersectCapabilityFilters(a?: AgentCapabilityFilter, b?: AgentCapabilityFilter): AgentCapabilityFilter | undefined {
   if (!a && !b) return undefined
@@ -678,6 +680,31 @@ function controlRequestRejection(
     ...(rejected.subject ? { subject: rejected.subject } : {}),
     reason: typeof rejected.reason === "string" ? rejected.reason : "request denied",
   }
+}
+
+/** Restore the public node keys that the canonical kernel intentionally does not carry. */
+function rebindDynamicWorkflowOutcome(
+  outcome: WorkflowOutcome,
+  spec: WorkflowSpec,
+  observations: KernelObservation[],
+): WorkflowOutcome {
+  const submitted = observations.find(observation => observation.kind === "workflow_nodes_submitted") as
+    | { base?: number }
+    | undefined
+  const base = Number.isInteger(submitted?.base) ? submitted!.base! : 0
+  const kernelToHost = new Map(spec.nodes.map((node, index) => [
+    `wf-node${base + index}`,
+    node.nodeId ?? `wf-node${base + index}`,
+  ]))
+  const nodeOutcomes = outcome.nodeOutcomes.map(node => ({
+    ...node,
+    nodeId: kernelToHost.get(node.nodeId) ?? node.nodeId,
+  }))
+  const outputs = Object.fromEntries(Object.entries(outcome.outputs).map(([nodeId, output]) => [
+    kernelToHost.get(nodeId) ?? nodeId,
+    output,
+  ]))
+  return { ...outcome, nodeOutcomes, outputs }
 }
 
 function pendingCallIds(action: KernelRunnerAction): string[] {
@@ -1567,6 +1594,107 @@ export class RuntimeRunner {
   }
 
   /**
+   * Run a dynamic script against one kernel-owned workflow root.
+   *
+   * The script pauses at each host submission. This driver appends that batch to the open dynamic
+   * root, drives only the newly runnable work until the root becomes idle, returns the typed
+   * outcome to the controller, and closes the root once the script has finished.
+   */
+  async runDynamicWorkflow<TArgs extends Record<string, unknown>, T>(
+    program: (context: DynamicWorkflowContext<TArgs>) => Promise<T> | T,
+    opts?: DynamicWorkflowRunOptions<TArgs> & { sessionId?: string },
+  ): Promise<DynamicWorkflowRun<T>> {
+    if (this.activeKernel || this.currentSessionId) {
+      throw new Error("dynamic workflows require a standalone RuntimeRunner")
+    }
+    const { sessionId: requestedSessionId, ...controllerOptions } = opts ?? {}
+    const sessionId = requestedSessionId ?? `dw-${crypto.randomUUID()}`
+    const runId = controllerOptions.runId ?? crypto.randomUUID()
+    let groupBudgetScope: GroupBudgetScope | undefined
+    const controller = new DynamicWorkflowController<TArgs>()
+
+    try {
+      if (this.opts.runGroup) {
+        groupBudgetScope = await GroupBudgetScope.open(
+          this.opts.runGroup,
+          { sessionId, role: this.opts.agentId, kind: "vehicle" },
+          this.groupBudgetRequest(false),
+        )
+        this.activeGroupBudgetScope = groupBudgetScope
+      }
+      await this.opts.sessionLog.append(sessionId, {
+        kind: "run_started",
+        run_id: runId,
+        goal: "dynamic-workflow",
+        criteria: [],
+        agent_id: this.opts.agentId,
+        route: this.providerRoute,
+      })
+      await this.initializeWorkflowKernel(sessionId, runId, groupBudgetScope)
+      const runtime = this.activeKernel!
+      const startObservations = this.pendingObservations.length
+      await canonicalStartDynamicWorkflow(runtime, this.pendingObservations)
+      this.pendingObservations.splice(startObservations)
+
+      const runPromise = controller.start(program, { ...controllerOptions, runId })
+      for (;;) {
+        const submission = await controller.nextSubmission()
+        if (!submission) break
+        const observationStart = this.pendingObservations.length
+        try {
+          const action = await this.appendDynamicWorkflowNodes(submission.spec)
+          const observations = this.pendingObservations.slice(observationStart)
+          const rejection = controlRequestRejection(observations, "submit_workflow_nodes")
+          const outcome = rejection
+            ? { nodeOutcomes: [], outputs: {}, rejection }
+            : rebindDynamicWorkflowOutcome(
+                await this.driveWorkflow(
+                  action,
+                  observations,
+                  sessionId,
+                  runtime,
+                  new Map(),
+                  new Map(submission.spec.nodes.flatMap((node, index) => node.context
+                    ? [[`wf-node${index}`, node.context] as const]
+                    : [])),
+                ),
+                submission.spec,
+                observations,
+              )
+          controller.completeSubmission(submission.id, outcome)
+        } catch (error) {
+          controller.failSubmission(submission.id, error)
+        }
+      }
+
+      const run = await runPromise
+      const closeAction = await this.completeDynamicWorkflow()
+      const terminal = closeAction ?? runtime.resumeAction()
+      if (!terminal || terminal.kind !== "done") {
+        throw new Error("dynamic workflow close did not produce a terminal kernel action")
+      }
+      await this.appendObservations(sessionId, runtime, 0)
+      if (groupBudgetScope && !groupBudgetScope.isClosed) {
+        await this.settleGroupBudget(groupBudgetScope, {
+          tokens: terminal.result.totalTokensUsed,
+          subagents: runtime.localSubagentsSpawned(),
+        })
+        this.activeGroupBudgetScope = undefined
+      }
+      return run
+    } finally {
+      try {
+        if (groupBudgetScope && !groupBudgetScope.isClosed) await groupBudgetScope.release()
+      } finally {
+        this.activeKernel = null
+        this.currentSessionId = null
+        this.pendingObservations = []
+        this.activeGroupBudgetScope = undefined
+      }
+    }
+  }
+
+  /**
    * Append nodes to an already active root dynamic workflow. The operation must have been
    * started by the same runner; this method deliberately exposes the kernel action rather than
    * starting a second standalone workflow, so the caller can continue the existing spawn loop.
@@ -1802,7 +1930,12 @@ export class RuntimeRunner {
     const completedNodeOutcomes: WorkflowNodeOutcome[] = []
 
     for (;;) {
-      if (nodes.length === 0) return { nodeOutcomes: [], outputs: Object.fromEntries(outputs) } // nothing to run (e.g. all gated)
+      if (nodes.length === 0) {
+        return {
+          nodeOutcomes: completedNodeOutcomes,
+          outputs: Object.fromEntries(outputs),
+        }
+      }
       for (const node of nodes) {
         for (const [agentId, output] of Object.entries(node.dependency_outputs ?? {})) {
           if (!outputs.has(agentId)) outputs.set(agentId, output)
