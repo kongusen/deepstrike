@@ -84,6 +84,27 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
     expect((runner as never as { activeKernel: unknown }).activeKernel).toBeNull()
   })
 
+  it("cancels the open kernel root when a dynamic child fails", async () => {
+    const sessionLog = new InMemorySessionLog()
+    const runner = new RuntimeRunner({
+      sessionLog,
+      maxTokens: 8000,
+      subAgentOrchestrator: {
+        async run() {
+          throw new Error("child failed")
+        },
+      } as never,
+    } as never)
+
+    await expect(runner.runDynamicWorkflow(ctx => ctx.agent("fails", { label: "fails" }), {
+      sessionId: "dynamic-failure",
+    })).rejects.toThrow("child failed")
+
+    expect((runner as never as { activeKernel: unknown }).activeKernel).toBeNull()
+    expect((await sessionLog.read("dynamic-failure"))
+      .some(entry => entry.event.kind === "operation_cancelled")).toBe(true)
+  })
+
   it("runFanout executes the public system-only/full template instead of returning empty success", async () => {
     const provider: LLMProvider = {
       async complete(): Promise<ModelMessage> {

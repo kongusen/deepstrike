@@ -1611,6 +1611,7 @@ export class RuntimeRunner {
     const sessionId = requestedSessionId ?? `dw-${crypto.randomUUID()}`
     const runId = controllerOptions.runId ?? crypto.randomUUID()
     let groupBudgetScope: GroupBudgetScope | undefined
+    let dynamicRootTerminal = false
     const controller = new DynamicWorkflowController<TArgs>()
 
     try {
@@ -1673,6 +1674,7 @@ export class RuntimeRunner {
       if (!terminal || terminal.kind !== "done") {
         throw new Error("dynamic workflow close did not produce a terminal kernel action")
       }
+      dynamicRootTerminal = true
       await this.appendObservations(sessionId, runtime, 0)
       if (groupBudgetScope && !groupBudgetScope.isClosed) {
         await this.settleGroupBudget(groupBudgetScope, {
@@ -1684,6 +1686,26 @@ export class RuntimeRunner {
       return run
     } finally {
       try {
+        if (this.activeKernel && !dynamicRootTerminal) {
+          try {
+            let cancellation = await this.commitKernelAction(this.activeKernel, this.pendingObservations, {
+              kind: "cancel_operation",
+              reason: "host_shutdown",
+            })
+            if (cancellation.kind === "preempt_sub_agents") {
+              cancellation = await this.commitKernelAction(this.activeKernel, this.pendingObservations, {
+                kind: "preempt_result",
+                effect_id: cancellation.effectId,
+              })
+            }
+            if (cancellation.kind === "done") {
+              await this.appendObservations(sessionId, this.activeKernel, 0)
+            }
+          } catch {
+            // Preserve the script/driver failure. Cleanup is best effort because the kernel may
+            // already have rejected a second terminal transition or be rebuilding from a journal.
+          }
+        }
         if (groupBudgetScope && !groupBudgetScope.isClosed) await groupBudgetScope.release()
       } finally {
         this.activeKernel = null
