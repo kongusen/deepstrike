@@ -57,6 +57,7 @@ from .credentials import (
 )
 from .model_catalog import DynamicModelCatalog, ModelCatalog, ModelCatalogSource, StaticModelCatalog
 from .capability_router import CapabilityRequirement, CapabilityRouteResult, CapabilityRouter, ProviderCandidate
+from .fallback import FallbackProvider
 from .runtime_registry import create_provider_async
 
 __all__ = [
@@ -82,6 +83,6 @@ __all__ = [
     "CredentialRequest", "CredentialResolutionError", "CredentialResolver", "OAuthAccessToken",
     "OAuthCredentialResolver", "ProviderCredential", "redact_credential", "resolve_credential",
     "DynamicModelCatalog", "ModelCatalog", "ModelCatalogSource", "StaticModelCatalog",
-    "CapabilityRequirement", "CapabilityRouteResult", "CapabilityRouter", "ProviderCandidate",
+    "CapabilityRequirement", "CapabilityRouteResult", "CapabilityRouter", "ProviderCandidate", "FallbackProvider",
     "create_provider_async",
 ]

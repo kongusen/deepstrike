@@ -158,6 +158,7 @@ from deepstrike.providers import (
     ToolCallEvent, ToolDeltaEvent, ToolSuspendEvent, ToolResultEvent, DoneEvent, ErrorEvent,
     PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse, ToolArgumentRepairedEvent,
     RetryConfig, CircuitBreaker, TokenUsage, ProviderToolSpec,
+    FallbackProvider,
 )
 from deepstrike.tools import (
     RegisteredTool, tool, streaming_tool, validate_tool_arguments, execute_tools, read_file,
@@ -365,6 +366,7 @@ __all__ = [
     "ToolCallEvent", "ToolDeltaEvent", "ToolSuspendEvent", "ToolResultEvent", "DoneEvent", "ErrorEvent",
     "PermissionRequestEvent", "PermissionResolvedEvent", "PermissionResponse", "ToolArgumentRepairedEvent",
     "RetryConfig", "CircuitBreaker", "TokenUsage", "ProviderToolSpec",
+    "FallbackProvider",
     "RegisteredTool", "tool", "streaming_tool", "validate_tool_arguments", "execute_tools", "read_file",
     "ToolError", "safe_tool", "ok", "fail", "format_tool_error", "ToolAuditFailedEvent",
     "EntropySample", "EntropySampleEvent", "EntropyAlertEvent",
