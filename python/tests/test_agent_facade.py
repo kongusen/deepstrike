@@ -44,6 +44,14 @@ async def test_agent_run_options_reach_runtime_provider():
     assert provider.extensions["temperature"] == 0.1
 
 
+async def test_agent_replay_uses_recorded_messages():
+    agent = create_agent("replay", runtime_binding={"provider": OneTurnProvider()})
+
+    result = await agent.replay([{"role": "assistant", "content": "recorded"}], "replay this")
+
+    assert result.output == "recorded"
+
+
 async def test_agent_memory_apis_use_runtime_binding():
     store = InMemoryMemoryStore()
     agent = create_agent(

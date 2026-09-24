@@ -442,17 +442,18 @@ class Agent:
         usage: dict[str, Any] | None = None
         status = "completed"
         async for event in events:
-            if isinstance(event, TextDelta):
-                output.append(event.delta)
-            elif isinstance(event, UsageEvent):
+            event_type = event.get("type") if isinstance(event, dict) else getattr(event, "type", None)
+            if isinstance(event, TextDelta) or event_type == "text_delta":
+                output.append(event.get("delta", "") if isinstance(event, dict) else event.delta)
+            elif isinstance(event, UsageEvent) or event_type == "usage":
                 usage = {
-                    "input_tokens": event.input_tokens,
-                    "output_tokens": event.output_tokens,
-                    "total_tokens": event.total_tokens,
+                    "input_tokens": event.get("input_tokens", event.get("inputTokens", 0)) if isinstance(event, dict) else event.input_tokens,
+                    "output_tokens": event.get("output_tokens", event.get("outputTokens", 0)) if isinstance(event, dict) else event.output_tokens,
+                    "total_tokens": event.get("total_tokens", event.get("totalTokens", 0)) if isinstance(event, dict) else event.total_tokens,
                 }
-            elif isinstance(event, DoneEvent):
-                status = event.status
-            elif isinstance(event, ErrorEvent):
+            elif isinstance(event, DoneEvent) or event_type == "done":
+                status = event.get("status", "completed") if isinstance(event, dict) else event.status
+            elif isinstance(event, ErrorEvent) or event_type == "error":
                 status = "error"
         entries = await self._session_log.read(session.id) if self._session_log is not None else []
         started = next((entry.event for entry in entries if entry.event.get("kind") == "run_started"), None)
@@ -528,6 +529,60 @@ class Agent:
             return await self._collect_result(session, session.resume())
         except ValueError:
             return None
+
+    async def evaluate(
+        self,
+        goal: str,
+        criteria: Sequence[Any],
+        *,
+        result: RunResult | str | None = None,
+        eval_provider: Any | None = None,
+    ) -> Any:
+        """Run the SDK's stateless judge against this Agent's output."""
+        from deepstrike.runtime.eval import Criterion, judge
+
+        run_result = result if isinstance(result, RunResult) else None
+        output = result if isinstance(result, str) else None
+        if run_result is None and output is None:
+            run_result = await self.run(goal)
+            output = run_result.output
+        normalized = [item if isinstance(item, Criterion) else Criterion(text=str(item)) for item in criteria]
+        provider = eval_provider or (self.runtime_binding or {}).get("eval_provider") or self._provider()
+        verdict = await judge(provider, goal, normalized, output or "")
+        return {"result": run_result, "output": output or "", "verdict": verdict}
+
+    async def replay(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        goal: str,
+        *,
+        session_id: str | None = None,
+    ) -> RunResult:
+        """Execute a deterministic run using recorded assistant messages."""
+        from deepstrike.runtime.replay_provider import ReplayProvider
+
+        replay_binding = dict(self.runtime_binding or {})
+        replay_binding["provider"] = ReplayProvider(list(messages))
+        replay_binding.pop("provider_for", None)
+        replay_agent = Agent(
+            self.name,
+            description=self.description,
+            instructions=self.instructions,
+            model=self.model,
+            capability_filter=self.capability_filter,
+            tools=self.tools,
+            mcp_servers=self.mcp_servers,
+            skills=self.skills,
+            memory=self.memory,
+            knowledge=self.knowledge,
+            handoffs=self.handoffs,
+            provider_options=self.provider_options,
+            output_schema=self.output_schema,
+            metadata=self.metadata,
+            guardrails=self.guardrails,
+            runtime_binding=replay_binding,
+        )
+        return await replay_agent.run(goal, session_id=session_id)
 
     async def stream(
         self,
