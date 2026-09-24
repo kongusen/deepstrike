@@ -44,6 +44,7 @@ class RunResult(dict[str, Any]):
         status: str,
         usage: dict[str, Any] | None = None,
         evidence: list[dict[str, Any]] | None = None,
+        output_validation: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(
             output=output,
@@ -52,6 +53,7 @@ class RunResult(dict[str, Any]):
             status=status,
             usage=usage,
             evidence=evidence or [],
+            output_validation=output_validation,
         )
 
     output: str
@@ -60,6 +62,7 @@ class RunResult(dict[str, Any]):
     status: str
     usage: dict[str, Any] | None
     evidence: list[dict[str, Any]]
+    output_validation: dict[str, Any] | None
 
     def __getattr__(self, name: str) -> Any:
         try:
@@ -202,11 +205,23 @@ class Agent:
         if max_turns is not None:
             raw_options["max_turns"] = max_turns
         binding = self.runtime_binding or {}
+        if self.mcp_servers and binding.get("mcp_execution_plane") is None and binding.get("execution_plane") is None:
+            raise RuntimeError(
+                f'agent "{self.name}" declares mcp_servers but no mcp execution plane is bound'
+            )
+        if self.provider_options:
+            raw_options["extensions"] = {
+                **dict(raw_options.get("extensions") or {}),
+                **self.provider_options,
+            }
+        for option_name in ("skill_dir", "skill_filter", "knowledge_source", "governance_policy"):
+            if binding.get(option_name) is not None:
+                raw_options.setdefault(option_name, binding[option_name])
         if binding.get("memory_store") is not None:
             raw_options.setdefault("memory_store", binding["memory_store"])
         if binding.get("memory_scope") is not None:
             raw_options.setdefault("memory_scope", binding["memory_scope"])
-        configured_plane = (self.runtime_binding or {}).get("execution_plane")
+        configured_plane = (self.runtime_binding or {}).get("execution_plane") or (self.runtime_binding or {}).get("mcp_execution_plane")
         plane = configured_plane or LocalExecutionPlane()
         if configured_plane is None:
             executable_tools = [tool for tool in (self.tools or []) if hasattr(tool, "schema")]
@@ -296,6 +311,19 @@ class Agent:
         sid = session_id or f"agent-workflow-{uuid.uuid4()}"
         return await self._runner_for(sid).run_workflow(spec, session_id=sid)
 
+    async def delegate(
+        self,
+        goal: str,
+        *,
+        role: str = "custom",
+        session_id: str | None = None,
+    ) -> Any:
+        """Delegate one bounded task through the governed workflow scheduler."""
+        from deepstrike.types.agent import WorkflowNodeSpec, WorkflowSpec
+
+        spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task=goal, role=role)])
+        return await self.workflow(spec, session_id=session_id)
+
     async def _run_in_session(self, session: AgentSession, goal: str, *, max_turns: int | None = None) -> RunResult:
         from deepstrike.providers.stream import DoneEvent, ErrorEvent, TextDelta, UsageEvent
 
@@ -318,6 +346,18 @@ class Agent:
         entries = await self._session_log.read(session.id) if self._session_log is not None else []
         started = next((entry.event for entry in entries if entry.event.get("kind") == "run_started"), None)
         evidence = [entry.event for entry in entries if entry.event.get("kind") in {"provider_attempt", "llm_completed"}]
+        output_validation = None
+        if self.output_schema is not None:
+            from deepstrike.runtime.output_schema import extract_json_value, validate_against_schema
+            parsed = extract_json_value("".join(output))
+            errors = validate_against_schema(parsed, self.output_schema)
+            output_validation = {
+                "valid": not errors,
+                "value": parsed,
+                "errors": errors,
+            }
+            if errors:
+                status = "partial"
         return RunResult(
             output="".join(output),
             run_id=started.get("run_id") if started else None,
@@ -325,6 +365,7 @@ class Agent:
             status=status,
             usage=usage,
             evidence=evidence,
+            output_validation=output_validation,
         )
 
     async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> RunResult:

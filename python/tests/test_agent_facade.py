@@ -43,6 +43,27 @@ async def test_agent_memory_apis_use_runtime_binding():
     assert hits and hits[0].record.record_id == record.record_id
 
 
+async def test_agent_output_schema_is_reported_on_run_result():
+    agent = create_agent(
+        "structured",
+        output_schema={"type": "object", "required": ["answer"]},
+        runtime_binding={"provider": type("Provider", (), {
+            "complete": OneTurnProvider.complete,
+            "stream": lambda self, context, tools, extensions=None, state=None: _structured_stream(),
+        })()},
+    )
+
+    result = await agent.run("return json")
+
+    assert result.output_validation is not None
+    assert result.output_validation["valid"] is False
+    assert result.status == "partial"
+
+
+async def _structured_stream():
+    yield TextDelta(delta="not json")
+
+
 def test_agent_session_is_pythonic_and_stable():
     agent = create_agent("greeter", runtime_binding={"provider": OneTurnProvider()})
 
