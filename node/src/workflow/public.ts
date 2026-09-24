@@ -10,10 +10,11 @@ export { FileWorkflowStore } from "../runtime/workflow-store.js"
 export {
   DynamicWorkflowArtifactCatalog,
   FileDynamicWorkflowStore,
+  createDynamicWorkflowArtifactCatalog,
   decodeDynamicWorkflowArtifact,
   encodeDynamicWorkflowArtifact,
 } from "./dynamic-store.js"
-export type { DynamicWorkflowArtifactBundle, DynamicWorkflowArtifactDescriptor } from "./dynamic-store.js"
+export type { DynamicWorkflowArtifactBundle, DynamicWorkflowArtifactDescriptor, DynamicWorkflowArtifactScope } from "./dynamic-store.js"
 export { createWorkflow, lowerWorkflowDefinition } from "./definition.js"
 export type { WorkflowDefinition, WorkflowStep, WorkflowResult } from "./definition.js"
 export {

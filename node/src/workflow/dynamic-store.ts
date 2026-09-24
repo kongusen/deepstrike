@@ -12,7 +12,10 @@ export interface DynamicWorkflowArtifactDescriptor {
   name: string
   digest: string
   origin: string
+  scope: DynamicWorkflowArtifactScope
 }
+
+export type DynamicWorkflowArtifactScope = "project" | "user" | "plugin" | "package" | "custom"
 
 function defaultRoot(): string {
   return join(homedir(), ".deepstrike", "workflows", "dynamic")
@@ -33,12 +36,13 @@ async function rejectSymlink(path: string, label: string): Promise<void> {
   }
 }
 
-function validateScript(value: unknown): DynamicWorkflowScript {
+function validateScript(value: unknown, expectedName?: string): DynamicWorkflowScript {
   if (!value || typeof value !== "object") throw new Error("invalid dynamic workflow artifact")
   const artifact = value as { meta?: unknown; source?: unknown }
   if (!artifact.meta || typeof artifact.meta !== "object") throw new Error("dynamic workflow artifact is missing meta")
   const meta = artifact.meta as { name?: unknown; description?: unknown; phases?: unknown; sizeGuideline?: unknown }
   if (typeof meta.name !== "string" || !meta.name.trim()) throw new Error("dynamic workflow meta.name must be a non-empty string")
+  if (expectedName && meta.name !== expectedName) throw new Error(`dynamic workflow meta.name "${meta.name}" does not match artifact name "${expectedName}"`)
   if (typeof meta.description !== "string" || !meta.description.trim()) {
     throw new Error("dynamic workflow meta.description must be a non-empty string")
   }
@@ -63,14 +67,21 @@ function validateScript(value: unknown): DynamicWorkflowScript {
 /** File-backed dynamic script artifacts. Source is data here; execution is owned by the later VM slice. */
 export class FileDynamicWorkflowStore {
   private readonly root: string
+  readonly scope: DynamicWorkflowArtifactScope
+  readonly origin: string
+  private readonly readOnly: boolean
 
-  constructor(opts?: { rootDir?: string }) {
+  constructor(opts?: { rootDir?: string; scope?: DynamicWorkflowArtifactScope; origin?: string; readOnly?: boolean }) {
     this.root = opts?.rootDir ?? defaultRoot()
+    this.scope = opts?.scope ?? "custom"
+    this.origin = opts?.origin ?? "file-store"
+    this.readOnly = opts?.readOnly ?? false
   }
 
   async save(name: string, script: DynamicWorkflowScript): Promise<string> {
+    if (this.readOnly) throw new Error(`dynamic workflow store "${this.origin}" is read-only`)
     const safe = safeName(name)
-    const validated = validateScript(script)
+    const validated = validateScript(script, safe)
     await this.ensureRoot()
     const path = join(this.root, `${safe}.json`)
     await rejectSymlink(path, "dynamic workflow artifact")
@@ -83,7 +94,7 @@ export class FileDynamicWorkflowStore {
     await this.ensureRoot(false)
     const path = join(this.root, `${safe}.json`)
     await rejectSymlink(path, "dynamic workflow artifact")
-    return validateScript(JSON.parse(await readFile(path, "utf8")) as unknown)
+    return validateScript(JSON.parse(await readFile(path, "utf8")) as unknown, safe)
   }
 
   async list(): Promise<string[]> {
@@ -117,7 +128,7 @@ export class DynamicWorkflowArtifactCatalog {
         if (seen.has(name)) continue
         const artifact = await this.load(name)
         seen.add(name)
-        descriptors.push({ name, digest: artifact.digest, origin: artifact.origin ?? "store" })
+        descriptors.push({ name, digest: artifact.digest, origin: artifact.origin ?? store.origin, scope: store.scope })
       }
     }
     return descriptors.sort((left, right) => left.name.localeCompare(right.name))
@@ -127,7 +138,7 @@ export class DynamicWorkflowArtifactCatalog {
     for (const store of this.stores) {
       if (!(await store.list()).includes(name)) continue
       const script = await store.load(name)
-      const artifact = createDynamicWorkflowArtifact(script, "file-store")
+      const artifact = createDynamicWorkflowArtifact(script, this.stores.find(candidate => candidate === store)?.origin ?? store.origin)
       if (expectedDigest && artifact.digest !== expectedDigest) {
         throw new Error(`dynamic workflow artifact "${name}" digest mismatch`)
       }
@@ -140,6 +151,23 @@ export class DynamicWorkflowArtifactCatalog {
     const artifact = await this.load(name)
     return destination.save(artifact.name, artifact.script)
   }
+}
+
+/** Build the default discovery order: project workflows override user workflows, which override
+ * plugin and package contributions. Every store remains independently addressable for distribution. */
+export function createDynamicWorkflowArtifactCatalog(options: {
+  projectRoot?: string
+  userRoot?: string
+  pluginRoots?: readonly string[]
+  packageRoots?: readonly string[]
+} = {}): DynamicWorkflowArtifactCatalog {
+  const stores = [
+    new FileDynamicWorkflowStore({ rootDir: options.projectRoot ?? join(process.cwd(), ".deepstrike", "workflows"), scope: "project", origin: "project" }),
+    new FileDynamicWorkflowStore({ rootDir: options.userRoot ?? defaultRoot(), scope: "user", origin: "user" }),
+    ...(options.pluginRoots ?? []).map(rootDir => new FileDynamicWorkflowStore({ rootDir, scope: "plugin", origin: `plugin:${rootDir}`, readOnly: true })),
+    ...(options.packageRoots ?? []).map(rootDir => new FileDynamicWorkflowStore({ rootDir, scope: "package", origin: `package:${rootDir}`, readOnly: true })),
+  ]
+  return new DynamicWorkflowArtifactCatalog(stores)
 }
 
 export function encodeDynamicWorkflowArtifact(artifact: DynamicWorkflowArtifact): string {

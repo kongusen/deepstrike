@@ -1,6 +1,7 @@
 import {
   DynamicWorkflowArtifactCatalog,
   FileDynamicWorkflowStore,
+  createDynamicWorkflowArtifactCatalog,
   decodeDynamicWorkflowArtifact,
   encodeDynamicWorkflowArtifact,
 } from "../src/workflow/dynamic-store.js"
@@ -24,7 +25,8 @@ describe("FileDynamicWorkflowStore", () => {
       expect(await store.load("audit")).toEqual(script)
       expect(await store.list()).toEqual(["audit"])
       await expect(store.save("../escape", script)).rejects.toThrow(/invalid dynamic workflow name/)
-      await expect(store.save("broken", { ...script, source: " " })).rejects.toThrow(/source must be non-empty/)
+      await expect(store.save("broken", { ...script, meta: { ...script.meta, name: "broken" }, source: " " })).rejects.toThrow(/source must be non-empty/)
+      await expect(store.save("other", { ...script, meta: { ...script.meta, name: "different" } })).rejects.toThrow(/does not match artifact name/)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -77,6 +79,35 @@ describe("FileDynamicWorkflowStore", () => {
     } finally {
       await rm(firstRoot, { recursive: true, force: true })
       await rm(secondRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("uses project artifacts before user/plugin/package stores and keeps read-only sources immutable", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "dynamic-wf-project-"))
+    const userRoot = await mkdtemp(join(tmpdir(), "dynamic-wf-user-"))
+    const pluginRoot = await mkdtemp(join(tmpdir(), "dynamic-wf-plugin-"))
+    const packageRoot = await mkdtemp(join(tmpdir(), "dynamic-wf-package-"))
+    try {
+      const project = new FileDynamicWorkflowStore({ rootDir: projectRoot })
+      const user = new FileDynamicWorkflowStore({ rootDir: userRoot })
+      await project.save("shared", { ...script, meta: { ...script.meta, name: "shared" } })
+      await user.save("user-only", { ...script, meta: { ...script.meta, name: "user-only" } })
+      await new FileDynamicWorkflowStore({ rootDir: pluginRoot }).save("plugin-only", { ...script, meta: { ...script.meta, name: "plugin-only" } })
+      await new FileDynamicWorkflowStore({ rootDir: packageRoot }).save("package-only", { ...script, meta: { ...script.meta, name: "package-only" } })
+
+      const catalog = createDynamicWorkflowArtifactCatalog({ projectRoot, userRoot, pluginRoots: [pluginRoot], packageRoots: [packageRoot] })
+      await expect(catalog.discover()).resolves.toEqual([
+        expect.objectContaining({ name: "package-only", scope: "package" }),
+        expect.objectContaining({ name: "plugin-only", scope: "plugin" }),
+        expect.objectContaining({ name: "shared", scope: "project" }),
+        expect.objectContaining({ name: "user-only", scope: "user" }),
+      ])
+      await expect(catalog.load("shared")).resolves.toMatchObject({ origin: "project" })
+      await expect(catalog.load("plugin-only")).resolves.toMatchObject({ origin: `plugin:${pluginRoot}` })
+      const pluginStore = new FileDynamicWorkflowStore({ rootDir: pluginRoot, scope: "plugin", origin: "plugin", readOnly: true })
+      await expect(pluginStore.save("blocked", script)).rejects.toThrow(/read-only/)
+    } finally {
+      await Promise.all([rm(projectRoot, { recursive: true, force: true }), rm(userRoot, { recursive: true, force: true }), rm(pluginRoot, { recursive: true, force: true }), rm(packageRoot, { recursive: true, force: true })])
     }
   })
 })
