@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from deepstrike import FileSessionLog, InMemorySessionLog, create_agent
+from deepstrike import FileSessionLog, FileWorkflowStore, InMemorySessionLog, WorkflowNodeSpec, WorkflowSpec, create_agent
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
 
@@ -45,3 +45,16 @@ def test_agent_can_create_a_durable_session_log_from_binding(tmp_path):
 
     assert isinstance(agent._session_log, FileSessionLog)
     assert hasattr(agent._session_log, "kernel_journal")
+
+
+def test_agent_workflow_persistence_uses_explicit_store(tmp_path):
+    agent = create_agent(
+        "workflow",
+        runtime_binding={"provider": Provider(), "workflow_store": FileWorkflowStore(tmp_path)},
+    )
+    spec = WorkflowSpec(nodes=[])
+
+    agent.save_workflow("empty", spec)
+
+    assert agent.list_workflows() == ["empty"]
+    assert agent.load_workflow("empty").nodes == []

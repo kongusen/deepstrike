@@ -218,6 +218,24 @@ class Agent:
         """Run a declarative workflow through the shared Kernel path."""
         return await self.session(session_id).workflow(spec)
 
+    def save_workflow(self, name: str, spec: Any) -> str:
+        store = (self.runtime_binding or {}).get("workflow_store")
+        if store is None:
+            raise RuntimeError("workflow persistence requires runtime_binding.workflow_store")
+        return store.save(name, spec)
+
+    def load_workflow(self, name: str) -> Any:
+        store = (self.runtime_binding or {}).get("workflow_store")
+        if store is None:
+            raise RuntimeError("workflow persistence requires runtime_binding.workflow_store")
+        return store.load(name)
+
+    def list_workflows(self) -> list[str]:
+        store = (self.runtime_binding or {}).get("workflow_store")
+        if store is None:
+            raise RuntimeError("workflow persistence requires runtime_binding.workflow_store")
+        return store.list()
+
     async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> dict[str, Any]:
         """Execute one goal through the host binding and return a structured run result."""
         if not self.runtime_binding:
