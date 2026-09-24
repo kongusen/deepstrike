@@ -12,6 +12,8 @@ DeepStrike Node.js SDK 可以看成三层系统：
 2. **Runtime 层**：负责请求编排、上下文、工具执行、Provider 调用、Memory、Workflow、事件流和恢复。
 3. **Canonical Kernel 层**：负责可恢复的动作调度、策略检查、预算、生命周期和规范化状态转移。
 
+从源码边界看，这三层还可以细化为五个协作层：Intent、Runtime、Kernel ABI、Provider 和 Effect。Intent 层对应根入口与声明，Runtime 层对应 RuntimeRunner 和 CanonicalRunnerRuntime，Kernel ABI 层对应 NAPI 暴露的 CanonicalKernel，Provider 层负责厂商协议，Effect 层承载 ExecutionPlane、MemoryStore 和各类宿主平面。五层是职责划分，三层是阅读运行时的简化视图。
+
 一次普通的 Agent 运行大致经过以下路径：
 
     应用代码
@@ -64,16 +66,16 @@ node/package.json 当前版本为 0.2.73，要求 Node.js >=18，核心依赖为
 
 | 导入路径 | 作用 |
 | --- | --- |
-| deepstrike | Agent、工具、Memory 基础类型与根级便捷 API |
-| deepstrike/providers | Provider、模型、端点、凭证、请求计划与适配器 |
-| deepstrike/workflow | Workflow 定义、编排、持久化与动态工作流能力 |
-| deepstrike/planes | Worktree、沙箱、MCP、远程 VPC 等执行平面 |
-| deepstrike/memory | MemoryStore、WorkingMemory、检索、保留策略与抽取 |
-| deepstrike/harness | Attempt loop、judge、nudge、carry 与停止策略 |
-| deepstrike/os | 原生 OS profile、信号、权限、重放与快照能力 |
-| deepstrike/advanced | 根 API 与 Runtime、事件、Journal、Session 等高级能力的组合入口 |
-| deepstrike/runtime | RuntimeRunner、SessionLog、KernelJournal、上下文与运行时 facade |
-| deepstrike/evals | Eval 数据集、评估器、judge、trace 与结果类型 |
+| @deepstrike/sdk | Agent、工具、Provider、Workflow、Eval 与根级便捷 API |
+| @deepstrike/sdk/providers | Provider、模型、端点、凭证、请求计划与适配器 |
+| @deepstrike/sdk/workflow | Workflow 定义、编排、持久化与动态工作流能力 |
+| @deepstrike/sdk/planes | Worktree、沙箱、MCP、远程 VPC 等执行平面 |
+| @deepstrike/sdk/memory | MemoryStore、WorkingMemory、检索、保留策略与抽取 |
+| @deepstrike/sdk/harness | Attempt loop、judge、nudge、carry 与停止策略 |
+| @deepstrike/sdk/os | 原生 OS profile、信号、权限、重放与快照能力 |
+| @deepstrike/sdk/advanced | 根 API 与 Runtime、事件、Journal、Session 等高级能力的组合入口 |
+| @deepstrike/sdk/runtime | RuntimeRunner、SessionLog、KernelJournal、上下文与运行时 facade |
+| @deepstrike/sdk/evals | Eval 数据集、评估器、judge、trace 与结果类型 |
 
 根级导出见 [src/index.ts](src/index.ts)。各子路径使用 public.ts 作为稳定 barrel，例如 [src/providers/public.ts](src/providers/public.ts) 和 [src/runtime/public.ts](src/runtime/public.ts)。
 
@@ -84,9 +86,12 @@ node/package.json 当前版本为 0.2.73，要求 Node.js >=18，核心依赖为
     createAgent(definition: AgentDefinition): Agent
     tool(definition: ToolDefinition): ToolDefinition
     streamingTool(definition: StreamingToolDefinition): ToolDefinition
+    safeTool / ok / fail / ToolError / formatToolError
     createTextKnowledgeSource(text: string, options?): KnowledgeSource
-    providerFor(model: string, options?): LLMProvider
     createProvider(options): LLMProvider
+    createProviderAsync(options): Promise<LLMProvider>
+    createWorkflow(definition): WorkflowDefinition
+    evaluate(agent, options): Promise<EvalRun>
 
 根级类型包括 Agent、AgentSession、AgentDefinition、RunOptions、RunResult、StreamEvent、ToolDefinition、MemoryRecord、MemoryStore、KnowledgeSource、WorkflowSpec 和 Provider 相关类型。
 
@@ -179,8 +184,8 @@ MCP stdio 连接会在工具 schema 快照前完成初始化和 tools/list，因
 
       run(goal: string, options?: RunOptions): Promise<RunResult>;
       stream(goal: string, options?: RunOptions): AsyncIterable<StreamEvent>;
-      resume(options?: ResumeOptions): Promise<RunResult>;
-      interrupt(reason?: string): Promise<void>;
+      resume(options?: RunOptions): AsyncIterable<StreamEvent>;
+      interrupt(reason?: "user" | "deadline" | "lease_lost" | "host_shutdown"): void;
     }
 
 Session 是同一条对话与 Journal 链的入口。Agent 默认使用 InMemorySessionLog，进程退出后内容不会保留。需要跨进程恢复时，应注入 FileSessionLog 或自定义 SessionLog，并确保它提供匹配的 KernelJournal。
@@ -198,7 +203,7 @@ Agent.run() 内部消费 stream() 的事件，累加 text_delta，读取最近�
 | usage | 当前实现取最后一次 Provider usage |
 | evidence | Provider attempt、工具、上下文和终止原因等证据 |
 | sessionId | 所属 Session |
-| termination | Kernel 或 Runtime 的原始终止信息 |
+| outputValidation | 声明 outputSchema 时的校验结果 |
 
 流事件包括 run_started、context_prepared、prompt_measured、provider_attempt、text_delta、tool_requested、tool_delta、tool_result、tool_completed、memory_retrieved、workflow_node_completed、run_terminal 和 done 等类型。
 
@@ -362,7 +367,7 @@ Kernel 返回 done 后，Runner 会：
 5. 发出 done。
 6. 由 Agent facade 汇总为 RunResult。
 
-最终状态是 Runtime 的粗粒度映射。context_overflow、no_progress、token_budget、max_turns、milestone_pending 和 invalid_arg 等细节需要从 SessionLog 或 evidence 中读取。
+最终状态是 Runtime 的粗粒度映射。RunResult 不提供独立的 termination 字段；context_overflow、no_progress、token_budget、max_turns、milestone_pending 和 invalid_arg 等细节需要从 SessionLog 的 run_terminal、operation_cancelled 及 evidence 中读取。
 
 ## 6. Canonical Kernel 与持久化
 
@@ -799,7 +804,7 @@ Workflow 的执行结果仍通过父运行的事件和 Journal 记录，便于�
 - 用户拒绝审批。
 - Provider 或工具层主动中止。
 
-Runner 会尝试停止当前 Provider stream 和工具执行，再把取消原因交给 Kernel。RunResult.status 会映射为 cancelled，但详细原因保存在 termination 与 SessionLog。
+Runner 会尝试停止当前 Provider stream 和工具执行，再把取消原因交给 Kernel。RunResult.status 会映射为 cancelled，详细原因保存在 SessionLog 的取消或终态事件中。
 
 ### 13.2 错误分类
 
@@ -839,7 +844,7 @@ Runner 会尝试停止当前 Provider stream 和工具执行，再把取消原�
 7. **自定义 SessionLog 需要对应 KernelJournal**。只实现业务事件日志而没有规范化 Journal，无法提供完整 Kernel 恢复语义。
 8. **根级 Agent 不会自动创建 Provider**。应用需要提供 runtimeBinding.provider，或者提供可解析的字符串模型以使用 providerFor()。
 9. **README 中的部分高级示例可能落后于实现**。例如 README 曾展示 runner.spawnSubAgent()，当前 RuntimeRunner 没有该方法，应使用 workflow 或 delegate API。
-10. **Runtime facade 的部分能力没有根级导出**。runAgent、runFanout、RuntimeRunner 等应从 deepstrike/runtime 或 deepstrike/advanced 导入。
+10. **Runtime facade 的部分能力没有根级导出**。runAgent、runFanout、RuntimeRunner 等应从 @deepstrike/sdk/runtime 或 @deepstrike/sdk/advanced 导入。
 11. **原生 addon 与 bundler 需要单独处理**。部署时应确认平台可选依赖、Node ABI、打包器 external 配置和本地 Rust fallback 行为。
 
 ## 15. 推荐阅读顺序
@@ -867,7 +872,7 @@ Runner 会尝试停止当前 Provider stream 和工具执行，再把取消原�
 
 推荐使用根级 API：
 
-    import { createAgent, createProvider, tool } from "deepstrike";
+    import { createAgent, createProvider, tool } from "@deepstrike/sdk";
 
     const agent = createAgent({
       name: "researcher",
@@ -895,7 +900,7 @@ Runner 会尝试停止当前 Provider stream 和工具执行，再把取消原�
 
 ### 16.2 自定义 Provider
 
-从 deepstrike/providers 导入 Provider 接口或适配器，确保：
+从 @deepstrike/sdk/providers 导入 Provider 接口或适配器，确保：
 
 - prepareRequest() 返回稳定、冻结的请求。
 - descriptor() 能准确描述 modality、tool、stream 和 countTokens 能力。
@@ -905,7 +910,7 @@ Runner 会尝试停止当前 Provider stream 和工具执行，再把取消原�
 
 ### 16.3 自定义执行平面
 
-从 deepstrike/planes 或 deepstrike/advanced 导入 ExecutionPlane 相关类型。自定义 plane 需要负责 schema 暴露、参数接收、权限检查、超时、取消、流事件和稳定的单结果约定。
+从 @deepstrike/sdk/planes 或 @deepstrike/sdk/advanced 导入 ExecutionPlane 相关类型。自定义 plane 需要负责 schema 暴露、参数接收、权限检查、超时、取消、流事件和稳定的单结果约定。
 
 ### 16.4 可恢复运行
 
@@ -936,3 +941,184 @@ DeepStrike Node.js SDK 的数据流核心是：
 在应用层，最常用的是 createAgent()、run()、stream()、session()、remember()、recall()、delegate() 和 workflow()。在平台层，最重要的是理解 RuntimeRunner、CanonicalKernelHost、KernelJournal、ExecutionPlane、LLMProvider 和 MemoryStore 之间的边界。
 
 如果需要定位一次运行的真实行为，应沿着 run_started → context_prepared → provider_attempt / tool_requested → observation → run_terminal 的事件链查看；如果需要定位恢复问题，应沿着 KernelJournal step_seq → prepare → compareAndAppend → commit → wake 的规范化链查看。
+
+
+## 18. 基于补充报告的源码核验与补充
+
+本节把外部补充报告与当前 main 分支源码逐项对照。结论以源码和测试中的实际入口为准，补充报告中与当前实现不一致的名称已在本节修正。
+
+### 18.1 五层架构的精确落点
+
+补充报告将 SDK 分成 Intent、Runtime、Kernel ABI、Provider、Effect 五层，这个划分与当前目录和调用方向一致：
+
+| 层 | 当前源码落点 | 主要职责 |
+| --- | --- | --- |
+| Intent | src/index.ts、src/agent-facade.ts、src/tools、src/workflow/definition.ts、src/evals/public.ts | 声明 Agent、工具、Provider、Workflow 和 Eval |
+| Runtime | src/runtime/runner.ts、src/runtime/facade.ts、src/runtime/context.ts | 编排循环、上下文、证据、事件、恢复和工作流驱动 |
+| Kernel ABI | src/kernel.ts、src/runtime/canonical-kernel-step.ts、@deepstrike/core | prepare、commit、abort、checkpoint、restore 和 action 产生 |
+| Provider | src/providers/* | 模型路由、凭证、请求 fingerprint、协议适配、流解析和 usage |
+| Effect | src/runtime/execution-plane.ts、各类 plane、MemoryStore、ArchiveStore、PayloadStore | 执行 Kernel 请求的宿主 I/O |
+
+这五层与前文三层模型可以同时使用。三层适合解释整体控制权，五层适合解释 API 边界和源码责任。
+
+### 18.2 根包入口核验
+
+当前包名是 @deepstrike/sdk。根入口除了 Agent、工具和 Provider，还明确导出：
+
+- createWorkflow 和 WorkflowDefinition、WorkflowStep、WorkflowResult。
+- evaluate、Dataset、Evaluator、EvalRun 和 EvalTrace。
+- safeTool、ok、fail、ToolError、formatToolError。
+- createProvider、createProviderAsync、resolveProviderRuntime、resolveProviderRuntimeAsync。
+- SESSION_EVENT_KINDS、InMemoryReactionCheckpointStore。
+- ModelMessage、RuntimeMessage、StoredMessage、WireMessage 和 StreamEvent 系列。
+
+因此，根包承担 Intent 层和稳定类型入口；RuntimeRunner、KernelJournal、ProviderRequestPlan 等底层能力继续通过 runtime、providers、advanced 等子路径访问。
+
+### 18.3 Kernel action 到宿主处理器
+
+当前 KernelRunnerAction 是一个 12 分支联合类型：
+
+| Action | 宿主处理器 | 结果或后续动作 |
+| --- | --- | --- |
+| call_provider | prepare request、计量、stream Provider | provider_result 或 provider_error |
+| execute_tool | hook、权限、ExecutionPlane | tool_completed |
+| request_approval | onPermissionRequest | approval_resolved |
+| spawn_workflow | workflow driver 启动或继续节点 | workflow_spawn_result |
+| preempt_sub_agents | 中止子 Agent 的 Provider 调用 | 由 workflow driver 收尾 |
+| persist_memory | MemoryStore.put | memory_persist_result |
+| query_memory | MemoryStore.search | memory_query_result |
+| archive_page_out | ArchiveStore 或 PayloadStore | page_out_archive_result |
+| load_payload | 读取 opaque payload 并校验 digest | payload_loaded 或 payload_load_failed |
+| evaluate_milestone | verifier 或 onMilestoneEvaluate | milestone_check_result |
+| unsupported_effect | fail-closed | 直接失败 |
+| done | 结束主循环 | run_terminal 和 done |
+
+工具层还有三个重要的宿主边界：
+
+1. update_plan 是宿主侧特判，会转换成 update_task 并提交回 Kernel。
+2. submit_workflow_nodes 和 start_workflow 是 Kernel syscall。它们如果错误地以 execute_tool 到达宿主，Runner 会直接抛出 canonical boundary drift，避免旁路执行。
+3. 普通工具由 ExecutionPlane 执行，工具结果可以携带结构化 contentParts。结构化块在当前 operation 的 toolOutputOverlay 中保留，SessionLog 的 durable 投影仍保存规范化文本和块信息。
+
+### 18.4 Provider 的身份、计量和恢复语义
+
+Provider 回合还有四个需要单独记录的事实：
+
+1. invocationId 取效果链上的第一个 effectId，由 Journal 因果链保证身份稳定。重试动作继续同一 invocation，不在宿主侧重新铸造身份。
+2. ProviderRequestPlan.fingerprint 同时绑定请求、路由范围和计量事实。Runner 在本次运行开始时从 SessionLog 建立 recordedMeasurements，重放时优先复用同 fingerprint 的事实。
+3. preflight 计量优先使用 Provider 原生 countTokens；没有原生能力时才使用 heuristic。heuristic 计量不会单独触发 context_overflow 终止，避免估算误差导致假阳性终止。
+4. Provider usage 到达后会写入 source 为 postflight、confidence 为 exact 的 prompt_measured 事实。该观测值覆盖同 fingerprint 的 preflight 估算，并成为后续重放的权威输入。
+
+Provider 错误的可见性也由 Kernel 结果决定：
+
+- transport ladder 耗尽后，Runner 追加 provider_attempt(status=transport_exhausted)。
+- Runner 把 provider_error 交给 Kernel。
+- Kernel 返回 call_provider 时，表示正在恢复，错误事件对外隐藏。
+- Kernel 返回 done 时，Runner 才向 StreamEvent 发出 error。
+
+### 18.5 四层消息体系与内容边界
+
+当前类型体系可以按数据生命周期分为四层：
+
+| 类型 | 所属层 | 说明 |
+| --- | --- | --- |
+| ModelMessage | 语义层 | Agent 与 Provider 共同理解的 role、content、contentParts、toolCalls |
+| StoredMessage | 持久层 | 在语义消息上增加 messageId、createdAt 等存储信息 |
+| RuntimeMessage | 执行层 | 保留 Runtime 需要的结构化 contentParts 和工具关联 |
+| WireMessage | 协议层 | Provider adapter 私有的厂商请求形状 |
+
+ContentPart 与 ToolOutputBlock 有意保持不对称。输入侧可以携带 text、image、audio、tool_result；工具输出侧可以携带 text、image、audio、video、file。Provider adapter 负责把这些内容转成厂商 wire message，根 API 不暴露厂商私有结构。
+
+MediaSource 会携带 URL、base64、fileId 或对象句柄等来源信息。fileId 需要保留 endpoint affinity，不能在不同 Provider route 之间盲目复用。
+
+### 18.6 SessionLog、KernelJournal 与 effect_id 关联
+
+SessionLog 和 KernelJournal 分别承担证据投影与规范化状态链：
+
+- KernelJournal 保存 staged outbound envelope、CAS append 的 record、checkpoint 和 acked prefix。
+- SessionLog 保存 run_started、context_prepared、prompt_measured、provider_attempt、tool_requested、tool_completed、compressed、page_out、budget、entropy 和 run_terminal 等业务事件。
+- step_seq 属于 KernelJournal，不复制到 SessionLog。
+- 两套数据通过 effect_id、invocation_id 和 request_fingerprint 关联，SessionLog 不承担 Kernel 调度真相。
+
+因此，SessionLog 可以用于 UI、审计和 EvalTrace；KernelJournal 才是恢复、幂等和 CAS 的权威来源。
+
+### 18.7 AgentSession、RunResult 与 Evidence 的核验修正
+
+当前 AgentSession 的实际接口是：
+
+    run(goal, options?): Promise<RunResult>
+    stream(goal, options?): AsyncIterable<StreamEvent>
+    resume(options?): AsyncIterable<StreamEvent>
+    interrupt(reason?): void
+
+interrupt 的 reason 受限于 user、deadline、lease_lost、host_shutdown。它置位当前 Runner 的取消状态，随后由 Kernel 接收 cancel_operation。
+
+RunResult 的实际稳定字段是：
+
+- output
+- runId
+- sessionId
+- status
+- usage
+- outputValidation
+- evidence
+
+RunResult 没有独立的 termination 字段。终止原因通过 SessionLog 的 run_terminal、operation_cancelled 和 evidence 查询。evidence 由最近一次 active run 的 context_prepared、provider_attempt、prompt_measured 和 runtime artifact binding 组装，因此复用 Session 时必须按 run_started 边界读取，不能取到旧运行的证据。
+
+### 18.8 Harness、Nudge 与 Evals 的反馈闭环
+
+Runtime、Harness 和 Evals 之间没有第二套执行协议，边界由稳定事件和 evidence 连接：
+
+    RuntimeRunner
+      → StreamEvent / SessionLog / RunResult.evidence
+      → RuntimeAttemptBody
+      → AttemptLoop
+      → AttemptJudge
+      → CarryPolicy 或 NudgeEngine
+      → injectNote 信号
+      → 下一次 Kernel transition
+
+核心组件：
+
+| 组件 | 代码位置 | 作用 |
+| --- | --- | --- |
+| RuntimeAttemptBody | src/harness/harness.ts | 把 Runtime stream 转成 token、tool、workflow、done 事件 |
+| AttemptLoop | src/harness/harness.ts | 管理 attempt、carry、judge、stop 和累计预算 |
+| AttemptJudge | src/harness/judge.ts | VerdictFnJudge、LlmEvalJudge、HybridJudge |
+| NudgeEngine | src/harness/nudge.ts | 将 tool_error、tool_denied、turns、tool calls、entropy alert 折叠成 note |
+| HarnessManifest | src/harness/manifest.ts | 管理可哈希的 instruction、nudge 和受限 Runtime patch |
+| evaluate | src/evals/public.ts | 对 Dataset 执行 Agent.run，并可输出 EvalTrace |
+
+默认 continueSession 保留同一 session transcript，Judge feedback 通过 runner.injectNote() 进入信号通道。freshWithFeedback 和 freshWithDigest 则显式创建新 Session。这样 CarryPolicy 不需要重新拼接内部 prompt，反馈仍能进入 Journal 和恢复链。
+
+HarnessManifest 的 Runtime patch 只能修改白名单字段，工具和 Skill 面使用交集收窄。Manifest 可以收紧宿主能力，不能在运行时扩权。
+
+Evals 的 evaluate() 直接消费 Agent.run() 返回的 output 和 evidence。includeTrace 开启后，EvalTrace 记录 executedInput、contextBinding、route、measurement 和 artifactSet。Judge 原语来自同一套 Kernel eval message、parseVerdict 和 verdictOutputSchema，因此一次性评估与 AttemptLoop 重试共享 Verdict 语义。
+
+### 18.9 动态 Workflow 的当前边界
+
+动态 Workflow 已经分成三个层次：
+
+1. 预定义 DAG：RuntimeRunner.runWorkflow() 调度 WorkflowSpec。
+2. 动态提交：RuntimeRunner.runDynamicWorkflow() 通过 DynamicWorkflowController 接收脚本提交，并调用 appendDynamicWorkflowNodes()。
+3. 动态脚本：DynamicWorkflowVmExecutor 在受限 node:vm 中执行 DynamicWorkflowScript 或 artifact。
+
+动态 Workflow 支持 agent、parallel、parallelAgents、pipeline、phase 和 log。默认限制是并发 16、单次运行最多 1000 个 Agent、一次 batch 最多 4096 个项目。artifact 使用 SHA-256 digest 绑定 replay identity。
+
+当前 VM 只适合 trusted script：
+
+- 禁止 require、import、process、global、Buffer、fetch、WebSocket、child_process、eval、Function 等能力。
+- 禁止字符串和 WebAssembly code generation。
+- 有 source bytes、单轮 timeout 和总执行时间限制。
+- untrusted script 必须交给 OS sandbox，不能把 node:vm 当成租户隔离边界。
+
+动态 Workflow 的生命周期事件包含 approval、pause/resume、phase、agent started/reused/completed、log、completed、failed 和 cancelled。失败时 Runtime 会提交 canonical cancel/preempt 序列，避免脚本在宿主退出但 Kernel 仍保持 active。
+
+### 18.10 补充报告与源码的差异说明
+
+补充报告整体与当前源码一致，但以下表述需要按当前实现理解：
+
+- 根包名称是 @deepstrike/sdk，deepstrike 是概念简称。
+- update_plan 可以由宿主处理；submit_workflow_nodes 和 start_workflow 到达宿主 execute_tool 分支属于 boundary drift，会 fail-closed。
+- RunResult 没有 termination 字段，终止细节在 SessionLog 和 evidence。
+- resume() 返回 AsyncIterable<StreamEvent>，interrupt() 是同步方法。
+- 动态 Workflow 的 node:vm 只允许 trusted script；untrusted 执行必须使用 OS sandbox。
