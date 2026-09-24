@@ -44,6 +44,43 @@ export const WORKFLOW_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
         forbidden: [],
       },
     },
+    {
+      adapter: "workflow/dynamic:dynamicWorkflowPlanToKernel",
+      source: { type: "DynamicWorkflowPlan", layer: "host", authority: "host-runtime" },
+      target: { type: "KernelDynamicWorkflowPlan", layer: "kernel", authority: "kernel" },
+      fields: {
+        preserves: ["sequence"],
+        renames: {
+          runId: "run_id",
+        },
+        nested: [
+          { source: "nodes.[].nodeId", target: "nodes.[].node_id", kind: "project" },
+          { source: "nodes.[].dependsOn", target: "nodes.[].depends_on", kind: "project" },
+          { source: "nodes.[].promptFingerprint", target: "nodes.[].prompt_fingerprint", kind: "project" },
+          { source: "nodes.[].replay", target: "nodes.[].replay", kind: "project" },
+        ],
+        drops: [],
+        derived: [],
+        forbidden: [],
+      },
+    },
+    {
+      adapter: "workflow/dynamic:dynamicWorkflowReplayFactToKernel",
+      source: { type: "DynamicWorkflowReplayFact", layer: "host", authority: "host-runtime" },
+      target: { type: "KernelDynamicWorkflowReplayFact", layer: "kernel", authority: "kernel" },
+      fields: {
+        preserves: ["sequence", "status", "replay"],
+        renames: {
+          runId: "run_id",
+          nodeId: "node_id",
+          promptFingerprint: "prompt_fingerprint",
+          resultDigest: "result_digest",
+        },
+        drops: [],
+        derived: [],
+        forbidden: [],
+      },
+    },
   ],
   lossiness: "intentional",
   validation: {

@@ -536,7 +536,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 - `phase(name, body)`、`log(message, fields)`、`args` 快照和 typed progress；
 - 单次运行 1000 agents、单批 4096 items 的 host guardrail；kernel quota 仍是最终权威；
 - `DynamicWorkflowScript` 元数据/源码类型，为后续保存与隔离执行留下稳定输入契约。
-- `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` 和 invocation fingerprint，为后续 replay 提供结果缓存边界；fan-out 会保留未变化 item，只提交 fingerprint miss。
+- `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` 和 invocation fingerprint 提供结果正文缓存；fan-out 会保留未变化 item，只提交 fingerprint miss。每次 submission 还会把 typed plan（节点依赖和 replay disposition）写入 canonical kernel，每个 invocation 的状态与结果 digest 通过 `record_dynamic_workflow_replay` 写入同一 journal，因此 replay 的决策事实不再只存在 host store。
 - `DynamicWorkflowController` 提供 typed submission queue：脚本暂停在 host workflow submission，外部 driver 通过 `nextSubmission()` 消费，再用 `completeSubmission()` 或 `failSubmission()` 回填；这一层把异步 handoff 固定成可测试协议，但不再作为第二个公共运行入口。
 - `RuntimeRunner.runDynamicWorkflow()` 现在拥有这一 controller，并在一个 `DynamicWorkflow` root 上完成 submission 驱动、结果回填、显式 close、session log 与 RunGroup 结算；`WorkflowNodeSpec.nodeId` 仍只在 host 侧通过 batch base 映射回动态结果。
 - `DynamicWorkflowArtifactCatalog` 按配置顺序发现多个文件根，稳定解析 name/digest/origin，并通过 bundle 编解码和目标 store 分发；`RuntimeRunner.runDynamicWorkflow(artifact, options)` 在统一入口校验 artifact digest 并绑定 replay identity。

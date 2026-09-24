@@ -7,6 +7,12 @@ import type {
 } from "../kernel.js"
 import type { ModelMessage } from "../types.js"
 import {
+  dynamicWorkflowPlanToKernel,
+  dynamicWorkflowReplayFactToKernel,
+  type DynamicWorkflowPlan,
+  type DynamicWorkflowReplayFact,
+} from "../workflow/dynamic.js"
+import {
   JournalCasConflictError,
   MAX_CHAIN_POSITION as JOURNAL_MAX_CHAIN_POSITION,
   type InstalledCheckpoint,
@@ -956,7 +962,7 @@ export class CanonicalRunnerRuntime {
   }
 
   /** Append dynamic workflow nodes to this active root workflow through host authority. */
-  async appendWorkflowNodes(specValue: Record<string, unknown>): Promise<KernelRunnerAction | null> {
+  async appendWorkflowNodes(specValue: Record<string, unknown>, plan?: DynamicWorkflowPlan): Promise<KernelRunnerAction | null> {
     await this.ensureConfigured()
     if (!this.started) throw new Error("cannot append dynamic workflow nodes before operation start")
     return this.commit({
@@ -964,6 +970,19 @@ export class CanonicalRunnerRuntime {
       command: {
         kind: "append_workflow_nodes",
         nodes: canonicalWorkflowSpec(specValue, true).nodes,
+        ...(plan ? { plan: dynamicWorkflowPlanToKernel(plan) } : {}),
+      },
+    })
+  }
+
+  async recordDynamicWorkflowReplay(fact: DynamicWorkflowReplayFact): Promise<KernelRunnerAction | null> {
+    await this.ensureConfigured()
+    if (!this.started) throw new Error("cannot record dynamic workflow replay before operation start")
+    return this.commit({
+      kind: "host_control",
+      command: {
+        kind: "record_dynamic_workflow_replay",
+        ...dynamicWorkflowReplayFactToKernel(fact),
       },
     })
   }
@@ -1289,6 +1308,19 @@ export class CanonicalRunnerRuntime {
         break
       case "complete_dynamic_workflow":
         input = { kind: "host_control", command: { kind: "complete_dynamic_workflow" } }
+        break
+      case "record_dynamic_workflow_replay":
+        input = { kind: "host_control", command: {
+          kind: "record_dynamic_workflow_replay",
+          run_id: event.run_id,
+          sequence: event.sequence,
+          node_id: event.node_id,
+          prompt_fingerprint: event.prompt_fingerprint,
+          status: event.status,
+          replay: event.replay,
+          result_digest: event.result_digest,
+          ...(event.termination ? { termination: event.termination } : {}),
+        } }
         break
       case "add_history_message":
         throw new Error("running ABI operations accept history only through effects or external events")

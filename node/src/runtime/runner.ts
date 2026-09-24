@@ -80,7 +80,7 @@ import type {
 } from "../types/agent.js"
 import type { AgentCapabilityFilter } from "../types/agent.js"
 import { DynamicWorkflowController } from "../workflow/dynamic-controller.js"
-import type { DynamicWorkflowContext, DynamicWorkflowLifecycleEvent, DynamicWorkflowRun, DynamicWorkflowRunOptions, DynamicWorkflowProgram } from "../workflow/dynamic.js"
+import type { DynamicWorkflowContext, DynamicWorkflowLifecycleEvent, DynamicWorkflowPlan, DynamicWorkflowReplayFact, DynamicWorkflowRun, DynamicWorkflowRunOptions, DynamicWorkflowProgram } from "../workflow/dynamic.js"
 
 function intersectCapabilityFilters(a?: AgentCapabilityFilter, b?: AgentCapabilityFilter): AgentCapabilityFilter | undefined {
   if (!a && !b) return undefined
@@ -1639,7 +1639,9 @@ export class RuntimeRunner {
     let groupBudgetScope: GroupBudgetScope | undefined
     let dynamicRootTerminal = false
     const lifecycleWrites: Promise<unknown>[] = []
-    const controller = new DynamicWorkflowController<TArgs>()
+    const controller = new DynamicWorkflowController<TArgs>({
+      onReplayFact: fact => this.recordDynamicWorkflowReplayFact(fact),
+    })
 
     try {
       if (this.opts.runGroup) {
@@ -1680,7 +1682,7 @@ export class RuntimeRunner {
         if (!submission) break
         const observationStart = this.pendingObservations.length
         try {
-          const action = await this.appendDynamicWorkflowNodes(submission.spec)
+          const action = await this.appendDynamicWorkflowNodes(submission.spec, submission.plan)
           const observations = this.pendingObservations.slice(observationStart)
           const rejection = controlRequestRejection(observations, "submit_workflow_nodes")
           const outcome = rejection
@@ -1762,14 +1764,14 @@ export class RuntimeRunner {
    * started by the same runner; this method deliberately exposes the kernel action rather than
    * starting a second standalone workflow, so the caller can continue the existing spawn loop.
    */
-  async appendDynamicWorkflowNodes(spec: WorkflowSpec): Promise<KernelRunnerAction | null> {
+  async appendDynamicWorkflowNodes(spec: WorkflowSpec, plan?: DynamicWorkflowPlan): Promise<KernelRunnerAction | null> {
     const runtime = this.activeKernel
     const sessionId = this.currentSessionId
     if (!runtime || !sessionId) {
       throw new Error("cannot append dynamic workflow nodes without an active workflow session")
     }
     const observationStart = this.pendingObservations.length
-    const action = await runtime.appendWorkflowNodes(workflowSpecToKernel(spec))
+    const action = await runtime.appendWorkflowNodes(workflowSpecToKernel(spec), plan)
     this.pendingObservations.push(...runtime.drainHostObservations())
     const observations = this.pendingObservations.slice(observationStart)
     const submitted = observations.find(observation => observation.kind === "workflow_nodes_submitted") as
@@ -1782,7 +1784,20 @@ export class RuntimeRunner {
         baseIndex: submitted.base,
       }))
     }
+    // The plan observation is kernel evidence, not a host-only submission detail. Keep it queued
+    // for the normal observation-to-session projection after using the batch-local base index.
+    this.pendingObservations.push(...observations.filter(observation => observation.kind === "dynamic_workflow_plan_committed"))
     return action
+  }
+
+  /** Record a replay decision in the same canonical journal as the dynamic DAG append. */
+  private async recordDynamicWorkflowReplayFact(fact: DynamicWorkflowReplayFact): Promise<void> {
+    const runtime = this.activeKernel
+    if (!runtime || !this.currentSessionId) {
+      throw new Error("cannot record dynamic workflow replay without an active workflow session")
+    }
+    await runtime.recordDynamicWorkflowReplay(fact)
+    this.pendingObservations.push(...runtime.drainHostObservations())
   }
 
   /** Close an active host-driven dynamic workflow and let the kernel commit its terminal. */

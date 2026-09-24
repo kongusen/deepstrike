@@ -1,4 +1,4 @@
-import { DynamicWorkflowExecutor, DynamicWorkflowNothingToResumeError, DynamicWorkflowReplayMismatchError, dynamicAgentTask } from "../src/workflow/dynamic.js"
+import { DynamicWorkflowExecutor, DynamicWorkflowNothingToResumeError, DynamicWorkflowReplayMismatchError, dynamicAgentTask, type DynamicWorkflowPlan, type DynamicWorkflowReplayFact } from "../src/workflow/dynamic.js"
 import { FileDynamicWorkflowReplayStore, InMemoryDynamicWorkflowReplayStore } from "../src/workflow/dynamic-replay.js"
 import type { DynamicWorkflowHost } from "../src/workflow/dynamic.js"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
@@ -40,6 +40,37 @@ function batchHostWithCalls(batches: string[][]): DynamicWorkflowHost {
 }
 
 describe("dynamic workflow replay", () => {
+  it("emits a typed kernel plan and replay facts for executed and reused nodes", async () => {
+    const plans: DynamicWorkflowPlan[] = []
+    const facts: DynamicWorkflowReplayFact[] = []
+    const store = new InMemoryDynamicWorkflowReplayStore()
+    const host: DynamicWorkflowHost = {
+      async runWorkflow(spec, plan) {
+        if (plan) plans.push(plan)
+        return {
+          nodeOutcomes: spec.nodes.map(node => ({
+            nodeId: node.nodeId!,
+            status: "completed" as const,
+            output: { role: "assistant" as const, content: `done:${typeof node.task === "string" ? node.task : node.task.goal}` },
+          })),
+          outputs: Object.fromEntries(spec.nodes.map(node => [node.nodeId!, `done:${typeof node.task === "string" ? node.task : node.task.goal}`])),
+        }
+      },
+      async recordReplayFact(fact) { facts.push(fact) },
+    }
+
+    await new DynamicWorkflowExecutor(host, { runId: "kernel-facts-1", replayStore: store })
+      .run(ctx => ctx.parallelAgents(["a", "b"], (item, index) => dynamicAgentTask(`task:${item}`, { label: `slot-${index}` })))
+    await new DynamicWorkflowExecutor(host, { runId: "kernel-facts-1", replayStore: store })
+      .run(ctx => ctx.parallelAgents(["a", "b"], (item, index) => dynamicAgentTask(`task:${item}`, { label: `slot-${index}` })))
+
+    expect(plans).toHaveLength(1)
+    expect(plans[0].nodes.map(node => node.nodeId)).toEqual(["slot-0", "slot-1"])
+    expect(plans[0].nodes.every(node => node.replay === "executed")).toBe(true)
+    expect(facts.map(fact => fact.replay)).toEqual(["executed", "executed", "reused", "reused"])
+    expect(facts.every(fact => fact.resultDigest.startsWith("sha256:"))).toBe(true)
+  })
+
   it("reuses a completed invocation only when its prompt fingerprint is unchanged", async () => {
     const store = new InMemoryDynamicWorkflowReplayStore()
     const calls: string[] = []

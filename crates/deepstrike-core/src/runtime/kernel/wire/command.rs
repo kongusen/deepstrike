@@ -27,6 +27,8 @@ pub enum HostCommand {
     /// spawn facts. This is intentionally separate from the model-facing append syscall: it has
     /// host authority and no caller-supplied agent identity.
     AppendWorkflowNodes(AppendWorkflowNodesCommand),
+    /// A host replay decision recorded in the canonical journal alongside workflow facts.
+    RecordDynamicWorkflowReplay(DynamicWorkflowReplayCommand),
     /// Close a host-driven dynamic workflow after its script and all submitted batches settle.
     CompleteDynamicWorkflow(CompleteDynamicWorkflowCommand),
     ApplyCapabilityPatch(ApplyCapabilityPatchCommand),
@@ -74,10 +76,46 @@ pub struct UpdateTaskCommand {
     pub update: TaskUpdate,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppendWorkflowNodesCommand {
     pub nodes: Vec<WorkflowNode>,
+    /// Host-generated plan metadata. The kernel records it, but scheduling remains driven by the
+    /// canonical DAG built from `nodes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<DynamicWorkflowPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicWorkflowPlan {
+    pub run_id: String,
+    pub sequence: u32,
+    pub nodes: Vec<DynamicWorkflowPlanNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicWorkflowPlanNode {
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    pub prompt_fingerprint: String,
+    pub replay: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DynamicWorkflowReplayCommand {
+    pub run_id: String,
+    pub sequence: u32,
+    pub node_id: String,
+    pub prompt_fingerprint: String,
+    pub status: String,
+    pub replay: String,
+    pub result_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

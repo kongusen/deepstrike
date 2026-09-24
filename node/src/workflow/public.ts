@@ -32,6 +32,8 @@ export type {
   DynamicWorkflowAgentOptions,
   DynamicWorkflowAgentRequest,
   DynamicWorkflowAgentResult,
+  DynamicWorkflowPlan,
+  DynamicWorkflowReplayFact,
   DynamicWorkflowContext,
   DynamicWorkflowHost,
   DynamicWorkflowLimits,

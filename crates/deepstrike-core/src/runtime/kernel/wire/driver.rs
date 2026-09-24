@@ -60,8 +60,8 @@ use super::checkpoint::{
 use super::command::{
     AppendWorkflowNodesCommand, ApplyCapabilityPatchCommand, ApplyKnowledgeMutationCommand,
     ApplyPolicyPatchCommand, ApplySkillActivationCommand, CancelCommand, CancellationReason,
-    HostCommand, LivePolicyState, SeedKnowledgeCommand, TaskUpdate as WireTaskUpdate,
-    UpdateDeadlineCommand, UpdateTaskCommand,
+    DynamicWorkflowReplayCommand, HostCommand, LivePolicyState, SeedKnowledgeCommand,
+    TaskUpdate as WireTaskUpdate, UpdateDeadlineCommand, UpdateTaskCommand,
 };
 use super::config::ResolvedOperationConfig;
 use super::effect::{

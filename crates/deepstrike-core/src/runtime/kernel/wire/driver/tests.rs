@@ -7,7 +7,10 @@ use super::*;
 use crate::runtime::kernel::wire::checkpoint::{
     CanonicalInput, CheckpointCandidate, CheckpointDraft, KernelCheckpoint,
 };
-use crate::runtime::kernel::wire::command::CompleteDynamicWorkflowCommand;
+use crate::runtime::kernel::wire::command::{
+    CompleteDynamicWorkflowCommand, DynamicWorkflowPlan, DynamicWorkflowPlanNode,
+    DynamicWorkflowReplayCommand,
+};
 use crate::runtime::kernel::wire::config::ConfigDefaults;
 use crate::runtime::kernel::wire::config::TailBounds;
 use crate::runtime::kernel::wire::config::{
@@ -912,6 +915,7 @@ fn a_dynamic_host_append_grows_the_existing_workflow_and_uses_kernel_spawn_gatin
         1_700_000_003_000,
         HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
             nodes: vec![wire_node("extra", "extra work", &[])],
+            plan: None,
         }),
     ));
 
@@ -944,8 +948,31 @@ fn a_dynamic_workflow_root_stays_open_until_host_closes_it() {
         1_700_000_002_000,
         HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
             nodes: vec![wire_node("dynamic-node", "dynamic work", &[])],
+            plan: Some(DynamicWorkflowPlan {
+                run_id: "dynamic-run".to_string(),
+                sequence: 0,
+                nodes: vec![DynamicWorkflowPlanNode {
+                    node_id: "dynamic-node".to_string(),
+                    depends_on: Vec::new(),
+                    prompt_fingerprint: "prompt-fingerprint".to_string(),
+                    replay: "executed".to_string(),
+                }],
+            }),
         }),
     ));
+    assert!(appended.step.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::DynamicWorkflowPlanCommitted {
+            run_id,
+            sequence,
+            node_ids,
+            prompt_fingerprints,
+            ..
+        } if run_id == "dynamic-run"
+            && *sequence == 0
+            && node_ids == &["dynamic-node".to_string()]
+            && prompt_fingerprints == &["prompt-fingerprint".to_string()]
+    )));
     let append_effect = sole_effect(&appended);
     assert_eq!(append_effect.tag(), EffectKindTag::SpawnTasks);
     runtime.submit(&spawned(
@@ -965,6 +992,34 @@ fn a_dynamic_workflow_root_stays_open_until_host_closes_it() {
         runtime.tx.terminal().is_none(),
         "the script may append another batch after this result"
     );
+
+    let replay = runtime.submit(&control(
+        "dynamic-replay-fact",
+        1_700_000_004_500,
+        HostCommand::RecordDynamicWorkflowReplay(DynamicWorkflowReplayCommand {
+            run_id: "dynamic-run".to_string(),
+            sequence: 0,
+            node_id: "dynamic-node".to_string(),
+            prompt_fingerprint: "prompt-fingerprint".to_string(),
+            status: "completed".to_string(),
+            replay: "executed".to_string(),
+            result_digest: "result-digest".to_string(),
+            termination: Some("completed".to_string()),
+        }),
+    ));
+    assert!(replay.step.observations.iter().any(|observation| matches!(
+        observation,
+        KernelObservation::DynamicWorkflowReplayRecorded {
+            run_id,
+            node_id,
+            replay,
+            result_digest,
+            ..
+        } if run_id == "dynamic-run"
+            && node_id == "dynamic-node"
+            && replay == "executed"
+            && result_digest == "result-digest"
+    )));
 
     let closed = runtime.submit(&control(
         "dynamic-close",
@@ -989,6 +1044,7 @@ fn a_dynamic_host_append_reports_submit_nodes_quota_rejections() {
         1_700_000_002_000,
         HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
             nodes: vec![wire_node("first", "first", &[])],
+            plan: None,
         }),
     ));
     let first_effect = sole_effect(&first);
@@ -1013,6 +1069,7 @@ fn a_dynamic_host_append_reports_submit_nodes_quota_rejections() {
                 wire_node("second", "second", &[]),
                 wire_node("third", "third", &[]),
             ],
+            plan: None,
         }),
     ));
     let second_effect = sole_effect(&second);
@@ -1040,6 +1097,7 @@ fn a_dynamic_host_append_reports_submit_nodes_quota_rejections() {
         1_700_000_009_000,
         HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
             nodes: vec![wire_node("fourth", "fourth", &[])],
+            plan: None,
         }),
     ));
     assert!(denied.published_effects().is_empty());

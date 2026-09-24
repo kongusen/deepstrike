@@ -236,6 +236,31 @@ pub enum KernelObservation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         submitter: Option<String>,
     },
+    /// The host's dynamic plan was accepted and bound to this kernel workflow transition. The
+    /// canonical DAG remains authoritative for scheduling; this fact preserves replay identity,
+    /// dependencies and the host's replay disposition in the journal.
+    DynamicWorkflowPlanCommitted {
+        turn: u32,
+        run_id: String,
+        sequence: u32,
+        node_ids: Vec<String>,
+        dependencies: Vec<Vec<String>>,
+        prompt_fingerprints: Vec<String>,
+        replay: Vec<String>,
+    },
+    /// A dynamic invocation replay decision observed by the kernel.
+    DynamicWorkflowReplayRecorded {
+        turn: u32,
+        run_id: String,
+        sequence: u32,
+        node_id: String,
+        prompt_fingerprint: String,
+        status: String,
+        replay: String,
+        result_digest: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        termination: Option<String>,
+    },
     /// A runtime node batch was rejected before any graph mutation.
     NodesRejected {
         turn: u32,

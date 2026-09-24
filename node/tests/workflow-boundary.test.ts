@@ -1,4 +1,5 @@
 import { workflowNodeSpecToKernel, workflowSpecToKernel } from "../src/types/agent.js"
+import { dynamicWorkflowPlanToKernel, dynamicWorkflowReplayFactToKernel } from "../src/workflow/dynamic.js"
 import { workflowBudgetFromKernel, workflowSpawnNodeFromKernel } from "../src/runtime/kernel-step.js"
 
 describe("workflow host-to-kernel boundary", () => {
@@ -73,6 +74,37 @@ describe("workflow host-to-kernel boundary", () => {
       nodes_remaining: 2,
       max_total_tokens: "5000",
       max_concurrency: 2,
+    })
+  })
+
+  it("projects dynamic workflow plans and replay facts into canonical wire shapes", () => {
+    expect(dynamicWorkflowPlanToKernel({
+      runId: "run-1",
+      sequence: 3,
+      nodes: [{ nodeId: "node-1", dependsOn: ["node-0"], promptFingerprint: "fp", replay: "executed" }],
+    })).toEqual({
+      run_id: "run-1",
+      sequence: 3,
+      nodes: [{ node_id: "node-1", depends_on: ["node-0"], prompt_fingerprint: "fp", replay: "executed" }],
+    })
+    expect(dynamicWorkflowReplayFactToKernel({
+      runId: "run-1",
+      sequence: 3,
+      nodeId: "node-1",
+      promptFingerprint: "fp",
+      status: "completed",
+      replay: "reused",
+      resultDigest: "digest",
+      termination: "completed",
+    })).toEqual({
+      run_id: "run-1",
+      sequence: 3,
+      node_id: "node-1",
+      prompt_fingerprint: "fp",
+      status: "completed",
+      replay: "reused",
+      result_digest: "digest",
+      termination: "completed",
     })
   })
 })

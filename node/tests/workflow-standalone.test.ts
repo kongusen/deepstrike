@@ -98,6 +98,17 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
         ? Buffer.from(record.canonical_input.data, "base64").toString("utf8").includes('"dynamic_workflow"')
         : false
     })).toBe(true)
+    const journalText = journal.map(entry => {
+      const record = JSON.parse(Buffer.from(entry.record_bytes).toString("utf8")) as { canonical_input?: { data?: string } }
+      return record.canonical_input?.data ? Buffer.from(record.canonical_input.data, "base64").toString("utf8") : ""
+    }).join("\n")
+    expect(journalText).toContain("append_workflow_nodes")
+    expect(journalText).toContain("record_dynamic_workflow_replay")
+    const kernelFacts = (await sessionLog.read("dynamic-operation"))
+      .filter(entry => entry.event.kind === "kernel_observation")
+      .map(entry => entry.event.kind === "kernel_observation" ? entry.event.observation_kind : "")
+    expect(kernelFacts).toContain("dynamic_workflow_plan_committed")
+    expect(kernelFacts).toContain("dynamic_workflow_replay_recorded")
     expect((runner as never as { activeKernel: unknown }).activeKernel).toBeNull()
   })
 

@@ -407,6 +407,9 @@ impl CanonicalOperationDriver {
             HostCommand::AppendWorkflowNodes(append) => {
                 self.plan_dynamic_workflow_append(context, append)
             }
+            HostCommand::RecordDynamicWorkflowReplay(fact) => {
+                self.plan_dynamic_workflow_replay(context, fact)
+            }
             HostCommand::CompleteDynamicWorkflow(_) => {
                 self.plan_dynamic_workflow_complete(context)
             }
@@ -445,6 +448,38 @@ impl CanonicalOperationDriver {
         for node in &append.nodes {
             self.require_known_contract(context.config, node.run_spec.as_ref())?;
         }
+        if let Some(plan) = &append.plan {
+            if plan.run_id.is_empty() || plan.nodes.len() != append.nodes.len() {
+                return Err(KernelFault::new(
+                    KernelFaultCode::InvalidConfig,
+                    "dynamic workflow plan must name a run and one entry per appended node",
+                ));
+            }
+            if plan.nodes.iter().any(|node| node.replay != "executed") {
+                return Err(KernelFault::new(
+                    KernelFaultCode::InvalidConfig,
+                    "dynamic workflow append plans may only describe executed nodes",
+                ));
+            }
+            for planned in &plan.nodes {
+                if planned.node_id.is_empty() || planned.prompt_fingerprint.is_empty() {
+                    return Err(KernelFault::new(
+                        KernelFaultCode::InvalidConfig,
+                        "dynamic workflow plan nodes require an identity and prompt fingerprint",
+                    ));
+                }
+                if planned
+                    .depends_on
+                    .iter()
+                    .any(|dependency| dependency == &planned.node_id)
+                {
+                    return Err(KernelFault::new(
+                        KernelFaultCode::InvalidConfig,
+                        format!("dynamic workflow plan node {:?} cannot depend on itself", planned.node_id),
+                    ));
+                }
+            }
+        }
         let wire_spec = WireSpec {
             name: String::new(),
             nodes: append.nodes.clone(),
@@ -469,8 +504,85 @@ impl CanonicalOperationDriver {
         if appended {
             self.node_ids.extend(node_ids);
             self.workflow_nodes.extend(append.nodes.clone());
+            if let Some(plan) = &append.plan {
+                let engine = self.engine_mut()?;
+                engine
+                    .observations
+                    .push(KernelObservation::DynamicWorkflowPlanCommitted {
+                        turn: engine.turn,
+                        run_id: plan.run_id.clone(),
+                        sequence: plan.sequence,
+                        node_ids: plan.nodes.iter().map(|node| node.node_id.clone()).collect(),
+                        dependencies: plan
+                            .nodes
+                            .iter()
+                            .map(|node| node.depends_on.clone())
+                            .collect(),
+                        prompt_fingerprints: plan
+                            .nodes
+                            .iter()
+                            .map(|node| node.prompt_fingerprint.clone())
+                            .collect(),
+                        replay: plan.nodes.iter().map(|node| node.replay.clone()).collect(),
+                    });
+            }
         }
         self.continue_after(context, action, RootKind::Workflow)
+    }
+
+    pub(super) fn plan_dynamic_workflow_replay(
+        &mut self,
+        _context: &PlanContext<'_>,
+        fact: &DynamicWorkflowReplayCommand,
+    ) -> Result<PlannedStep, KernelFault> {
+        if fact.run_id.is_empty()
+            || fact.node_id.is_empty()
+            || fact.prompt_fingerprint.is_empty()
+            || fact.result_digest.is_empty()
+        {
+            return Err(KernelFault::new(
+                KernelFaultCode::InvalidConfig,
+                "dynamic workflow replay facts require run_id, node_id, prompt_fingerprint and result_digest",
+            ));
+        }
+        if !matches!(fact.replay.as_str(), "executed" | "reused") {
+            return Err(KernelFault::new(
+                KernelFaultCode::InvalidConfig,
+                "dynamic workflow replay must be executed or reused",
+            ));
+        }
+        if !matches!(
+            fact.status.as_str(),
+            "completed" | "completed_partial" | "failed" | "skipped_upstream_failed" | "cancelled"
+        ) {
+            return Err(KernelFault::new(
+                KernelFaultCode::InvalidConfig,
+                "dynamic workflow replay fact has an unsupported status",
+            ));
+        }
+        if self.root_kind != Some(RootKind::Workflow)
+            || !self.engine().is_some_and(LoopStateMachine::workflow_active)
+        {
+            return Err(KernelFault::new(
+                KernelFaultCode::InvalidAuthority,
+                "dynamic workflow replay facts require a live workflow operation",
+            ));
+        }
+        let engine = self.engine_mut()?;
+        engine
+            .observations
+            .push(KernelObservation::DynamicWorkflowReplayRecorded {
+                turn: engine.turn,
+                run_id: fact.run_id.clone(),
+                sequence: fact.sequence,
+                node_id: fact.node_id.clone(),
+                prompt_fingerprint: fact.prompt_fingerprint.clone(),
+                status: fact.status.clone(),
+                replay: fact.replay.clone(),
+                result_digest: fact.result_digest.clone(),
+                termination: fact.termination.clone(),
+            });
+        Ok(self.quiet_step())
     }
 
     pub(super) fn plan_dynamic_workflow_complete(

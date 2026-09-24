@@ -172,9 +172,89 @@ export interface DynamicWorkflowAgentResult<T = string> {
   termination?: string
 }
 
+/** A kernel-facing description of one dynamic submission. The script host creates it; the kernel
+ * records it together with the admitted DAG append so replay can correlate plan and execution. */
+export interface DynamicWorkflowPlan {
+  runId: string
+  sequence: number
+  nodes: ReadonlyArray<{
+    nodeId: string
+    dependsOn: readonly string[]
+    promptFingerprint: string
+    replay: "executed"
+  }>
+}
+
+/** Canonical snake_case wire shape recorded by the kernel for a dynamic plan. */
+export interface KernelDynamicWorkflowPlan {
+  run_id: string
+  sequence: number
+  nodes: Array<{
+    node_id: string
+    depends_on: string[]
+    prompt_fingerprint: string
+    replay: "executed"
+  }>
+}
+
+/** Lower a host dynamic plan without carrying script or result payloads into the kernel. */
+export function dynamicWorkflowPlanToKernel(plan: DynamicWorkflowPlan): KernelDynamicWorkflowPlan {
+  return {
+    run_id: plan.runId,
+    sequence: plan.sequence,
+    nodes: plan.nodes.map(node => ({
+      node_id: node.nodeId,
+      depends_on: [...node.dependsOn],
+      prompt_fingerprint: node.promptFingerprint,
+      replay: node.replay,
+    })),
+  }
+}
+
+/** A replay fact is deliberately smaller than the host result. The host keeps result bytes, while
+ * the kernel owns the durable identity/status/digest fact used to audit replay decisions. */
+export interface DynamicWorkflowReplayFact {
+  runId: string
+  sequence: number
+  nodeId: string
+  promptFingerprint: string
+  status: WorkflowNodeStatus | "cancelled"
+  replay: "executed" | "reused"
+  resultDigest: string
+  termination?: string
+}
+
+/** Canonical snake_case wire shape for a dynamic invocation replay fact. */
+export interface KernelDynamicWorkflowReplayFact {
+  run_id: string
+  sequence: number
+  node_id: string
+  prompt_fingerprint: string
+  status: WorkflowNodeStatus | "cancelled"
+  replay: "executed" | "reused"
+  result_digest: string
+  termination?: string
+}
+
+/** Lower a host replay fact into the kernel's compact audit record. */
+export function dynamicWorkflowReplayFactToKernel(fact: DynamicWorkflowReplayFact): KernelDynamicWorkflowReplayFact {
+  return {
+    run_id: fact.runId,
+    sequence: fact.sequence,
+    node_id: fact.nodeId,
+    prompt_fingerprint: fact.promptFingerprint,
+    status: fact.status,
+    replay: fact.replay,
+    result_digest: fact.resultDigest,
+    ...(fact.termination ? { termination: fact.termination } : {}),
+  }
+}
+
 export interface DynamicWorkflowHost {
   /** Submit a kernel-owned workflow and return its typed host result. */
-  runWorkflow(spec: WorkflowSpec): Promise<WorkflowOutcome>
+  runWorkflow(spec: WorkflowSpec, plan?: DynamicWorkflowPlan): Promise<WorkflowOutcome>
+  /** Persist a replay decision as a kernel-owned fact when the host has one. */
+  recordReplayFact?(fact: DynamicWorkflowReplayFact): Promise<void>
 }
 
 export interface DynamicWorkflowRun<T> {
@@ -475,6 +555,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
   private readonly phaseStack: DynamicWorkflowPhaseProgress[] = []
   private activeAgentSlots = 0
   private readonly waitingAgentSlots: Array<() => void> = []
+  private nextPlanSequence = 0
 
   constructor(
     private readonly host: DynamicWorkflowHost,
@@ -580,6 +661,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
   private async runAgent<T>(prompt: string, options: DynamicWorkflowAgentOptions): Promise<DynamicWorkflowAgentResult<T> | null> {
     await this.control.waitIfPaused()
     if (!prompt.trim()) throw new Error("dynamic workflow agent prompt must not be empty")
+    const planSequence = this.nextPlanSequence++
     const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
     const promptFingerprint = fingerprintDynamicWorkflowInvocation(prompt, options)
     const cached = this.replayInvalidated ? undefined : await this.replayStore?.find(this.runId, nodeId, promptFingerprint)
@@ -587,6 +669,16 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       throw new DynamicWorkflowNothingToResumeError(`dynamic workflow invocation "${nodeId}" has no saved result`)
     }
     if (cached) {
+      await this.host.recordReplayFact?.({
+        runId: this.runId,
+        sequence: planSequence,
+        nodeId,
+        promptFingerprint,
+        status: cached.status,
+        replay: "reused",
+        resultDigest: digestDynamicWorkflowResult(cached.text),
+        ...(cached.termination ? { termination: cached.termination } : {}),
+      })
       this.emitLifecycle?.({ kind: "agent_reused", runId: this.runId, nodeId, promptFingerprint })
       this.progress.agentsReused += 1
       this.progress.agentsCompleted += 1
@@ -639,7 +731,11 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       }
       let outcome: WorkflowOutcome
       try {
-        outcome = await this.host.runWorkflow(spec)
+        outcome = await this.host.runWorkflow(spec, {
+          runId: this.runId,
+          sequence: planSequence,
+          nodes: [{ nodeId, dependsOn: [], promptFingerprint, replay: "executed" }],
+        })
       } catch (error) {
         await this.replayStore?.save(this.runId, {
           nodeId,
@@ -648,6 +744,16 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           status: "failed",
           termination: "host_error",
           error: error instanceof Error ? error.message : String(error),
+        })
+        await this.host.recordReplayFact?.({
+          runId: this.runId,
+          sequence: planSequence,
+          nodeId,
+          promptFingerprint,
+          status: "failed",
+          replay: "executed",
+          resultDigest: digestDynamicWorkflowResult(""),
+          termination: "host_error",
         })
         this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status: "failed", termination: "host_error" })
         throw error
@@ -658,6 +764,16 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           promptFingerprint,
           text: "",
           status: "cancelled",
+          termination: "workflow_rejected",
+        })
+        await this.host.recordReplayFact?.({
+          runId: this.runId,
+          sequence: planSequence,
+          nodeId,
+          promptFingerprint,
+          status: "cancelled",
+          replay: "executed",
+          resultDigest: digestDynamicWorkflowResult(""),
           termination: "workflow_rejected",
         })
         this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status: "failed", termination: "workflow_rejected" })
@@ -674,6 +790,16 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         status,
         ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }),
         ...(node ? {} : { error: "workflow returned no matching node outcome" }),
+      })
+      await this.host.recordReplayFact?.({
+        runId: this.runId,
+        sequence: planSequence,
+        nodeId,
+        promptFingerprint,
+        status,
+        replay: "executed",
+        resultDigest: digestDynamicWorkflowResult(text),
+        ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }),
       })
       this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId, status, ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }) })
       this.progress.agentsCompleted += 1
@@ -695,6 +821,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
   private async runAgentBatch(requests: readonly DynamicWorkflowAgentRequest[]): Promise<Array<DynamicWorkflowAgentResult | null>> {
     if (requests.length === 0) return []
     await this.control.waitIfPaused()
+    const planSequence = this.nextPlanSequence++
     const nodes = requests.map((request, index) => {
       const options = request.options ?? {}
       const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
@@ -749,7 +876,19 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         currentPhase.agentsCompleted += replayed.length
       }
       this.emit()
-      for (const entry of replayed) this.emitLifecycle?.({ kind: "agent_reused", runId: this.runId, nodeId: entry.nodeId, promptFingerprint: entry.promptFingerprint })
+      for (const entry of replayed) {
+        await this.host.recordReplayFact?.({
+          runId: this.runId,
+          sequence: planSequence,
+          nodeId: entry.nodeId,
+          promptFingerprint: entry.promptFingerprint,
+          status: entry.record!.status,
+          replay: "reused",
+          resultDigest: digestDynamicWorkflowResult(entry.record!.text),
+          ...(entry.record!.termination ? { termination: entry.record!.termination } : {}),
+        })
+        this.emitLifecycle?.({ kind: "agent_reused", runId: this.runId, nodeId: entry.nodeId, promptFingerprint: entry.promptFingerprint })
+      }
     }
     if (misses.length === 0) {
       return replayable.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
@@ -762,7 +901,16 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     try {
       let outcome: WorkflowOutcome
       try {
-        outcome = await this.host.runWorkflow({ nodes: misses.map(entry => entry.node) })
+        outcome = await this.host.runWorkflow({ nodes: misses.map(entry => entry.node) }, {
+          runId: this.runId,
+          sequence: planSequence,
+          nodes: misses.map(entry => ({
+            nodeId: entry.nodeId,
+            dependsOn: [],
+            promptFingerprint: entry.promptFingerprint,
+            replay: "executed" as const,
+          })),
+        })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await Promise.all(misses.map(entry => this.replayStore?.save(this.runId, {
@@ -773,6 +921,16 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           termination: "host_error",
           error: message,
         })))
+        await Promise.all(misses.map(entry => this.host.recordReplayFact?.({
+          runId: this.runId,
+          sequence: planSequence,
+          nodeId: entry.nodeId,
+          promptFingerprint: entry.promptFingerprint,
+          status: "failed",
+          replay: "executed",
+          resultDigest: digestDynamicWorkflowResult(""),
+          termination: "host_error",
+        })))
         for (const entry of misses) this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId: entry.nodeId, status: "failed", termination: "host_error" })
         throw error
       }
@@ -782,6 +940,16 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           promptFingerprint: entry.promptFingerprint,
           text: "",
           status: "cancelled",
+          termination: "workflow_rejected",
+        })))
+        await Promise.all(misses.map(entry => this.host.recordReplayFact?.({
+          runId: this.runId,
+          sequence: planSequence,
+          nodeId: entry.nodeId,
+          promptFingerprint: entry.promptFingerprint,
+          status: "cancelled",
+          replay: "executed",
+          resultDigest: digestDynamicWorkflowResult(""),
           termination: "workflow_rejected",
         })))
         return replayable.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
@@ -806,6 +974,16 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           status,
           ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }),
           ...(node ? {} : { error: "workflow returned no matching node outcome" }),
+        })
+        await this.host.recordReplayFact?.({
+          runId: this.runId,
+          sequence: planSequence,
+          nodeId: entry.nodeId,
+          promptFingerprint: entry.promptFingerprint,
+          status,
+          replay: "executed",
+          resultDigest: digestDynamicWorkflowResult(text),
+          ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }),
         })
         this.emitLifecycle?.({ kind: "agent_completed", runId: this.runId, nodeId: entry.nodeId, status, ...(node?.termination ? { termination: node.termination } : { termination: "missing_node_outcome" }) })
         this.progress.agentsCompleted += 1
@@ -866,6 +1044,10 @@ function parseStructuredValue<T>(text: string): T {
   } catch {
     return text as T
   }
+}
+
+function digestDynamicWorkflowResult(text: string): string {
+  return `sha256:${createHash("sha256").update(text).digest("hex")}`
 }
 
 function replayStatus(status: DynamicWorkflowInvocationRecord["status"]): WorkflowNodeStatus {

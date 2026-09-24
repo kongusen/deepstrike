@@ -3,6 +3,8 @@ import {
   DynamicWorkflowExecutor,
   type DynamicWorkflowContext,
   type DynamicWorkflowHost,
+  type DynamicWorkflowPlan,
+  type DynamicWorkflowReplayFact,
   type DynamicWorkflowRun,
   type DynamicWorkflowRunOptions,
   type DynamicWorkflowProgram,
@@ -15,6 +17,7 @@ import { DynamicWorkflowScriptError } from "./dynamic-vm.js"
 export interface DynamicWorkflowSubmission {
   readonly id: string
   readonly spec: WorkflowSpec
+  readonly plan?: DynamicWorkflowPlan
 }
 
 interface PendingSubmission extends DynamicWorkflowSubmission {
@@ -36,6 +39,12 @@ export class DynamicWorkflowController<TArgs extends Record<string, unknown> = R
   private nextId = 0
   private finalRun: Promise<DynamicWorkflowRun<unknown>> | undefined
   private finished = false
+  private readonly replayFactHandler?: (fact: DynamicWorkflowReplayFact) => Promise<void> | void
+  private replayFactTail: Promise<void> = Promise.resolve()
+
+  constructor(options?: { onReplayFact?: (fact: DynamicWorkflowReplayFact) => Promise<void> | void }) {
+    this.replayFactHandler = options?.onReplayFact
+  }
 
   start<T>(
     program: DynamicWorkflowProgram<TArgs, T>,
@@ -45,7 +54,10 @@ export class DynamicWorkflowController<TArgs extends Record<string, unknown> = R
     if (typeof program === "function" && options.trust === "untrusted") {
       throw new DynamicWorkflowScriptError("untrusted dynamic workflows require a script or artifact for process isolation")
     }
-    const host: DynamicWorkflowHost = { runWorkflow: spec => this.enqueue(spec) }
+    const host: DynamicWorkflowHost = {
+      runWorkflow: (spec, plan) => this.enqueue(spec, plan),
+      recordReplayFact: fact => this.recordReplayFact(fact),
+    }
     const processExecutor = options.trust === "untrusted" ? new DynamicWorkflowProcessExecutor(host) : undefined
     const run = typeof program === "function"
       ? new DynamicWorkflowExecutor<TArgs>(host, options).run(program)
@@ -88,11 +100,13 @@ export class DynamicWorkflowController<TArgs extends Record<string, unknown> = R
     return this.finished
   }
 
-  private enqueue(spec: WorkflowSpec): Promise<WorkflowOutcome> {
+  private enqueue(spec: WorkflowSpec, plan?: DynamicWorkflowPlan): Promise<WorkflowOutcome> {
     return new Promise((resolve, reject) => {
+      const id = `dynamic-submission-${this.nextId++}`
       const submission: PendingSubmission = {
-        id: `dynamic-submission-${this.nextId++}`,
+        id,
         spec,
+        ...(plan ? { plan: { ...plan } } : {}),
         resolve,
         reject,
       }
@@ -104,6 +118,12 @@ export class DynamicWorkflowController<TArgs extends Record<string, unknown> = R
         this.queue.push(submission)
       }
     })
+  }
+
+  private recordReplayFact(fact: DynamicWorkflowReplayFact): Promise<void> {
+    const next = this.replayFactTail.then(() => this.replayFactHandler?.(fact)).then(() => undefined)
+    this.replayFactTail = next.catch(() => undefined)
+    return next
   }
 
   private finish(error?: unknown): void {
