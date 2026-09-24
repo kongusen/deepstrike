@@ -7,10 +7,14 @@ import pytest
 
 
 class OneTurnProvider:
+    def __init__(self):
+        self.extensions = None
+
     async def complete(self, context: RenderedContext, tools, extensions=None):
         raise NotImplementedError
 
     async def stream(self, context: RenderedContext, tools, extensions=None, state=None):
+        self.extensions = extensions
         yield TextDelta(delta="hello")
 
 
@@ -24,6 +28,20 @@ async def test_agent_run_returns_attribute_and_mapping_result():
     assert result["output"] == "hello"
     assert result.session_id.startswith("agent-")
     assert result.run_id
+
+
+async def test_agent_run_options_reach_runtime_provider():
+    provider = OneTurnProvider()
+    agent = create_agent("options", runtime_binding={"provider": provider})
+
+    await agent.run(
+        "say hello",
+        criteria=["must greet"],
+        attachments=[{"name": "brief", "content": "hello"}],
+        extensions={"temperature": 0.1},
+    )
+
+    assert provider.extensions["temperature"] == 0.1
 
 
 async def test_agent_memory_apis_use_runtime_binding():

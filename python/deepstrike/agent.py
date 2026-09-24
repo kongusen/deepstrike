@@ -84,9 +84,18 @@ class AgentSession:
         goal: str,
         *,
         max_turns: int | None = None,
+        criteria: list[str] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        extensions: dict[str, Any] | None = None,
     ) -> AsyncIterator[Any]:
         runner = await self.agent._prepare_runner(self.id, max_turns=max_turns)
-        async for event in runner.run(goal=goal, session_id=self.id):
+        async for event in runner.run(
+            goal=goal,
+            session_id=self.id,
+            criteria=criteria,
+            attachments=attachments,
+            extensions=extensions,
+        ):
             yield event
 
     async def resume(self) -> AsyncIterator[Any]:
@@ -97,8 +106,23 @@ class AgentSession:
     def interrupt(self, reason: str = "user") -> None:
         self._runner.interrupt(reason)  # type: ignore[arg-type]
 
-    async def run(self, goal: str, *, max_turns: int | None = None) -> RunResult:
-        return await self.agent._run_in_session(self, goal, max_turns=max_turns)
+    async def run(
+        self,
+        goal: str,
+        *,
+        max_turns: int | None = None,
+        criteria: list[str] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        extensions: dict[str, Any] | None = None,
+    ) -> RunResult:
+        return await self.agent._run_in_session(
+            self,
+            goal,
+            max_turns=max_turns,
+            criteria=criteria,
+            attachments=attachments,
+            extensions=extensions,
+        )
 
 
 class AgentRegistry:
@@ -455,13 +479,47 @@ class Agent:
             output_validation=output_validation,
         )
 
-    async def _run_in_session(self, session: AgentSession, goal: str, *, max_turns: int | None = None) -> RunResult:
-        return await self._collect_result(session, session.stream(goal, max_turns=max_turns))
+    async def _run_in_session(
+        self,
+        session: AgentSession,
+        goal: str,
+        *,
+        max_turns: int | None = None,
+        criteria: list[str] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        extensions: dict[str, Any] | None = None,
+    ) -> RunResult:
+        return await self._collect_result(
+            session,
+            session.stream(
+                goal,
+                max_turns=max_turns,
+                criteria=criteria,
+                attachments=attachments,
+                extensions=extensions,
+            ),
+        )
 
-    async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> RunResult:
+    async def run(
+        self,
+        goal: str,
+        *,
+        session_id: str | None = None,
+        max_turns: int | None = None,
+        criteria: list[str] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        extensions: dict[str, Any] | None = None,
+    ) -> RunResult:
         """Execute one goal and return a reusable, structured result."""
         session = self.session(session_id)
-        return await self._run_in_session(session, goal, max_turns=max_turns)
+        return await self._run_in_session(
+            session,
+            goal,
+            max_turns=max_turns,
+            criteria=criteria,
+            attachments=attachments,
+            extensions=extensions,
+        )
 
     async def listen(self, session_id: str) -> RunResult | None:
         """Resume a durable session that has pending inbound signals or work."""
@@ -471,10 +529,25 @@ class Agent:
         except ValueError:
             return None
 
-    async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None):
+    async def stream(
+        self,
+        goal: str,
+        *,
+        session_id: str | None = None,
+        max_turns: int | None = None,
+        criteria: list[str] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        extensions: dict[str, Any] | None = None,
+    ):
         """Stream host events while retaining the session for later resume."""
         session = self.session(session_id)
-        async for event in session.stream(goal, max_turns=max_turns):
+        async for event in session.stream(
+            goal,
+            max_turns=max_turns,
+            criteria=criteria,
+            attachments=attachments,
+            extensions=extensions,
+        ):
             yield event
 
     def close(self) -> None:
