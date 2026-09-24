@@ -24,6 +24,8 @@ async def test_agent_session_reuses_host_session_log():
     assert result == "ok"
     assert entries
     assert entries[0].event["kind"] == "run_started"
+    assert (await session.latest_seq()) == entries[-1].seq
+    assert len(await session.history()) == len(entries)
 
 
 def test_agent_returns_one_handle_per_session_id():

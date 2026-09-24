@@ -59,6 +59,13 @@ class AgentSession:
         if self._active_runner is not None:
             self._active_runner.interrupt(reason)
 
+    async def history(self, *, from_seq: int = 0):
+        """Read the durable business projection for this session."""
+        return await self._session_log.read(self.id, from_seq=from_seq)
+
+    async def latest_seq(self) -> int:
+        return await self._session_log.latest_seq(self.id)
+
     async def run(self, goal: str, *, max_turns: int | None = None) -> str:
         from deepstrike.runtime.runner import collect_text
         return await collect_text(self.stream(goal, max_turns=max_turns))
