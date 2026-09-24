@@ -6,7 +6,7 @@ callables and provider objects stay in host bindings and never cross this bounda
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -73,6 +73,33 @@ class CapturedAgent:
     declaration: AgentDeclaration
     host_tools: tuple[Any, ...] = ()
     runtime_binding: Mapping[str, Any] | None = None
+
+
+@runtime_checkable
+class AgentResolver(Protocol):
+    """Host-side name resolver; resolved declarations still lower through the Kernel contract."""
+
+    def resolve(self, name: str) -> CapturedAgent: ...
+
+
+class InMemoryAgentResolver:
+    def __init__(self, agents: Sequence[CapturedAgent] | None = None) -> None:
+        self._agents: dict[str, CapturedAgent] = {}
+        for agent in agents or ():
+            self.register(agent)
+
+    def register(self, agent: CapturedAgent) -> "InMemoryAgentResolver":
+        name = agent.declaration.name
+        if name in self._agents and self._agents[name] is not agent:
+            raise ValueError(f'agent "{name}" is already registered')
+        self._agents[name] = agent
+        return self
+
+    def resolve(self, name: str) -> CapturedAgent:
+        try:
+            return self._agents[name]
+        except KeyError as exc:
+            raise KeyError(f'unknown agent "{name}"') from exc
 
 
 def _tool_snapshot(tool: Any) -> tuple[dict[str, Any], Any | None]:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from deepstrike import create_agent, tool
+from deepstrike import InMemoryAgentResolver, create_agent, tool
 
 
 @tool
@@ -46,3 +46,11 @@ def test_declaration_lowers_to_shared_run_spec():
     assert spec.model_hint == "openai:gpt"
     assert spec.capability_filter.allowed_ids == ["add"]
     assert spec.exposure_baseline == ["add"]
+
+
+def test_agent_resolver_is_name_only_and_returns_captured_declaration():
+    agent = create_agent("math", tools=[add])
+    captured = agent._captured
+    resolver = InMemoryAgentResolver([captured])
+
+    assert resolver.resolve("math") is captured

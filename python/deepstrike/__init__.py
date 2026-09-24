@@ -202,7 +202,10 @@ from deepstrike.types.agent import (
     fanout_synthesize, generate_and_filter, verify_rules, gen_eval,
 )
 from deepstrike.agent import Agent, AgentDefinition, AgentMemory, MemoryReference, ModelRef, create_agent
-from deepstrike.runtime.agent_declaration import AgentDeclaration, CapturedAgent, capture_agent_declaration
+from deepstrike.runtime.agent_declaration import (
+    AgentDeclaration, AgentResolver, CapturedAgent, InMemoryAgentResolver,
+    capture_agent_declaration,
+)
 from deepstrike.runtime.durable_content import (
     DurableContentError,
     decode_durable_content,
@@ -383,7 +386,8 @@ __all__ = [
     # Sub-agent isolation
     "AgentIdentity", "AgentCapabilityFilter", "AgentRunSpec",
     "Agent", "create_agent", "AgentDefinition", "AgentMemory", "MemoryReference", "ModelRef",
-    "AgentDeclaration", "CapturedAgent", "capture_agent_declaration",
+    "AgentDeclaration", "AgentResolver", "CapturedAgent", "InMemoryAgentResolver",
+    "capture_agent_declaration",
     "AgentProcessChangedObservation", "SubAgentResult", "LoopResult",
     "KernelAgentRole", "AgentIsolation", "ContextInheritance",
     "MilestoneContract", "MilestonePhase", "MilestoneCheckResult", "MilestonePolicy",
