@@ -37,7 +37,18 @@ class AgentSession:
 
     async def resume(self):
         if self._active_runner is None:
-            self._active_runner = self._runner("resume")
+            entries = await self._session_log.read(self.id)
+            started = next(
+                (entry.event for entry in entries if entry.event.get("kind") == "run_started"),
+                None,
+            )
+            if started is None:
+                raise ValueError(f"No run_started event for session: {self.id}")
+            self._active_runner = self.agent._create_runner(
+                self._session_log,
+                goal=str(started.get("goal", "")),
+                session_id=self.id,
+            )
         try:
             async for event in self._active_runner.wake(self.id):
                 yield event
@@ -130,6 +141,7 @@ class Agent:
         self.runtime_binding = dict(runtime_binding) if runtime_binding is not None else None
         from deepstrike.runtime.session_log import InMemorySessionLog
         self._session_log = (self.runtime_binding or {}).get("session_log") or InMemorySessionLog()
+        self._sessions: dict[str, AgentSession] = {}
 
     @property
     def declaration(self) -> dict[str, Any]:
@@ -137,7 +149,10 @@ class Agent:
         return self._captured.declaration.to_kernel_dict()
 
     def session(self, session_id: str | None = None) -> AgentSession:
-        return AgentSession(self, session_id or f"agent-{uuid.uuid4()}")
+        resolved = session_id or f"agent-{uuid.uuid4()}"
+        if resolved not in self._sessions:
+            self._sessions[resolved] = AgentSession(self, resolved)
+        return self._sessions[resolved]
 
     def _provider(self) -> Any:
         if not self.runtime_binding:

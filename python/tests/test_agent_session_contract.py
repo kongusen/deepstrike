@@ -24,3 +24,9 @@ async def test_agent_session_reuses_host_session_log():
     assert result == "ok"
     assert entries
     assert entries[0].event["kind"] == "run_started"
+
+
+def test_agent_returns_one_handle_per_session_id():
+    agent = create_agent("session-agent", runtime_binding={"provider": Provider()})
+
+    assert agent.session("same") is agent.session("same")
