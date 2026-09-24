@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from deepstrike import AgentSession, RunResult, create_agent
+from deepstrike import AgentSession, InMemoryMemoryStore, MemoryScope, RunResult, create_agent
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
 
@@ -23,6 +23,24 @@ async def test_agent_run_returns_attribute_and_mapping_result():
     assert result["output"] == "hello"
     assert result.session_id.startswith("agent-")
     assert result.run_id
+
+
+async def test_agent_memory_apis_use_runtime_binding():
+    store = InMemoryMemoryStore()
+    agent = create_agent(
+        "greeter",
+        runtime_binding={
+            "provider": OneTurnProvider(),
+            "memory_store": store,
+            "memory_scope": MemoryScope("tenant", "greeter"),
+        },
+    )
+
+    record = await agent.remember("remember this", name="note")
+    hits = await agent.recall("remember this")
+
+    assert record.content == "remember this"
+    assert hits and hits[0].record.record_id == record.record_id
 
 
 def test_agent_session_is_pythonic_and_stable():

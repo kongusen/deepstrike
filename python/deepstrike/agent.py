@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import uuid
+import time
 from collections.abc import AsyncIterator
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
@@ -144,6 +145,27 @@ class Agent:
         self._session_log = None
         self._runners: dict[str, Any] = {}
 
+    @property
+    def declaration(self) -> dict[str, Any]:
+        """Return the serializable agent declaration used by runtime adapters."""
+        return {
+            "name": self.name,
+            "description": self.description,
+            "instructions": self.instructions,
+            "model": self.model,
+            "capability_filter": self.capability_filter,
+            "tools": self.tools,
+            "mcp_servers": self.mcp_servers,
+            "skills": self.skills,
+            "memory": self.memory,
+            "knowledge": self.knowledge,
+            "handoffs": self.handoffs,
+            "provider_options": self.provider_options,
+            "output_schema": self.output_schema,
+            "metadata": self.metadata,
+            "guardrails": self.guardrails,
+        }
+
     def session(self, session_id: str | None = None) -> AgentSession:
         """Return a stable session handle, creating an id when omitted."""
         return AgentSession(self, session_id or f"agent-{uuid.uuid4()}")
@@ -179,10 +201,17 @@ class Agent:
         raw_options.pop("system_prompt", None)
         if max_turns is not None:
             raw_options["max_turns"] = max_turns
-        plane = LocalExecutionPlane()
-        executable_tools = [tool for tool in (self.tools or []) if hasattr(tool, "schema")]
-        if executable_tools:
-            plane.register(*executable_tools)
+        binding = self.runtime_binding or {}
+        if binding.get("memory_store") is not None:
+            raw_options.setdefault("memory_store", binding["memory_store"])
+        if binding.get("memory_scope") is not None:
+            raw_options.setdefault("memory_scope", binding["memory_scope"])
+        configured_plane = (self.runtime_binding or {}).get("execution_plane")
+        plane = configured_plane or LocalExecutionPlane()
+        if configured_plane is None:
+            executable_tools = [tool for tool in (self.tools or []) if hasattr(tool, "schema")]
+            if executable_tools:
+                plane.register(*executable_tools)
         options = RuntimeOptions(
             provider=self._provider(),
             execution_plane=plane,
@@ -195,6 +224,77 @@ class Agent:
         if max_turns is None:
             self._runners[session_id] = runner
         return runner
+
+    def _memory_binding(self) -> tuple[Any, Any]:
+        binding = self.runtime_binding or {}
+        store = binding.get("memory_store")
+        scope = binding.get("memory_scope")
+        if store is None or scope is None:
+            raise RuntimeError(
+                f'agent "{self.name}" memory APIs require runtime_binding.memory_store and memory_scope'
+            )
+        return store, scope
+
+    async def remember(
+        self,
+        memory: Any,
+        *,
+        session_id: str | None = None,
+        name: str | None = None,
+        kind: str = "reference",
+        description: str = "",
+        pinned: bool = False,
+    ) -> Any:
+        """Persist one durable memory through the same runner/kernel path as a live run."""
+        from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord
+
+        _store, scope = self._memory_binding()
+        if isinstance(memory, MemoryRecord):
+            record = memory
+        else:
+            content = str(memory)
+            now = int(time.time() * 1000)
+            record = MemoryRecord(
+                record_id=f"mem-{uuid.uuid4()}",
+                scope=scope,
+                name=name or "memory",
+                kind=kind,  # type: ignore[arg-type]
+                content=content,
+                description=description,
+                provenance=MemoryProvenance(author="host", trust="user_asserted", session_id=session_id),
+                created_at=now,
+                updated_at=now,
+                pinned=pinned,
+            )
+        sid = session_id or f"agent-memory-{uuid.uuid4()}"
+        runner = self._runner_for(sid)
+        await runner.write_memory(record, session_id=sid, agent_id=self.name)
+        return record
+
+    async def recall(
+        self,
+        query: str,
+        *,
+        session_id: str | None = None,
+        top_k: int = 5,
+        min_score: float | None = None,
+    ) -> list[Any]:
+        """Search durable memory using the configured store and scope."""
+        _store, scope = self._memory_binding()
+        from deepstrike.memory.protocols import MemoryQuery
+
+        sid = session_id or f"agent-memory-{uuid.uuid4()}"
+        runner = self._runner_for(sid)
+        return await runner.query_memory(
+            MemoryQuery(scope=scope, query=query, top_k=top_k, min_score=min_score),
+            session_id=sid,
+            agent_id=self.name,
+        )
+
+    async def workflow(self, spec: Any, *, session_id: str | None = None) -> Any:
+        """Run a declarative workflow through the runner's governed workflow path."""
+        sid = session_id or f"agent-workflow-{uuid.uuid4()}"
+        return await self._runner_for(sid).run_workflow(spec, session_id=sid)
 
     async def _run_in_session(self, session: AgentSession, goal: str, *, max_turns: int | None = None) -> RunResult:
         from deepstrike.providers.stream import DoneEvent, ErrorEvent, TextDelta, UsageEvent
