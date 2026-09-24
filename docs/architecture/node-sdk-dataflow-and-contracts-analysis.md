@@ -209,6 +209,7 @@ Memory content 的 authority 在 host MemoryStore；kernel 只持有 effect、re
 - lifecycle event 序列和 invocation fingerprint。
 - 仅 `completed`/`completed_partial` 记录可以被复用。
 - `failed`/`cancelled` 尾巴只作为诊断，不得当成成功结果。
+- 同一 run 中第一次 fingerprint 变更、失败或结果缺失会使后续 invocation suffix 失效；fan-out 保持位置顺序，只提交该 suffix。
 
 失败必须有终态路径：provider transport error 由 kernel 决定 retry 或 done；未处理的 kernel action fail-closed；script/child driver 抛错时提交 cancel/preempt sequence；host 清理 active state 之前先让 canonical operation terminal。
 

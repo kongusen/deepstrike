@@ -185,6 +185,7 @@ It must not independently decide whether an operation is terminal, replace journ
 Normal resume reads session events, locates `run_started`, verifies the canonical journal head, restores the kernel, and continues from its pending effect. Provider replay reuses measurement/evidence only when the request fingerprint matches.
 
 Dynamic replay additionally binds run ID, artifact digest, argument fingerprint, limits, lifecycle sequence, and invocation fingerprints. Only completed or completed-partial records are reusable; failed and cancelled tails remain diagnostic.
+Within one run, the first changed, failed, or missing invocation invalidates the remaining suffix; fan-out preserves positions while submitting that suffix again.
 
 Every failure has a terminal path: provider errors are adjudicated by the kernel, unhandled actions fail closed, and dynamic script/child failures commit cancellation/preemption before host state is cleared.
 

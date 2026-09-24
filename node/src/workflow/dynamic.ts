@@ -339,6 +339,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       progress,
       this.options.args ?? {} as TArgs,
       runId,
+      Boolean(existing?.records?.length),
       this.options.replayStore,
       this.options.onProgress,
       emitLifecycle,
@@ -398,6 +399,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
   readonly args: Readonly<TArgs>
   private agentCount = 0
   private nextNode = 0
+  private replayInvalidated = false
   private readonly phaseStack: DynamicWorkflowPhaseProgress[] = []
   private activeAgentSlots = 0
   private readonly waitingAgentSlots: Array<() => void> = []
@@ -408,6 +410,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     readonly progress: DynamicWorkflowProgress,
     args: TArgs,
     private readonly runId: string,
+    private readonly replayActive: boolean,
     private readonly replayStore: DynamicWorkflowReplayStore | undefined,
     private readonly onProgress?: (progress: DynamicWorkflowProgress) => void,
     private readonly emitLifecycle?: (event: DynamicWorkflowLifecycleEvent) => void,
@@ -501,7 +504,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     if (!prompt.trim()) throw new Error("dynamic workflow agent prompt must not be empty")
     const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
     const promptFingerprint = fingerprintDynamicWorkflowInvocation(prompt, options)
-    const cached = await this.replayStore?.find(this.runId, nodeId, promptFingerprint)
+    const cached = this.replayInvalidated ? undefined : await this.replayStore?.find(this.runId, nodeId, promptFingerprint)
     if (cached) {
       this.emitLifecycle?.({ kind: "agent_reused", runId: this.runId, nodeId, promptFingerprint })
       this.progress.agentsReused += 1
@@ -520,6 +523,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         ...(cached.termination ? { termination: cached.termination } : {}),
       }
     }
+    if (this.replayActive) this.replayInvalidated = true
     if (this.agentCount >= this.limits.maxAgentsPerRun) {
       throw new DynamicWorkflowLimitError(
         `dynamic workflow exceeded maxAgentsPerRun (${this.limits.maxAgentsPerRun})`,
@@ -637,17 +641,20 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       return {
         ...entry,
         promptFingerprint,
-        record: await this.replayStore?.find(this.runId, entry.nodeId, promptFingerprint),
+        record: this.replayInvalidated ? undefined : await this.replayStore?.find(this.runId, entry.nodeId, promptFingerprint),
       }
     }))
-    const misses = cached.filter(entry => !entry.record)
+    const firstMiss = cached.findIndex(entry => !entry.record)
+    if (firstMiss >= 0 && this.replayActive) this.replayInvalidated = true
+    const replayable = firstMiss >= 0 ? cached.map((entry, index) => index < firstMiss ? entry : { ...entry, record: undefined }) : cached
+    const misses = replayable.filter(entry => !entry.record)
     if (this.agentCount + misses.length > this.limits.maxAgentsPerRun) {
       throw new DynamicWorkflowLimitError(
         `dynamic workflow exceeded maxAgentsPerRun (${this.limits.maxAgentsPerRun})`,
       )
     }
     const currentPhase = this.phaseStack.at(-1)
-    const replayed = cached.filter(entry => entry.record)
+    const replayed = replayable.filter(entry => entry.record)
     if (replayed.length > 0) {
       this.progress.agentsReused += replayed.length
       this.progress.agentsCompleted += replayed.length
@@ -659,7 +666,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
       for (const entry of replayed) this.emitLifecycle?.({ kind: "agent_reused", runId: this.runId, nodeId: entry.nodeId, promptFingerprint: entry.promptFingerprint })
     }
     if (misses.length === 0) {
-      return cached.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
+      return replayable.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
     }
     this.agentCount += misses.length
     this.progress.agentsStarted = this.agentCount
@@ -691,7 +698,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           status: "cancelled",
           termination: "workflow_rejected",
         })))
-        return cached.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
+        return replayable.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
       }
       const results = new Map<string, DynamicWorkflowAgentResult | null>()
       for (const entry of misses) {
@@ -718,7 +725,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         this.progress.agentsCompleted += 1
         if (currentPhase) currentPhase.agentsCompleted += 1
       }
-      return cached.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : results.get(entry.nodeId) ?? null)
+      return replayable.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : results.get(entry.nodeId) ?? null)
     } finally {
       this.progress.activeAgents -= misses.length
       this.emit()

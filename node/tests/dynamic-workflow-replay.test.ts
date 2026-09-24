@@ -56,6 +56,19 @@ describe("dynamic workflow replay", () => {
     expect(calls).toEqual(["inspect", "inspect again"])
   })
 
+  it("invalidates sequential replay after the first changed invocation", async () => {
+    const store = new InMemoryDynamicWorkflowReplayStore()
+    const calls: string[] = []
+    const run = (first: string, second: string) => new DynamicWorkflowExecutor(hostWithCalls(calls), {
+      runId: "sequential-suffix-1",
+      replayStore: store,
+    }).run(async ctx => [await ctx.agent(first, { label: "first" }), await ctx.agent(second, { label: "second" })])
+
+    await run("a", "b")
+    await run("changed", "b")
+    expect(calls).toEqual(["a", "b", "changed", "b"])
+  })
+
   it("rejects replay when run inputs or artifact identity change", async () => {
     const store = new InMemoryDynamicWorkflowReplayStore()
     await new DynamicWorkflowExecutor(hostWithCalls([]), {
@@ -162,10 +175,10 @@ describe("dynamic workflow replay", () => {
       dynamicAgentTask(`task:${item}`, { label: `slot-${index}` }),
     ))
 
-    expect(batches).toEqual([["task:a", "task:b", "task:c"], ["task:changed"]])
+    expect(batches).toEqual([["task:a", "task:b", "task:c"], ["task:changed", "task:c"]])
     expect(replayed.value.map(result => result?.text)).toEqual(["done:task:a", "done:task:changed", "done:task:c"])
-    expect(replayed.progress.agentsReused).toBe(2)
-    expect(replayed.progress.agentsStarted).toBe(1)
+    expect(replayed.progress.agentsReused).toBe(1)
+    expect(replayed.progress.agentsStarted).toBe(2)
   })
 
   it("does not consume the agent limit for a replay hit", async () => {
