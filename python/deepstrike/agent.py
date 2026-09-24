@@ -66,6 +66,11 @@ class AgentSession:
     async def latest_seq(self) -> int:
         return await self._session_log.latest_seq(self.id)
 
+    async def replay_fixture(self):
+        """Return ordered assistant messages suitable for ``ReplayProvider``."""
+        from deepstrike.runtime.replay_fixture import extract_recorded_messages
+        return extract_recorded_messages(await self.history())
+
     async def run(self, goal: str, *, max_turns: int | None = None) -> str:
         from deepstrike.runtime.runner import collect_text
         return await collect_text(self.stream(goal, max_turns=max_turns))

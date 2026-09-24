@@ -26,6 +26,9 @@ async def test_agent_session_reuses_host_session_log():
     assert entries[0].event["kind"] == "run_started"
     assert (await session.latest_seq()) == entries[-1].seq
     assert len(await session.history()) == len(entries)
+    await log.append("s-1", {"kind": "llm_completed", "content": "ok", "tool_calls": []})
+    fixture = await session.replay_fixture()
+    assert fixture and fixture[0]["content"] == "ok"
 
 
 def test_agent_returns_one_handle_per_session_id():

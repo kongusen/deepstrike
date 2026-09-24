@@ -19,7 +19,11 @@ def extract_recorded_messages(events: Iterable[Any]) -> list[ModelMessage]:
 
     out: list[ModelMessage] = []
     for entry in events:
-        event = entry.get("event") if isinstance(entry, dict) and "event" in entry else entry
+        event = (
+            entry.get("event")
+            if isinstance(entry, dict) and "event" in entry
+            else getattr(entry, "event", entry)
+        )
         kind = event.get("kind") if isinstance(event, dict) else getattr(event, "kind", None)
         if kind != "llm_completed":
             continue
