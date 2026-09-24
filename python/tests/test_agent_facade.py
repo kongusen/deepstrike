@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from deepstrike import AgentRegistry, AgentSession, InMemoryMemoryStore, MemoryScope, RunResult, create_agent
+from deepstrike import AgentRegistry, AgentSession, InMemoryMemoryStore, MemoryScope, RunOptions, RunResult, create_agent
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
 import pytest
@@ -42,6 +42,18 @@ async def test_agent_run_options_reach_runtime_provider():
     )
 
     assert provider.extensions["temperature"] == 0.1
+
+
+async def test_run_options_can_override_output_schema_for_one_run():
+    agent = create_agent("options-schema", runtime_binding={"provider": OneTurnProvider()})
+
+    result = await agent.run(
+        "say hello",
+        options=RunOptions(output_schema={"type": "object"}),
+    )
+
+    assert result.output_validation is not None
+    assert result.status == "partial"
 
 
 async def test_agent_replay_uses_recorded_messages():

@@ -30,6 +30,8 @@ class RunOptions:
     criteria: list[str] | None = None
     attachments: list[dict[str, Any]] | None = None
     extensions: dict[str, Any] | None = None
+    output_schema: Mapping[str, Any] | None = None
+    governance_policy: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,7 @@ class AgentSession:
             max_turns=max_turns,
             max_tokens=options.max_tokens,
             timeout_ms=options.timeout_ms,
+            governance_policy=options.governance_policy,
         )
         async for event in runner.run(
             goal=goal,
@@ -293,6 +296,7 @@ class Agent:
         max_turns: int | None = None,
         max_tokens: int | None = None,
         timeout_ms: int | None = None,
+        governance_policy: Any | None = None,
     ) -> Any:
         runner = self._runners.get(session_id)
         if runner is not None and max_turns is None:
@@ -317,6 +321,8 @@ class Agent:
             raw_options["max_tokens"] = max_tokens
         if timeout_ms is not None:
             raw_options["timeout_ms"] = timeout_ms
+        if governance_policy is not None:
+            raw_options["governance_policy"] = governance_policy
         binding = self.runtime_binding or {}
         if self.mcp_servers and binding.get("mcp_execution_plane") is None and binding.get("execution_plane") is None:
             raise RuntimeError(
@@ -372,7 +378,7 @@ class Agent:
             **raw_options,
         )
         runner = RuntimeRunner(options)
-        if max_turns is None and max_tokens is None and timeout_ms is None:
+        if max_turns is None and max_tokens is None and timeout_ms is None and governance_policy is None:
             self._runners[session_id] = runner
         return runner
 
@@ -383,12 +389,14 @@ class Agent:
         max_turns: int | None = None,
         max_tokens: int | None = None,
         timeout_ms: int | None = None,
+        governance_policy: Any | None = None,
     ) -> Any:
         runner = self._runner_for(
             session_id,
             max_turns=max_turns,
             max_tokens=max_tokens,
             timeout_ms=timeout_ms,
+            governance_policy=governance_policy,
         )
         plane = runner.execution_plane
         if hasattr(plane, "connect") and id(plane) not in self._connected_planes:
@@ -480,7 +488,13 @@ class Agent:
         spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task=goal, role=role)])
         return await self.workflow(spec, session_id=session_id)
 
-    async def _collect_result(self, session: AgentSession, events: AsyncIterator[Any]) -> RunResult:
+    async def _collect_result(
+        self,
+        session: AgentSession,
+        events: AsyncIterator[Any],
+        *,
+        output_schema: Mapping[str, Any] | None = None,
+    ) -> RunResult:
         from deepstrike.providers.stream import DoneEvent, ErrorEvent, TextDelta, UsageEvent
 
         output: list[str] = []
@@ -531,10 +545,11 @@ class Agent:
             elif reason == "error":
                 status = "error"
         output_validation = None
-        if self.output_schema is not None:
+        effective_schema = output_schema if output_schema is not None else self.output_schema
+        if effective_schema is not None:
             from deepstrike.runtime.output_schema import extract_json_value, validate_against_schema
             parsed = extract_json_value("".join(output))
-            errors = validate_against_schema(parsed, self.output_schema)
+            errors = validate_against_schema(parsed, effective_schema)
             output_validation = {
                 "valid": not errors,
                 "value": parsed,
@@ -573,6 +588,7 @@ class Agent:
                 attachments=attachments,
                 extensions=extensions,
             ),
+            output_schema=options.output_schema if options is not None else None,
         )
 
     async def run(
