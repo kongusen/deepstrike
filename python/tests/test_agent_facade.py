@@ -3,6 +3,7 @@ from __future__ import annotations
 from deepstrike import AgentSession, InMemoryMemoryStore, MemoryScope, RunResult, create_agent
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
+import pytest
 
 
 class OneTurnProvider:
@@ -72,3 +73,11 @@ def test_agent_session_is_pythonic_and_stable():
     assert isinstance(session, AgentSession)
     assert session.id == "session-1"
     assert agent.session("session-1").id == session.id
+
+
+def test_agent_captures_invalid_bindings_before_runtime_creation():
+    with pytest.raises(ValueError, match="configured together"):
+        create_agent("invalid", runtime_binding={"memory_store": InMemoryMemoryStore()})
+
+    with pytest.raises(ValueError, match="requires a name"):
+        create_agent("invalid", mcp_servers=[{"command": "server"}])

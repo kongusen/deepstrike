@@ -145,8 +145,29 @@ class Agent:
         self.metadata = dict(metadata) if metadata is not None else None
         self.guardrails = list(guardrails) if guardrails is not None else None
         self.runtime_binding = dict(runtime_binding) if runtime_binding is not None else None
+        self._validate_declaration()
         self._session_log = None
         self._runners: dict[str, Any] = {}
+
+    def _validate_declaration(self) -> None:
+        """Validate host bindings once, before a run can create kernel state."""
+        binding = self.runtime_binding or {}
+        has_store = binding.get("memory_store") is not None
+        has_scope = binding.get("memory_scope") is not None
+        if has_store != has_scope:
+            raise ValueError("runtime_binding.memory_store and memory_scope must be configured together")
+        for index, server in enumerate(self.mcp_servers or []):
+            if not isinstance(server, Mapping):
+                raise TypeError(f"mcp_servers[{index}] must be a mapping")
+            if not server.get("name"):
+                raise ValueError(f"mcp_servers[{index}] requires a name")
+            if not server.get("command") and binding.get("mcp_execution_plane") is None:
+                raise ValueError(f"mcp_servers[{index}] requires command when no bound MCP plane is provided")
+        for index, skill in enumerate(self.skills or []):
+            if not isinstance(skill, Mapping) or not skill.get("name"):
+                raise ValueError(f"skills[{index}] requires a name")
+        if self.output_schema is not None and not isinstance(self.output_schema, Mapping):
+            raise TypeError("output_schema must be a mapping")
 
     @property
     def declaration(self) -> dict[str, Any]:
