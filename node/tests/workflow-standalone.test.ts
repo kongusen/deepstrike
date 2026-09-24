@@ -84,6 +84,10 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
     const starts = (await sessionLog.read("dynamic-operation"))
       .filter(entry => entry.event.kind === "run_started")
     expect(starts).toHaveLength(1)
+    const lifecycle = (await sessionLog.read("dynamic-operation"))
+      .filter(entry => entry.event.kind === "kernel_observation" && entry.event.observation_kind.startsWith("dynamic_lifecycle:"))
+      .map(entry => entry.event.kind === "kernel_observation" ? entry.event.observation_kind : "")
+    expect(lifecycle).toEqual(expect.arrayContaining(["dynamic_lifecycle:run_started", "dynamic_lifecycle:run_completed"]))
     const runId = starts[0].event.kind === "run_started" ? starts[0].event.run_id : ""
     const journal = await sessionLog.kernelJournal.readFrom(`node-operation-${runId}`)
     expect(journal.some(entry => {

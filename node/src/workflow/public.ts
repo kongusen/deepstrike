@@ -22,6 +22,7 @@ export {
   DynamicWorkflowApprovalError,
   DynamicWorkflowCancellationError,
   DynamicWorkflowControl,
+  DynamicWorkflowNothingToResumeError,
   DynamicWorkflowLimitError,
   DynamicWorkflowReplayMismatchError,
   dynamicAgentTask,

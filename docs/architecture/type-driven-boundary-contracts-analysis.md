@@ -540,6 +540,6 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 - `DynamicWorkflowController` 提供 typed submission queue：脚本暂停在 host workflow submission，外部 driver 通过 `nextSubmission()` 消费，再用 `completeSubmission()` 或 `failSubmission()` 回填；这一层把异步 handoff 固定成可测试协议，但不再作为第二个公共运行入口。
 - `RuntimeRunner.runDynamicWorkflow()` 现在拥有这一 controller，并在一个 `DynamicWorkflow` root 上完成 submission 驱动、结果回填、显式 close、session log 与 RunGroup 结算；`WorkflowNodeSpec.nodeId` 仍只在 host 侧通过 batch base 映射回动态结果。
 - `DynamicWorkflowArtifactCatalog` 按配置顺序发现多个文件根，稳定解析 name/digest/origin，并通过 bundle 编解码和目标 store 分发；`RuntimeRunner.runDynamicWorkflow(artifact, options)` 在统一入口校验 artifact digest 并绑定 replay identity。
-- 动态 host executor 在 boundary 完成 approval 和 lifecycle 记录；`FileDynamicWorkflowReplayStore` 以每个 run 的原子 JSON 快照保存事件、状态和 invocation records，跨进程重启仍可继续检查 replay 输入。
+- 动态 host executor 在 boundary 完成 approval 和 lifecycle 记录；lifecycle 同时以 `kernel_observation` 形式进入 SessionLog，`FileDynamicWorkflowReplayStore` 以每个 run 的原子 JSON 快照保存事件、状态和 invocation records，跨进程重启仍可继续检查 replay 输入。
 
 这条实现刻意不把脚本源码直接接入 provider 或 kernel，也不把 `node:vm` 当成 OS 级安全边界。脚本只能通过 host workflow facade 产生 kernel-owned submission；文件、shell、网络和模块加载仍不可达。若未来需要强对抗租户隔离，应在 VM 之外增加独立 worker/OS sandbox，并把生命周期事件接入统一 SessionLog 查询面。

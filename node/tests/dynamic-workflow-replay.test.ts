@@ -1,4 +1,4 @@
-import { DynamicWorkflowExecutor, DynamicWorkflowReplayMismatchError, dynamicAgentTask } from "../src/workflow/dynamic.js"
+import { DynamicWorkflowExecutor, DynamicWorkflowNothingToResumeError, DynamicWorkflowReplayMismatchError, dynamicAgentTask } from "../src/workflow/dynamic.js"
 import { FileDynamicWorkflowReplayStore, InMemoryDynamicWorkflowReplayStore } from "../src/workflow/dynamic-replay.js"
 import type { DynamicWorkflowHost } from "../src/workflow/dynamic.js"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
@@ -117,6 +117,24 @@ describe("dynamic workflow replay", () => {
       expect.objectContaining({ status: "failed", error: "provider unavailable" }),
       expect.objectContaining({ status: "cancelled" }),
     ] })
+  })
+
+  it("rejects a completed artifact run when its saved invocation result is missing", async () => {
+    const store = new InMemoryDynamicWorkflowReplayStore()
+    await store.saveRun("missing-result-1", {
+      version: 2,
+      runId: "missing-result-1",
+      status: "completed",
+      artifact: { name: "audit", digest: "digest-a", meta: { name: "audit", description: "Audit" } },
+      events: [],
+      records: [],
+    })
+    await expect(new DynamicWorkflowExecutor(hostWithCalls([]), {
+      runId: "missing-result-1",
+      artifactDigest: "digest-a",
+      artifactSnapshot: { name: "audit", digest: "digest-a", meta: { name: "audit", description: "Audit" } },
+      replayStore: store,
+    }).run(ctx => ctx.agent("inspect", { label: "inspect" }))).rejects.toBeInstanceOf(DynamicWorkflowNothingToResumeError)
   })
 
   it("returns lifecycle events for approved runs and phases", async () => {

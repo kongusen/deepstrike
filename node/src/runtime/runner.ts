@@ -80,7 +80,7 @@ import type {
 } from "../types/agent.js"
 import type { AgentCapabilityFilter } from "../types/agent.js"
 import { DynamicWorkflowController } from "../workflow/dynamic-controller.js"
-import type { DynamicWorkflowContext, DynamicWorkflowRun, DynamicWorkflowRunOptions, DynamicWorkflowProgram } from "../workflow/dynamic.js"
+import type { DynamicWorkflowContext, DynamicWorkflowLifecycleEvent, DynamicWorkflowRun, DynamicWorkflowRunOptions, DynamicWorkflowProgram } from "../workflow/dynamic.js"
 
 function intersectCapabilityFilters(a?: AgentCapabilityFilter, b?: AgentCapabilityFilter): AgentCapabilityFilter | undefined {
   if (!a && !b) return undefined
@@ -1638,6 +1638,7 @@ export class RuntimeRunner {
     const runId = controllerOptions.runId ?? crypto.randomUUID()
     let groupBudgetScope: GroupBudgetScope | undefined
     let dynamicRootTerminal = false
+    const lifecycleWrites: Promise<unknown>[] = []
     const controller = new DynamicWorkflowController<TArgs>()
 
     try {
@@ -1664,7 +1665,16 @@ export class RuntimeRunner {
       await canonicalStartDynamicWorkflow(runtime, this.pendingObservations)
       this.pendingObservations.splice(startObservations)
 
-      const runPromise = controller.start(program, { ...controllerOptions, runId })
+      const onLifecycleEvent = (event: DynamicWorkflowLifecycleEvent): void => {
+        controllerOptions.onLifecycleEvent?.(event)
+        lifecycleWrites.push(this.opts.sessionLog.append(sessionId, {
+          kind: "kernel_observation",
+          turn: runtime.turn(),
+          observation_kind: `dynamic_lifecycle:${event.kind}`,
+          raw: event as unknown as Record<string, unknown>,
+        }))
+      }
+      const runPromise = controller.start(program, { ...controllerOptions, onLifecycleEvent, runId })
       for (;;) {
         const submission = await controller.nextSubmission()
         if (!submission) break
@@ -1698,6 +1708,7 @@ export class RuntimeRunner {
       }
 
       const run = await runPromise
+      await Promise.all(lifecycleWrites)
       const closeAction = await this.completeDynamicWorkflow()
       const terminal = closeAction ?? runtime.resumeAction()
       if (!terminal || terminal.kind !== "done") {
@@ -1715,6 +1726,7 @@ export class RuntimeRunner {
       return run
     } finally {
       try {
+        await Promise.allSettled(lifecycleWrites)
         if (this.activeKernel && !dynamicRootTerminal) {
           try {
             let cancellation = await this.commitKernelAction(this.activeKernel, this.pendingObservations, {

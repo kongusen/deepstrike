@@ -253,6 +253,15 @@ export class DynamicWorkflowCancellationError extends Error {
   }
 }
 
+export class DynamicWorkflowNothingToResumeError extends Error {
+  readonly code = "DYNAMIC_WORKFLOW_NOTHING_TO_RESUME"
+
+  constructor(message = "dynamic workflow saved result is missing; refusing to relaunch") {
+    super(message)
+    this.name = "DynamicWorkflowNothingToResumeError"
+  }
+}
+
 export class DynamicWorkflowControl {
   private paused = false
   private readonly waiters: Array<() => void> = []
@@ -339,6 +348,9 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
     if (existingArtifactDigest !== undefined && existingArtifactDigest !== requestedArtifactDigest) {
       throw new DynamicWorkflowReplayMismatchError(`dynamic workflow artifact changed for run "${runId}"`)
     }
+    if (existing?.status === "completed" && existing.records.length === 0 && this.options.artifactSnapshot) {
+      throw new DynamicWorkflowNothingToResumeError(`dynamic workflow run "${runId}" has no saved invocation results`)
+    }
     const replayRun: DynamicWorkflowReplayRun = {
       version: 2,
       runId,
@@ -383,7 +395,9 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       progress,
       this.options.args ?? {} as TArgs,
       runId,
-      Boolean(existing?.records?.length),
+      existing !== undefined && existing.status !== "planning",
+      existing?.status === "completed",
+      new Set(existing?.records.map(record => record.nodeId) ?? []),
       control,
       this.options.replayStore,
       this.options.onProgress,
@@ -457,6 +471,8 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     args: TArgs,
     private readonly runId: string,
     private readonly replayActive: boolean,
+    private readonly resumeRequiresRecords: boolean,
+    private readonly replayNodeIds: ReadonlySet<string>,
     private readonly control: DynamicWorkflowControl,
     private readonly replayStore: DynamicWorkflowReplayStore | undefined,
     private readonly onProgress?: (progress: DynamicWorkflowProgress) => void,
@@ -555,6 +571,9 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
     const promptFingerprint = fingerprintDynamicWorkflowInvocation(prompt, options)
     const cached = this.replayInvalidated ? undefined : await this.replayStore?.find(this.runId, nodeId, promptFingerprint)
+    if (!cached && this.replayActive && this.resumeRequiresRecords && !this.replayNodeIds.has(nodeId)) {
+      throw new DynamicWorkflowNothingToResumeError(`dynamic workflow invocation "${nodeId}" has no saved result`)
+    }
     if (cached) {
       this.emitLifecycle?.({ kind: "agent_reused", runId: this.runId, nodeId, promptFingerprint })
       this.progress.agentsReused += 1
@@ -695,6 +714,10 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
         record: this.replayInvalidated ? undefined : await this.replayStore?.find(this.runId, entry.nodeId, promptFingerprint),
       }
     }))
+    if (this.replayActive && this.resumeRequiresRecords) {
+      const missingNode = cached.find(entry => !entry.record && !this.replayNodeIds.has(entry.nodeId))
+      if (missingNode) throw new DynamicWorkflowNothingToResumeError(`dynamic workflow invocation "${missingNode.nodeId}" has no saved result`)
+    }
     const firstMiss = cached.findIndex(entry => !entry.record)
     if (firstMiss >= 0 && this.replayActive) this.replayInvalidated = true
     const replayable = firstMiss >= 0 ? cached.map((entry, index) => index < firstMiss ? entry : { ...entry, record: undefined }) : cached

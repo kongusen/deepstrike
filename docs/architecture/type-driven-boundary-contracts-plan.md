@@ -279,7 +279,7 @@ The next workflow checkpoint is also complete: `spawn_workflow` actions now expo
 - [x] `parallelAgents` 支持部分 fan-out replay：保持结果顺序，只提交 fingerprint miss，命中项计入复用进度。
 - [x] 持久化 artifact identity/meta snapshot、输入 fingerprint、invocation records、lifecycle events 和 terminal status。
 - [x] fingerprint 未变时复用完成结果；从第一个变更、失败或缺失结果开始，后续 invocation 作为 suffix 重新执行。replay record 接入 kernel workflow/session log 仍待补齐。
-- [x] artifact digest/meta snapshot 改变会拒绝继续；saved result 缺失时仍需补 typed `nothing_to_resume` rejection，不能静默从头开始。
+- [x] artifact digest/meta snapshot 改变会拒绝继续；已完成 run 缺少 invocation result 时返回 typed `nothing_to_resume` rejection，不能静默从头开始。
 
 **门槛：** 只修改上游 prompt 时仅使其 suffix 失效；中间 fan-out 失败时重跑文档规定的 suffix；缺失结果返回 typed `nothing_to_resume` rejection。
 

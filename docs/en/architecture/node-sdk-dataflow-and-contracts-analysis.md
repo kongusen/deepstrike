@@ -186,6 +186,7 @@ Normal resume reads session events, locates `run_started`, verifies the canonica
 
 Dynamic replay additionally binds run ID, artifact digest, argument fingerprint, limits, lifecycle sequence, and invocation fingerprints. Only completed or completed-partial records are reusable; failed and cancelled tails remain diagnostic.
 Within one run, the first changed, failed, or missing invocation invalidates the remaining suffix; fan-out preserves positions while submitting that suffix again.
+RuntimeRunner also records dynamic lifecycle events as `kernel_observation` entries in the same SessionLog, keeping approval, pause/resume, and terminal transitions on the kernel operation's audit chain.
 
 Every failure has a terminal path: provider errors are adjudicated by the kernel, unhandled actions fail closed, and dynamic script/child failures commit cancellation/preemption before host state is cleared.
 
