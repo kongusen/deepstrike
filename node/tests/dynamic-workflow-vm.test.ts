@@ -90,4 +90,9 @@ describe("DynamicWorkflowVmExecutor", () => {
       source: "return 1",
     })).rejects.toThrow(/maxSourceBytes/)
   })
+
+  it("fails closed when an untrusted script requests the in-process VM", async () => {
+    await expect(new DynamicWorkflowVmExecutor(host([])).runScript(script, { trust: "untrusted" }))
+      .rejects.toThrow(/OS sandbox executor.*trusted-only/i)
+  })
 })

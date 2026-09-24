@@ -92,6 +92,9 @@ export interface DynamicWorkflowVmOptions {
   maxExecutionMs?: number
 }
 
+/** Trust boundary for dynamic script execution. The in-process VM is only for trusted scripts. */
+export type DynamicWorkflowTrust = "trusted" | "untrusted"
+
 export type DynamicWorkflowProgram<TArgs extends Record<string, unknown> = Record<string, unknown>, T = unknown> =
   | ((context: DynamicWorkflowContext<TArgs>) => Promise<T> | T)
   | DynamicWorkflowScript
@@ -181,6 +184,8 @@ export interface DynamicWorkflowContext<TArgs extends Record<string, unknown> = 
 export interface DynamicWorkflowRunOptions<TArgs extends Record<string, unknown> = Record<string, unknown>> {
   runId?: string
   args?: TArgs
+  /** Defaults to `trusted`; untrusted scripts require an OS sandbox executor. */
+  trust?: DynamicWorkflowTrust
   limits?: DynamicWorkflowLimits
   onProgress?: (progress: DynamicWorkflowProgress) => void
   replayStore?: DynamicWorkflowReplayStore

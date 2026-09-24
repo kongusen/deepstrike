@@ -42,6 +42,11 @@ export class DynamicWorkflowVmExecutor {
     script: DynamicWorkflowScript,
     options: DynamicWorkflowRunOptions<TArgs> = {},
   ): Promise<DynamicWorkflowRun<T>> {
+    if (options.trust === "untrusted") {
+      throw new DynamicWorkflowScriptError(
+        "untrusted dynamic workflows require an OS sandbox executor; node:vm is trusted-only",
+      )
+    }
     const limits = { ...DEFAULT_VM_OPTIONS, ...this.vmOptions }
     assertVmOptions(limits)
     assertSafeSource(script.source, limits.maxSourceBytes)

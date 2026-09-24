@@ -164,7 +164,7 @@ Dynamic workflows use `RuntimeRunner.runDynamicWorkflow()` as the only public ex
 - artifact digest, args, limits, lifecycle events, and invocation records bind to the replay store;
 - approval, cancellation, failure, and completion close the same root operation.
 
-The VM rejects direct filesystem, shell, network, module-loading, and dynamic-code-generation capabilities. It remains a Node-process isolation boundary, not a substitute for an OS sandbox against hostile tenants.
+The VM rejects direct filesystem, shell, network, module-loading, and dynamic-code-generation capabilities, but still runs inside the Node process. Dynamic scripts now expose an explicit `trust: "trusted" | "untrusted"` policy: only `trusted` scripts may enter `node:vm`; `untrusted` scripts fail closed until an OS sandbox executor is supplied. The VM remains a process-local isolation layer, not a substitute for an OS sandbox against hostile tenants.
 
 ## 4. Kernel journal and SessionLog
 

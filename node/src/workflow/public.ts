@@ -45,6 +45,7 @@ export type {
   DynamicWorkflowStatus,
   DynamicWorkflowProgram,
   DynamicWorkflowVmOptions,
+  DynamicWorkflowTrust,
 } from "./dynamic.js"
 export { DynamicWorkflowScriptError } from "./dynamic-vm.js"
 export {
