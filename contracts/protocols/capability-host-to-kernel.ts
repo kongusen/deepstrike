@@ -55,5 +55,5 @@ export const CAPABILITY_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
     },
   ],
   lossiness: "intentional",
-  validation: { mode: "behavioral-tests", reason: "Capability boundary tests cover tool, skill, marker, mount, and unmount projections.", testRefs: ["node/tests/capability-boundary.test.ts", "node/tests/skill-kernel-projection-validator.test.ts"] },
+  validation: { mode: "behavioral-tests", reason: "Capability boundary tests cover tool, skill, marker, mount, and unmount projections.", testRefs: [{ path: "node/tests/capability-boundary.test.ts", selectors: ["capability host-to-kernel adapters"] }, { path: "node/tests/skill-kernel-projection-validator.test.ts", selectors: ["validateSkillKernelProjection"] }] },
 }

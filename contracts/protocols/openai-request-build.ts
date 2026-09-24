@@ -41,5 +41,5 @@ export const OPENAI_REQUEST_BUILD_PROTOCOL: BoundaryProtocol = {
     },
   ],
   lossiness: "intentional",
-  validation: { mode: "behavioral-tests", reason: "OpenAI request tests cover dialect preparation, continuation state, and native token-count plans.", testRefs: ["node/tests/openai-adapter.test.ts", "node/tests/openai-responses-adapter.test.ts"] },
+  validation: { mode: "behavioral-tests", reason: "OpenAI request tests cover dialect preparation, continuation state, and native token-count plans.", testRefs: [{ path: "node/tests/openai-adapter.test.ts", selectors: ["OpenAIChatAdapter"] }, { path: "node/tests/openai-responses-adapter.test.ts", selectors: ["OpenAIResponsesAdapter"] }] },
 }

@@ -20,7 +20,12 @@
       "mode": "behavioral-tests",
       "reason": "Kernel projection tests cover snake-case fields, parsed arguments, and optional data handling.",
       "testRefs": [
-        "node/tests/kernel-projection-boundary.test.ts"
+        {
+          "path": "node/tests/kernel-projection-boundary.test.ts",
+          "selectors": [
+            "kernel projection adapters"
+          ]
+        }
       ]
     }
   },

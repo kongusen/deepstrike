@@ -20,7 +20,12 @@
       "mode": "behavioral-tests",
       "reason": "Configure-run tests cover defaults, snake-case projection, and composite policy correlation.",
       "testRefs": [
-        "node/tests/configure-run-boundary.test.ts"
+        {
+          "path": "node/tests/configure-run-boundary.test.ts",
+          "selectors": [
+            "configure_run policy adapters"
+          ]
+        }
       ]
     }
   },

@@ -26,5 +26,5 @@ export const KERNEL_OBSERVATION_TO_SESSION_EVENT_PROTOCOL: BoundaryProtocol = {
     manifest: "contracts/manifests/kernel-observation-to-session-event.json",
   },
   lossiness: "intentional",
-  validation: { mode: "behavioral-tests", reason: "Kernel event-log tests cover representative persistence and intentionally dropped observations.", testRefs: ["node/tests/kernel-observation-decode-boundary.test.ts"] },
+  validation: { mode: "behavioral-tests", reason: "Kernel event-log tests cover representative persistence and intentionally dropped observations.", testRefs: [{ path: "node/tests/kernel-observation-decode-boundary.test.ts", selectors: ["kernel observation to session event boundary"] }] },
 }

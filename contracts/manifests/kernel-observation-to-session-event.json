@@ -20,7 +20,12 @@
       "mode": "behavioral-tests",
       "reason": "Kernel event-log tests cover representative persistence and intentionally dropped observations.",
       "testRefs": [
-        "node/tests/kernel-observation-decode-boundary.test.ts"
+        {
+          "path": "node/tests/kernel-observation-decode-boundary.test.ts",
+          "selectors": [
+            "kernel observation to session event boundary"
+          ]
+        }
       ]
     }
   },

@@ -204,7 +204,7 @@ Multiple adapters are intentional: capabilities, configure-run, provider familie
 
 Nested mappings are path-aware, including arrays. The checker proves that paths and types exist; it does not prove that every runtime value is semantically mapped.
 
-Generated validators can enforce forbidden fields, lazy-field policy, required preserved fields, basic runtime shapes, and strict unknown-field rejection. `behavioral-tests` requires test references that exist and contain tests, but cannot prove the tests cover every semantic branch.
+Generated validators can enforce forbidden fields, lazy-field policy, required preserved fields, basic runtime shapes, and strict unknown-field rejection. `behavioral-tests` requires test references with selectors; the checker verifies that each file exists, contains tests, and still contains the selected suite/test identifier, but execution and review are still needed to prove semantic branch coverage.
 
 ### 6.3 Global relational invariants
 

@@ -20,8 +20,18 @@
       "mode": "behavioral-tests",
       "reason": "OpenAI request tests cover dialect preparation, continuation state, and native token-count plans.",
       "testRefs": [
-        "node/tests/openai-adapter.test.ts",
-        "node/tests/openai-responses-adapter.test.ts"
+        {
+          "path": "node/tests/openai-adapter.test.ts",
+          "selectors": [
+            "OpenAIChatAdapter"
+          ]
+        },
+        {
+          "path": "node/tests/openai-responses-adapter.test.ts",
+          "selectors": [
+            "OpenAIResponsesAdapter"
+          ]
+        }
       ]
     }
   },

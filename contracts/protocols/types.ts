@@ -127,7 +127,13 @@ export interface BoundaryValidation {
   /** Short reviewable explanation of the selected enforcement mode. */
   reason: string
   /** Repository-relative test files that exercise this crossing's runtime semantics. */
-  testRefs?: readonly string[]
+  testRefs?: readonly (string | BoundaryTestRef)[]
+}
+
+/** A behavioral test file plus optional suite/test selectors checked by the registry validator. */
+export interface BoundaryTestRef {
+  path: string
+  selectors?: readonly string[]
 }
 
 /** One typed implementation inside a protocol family. */

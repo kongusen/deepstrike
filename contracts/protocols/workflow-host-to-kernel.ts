@@ -49,6 +49,6 @@ export const WORKFLOW_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
   validation: {
     mode: "behavioral-tests",
     reason: "Workflow ABI and control-flow tests cover node lowering, snake_case fields, and root composition.",
-    testRefs: ["node/tests/workflow-boundary.test.ts", "node/tests/workflow-control-flow.test.ts", "node/tests/workflow-optimization.test.ts"],
+    testRefs: [{ path: "node/tests/workflow-boundary.test.ts", selectors: ["workflow host-to-kernel boundary"] }, { path: "node/tests/workflow-control-flow.test.ts", selectors: ["workflowNodeSpecToKernel: control-flow kinds"] }, { path: "node/tests/workflow-optimization.test.ts", selectors: ["W-N2 / W-N7: spawn descriptors carry data edges and per-node caps"] }],
   },
 }

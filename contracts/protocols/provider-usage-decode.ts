@@ -35,5 +35,5 @@ export const PROVIDER_USAGE_DECODE_PROTOCOL: BoundaryProtocol = {
     },
   ],
   lossiness: "intentional",
-  validation: { mode: "behavioral-tests", reason: "Usage tests cover provider-specific fields, invalid values, and missing usage.", testRefs: ["node/tests/usage-normalizer.test.ts"] },
+  validation: { mode: "behavioral-tests", reason: "Usage tests cover provider-specific fields, invalid values, and missing usage.", testRefs: [{ path: "node/tests/usage-normalizer.test.ts", selectors: ["UsageNormalizer — OpenAI wire family (Chat Completions + Responses)"] }] },
 }

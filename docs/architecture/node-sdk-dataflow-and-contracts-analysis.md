@@ -253,7 +253,7 @@ runtime validator 当前可以检查：
 - target field 的基本 runtime shape。
 - strict 模式下是否出现额外字段。
 
-`behavioral-tests` 现在要求 `testRefs` 存在且文件含测试声明；它仍然不能证明测试真的覆盖了该 adapter 的每个语义分支，所以完整语义证明仍由测试内容和 review 负责。
+`behavioral-tests` 现在要求 `testRefs` 存在且每个引用包含可核验的 suite/test selector。checker 会验证文件存在、含测试声明且 selector 仍在源码中；它仍不能证明测试真的覆盖了该 adapter 的每个语义分支，所以完整语义证明仍由测试执行和 review 负责。
 
 ### 6.3 三条全局关联不变量
 

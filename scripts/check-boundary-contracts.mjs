@@ -427,13 +427,28 @@ function processProtocol(program, checker, protocol) {
   if (protocol.validation.mode === "behavioral-tests" && testRefs.length === 0) {
     fail(`${protocol.id}: behavioral-tests validation requires at least one testRefs entry`)
   }
+  if (protocol.validation.mode === "behavioral-tests" && testRefs.some((testRef) => typeof testRef === "string" || !Array.isArray(testRef?.selectors) || testRef.selectors.length === 0)) {
+    fail(`${protocol.id}: behavioral-tests testRefs must use { path, selectors } with at least one selector`)
+  }
   for (const testRef of testRefs) {
-    if (typeof testRef !== "string" || !testRef) fail(`${protocol.id}: testRefs entries must be non-empty paths`)
-    const testPath = artifactPath(testRef)
-    if (!existsSync(testPath)) fail(`${protocol.id}: behavioral test reference does not exist: ${testRef}`)
+    const testPathRef = typeof testRef === "string" ? { path: testRef, selectors: [] } : testRef
+    if (!testPathRef || typeof testPathRef.path !== "string" || !testPathRef.path) {
+      fail(`${protocol.id}: testRefs entries must be non-empty paths or { path, selectors } objects`)
+    }
+    const selectors = testPathRef.selectors ?? []
+    if (!Array.isArray(selectors) || selectors.some((selector) => typeof selector !== "string" || !selector)) {
+      fail(`${protocol.id}: testRefs selectors must be non-empty strings`)
+    }
+    const testPath = artifactPath(testPathRef.path)
+    if (!existsSync(testPath)) fail(`${protocol.id}: behavioral test reference does not exist: ${testPathRef.path}`)
     const testSource = readFileSync(testPath, "utf8")
     if (!/\b(?:describe|it|test)\s*\(/.test(testSource)) {
-      fail(`${protocol.id}: behavioral test reference has no test declaration: ${testRef}`)
+      fail(`${protocol.id}: behavioral test reference has no test declaration: ${testPathRef.path}`)
+    }
+    for (const selector of selectors) {
+      if (!testSource.includes(selector)) {
+        fail(`${protocol.id}: behavioral test selector not found in ${testPathRef.path}: ${selector}`)
+      }
     }
   }
   const [, adapterPath, adapterName] = protocol.adapter.match(/^([^:]+):(.+)$/) ?? []

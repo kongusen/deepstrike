@@ -20,7 +20,12 @@
       "mode": "behavioral-tests",
       "reason": "Memory policy boundary tests cover snake-case projection and unknown-field rejection.",
       "testRefs": [
-        "node/tests/memory-policy-boundary.test.ts"
+        {
+          "path": "node/tests/memory-policy-boundary.test.ts",
+          "selectors": [
+            "memory policy host-to-kernel boundary"
+          ]
+        }
       ]
     }
   },

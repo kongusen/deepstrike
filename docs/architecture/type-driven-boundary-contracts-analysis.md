@@ -517,7 +517,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 1. **Workflow target**：`RuntimeRunner` 在 host 侧维护 kernel 节点 id 到 public agent 名称的映射，使用现有 `resolveAgent` 解析目标并执行目标 Agent；动态追加节点和 loop iteration 也沿用同一映射。kernel DTO 不增加 provider 或 public Agent 引用。
 2. **Memory binding**：声明快照在存在 `memoryStore + memoryScope` 时记录 `memory: { kind: "durable", namespace, binding: "runtime" }`；缺少任一绑定会在 `createAgent` 阶段失败。`remember/recall` 继续只经由 `RuntimeRunner`，声明与实际 binding 的关系可被审计。
 3. **Nested contract paths**：checker 按完整点路径遍历 TypeScript 类型，逐段检查 union、nullable 和数组路径，不再只验证根字段。当前 `input.context`、`input.tools` 等映射会在 `contracts:check` 中被实际解析。
-4. **Behavioral test references**：`behavioral-tests` 必须声明 `validation.testRefs`；checker 验证引用文件存在并含有测试声明。41 个 adapter 已绑定到现有 boundary/provider/workflow 测试文件，`contracts:verify` 会阻止引用漂移。
+4. **Behavioral test references**：`behavioral-tests` 必须声明 `validation.testRefs`；每个引用现在带有可核验的 suite/test selector，checker 同时验证文件存在、包含测试声明且 selector 仍存在。41 个 adapter 已绑定到现有 boundary/provider/workflow 测试文件，`contracts:verify` 会阻止文件或测试入口漂移；它仍不替代实际测试执行。
 5. **Manifest version**：契约 manifest 从根目录 `VERSION` 读取 canonical version，不再硬编码旧版本；生成产物已统一到当前版本。
 6. **Handoff payload**：allowlisted handoff 的 `inputSchema`、`metadata`、`providerOptions` 已进入 `delegate()` 的执行路径；输入在 resolver 前验证，metadata 写入目标 run 的 `run_started` 事实，provider options 作为该次目标调用的扩展覆盖。
 7. **Global invariants**：新增独立的 `contracts/invariants.ts` 与 `global-invariants.json`，登记 EffectId 铸造、signal disposal 一对一、RunContext 隔离三类关系规则；它们由 `contracts:verify` 检查引用测试，不再伪装成单字段映射。

@@ -51,5 +51,5 @@ export const CONFIGURE_RUN_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
     },
   ],
   lossiness: "intentional",
-  validation: { mode: "behavioral-tests", reason: "Configure-run tests cover defaults, snake-case projection, and composite policy correlation.", testRefs: ["node/tests/configure-run-boundary.test.ts"] },
+  validation: { mode: "behavioral-tests", reason: "Configure-run tests cover defaults, snake-case projection, and composite policy correlation.", testRefs: [{ path: "node/tests/configure-run-boundary.test.ts", selectors: ["configure_run policy adapters"] }] },
 }

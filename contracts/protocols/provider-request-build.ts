@@ -53,5 +53,5 @@ export const PROVIDER_REQUEST_BUILD_PROTOCOL: BoundaryProtocol = {
     },
   ],
   lossiness: "intentional",
-  validation: { mode: "behavioral-tests", reason: "Provider semantic tests cover protocol-specific request plans and wire extensions.", testRefs: ["node/tests/provider-request-plan.test.ts", "node/tests/provider-semantic-conformance.test.ts"] },
+  validation: { mode: "behavioral-tests", reason: "Provider semantic tests cover protocol-specific request plans and wire extensions.", testRefs: [{ path: "node/tests/provider-request-plan.test.ts", selectors: ["spc_016-01: provider request plans"] }, { path: "node/tests/provider-semantic-conformance.test.ts", selectors: ["SPC-028-11/13 route identity changes with execution target"] }] },
 }
