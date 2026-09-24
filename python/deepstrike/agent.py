@@ -15,6 +15,15 @@ from deepstrike.types.agent import AgentCapabilityFilter
 from deepstrike.runtime.agent_declaration import capture_agent_declaration, CapturedAgent
 
 
+class _MemoryOnlyProvider:
+    async def complete(self, *args: Any, **kwargs: Any):
+        raise RuntimeError("memory-only agent cannot perform a model completion")
+
+    async def stream(self, *args: Any, **kwargs: Any):
+        raise RuntimeError("memory-only agent cannot perform a model stream")
+        yield  # pragma: no cover
+
+
 class AgentSession:
     """Pythonic session handle backed by one shared SessionLog."""
 
@@ -319,7 +328,10 @@ class Agent:
         if provider is None:
             provider_for = self.runtime_binding.get("provider_for")
             provider = provider_for(self.model) if callable(provider_for) else None
-        if provider is None:
+        if provider is None and not (
+            self.runtime_binding.get("memory_store") is not None
+            and self.runtime_binding.get("memory_scope") is not None
+        ):
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
         return provider
 
@@ -366,6 +378,8 @@ class Agent:
         if fallback:
             from deepstrike.providers import FallbackProvider
             return FallbackProvider(tuple(fallback))
+        if binding.get("memory_store") is not None and binding.get("memory_scope") is not None:
+            return _MemoryOnlyProvider()
         provider_for = binding.get("provider_for")
         if callable(provider_for):
             resolved = provider_for(self.model)

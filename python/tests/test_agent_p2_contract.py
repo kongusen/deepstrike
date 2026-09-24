@@ -39,6 +39,17 @@ async def test_agent_memory_requires_runtime_binding():
 
 
 @pytest.mark.asyncio
+async def test_memory_only_agent_does_not_require_provider():
+    store = InMemoryMemoryStore()
+    agent = create_agent(
+        "memory-only",
+        runtime_binding={"memory_store": store, "memory_scope": MemoryScope("tenant", "default")},
+    )
+    record = await agent.remember({"name": "fact", "content": "value"})
+    assert record.content == "value"
+
+
+@pytest.mark.asyncio
 async def test_agent_delegate_requires_declared_target_and_resolves_host_agent():
     child = create_agent("child", runtime_binding={"provider": Provider()})
     parent = create_agent(
