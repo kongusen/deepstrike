@@ -34,11 +34,12 @@ class AgentSession:
             provider=provider,
         )
 
-    async def stream(self, goal: str, *, max_turns: int | None = None):
+    async def stream(self, goal: str, *, max_turns: int | None = None,
+                     attachments: list[dict[str, Any]] | None = None):
         runner = await self._runner(goal, max_turns=max_turns)
         self._active_runner = runner
         try:
-            async for event in runner.run(goal=goal, session_id=self.id):
+            async for event in runner.run(goal=goal, session_id=self.id, attachments=attachments):
                 yield event
         finally:
             self._active_runner = None
@@ -93,9 +94,10 @@ class AgentSession:
         from deepstrike.runtime.workflow_replay import WorkflowReplay
         return WorkflowReplay.from_entries(await self.history())
 
-    async def run(self, goal: str, *, max_turns: int | None = None) -> str:
+    async def run(self, goal: str, *, max_turns: int | None = None,
+                  attachments: list[dict[str, Any]] | None = None) -> str:
         from deepstrike.runtime.runner import collect_text
-        return await collect_text(self.stream(goal, max_turns=max_turns))
+        return await collect_text(self.stream(goal, max_turns=max_turns, attachments=attachments))
 
     async def workflow(self, spec: Any):
         """Run a WorkflowSpec under this session's Kernel owner."""
@@ -407,7 +409,8 @@ class Agent:
             raise RuntimeError("workflow persistence requires runtime_binding.workflow_store")
         return store.list()
 
-    async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> dict[str, Any]:
+    async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None,
+                  attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Execute one goal through the host binding and return a structured run result."""
         if not self.runtime_binding:
             raise RuntimeError(f'agent "{self.name}" has no runtime binding')
@@ -418,13 +421,14 @@ class Agent:
         if provider is None:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
-        output = await self.session(resolved_session_id).run(goal, max_turns=max_turns)
+        output = await self.session(resolved_session_id).run(goal, max_turns=max_turns, attachments=attachments)
         return {"output": output, "status": "completed", "session_id": resolved_session_id}
 
-    async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None):
+    async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None,
+                     attachments: list[dict[str, Any]] | None = None):
         """Stream host events for the same public Agent contract."""
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
-        async for event in self.session(resolved_session_id).stream(goal, max_turns=max_turns):
+        async for event in self.session(resolved_session_id).stream(goal, max_turns=max_turns, attachments=attachments):
             yield event
 
     async def remember(self, input: Mapping[str, Any] | Any, *, session_id: str | None = None):
