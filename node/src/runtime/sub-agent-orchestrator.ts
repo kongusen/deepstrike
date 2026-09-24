@@ -14,6 +14,8 @@ import type { AttemptOutcome } from "../harness/harness.js"
 export interface SubAgentRunContext {
   parentOpts: RuntimeOptions
   parentSessionId: string
+  /** Canonical run id of the workflow operation that owns this child. */
+  parentRunId?: string
   spec: AgentRunSpec
   manifest: AgentProcessChangedObservation
   sessionLog: SessionLog

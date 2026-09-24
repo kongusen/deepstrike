@@ -38,7 +38,11 @@ export interface RuntimeBinding {
 
 export interface AgentRunOptions {
   session?: SessionRef
+  /** Per-run cumulative token ceiling, including workflow child runs. */
+  maxTotalTokens?: number
   maxTurns?: number
+  /** Per-run wall-clock ceiling in milliseconds, including workflow child runs. */
+  timeoutMs?: number
   signal?: AbortSignal
   metadata?: Record<string, unknown>
   providerOptions?: Record<string, unknown>

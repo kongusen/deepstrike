@@ -1346,6 +1346,7 @@ export class RuntimeRunner {
     abortSignal?: AbortSignal,
     contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
     workflowAgentTargets?: Map<string, string>,
+    parentRunId?: string,
   ): Promise<SubAgentResult> {
     // G2: a reduce node runs no LLM — execute the registered pure function over its dependency
     // outputs and feed the result back as an ordinary completion. Deterministic; no agent burned.
@@ -1375,6 +1376,7 @@ export class RuntimeRunner {
     const mkCtx = (goal: string): SubAgentRunContext => ({
       parentOpts: this.opts,
       parentSessionId,
+      ...(parentRunId ? { parentRunId } : {}),
       spec: { ...baseSpec, goal: withBudget(goal) },
       manifest,
       sessionLog: this.opts.sessionLog,
@@ -2008,7 +2010,17 @@ export class RuntimeRunner {
       let results: SubAgentResult[]
       try {
         results = await Promise.all(
-          nodes.map(node => this.runWorkflowNode(node, parentSessionId, orchestrator, roundBudget, outputs, controllers.get(node.agent_id)?.signal, contextPolicies, workflowAgentTargets)),
+          nodes.map(node => this.runWorkflowNode(
+            node,
+            parentSessionId,
+            orchestrator,
+            roundBudget,
+            outputs,
+            controllers.get(node.agent_id)?.signal,
+            contextPolicies,
+            workflowAgentTargets,
+            runtime.operationId.replace(/^node-operation-/, ""),
+          )),
         )
       } catch (error) {
         batchState.settled = true

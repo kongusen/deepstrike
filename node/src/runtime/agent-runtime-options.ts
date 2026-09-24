@@ -45,6 +45,8 @@ export function buildAgentRuntimeOptions(
       ].filter((part): part is string => Boolean(part)).join("\n\n"),
     } : {}),
     ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
+    ...(options.maxTotalTokens !== undefined ? { maxTotalTokens: options.maxTotalTokens } : {}),
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
     ...(bindings.memoryStore ? { memoryStore: bindings.memoryStore } : {}),
     ...(bindings.memoryScope ? { memoryScope: bindings.memoryScope } : {}),
     ...(declaration.skills?.length ? { skillCatalog: declaration.skills as unknown as Skill[] } : {}),
@@ -63,9 +65,18 @@ export function buildAgentRuntimeOptions(
       workflowAgentResolver: async (name: string, context: SubAgentRunContext): Promise<SubAgentResult | undefined> => {
         const target = await binding.resolveAgent?.(name)
         if (!target) return undefined
+        const workflowMetadata = {
+          parentRunId: context.parentRunId,
+          nodeId: context.spec.identity.agentId,
+          targetAgent: name,
+        }
         const result = await target.run(context.spec.goal, {
           session: { id: context.spec.identity.sessionId },
+          ...(context.spec.tokenBudget !== undefined ? { maxTotalTokens: context.spec.tokenBudget } : {}),
+          ...(context.spec.maxTurns !== undefined ? { maxTurns: context.spec.maxTurns } : {}),
+          ...(context.spec.maxWallMs !== undefined ? { timeoutMs: context.spec.maxWallMs } : {}),
           ...(context.abortSignal ? { signal: context.abortSignal } : {}),
+          metadata: { workflow: workflowMetadata },
         })
         return {
           agentId: context.spec.identity.agentId,
