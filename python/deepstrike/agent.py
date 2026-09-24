@@ -457,7 +457,34 @@ class Agent:
                 status = "error"
         entries = await self._session_log.read(session.id) if self._session_log is not None else []
         started = next((entry.event for entry in entries if entry.event.get("kind") == "run_started"), None)
-        evidence = [entry.event for entry in entries if entry.event.get("kind") in {"provider_attempt", "llm_completed"}]
+        evidence_kinds = {
+            "run_terminal",
+            "provider_attempt",
+            "llm_completed",
+            "context_prepared",
+            "prompt_measured",
+            "tool_requested",
+            "tool_completed",
+            "memory_retrieval_result",
+            "workflow_completed",
+        }
+        evidence = [entry.event for entry in entries if entry.event.get("kind") in evidence_kinds]
+        if usage is None:
+            attempts = [event for event in evidence if event.get("kind") == "provider_attempt"]
+            usage_records = [event.get("usage") for event in attempts if isinstance(event.get("usage"), dict)]
+            if usage_records:
+                usage = {
+                    "input_tokens": sum(int(item.get("input_tokens", item.get("inputTokens", 0)) or 0) for item in usage_records),
+                    "output_tokens": sum(int(item.get("output_tokens", item.get("outputTokens", 0)) or 0) for item in usage_records),
+                    "total_tokens": sum(int(item.get("total_tokens", item.get("totalTokens", 0)) or 0) for item in usage_records),
+                }
+        terminal = next((event for event in reversed(evidence) if event.get("kind") == "run_terminal"), None)
+        if terminal is not None:
+            reason = terminal.get("reason")
+            if reason in {"user_abort", "timeout", "token_budget", "max_turns"}:
+                status = "cancelled" if reason == "user_abort" else "partial"
+            elif reason == "error":
+                status = "error"
         output_validation = None
         if self.output_schema is not None:
             from deepstrike.runtime.output_schema import extract_json_value, validate_against_schema
