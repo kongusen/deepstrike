@@ -23,11 +23,18 @@ class AgentSession:
         self._session_log = agent._session_log
         self._active_runner = None
 
-    def _runner(self, goal: str):
-        return self.agent._create_runner(self._session_log, goal=goal, session_id=self.id)
+    async def _runner(self, goal: str, *, max_turns: int | None = None):
+        provider = await self.agent._resolve_provider()
+        return self.agent._create_runner(
+            self._session_log,
+            goal=goal,
+            session_id=self.id,
+            max_turns=max_turns,
+            provider=provider,
+        )
 
     async def stream(self, goal: str, *, max_turns: int | None = None):
-        runner = self.agent._create_runner(self._session_log, goal=goal, session_id=self.id, max_turns=max_turns)
+        runner = await self._runner(goal, max_turns=max_turns)
         self._active_runner = runner
         try:
             async for event in runner.run(goal=goal, session_id=self.id):
@@ -44,11 +51,7 @@ class AgentSession:
             )
             if started is None:
                 raise ValueError(f"No run_started event for session: {self.id}")
-            self._active_runner = self.agent._create_runner(
-                self._session_log,
-                goal=str(started.get("goal", "")),
-                session_id=self.id,
-            )
+            self._active_runner = await self._runner(str(started.get("goal", "")))
         try:
             async for event in self._active_runner.wake(self.id):
                 yield event
@@ -77,7 +80,7 @@ class AgentSession:
 
     async def workflow(self, spec: Any):
         """Run a WorkflowSpec under this session's Kernel owner."""
-        runner = self.agent._create_runner(self._session_log, goal="workflow", session_id=self.id)
+        runner = await self._runner("workflow")
         self._active_runner = runner
         try:
             return await runner.run_workflow(spec, session_id=self.id)
@@ -190,7 +193,15 @@ class Agent:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
         return provider
 
-    def _create_runner(self, session_log: Any, *, goal: str, session_id: str, max_turns: int | None = None):
+    def _create_runner(
+        self,
+        session_log: Any,
+        *,
+        goal: str,
+        session_id: str,
+        max_turns: int | None = None,
+        provider: Any | None = None,
+    ):
         from deepstrike.runtime.execution_plane import LocalExecutionPlane
         from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner
 
@@ -206,13 +217,38 @@ class Agent:
             if self._captured.host_tools:
                 plane.register(*self._captured.host_tools)
         return RuntimeRunner(RuntimeOptions(
-            provider=self._provider(),
+            provider=provider or self._provider(),
             execution_plane=plane,
             session_log=session_log,
             agent_id=self.name,
             **({"system_prompt": self.instructions} if self.instructions else {}),
             **options,
         ))
+
+    async def _resolve_provider(self) -> Any:
+        binding = self.runtime_binding or {}
+        if binding.get("provider") is not None:
+            return binding["provider"]
+        provider_for = binding.get("provider_for")
+        if callable(provider_for):
+            resolved = provider_for(self.model)
+            if resolved is not None:
+                return resolved
+        candidates = binding.get("provider_candidates")
+        if candidates:
+            from deepstrike.providers import CapabilityRequirement, CapabilityRouter
+
+            requirement_data = self.model if isinstance(self.model, Mapping) else {}
+            requirement = CapabilityRequirement(
+                tools=requirement_data.get("tools"),
+                reasoning=requirement_data.get("reasoning"),
+                minimum_context_window=requirement_data.get("context_window"),
+            )
+            result = await CapabilityRouter().route(requirement, candidates)
+            if result.ok and result.provider is not None:
+                return result.provider
+            raise RuntimeError(result.error or {"code": "no_capable_model"})
+        raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
 
     async def workflow(self, spec: Any, *, session_id: str | None = None):
         """Run a declarative workflow through the shared Kernel path."""
