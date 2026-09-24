@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from deepstrike import InMemoryAgentResolver, create_agent, tool
+import pytest
+
+from deepstrike import InMemoryAgentResolver, create_agent, resolve_handoff, tool
 
 
 @tool
@@ -54,3 +56,19 @@ def test_agent_resolver_is_name_only_and_returns_captured_declaration():
     resolver = InMemoryAgentResolver([captured])
 
     assert resolver.resolve("math") is captured
+
+
+def test_handoff_requires_explicit_declaration():
+    source = create_agent("source", handoffs=[{"target": "math"}])
+    target = create_agent("math")
+    resolution = resolve_handoff(
+        source._captured.declaration,
+        "math",
+        "finish the calculation",
+        InMemoryAgentResolver([target._captured]),
+    )
+    assert resolution.target is target._captured
+    assert resolution.goal == "finish the calculation"
+
+    with pytest.raises(PermissionError):
+        resolve_handoff(source._captured.declaration, "other", "goal", InMemoryAgentResolver())

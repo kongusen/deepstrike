@@ -102,6 +102,36 @@ class InMemoryAgentResolver:
             raise KeyError(f'unknown agent "{name}"') from exc
 
 
+@dataclass(frozen=True)
+class HandoffResolution:
+    source: AgentDeclaration
+    target: CapturedAgent
+    goal: str
+
+
+def resolve_handoff(
+    declaration: AgentDeclaration,
+    target_name: str,
+    goal: str,
+    resolver: AgentResolver,
+) -> HandoffResolution:
+    """Resolve an explicitly declared handoff without executing outside the Kernel path."""
+    allowed = {
+        str(item.get("target", item.get("agent", "")))
+        for item in declaration.handoffs
+        if item.get("target", item.get("agent"))
+    }
+    if target_name not in allowed:
+        raise PermissionError(
+            f'agent "{declaration.name}" has not declared a handoff to "{target_name}"'
+        )
+    return HandoffResolution(
+        source=declaration,
+        target=resolver.resolve(target_name),
+        goal=goal,
+    )
+
+
 def _tool_snapshot(tool: Any) -> tuple[dict[str, Any], Any | None]:
     schema = getattr(tool, "schema", None)
     if schema is not None:
