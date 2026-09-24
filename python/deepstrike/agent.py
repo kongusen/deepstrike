@@ -57,6 +57,7 @@ class AgentSession:
 
     async def _runner(self, goal: str, *, max_turns: int | None = None,
                       runtime_overrides: Mapping[str, Any] | None = None):
+        await self.agent._ensure_mcp()
         provider = await self.agent._resolve_provider()
         return self.agent._create_runner(
             self._session_log,
@@ -248,7 +249,8 @@ class AgentSession:
             await source.nack_signal(claim)
             raise
 
-    async def delegate(self, target: str, goal: str, *, metadata: Mapping[str, Any] | None = None):
+    async def delegate(self, target: str, goal: str, *, metadata: Mapping[str, Any] | None = None,
+                       provider_options: Mapping[str, Any] | None = None):
         """Resolve and execute an explicitly declared handoff target."""
         from deepstrike.runtime.agent_declaration import resolve_handoff
 
@@ -274,9 +276,11 @@ class AgentSession:
             raise RuntimeError(f'target agent "{target}" is not registered')
         if not hasattr(target_agent, "run"):
             raise TypeError("agent_resolver must return an executable Agent")
-        result = await target_agent.run(goal, session_id=f"handoff-{uuid.uuid4()}")
-        return {"output": result.get("output", ""), "status": result.get("status", "partial"),
-                **({"metadata": dict(metadata)} if metadata else {})}
+        result = await target_agent.run(
+            goal, session_id=f"handoff-{uuid.uuid4()}", metadata=metadata,
+            provider_options=provider_options,
+        )
+        return {"output": result.get("output", ""), "status": result.get("status", "partial")}
 
 
 ModelRef: TypeAlias = str | dict[str, Any]
@@ -361,6 +365,7 @@ class Agent:
             configured_log = FileSessionLog(binding["session_log_dir"])
         self._session_log = configured_log or InMemorySessionLog()
         self._sessions: dict[str, AgentSession] = {}
+        self._mcp_connected = False
 
     @property
     def declaration(self) -> dict[str, Any]:
@@ -372,6 +377,16 @@ class Agent:
         if resolved not in self._sessions:
             self._sessions[resolved] = AgentSession(self, resolved)
         return self._sessions[resolved]
+
+    async def _ensure_mcp(self) -> None:
+        binding = self.runtime_binding or {}
+        plane = binding.get("mcp_plane")
+        if plane is None or self._mcp_connected:
+            return
+        connect = getattr(plane, "connect", None)
+        if callable(connect):
+            await connect()
+        self._mcp_connected = True
 
     def _provider(self) -> Any:
         if not self.runtime_binding:
@@ -406,7 +421,7 @@ class Agent:
 
         binding = self.runtime_binding or {}
         options = dict(binding.get("runtime_options", {}))
-        plane = options.pop("execution_plane", None)
+        plane = options.pop("execution_plane", None) or binding.get("execution_plane")
         options.pop("session_log", None)
         options.update(runtime_overrides or {})
         for key in ("memory_store", "memory_scope", "signal_source", "knowledge_source"):
@@ -539,7 +554,15 @@ class Agent:
         }
         if evidence:
             result["evidence"] = evidence
-        if terminal.get("total_tokens") is not None:
+        usage_event = next((event for event in reversed(events) if event.get("kind") == "provider_attempt" and event.get("usage")), {})
+        usage = usage_event.get("usage") or {}
+        if usage:
+            result["usage"] = {
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+            }
+        elif terminal.get("total_tokens") is not None:
             result["usage"] = {"total_tokens": terminal["total_tokens"]}
         return result
 
@@ -575,8 +598,9 @@ class Agent:
                      min_score: float | None = None, session_id: str | None = None):
         return await self.session(session_id).recall(query, top_k=top_k, kinds=kinds, min_score=min_score)
 
-    async def delegate(self, target: str, goal: str, *, metadata: Mapping[str, Any] | None = None):
-        return await self.session().delegate(target, goal, metadata=metadata)
+    async def delegate(self, target: str, goal: str, *, metadata: Mapping[str, Any] | None = None,
+                       provider_options: Mapping[str, Any] | None = None):
+        return await self.session().delegate(target, goal, metadata=metadata, provider_options=provider_options)
 
     async def listen(self, *, lease_ms: int | None = None, session_id: str | None = None):
         return await self.session(session_id).listen(lease_ms=lease_ms)
@@ -592,6 +616,7 @@ class Agent:
         plane = (self.runtime_binding or {}).get("mcp_plane")
         if plane is not None and hasattr(plane, "disconnect"):
             await plane.disconnect()
+        self._mcp_connected = False
 
 
 def create_agent(name: str, **kwargs: Any) -> Agent:
