@@ -47,6 +47,26 @@ class AgentDeclaration:
             "guardrails": [dict(item) for item in self.guardrails],
         }
 
+    def to_run_spec(self, *, goal: str, session_id: str, role: str = "custom") -> Any:
+        """Lower the declaration to the shared Python ``AgentRunSpec`` contract."""
+        from deepstrike.types.agent import AgentCapabilityFilter, AgentIdentity, AgentRunSpec
+
+        capability_filter = self.capability_filter
+        if isinstance(capability_filter, Mapping):
+            capability_filter = AgentCapabilityFilter(
+                allowed_kinds=list(capability_filter.get("allowed_kinds", capability_filter.get("allowedKinds", [])) or []),
+                allowed_ids=list(capability_filter.get("allowed_ids", capability_filter.get("allowedIds", [])) or []),
+            )
+        return AgentRunSpec(
+            identity=AgentIdentity(agent_id=self.name, session_id=session_id),
+            role=role,
+            goal=goal,
+            capability_filter=capability_filter,
+            metadata=dict(self.metadata) if self.metadata is not None else None,
+            model_hint=self.model if isinstance(self.model, str) else None,
+            exposure_baseline=[tool["name"] for tool in self.tools if tool.get("name")],
+        )
+
 
 @dataclass(frozen=True)
 class CapturedAgent:

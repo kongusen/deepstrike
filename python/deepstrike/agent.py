@@ -106,13 +106,18 @@ class Agent:
         if provider is None:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
         from deepstrike.runtime.facade import run_agent
+        resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
         output = await run_agent(
             provider=provider,
             goal=goal,
             system_prompt=self.instructions,
             tools=list(self._captured.host_tools),
-            session_id=session_id,
+            session_id=resolved_session_id,
             max_turns=max_turns,
+            run_spec=self._captured.declaration.to_run_spec(
+                goal=goal,
+                session_id=resolved_session_id,
+            ),
         )
         return {"output": output, "status": "completed", "session_id": session_id}
 
@@ -131,6 +136,11 @@ class Agent:
         from deepstrike.runtime.session_log import InMemorySessionLog
         options = dict(self.runtime_binding.get("runtime_options", {}))
         plane = options.pop("execution_plane", None) if isinstance(options, dict) else None
+        resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
+        options.setdefault(
+            "run_spec",
+            self._captured.declaration.to_run_spec(goal=goal, session_id=resolved_session_id),
+        )
         runner = RuntimeRunner(RuntimeOptions(
             provider=provider,
             execution_plane=plane or LocalExecutionPlane(),
@@ -141,7 +151,7 @@ class Agent:
             **({"max_turns": max_turns} if max_turns is not None else {}),
             **options,
         ))
-        async for event in runner.run(goal=goal, session_id=session_id or f"agent-{uuid.uuid4()}"):
+        async for event in runner.run(goal=goal, session_id=resolved_session_id):
             yield event
 
 
