@@ -251,23 +251,23 @@ The next workflow checkpoint is also complete: `spawn_workflow` actions now expo
 - [x] 增加 `DynamicWorkflowController` 的 typed submission queue，隔离脚本 executor 与外部 kernel driver；driver 消费 submission 后按 id 回填 `WorkflowOutcome` 或失败。
 - [x] 增加独立的 `DynamicWorkflow` root entry 与 `CompleteDynamicWorkflow` close command；空 DAG 在脚本提交前保持 active，批次清空后也不自动 terminal。
 - [x] 在 `RuntimeRunner` 内引入 `DynamicWorkflowController`，让一个脚本运行共享一个 session/run id、RunGroup reservation 和 kernel workflow operation；脚本结束后由 host 显式 close dynamic root。
-- [ ] 将 `agent`/`parallel`/`pipeline` 编译为动态 DAG append，而不是每次启动独立的单节点 workflow。
-- [ ] 在 host spawn boundary 解析 `modelHint`、目标 Agent、tool access 和 trust；不能把 host-only `agent` metadata 伪装成 kernel 字段。
+- [x] `agent`/`parallelAgents`/`pipeline` 的 agent 请求都经过同一个 controller submission queue，再由 RuntimeRunner append 到长生命周期 dynamic root；`parallel`/`pipeline` 自身的纯 host 映射保持在脚本进程内，不伪装成 kernel 节点。
+- [x] 在 host spawn boundary 解析 `modelHint`、目标 Agent、tool access 和 trust；`agent` 是 host-only metadata，kernel wire 不携带 public Agent 引用或工具策略。
 
 **门槛：** 并行脚本共享同一 quota ledger、取消路径和审计/session log；被拒绝的 append 以 typed rejection 返回给脚本。
 
 ### Slice C：隔离脚本 artifact
 
 - [x] 增加 `FileDynamicWorkflowStore`，以可配置目录保存并校验 `DynamicWorkflowScript`，拒绝不安全名称和 symlink。
-- [ ] 按 project/personal 位置补齐 artifact 发现、优先级和不可变 run snapshot。
-- [ ] 在隔离 worker/VM 中只提供 `agent`、`parallel`、`pipeline`、`phase`、`log`、`args` globals。
-- [ ] 在脚本边界拒绝 module loading、直接 filesystem/shell、非确定性时间/随机数和运行中用户输入。
+- [x] 按 project/user/plugin/package 位置发现 artifact，project 优先于 user，再优先于 plugin/package；plugin/package store 只读，并把 artifact name、digest、meta 固化到 replay run snapshot。
+- [x] trusted 脚本使用受限 `node:vm`；untrusted 脚本使用独立 child process + child VM，只提供 `agent`、`parallel`、`parallelAgents`、`pipeline`、`phase`、`log`、`args` globals。
+- [x] 在脚本边界拒绝 module loading、直接 filesystem/shell、非确定性时间/随机数和运行中用户输入；进程路径使用最小环境并可被 signal kill。它仍是进程级隔离，不宣称 container/OS policy sandbox。
 
 **门槛：** 同一脚本和 args 产生相同的 agent invocation 序列；脚本不能读取 host credentials 或任意 process API。
 
 ### Slice D：进度、审批和成本控制
 
-- [ ] 增加 phase start/end、agent start/end、log、approval、pause、resume、cancellation 的 typed lifecycle events。
+- [x] 增加 phase start/end、agent start/end、log、approval、cancellation 的 typed lifecycle events，并支持 `AbortSignal` 触发统一 terminal cancellation；pause/resume 仍待补齐。
 - [ ] 增加 pre-run approval，携带 workflow metadata、phases、raw-script reference、size guideline 和 projected cost。
 - [ ] 增加 phase progress 查询和 large-workflow advisory，不削弱 kernel quota。
 
@@ -277,15 +277,15 @@ The next workflow checkpoint is also complete: `spawn_workflow` actions now expo
 
 - [x] 增加 invocation fingerprint、可插拔 replay store，以及内存/文件实现；相同 run/node/prompt/options 会复用完成结果。
 - [x] `parallelAgents` 支持部分 fan-out replay：保持结果顺序，只提交 fingerprint miss，命中项计入复用进度。
-- [ ] 持久化输入依赖和 terminal status，并把 replay 记录接入 kernel workflow/session log。
-- [ ] fingerprint 未变时复用完成结果；第一个变更/失败 invocation 及其后继重新执行。
-- [ ] run artifact 或 saved result 缺失时拒绝 relaunch，resume 不得静默从头开始。
+- [x] 持久化 artifact identity/meta snapshot、输入 fingerprint、invocation records、lifecycle events 和 terminal status。
+- [ ] fingerprint 未变时复用完成结果；第一个变更/失败 invocation 及其后继重新执行，并把 replay record 接入 kernel workflow/session log。
+- [x] artifact digest/meta snapshot 改变会拒绝继续；saved result 缺失时仍需补 typed `nothing_to_resume` rejection，不能静默从头开始。
 
 **门槛：** 只修改上游 prompt 时仅使其 suffix 失效；中间 fan-out 失败时重跑文档规定的 suffix；缺失结果返回 typed `nothing_to_resume` rejection。
 
 ### Slice F：编排与分发
 
-- [ ] 增加 project/user workflow store、名称冲突优先级和 plugin/package discovery。
+- [x] 增加 project/user workflow store、名称冲突优先级和 plugin/package discovery（由显式 roots 注入）。
 - [ ] 校验字面量 `meta.name`/`meta.description` 与 phase title 一致性。
 - [ ] 增加 `workflowSizeGuideline` 配置和 disable switch，并与 kernel quota 分开保存。
 

@@ -500,7 +500,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 
 ### 9.2 当前缺口
 
-1. **脚本运行时已补齐**：`RuntimeRunner.runDynamicWorkflow()` 在 `node:vm` 的无原型上下文中执行 artifact，只暴露 `agent/parallel/parallelAgents/pipeline/phase/log/args/progress`，并拒绝模块加载、进程/网络原语和动态代码生成。宿主函数和参数对象也会转成 VM realm 数据，不能通过 constructor 逃逸。它仍是 host 隔离边界，不能替代 OS sandbox。
+1. **脚本运行时已分 trust 收敛**：trusted artifact 进入 `node:vm` 的无原型上下文；untrusted artifact 进入独立 child process + child VM，通过 JSON-RPC 只请求 `agent/parallelAgents/phase/log`，不接触 parent provider、memory、filesystem 或 process。两条路径都拒绝模块加载、进程/网络原语、动态代码生成和非确定性时间/随机数；child process 可被 signal kill，但仍不宣称 container/OS policy sandbox。
 2. **动态运行进度与生命周期已补齐**：`DynamicWorkflowProgress` 聚合 phase、agent、并发和日志状态；`DynamicWorkflowLifecycleEvent` 提供有序的 run、approval、phase、agent、log、终止事件，并可由调用方持久化。
 3. **恢复语义已补齐**：replay snapshot 持久化 run identity、artifact digest、args/limits fingerprint、生命周期事件和 invocation records；只重用 completed/completed_partial，失败和取消尾部保留用于诊断；输入或 artifact 改变会拒绝继续复用。
 4. **启动审批已补齐**：脚本提交任何 kernel workflow 前必须经过一次 approval callback；拒绝会产生 ordered cancellation event 且不会提交节点。成本提示仍由调用方根据 args、limits 和 artifact metadata 展示。
@@ -522,7 +522,7 @@ kernel observation → public `StreamEvent` 约 19 个 yield 点（runner.ts）�
 6. **Handoff payload**：allowlisted handoff 的 `inputSchema`、`metadata`、`providerOptions` 已进入 `delegate()` 的执行路径；输入在 resolver 前验证，metadata 写入目标 run 的 `run_started` 事实，provider options 作为该次目标调用的扩展覆盖。
 7. **Global invariants**：新增独立的 `contracts/invariants.ts` 与 `global-invariants.json`，登记 EffectId 铸造、signal disposal 一对一、RunContext 隔离三类关系规则；它们由 `contracts:verify` 检查引用测试，不再伪装成单字段映射。
 
-这几项修复后，声明层、host 执行层和 kernel wire 的职责边界已经分别可见。跨事件关联规则已进入 global invariants，动态脚本的 VM、artifact 分发、审批、生命周期和 replay 控制面也已落地；后续若需要更强租户隔离或跨进程统一查询，应在现有 host boundary 之外增加 OS sandbox 与 SessionLog 投影，不应把这些职责重新塞进字段映射规则。
+这几项修复后，声明层、host 执行层和 kernel wire 的职责边界已经分别可见。跨事件关联规则已进入 global invariants，动态脚本的 trusted VM、untrusted child process、artifact 分发、审批、生命周期和 replay 控制面已经接通；pause/resume、失败 suffix 的 typed resume rejection、以及真正的 container/OS policy sandbox 仍是后续边界，不应把这些职责重新塞进字段映射规则。
 
 ### 9.3 执行控制与 replay 实现边界
 

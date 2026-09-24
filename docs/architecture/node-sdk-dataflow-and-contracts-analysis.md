@@ -168,7 +168,7 @@ Memory content 的 authority 在 host MemoryStore；kernel 只持有 effect、re
 - artifact digest、args、limits、lifecycle events 和 invocation records 绑定到 replay store。
 - approval、cancel、failure、complete 都在同一个 root operation 上落盘，不能留下“host 已返回但 kernel 仍 active”的半终态。
 
-VM 拒绝直接 filesystem/shell/network/module loading/dynamic code generation，但它仍然运行在 Node 进程内。动态脚本现在显式区分 `trust: "trusted" | "untrusted"`：只有 `trusted` 能进入 `node:vm`，`untrusted` 在没有 OS sandbox executor 时直接 fail-closed。面对恶意租户仍需要 OS worker、容器或其他外部 sandbox；VM 不能单独承担进程级安全边界。
+动态脚本现在显式区分 `trust: "trusted" | "untrusted"`：trusted 进入受限 `node:vm`，untrusted 进入独立 child process + child VM，通过 JSON-RPC 请求 host workflow 操作。两条路径都拒绝 filesystem/shell/network/module loading/dynamic code generation 和非确定性时间/随机数；child process 能被 signal kill，但它仍不是 container/OS policy sandbox。
 
 ## 4. 两条持久化链：KernelJournal 与 SessionLog
 

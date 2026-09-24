@@ -8,6 +8,8 @@ import {
   type DynamicWorkflowProgram,
 } from "./dynamic.js"
 import { DynamicWorkflowVmExecutor } from "./dynamic-vm.js"
+import { DynamicWorkflowProcessExecutor } from "./dynamic-process.js"
+import { DynamicWorkflowScriptError } from "./dynamic-vm.js"
 
 /** A workflow submission waiting for an external kernel driver to execute it. */
 export interface DynamicWorkflowSubmission {
@@ -40,12 +42,16 @@ export class DynamicWorkflowController<TArgs extends Record<string, unknown> = R
     options: DynamicWorkflowRunOptions<TArgs> = {},
   ): Promise<DynamicWorkflowRun<T>> {
     if (this.finalRun) throw new Error("dynamic workflow controller has already started")
+    if (typeof program === "function" && options.trust === "untrusted") {
+      throw new DynamicWorkflowScriptError("untrusted dynamic workflows require a script or artifact for process isolation")
+    }
     const host: DynamicWorkflowHost = { runWorkflow: spec => this.enqueue(spec) }
+    const processExecutor = options.trust === "untrusted" ? new DynamicWorkflowProcessExecutor(host) : undefined
     const run = typeof program === "function"
       ? new DynamicWorkflowExecutor<TArgs>(host, options).run(program)
       : "digest" in program
-        ? new DynamicWorkflowVmExecutor(host, options.vmOptions).runArtifact<TArgs, T>(program, options)
-        : new DynamicWorkflowVmExecutor(host, options.vmOptions).runScript<TArgs, T>(program, options)
+        ? (processExecutor ?? new DynamicWorkflowVmExecutor(host, options.vmOptions)).runArtifact<TArgs, T>(program, options)
+        : (processExecutor ?? new DynamicWorkflowVmExecutor(host, options.vmOptions)).runScript<TArgs, T>(program, options)
     this.finalRun = run as Promise<DynamicWorkflowRun<unknown>>
     void run.then(() => this.finish(), error => this.finish(error))
     return run

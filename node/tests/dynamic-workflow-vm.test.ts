@@ -52,7 +52,7 @@ describe("DynamicWorkflowVmExecutor", () => {
     expect(calls).toEqual(["inspect"])
   })
 
-  it.each(["process", "require", "import", "eval", "Function"])("rejects forbidden capability %s", async capability => {
+  it.each(["process", "require", "import", "eval", "Function", "Date", "Math.random"])("rejects forbidden capability %s", async capability => {
     await expect(new DynamicWorkflowVmExecutor(host([])).runScript({
       ...script,
       source: `return typeof ${capability}`,

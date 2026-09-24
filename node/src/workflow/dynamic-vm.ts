@@ -132,7 +132,7 @@ function assertSafeSource(source: string, maxSourceBytes: number): void {
   if (Buffer.byteLength(source, "utf8") > maxSourceBytes) {
     throw new DynamicWorkflowScriptError(`dynamic workflow source exceeds maxSourceBytes (${maxSourceBytes})`)
   }
-  const forbidden = /(?:^|[^\w$])(require|import|export|process|globalThis|global|Buffer|Deno|fetch|WebSocket|child_process|eval|Function)(?:[^\w$]|$)/
+  const forbidden = /(?:^|[^\w$])(require|import|export|process|globalThis|global|Buffer|Deno|fetch|WebSocket|child_process|eval|Function|Date|performance|Math\.random)(?:[^\w$]|$)/
   const match = forbidden.exec(source)
   if (match) throw new DynamicWorkflowScriptError(`dynamic workflow source uses forbidden capability "${match[1]}"`)
 }

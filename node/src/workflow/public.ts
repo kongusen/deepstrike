@@ -51,6 +51,8 @@ export type {
   DynamicWorkflowTrust,
 } from "./dynamic.js"
 export { DynamicWorkflowScriptError } from "./dynamic-vm.js"
+export { DynamicWorkflowProcessExecutor } from "./dynamic-process.js"
+export type { DynamicWorkflowProcessOptions } from "./dynamic-process.js"
 export {
   FileDynamicWorkflowReplayStore,
   InMemoryDynamicWorkflowReplayStore,
