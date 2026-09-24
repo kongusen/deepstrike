@@ -26,7 +26,7 @@ class McpServerConfig:
     args: list[str] = field(default_factory=list)
     credential_keys: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
-    transport: Literal["stdio"] = "stdio"
+    transport: Literal["stdio", "http", "sse"] = "stdio"
 
 
 class McpConnection(Protocol):
@@ -225,17 +225,17 @@ class McpProxyPlane:
     self._timeout_ms = timeout_ms
     self._connection_factory = connection_factory or _McpConnection
 
-    async def connect(self) -> None:
-      for name, config in self._server_configs.items():
-        if config.transport != "stdio":
-          raise NotImplementedError(
-            f"MCP transport '{config.transport}' is not implemented; supported transports: stdio"
-          )
-        conn = self._connection_factory(name, config, self._vault)
-        await conn.start()
-        self._connections[name] = conn
-        for schema in conn.schemas():
-          self._tool_to_conn[schema.name] = conn
+  async def connect(self) -> None:
+    for name, config in self._server_configs.items():
+      if config.transport != "stdio" and self._connection_factory is _McpConnection:
+        raise NotImplementedError(
+          f"MCP transport '{config.transport}' is not implemented; supported transports: stdio"
+        )
+      conn = self._connection_factory(name, config, self._vault)
+      await conn.start()
+      self._connections[name] = conn
+      for schema in conn.schemas():
+        self._tool_to_conn[schema.name] = conn
 
   async def disconnect(self) -> None:
     for conn in self._connections.values():
