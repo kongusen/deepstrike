@@ -422,7 +422,40 @@ class Agent:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
         output = await self.session(resolved_session_id).run(goal, max_turns=max_turns, attachments=attachments)
-        return {"output": output, "status": "completed", "session_id": resolved_session_id}
+        entries = await self.session(resolved_session_id).history()
+        events = [entry.event for entry in entries]
+        started = next((event for event in reversed(events) if event.get("kind") == "run_started"), {})
+        terminal = next((event for event in reversed(events) if event.get("kind") == "run_terminal"), {})
+        reason = str(terminal.get("reason", "completed"))
+        status = "completed" if reason in {"completed", "success", "done"} else (
+            "cancelled" if reason in {"user", "user_abort", "deadline", "lease_lost", "host_shutdown", "timeout"}
+            else "failed" if reason in {"error", "failed", "invalid_arg"} else "partial"
+        )
+        result: dict[str, Any] = {
+            "output": output,
+            "status": status,
+            "session_id": resolved_session_id,
+            "run_id": started.get("run_id"),
+        }
+        if self.output_schema:
+            from deepstrike.runtime.output_schema import extract_json_value, validate_against_schema
+            errors = validate_against_schema(extract_json_value(output), self.output_schema)
+            result["output_validation"] = {"ok": not errors, "errors": errors}
+            if errors and status == "completed":
+                result["status"] = "failed"
+        attempts = next((event for event in reversed(events) if event.get("kind") == "provider_attempt"), {})
+        measured = next((event for event in reversed(events) if event.get("kind") == "prompt_measured"), {})
+        prepared = next((event for event in reversed(events) if event.get("kind") == "context_prepared"), {})
+        evidence = {
+            **({"route": attempts.get("route")} if attempts.get("route") is not None else {}),
+            **({"measurement": measured.get("measurement")} if measured.get("measurement") is not None else {}),
+            **({"context_binding": prepared.get("preparation", {}).get("binding")} if isinstance(prepared.get("preparation"), dict) and prepared["preparation"].get("binding") is not None else {}),
+        }
+        if evidence:
+            result["evidence"] = evidence
+        if terminal.get("total_tokens") is not None:
+            result["usage"] = {"total_tokens": terminal["total_tokens"]}
+        return result
 
     async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None,
                      attachments: list[dict[str, Any]] | None = None):

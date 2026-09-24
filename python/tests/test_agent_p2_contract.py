@@ -50,3 +50,12 @@ async def test_agent_delegate_requires_declared_target_and_resolves_host_agent()
     assert result["status"] == "completed"
     with pytest.raises(PermissionError):
         await parent.session("s").delegate("other", "blocked")
+
+
+@pytest.mark.asyncio
+async def test_agent_run_returns_structured_execution_evidence():
+    agent = create_agent("result", runtime_binding={"provider": Provider()})
+    result = await agent.run("hello", session_id="result-session")
+    assert result["status"] == "completed"
+    assert result["session_id"] == "result-session"
+    assert result["run_id"]
