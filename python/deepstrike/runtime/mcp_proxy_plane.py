@@ -6,7 +6,7 @@ import os
 from asyncio.subprocess import PIPE
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from deepstrike._kernel import ToolCall, ToolSchema
 from deepstrike.providers.stream import StreamEvent, ToolResultEvent
@@ -22,10 +22,11 @@ if TYPE_CHECKING:
 
 @dataclass
 class McpServerConfig:
-  command: str
-  args: list[str] = field(default_factory=list)
-  credential_keys: list[str] = field(default_factory=list)
-  env: dict[str, str] = field(default_factory=dict)
+    command: str
+    args: list[str] = field(default_factory=list)
+    credential_keys: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    transport: Literal["stdio"] = "stdio"
 
 
 # ── Internal MCP client ───────────────────────────────────────────────────────
@@ -210,13 +211,17 @@ class McpProxyPlane:
     self._local_names: set[str] = set()
     self._timeout_ms = timeout_ms
 
-  async def connect(self) -> None:
-    for name, config in self._server_configs.items():
-      conn = _McpConnection(name, config, self._vault)
-      await conn.start()
-      self._connections[name] = conn
-      for schema in conn.schemas():
-        self._tool_to_conn[schema.name] = conn
+    async def connect(self) -> None:
+      for name, config in self._server_configs.items():
+        if config.transport != "stdio":
+          raise NotImplementedError(
+            f"MCP transport '{config.transport}' is not implemented; supported transports: stdio"
+          )
+        conn = _McpConnection(name, config, self._vault)
+        await conn.start()
+        self._connections[name] = conn
+        for schema in conn.schemas():
+          self._tool_to_conn[schema.name] = conn
 
   async def disconnect(self) -> None:
     for conn in self._connections.values():
