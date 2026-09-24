@@ -378,11 +378,17 @@ function checkGlobalInvariants() {
     if (typeof invariant.enforcement !== "string" || !invariant.enforcement) fail(`${invariant.id}: invariant enforcement is required`)
     if (!Array.isArray(invariant.testRefs) || invariant.testRefs.length === 0) fail(`${invariant.id}: at least one testRefs entry is required`)
     for (const testRef of invariant.testRefs) {
-      if (typeof testRef !== "string" || !testRef) fail(`${invariant.id}: testRefs entries must be non-empty paths`)
-      const testPath = artifactPath(testRef)
-      if (!existsSync(testPath)) fail(`${invariant.id}: test reference does not exist: ${testRef}`)
-      if (!/\b(?:describe|it|test)\s*\(/.test(readFileSync(testPath, "utf8"))) {
-        fail(`${invariant.id}: test reference has no test declaration: ${testRef}`)
+      if (!testRef || typeof testRef.path !== "string" || !testRef.path || !Array.isArray(testRef.selectors) || testRef.selectors.length === 0 || testRef.selectors.some(selector => typeof selector !== "string" || !selector)) {
+        fail(`${invariant.id}: testRefs entries must use { path, selectors } with at least one selector`)
+      }
+      const testPath = artifactPath(testRef.path)
+      if (!existsSync(testPath)) fail(`${invariant.id}: test reference does not exist: ${testRef.path}`)
+      const testSource = readFileSync(testPath, "utf8")
+      if (!/\b(?:describe|it|test)\s*\(/.test(testSource)) {
+        fail(`${invariant.id}: test reference has no test declaration: ${testRef.path}`)
+      }
+      for (const selector of testRef.selectors) {
+        if (!testSource.includes(selector)) fail(`${invariant.id}: test selector not found in ${testRef.path}: ${selector}`)
       }
     }
   }
