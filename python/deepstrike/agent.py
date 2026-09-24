@@ -74,6 +74,19 @@ class AgentSession:
         from deepstrike.runtime.replay_fixture import extract_recorded_messages
         return extract_recorded_messages(await self.history())
 
+    async def workflow_trace(self):
+        """Return durable workflow lifecycle events for replay/inspection tooling."""
+        workflow_kinds = {
+            "workflow_batch_spawned",
+            "workflow_node_completed",
+            "workflow_nodes_submitted",
+            "workflow_completed",
+        }
+        return [
+            entry for entry in await self.history()
+            if entry.event.get("kind") in workflow_kinds
+        ]
+
     async def run(self, goal: str, *, max_turns: int | None = None) -> str:
         from deepstrike.runtime.runner import collect_text
         return await collect_text(self.stream(goal, max_turns=max_turns))
