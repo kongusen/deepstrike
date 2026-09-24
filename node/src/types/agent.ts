@@ -355,6 +355,8 @@ export interface WorkflowNodeSpec {
   isolation?: AgentIsolation
   contextInheritance?: ContextInheritance
   modelHint?: string
+  /** Host-only tool surface policy for dynamic/workflow child execution. */
+  toolAccess?: "inherit" | "filtered"
   /** W3: `quarantined` nodes read untrusted content and must run without privileges. */
   trust?: NodeTrust
   /** G3: JSON Schema the node's output must conform to. The kernel carries it to the spawn

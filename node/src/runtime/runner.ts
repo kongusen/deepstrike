@@ -1346,6 +1346,7 @@ export class RuntimeRunner {
     abortSignal?: AbortSignal,
     contextPolicies?: Map<string, WorkflowContextPolicy | undefined>,
     workflowAgentTargets?: Map<string, string>,
+    workflowNodeToolAccess?: Map<string, "inherit" | "filtered">,
     parentRunId?: string,
   ): Promise<SubAgentResult> {
     // G2: a reduce node runs no LLM — execute the registered pure function over its dependency
@@ -1386,7 +1387,9 @@ export class RuntimeRunner {
       // W-N1: trusted workflow nodes run on the parent's execution plane (they carry no grant list
       // by design — filtering on the missing list ran every DAG node TOOL-LESS); quarantined nodes
       // stay deny-all filtered (they read untrusted content).
-      toolAccess: (node.trust === "quarantined" ? "filtered" : "inherit") as "filtered" | "inherit",
+      toolAccess: workflowNodeToolAccess?.get(node.agent_id)
+        ?? workflowNodeToolAccess?.get(node.agent_id.replace(/-i\d+$/, ""))
+        ?? (node.trust === "quarantined" ? "filtered" : "inherit") as "filtered" | "inherit",
       // #2-B-ii: the per-node abort signal the driver fires when the kernel preempts this node.
       ...(abortSignal ? { abortSignal } : {}),
       ...(this.opts.subAgentHarness ? { harness: this.opts.subAgentHarness } : {}),
@@ -1968,9 +1971,11 @@ export class RuntimeRunner {
       throw new Error(`workflow load returned unexpected kernel effect: ${initialAction.kind}`)
     }
     const workflowAgentTargets = new Map<string, string>()
+    const workflowNodeToolAccess = new Map<string, "inherit" | "filtered">()
     if (workflowNodes?.length) {
       workflowNodes.forEach((node, index) => {
         if (node.agent) workflowAgentTargets.set(`wf-node${workflowNodeBase + index}`, node.agent)
+        if (node.toolAccess) workflowNodeToolAccess.set(`wf-node${workflowNodeBase + index}`, node.toolAccess)
       })
     }
     let nodes = initialAction.nodes.map(workflowSpawnNodeFromKernel)
@@ -2019,6 +2024,7 @@ export class RuntimeRunner {
             controllers.get(node.agent_id)?.signal,
             contextPolicies,
             workflowAgentTargets,
+            workflowNodeToolAccess,
             runtime.operationId.replace(/^node-operation-/, ""),
           )),
         )
@@ -2087,6 +2093,7 @@ export class RuntimeRunner {
             const base = typeof submitted.base === "number" ? submitted.base : 0
             result.submittedNodes.forEach((node, index) => {
               if (node.agent) workflowAgentTargets.set(`wf-node${base + index}`, node.agent)
+              if (node.toolAccess) workflowNodeToolAccess.set(`wf-node${base + index}`, node.toolAccess)
             })
             await this.opts.sessionLog.append(parentSessionId, buildWorkflowNodesSubmittedEvent({
               turn: runtime.turn(),

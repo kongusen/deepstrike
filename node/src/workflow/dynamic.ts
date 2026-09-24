@@ -135,8 +135,12 @@ export interface DynamicWorkflowProgress {
 
 export interface DynamicWorkflowAgentOptions {
   label?: string
+  /** Host-side public Agent target resolved at the workflow spawn boundary. */
+  agent?: string
   role?: KernelAgentRole
   modelHint?: string
+  trust?: WorkflowNodeSpec["trust"]
+  toolAccess?: WorkflowNodeSpec["toolAccess"]
   isolation?: WorkflowNodeSpec["isolation"]
   outputSchema?: Record<string, unknown>
   tokenBudget?: number
@@ -503,7 +507,10 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           nodeId,
           task: prompt,
           role: options.role ?? "implement",
+          ...(options.agent ? { agent: options.agent } : {}),
           ...(options.modelHint ? { modelHint: options.modelHint } : {}),
+          ...(options.trust ? { trust: options.trust } : {}),
+          ...(options.toolAccess ? { toolAccess: options.toolAccess } : {}),
           ...(options.isolation ? { isolation: options.isolation } : {}),
           ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
           ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),
@@ -579,7 +586,10 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           nodeId,
           task: request.prompt,
           role: options.role ?? "implement",
+          ...(options.agent ? { agent: options.agent } : {}),
           ...(options.modelHint ? { modelHint: options.modelHint } : {}),
+          ...(options.trust ? { trust: options.trust } : {}),
+          ...(options.toolAccess ? { toolAccess: options.toolAccess } : {}),
           ...(options.isolation ? { isolation: options.isolation } : {}),
           ...(options.outputSchema ? { outputSchema: options.outputSchema } : {}),
           ...(options.tokenBudget !== undefined ? { tokenBudget: options.tokenBudget } : {}),

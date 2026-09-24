@@ -5,6 +5,7 @@ import {
   resolveDynamicWorkflowLimits,
 } from "../src/workflow/dynamic.js"
 import type { DynamicWorkflowHost } from "../src/workflow/dynamic.js"
+import type { WorkflowNodeSpec } from "../src/types/agent.js"
 
 function fakeHost(delayMs = 0, onRun?: (goal: string) => void, onDone?: (goal: string) => void): DynamicWorkflowHost {
   return {
@@ -111,6 +112,33 @@ describe("DynamicWorkflowExecutor", () => {
 
     expect(batchSizes).toEqual([3])
     expect(run.value.map(result => result?.text)).toEqual(["batch:task:a", "batch:task:b", "batch:task:c"])
+  })
+
+  it("keeps host target, model, trust, and tool policy on the dynamic spawn boundary", async () => {
+    let captured: WorkflowNodeSpec | undefined
+    const host: DynamicWorkflowHost = {
+      async runWorkflow(spec) {
+        captured = spec.nodes[0]
+        return {
+          nodeOutcomes: [{ nodeId: captured.nodeId!, status: "completed", output: { role: "assistant", content: "ok" } }],
+          outputs: { [captured.nodeId!]: "ok" },
+        }
+      },
+    }
+    const executor = new DynamicWorkflowExecutor(host, { runId: "dynamic-boundary" })
+    await executor.run(ctx => ctx.agent("inspect", {
+      agent: "researcher",
+      modelHint: "fast",
+      trust: "quarantined",
+      toolAccess: "filtered",
+    }))
+
+    expect(captured).toMatchObject({
+      agent: "researcher",
+      modelHint: "fast",
+      trust: "quarantined",
+      toolAccess: "filtered",
+    })
   })
 
   it("rejects unsafe limits and oversized batches before spawning", async () => {
