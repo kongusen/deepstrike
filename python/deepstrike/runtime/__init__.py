@@ -136,7 +136,8 @@ from deepstrike.runtime.credential_vault import (
   ChainedCredentialVault,
 )
 from deepstrike.runtime.process_sandbox_plane import ProcessSandboxPlane
-from deepstrike.runtime.mcp_proxy_plane import McpProxyPlane, McpServerConfig
+from deepstrike.runtime.mcp_proxy_plane import McpConnection, McpProxyPlane, McpServerConfig
+from deepstrike.runtime.workflow_replay import WorkflowReplay
 from deepstrike.runtime.evolution import (
   EVOLUTION_REPORT_SCHEMA,
   ContextEntryRef,
@@ -351,6 +352,7 @@ __all__ = [
   "ProcessSandboxPlane",
   "McpProxyPlane",
   "McpServerConfig",
+  "McpConnection",
   "EVOLUTION_REPORT_SCHEMA",
   "ContextEntryRef",
   "ContextExecutionInput",

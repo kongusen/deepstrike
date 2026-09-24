@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from deepstrike import FileSessionLog, FileWorkflowStore, InMemorySessionLog, WorkflowNodeSpec, WorkflowSpec, create_agent
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
@@ -58,3 +60,12 @@ def test_agent_workflow_persistence_uses_explicit_store(tmp_path):
 
     assert agent.list_workflows() == ["empty"]
     assert agent.load_workflow("empty").nodes == []
+
+@pytest.mark.asyncio
+async def test_agent_session_workflow_replay_projection():
+    agent = create_agent("replay", runtime_binding={"provider": Provider()})
+    session = agent.session("s-replay")
+    await session._session_log.append("s-replay", {"kind": "workflow_completed", "node_outcomes": [{"node_id": "n1"}], "total_nodes": 1})
+    replay = await session.workflow_replay()
+    assert replay.completed is True
+    assert replay.node("n1") is not None

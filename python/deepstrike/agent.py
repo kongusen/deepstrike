@@ -87,6 +87,11 @@ class AgentSession:
             if entry.event.get("kind") in workflow_kinds
         ]
 
+    async def workflow_replay(self):
+        """Project durable workflow events into a replayable audit object."""
+        from deepstrike.runtime.workflow_replay import WorkflowReplay
+        return WorkflowReplay.from_entries(await self.history())
+
     async def run(self, goal: str, *, max_turns: int | None = None) -> str:
         from deepstrike.runtime.runner import collect_text
         return await collect_text(self.stream(goal, max_turns=max_turns))
@@ -199,6 +204,10 @@ class Agent:
         if not self.runtime_binding:
             raise RuntimeError(f'agent "{self.name}" has no runtime binding')
         provider = self.runtime_binding.get("provider")
+        fallback = self.runtime_binding.get("provider_fallbacks")
+        if provider is None and fallback:
+            from deepstrike.providers import FallbackProvider
+            provider = FallbackProvider(tuple(fallback))
         if provider is None:
             provider_for = self.runtime_binding.get("provider_for")
             provider = provider_for(self.model) if callable(provider_for) else None
@@ -242,6 +251,10 @@ class Agent:
         binding = self.runtime_binding or {}
         if binding.get("provider") is not None:
             return binding["provider"]
+        fallback = binding.get("provider_fallbacks")
+        if fallback:
+            from deepstrike.providers import FallbackProvider
+            return FallbackProvider(tuple(fallback))
         provider_for = binding.get("provider_for")
         if callable(provider_for):
             resolved = provider_for(self.model)

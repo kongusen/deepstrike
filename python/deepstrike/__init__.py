@@ -143,6 +143,7 @@ from deepstrike.runtime import (
     ReplayProvider,
     ReplayProviderOpts,
     extract_recorded_messages,
+    WorkflowReplay,
     Criterion,
     Verdict,
     VerdictDetail,

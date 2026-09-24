@@ -6,7 +6,7 @@ import os
 from asyncio.subprocess import PIPE
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Callable
 
 from deepstrike._kernel import ToolCall, ToolSchema
 from deepstrike.providers.stream import StreamEvent, ToolResultEvent
@@ -27,6 +27,18 @@ class McpServerConfig:
     credential_keys: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     transport: Literal["stdio"] = "stdio"
+
+
+class McpConnection(Protocol):
+  """Host supplied MCP transport contract.
+
+  The Kernel only depends on these operations, so HTTP/SSE or hosted transports
+  can be added without changing tool execution semantics.
+  """
+  async def start(self) -> None: ...
+  def schemas(self) -> list[ToolSchema]: ...
+  async def execute(self, call: ToolCall) -> tuple[str, bool, list[dict] | None]: ...
+  async def stop(self) -> None: ...
 
 
 # ── Internal MCP client ───────────────────────────────────────────────────────
@@ -202,14 +214,16 @@ class McpProxyPlane:
   def __init__(
     self, *, servers: dict[str, McpServerConfig], vault: CredentialVault,
     timeout_ms: int = 30_000,
+    connection_factory: Callable[[str, McpServerConfig, CredentialVault], McpConnection] | None = None,
   ) -> None:
     self._server_configs = servers
     self._vault = vault
-    self._connections: dict[str, _McpConnection] = {}
-    self._tool_to_conn: dict[str, _McpConnection] = {}
+    self._connections: dict[str, McpConnection] = {}
+    self._tool_to_conn: dict[str, McpConnection] = {}
     self._local = LocalExecutionPlane()
     self._local_names: set[str] = set()
     self._timeout_ms = timeout_ms
+    self._connection_factory = connection_factory or _McpConnection
 
     async def connect(self) -> None:
       for name, config in self._server_configs.items():
@@ -217,7 +231,7 @@ class McpProxyPlane:
           raise NotImplementedError(
             f"MCP transport '{config.transport}' is not implemented; supported transports: stdio"
           )
-        conn = _McpConnection(name, config, self._vault)
+        conn = self._connection_factory(name, config, self._vault)
         await conn.start()
         self._connections[name] = conn
         for schema in conn.schemas():
@@ -255,7 +269,7 @@ class McpProxyPlane:
         yield evt
 
     # Group by connection, run groups concurrently
-    groups: dict[_McpConnection, list[ToolCall]] = {}
+    groups: dict[McpConnection, list[ToolCall]] = {}
     unknown: list[ToolCall] = []
     for call in mcp_calls:
       conn = self._tool_to_conn.get(call.name)
@@ -267,7 +281,7 @@ class McpProxyPlane:
     for call in unknown:
       yield ToolResultEvent(call_id=call.id, name=call.name, content=f"unknown MCP tool: {call.name}", is_error=True)
 
-    async def run_group(conn: _McpConnection, group: list[ToolCall]) -> list[tuple[ToolCall, str, bool, list[dict] | None]]:
+    async def run_group(conn: McpConnection, group: list[ToolCall]) -> list[tuple[ToolCall, str, bool, list[dict] | None]]:
       results = []
       for call in group:
         output, is_error, content_parts = await run_with_operation(
