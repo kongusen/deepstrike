@@ -131,6 +131,24 @@ describe("dynamic workflow replay", () => {
     expect(events).toEqual(run.events.map(event => event.kind))
   })
 
+  it("persists lifecycle events exactly once in a file replay snapshot", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dynamic-wf-events-"))
+    try {
+      const store = new FileDynamicWorkflowReplayStore({ rootDir: root })
+      const run = await new DynamicWorkflowExecutor(hostWithCalls([]), {
+        runId: "events-1",
+        replayStore: store,
+      }).run(ctx => ctx.phase("inspect", async () => {
+        ctx.log("starting")
+        return (await ctx.agent("inspect", { label: "inspect" }))?.text
+      }))
+      const persisted = await store.loadRun("events-1")
+      expect(persisted?.events).toEqual(run.events)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it("reuses unchanged fanout items and submits only the changed suffix", async () => {
     const store = new InMemoryDynamicWorkflowReplayStore()
     const batches: string[][] = []

@@ -45,7 +45,7 @@ describe("DynamicWorkflowVmExecutor", () => {
     await expect(executor.runArtifact({
       ...artifact,
       digest: "changed-digest",
-    }, { runId: "artifact-replay", replayStore: store })).rejects.toMatchObject({ code: "DYNAMIC_WORKFLOW_REPLAY_MISMATCH" })
+    }, { runId: "artifact-replay", replayStore: store })).rejects.toThrow(/digest mismatch/)
     expect(calls).toEqual(["inspect"])
   })
 
@@ -54,6 +54,27 @@ describe("DynamicWorkflowVmExecutor", () => {
       ...script,
       source: `return typeof ${capability}`,
     })).rejects.toMatchObject({ code: "DYNAMIC_WORKFLOW_SCRIPT" })
+  })
+
+  it("does not expose a host Function constructor through workflow methods or args", async () => {
+    const executor = new DynamicWorkflowVmExecutor(host([]))
+    await expect(executor.runScript({
+      ...script,
+      source: "return workflow.agent.constructor(\"return typeof \" + \"pro\" + \"cess\")()",
+    })).rejects.toMatchObject({ code: "DYNAMIC_WORKFLOW_SCRIPT" })
+    await expect(executor.runScript({
+      ...script,
+      source: "return args.constructor.constructor(\"return typeof \" + \"pro\" + \"cess\")()",
+    }, { args: { target: "safe" } })).rejects.toMatchObject({ code: "DYNAMIC_WORKFLOW_SCRIPT" })
+  })
+
+  it("rejects an artifact whose source no longer matches its declared digest", async () => {
+    const artifact = createDynamicWorkflowArtifact(script)
+    const tampered = {
+      ...artifact,
+      script: { ...artifact.script, source: "return 'tampered'" },
+    }
+    await expect(new DynamicWorkflowVmExecutor(host([])).runArtifact(tampered)).rejects.toThrow(/digest mismatch/)
   })
 
   it("stops synchronous source that exceeds the VM timeout", async () => {

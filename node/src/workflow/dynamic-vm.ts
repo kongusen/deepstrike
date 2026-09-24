@@ -6,22 +6,15 @@ import type {
   DynamicWorkflowRun,
   DynamicWorkflowRunOptions,
   DynamicWorkflowScript,
+  DynamicWorkflowVmOptions,
 } from "./dynamic.js"
 import {
   DynamicWorkflowApprovalError,
   DynamicWorkflowExecutor,
   DynamicWorkflowLimitError,
   DynamicWorkflowReplayMismatchError,
+  fingerprintDynamicWorkflowScript,
 } from "./dynamic.js"
-
-export interface DynamicWorkflowVmOptions {
-  /** Maximum source bytes accepted from an artifact. */
-  maxSourceBytes?: number
-  /** Maximum synchronous VM execution time for one script turn. */
-  timeoutMs?: number
-  /** Maximum wall time for the complete script, including host workflow submissions. */
-  maxExecutionMs?: number
-}
 
 export class DynamicWorkflowScriptError extends Error {
   readonly code = "DYNAMIC_WORKFLOW_SCRIPT"
@@ -68,8 +61,8 @@ export class DynamicWorkflowVmExecutor {
 
     const executor = new DynamicWorkflowExecutor<TArgs>(this.host, options)
     const run = executor.run<T>(workflow => {
-      const facade = createWorkflowFacade(workflow)
-      const args = workflow.args
+      const facade = createWorkflowFacade(workflow, context)
+      const args = cloneIntoVm(context, workflow.args)
       return runWithTimeout(
         () => {
           Object.assign(context, { workflow: facade, args })
@@ -92,6 +85,10 @@ export class DynamicWorkflowVmExecutor {
     artifact: DynamicWorkflowArtifact,
     options: DynamicWorkflowRunOptions<TArgs> = {},
   ): Promise<DynamicWorkflowRun<T>> {
+    const expectedDigest = fingerprintDynamicWorkflowScript(artifact.script)
+    if (artifact.name !== artifact.script.meta.name || artifact.digest !== expectedDigest) {
+      throw new DynamicWorkflowScriptError(`dynamic workflow artifact "${artifact.name}" digest mismatch`)
+    }
     return this.runScript<TArgs, T>(artifact.script, {
       ...options,
       artifactDigest: options.artifactDigest ?? artifact.digest,
@@ -99,19 +96,30 @@ export class DynamicWorkflowVmExecutor {
   }
 }
 
-function createWorkflowFacade<TArgs extends Record<string, unknown>, T>(workflow: DynamicWorkflowContext<TArgs>): DynamicWorkflowContext<TArgs> {
+function createWorkflowFacade<TArgs extends Record<string, unknown>, T>(workflow: DynamicWorkflowContext<TArgs>, context: vm.Context): DynamicWorkflowContext<TArgs> {
   const facade = Object.create(null) as DynamicWorkflowContext<TArgs>
   Object.defineProperties(facade, {
-    args: { enumerable: true, value: workflow.args },
-    progress: { enumerable: true, value: workflow.progress },
-    agent: { enumerable: true, value: workflow.agent.bind(workflow) },
-    parallel: { enumerable: true, value: workflow.parallel.bind(workflow) },
-    parallelAgents: { enumerable: true, value: workflow.parallelAgents.bind(workflow) },
-    pipeline: { enumerable: true, value: workflow.pipeline.bind(workflow) },
-    phase: { enumerable: true, value: workflow.phase.bind(workflow) },
-    log: { enumerable: true, value: workflow.log.bind(workflow) },
+    args: { enumerable: true, value: cloneIntoVm(context, workflow.args) },
+    progress: { enumerable: true, value: cloneIntoVm(context, workflow.progress) },
+    agent: { enumerable: true, value: createVmCallable(workflow.agent.bind(workflow)) },
+    parallel: { enumerable: true, value: createVmCallable(workflow.parallel.bind(workflow)) },
+    parallelAgents: { enumerable: true, value: createVmCallable(workflow.parallelAgents.bind(workflow)) },
+    pipeline: { enumerable: true, value: createVmCallable(workflow.pipeline.bind(workflow)) },
+    phase: { enumerable: true, value: createVmCallable(workflow.phase.bind(workflow)) },
+    log: { enumerable: true, value: createVmCallable(workflow.log.bind(workflow)) },
   })
   return Object.freeze(facade)
+}
+
+function createVmCallable<T extends (...args: any[]) => any>(implementation: T): T {
+  const callable = (...args: Parameters<T>): ReturnType<T> => implementation(...args)
+  Object.setPrototypeOf(callable, null)
+  return Object.freeze(callable) as T
+}
+
+function cloneIntoVm<T>(context: vm.Context, value: T): T {
+  const serialized = JSON.stringify(value)
+  return vm.runInContext(serialized === undefined ? "undefined" : `(${serialized})`, context) as T
 }
 
 function assertSafeSource(source: string, maxSourceBytes: number): void {

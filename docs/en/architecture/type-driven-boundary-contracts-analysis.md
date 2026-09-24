@@ -50,21 +50,22 @@ This alignment targets the product mechanism described in Anthropic's official C
 | Durable evidence and recovery | SessionLog, kernel journal, workflow completion records | Substrate present |
 | Provider and tool I/O | Host runner executes; kernel adjudicates effects | Boundary is correct |
 
-### Missing contracts
+### Remaining boundaries
 
-1. A `FileDynamicWorkflowStore` now saves and validates a `meta + source` artifact, but there is still no isolated script runtime exposing `agent`, `parallel`, `pipeline`, `phase`, `log`, and `args` to source text.
-2. Session events record node completion, but there is no phase-level progress view with agent counts, tokens, elapsed time, and status.
-3. Invocation fingerprints and pluggable replay stores now reuse a completed result for the same `runId + nodeId + prompt/options`, but kernel workflow replay still lacks failed-suffix invalidation, dependent descendants, and typed refusal when artifacts are missing.
-4. Workflow launch has no pre-run approval card, raw-script inspection path, or advisory large-run warning.
-5. `WorkflowNodeSpec.agent` is host metadata and `workflowNodeSpecToKernel` intentionally drops it. A dynamic script must resolve a target Agent at the host spawn boundary instead of inventing a kernel field.
-6. Kernel quotas exist, but the article-level workflow contract does not yet model the default 16 concurrency, 256 ceiling, 4096 items per `parallel`/`pipeline`, 1000 agents per run, or size-guideline warnings.
+1. The Node runtime now validates and executes `meta + source` artifacts in a restricted `node:vm` context. The VM is a host isolation boundary; adversarial tenant isolation still requires an OS worker or sandbox.
+2. Lifecycle events expose phase progress, agent counts, logs, approval, and terminal state. A future cross-runtime SessionLog projection can make these events queryable by the same dashboard as ordinary runs.
+3. Replay snapshots bind run identity to artifact digest, arguments, limits, lifecycle events, and invocation records. Failed and cancelled records remain diagnostic tails and are never reused as successful work.
+4. Approval is a typed pre-run callback. Large-run advisories and approval-card rendering remain application/UI concerns and are intentionally outside the kernel wire.
+5. `WorkflowNodeSpec.agent` is host metadata and `workflowNodeSpecToKernel` intentionally drops it. A dynamic script resolves a target Agent at the host spawn boundary instead of inventing a kernel field.
+6. Host limits model the default 16 concurrency, 256 ceiling, 4096 items per `parallel`/`pipeline`, and 1000 agents per run; kernel quotas remain authoritative.
 7. The kernel append entry and the RuntimeRunner controller are now connected: a distinct `DynamicWorkflow` root entry keeps an empty DAG active, `HostCommand::AppendWorkflowNodes`, `CanonicalRunnerRuntime.appendWorkflowNodes()`, and `RuntimeRunner.appendDynamicWorkflowNodes()` grow the same kernel operation, and `CompleteDynamicWorkflow` closes it explicitly; `DynamicWorkflowController` provides the typed submission handoff, while `RuntimeRunner.runDynamicWorkflow()` owns startup, submission consumption, outcome completion, explicit close, and RunGroup settlement.
 8. Per-node limits now cross the boundary end to end: `tokenBudget`, `maxTurns`, and `maxWallMs` travel through canonical metadata into the Rust DAG and back out on the spawn descriptor to the child runner. Host append quota denials use `submit_workflow_nodes` consistently instead of being mislabeled as a new `start_workflow`.
 9. Dynamic failures now have a terminal path: when the script or child driver throws, `RuntimeRunner` commits the canonical cancel/preempt sequence and one `operation_cancelled` fact before clearing host state, so a failed run cannot disappear from the host while remaining active in the kernel.
 
 ### First implementation slice
 
-The branch now adds a provider-neutral `DynamicWorkflowExecutor` in `node/src/workflow/dynamic.ts`. It provides:
+The branch keeps the provider-neutral dynamic vocabulary internal to `node/src/workflow/dynamic.ts`; the
+public execution entrypoint is `RuntimeRunner.runDynamicWorkflow()`. It provides:
 
 - `agent(prompt, options)`, which creates a one-node `WorkflowSpec` and enters the existing kernel through an injected `runWorkflow` host;
 - bounded, order-preserving `parallel` (default 16, configurable up to 256) and sequential `pipeline`;
@@ -73,7 +74,7 @@ The branch now adds a provider-neutral `DynamicWorkflowExecutor` in `node/src/wo
 - host guardrails for 1000 agents per run and 4096 items per batch, with kernel quotas remaining authoritative;
 - `DynamicWorkflowScript` metadata/source types as the stable input contract for persistence and isolated execution.
 - `InMemoryDynamicWorkflowReplayStore` / `FileDynamicWorkflowReplayStore` and invocation fingerprints as the replay cache boundary; fan-out preserves unchanged items and submits only fingerprint misses.
-- `DynamicWorkflowController` provides a typed submission queue: the script pauses at a host workflow submission, an external driver consumes it through `nextSubmission()`, and the driver returns a `WorkflowOutcome` or failure through the id-addressed completion methods. This fixes the asynchronous handoff as a testable contract.
+- `DynamicWorkflowController` provides a typed submission queue: the script pauses at a host workflow submission, an external driver consumes it through `nextSubmission()`, and the driver returns a `WorkflowOutcome` or failure through the id-addressed completion methods. This fixes the asynchronous handoff as a testable contract without creating a second public execution entrypoint.
 - `RuntimeRunner.runDynamicWorkflow()` now owns that controller and drives submissions, outcome completion, explicit close, session logging, and RunGroup settlement on one `DynamicWorkflow` root; `WorkflowNodeSpec.nodeId` remains host-only and is rebound from the admitted batch base when results return.
 
-This slice deliberately does not execute arbitrary source text, grant scripts direct filesystem or shell access, or claim replay parity. It fixes the public vocabulary and kernel entry point first, then adds an isolated script VM and durable replay without creating a second execution authority.
+The source VM deliberately grants no direct filesystem, shell, network, module-loading, or dynamic-code-generation capability. The public runtime keeps one execution authority: `RuntimeRunner.runDynamicWorkflow()`.

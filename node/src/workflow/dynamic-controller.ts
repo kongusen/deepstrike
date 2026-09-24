@@ -5,7 +5,9 @@ import {
   type DynamicWorkflowHost,
   type DynamicWorkflowRun,
   type DynamicWorkflowRunOptions,
+  type DynamicWorkflowProgram,
 } from "./dynamic.js"
+import { DynamicWorkflowVmExecutor } from "./dynamic-vm.js"
 
 /** A workflow submission waiting for an external kernel driver to execute it. */
 export interface DynamicWorkflowSubmission {
@@ -34,12 +36,16 @@ export class DynamicWorkflowController<TArgs extends Record<string, unknown> = R
   private finished = false
 
   start<T>(
-    program: (context: DynamicWorkflowContext<TArgs>) => Promise<T> | T,
+    program: DynamicWorkflowProgram<TArgs, T>,
     options: DynamicWorkflowRunOptions<TArgs> = {},
   ): Promise<DynamicWorkflowRun<T>> {
     if (this.finalRun) throw new Error("dynamic workflow controller has already started")
     const host: DynamicWorkflowHost = { runWorkflow: spec => this.enqueue(spec) }
-    const run = new DynamicWorkflowExecutor<TArgs>(host, options).run(program)
+    const run = typeof program === "function"
+      ? new DynamicWorkflowExecutor<TArgs>(host, options).run(program)
+      : "digest" in program
+        ? new DynamicWorkflowVmExecutor(host, options.vmOptions).runArtifact<TArgs, T>(program, options)
+        : new DynamicWorkflowVmExecutor(host, options.vmOptions).runScript<TArgs, T>(program, options)
     this.finalRun = run as Promise<DynamicWorkflowRun<unknown>>
     void run.then(() => this.finish(), error => this.finish(error))
     return run

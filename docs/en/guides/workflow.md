@@ -170,28 +170,21 @@ WorkflowNodeSpec(
 
 Register custom reducers: `RuntimeOptions(reducers={**builtin_reducers(), "my_merge": fn})`
 
-## Node dynamic script vocabulary (first slice)
+## Node dynamic workflows
 
-Anthropic-style dynamic orchestration is available through `DynamicWorkflowExecutor` from
-`@deepstrike/sdk/workflow`. In this slice the script is a TypeScript/JavaScript function. Every
-`agent()` call still enters the kernel through the supplied `runWorkflow`; isolated source-file
-execution and resumable replay are later slices.
+Anthropic-style dynamic orchestration has one execution entrypoint:
+`RuntimeRunner.runDynamicWorkflow()`. A function program, a validated JavaScript artifact, and
+artifact replay all use the same kernel workflow root, approval, lifecycle, session log, quota,
+and replay path.
 
 ```ts
-import { DynamicWorkflowExecutor } from "@deepstrike/sdk/workflow"
-
-const dynamic = new DynamicWorkflowExecutor(
-  { runWorkflow: spec => runner.runWorkflow(spec) },
-  { args: { files: ["a.ts", "b.ts"] } },
-)
-
-const run = await dynamic.run(async ({ args, phase, pipeline, agent, log }) => {
+const run = await runner.runDynamicWorkflow(async ({ args, phase, pipeline, agent, log }) => {
   const files = args.files as string[]
   log("audit started", { count: files.length })
   return phase("audit", () => pipeline(files, file =>
     agent(`Audit ${file} for authentication issues`, { label: file, role: "verify" }),
   ))
-})
+}, { args: { files: ["a.ts", "b.ts"] } })
 ```
 
 `parallel` preserves input order and uses a default concurrency of 16, `pipeline` runs in order;
@@ -200,19 +193,23 @@ cancellation remain authoritative.
 
 With a fixed `runId` and `replayStore`, completed single-agent invocations and unchanged fan-out
 items are reused when their prompt and options fingerprint is unchanged; changed items are
-submitted again. Kernel replay of failed suffixes and dependent descendants is a later slice.
+submitted again. Artifact source digests are part of the replay identity, so changed source cannot
+reuse an old snapshot.
 
 When fan-out prompts can be constructed up front, `parallelAgents` submits declarative requests as
 kernel workflow batches:
 
 ```ts
-const reviews = await dynamic.run(async ({ args, parallelAgents }) =>
+const reviews = await runner.runDynamicWorkflow(async ({ args, parallelAgents }) =>
   parallelAgents(args.files as string[], file => ({
     prompt: `Audit ${file} for authentication issues`,
     options: { role: "verify", label: file },
   })),
 )
 ```
+
+To execute a discovered artifact, pass that artifact as the first argument to the same
+`runDynamicWorkflow(artifact, options)` method. It does not select a second execution authority.
 
 ---
 

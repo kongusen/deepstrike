@@ -83,6 +83,20 @@ export interface DynamicWorkflowArtifact {
   origin?: string
 }
 
+export interface DynamicWorkflowVmOptions {
+  /** Maximum source bytes accepted from an artifact. */
+  maxSourceBytes?: number
+  /** Maximum synchronous VM execution time for one script turn. */
+  timeoutMs?: number
+  /** Maximum wall time for the complete script, including host workflow submissions. */
+  maxExecutionMs?: number
+}
+
+export type DynamicWorkflowProgram<TArgs extends Record<string, unknown> = Record<string, unknown>, T = unknown> =
+  | ((context: DynamicWorkflowContext<TArgs>) => Promise<T> | T)
+  | DynamicWorkflowScript
+  | DynamicWorkflowArtifact
+
 export function fingerprintDynamicWorkflowScript(script: DynamicWorkflowScript): string {
   return createHash("sha256").update(JSON.stringify(script)).digest("hex")
 }
@@ -173,6 +187,7 @@ export interface DynamicWorkflowRunOptions<TArgs extends Record<string, unknown>
   approval?: (request: DynamicWorkflowApprovalRequest<TArgs>) => boolean | Promise<boolean> | { approved: boolean; reason?: string } | Promise<{ approved: boolean; reason?: string }>
   onLifecycleEvent?: (event: DynamicWorkflowLifecycleEvent) => void
   artifactDigest?: string
+  vmOptions?: DynamicWorkflowVmOptions
 }
 
 export function dynamicAgentTask(prompt: string, options?: DynamicWorkflowAgentOptions): DynamicWorkflowAgentRequest {
@@ -222,13 +237,14 @@ export function resolveDynamicWorkflowLimits(limits?: DynamicWorkflowLimits): Re
 }
 
 /**
- * Host-side controller for the dynamic workflow vocabulary.
+ * Internal host-side controller for the dynamic workflow vocabulary.
  *
  * `agent()` delegates to the existing `RuntimeRunner.runWorkflow()` entry point, so every child
  * still crosses the kernel syscall gate. `parallel()` and `pipeline()` provide the dynamic script
  * semantics now; a later controller can replace the host callback with one long-lived kernel DAG
  * without changing the public vocabulary.
  */
+/** @internal Use `RuntimeRunner.runDynamicWorkflow()` as the public execution entrypoint. */
 export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Record<string, unknown>> {
   private readonly host: DynamicWorkflowHost
   private readonly limits: Required<DynamicWorkflowLimits>
@@ -261,11 +277,17 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
     }
     if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
     const events: DynamicWorkflowLifecycleEvent[] = []
+    const eventWrites: Promise<void>[] = []
     const emitLifecycle = (event: DynamicWorkflowLifecycleEvent): void => {
       events.push(event)
       replayRun.events.push(event)
       this.options.onLifecycleEvent?.(event)
-      void this.options.replayStore?.appendEvent?.(runId, event)
+      const write = this.options.replayStore?.appendEvent?.(runId, event)
+      if (write) eventWrites.push(write)
+    }
+    const flushEvents = async (): Promise<void> => {
+      if (eventWrites.length === 0) return
+      await Promise.all(eventWrites.splice(0))
     }
     emitLifecycle({ kind: "run_started", runId })
     const progress: DynamicWorkflowProgress = {
@@ -298,6 +320,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
     if (!approved) {
       context.setStatus("cancelled")
       emitLifecycle({ kind: "run_cancelled", runId, reason: reason ?? "approval denied" })
+      await flushEvents()
       replayRun.status = "cancelled"
       replayRun.events = [...replayRun.events]
       if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
@@ -309,6 +332,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       const value = await program(context)
       context.setStatus("completed")
       emitLifecycle({ kind: "run_completed", runId })
+      await flushEvents()
       replayRun.status = "completed"
       replayRun.events = [...replayRun.events]
       replayRun.records = (await this.options.replayStore?.loadRun?.(runId))?.records ?? replayRun.records
@@ -317,6 +341,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
     } catch (error) {
       context.setStatus("failed")
       emitLifecycle({ kind: "run_failed", runId, error: error instanceof Error ? error.message : String(error) })
+      await flushEvents()
       replayRun.status = "failed"
       replayRun.events = [...events]
       replayRun.records = (await this.options.replayStore?.loadRun?.(runId))?.records ?? replayRun.records

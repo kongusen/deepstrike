@@ -80,7 +80,7 @@ import type {
 } from "../types/agent.js"
 import type { AgentCapabilityFilter } from "../types/agent.js"
 import { DynamicWorkflowController } from "../workflow/dynamic-controller.js"
-import type { DynamicWorkflowContext, DynamicWorkflowRun, DynamicWorkflowRunOptions } from "../workflow/dynamic.js"
+import type { DynamicWorkflowContext, DynamicWorkflowRun, DynamicWorkflowRunOptions, DynamicWorkflowProgram } from "../workflow/dynamic.js"
 
 function intersectCapabilityFilters(a?: AgentCapabilityFilter, b?: AgentCapabilityFilter): AgentCapabilityFilter | undefined {
   if (!a && !b) return undefined
@@ -1622,7 +1622,7 @@ export class RuntimeRunner {
    * outcome to the controller, and closes the root once the script has finished.
    */
   async runDynamicWorkflow<TArgs extends Record<string, unknown>, T>(
-    program: (context: DynamicWorkflowContext<TArgs>) => Promise<T> | T,
+    program: DynamicWorkflowProgram<TArgs, T>,
     opts?: DynamicWorkflowRunOptions<TArgs> & { sessionId?: string },
   ): Promise<DynamicWorkflowRun<T>> {
     if (this.activeKernel || this.currentSessionId) {

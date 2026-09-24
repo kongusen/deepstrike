@@ -8,6 +8,7 @@
  */
 import { RuntimeRunner, InMemorySessionLog, InMemoryGroupBudgetStore, runFanout } from "../src/advanced/public.js"
 import type { LLMProvider, ModelMessage, SessionEvent, StreamEvent, WorkflowSpec } from "../src/advanced/public.js"
+import { createDynamicWorkflowArtifact } from "../src/workflow/dynamic.js"
 
 function stubOrchestrator(onCall?: () => void) {
   return {
@@ -94,6 +95,42 @@ describe("runWorkflow bootstraps standalone (no active parent run)", () => {
         : false
     })).toBe(true)
     expect((runner as never as { activeKernel: unknown }).activeKernel).toBeNull()
+  })
+
+  it("runs an artifact through the same RuntimeRunner dynamic workflow entrypoint", async () => {
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      subAgentOrchestrator: stubOrchestrator() as never,
+    } as never)
+    const artifact = createDynamicWorkflowArtifact({
+      meta: { name: "artifact-entry", description: "single entrypoint" },
+      source: "return (await workflow.agent(\"artifact task\", { label: \"artifact\" }))?.text",
+    })
+
+    const run = await runner.runDynamicWorkflow(artifact, { sessionId: "artifact-entry-session" })
+
+    expect(run.value).toBe("wf-node0")
+    const starts = (await (runner as never as { opts: { sessionLog: InMemorySessionLog } }).opts.sessionLog.read("artifact-entry-session"))
+      .filter(entry => entry.event.kind === "run_started")
+    expect(starts).toHaveLength(1)
+  })
+
+  it("rejects a tampered artifact at the unified RuntimeRunner entrypoint", async () => {
+    const runner = new RuntimeRunner({
+      sessionLog: new InMemorySessionLog(),
+      maxTokens: 8000,
+      subAgentOrchestrator: stubOrchestrator() as never,
+    } as never)
+    const artifact = createDynamicWorkflowArtifact({
+      meta: { name: "tampered-entry", description: "digest check" },
+      source: "return 1",
+    })
+
+    await expect(runner.runDynamicWorkflow({
+      ...artifact,
+      script: { ...artifact.script, source: "return 2" },
+    }, { sessionId: "tampered-entry-session" })).rejects.toThrow(/digest mismatch/)
   })
 
   it("surfaces a kernel submit-nodes quota denial as a typed null result", async () => {
