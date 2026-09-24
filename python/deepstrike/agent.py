@@ -14,6 +14,45 @@ from deepstrike.types.agent import AgentCapabilityFilter
 from deepstrike.runtime.agent_declaration import capture_agent_declaration, CapturedAgent
 
 
+class AgentSession:
+    """Pythonic session handle backed by one shared SessionLog."""
+
+    def __init__(self, agent: "Agent", session_id: str) -> None:
+        self.agent = agent
+        self.id = session_id
+        self._session_log = agent._session_log
+        self._active_runner = None
+
+    def _runner(self, goal: str):
+        return self.agent._create_runner(self._session_log, goal=goal, session_id=self.id)
+
+    async def stream(self, goal: str, *, max_turns: int | None = None):
+        runner = self.agent._create_runner(self._session_log, goal=goal, session_id=self.id, max_turns=max_turns)
+        self._active_runner = runner
+        try:
+            async for event in runner.run(goal=goal, session_id=self.id):
+                yield event
+        finally:
+            self._active_runner = None
+
+    async def resume(self):
+        if self._active_runner is None:
+            self._active_runner = self._runner("resume")
+        try:
+            async for event in self._active_runner.wake(self.id):
+                yield event
+        finally:
+            self._active_runner = None
+
+    def interrupt(self, reason: str = "user") -> None:
+        if self._active_runner is not None:
+            self._active_runner.interrupt(reason)
+
+    async def run(self, goal: str, *, max_turns: int | None = None) -> str:
+        from deepstrike.runtime.runner import collect_text
+        return await collect_text(self.stream(goal, max_turns=max_turns))
+
+
 ModelRef: TypeAlias = str | dict[str, Any]
 AgentDefinition: TypeAlias = Mapping[str, Any]
 AgentMemory: TypeAlias = Any
@@ -89,11 +128,51 @@ class Agent:
         self.metadata = dict(metadata) if metadata is not None else None
         self.guardrails = list(guardrails) if guardrails is not None else None
         self.runtime_binding = dict(runtime_binding) if runtime_binding is not None else None
+        from deepstrike.runtime.session_log import InMemorySessionLog
+        self._session_log = (self.runtime_binding or {}).get("session_log") or InMemorySessionLog()
 
     @property
     def declaration(self) -> dict[str, Any]:
         """JSON-safe declaration snapshot; host callables remain private bindings."""
         return self._captured.declaration.to_kernel_dict()
+
+    def session(self, session_id: str | None = None) -> AgentSession:
+        return AgentSession(self, session_id or f"agent-{uuid.uuid4()}")
+
+    def _provider(self) -> Any:
+        if not self.runtime_binding:
+            raise RuntimeError(f'agent "{self.name}" has no runtime binding')
+        provider = self.runtime_binding.get("provider")
+        if provider is None:
+            provider_for = self.runtime_binding.get("provider_for")
+            provider = provider_for(self.model) if callable(provider_for) else None
+        if provider is None:
+            raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
+        return provider
+
+    def _create_runner(self, session_log: Any, *, goal: str, session_id: str, max_turns: int | None = None):
+        from deepstrike.runtime.execution_plane import LocalExecutionPlane
+        from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner
+
+        binding = self.runtime_binding or {}
+        options = dict(binding.get("runtime_options", {}))
+        plane = options.pop("execution_plane", None)
+        options.pop("session_log", None)
+        if max_turns is not None:
+            options["max_turns"] = max_turns
+        options.setdefault("run_spec", self._captured.declaration.to_run_spec(goal=goal, session_id=session_id))
+        if plane is None:
+            plane = LocalExecutionPlane()
+            if self._captured.host_tools:
+                plane.register(*self._captured.host_tools)
+        return RuntimeRunner(RuntimeOptions(
+            provider=self._provider(),
+            execution_plane=plane,
+            session_log=session_log,
+            agent_id=self.name,
+            **({"system_prompt": self.instructions} if self.instructions else {}),
+            **options,
+        ))
 
     async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> dict[str, Any]:
         """Execute one goal through the host binding and return a structured run result."""
@@ -105,59 +184,14 @@ class Agent:
             provider = provider_for(self.model) if callable(provider_for) else None
         if provider is None:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
-        from deepstrike.runtime.facade import run_agent
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
-        runtime_options = dict(self.runtime_binding.get("runtime_options", {}))
-        execution_plane = runtime_options.pop("execution_plane", None)
-        session_log = runtime_options.pop("session_log", None)
-        output = await run_agent(
-            provider=provider,
-            goal=goal,
-            system_prompt=self.instructions,
-            tools=list(self._captured.host_tools),
-            session_id=resolved_session_id,
-            max_turns=max_turns,
-            run_spec=self._captured.declaration.to_run_spec(
-                goal=goal,
-                session_id=resolved_session_id,
-            ),
-            execution_plane=execution_plane,
-            session_log=session_log,
-            runtime_options=runtime_options,
-        )
-        return {"output": output, "status": "completed", "session_id": session_id}
+        output = await self.session(resolved_session_id).run(goal, max_turns=max_turns)
+        return {"output": output, "status": "completed", "session_id": resolved_session_id}
 
     async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None):
         """Stream host events for the same public Agent contract."""
-        if not self.runtime_binding:
-            raise RuntimeError(f'agent "{self.name}" has no runtime binding')
-        provider = self.runtime_binding.get("provider")
-        if provider is None:
-            provider_for = self.runtime_binding.get("provider_for")
-            provider = provider_for(self.model) if callable(provider_for) else None
-        if provider is None:
-            raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
-        from deepstrike.runtime.execution_plane import LocalExecutionPlane
-        from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner
-        from deepstrike.runtime.session_log import InMemorySessionLog
-        options = dict(self.runtime_binding.get("runtime_options", {}))
-        plane = options.pop("execution_plane", None) if isinstance(options, dict) else None
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
-        options.setdefault(
-            "run_spec",
-            self._captured.declaration.to_run_spec(goal=goal, session_id=resolved_session_id),
-        )
-        runner = RuntimeRunner(RuntimeOptions(
-            provider=provider,
-            execution_plane=plane or LocalExecutionPlane(),
-            session_log=InMemorySessionLog(),
-            max_tokens=32_000,
-            agent_id=self.name,
-            **({"system_prompt": self.instructions} if self.instructions else {}),
-            **({"max_turns": max_turns} if max_turns is not None else {}),
-            **options,
-        ))
-        async for event in runner.run(goal=goal, session_id=resolved_session_id):
+        async for event in self.session(resolved_session_id).stream(goal, max_turns=max_turns):
             yield event
 
 
