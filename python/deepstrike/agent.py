@@ -57,7 +57,7 @@ class AgentSession:
         if self._active_runner is None:
             entries = await self._session_log.read(self.id)
             started = next(
-                (entry.event for entry in entries if entry.event.get("kind") == "run_started"),
+                (entry.event for entry in reversed(entries) if entry.event.get("kind") == "run_started"),
                 None,
             )
             if started is None:
@@ -476,6 +476,12 @@ class Agent:
         """Stream host events for the same public Agent contract."""
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
         async for event in self.session(resolved_session_id).stream(goal, max_turns=max_turns, attachments=attachments):
+            yield event
+
+    async def resume(self, session_id: str):
+        """Resume the latest interrupted run in a durable session."""
+        session = self.session(session_id)
+        async for event in session.resume():
             yield event
 
     async def remember(self, input: Mapping[str, Any] | Any, *, session_id: str | None = None):
