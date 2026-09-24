@@ -63,6 +63,15 @@ class AgentSession:
         from deepstrike.runtime.runner import collect_text
         return await collect_text(self.stream(goal, max_turns=max_turns))
 
+    async def workflow(self, spec: Any):
+        """Run a WorkflowSpec under this session's Kernel owner."""
+        runner = self.agent._create_runner(self._session_log, goal="workflow", session_id=self.id)
+        self._active_runner = runner
+        try:
+            return await runner.run_workflow(spec, session_id=self.id)
+        finally:
+            self._active_runner = None
+
 
 ModelRef: TypeAlias = str | dict[str, Any]
 AgentDefinition: TypeAlias = Mapping[str, Any]
@@ -188,6 +197,10 @@ class Agent:
             **({"system_prompt": self.instructions} if self.instructions else {}),
             **options,
         ))
+
+    async def workflow(self, spec: Any, *, session_id: str | None = None):
+        """Run a declarative workflow through the shared Kernel path."""
+        return await self.session(session_id).workflow(spec)
 
     async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> dict[str, Any]:
         """Execute one goal through the host binding and return a structured run result."""
