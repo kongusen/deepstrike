@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from deepstrike import AgentSession, InMemoryMemoryStore, MemoryScope, RunResult, create_agent
+from deepstrike import AgentRegistry, AgentSession, InMemoryMemoryStore, MemoryScope, RunResult, create_agent
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
 import pytest
@@ -81,6 +81,18 @@ def test_agent_captures_invalid_bindings_before_runtime_creation():
 
     with pytest.raises(ValueError, match="requires a name"):
         create_agent("invalid", mcp_servers=[{"command": "server"}])
+
+    with pytest.raises(ValueError, match="skill_dir"):
+        create_agent("invalid", skills=[{"name": "research"}])
+
+
+def test_agent_registry_resolves_stable_names():
+    first = create_agent("first", runtime_binding={"provider": OneTurnProvider()})
+    registry = AgentRegistry([first])
+    assert registry.resolve("first") is first
+    assert registry.names() == ("first",)
+    with pytest.raises(KeyError):
+        registry.resolve("missing")
 
 
 async def test_agent_connects_and_closes_bound_async_plane():

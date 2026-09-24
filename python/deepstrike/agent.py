@@ -101,6 +101,35 @@ class AgentSession:
         return await self.agent._run_in_session(self, goal, max_turns=max_turns)
 
 
+class AgentRegistry:
+    """Name based Agent resolver for workflow and delegation hosts."""
+
+    def __init__(self, agents: Sequence["Agent"] | None = None) -> None:
+        self._agents: dict[str, Agent] = {}
+        for agent in agents or []:
+            self.register(agent)
+
+    def register(self, agent: "Agent") -> "AgentRegistry":
+        if not isinstance(agent, Agent):
+            raise TypeError("agent registry accepts Agent instances")
+        if agent.name in self._agents and self._agents[agent.name] is not agent:
+            raise ValueError(f'agent "{agent.name}" is already registered')
+        self._agents[agent.name] = agent
+        return self
+
+    def resolve(self, name: str) -> "Agent":
+        try:
+            return self._agents[name]
+        except KeyError as exc:
+            raise KeyError(f'unknown agent "{name}"') from exc
+
+    def get(self, name: str) -> "Agent | None":
+        return self._agents.get(name)
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(self._agents)
+
+
 class Agent:
     """Provider-neutral declaration and executable public Agent handle.
 
@@ -170,6 +199,8 @@ class Agent:
         for index, skill in enumerate(self.skills or []):
             if not isinstance(skill, Mapping) or not skill.get("name"):
                 raise ValueError(f"skills[{index}] requires a name")
+        if self.skills and not binding.get("skill_dir"):
+            raise ValueError("skills require runtime_binding.skill_dir")
         if self.output_schema is not None and not isinstance(self.output_schema, Mapping):
             raise TypeError("output_schema must be a mapping")
 
@@ -242,6 +273,9 @@ class Agent:
         for option_name in ("skill_dir", "skill_filter", "knowledge_source", "governance_policy"):
             if binding.get(option_name) is not None:
                 raw_options.setdefault(option_name, binding[option_name])
+        if self.skills:
+            declared_names = [str(skill["name"]) for skill in self.skills]
+            raw_options["skill_filter"] = list(raw_options.get("skill_filter") or declared_names)
         if binding.get("memory_store") is not None:
             raw_options.setdefault("memory_store", binding["memory_store"])
         if binding.get("memory_scope") is not None:
