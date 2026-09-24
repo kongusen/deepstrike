@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from deepstrike import InMemorySessionLog, create_agent
+from deepstrike import FileSessionLog, InMemorySessionLog, create_agent
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
 
@@ -30,3 +30,13 @@ def test_agent_returns_one_handle_per_session_id():
     agent = create_agent("session-agent", runtime_binding={"provider": Provider()})
 
     assert agent.session("same") is agent.session("same")
+
+
+def test_agent_can_create_a_durable_session_log_from_binding(tmp_path):
+    agent = create_agent(
+        "durable",
+        runtime_binding={"provider": Provider(), "session_log_dir": str(tmp_path)},
+    )
+
+    assert isinstance(agent._session_log, FileSessionLog)
+    assert hasattr(agent._session_log, "kernel_journal")

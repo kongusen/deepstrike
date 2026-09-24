@@ -148,8 +148,12 @@ class Agent:
         self.metadata = dict(metadata) if metadata is not None else None
         self.guardrails = list(guardrails) if guardrails is not None else None
         self.runtime_binding = dict(runtime_binding) if runtime_binding is not None else None
-        from deepstrike.runtime.session_log import InMemorySessionLog
-        self._session_log = (self.runtime_binding or {}).get("session_log") or InMemorySessionLog()
+        from deepstrike.runtime.session_log import FileSessionLog, InMemorySessionLog
+        binding = self.runtime_binding or {}
+        configured_log = binding.get("session_log")
+        if configured_log is None and binding.get("session_log_dir") is not None:
+            configured_log = FileSessionLog(binding["session_log_dir"])
+        self._session_log = configured_log or InMemorySessionLog()
         self._sessions: dict[str, AgentSession] = {}
 
     @property
