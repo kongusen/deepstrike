@@ -97,6 +97,7 @@ export class DynamicWorkflowVmExecutor {
     return this.runScript<TArgs, T>(artifact.script, {
       ...options,
       artifactDigest: options.artifactDigest ?? artifact.digest,
+      artifactSnapshot: options.artifactSnapshot ?? { name: artifact.name, digest: artifact.digest, meta: structuredClone(artifact.script.meta) },
     })
   }
 }

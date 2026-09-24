@@ -83,6 +83,13 @@ export interface DynamicWorkflowArtifact {
   origin?: string
 }
 
+/** Immutable artifact identity persisted with a replay run; source bytes remain in the artifact store. */
+export interface DynamicWorkflowArtifactSnapshot {
+  name: string
+  digest: string
+  meta: DynamicWorkflowMeta
+}
+
 export interface DynamicWorkflowVmOptions {
   /** Maximum source bytes accepted from an artifact. */
   maxSourceBytes?: number
@@ -196,6 +203,7 @@ export interface DynamicWorkflowRunOptions<TArgs extends Record<string, unknown>
   approval?: (request: DynamicWorkflowApprovalRequest<TArgs>) => boolean | Promise<boolean> | { approved: boolean; reason?: string } | Promise<{ approved: boolean; reason?: string }>
   onLifecycleEvent?: (event: DynamicWorkflowLifecycleEvent) => void
   artifactDigest?: string
+  artifactSnapshot?: DynamicWorkflowArtifactSnapshot
   vmOptions?: DynamicWorkflowVmOptions
 }
 
@@ -273,11 +281,17 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
     if (existing?.inputFingerprint && existing.inputFingerprint !== inputFingerprint) {
       throw new DynamicWorkflowReplayMismatchError(`dynamic workflow replay inputs changed for run "${runId}"`)
     }
+    const existingArtifactDigest = existing?.artifact?.digest
+    const requestedArtifactDigest = this.options.artifactSnapshot?.digest ?? this.options.artifactDigest
+    if (existingArtifactDigest !== undefined && existingArtifactDigest !== requestedArtifactDigest) {
+      throw new DynamicWorkflowReplayMismatchError(`dynamic workflow artifact changed for run "${runId}"`)
+    }
     const replayRun: DynamicWorkflowReplayRun = {
       version: 2,
       runId,
       inputFingerprint,
       ...(this.options.artifactDigest ? { artifactDigest: this.options.artifactDigest } : {}),
+      ...(this.options.artifactSnapshot ? { artifact: structuredClone(this.options.artifactSnapshot) } : {}),
       argsFingerprint: fingerprintDynamicWorkflowRun({ args, limits: this.limits }),
       limits: this.limits,
       status: "planning",

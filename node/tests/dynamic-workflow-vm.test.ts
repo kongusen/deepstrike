@@ -42,6 +42,9 @@ describe("DynamicWorkflowVmExecutor", () => {
     const executor = new DynamicWorkflowVmExecutor(host(calls))
     const artifact = createDynamicWorkflowArtifact(script)
     await executor.runArtifact(artifact, { runId: "artifact-replay", replayStore: store })
+    await expect(store.loadRun("artifact-replay")).resolves.toMatchObject({
+      artifact: { name: "vm-audit", digest: artifact.digest, meta: script.meta },
+    })
     await expect(executor.runArtifact({
       ...artifact,
       digest: "changed-digest",

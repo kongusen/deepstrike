@@ -3,7 +3,7 @@ import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { DynamicWorkflowAgentOptions } from "./dynamic.js"
-import type { DynamicWorkflowLifecycleEvent, DynamicWorkflowLimits } from "./dynamic.js"
+import type { DynamicWorkflowArtifactSnapshot, DynamicWorkflowLifecycleEvent, DynamicWorkflowLimits } from "./dynamic.js"
 import type { WorkflowNodeStatus } from "../types/agent.js"
 
 export interface DynamicWorkflowInvocationRecord {
@@ -20,6 +20,7 @@ export interface DynamicWorkflowReplayRun {
   runId: string
   inputFingerprint?: string
   artifactDigest?: string
+  artifact?: DynamicWorkflowArtifactSnapshot
   argsFingerprint?: string
   limits?: Required<DynamicWorkflowLimits>
   status: "planning" | "running" | "completed" | "failed" | "cancelled"

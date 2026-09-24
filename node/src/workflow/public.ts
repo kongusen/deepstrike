@@ -39,6 +39,7 @@ export type {
   DynamicWorkflowRun,
   DynamicWorkflowRunOptions,
   DynamicWorkflowArtifact,
+  DynamicWorkflowArtifactSnapshot,
   DynamicWorkflowScript,
   DynamicWorkflowApprovalRequest,
   DynamicWorkflowLifecycleEvent,
