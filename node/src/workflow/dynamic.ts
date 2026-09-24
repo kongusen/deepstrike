@@ -18,7 +18,7 @@ import { createHash } from "node:crypto"
 export type DynamicWorkflowSizeGuideline = "small" | "medium" | "large" | "unrestricted"
 
 /** Lifecycle states exposed by the host-side dynamic workflow controller. */
-export type DynamicWorkflowStatus = "planning" | "running" | "completed" | "failed" | "cancelled"
+export type DynamicWorkflowStatus = "planning" | "running" | "paused" | "completed" | "failed" | "cancelled"
 
 /**
  * Runtime limits modelled after the public dynamic-workflow contract.
@@ -53,6 +53,9 @@ export type DynamicWorkflowLifecycleEvent =
   | { kind: "run_started"; runId: string }
   | { kind: "approval_requested"; runId: string }
   | { kind: "approval_resolved"; runId: string; approved: boolean; reason?: string }
+  | { kind: "pause_requested"; runId: string; reason: string }
+  | { kind: "paused"; runId: string; reason: string }
+  | { kind: "resumed"; runId: string }
   | { kind: "phase_started"; runId: string; name: string }
   | { kind: "phase_completed"; runId: string; name: string }
   | { kind: "phase_failed"; runId: string; name: string; error: string }
@@ -203,6 +206,7 @@ export interface DynamicWorkflowRunOptions<TArgs extends Record<string, unknown>
   approval?: (request: DynamicWorkflowApprovalRequest<TArgs>) => boolean | Promise<boolean> | { approved: boolean; reason?: string } | Promise<{ approved: boolean; reason?: string }>
   onLifecycleEvent?: (event: DynamicWorkflowLifecycleEvent) => void
   signal?: AbortSignal
+  control?: DynamicWorkflowControl
   artifactDigest?: string
   artifactSnapshot?: DynamicWorkflowArtifactSnapshot
   vmOptions?: DynamicWorkflowVmOptions
@@ -246,6 +250,45 @@ export class DynamicWorkflowCancellationError extends Error {
   constructor(message = "dynamic workflow execution was cancelled") {
     super(message)
     this.name = "DynamicWorkflowCancellationError"
+  }
+}
+
+export class DynamicWorkflowControl {
+  private paused = false
+  private readonly waiters: Array<() => void> = []
+  private runId?: string
+  private emit?: (event: DynamicWorkflowLifecycleEvent) => void
+  private setStatus?: (status: DynamicWorkflowStatus) => void
+
+  attach(runId: string, emit: (event: DynamicWorkflowLifecycleEvent) => void, setStatus?: (status: DynamicWorkflowStatus) => void): void {
+    this.runId = runId
+    this.emit = emit
+    this.setStatus = setStatus
+  }
+
+  pause(reason = "paused by caller"): void {
+    if (this.paused) return
+    this.paused = true
+    this.setStatus?.("paused")
+    if (this.runId && this.emit) {
+      this.emit({ kind: "pause_requested", runId: this.runId, reason })
+      this.emit({ kind: "paused", runId: this.runId, reason })
+    }
+  }
+
+  resume(): void {
+    if (!this.paused) return
+    this.paused = false
+    this.setStatus?.("running")
+    if (this.runId && this.emit) this.emit({ kind: "resumed", runId: this.runId })
+    for (const resolve of this.waiters.splice(0)) resolve()
+  }
+
+  get isPaused(): boolean { return this.paused }
+
+  async waitIfPaused(): Promise<void> {
+    if (!this.paused) return
+    await new Promise<void>(resolve => this.waiters.push(resolve))
   }
 }
 
@@ -333,6 +376,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       phases: [],
       logs: [],
     }
+    const control = this.options.control ?? new DynamicWorkflowControl()
     const context = new DynamicWorkflowContextImpl<TArgs>(
       this.host,
       this.limits,
@@ -340,10 +384,12 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       this.options.args ?? {} as TArgs,
       runId,
       Boolean(existing?.records?.length),
+      control,
       this.options.replayStore,
       this.options.onProgress,
       emitLifecycle,
     )
+    control.attach(runId, emitLifecycle, status => context.setStatus(status))
     emitLifecycle({ kind: "approval_requested", runId })
     const approval = this.options.approval
       ? await this.options.approval({ runId, args: context.args, limits: this.limits })
@@ -411,6 +457,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     args: TArgs,
     private readonly runId: string,
     private readonly replayActive: boolean,
+    private readonly control: DynamicWorkflowControl,
     private readonly replayStore: DynamicWorkflowReplayStore | undefined,
     private readonly onProgress?: (progress: DynamicWorkflowProgress) => void,
     private readonly emitLifecycle?: (event: DynamicWorkflowLifecycleEvent) => void,
@@ -444,6 +491,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
 
   async parallel<T, R>(items: readonly T[], worker: (item: T, index: number) => Promise<R> | R): Promise<R[]> {
     this.assertBatchSize(items.length, "parallel")
+    await this.control.waitIfPaused()
     return this.mapBounded(items, worker)
   }
 
@@ -451,6 +499,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     this.assertBatchSize(items.length, "pipeline")
     const results: R[] = []
     for (let index = 0; index < items.length; index += 1) {
+      await this.control.waitIfPaused()
       results.push(await worker(items[index], index))
     }
     return results
@@ -501,6 +550,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
   }
 
   private async runAgent<T>(prompt: string, options: DynamicWorkflowAgentOptions): Promise<DynamicWorkflowAgentResult<T> | null> {
+    await this.control.waitIfPaused()
     if (!prompt.trim()) throw new Error("dynamic workflow agent prompt must not be empty")
     const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`
     const promptFingerprint = fingerprintDynamicWorkflowInvocation(prompt, options)
@@ -613,6 +663,7 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
 
   private async runAgentBatch(requests: readonly DynamicWorkflowAgentRequest[]): Promise<Array<DynamicWorkflowAgentResult | null>> {
     if (requests.length === 0) return []
+    await this.control.waitIfPaused()
     const nodes = requests.map((request, index) => {
       const options = request.options ?? {}
       const nodeId = options.label?.trim() || `dynamic-agent-${this.nextNode++}`

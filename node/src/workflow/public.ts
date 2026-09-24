@@ -21,6 +21,7 @@ export {
   DEFAULT_DYNAMIC_WORKFLOW_LIMITS,
   DynamicWorkflowApprovalError,
   DynamicWorkflowCancellationError,
+  DynamicWorkflowControl,
   DynamicWorkflowLimitError,
   DynamicWorkflowReplayMismatchError,
   dynamicAgentTask,

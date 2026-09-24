@@ -267,7 +267,7 @@ The next workflow checkpoint is also complete: `spawn_workflow` actions now expo
 
 ### Slice D：进度、审批和成本控制
 
-- [x] 增加 phase start/end、agent start/end、log、approval、cancellation 的 typed lifecycle events，并支持 `AbortSignal` 触发统一 terminal cancellation；pause/resume 仍待补齐。
+- [x] 增加 phase start/end、agent start/end、log、approval、pause、resume、cancellation 的 typed lifecycle events；`DynamicWorkflowControl` 会阻塞新工作并在同一 run 内恢复，`AbortSignal` 触发统一 terminal cancellation。
 - [ ] 增加 pre-run approval，携带 workflow metadata、phases、raw-script reference、size guideline 和 projected cost。
 - [ ] 增加 phase progress 查询和 large-workflow advisory，不削弱 kernel quota。
 

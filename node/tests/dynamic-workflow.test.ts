@@ -1,6 +1,7 @@
 import {
   DynamicWorkflowExecutor,
   DynamicWorkflowCancellationError,
+  DynamicWorkflowControl,
   DynamicWorkflowLimitError,
   dynamicAgentTask,
   resolveDynamicWorkflowLimits,
@@ -161,5 +162,24 @@ describe("DynamicWorkflowExecutor", () => {
     setTimeout(() => controller.abort(new Error("user stopped")), 5)
     await expect(run).rejects.toBeInstanceOf(DynamicWorkflowCancellationError)
     expect(events.at(-1)).toBe("run_cancelled")
+  })
+
+  it("pauses new work and resumes the same run with ordered lifecycle events", async () => {
+    const control = new DynamicWorkflowControl()
+    const events: string[] = []
+    const executor = new DynamicWorkflowExecutor(fakeHost(), {
+      control,
+      onLifecycleEvent: event => events.push(event.kind),
+    })
+    const runPromise = executor.run(async ctx => {
+      control.pause("review")
+      const pending = ctx.agent("after-review")
+      setTimeout(() => control.resume(), 10)
+      return (await pending)?.text
+    })
+    await expect(runPromise).resolves.toMatchObject({ value: "done:after-review" })
+    expect(events).toEqual(expect.arrayContaining(["pause_requested", "paused", "resumed"]))
+    expect(events.indexOf("pause_requested")).toBeLessThan(events.indexOf("paused"))
+    expect(events.indexOf("paused")).toBeLessThan(events.indexOf("resumed"))
   })
 })
