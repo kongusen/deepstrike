@@ -24,6 +24,27 @@ class _MemoryOnlyProvider:
         yield  # pragma: no cover
 
 
+def _run_overrides(
+    metadata: Mapping[str, Any] | None,
+    provider_options: Mapping[str, Any] | None,
+    timeout_ms: int | None,
+    max_total_tokens: int | None,
+    on_permission_request: Any,
+) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    if metadata is not None:
+        overrides["run_metadata"] = dict(metadata)
+    if provider_options is not None:
+        overrides["extensions"] = dict(provider_options)
+    if timeout_ms is not None:
+        overrides["timeout_ms"] = timeout_ms
+    if max_total_tokens is not None:
+        overrides["max_total_tokens"] = max_total_tokens
+    if on_permission_request is not None:
+        overrides["on_permission_request"] = on_permission_request
+    return overrides
+
+
 class AgentSession:
     """Pythonic session handle backed by one shared SessionLog."""
 
@@ -33,7 +54,8 @@ class AgentSession:
         self._session_log = agent._session_log
         self._active_runner = None
 
-    async def _runner(self, goal: str, *, max_turns: int | None = None):
+    async def _runner(self, goal: str, *, max_turns: int | None = None,
+                      runtime_overrides: Mapping[str, Any] | None = None):
         provider = await self.agent._resolve_provider()
         return self.agent._create_runner(
             self._session_log,
@@ -41,11 +63,18 @@ class AgentSession:
             session_id=self.id,
             max_turns=max_turns,
             provider=provider,
+            runtime_overrides=runtime_overrides,
         )
 
     async def stream(self, goal: str, *, max_turns: int | None = None,
-                     attachments: list[dict[str, Any]] | None = None):
-        runner = await self._runner(goal, max_turns=max_turns)
+                     attachments: list[dict[str, Any]] | None = None,
+                     metadata: Mapping[str, Any] | None = None,
+                     provider_options: Mapping[str, Any] | None = None,
+                     timeout_ms: int | None = None,
+                     max_total_tokens: int | None = None,
+                     on_permission_request: Any = None):
+        overrides = _run_overrides(metadata, provider_options, timeout_ms, max_total_tokens, on_permission_request)
+        runner = await self._runner(goal, max_turns=max_turns, runtime_overrides=overrides)
         self._active_runner = runner
         try:
             async for event in runner.run(goal=goal, session_id=self.id, attachments=attachments):
@@ -53,7 +82,8 @@ class AgentSession:
         finally:
             self._active_runner = None
 
-    async def resume(self):
+    async def resume(self, *, max_turns: int | None = None,
+                     timeout_ms: int | None = None, max_total_tokens: int | None = None):
         if self._active_runner is None:
             entries = await self._session_log.read(self.id)
             started = next(
@@ -62,7 +92,11 @@ class AgentSession:
             )
             if started is None:
                 raise ValueError(f"No run_started event for session: {self.id}")
-            self._active_runner = await self._runner(str(started.get("goal", "")))
+            self._active_runner = await self._runner(
+                str(started.get("goal", "")),
+                max_turns=max_turns,
+                runtime_overrides=_run_overrides(None, None, timeout_ms, max_total_tokens, None),
+            )
         try:
             async for event in self._active_runner.wake(self.id):
                 yield event
@@ -104,9 +138,18 @@ class AgentSession:
         return WorkflowReplay.from_entries(await self.history())
 
     async def run(self, goal: str, *, max_turns: int | None = None,
-                  attachments: list[dict[str, Any]] | None = None) -> str:
+                  attachments: list[dict[str, Any]] | None = None,
+                  metadata: Mapping[str, Any] | None = None,
+                  provider_options: Mapping[str, Any] | None = None,
+                  timeout_ms: int | None = None,
+                  max_total_tokens: int | None = None,
+                  on_permission_request: Any = None) -> str:
         from deepstrike.runtime.runner import collect_text
-        return await collect_text(self.stream(goal, max_turns=max_turns, attachments=attachments))
+        return await collect_text(self.stream(
+            goal, max_turns=max_turns, attachments=attachments, metadata=metadata,
+            provider_options=provider_options, timeout_ms=timeout_ms,
+            max_total_tokens=max_total_tokens, on_permission_request=on_permission_request,
+        ))
 
     async def workflow(self, spec: Any):
         """Run a WorkflowSpec under this session's Kernel owner."""
@@ -343,6 +386,7 @@ class Agent:
         session_id: str,
         max_turns: int | None = None,
         provider: Any | None = None,
+        runtime_overrides: Mapping[str, Any] | None = None,
     ):
         from deepstrike.runtime.execution_plane import LocalExecutionPlane
         from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner
@@ -351,12 +395,16 @@ class Agent:
         options = dict(binding.get("runtime_options", {}))
         plane = options.pop("execution_plane", None)
         options.pop("session_log", None)
+        options.update(runtime_overrides or {})
         for key in ("memory_store", "memory_scope", "signal_source", "knowledge_source"):
             if key in binding and key not in options:
                 options[key] = binding[key]
         if max_turns is not None:
             options["max_turns"] = max_turns
-        options.setdefault("run_spec", self._captured.declaration.to_run_spec(goal=goal, session_id=session_id))
+        run_spec = self._captured.declaration.to_run_spec(goal=goal, session_id=session_id)
+        if "run_metadata" in options:
+            run_spec.metadata = {**(run_spec.metadata or {}), **dict(options.pop("run_metadata"))}
+        options.setdefault("run_spec", run_spec)
         if plane is None:
             plane = LocalExecutionPlane()
             if self._captured.host_tools:
@@ -424,7 +472,12 @@ class Agent:
         return store.list()
 
     async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None,
-                  attachments: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+                  attachments: list[dict[str, Any]] | None = None,
+                  metadata: Mapping[str, Any] | None = None,
+                  provider_options: Mapping[str, Any] | None = None,
+                  timeout_ms: int | None = None,
+                  max_total_tokens: int | None = None,
+                  on_permission_request: Any = None) -> dict[str, Any]:
         """Execute one goal through the host binding and return a structured run result."""
         if not self.runtime_binding:
             raise RuntimeError(f'agent "{self.name}" has no runtime binding')
@@ -435,7 +488,11 @@ class Agent:
         if provider is None:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
-        output = await self.session(resolved_session_id).run(goal, max_turns=max_turns, attachments=attachments)
+        output = await self.session(resolved_session_id).run(
+            goal, max_turns=max_turns, attachments=attachments, metadata=metadata,
+            provider_options=provider_options, timeout_ms=timeout_ms,
+            max_total_tokens=max_total_tokens, on_permission_request=on_permission_request,
+        )
         entries = await self.session(resolved_session_id).history()
         events = [entry.event for entry in entries]
         started = next((event for event in reversed(events) if event.get("kind") == "run_started"), {})
@@ -472,16 +529,26 @@ class Agent:
         return result
 
     async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None,
-                     attachments: list[dict[str, Any]] | None = None):
+                     attachments: list[dict[str, Any]] | None = None,
+                     metadata: Mapping[str, Any] | None = None,
+                     provider_options: Mapping[str, Any] | None = None,
+                     timeout_ms: int | None = None,
+                     max_total_tokens: int | None = None,
+                     on_permission_request: Any = None):
         """Stream host events for the same public Agent contract."""
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
-        async for event in self.session(resolved_session_id).stream(goal, max_turns=max_turns, attachments=attachments):
+        async for event in self.session(resolved_session_id).stream(
+            goal, max_turns=max_turns, attachments=attachments, metadata=metadata,
+            provider_options=provider_options, timeout_ms=timeout_ms,
+            max_total_tokens=max_total_tokens, on_permission_request=on_permission_request,
+        ):
             yield event
 
-    async def resume(self, session_id: str):
+    async def resume(self, session_id: str, *, max_turns: int | None = None,
+                     timeout_ms: int | None = None, max_total_tokens: int | None = None):
         """Resume the latest interrupted run in a durable session."""
         session = self.session(session_id)
-        async for event in session.resume():
+        async for event in session.resume(max_turns=max_turns, timeout_ms=timeout_ms, max_total_tokens=max_total_tokens):
             yield event
 
     async def remember(self, input: Mapping[str, Any] | Any, *, session_id: str | None = None):
