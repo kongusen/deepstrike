@@ -7,9 +7,11 @@ The declaration stays provider-neutral; execution resolves a provider through th
 from __future__ import annotations
 
 from dataclasses import dataclass
+import uuid
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
 from deepstrike.types.agent import AgentCapabilityFilter
+from deepstrike.runtime.agent_declaration import capture_agent_declaration, CapturedAgent
 
 
 ModelRef: TypeAlias = str | dict[str, Any]
@@ -52,8 +54,25 @@ class Agent:
         guardrails: Sequence[Mapping[str, Any]] | None = None,
         runtime_binding: Mapping[str, Any] | None = None,
     ) -> None:
-        if not name:
-            raise ValueError("agent name is required")
+        captured = capture_agent_declaration(
+            name,
+            description=description,
+            instructions=instructions,
+            model=model,
+            capability_filter=capability_filter,
+            tools=tools,
+            mcp_servers=mcp_servers,
+            skills=skills,
+            memory=memory,
+            knowledge=knowledge,
+            handoffs=handoffs,
+            provider_options=provider_options,
+            output_schema=output_schema,
+            metadata=metadata,
+            guardrails=guardrails,
+            runtime_binding=runtime_binding,
+        )
+        self._captured: CapturedAgent = captured
         self.name = name
         self.description = description
         self.instructions = instructions
@@ -71,6 +90,11 @@ class Agent:
         self.guardrails = list(guardrails) if guardrails is not None else None
         self.runtime_binding = dict(runtime_binding) if runtime_binding is not None else None
 
+    @property
+    def declaration(self) -> dict[str, Any]:
+        """JSON-safe declaration snapshot; host callables remain private bindings."""
+        return self._captured.declaration.to_kernel_dict()
+
     async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> dict[str, Any]:
         """Execute one goal through the host binding and return a structured run result."""
         if not self.runtime_binding:
@@ -86,7 +110,7 @@ class Agent:
             provider=provider,
             goal=goal,
             system_prompt=self.instructions,
-            tools=list(self.tools or []),
+            tools=list(self._captured.host_tools),
             session_id=session_id,
             max_turns=max_turns,
         )
@@ -105,10 +129,11 @@ class Agent:
         from deepstrike.runtime.execution_plane import LocalExecutionPlane
         from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner
         from deepstrike.runtime.session_log import InMemorySessionLog
-        options = self.runtime_binding.get("runtime_options", {})
+        options = dict(self.runtime_binding.get("runtime_options", {}))
+        plane = options.pop("execution_plane", None) if isinstance(options, dict) else None
         runner = RuntimeRunner(RuntimeOptions(
             provider=provider,
-            execution_plane=LocalExecutionPlane(),
+            execution_plane=plane or LocalExecutionPlane(),
             session_log=InMemorySessionLog(),
             max_tokens=32_000,
             agent_id=self.name,
