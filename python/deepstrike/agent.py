@@ -7,6 +7,7 @@ The declaration stays provider-neutral; execution resolves a provider through th
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 import uuid
 import time
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
@@ -72,14 +73,24 @@ class AgentSession:
                      provider_options: Mapping[str, Any] | None = None,
                      timeout_ms: int | None = None,
                      max_total_tokens: int | None = None,
-                     on_permission_request: Any = None):
+                     on_permission_request: Any = None,
+                     cancel_event: asyncio.Event | None = None):
         overrides = _run_overrides(metadata, provider_options, timeout_ms, max_total_tokens, on_permission_request)
         runner = await self._runner(goal, max_turns=max_turns, runtime_overrides=overrides)
         self._active_runner = runner
+        watcher = None
+        if cancel_event is not None:
+            async def watch_cancel() -> None:
+                await cancel_event.wait()
+                runner.interrupt("user")
+            watcher = asyncio.create_task(watch_cancel())
         try:
             async for event in runner.run(goal=goal, session_id=self.id, attachments=attachments):
                 yield event
         finally:
+            if watcher is not None:
+                watcher.cancel()
+                await asyncio.gather(watcher, return_exceptions=True)
             self._active_runner = None
 
     async def resume(self, *, max_turns: int | None = None,
@@ -143,12 +154,14 @@ class AgentSession:
                   provider_options: Mapping[str, Any] | None = None,
                   timeout_ms: int | None = None,
                   max_total_tokens: int | None = None,
-                  on_permission_request: Any = None) -> str:
+                  on_permission_request: Any = None,
+                  cancel_event: asyncio.Event | None = None) -> str:
         from deepstrike.runtime.runner import collect_text
         return await collect_text(self.stream(
             goal, max_turns=max_turns, attachments=attachments, metadata=metadata,
             provider_options=provider_options, timeout_ms=timeout_ms,
             max_total_tokens=max_total_tokens, on_permission_request=on_permission_request,
+            cancel_event=cancel_event,
         ))
 
     async def workflow(self, spec: Any):
@@ -477,7 +490,8 @@ class Agent:
                   provider_options: Mapping[str, Any] | None = None,
                   timeout_ms: int | None = None,
                   max_total_tokens: int | None = None,
-                  on_permission_request: Any = None) -> dict[str, Any]:
+                  on_permission_request: Any = None,
+                  cancel_event: asyncio.Event | None = None) -> dict[str, Any]:
         """Execute one goal through the host binding and return a structured run result."""
         if not self.runtime_binding:
             raise RuntimeError(f'agent "{self.name}" has no runtime binding')
@@ -492,6 +506,7 @@ class Agent:
             goal, max_turns=max_turns, attachments=attachments, metadata=metadata,
             provider_options=provider_options, timeout_ms=timeout_ms,
             max_total_tokens=max_total_tokens, on_permission_request=on_permission_request,
+            cancel_event=cancel_event,
         )
         entries = await self.session(resolved_session_id).history()
         events = [entry.event for entry in entries]
@@ -534,13 +549,15 @@ class Agent:
                      provider_options: Mapping[str, Any] | None = None,
                      timeout_ms: int | None = None,
                      max_total_tokens: int | None = None,
-                     on_permission_request: Any = None):
+                     on_permission_request: Any = None,
+                     cancel_event: asyncio.Event | None = None):
         """Stream host events for the same public Agent contract."""
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
         async for event in self.session(resolved_session_id).stream(
             goal, max_turns=max_turns, attachments=attachments, metadata=metadata,
             provider_options=provider_options, timeout_ms=timeout_ms,
             max_total_tokens=max_total_tokens, on_permission_request=on_permission_request,
+            cancel_event=cancel_event,
         ):
             yield event
 
