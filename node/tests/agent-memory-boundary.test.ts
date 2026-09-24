@@ -34,6 +34,22 @@ describe("public Agent memory boundary", () => {
     expect(() => createAgent({ memoryScope: scope })).toThrow(/memoryStore and memoryScope/i)
   })
 
+  it("marks declaration-only memory explicitly and fails convenience APIs before execution", async () => {
+    const agent = createAgent({ memory: { kind: "durable", namespace: "notes" } })
+
+    expect(agent.declaration.memory).toEqual({ kind: "durable", namespace: "notes", binding: "declaration" })
+    await expect(agent.remember({ name: "note", content: "content" })).rejects.toThrow(/not runtime-bound/i)
+    await expect(agent.recall("note")).rejects.toThrow(/not runtime-bound/i)
+  })
+
+  it("rejects a declaration namespace that disagrees with the runtime memory scope", () => {
+    expect(() => createAgent({
+      memory: { kind: "durable", namespace: "declared" },
+      memoryStore: new InMemoryMemoryStore(),
+      memoryScope: { ...scope, namespace: "bound" },
+    })).toThrow(/namespace.*does not match runtime memory scope/i)
+  })
+
   it("routes host writes through validation and rejects denied writes before the store", async () => {
     const store = new InMemoryMemoryStore()
     const agent = createAgent({

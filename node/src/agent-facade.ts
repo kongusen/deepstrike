@@ -191,7 +191,7 @@ class AgentRuntimeImpl implements Agent {
   async remember(input: MemoryInput): Promise<MemoryRecord> {
     const store = this.bindings.memoryStore
     const scope = this.bindings.memoryScope
-    if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
+    if (!store || !scope) throw new Error(`agent "${this.name}" memory declaration is not runtime-bound; provide memoryStore and memoryScope`)
     const session = `memory-${crypto.randomUUID()}`
     const now = Date.now()
     const record: MemoryRecord = {
@@ -219,7 +219,7 @@ class AgentRuntimeImpl implements Agent {
   async recall(query: string, options: RecallOptions = {}): Promise<MemoryRecall[]> {
     const store = this.bindings.memoryStore
     const scope = this.bindings.memoryScope
-    if (!store || !scope) throw new Error("agent memory requires memoryStore and memoryScope")
+    if (!store || !scope) throw new Error(`agent "${this.name}" memory declaration is not runtime-bound; provide memoryStore and memoryScope`)
     const request: MemoryQuery = {
       scope,
       query,

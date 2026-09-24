@@ -73,7 +73,7 @@ flowchart TD
 - The declaration contains name, instructions, output schema, skills, knowledge, guardrails, handoffs, provider options, and memory description.
 - Host bindings contain the provider, execution plane, session log, memory store/scope, tool functions, vector retrievers, and runtime binding.
 - The declaration can be audited, cached, and compared; execution handles and external objects stay out of the snapshot.
-- A memory `{kind, namespace, binding:"runtime"}` describes declaration intent; actual storage comes from the `memoryStore + memoryScope` binding.
+- A memory `{kind, namespace, binding}` records declaration and binding state: `runtime` means `memoryStore + memoryScope` are bound, while `declaration` means the agent has only a serializable memory declaration and no runtime store; `remember()`/`recall()` fail immediately at the facade in the latter case. A declaration namespace that disagrees with the runtime scope is rejected during agent creation.
 
 A declaration field has execution semantics only when `buildAgentRuntimeOptions()` maps it and the runner consumes it.
 

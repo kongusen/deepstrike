@@ -73,7 +73,7 @@ flowchart TD
 - 声明快照包括 name、instructions、output schema、skills、knowledge、guardrails、handoffs、provider options 和 memory 描述。
 - host binding 保存 provider、execution plane、session log、memory store/scope、工具函数、vector retriever 和 runtime binding。
 - 声明可以被审计、缓存和比较；执行句柄和外部对象不进入声明快照。
-- memory 的 `{kind, namespace, binding:"runtime"}` 描述声明意图，真实存储仍由 `memoryStore + memoryScope` binding 提供。
+- memory 的 `{kind, namespace, binding}` 描述声明和绑定状态：`runtime` 表示 `memoryStore + memoryScope` 已绑定，`declaration` 表示只有可序列化声明、尚未接入运行时存储；后者会让 `remember()`/`recall()` 在 facade 入口立即失败。声明 namespace 与 runtime scope 不一致时，Agent 创建阶段直接拒绝。
 
 这个分离让 public 对象不再承担执行状态，但也带来一个必须保持的规则：**声明里的字段只有在 `buildAgentRuntimeOptions()` 被映射并被 runner 消费时才算有执行语义**。
 

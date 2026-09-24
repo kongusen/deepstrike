@@ -13,7 +13,7 @@ type DeepReadonly<T> = T extends (...args: never[]) => unknown ? never
 type DeclarationData = Omit<AgentDefinition, "runtimeBinding" | "memoryStore" | "memoryScope" | "tools" | "memory" | "knowledge"> & {
   name: string
   tools?: Pick<RegisteredTool, "schema" | "providerOptions">[]
-  memory?: { kind: "working"; binding?: "runtime" } | { kind: "durable"; namespace?: string; binding?: "runtime" }
+  memory?: { kind: "working"; binding: "runtime" | "declaration" } | { kind: "durable"; namespace?: string; binding: "runtime" | "declaration" }
   knowledge?: Array<Omit<NonNullable<AgentDefinition["knowledge"]>[number], "source"> & {
     source: Exclude<NonNullable<AgentDefinition["knowledge"]>[number]["source"], { kind: "vector" }> | { kind: "vector" }
   }>
@@ -85,6 +85,15 @@ export function captureAgentDeclaration(input: AgentDefinition): { declaration: 
   if (Boolean(input.memoryStore) !== Boolean(input.memoryScope)) {
     throw new TypeError("agent memory requires memoryStore and memoryScope to be bound together")
   }
+  const runtimeMemoryBound = Boolean(input.memoryStore && input.memoryScope)
+  if (runtimeMemoryBound && input.memory && !(input.memory instanceof WorkingMemory) && "namespace" in input.memory) {
+    const declaredNamespace = input.memory.namespace
+    if (declaredNamespace !== undefined && declaredNamespace !== input.memoryScope!.namespace) {
+      throw new TypeError(
+        `agent memory namespace "${declaredNamespace}" does not match runtime memory scope "${input.memoryScope!.namespace}"`,
+      )
+    }
+  }
   const vectorRetrievers = new Map<number, KnowledgeSource>()
   const knowledge = input.knowledge?.map((item, index) => {
     if (item.source.kind !== "vector") return item
@@ -92,9 +101,9 @@ export function captureAgentDeclaration(input: AgentDefinition): { declaration: 
     return { ...item, source: { kind: "vector" as const } }
   })
   const memory = input.memory
-    ? input.memory instanceof WorkingMemory ? { kind: "working" as const, ...(input.memoryStore ? { binding: "runtime" as const } : {}) }
-      : "search" in input.memory ? { kind: "durable" as const, ...("namespace" in input.memory ? { namespace: input.memory.namespace } : {}), ...(input.memoryStore ? { binding: "runtime" as const } : {}) }
-        : { kind: "durable" as const, ...(input.memory.namespace ? { namespace: input.memory.namespace } : {}), ...(input.memoryStore ? { binding: "runtime" as const } : {}) }
+    ? input.memory instanceof WorkingMemory ? { kind: "working" as const, binding: runtimeMemoryBound ? "runtime" as const : "declaration" as const }
+      : "search" in input.memory ? { kind: "durable" as const, ...("namespace" in input.memory ? { namespace: input.memory.namespace } : {}), binding: runtimeMemoryBound ? "runtime" as const : "declaration" as const }
+        : { kind: "durable" as const, ...(input.memory.namespace ? { namespace: input.memory.namespace } : {}), binding: runtimeMemoryBound ? "runtime" as const : "declaration" as const }
     : input.memoryStore && input.memoryScope
       ? { kind: "durable" as const, namespace: input.memoryScope.namespace, binding: "runtime" as const }
       : undefined
