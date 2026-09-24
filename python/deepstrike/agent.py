@@ -107,6 +107,9 @@ class Agent:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
         from deepstrike.runtime.facade import run_agent
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
+        runtime_options = dict(self.runtime_binding.get("runtime_options", {}))
+        execution_plane = runtime_options.pop("execution_plane", None)
+        session_log = runtime_options.pop("session_log", None)
         output = await run_agent(
             provider=provider,
             goal=goal,
@@ -118,6 +121,9 @@ class Agent:
                 goal=goal,
                 session_id=resolved_session_id,
             ),
+            execution_plane=execution_plane,
+            session_log=session_log,
+            runtime_options=runtime_options,
         )
         return {"output": output, "status": "completed", "session_id": session_id}
 

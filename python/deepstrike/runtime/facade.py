@@ -31,6 +31,7 @@ async def run_agent(
     session_log: Any | None = None,
     execution_plane: Any | None = None,
     run_spec: Any | None = None,
+    runtime_options: dict[str, Any] | None = None,
 ) -> str:
     """Run a single agent to completion and return its final text."""
     plane = execution_plane
@@ -38,6 +39,15 @@ async def run_agent(
         plane = LocalExecutionPlane()
         if tools:
             plane.register(*tools)
+    extra = dict(runtime_options or {})
+    extra.pop("provider", None)
+    extra.pop("session_log", None)
+    extra.pop("execution_plane", None)
+    extra.pop("max_tokens", None)
+    extra.pop("max_turns", None)
+    extra.setdefault("run_spec", run_spec)
+    if extra.get("run_spec") is None:
+        extra.pop("run_spec", None)
     opts = RuntimeOptions(
         provider=provider,
         execution_plane=plane,
@@ -45,7 +55,7 @@ async def run_agent(
         max_tokens=max_tokens,
         **({"max_turns": max_turns} if max_turns is not None else {}),
         **({"system_prompt": system_prompt} if system_prompt is not None else {}),
-        **({"run_spec": run_spec} if run_spec is not None else {}),
+        **extra,
     )
     runner = RuntimeRunner(opts)
     return await collect_text(runner.run(goal=goal, session_id=session_id or f"agent-{uuid.uuid4()}"))
