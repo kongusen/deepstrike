@@ -268,15 +268,17 @@ export class DynamicWorkflowControl {
   private runId?: string
   private emit?: (event: DynamicWorkflowLifecycleEvent) => void
   private setStatus?: (status: DynamicWorkflowStatus) => void
+  private closed = false
 
   attach(runId: string, emit: (event: DynamicWorkflowLifecycleEvent) => void, setStatus?: (status: DynamicWorkflowStatus) => void): void {
+    this.closed = false
     this.runId = runId
     this.emit = emit
     this.setStatus = setStatus
   }
 
   pause(reason = "paused by caller"): void {
-    if (this.paused) return
+    if (this.closed || this.paused) return
     this.paused = true
     this.setStatus?.("paused")
     if (this.runId && this.emit) {
@@ -286,7 +288,7 @@ export class DynamicWorkflowControl {
   }
 
   resume(): void {
-    if (!this.paused) return
+    if (this.closed || !this.paused) return
     this.paused = false
     this.setStatus?.("running")
     if (this.runId && this.emit) this.emit({ kind: "resumed", runId: this.runId })
@@ -294,6 +296,12 @@ export class DynamicWorkflowControl {
   }
 
   get isPaused(): boolean { return this.paused }
+
+  close(): void {
+    this.closed = true
+    this.paused = false
+    for (const resolve of this.waiters.splice(0)) resolve()
+  }
 
   async waitIfPaused(): Promise<void> {
     if (!this.paused) return
@@ -418,6 +426,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       replayRun.status = "cancelled"
       replayRun.events = [...replayRun.events]
       if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
+      control.close()
       throw new DynamicWorkflowApprovalError(reason ?? undefined)
     }
     context.setStatus("running")
@@ -431,6 +440,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       replayRun.events = [...replayRun.events]
       replayRun.records = (await this.options.replayStore?.loadRun?.(runId))?.records ?? replayRun.records
       if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
+      control.close()
       return { runId, value, progress, events }
     } catch (error) {
       if (error instanceof DynamicWorkflowCancellationError) {
@@ -441,6 +451,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
         replayRun.events = [...replayRun.events]
         replayRun.records = (await this.options.replayStore?.loadRun?.(runId))?.records ?? replayRun.records
         if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
+        control.close()
         throw error
       }
       context.setStatus("failed")
@@ -450,6 +461,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       replayRun.events = [...events]
       replayRun.records = (await this.options.replayStore?.loadRun?.(runId))?.records ?? replayRun.records
       if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
+      control.close()
       throw error
     }
   }

@@ -49,6 +49,13 @@ describe("DynamicWorkflowProcessExecutor", () => {
     }, { trust: "untrusted" })).rejects.toThrow(/forbidden capability|failed/)
   })
 
+  it("applies source-size limits before spawning the child", async () => {
+    await expect(new DynamicWorkflowProcessExecutor(host([])).runScript({
+      ...script,
+      source: "x".repeat(32),
+    }, { trust: "untrusted", vmOptions: { maxSourceBytes: 4 } })).rejects.toThrow(/maxSourceBytes/)
+  })
+
   it("routes untrusted artifacts through the process executor in the controller", async () => {
     const controller = new DynamicWorkflowController()
     const runPromise = controller.start(script, { trust: "untrusted", runId: "controller-process" })

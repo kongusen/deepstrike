@@ -65,6 +65,10 @@ export class DynamicWorkflowProcessExecutor {
     context: DynamicWorkflowContext<TArgs>,
     options: DynamicWorkflowRunOptions<TArgs>,
   ): Promise<T> {
+    const maxSourceBytes = options.vmOptions?.maxSourceBytes ?? 256_000
+    if (Buffer.byteLength(script.source, "utf8") > maxSourceBytes) {
+      return Promise.reject(new DynamicWorkflowScriptError(`dynamic workflow source exceeds maxSourceBytes (${maxSourceBytes})`))
+    }
     return new Promise<T>((resolve, reject) => {
       const child = spawn(process.execPath, ["--input-type=module", "-e", WORKER_SOURCE], {
         cwd: this.processOptions.cwd,
