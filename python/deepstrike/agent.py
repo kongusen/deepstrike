@@ -85,12 +85,13 @@ class AgentSession:
         *,
         max_turns: int | None = None,
     ) -> AsyncIterator[Any]:
-        runner = self._runner if max_turns is None else self.agent._runner_for(self.id, max_turns=max_turns)
+        runner = await self.agent._prepare_runner(self.id, max_turns=max_turns)
         async for event in runner.run(goal=goal, session_id=self.id):
             yield event
 
     async def resume(self) -> AsyncIterator[Any]:
-        async for event in self._runner.wake(self.id):
+        runner = await self.agent._prepare_runner(self.id)
+        async for event in runner.wake(self.id):
             yield event
 
     def interrupt(self, reason: str = "user") -> None:
@@ -148,6 +149,9 @@ class Agent:
         self._validate_declaration()
         self._session_log = None
         self._runners: dict[str, Any] = {}
+        self._mcp_planes: list[Any] = []
+        self._managed_planes: list[Any] = []
+        self._connected_planes: set[int] = set()
 
     def _validate_declaration(self) -> None:
         """Validate host bindings once, before a run can create kernel state."""
@@ -243,7 +247,27 @@ class Agent:
         if binding.get("memory_scope") is not None:
             raw_options.setdefault("memory_scope", binding["memory_scope"])
         configured_plane = (self.runtime_binding or {}).get("execution_plane") or (self.runtime_binding or {}).get("mcp_execution_plane")
+        if configured_plane is None and self.mcp_servers:
+            from deepstrike.runtime.credential_vault import EnvCredentialVault
+            from deepstrike.runtime.mcp_proxy_plane import McpProxyPlane, McpServerConfig
+
+            servers = {
+                str(server["name"]): McpServerConfig(
+                    command=str(server["command"]),
+                    args=list(server.get("args") or []),
+                    credential_keys=list(server.get("credential_keys") or server.get("credentialKeys") or []),
+                    env=dict(server.get("env") or {}),
+                )
+                for server in self.mcp_servers
+            }
+            configured_plane = McpProxyPlane(
+                servers=servers,
+                vault=(self.runtime_binding or {}).get("credential_vault") or EnvCredentialVault(),
+            )
+            self._mcp_planes.append(configured_plane)
         plane = configured_plane or LocalExecutionPlane()
+        if hasattr(plane, "disconnect") and all(existing is not plane for existing in self._managed_planes):
+            self._managed_planes.append(plane)
         if configured_plane is None:
             executable_tools = [tool for tool in (self.tools or []) if hasattr(tool, "schema")]
             if executable_tools:
@@ -259,6 +283,14 @@ class Agent:
         runner = RuntimeRunner(options)
         if max_turns is None:
             self._runners[session_id] = runner
+        return runner
+
+    async def _prepare_runner(self, session_id: str, *, max_turns: int | None = None) -> Any:
+        runner = self._runner_for(session_id, max_turns=max_turns)
+        plane = runner.execution_plane
+        if hasattr(plane, "connect") and id(plane) not in self._connected_planes:
+            await plane.connect()
+            self._connected_planes.add(id(plane))
         return runner
 
     def _memory_binding(self) -> tuple[Any, Any]:
@@ -415,6 +447,14 @@ class Agent:
         """Interrupt active runs owned by this agent."""
         for runner in self._runners.values():
             runner.interrupt("host_shutdown")
+
+    async def aclose(self) -> None:
+        """Interrupt active runs and close async execution resources such as MCP servers."""
+        self.close()
+        for plane in self._managed_planes:
+            if hasattr(plane, "disconnect"):
+                await plane.disconnect()
+        self._connected_planes.clear()
 
 
 def create_agent(name: str, **kwargs: Any) -> Agent:

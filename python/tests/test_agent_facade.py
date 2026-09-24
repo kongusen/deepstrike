@@ -81,3 +81,34 @@ def test_agent_captures_invalid_bindings_before_runtime_creation():
 
     with pytest.raises(ValueError, match="requires a name"):
         create_agent("invalid", mcp_servers=[{"command": "server"}])
+
+
+async def test_agent_connects_and_closes_bound_async_plane():
+    class Plane:
+        def __init__(self):
+            self.connected = 0
+            self.disconnected = 0
+
+        def register(self, *tools):
+            return self
+
+        async def connect(self):
+            self.connected += 1
+
+        async def disconnect(self):
+            self.disconnected += 1
+
+        def schemas(self):
+            return []
+
+        async def execute_all(self, calls, ctx):
+            if False:
+                yield None
+
+    plane = Plane()
+    agent = create_agent("bound", runtime_binding={"provider": OneTurnProvider(), "execution_plane": plane})
+    async for _ in agent.stream("hello", session_id="s1"):
+        pass
+    await agent.aclose()
+    assert plane.connected == 1
+    assert plane.disconnected == 1
