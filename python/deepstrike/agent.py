@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import uuid
+import time
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
 from deepstrike.types.agent import AgentCapabilityFilter
@@ -104,6 +105,111 @@ class AgentSession:
             return await runner.run_workflow(spec, session_id=self.id)
         finally:
             self._active_runner = None
+
+    async def remember(self, input: Mapping[str, Any] | Any):
+        """Persist one host supplied memory record through the Kernel write funnel."""
+        from deepstrike.memory import MemoryProvenance, MemoryRecord
+        binding = self.agent.runtime_binding or {}
+        store = binding.get("memory_store")
+        scope = binding.get("memory_scope")
+        if store is None or scope is None:
+            raise RuntimeError(
+                f'agent "{self.agent.name}" memory is not runtime-bound; '
+                "provide runtime_binding.memory_store and memory_scope"
+            )
+        value = dict(input) if isinstance(input, Mapping) else vars(input)
+        now = int(time.time() * 1000)
+        record = MemoryRecord(
+            record_id=str(value.get("record_id") or uuid.uuid4()),
+            scope=scope,
+            name=str(value["name"]),
+            kind=value.get("kind", "reference"),
+            content=str(value["content"]),
+            description=str(value.get("description") or value["name"]),
+            provenance=MemoryProvenance(
+                author="host", trust="user_asserted", session_id=f"memory-{uuid.uuid4()}"
+            ),
+            created_at=int(value.get("created_at", now)),
+            updated_at=int(value.get("updated_at", now)),
+            confidence=float(value.get("confidence", 1.0)),
+            pinned=bool(value.get("pinned", False)),
+            ttl_days=value.get("ttl_days"),
+        )
+        runner = await self._runner("memory", max_turns=1)
+        await runner.write_memory(record, session_id=record.provenance.session_id, agent_id=self.agent.name)
+        return record
+
+    async def recall(self, query: str, *, top_k: int = 8, kinds: list[str] | None = None,
+                     min_score: float | None = None):
+        """Query bound durable memory through the Runner memory lifecycle."""
+        from deepstrike.memory import MemoryQuery
+
+        binding = self.agent.runtime_binding or {}
+        store = binding.get("memory_store")
+        scope = binding.get("memory_scope")
+        if store is None or scope is None:
+            raise RuntimeError(
+                f'agent "{self.agent.name}" memory is not runtime-bound; '
+                "provide runtime_binding.memory_store and memory_scope"
+            )
+        runner = await self._runner("memory", max_turns=1)
+        return await runner.query_memory(
+            MemoryQuery(scope=scope, query=query, top_k=top_k, kinds=kinds or [], min_score=min_score),
+            session_id=f"memory-{uuid.uuid4()}",
+            agent_id=self.agent.name,
+        )
+
+    async def listen(self, *, lease_ms: int | None = None):
+        """Claim one host signal, run it, and acknowledge only after success."""
+        binding = self.agent.runtime_binding or {}
+        source = binding.get("signal_source")
+        if source is None:
+            options = binding.get("runtime_options", {})
+            source = options.get("signal_source")
+        if source is None:
+            raise RuntimeError("agent signals require runtime_binding.signal_source")
+        claim = await source.claim_signal(self.agent.name, lease_ms)
+        if claim is None:
+            return None
+        payload = claim.signal.payload
+        goal = payload.get("goal") or payload.get("summary") or str(payload)
+        try:
+            result = await self.run(str(goal))
+            await source.ack_signal(claim)
+            return result
+        except Exception:
+            await source.nack_signal(claim)
+            raise
+
+    async def delegate(self, target: str, goal: str, *, metadata: Mapping[str, Any] | None = None):
+        """Resolve and execute an explicitly declared handoff target."""
+        from deepstrike.runtime.agent_declaration import resolve_handoff
+
+        resolver = (self.agent.runtime_binding or {}).get("agent_resolver")
+        if resolver is None:
+            raise RuntimeError(f'agent "{self.agent.name}" requires runtime_binding.agent_resolver')
+        allowed = {
+            str(item.get("target", item.get("agent", "")))
+            for item in self.agent._captured.declaration.handoffs
+            if item.get("target", item.get("agent"))
+        }
+        if target not in allowed:
+            raise PermissionError(f'agent "{self.agent.name}" cannot hand off to "{target}"')
+        if callable(resolver) and not hasattr(resolver, "resolve"):
+            resolved = resolver(target)
+            if hasattr(resolved, "__await__"):
+                resolved = await resolved
+            target_agent = resolved
+        else:
+            resolution = resolve_handoff(self.agent._captured.declaration, target, goal, resolver)
+            target_agent = resolution.target
+        if target_agent is None:
+            raise RuntimeError(f'target agent "{target}" is not registered')
+        if not hasattr(target_agent, "run"):
+            raise TypeError("agent_resolver must return an executable Agent")
+        result = await target_agent.run(goal, session_id=f"handoff-{uuid.uuid4()}")
+        return {"output": result.get("output", ""), "status": result.get("status", "partial"),
+                **({"metadata": dict(metadata)} if metadata else {})}
 
 
 ModelRef: TypeAlias = str | dict[str, Any]
@@ -231,6 +337,9 @@ class Agent:
         options = dict(binding.get("runtime_options", {}))
         plane = options.pop("execution_plane", None)
         options.pop("session_log", None)
+        for key in ("memory_store", "memory_scope", "signal_source", "knowledge_source"):
+            if key in binding and key not in options:
+                options[key] = binding[key]
         if max_turns is not None:
             options["max_turns"] = max_turns
         options.setdefault("run_spec", self._captured.declaration.to_run_spec(goal=goal, session_id=session_id))
@@ -317,6 +426,31 @@ class Agent:
         resolved_session_id = session_id or f"agent-{uuid.uuid4()}"
         async for event in self.session(resolved_session_id).stream(goal, max_turns=max_turns):
             yield event
+
+    async def remember(self, input: Mapping[str, Any] | Any, *, session_id: str | None = None):
+        return await self.session(session_id).remember(input)
+
+    async def recall(self, query: str, *, top_k: int = 8, kinds: list[str] | None = None,
+                     min_score: float | None = None, session_id: str | None = None):
+        return await self.session(session_id).recall(query, top_k=top_k, kinds=kinds, min_score=min_score)
+
+    async def delegate(self, target: str, goal: str, *, metadata: Mapping[str, Any] | None = None):
+        return await self.session().delegate(target, goal, metadata=metadata)
+
+    async def listen(self, *, lease_ms: int | None = None, session_id: str | None = None):
+        return await self.session(session_id).listen(lease_ms=lease_ms)
+
+    def interrupt(self, reason: str = "user", *, session_id: str | None = None) -> None:
+        if session_id is not None:
+            self.session(session_id).interrupt(reason)
+            return
+        for session in self._sessions.values():
+            session.interrupt(reason)
+
+    async def close(self) -> None:
+        plane = (self.runtime_binding or {}).get("mcp_plane")
+        if plane is not None and hasattr(plane, "disconnect"):
+            await plane.disconnect()
 
 
 def create_agent(name: str, **kwargs: Any) -> Agent:
