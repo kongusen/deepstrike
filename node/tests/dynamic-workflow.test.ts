@@ -1,5 +1,6 @@
 import {
   DynamicWorkflowExecutor,
+  DynamicWorkflowCancellationError,
   DynamicWorkflowLimitError,
   dynamicAgentTask,
   resolveDynamicWorkflowLimits,
@@ -147,5 +148,18 @@ describe("DynamicWorkflowExecutor", () => {
 
     const executor = new DynamicWorkflowExecutor(fakeHost(), { limits: { maxItemsPerBatch: 2 } })
     await expect(executor.run(ctx => ctx.parallel([1, 2, 3], item => item))).rejects.toThrow(/at most 2 items/)
+  })
+
+  it("cancels an in-flight script through AbortSignal and records one terminal event", async () => {
+    const controller = new AbortController()
+    const events: string[] = []
+    const executor = new DynamicWorkflowExecutor(fakeHost(), {
+      signal: controller.signal,
+      onLifecycleEvent: event => events.push(event.kind),
+    })
+    const run = executor.run(async () => new Promise(resolve => setTimeout(() => resolve("late"), 100)))
+    setTimeout(() => controller.abort(new Error("user stopped")), 5)
+    await expect(run).rejects.toBeInstanceOf(DynamicWorkflowCancellationError)
+    expect(events.at(-1)).toBe("run_cancelled")
   })
 })

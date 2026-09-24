@@ -202,6 +202,7 @@ export interface DynamicWorkflowRunOptions<TArgs extends Record<string, unknown>
   replayStore?: DynamicWorkflowReplayStore
   approval?: (request: DynamicWorkflowApprovalRequest<TArgs>) => boolean | Promise<boolean> | { approved: boolean; reason?: string } | Promise<{ approved: boolean; reason?: string }>
   onLifecycleEvent?: (event: DynamicWorkflowLifecycleEvent) => void
+  signal?: AbortSignal
   artifactDigest?: string
   artifactSnapshot?: DynamicWorkflowArtifactSnapshot
   vmOptions?: DynamicWorkflowVmOptions
@@ -236,6 +237,15 @@ export class DynamicWorkflowReplayMismatchError extends Error {
   constructor(message = "dynamic workflow replay inputs do not match the stored run") {
     super(message)
     this.name = "DynamicWorkflowReplayMismatchError"
+  }
+}
+
+export class DynamicWorkflowCancellationError extends Error {
+  readonly code = "DYNAMIC_WORKFLOW_CANCELLED"
+
+  constructor(message = "dynamic workflow execution was cancelled") {
+    super(message)
+    this.name = "DynamicWorkflowCancellationError"
   }
 }
 
@@ -352,7 +362,7 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
     context.setStatus("running")
     replayRun.status = "running"
     try {
-      const value = await program(context)
+      const value = await raceDynamicWorkflowCancellation(Promise.resolve(program(context)), this.options.signal)
       context.setStatus("completed")
       emitLifecycle({ kind: "run_completed", runId })
       await flushEvents()
@@ -362,6 +372,16 @@ export class DynamicWorkflowExecutor<TArgs extends Record<string, unknown> = Rec
       if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
       return { runId, value, progress, events }
     } catch (error) {
+      if (error instanceof DynamicWorkflowCancellationError) {
+        context.setStatus("cancelled")
+        emitLifecycle({ kind: "run_cancelled", runId, reason: error.message })
+        await flushEvents()
+        replayRun.status = "cancelled"
+        replayRun.events = [...replayRun.events]
+        replayRun.records = (await this.options.replayStore?.loadRun?.(runId))?.records ?? replayRun.records
+        if (this.options.replayStore?.saveRun) await this.options.replayStore.saveRun(runId, replayRun)
+        throw error
+      }
       context.setStatus("failed")
       emitLifecycle({ kind: "run_failed", runId, error: error instanceof Error ? error.message : String(error) })
       await flushEvents()
@@ -770,4 +790,19 @@ function deepFreeze<T>(value: T): T {
   Object.freeze(value)
   for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child)
   return value
+}
+
+async function raceDynamicWorkflowCancellation<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work
+  if (signal.aborted) throw new DynamicWorkflowCancellationError(signal.reason instanceof Error ? signal.reason.message : undefined)
+  let onAbort: (() => void) | undefined
+  const cancellation = new Promise<never>((_, reject) => {
+    onAbort = () => reject(new DynamicWorkflowCancellationError(signal.reason instanceof Error ? signal.reason.message : undefined))
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+  try {
+    return await Promise.race([work, cancellation])
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort)
+  }
 }

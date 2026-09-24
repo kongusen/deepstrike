@@ -20,6 +20,7 @@ export type { WorkflowDefinition, WorkflowStep, WorkflowResult } from "./definit
 export {
   DEFAULT_DYNAMIC_WORKFLOW_LIMITS,
   DynamicWorkflowApprovalError,
+  DynamicWorkflowCancellationError,
   DynamicWorkflowLimitError,
   DynamicWorkflowReplayMismatchError,
   dynamicAgentTask,
