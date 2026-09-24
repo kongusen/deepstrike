@@ -324,13 +324,13 @@ class Agent:
         spec = WorkflowSpec(nodes=[WorkflowNodeSpec(task=goal, role=role)])
         return await self.workflow(spec, session_id=session_id)
 
-    async def _run_in_session(self, session: AgentSession, goal: str, *, max_turns: int | None = None) -> RunResult:
+    async def _collect_result(self, session: AgentSession, events: AsyncIterator[Any]) -> RunResult:
         from deepstrike.providers.stream import DoneEvent, ErrorEvent, TextDelta, UsageEvent
 
         output: list[str] = []
         usage: dict[str, Any] | None = None
         status = "completed"
-        async for event in session.stream(goal, max_turns=max_turns):
+        async for event in events:
             if isinstance(event, TextDelta):
                 output.append(event.delta)
             elif isinstance(event, UsageEvent):
@@ -368,10 +368,21 @@ class Agent:
             output_validation=output_validation,
         )
 
+    async def _run_in_session(self, session: AgentSession, goal: str, *, max_turns: int | None = None) -> RunResult:
+        return await self._collect_result(session, session.stream(goal, max_turns=max_turns))
+
     async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> RunResult:
         """Execute one goal and return a reusable, structured result."""
         session = self.session(session_id)
         return await self._run_in_session(session, goal, max_turns=max_turns)
+
+    async def listen(self, session_id: str) -> RunResult | None:
+        """Resume a durable session that has pending inbound signals or work."""
+        session = self.session(session_id)
+        try:
+            return await self._collect_result(session, session.resume())
+        except ValueError:
+            return None
 
     async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None):
         """Stream host events while retaining the session for later resume."""
