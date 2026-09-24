@@ -203,6 +203,7 @@ from deepstrike.types.agent import (
 )
 from deepstrike.agent import (
     Agent, AgentDefinition, AgentMemory, AgentRegistry, AgentSession, MemoryReference, ModelRef,
+    RunOptions,
     RunResult, create_agent,
 )
 from deepstrike.runtime.durable_content import (
@@ -384,7 +385,7 @@ __all__ = [
     "SkillMetadata",
     # Sub-agent isolation
     "AgentIdentity", "AgentCapabilityFilter", "AgentRunSpec",
-    "Agent", "AgentSession", "AgentRegistry", "RunResult", "create_agent", "AgentDefinition", "AgentMemory",
+    "Agent", "AgentSession", "AgentRegistry", "RunResult", "RunOptions", "create_agent", "AgentDefinition", "AgentMemory",
     "MemoryReference", "ModelRef",
     "AgentProcessChangedObservation", "SubAgentResult", "LoopResult",
     "KernelAgentRole", "AgentIsolation", "ContextInheritance",

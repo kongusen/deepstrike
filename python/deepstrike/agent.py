@@ -21,6 +21,18 @@ AgentMemory: TypeAlias = Any
 
 
 @dataclass(frozen=True)
+class RunOptions:
+    """Per-run overrides shared by Agent and AgentSession entry points."""
+
+    max_turns: int | None = None
+    max_tokens: int | None = None
+    timeout_ms: int | None = None
+    criteria: list[str] | None = None
+    attachments: list[dict[str, Any]] | None = None
+    extensions: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
 class MemoryReference:
     """Serializable durable-memory binding for an agent declared before a host store exists."""
 
@@ -84,17 +96,25 @@ class AgentSession:
         goal: str,
         *,
         max_turns: int | None = None,
+        options: RunOptions | None = None,
         criteria: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         extensions: dict[str, Any] | None = None,
     ) -> AsyncIterator[Any]:
-        runner = await self.agent._prepare_runner(self.id, max_turns=max_turns)
+        options = options or RunOptions()
+        max_turns = max_turns if max_turns is not None else options.max_turns
+        runner = await self.agent._prepare_runner(
+            self.id,
+            max_turns=max_turns,
+            max_tokens=options.max_tokens,
+            timeout_ms=options.timeout_ms,
+        )
         async for event in runner.run(
             goal=goal,
             session_id=self.id,
-            criteria=criteria,
-            attachments=attachments,
-            extensions=extensions,
+            criteria=criteria if criteria is not None else options.criteria,
+            attachments=attachments if attachments is not None else options.attachments,
+            extensions=extensions if extensions is not None else options.extensions,
         ):
             yield event
 
@@ -111,6 +131,7 @@ class AgentSession:
         goal: str,
         *,
         max_turns: int | None = None,
+        options: RunOptions | None = None,
         criteria: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         extensions: dict[str, Any] | None = None,
@@ -119,6 +140,7 @@ class AgentSession:
             self,
             goal,
             max_turns=max_turns,
+            options=options,
             criteria=criteria,
             attachments=attachments,
             extensions=extensions,
@@ -264,7 +286,14 @@ class Agent:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
         return provider
 
-    def _runner_for(self, session_id: str, *, max_turns: int | None = None) -> Any:
+    def _runner_for(
+        self,
+        session_id: str,
+        *,
+        max_turns: int | None = None,
+        max_tokens: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> Any:
         runner = self._runners.get(session_id)
         if runner is not None and max_turns is None:
             return runner
@@ -284,6 +313,10 @@ class Agent:
         raw_options.pop("system_prompt", None)
         if max_turns is not None:
             raw_options["max_turns"] = max_turns
+        if max_tokens is not None:
+            raw_options["max_tokens"] = max_tokens
+        if timeout_ms is not None:
+            raw_options["timeout_ms"] = timeout_ms
         binding = self.runtime_binding or {}
         if self.mcp_servers and binding.get("mcp_execution_plane") is None and binding.get("execution_plane") is None:
             raise RuntimeError(
@@ -339,12 +372,24 @@ class Agent:
             **raw_options,
         )
         runner = RuntimeRunner(options)
-        if max_turns is None:
+        if max_turns is None and max_tokens is None and timeout_ms is None:
             self._runners[session_id] = runner
         return runner
 
-    async def _prepare_runner(self, session_id: str, *, max_turns: int | None = None) -> Any:
-        runner = self._runner_for(session_id, max_turns=max_turns)
+    async def _prepare_runner(
+        self,
+        session_id: str,
+        *,
+        max_turns: int | None = None,
+        max_tokens: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> Any:
+        runner = self._runner_for(
+            session_id,
+            max_turns=max_turns,
+            max_tokens=max_tokens,
+            timeout_ms=timeout_ms,
+        )
         plane = runner.execution_plane
         if hasattr(plane, "connect") and id(plane) not in self._connected_planes:
             await plane.connect()
@@ -513,6 +558,7 @@ class Agent:
         goal: str,
         *,
         max_turns: int | None = None,
+        options: RunOptions | None = None,
         criteria: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         extensions: dict[str, Any] | None = None,
@@ -522,6 +568,7 @@ class Agent:
             session.stream(
                 goal,
                 max_turns=max_turns,
+                options=options,
                 criteria=criteria,
                 attachments=attachments,
                 extensions=extensions,
@@ -534,6 +581,7 @@ class Agent:
         *,
         session_id: str | None = None,
         max_turns: int | None = None,
+        options: RunOptions | None = None,
         criteria: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         extensions: dict[str, Any] | None = None,
@@ -544,6 +592,7 @@ class Agent:
             session,
             goal,
             max_turns=max_turns,
+            options=options,
             criteria=criteria,
             attachments=attachments,
             extensions=extensions,
@@ -617,6 +666,7 @@ class Agent:
         *,
         session_id: str | None = None,
         max_turns: int | None = None,
+        options: RunOptions | None = None,
         criteria: list[str] | None = None,
         attachments: list[dict[str, Any]] | None = None,
         extensions: dict[str, Any] | None = None,
@@ -626,6 +676,7 @@ class Agent:
         async for event in session.stream(
             goal,
             max_turns=max_turns,
+            options=options,
             criteria=criteria,
             attachments=attachments,
             extensions=extensions,
