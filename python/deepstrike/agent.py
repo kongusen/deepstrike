@@ -7,6 +7,8 @@ The declaration stays provider-neutral; execution resolves a provider through th
 from __future__ import annotations
 
 from dataclasses import dataclass
+import uuid
+from collections.abc import AsyncIterator
 from typing import Any, Literal, Mapping, Sequence, TypeAlias
 
 from deepstrike.types.agent import AgentCapabilityFilter
@@ -23,6 +25,75 @@ class MemoryReference:
 
     namespace: str | None = None
     kind: Literal["durable"] = "durable"
+
+
+class RunResult(dict[str, Any]):
+    """Completed run data with both mapping and attribute-style access.
+
+    Mapping access keeps the 0.2.x facade compatible while attributes make the
+    result pleasant to use in normal Python code.
+    """
+
+    def __init__(
+        self,
+        *,
+        output: str,
+        run_id: str | None,
+        session_id: str,
+        status: str,
+        usage: dict[str, Any] | None = None,
+        evidence: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(
+            output=output,
+            run_id=run_id,
+            session_id=session_id,
+            status=status,
+            usage=usage,
+            evidence=evidence or [],
+        )
+
+    output: str
+    run_id: str | None
+    session_id: str
+    status: str
+    usage: dict[str, Any] | None
+    evidence: list[dict[str, Any]]
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
+class AgentSession:
+    """A reusable, resumable session owned by one :class:`Agent`."""
+
+    def __init__(self, agent: "Agent", session_id: str) -> None:
+        self.agent = agent
+        self.id = session_id
+        self._runner = agent._runner_for(session_id)
+
+    async def stream(
+        self,
+        goal: str,
+        *,
+        max_turns: int | None = None,
+    ) -> AsyncIterator[Any]:
+        runner = self._runner if max_turns is None else self.agent._runner_for(self.id, max_turns=max_turns)
+        async for event in runner.run(goal=goal, session_id=self.id):
+            yield event
+
+    async def resume(self) -> AsyncIterator[Any]:
+        async for event in self._runner.wake(self.id):
+            yield event
+
+    def interrupt(self, reason: str = "user") -> None:
+        self._runner.interrupt(reason)  # type: ignore[arg-type]
+
+    async def run(self, goal: str, *, max_turns: int | None = None) -> RunResult:
+        return await self.agent._run_in_session(self, goal, max_turns=max_turns)
 
 
 class Agent:
@@ -70,9 +141,14 @@ class Agent:
         self.metadata = dict(metadata) if metadata is not None else None
         self.guardrails = list(guardrails) if guardrails is not None else None
         self.runtime_binding = dict(runtime_binding) if runtime_binding is not None else None
+        self._session_log = None
+        self._runners: dict[str, Any] = {}
 
-    async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> dict[str, Any]:
-        """Execute one goal through the host binding and return a structured run result."""
+    def session(self, session_id: str | None = None) -> AgentSession:
+        """Return a stable session handle, creating an id when omitted."""
+        return AgentSession(self, session_id or f"agent-{uuid.uuid4()}")
+
+    def _provider(self) -> Any:
         if not self.runtime_binding:
             raise RuntimeError(f'agent "{self.name}" has no runtime binding')
         provider = self.runtime_binding.get("provider")
@@ -81,43 +157,91 @@ class Agent:
             provider = provider_for(self.model) if callable(provider_for) else None
         if provider is None:
             raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
-        from deepstrike.runtime.facade import run_agent
-        output = await run_agent(
-            provider=provider,
-            goal=goal,
-            system_prompt=self.instructions,
-            tools=list(self.tools or []),
-            session_id=session_id,
-            max_turns=max_turns,
-        )
-        return {"output": output, "status": "completed", "session_id": session_id}
+        return provider
 
-    async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None):
-        """Stream host events for the same public Agent contract."""
-        if not self.runtime_binding:
-            raise RuntimeError(f'agent "{self.name}" has no runtime binding')
-        provider = self.runtime_binding.get("provider")
-        if provider is None:
-            provider_for = self.runtime_binding.get("provider_for")
-            provider = provider_for(self.model) if callable(provider_for) else None
-        if provider is None:
-            raise RuntimeError(f'agent "{self.name}" has no runtime provider binding')
+    def _runner_for(self, session_id: str, *, max_turns: int | None = None) -> Any:
+        runner = self._runners.get(session_id)
+        if runner is not None and max_turns is None:
+            return runner
         from deepstrike.runtime.execution_plane import LocalExecutionPlane
         from deepstrike.runtime.runner import RuntimeOptions, RuntimeRunner
         from deepstrike.runtime.session_log import InMemorySessionLog
-        options = self.runtime_binding.get("runtime_options", {})
-        runner = RuntimeRunner(RuntimeOptions(
-            provider=provider,
-            execution_plane=LocalExecutionPlane(),
-            session_log=InMemorySessionLog(),
-            max_tokens=32_000,
+
+        if self._session_log is None:
+            self._session_log = self.runtime_binding.get("session_log") if self.runtime_binding else None
+            if self._session_log is None:
+                self._session_log = InMemorySessionLog()
+        raw_options = dict((self.runtime_binding or {}).get("runtime_options") or {})
+        raw_options.pop("provider", None)
+        raw_options.pop("session_log", None)
+        raw_options.pop("execution_plane", None)
+        raw_options.pop("agent_id", None)
+        raw_options.pop("system_prompt", None)
+        if max_turns is not None:
+            raw_options["max_turns"] = max_turns
+        plane = LocalExecutionPlane()
+        executable_tools = [tool for tool in (self.tools or []) if hasattr(tool, "schema")]
+        if executable_tools:
+            plane.register(*executable_tools)
+        options = RuntimeOptions(
+            provider=self._provider(),
+            execution_plane=plane,
+            session_log=self._session_log,
             agent_id=self.name,
             **({"system_prompt": self.instructions} if self.instructions else {}),
-            **({"max_turns": max_turns} if max_turns is not None else {}),
-            **options,
-        ))
-        async for event in runner.run(goal=goal, session_id=session_id or f"agent-{uuid.uuid4()}"):
+            **raw_options,
+        )
+        runner = RuntimeRunner(options)
+        if max_turns is None:
+            self._runners[session_id] = runner
+        return runner
+
+    async def _run_in_session(self, session: AgentSession, goal: str, *, max_turns: int | None = None) -> RunResult:
+        from deepstrike.providers.stream import DoneEvent, ErrorEvent, TextDelta, UsageEvent
+
+        output: list[str] = []
+        usage: dict[str, Any] | None = None
+        status = "completed"
+        async for event in session.stream(goal, max_turns=max_turns):
+            if isinstance(event, TextDelta):
+                output.append(event.delta)
+            elif isinstance(event, UsageEvent):
+                usage = {
+                    "input_tokens": event.input_tokens,
+                    "output_tokens": event.output_tokens,
+                    "total_tokens": event.total_tokens,
+                }
+            elif isinstance(event, DoneEvent):
+                status = event.status
+            elif isinstance(event, ErrorEvent):
+                status = "error"
+        entries = await self._session_log.read(session.id) if self._session_log is not None else []
+        started = next((entry.event for entry in entries if entry.event.get("kind") == "run_started"), None)
+        evidence = [entry.event for entry in entries if entry.event.get("kind") in {"provider_attempt", "llm_completed"}]
+        return RunResult(
+            output="".join(output),
+            run_id=started.get("run_id") if started else None,
+            session_id=session.id,
+            status=status,
+            usage=usage,
+            evidence=evidence,
+        )
+
+    async def run(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None) -> RunResult:
+        """Execute one goal and return a reusable, structured result."""
+        session = self.session(session_id)
+        return await self._run_in_session(session, goal, max_turns=max_turns)
+
+    async def stream(self, goal: str, *, session_id: str | None = None, max_turns: int | None = None):
+        """Stream host events while retaining the session for later resume."""
+        session = self.session(session_id)
+        async for event in session.stream(goal, max_turns=max_turns):
             yield event
+
+    def close(self) -> None:
+        """Interrupt active runs owned by this agent."""
+        for runner in self._runners.values():
+            runner.interrupt("host_shutdown")
 
 
 def create_agent(name: str, **kwargs: Any) -> Agent:

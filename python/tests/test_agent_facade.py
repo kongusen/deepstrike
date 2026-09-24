@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+from deepstrike import AgentSession, RunResult, create_agent
+from deepstrike.providers.base import RenderedContext
+from deepstrike.providers.stream import TextDelta
+
+
+class OneTurnProvider:
+    async def complete(self, context: RenderedContext, tools, extensions=None):
+        raise NotImplementedError
+
+    async def stream(self, context: RenderedContext, tools, extensions=None, state=None):
+        yield TextDelta(delta="hello")
+
+
+async def test_agent_run_returns_attribute_and_mapping_result():
+    agent = create_agent("greeter", runtime_binding={"provider": OneTurnProvider()})
+
+    result = await agent.run("say hello")
+
+    assert isinstance(result, RunResult)
+    assert result.output == "hello"
+    assert result["output"] == "hello"
+    assert result.session_id.startswith("agent-")
+    assert result.run_id
+
+
+def test_agent_session_is_pythonic_and_stable():
+    agent = create_agent("greeter", runtime_binding={"provider": OneTurnProvider()})
+
+    session = agent.session("session-1")
+
+    assert isinstance(session, AgentSession)
+    assert session.id == "session-1"
+    assert agent.session("session-1").id == session.id
