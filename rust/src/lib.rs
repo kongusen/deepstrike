@@ -16,7 +16,7 @@ mod tests;
 
 pub use agent::{
     Agent, AgentEvidence, AgentRunOptions, AgentRunResult, AgentSession, AgentStream, AgentUsage,
-    AgentWorkflow,
+    AgentWorkflow, OutputValidation,
 };
 pub use deepstrike_core::context::measurement::{MeasurementConfidence, MeasurementSource};
 // F3 (0.2.66): the core-internal render type is `InternalRenderedContext`; the SDK-visible

@@ -73,6 +73,7 @@ pub struct AgentRunOptions {
     pub criteria: Vec<String>,
     pub extensions: Option<serde_json::Value>,
     pub attachments: Vec<deepstrike_core::types::message::ContentPart>,
+    pub output_schema: Option<serde_json::Value>,
 }
 
 /// A completed run projected from the runtime event stream.
@@ -86,6 +87,13 @@ pub struct AgentRunResult {
     pub total_tokens: u64,
     pub usage: Option<AgentUsage>,
     pub evidence: Option<AgentEvidence>,
+    pub output_validation: Option<OutputValidation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputValidation {
+    pub ok: bool,
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,6 +221,23 @@ impl AgentSession {
             total_tokens: result.total_tokens,
         });
         result.evidence = self.latest_evidence().await?;
+        if let Some(schema) = &options.output_schema {
+            let mut value =
+                serde_json::from_str::<serde_json::Value>(&result.text).map_err(|error| {
+                    crate::Error::Other(format!("structured output is not valid JSON: {error}"))
+                })?;
+            let validation = match crate::tools::validate_tool_arguments(schema, &mut value) {
+                Ok(_) => OutputValidation {
+                    ok: true,
+                    errors: Vec::new(),
+                },
+                Err(error) => OutputValidation {
+                    ok: false,
+                    errors: vec![error],
+                },
+            };
+            result.output_validation = Some(validation);
+        }
         Ok(result)
     }
 

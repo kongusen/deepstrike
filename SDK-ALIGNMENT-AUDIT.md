@@ -15,7 +15,7 @@
 | per-run attachments / provider options | ✅ | ✅ | ✅ | ✅ | Rust 为 `AgentRunOptions` |
 | durable resume / history | ✅ | ✅ | ✅ | ✅ | session log + journal |
 | interrupt / cancellation | ✅ | ✅ | ✅ | ✅ | Rust 使用显式 cancellation reason |
-| structured output validation | ✅ | ✅ | ✅ | ⚠️ | Rust 当前由宿主自行校验 `RunEvent`/结果 |
+| structured output validation | ✅ | ✅ | ✅ | ✅ | Rust 通过 `AgentRunOptions::output_schema` 返回 typed validation |
 | usage / evidence result projection | ✅ | ✅ | ✅ | ✅ | Rust 从 `ContextPrepared` 和 terminal 事件投影 usage/evidence |
 | remember / recall | ✅ | ✅ | ✅ | ✅ | Rust 支持 typed `MemoryRecord` / `MemoryQuery` |
 | workflow driver | ✅ | ✅ | ✅ | ⚠️ | Rust 暴露 `AgentWorkflow` 手动 executor，不强行引入 async runtime |
@@ -31,7 +31,7 @@
 
 Rust 的 `RuntimeRunner` 是强类型、可组合的 runtime driver。`AgentSession` 和 `AgentWorkflow` 只做对象模型封装，不复制状态机。workflow 不自动创建 tokio task，也不假设并发执行器；调用方按 `ready_batch`、`spawn_info`、`record_completion` 推进，这与 Rust 的 ownership 和宿主控制模型一致。
 
-剩余差距集中在结果投影和 host contract，而不是内核能力缺失：structured output/evidence 可从 session event 读取，但还没有统一的 Rust `AgentRunResult` projection；delegate 需要先定义 Rust resolver trait；专用 workflow trace/replay 也应建立在已有 `SessionEvent` 上。
+剩余差距集中在 host contract，而不是内核能力缺失：delegate 需要先定义 Rust resolver trait；专用 workflow trace/replay 也应建立在已有 `SessionEvent` 上。
 
 ### WASM
 
