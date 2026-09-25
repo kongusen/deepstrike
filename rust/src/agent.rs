@@ -87,7 +87,7 @@ pub struct AgentRunOptions {
 /// A completed run projected from the runtime event stream.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentRunResult {
-    pub text: String,
+    pub output: String,
     pub run_id: Option<String>,
     pub session_id: String,
     pub status: String,
@@ -217,7 +217,7 @@ impl Agent {
             return Ok(None);
         };
         Ok(Some(AgentRunResult {
-            text,
+            output: text,
             run_id: session.latest_run_id().await?,
             session_id: session.session_id.clone(),
             status: "completed".into(),
@@ -271,7 +271,7 @@ impl AgentSession {
         };
         while let Some(event) = stream.next().await {
             match event? {
-                RunEvent::TextDelta(delta) => result.text.push_str(&delta),
+                RunEvent::TextDelta(delta) => result.output.push_str(&delta),
                 RunEvent::Done {
                     iterations,
                     total_tokens,
@@ -290,7 +290,7 @@ impl AgentSession {
         });
         result.evidence = self.latest_evidence().await?;
         if let Some(schema) = &options.output_schema {
-            result.output_validation = Some(validate_output(&result.text, schema));
+            result.output_validation = Some(validate_output(&result.output, schema));
         }
         Ok(result)
     }
