@@ -90,6 +90,10 @@ fn make_result(
 pub trait ExecutionPlane: Send + Sync {
     fn schemas(&self) -> Vec<ToolSchema>;
 
+    fn shutdown<'a>(&'a self) -> futures::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Execute a batch of calls. Yields intermediate events; ends with one `ToolResult` per call.
     fn execute_all<'a>(
         &'a self,

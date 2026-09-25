@@ -325,6 +325,15 @@ impl McpProxyPlane {
 }
 
 impl ExecutionPlane for McpProxyPlane {
+    fn shutdown<'a>(&'a self) -> futures::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            for conn in &self.connections {
+                conn.stop().await;
+            }
+            Ok(())
+        })
+    }
+
     fn schemas(&self) -> Vec<ToolSchema> {
         let mut result = self.local.schemas();
         for conn in &self.connections {

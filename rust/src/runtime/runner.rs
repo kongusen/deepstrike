@@ -310,6 +310,11 @@ impl RuntimeRunner {
         self.plane.as_ref()
     }
 
+    pub async fn shutdown(&self) -> Result<()> {
+        self.interrupt_with_reason(CancellationReason::HostShutdown);
+        self.plane.shutdown().await
+    }
+
     /// Read the durable projection for a session.  This is the low-level hook used by the
     /// ergonomic `AgentSession` facade and is also useful to Rust hosts that need to inspect
     /// evidence without reconstructing a runner.

@@ -258,6 +258,10 @@ impl Agent {
         };
         agent.run(goal).await
     }
+
+    pub async fn close(&self) -> Result<()> {
+        self.runner.shutdown().await
+    }
 }
 
 /// A durable, resumable session handle.
