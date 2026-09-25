@@ -90,12 +90,32 @@ pub struct AgentRunResult {
     pub output: String,
     pub run_id: Option<String>,
     pub session_id: String,
-    pub status: String,
+    pub status: AgentRunStatus,
     pub iterations: u32,
     pub total_tokens: u64,
     pub usage: Option<AgentUsage>,
     pub evidence: Option<AgentEvidence>,
     pub output_validation: Option<OutputValidation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRunStatus {
+    #[default]
+    Partial,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+fn status_from_reason(reason: &str) -> AgentRunStatus {
+    match reason {
+        "completed" | "success" | "done" => AgentRunStatus::Completed,
+        "cancelled" | "user" | "user_abort" | "deadline" | "lease_lost" | "host_shutdown"
+        | "timeout" => AgentRunStatus::Cancelled,
+        "failed" | "error" | "invalid_arg" => AgentRunStatus::Failed,
+        _ => AgentRunStatus::Partial,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,7 +240,7 @@ impl Agent {
             output: text,
             run_id: session.latest_run_id().await?,
             session_id: session.session_id.clone(),
-            status: "completed".into(),
+            status: AgentRunStatus::Completed,
             ..Default::default()
         }))
     }
@@ -279,7 +299,7 @@ impl AgentSession {
                 } => {
                     result.iterations = iterations;
                     result.total_tokens = total_tokens;
-                    result.status = status;
+                    result.status = status_from_reason(&status);
                 }
                 _ => {}
             }
