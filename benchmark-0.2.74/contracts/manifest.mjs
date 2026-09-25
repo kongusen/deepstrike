@@ -64,9 +64,41 @@ export const PUBLIC_CONTRACTS = [
   },
 ]
 
+export const EXPECTED_EXPORTS = {
+  ".": { import: "./dist/index.js", types: "./dist/index.d.ts" },
+  "./providers": { import: "./dist/providers/public.js", types: "./dist/providers/public.d.ts" },
+  "./workflow": { import: "./dist/workflow/public.js", types: "./dist/workflow/public.d.ts" },
+  "./planes": { import: "./dist/planes/public.js", types: "./dist/planes/public.d.ts" },
+  "./memory": { import: "./dist/memory/public.js", types: "./dist/memory/public.d.ts" },
+  "./harness": { import: "./dist/harness/public.js", types: "./dist/harness/public.d.ts" },
+  "./os": { import: "./dist/os/public.js", types: "./dist/os/public.d.ts" },
+  "./advanced": { import: "./dist/advanced/public.js", types: "./dist/advanced/public.d.ts" },
+  "./runtime": { import: "./dist/runtime/public.js", types: "./dist/runtime/public.d.ts" },
+  "./evals": { import: "./dist/evals/public.js", types: "./dist/evals/public.d.ts" },
+}
+
+export function checkPackageExportMap(sdk, expected = EXPECTED_EXPORTS) {
+  const actual = sdk.packageJson?.exports ?? {}
+  const missing = Object.keys(expected).filter(path => !(path in actual))
+  const wrong = Object.entries(expected).flatMap(([path, contract]) => {
+    const value = actual[path]
+    if (!value) return []
+    return ["import", "types"].filter(condition => value[condition] !== contract[condition]).map(condition => ({
+      path,
+      condition,
+      expected: contract[condition],
+      actual: value[condition],
+    }))
+  })
+  return { passed: missing.length === 0 && wrong.length === 0, missing, wrong }
+}
+
 export function checkPublicContracts(sdk, contracts = PUBLIC_CONTRACTS) {
   const failures = []
   const results = []
+  const exportMap = checkPackageExportMap(sdk)
+  results.push({ id: "package.export-map", surface: "package.json", passed: exportMap.passed, missing: exportMap.missing, wrong: exportMap.wrong })
+  if (!exportMap.passed) failures.push({ id: "package.export-map", surface: "package.json", missing: exportMap.missing, wrong: exportMap.wrong })
   for (const contract of contracts) {
     const module = sdk.surfaces?.[contract.surface]
     const missing = module ? contract.required.filter(name => !(name in module)) : [...contract.required]
@@ -81,7 +113,7 @@ export function checkPublicContracts(sdk, contracts = PUBLIC_CONTRACTS) {
 export function assertPublicContracts(sdk, contracts = PUBLIC_CONTRACTS) {
   const report = checkPublicContracts(sdk, contracts)
   if (!report.passed) {
-    const detail = report.failures.map(f => `${f.id}: missing=[${f.missing.join(",")}] forbidden=[${f.forbiddenPresent.join(",")}]`).join("; ")
+    const detail = report.failures.map(f => `${f.id}: missing=[${(f.missing ?? []).join(",")}] forbidden=[${(f.forbiddenPresent ?? []).join(",")}] wrong=[${(f.wrong ?? []).map(item => `${item.path}.${item.condition}`).join(",")}]`).join("; ")
     throw new Error(`public contract failure: ${detail}`)
   }
   return report

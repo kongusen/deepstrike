@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { loadSdk, assertSdkVersion, EXPECTED_SDK_VERSION } from "../core/sdk.mjs"
-import { assertPublicContracts, checkPublicContracts, PUBLIC_CONTRACTS } from "../contracts/manifest.mjs"
+import { assertPublicContracts, checkPublicContracts, checkPackageExportMap, PUBLIC_CONTRACTS } from "../contracts/manifest.mjs"
 
 test("loads the 0.2.74 package export map", async () => {
   const sdk = assertSdkVersion(await loadSdk())
@@ -12,8 +12,13 @@ test("loads the 0.2.74 package export map", async () => {
 test("all declared public barrel contracts pass", async () => {
   const sdk = await loadSdk()
   const report = assertPublicContracts(sdk)
-  assert.equal(report.results.length, PUBLIC_CONTRACTS.length)
+  assert.equal(report.results.length, PUBLIC_CONTRACTS.length + 1)
   assert.ok(report.results.every(result => result.passed))
+})
+
+test("the package export map keeps import and declaration entry points aligned", async () => {
+  const sdk = await loadSdk()
+  assert.equal(checkPackageExportMap(sdk).passed, true)
 })
 
 test("contract report identifies drift without hiding missing or leaked symbols", async () => {

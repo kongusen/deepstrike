@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "sdkVersion": "0.2.74",
+  "scenario": "agent-facade",
+  "variant": "replay",
+  "status": "passed",
+  "elapsedMs": 561,
+  "metrics": {
+    "completedRuns": {
+      "value": 2,
+      "unit": "count",
+      "mode": "deterministic",
+      "samples": 1
+    },
+    "streamEvents": {
+      "value": 2,
+      "unit": "count",
+      "mode": "deterministic",
+      "samples": 1
+    },
+    "replayInputTokens": {
+      "value": 36,
+      "unit": "tokens",
+      "mode": "deterministic",
+      "samples": 1
+    },
+    "memoryHits": {
+      "value": 1,
+      "unit": "count",
+      "mode": "deterministic",
+      "samples": 1
+    },
+    "evidenceFields": {
+      "value": 3,
+      "unit": "count",
+      "mode": "deterministic",
+      "samples": 1
+    }
+  },
+  "evidence": {
+    "result": {
+      "status": "completed",
+      "output": "hello from replay",
+      "sessionId": "agent-run"
+    },
+    "stream": [
+      "text_delta",
+      "done"
+    ],
+    "memory": {
+      "roundTrip": true,
+      "score": 0.85
+    }
+  }
+}

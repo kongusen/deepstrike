@@ -1,4 +1,3 @@
-import { resolve } from "node:path"
 import { loadSdk, assertSdkVersion } from "./sdk.mjs"
 import { makeArtifact, makeFailureArtifact, compareArtifacts, defaultPath, readJson, saveJson } from "./artifacts.mjs"
 import { SCENARIO_MAP } from "../scenarios/index.mjs"

@@ -45,7 +45,7 @@ export const agentFacade = {
       evidence: {
         result: { status: run.status, output: run.output, sessionId: run.sessionId },
         stream: streamEvents.map(event => event.type),
-        memory: { recordId: saved.record_id, score: recalled[0]?.score ?? 0 },
+        memory: { roundTrip: recalled[0]?.record.record_id === saved.record_id, score: Math.round((recalled[0]?.score ?? 0) * 1000) / 1000 },
       },
     }
   },
