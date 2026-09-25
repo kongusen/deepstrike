@@ -48,6 +48,8 @@ live smoke 会检查真实鉴权、一次普通 run、一次 stream、usage/evid
 
 `dynamic-complex` 覆盖动态 workflow 的 phase、串行 pipeline、有并发上限的 fan-out、条件分支、聚合、审批、pause/resume 和 replay。
 
+复杂业务流程的体系化优化、优先级和验收矩阵见 [`COMPLEX-FLOW-OPTIMIZATION.md`](./COMPLEX-FLOW-OPTIMIZATION.md)。
+
 `live-comprehensive` 进一步覆盖 session、tool、memory host/API 与 memory tool、knowledge tool、skill loader/declaration、output schema、SignalGateway、PermissionManager，以及真实 `RuntimeRunner.runDynamicWorkflow()` 的并行子 agent 和生命周期事件。
 报告会把“工具已执行但模型最终回答未在预算内完成”记为 `completionWarnings`，保留能力执行证据，不把它隐藏成普通成功。
 
