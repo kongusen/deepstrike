@@ -65,6 +65,29 @@ export class AgentSession {
   constructor(private readonly owner: Agent, id: string) { this.id = id }
   history(fromSeq = 0) { return this.owner.sessionLog.read(this.id, fromSeq) }
   latestSeq() { return this.owner.sessionLog.latestSeq(this.id) }
+  async workflowTrace() {
+    const kinds = new Set(["workflow_batch_spawned", "workflow_node_completed", "workflow_nodes_submitted", "workflow_completed"])
+    return (await this.history()).filter(entry => kinds.has(entry.event.kind))
+  }
+  async workflowReplay() {
+    const events = await this.workflowTrace()
+    const outcomes = new Map<string, Record<string, unknown>>()
+    let completed = false
+    for (const entry of events) {
+      if (entry.event.kind === "workflow_node_completed") {
+        const id = entry.event.agent_id
+        if (id) outcomes.set(id, entry.event as unknown as Record<string, unknown>)
+      }
+      if (entry.event.kind === "workflow_completed") {
+        completed = true
+        for (const outcome of entry.event.node_outcomes) {
+          const id = outcome.node_id
+          if (id) outcomes.set(id, outcome as unknown as Record<string, unknown>)
+        }
+      }
+    }
+    return { events, nodeOutcomes: [...outcomes.values()], completed }
+  }
   private runner(goal: string, options: AgentRunOptions = {}) { return this.owner.createRunner(goal, this.id, options) }
 
   async *stream(goal: string, options: Omit<AgentRunOptions, "sessionId"> = {}): AsyncIterable<StreamEvent> {

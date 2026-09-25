@@ -8,7 +8,7 @@ export class DurableMemory implements Memory {
   constructor(
     private readonly store: MemoryStore,
     private readonly agentId: string,
-    private readonly scope: MemoryScope,
+    scope: MemoryScope,
   ) {
     this.namespace = scope.namespace
     this.scope = scope
