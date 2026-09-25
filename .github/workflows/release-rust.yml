@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$(cat VERSION)"
-          if curl --fail --silent --show-error "https://crates.io/api/v1/crates/deepstrike-tokenizer/${VERSION}" >/dev/null; then
+          if curl --fail --silent --show-error "https://index.crates.io/de/ep/deepstrike-tokenizer" | grep -q '"vers":"'"${VERSION}"'"'; then
             echo "deepstrike-tokenizer ${VERSION} already exists; skipping upload"
           else
             cargo publish --registry crates-io -p deepstrike-tokenizer
@@ -54,7 +54,7 @@ jobs:
           set -euo pipefail
           VERSION="$(cat VERSION)"
           for i in $(seq 1 12); do
-            if curl --fail --silent --show-error "https://crates.io/api/v1/crates/deepstrike-tokenizer/${VERSION}" >/dev/null; then
+            if curl --fail --silent --show-error "https://index.crates.io/de/ep/deepstrike-tokenizer" | grep -q '"vers":"'"${VERSION}"'"'; then
               echo "deepstrike-tokenizer $VERSION is indexed"
               exit 0
             fi
@@ -76,7 +76,7 @@ jobs:
           set -euo pipefail
           VERSION="$(cat VERSION)"
           for i in $(seq 1 12); do
-            if curl --fail --silent --show-error "https://crates.io/api/v1/crates/deepstrike-core/${VERSION}" >/dev/null; then
+            if curl --fail --silent --show-error "https://index.crates.io/de/ep/deepstrike-core" | grep -q '"vers":"'"${VERSION}"'"'; then
               echo "deepstrike-core $VERSION is indexed"
               exit 0
             fi
