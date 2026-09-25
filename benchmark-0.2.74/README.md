@@ -30,9 +30,13 @@ node benchmark-0.2.74/cli/bench.mjs live-smoke --live --provider=all
 node benchmark-0.2.74/cli/bench.mjs live-smoke --live --provider=openai
 # 限制单次请求时长和累计 token
 node benchmark-0.2.74/cli/bench.mjs live-smoke --live --provider=openai --timeout-ms=90000 --max-total-tokens=1200
+# 使用 OpenAI key 详细验证功能矩阵
+node benchmark-0.2.74/cli/bench.mjs live-comprehensive --live --provider=openai --max-total-tokens=1200
 ```
 
 live smoke 会检查真实鉴权、一次普通 run、一次 stream、usage/evidence，以及模型是否实际完成工具调用。工具调用没有发生时会记录为 `not_exercised`，不会把模型能力差异误报成 SDK 失败。
+
+`live-comprehensive` 进一步覆盖 session、tool、memory host/API 与 memory tool、knowledge tool、skill tool、output schema，以及真实 `RuntimeRunner.runDynamicWorkflow()` 的并行子 agent 和生命周期事件。
 
 保存和检查 baseline：
 

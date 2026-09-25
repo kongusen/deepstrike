@@ -9,13 +9,13 @@ const PROVIDER_SPECS = {
   kimi: { key: "KIMI_API_KEY", model: "KIMI_MODEL", baseURL: "KIMI_BASE_URL" },
 }
 
-function redactError(error) {
+export function redactError(error) {
   return String(error?.message ?? error)
     .replace(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]")
     .replace(/(?:sk|api|key)[-_][A-Za-z0-9._-]{8,}/gi, "[REDACTED]")
 }
 
-function providerFromEnv(sdk, name) {
+export function providerFromEnv(sdk, name) {
   const spec = PROVIDER_SPECS[name]
   const apiKey = process.env[spec.key]
   if (!apiKey) return { provider: null, skipReason: `missing ${spec.key}` }
@@ -93,8 +93,16 @@ async function probeProvider(sdk, name, options) {
       status: basic.status,
       outputPrefix: String(basic.output).slice(0, 80),
       usageAvailable: Boolean(basic.usage),
+      routeAvailable: Boolean(basic.evidence?.route),
+      measurementAvailable: Boolean(basic.evidence?.measurement),
       evidenceFields: Object.keys(basic.evidence ?? {}).length,
       eventKinds: [...new Set(basicEvents.map(entry => entry.event.kind))].sort(),
+      ...(basicEvents.find(entry => entry.event.kind === "run_terminal")?.event.kind === "run_terminal"
+        ? { terminalReason: basicEvents.find(entry => entry.event.kind === "run_terminal").event.reason }
+        : {}),
+      ...(basicEvents.find(entry => entry.event.kind === "provider_attempt")?.event.kind === "provider_attempt"
+        ? { providerAttemptStatus: basicEvents.find(entry => entry.event.kind === "provider_attempt").event.status, providerErrorClass: basicEvents.find(entry => entry.event.kind === "provider_attempt").event.last_error_class }
+        : {}),
     }
 
     const streamEvents = await withTimeout(signal => collectAsync(agent.stream("Reply with exactly STREAM_OK.", {
@@ -104,6 +112,7 @@ async function probeProvider(sdk, name, options) {
       passed: streamEvents.some(event => event.type === "text_delta") && streamEvents.some(event => event.type === "done"),
       eventTypes: [...new Set(streamEvents.map(event => event.type))],
       textChars: streamEvents.filter(event => event.type === "text_delta").reduce((n, event) => n + String(event.delta ?? "").length, 0),
+      ...(streamEvents.find(event => event.type === "error")?.message ? { error: redactError(streamEvents.find(event => event.type === "error").message) } : {}),
     }
 
     const toolRun = await withTimeout(signal => agent.run("Call add_numbers exactly once with a=2 and b=3, then reply with exactly TOOL_OK.", {
@@ -163,6 +172,8 @@ export const liveSmoke = {
     const basicPassed = reports.filter(report => report.basic?.passed).length
     const streamPassed = reports.filter(report => report.stream?.passed).length
     const toolExercised = reports.filter(report => report.tool?.status === "exercised").length
+    const providerUsageAvailable = reports.filter(report => report.basic?.usageAvailable).length
+    const measurementAvailable = reports.filter(report => report.basic?.measurementAvailable).length
     const result = {
       status: failed.length === 0 && attempted.length > 0 ? "passed" : "failed",
       metrics: {
@@ -172,6 +183,8 @@ export const liveSmoke = {
         basicPassRate: ratio(basicPassed, attempted.length),
         streamPassRate: ratio(streamPassed, attempted.length),
         toolCapabilityRate: ratio(toolExercised, attempted.length),
+        providerUsageAvailabilityRate: ratio(providerUsageAvailable, attempted.length),
+        measurementAvailabilityRate: ratio(measurementAvailable, attempted.length),
         averageLatencyMs: metric(attempted.length ? Math.round(attempted.reduce((sum, report) => sum + (report.elapsedMs ?? 0), 0) / attempted.length) : 0, "ms"),
       },
       evidence: { requestedProviders: names, reports },
