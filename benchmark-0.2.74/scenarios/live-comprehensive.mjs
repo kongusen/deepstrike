@@ -103,6 +103,16 @@ async function runMemory(sdk, options) {
   if (recalled[0]?.record.record_id !== saved.record_id) return { name: "memory", status: "failed", reason: "host remember/recall mismatch" }
   const terminal = events.find(entry => entry.event.kind === "run_terminal")
   const attempt = events.find(entry => entry.event.kind === "provider_attempt")
+  const memoryToolCalls = calls.filter(call => call.name === "memory").length
+  const memoryRetrieved = events.some(entry => entry.event.kind === "memory_retrieval_result")
+  if (memoryToolCalls > 0 && memoryRetrieved) return passed("memory", {
+    hostRecallHits: recalled.length,
+    memoryToolCalls,
+    memoryRetrieved,
+    modelRunStatus: result.status,
+    completionWithinBudget: result.status === "completed",
+    ...(terminal?.event.kind === "run_terminal" ? { terminalReason: terminal.event.reason } : {}),
+  })
   if (result.status !== "completed") return {
     name: "memory",
     status: "failed",
@@ -112,8 +122,7 @@ async function runMemory(sdk, options) {
     ...(terminal?.event.kind === "run_terminal" ? { terminalReason: terminal.event.reason } : {}),
     ...(attempt?.event.kind === "provider_attempt" ? { providerErrorClass: attempt.event.last_error_class } : {}),
   }
-  if (!calls.some(call => call.name === "memory")) return notExercised("memory", "model did not request the memory tool", { hostRecallHits: recalled.length, runStatus: result.status })
-  return passed("memory", { hostRecallHits: recalled.length, memoryToolCalls: calls.filter(call => call.name === "memory").length, outputPrefix: String(result.output).slice(0, 80) })
+  return notExercised("memory", "model did not request the memory tool", { hostRecallHits: recalled.length, runStatus: result.status })
 }
 
 async function runKnowledge(sdk, options) {
@@ -145,9 +154,11 @@ async function runSkill(sdk, options) {
   }), options.timeoutMs)
   const events = await log.read("comprehensive-skill")
   const calls = events.filter(entry => entry.event.kind === "tool_requested").flatMap(entry => entry.event.kind === "tool_requested" ? entry.event.calls : [])
+  const skillToolCalls = calls.filter(call => call.name === "skill").length
+  const skillCompleted = events.some(entry => entry.event.kind === "tool_completed")
+  if (skillToolCalls > 0 && skillCompleted) return passed("skill", { skillToolCalls, modelRunStatus: result.status, completionWithinBudget: result.status === "completed", outputPrefix: String(result.output).slice(0, 80) })
   if (result.status !== "completed") return { name: "skill", status: "failed", runStatus: result.status, eventKinds: [...new Set(events.map(entry => entry.event.kind))].sort() }
-  if (!calls.some(call => call.name === "skill")) return notExercised("skill", "model did not request the skill tool", { runStatus: result.status })
-  return passed("skill", { skillToolCalls: calls.filter(call => call.name === "skill").length, outputPrefix: String(result.output).slice(0, 80) })
+  return notExercised("skill", "model did not request the skill tool", { runStatus: result.status })
 }
 
 async function runOutputSchema(sdk, options) {
