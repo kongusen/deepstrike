@@ -228,6 +228,30 @@ impl AgentSession {
         self.runner.read_session(&self.session_id).await
     }
 
+    /// Reconstruct the current message context from the durable session projection.
+    pub async fn replay_messages(
+        &self,
+    ) -> Result<Vec<deepstrike_core::types::message::CoreMessage>> {
+        Ok(crate::runtime::replay::replay_messages(
+            &self.history().await?,
+        ))
+    }
+
+    /// Return the provider replay messages recorded for this session.
+    pub async fn recorded_messages(
+        &self,
+    ) -> Result<Vec<deepstrike_core::types::message::CoreMessage>> {
+        Ok(
+            crate::runtime::replay_fixture::extract_recorded_messages_from_entries(
+                &self.history().await?,
+            ),
+        )
+    }
+
+    pub async fn is_mid_run(&self) -> Result<bool> {
+        Ok(crate::runtime::replay::is_mid_run(&self.history().await?))
+    }
+
     pub async fn latest_seq(&self) -> Result<i64> {
         self.runner.latest_session_seq(&self.session_id).await
     }

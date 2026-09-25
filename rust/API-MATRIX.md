@@ -11,6 +11,7 @@ Rust SDK 和 Node、Python、WASM 共用 `deepstrike-core` 的状态机、事件
 | 流式运行 | `Agent::stream` / `AgentSession::stream` | ✅ | 复用 `RunEvent`，保留 Rust `Stream` 语义 |
 | 恢复运行 | `AgentSession::resume` | ✅ | 调用 durable session projection + canonical journal |
 | 历史与序号 | `history` / `latest_seq` | ✅ | 读取 `SessionEntry`，支持审计和证据投影 |
+| Replay projection | `replay_messages` / `recorded_messages` / `is_mid_run` | ✅ | 从 durable session projection 恢复上下文和 provider replay |
 | 中断 | `AgentSession::interrupt` | ✅ | 委托给 runner 的 cancellation reason 机制 |
 | 信号监听 | `Agent::listen` / `RuntimeRunner::listen` | ✅ | claim → run → ack；失败走 nack，保持租约语义 |
 | Memory | `RuntimeRunner::write_memory` / `query_memory` | ✅ | 共享 core memory policy、校验、配额和审计 |
