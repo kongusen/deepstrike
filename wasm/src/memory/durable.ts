@@ -3,6 +3,7 @@ import type { Memory, MemoryQuery, MemoryRecord, MemoryScope, MemorySearchOption
 /** Binds host storage to the public durable Memory contract for one agent and namespace. */
 export class DurableMemory implements Memory {
   readonly namespace: string
+  readonly scope: MemoryScope
 
   constructor(
     private readonly store: MemoryStore,
@@ -10,6 +11,7 @@ export class DurableMemory implements Memory {
     private readonly scope: MemoryScope,
   ) {
     this.namespace = scope.namespace
+    this.scope = scope
   }
 
   async search(query: string, options: MemorySearchOptions = {}): Promise<MemoryRecord[]> {

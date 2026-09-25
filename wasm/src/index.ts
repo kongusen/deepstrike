@@ -127,8 +127,9 @@ export {
 } from "./runtime/workflow-control-flow.js"
 export { Agent } from "./agent.js"
 export type {
-  AgentMemory, AgentOptions, AgentRunResult, AgentToolDefinition, AgentRef, Guardrail, Handoff, Knowledge,
+  AgentMemory, AgentOptions, AgentRunResult, AgentRunOptions, AgentToolDefinition, AgentRef, Guardrail, Handoff, Knowledge,
   KnowledgeSourceRef, MCPServer, McpTransport, MemoryReference, ModelRef, ModelRequirement, Skill,
+  MemoryInput, RecallOptions, DelegationResult, AgentRuntimeBinding, AgentSession,
 } from "./agent.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
 export { OpenAIProvider, qwen, deepseek, minimax, kimi } from "./providers/openai.js"

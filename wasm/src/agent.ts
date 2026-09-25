@@ -1,5 +1,5 @@
 import type { AgentCapabilityFilter, WorkflowOutcome, WorkflowSpec } from "./runtime/types/agent.js"
-import type { Memory, WorkingMemory } from "./memory/index.js"
+import type { Memory, WorkingMemory, MemoryRecord, MemoryRecall, MemoryKind } from "./memory/index.js"
 import type { RegisteredTool } from "./tools/index.js"
 import type { LLMProvider, StreamEvent, ContentPart, UsageEvent } from "./types.js"
 import { RuntimeRunner } from "./runtime/runner.js"
@@ -48,6 +48,9 @@ export interface AgentRunResult {
   outputValidation?: { ok: boolean; errors: string[] }
   evidence?: { route?: unknown; measurement?: unknown; contextBinding?: unknown }
 }
+export interface MemoryInput { name: string; content: string; description?: string; kind?: MemoryKind; confidence?: number; pinned?: boolean; ttlDays?: number }
+export interface RecallOptions { topK?: number; kinds?: MemoryKind[]; minScore?: number }
+export interface DelegationResult { output: string; status: "completed" | "partial" | "failed" }
 
 function statusOf(reason: string): AgentRunResult["status"] {
   if (["completed", "success", "done"].includes(reason)) return "completed"
@@ -123,6 +126,30 @@ export class Agent {
   resume(sessionId: string, options: Omit<AgentRunOptions, "sessionId"> = {}) { return this.session(sessionId).resume(options) }
   interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user", sessionId?: string) { sessionId ? this.session(sessionId).interrupt(reason) : [...this.sessions.values()].forEach(s => s.interrupt(reason)) }
   workflow(spec: WorkflowSpec, options: { sessionId?: string } = {}) { return this.session(options.sessionId).workflow(spec) }
+  async remember(input: MemoryInput): Promise<MemoryRecord> {
+    if (!this.memory || typeof (this.memory as Memory).put !== "function") throw new Error(`agent "${this.name}" memory is not runtime-bound`)
+    const now = Date.now()
+    const record: MemoryRecord = {
+      record_id: crypto.randomUUID(), scope: (this.memory as Memory & { scope?: { tenant_id: string; namespace: string } }).scope
+        ?? { tenant_id: "default", namespace: (this.memory as Memory).namespace ?? this.name },
+      name: input.name, kind: input.kind ?? "reference", content: input.content,
+      description: input.description ?? input.name,
+      provenance: { author: "host", trust: "user_asserted", evidence_refs: [], session_id: `memory-${crypto.randomUUID()}` },
+      created_at: now, updated_at: now, recall_count: 0, confidence: input.confidence ?? 1,
+      links: [], pinned: input.pinned ?? false, ...(input.ttlDays === undefined ? {} : { ttl_days: input.ttlDays }),
+    }
+    await (this.memory as Memory).put(record)
+    return record
+  }
+  async recall(query: string, options: RecallOptions = {}): Promise<MemoryRecall[]> {
+    if (!this.memory || typeof (this.memory as Memory).search !== "function") throw new Error(`agent "${this.name}" memory is not runtime-bound`)
+    const records = await (this.memory as Memory).search(query, { topK: options.topK ?? 8, kinds: options.kinds, minScore: options.minScore })
+    return records.map(record => ({ record, score: 1, why: "memory facade search" }))
+  }
+  async delegate(_request: { target: AgentRef; goal: string; metadata?: Record<string, unknown>; providerOptions?: Record<string, unknown> }): Promise<DelegationResult> {
+    throw new Error("WASM delegate requires a host agent resolver; bind one through the runtime adapter")
+  }
+  async listen(): Promise<AgentRunResult | null> { throw new Error("WASM signals require a host SignalSource adapter") }
   async close() {}
   async result(sessionId: string, events: StreamEvent[]): Promise<AgentRunResult> {
     const entries = await this.sessionLog.read(sessionId)
