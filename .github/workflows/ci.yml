@@ -139,6 +139,11 @@ jobs:
       - name: Test WASM SDK
         run: npm test
         working-directory: wasm
+      - name: Verify Rust WASM target directly
+        run: cargo check --locked --target wasm32-unknown-unknown -p deepstrike-wasm
+      - name: Verify Node-target WASM bindings and golden fixtures
+        run: npm run test:canonical-binding
+        working-directory: wasm
 
   python:
     runs-on: ubuntu-latest
