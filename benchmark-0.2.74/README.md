@@ -1,6 +1,6 @@
 # DeepStrike Node SDK 0.2.74 Benchmark
 
-这是面向 Node SDK `0.2.74` 的新测评目录。它按 SDK 的新契约和 API 分层重建，保留旧的 `benchmark/` 目录作为历史实现，不复用旧 runner、旧 loader 或旧场景。
+这是面向 Node SDK `0.2.74` 的测评目录，按 SDK 的新契约和 API 分层重建。
 
 ## 测评分层
 

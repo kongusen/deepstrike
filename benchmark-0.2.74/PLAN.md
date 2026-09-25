@@ -2,7 +2,7 @@
 
 ## Architecture Decisions
 
-1. Keep `benchmark-0.2.74/` independent from the stale `benchmark/` tree.
+1. Keep `benchmark-0.2.74/` as the repository benchmark tree for SDK 0.2.74.
 2. Treat the package exports map as the benchmark's contract boundary. Load root plus every declared 0.2.74 subpath through one adapter; never import implementation files from scenarios.
 3. Build the benchmark in three layers: public-surface contracts, behavior scenarios, and replay/regression artifacts. Deterministic fixtures validate the current SDK without API keys.
 4. Keep metrics and golden logic provider-agnostic so replay and live runs share the same artifact format.
