@@ -10,6 +10,29 @@ function skillPath(skillDir: string, name: string): string {
   return path.join(skillDir, `${name}.md`)
 }
 
+async function readSkillSource(skillDir: string, name: string): Promise<string | null> {
+  const direct = skillPath(skillDir, name)
+  try {
+    return await readFile(direct, "utf8")
+  } catch (error: unknown) {
+    if ((error as { code?: string }).code !== "ENOENT") throw error
+  }
+
+  // Anthropic Agent Skills use one directory per skill with a canonical SKILL.md entrypoint.
+  // Keep the flat `<name>.md` catalog shape for existing callers, while resolving the standard
+  // entrypoint by its frontmatter name when the flat file is absent.
+  const standard = path.join(skillDir, "SKILL.md")
+  try {
+    const raw = await readFile(standard, "utf8")
+    const { meta } = parseFrontmatter(raw)
+    const declaredName = meta.name ? String(meta.name) : "SKILL"
+    return declaredName === name || name === "SKILL" ? raw : null
+  } catch (error: unknown) {
+    if ((error as { code?: string }).code !== "ENOENT") throw error
+    return null
+  }
+}
+
 export interface SkillMetadata {
   name: string
   description: string
@@ -46,14 +69,8 @@ function parseFrontmatter(content: string): { meta: Record<string, unknown>; bod
 
 /** Read one skill file and return its body (frontmatter stripped). */
 export async function readSkillFile(skillDir: string, name: string): Promise<string | null> {
-  const file = skillPath(skillDir, name)
-  try {
-    const raw = await readFile(file, "utf8")
-    return parseFrontmatter(raw).body
-  } catch (error: unknown) {
-    if ((error as { code?: string }).code !== "ENOENT") throw error
-    return null
-  }
+  const raw = await readSkillSource(skillDir, name)
+  return raw === null ? null : parseFrontmatter(raw).body
 }
 
 /** Scan a skill directory and return frontmatter-only metadata for all `.md` files. */

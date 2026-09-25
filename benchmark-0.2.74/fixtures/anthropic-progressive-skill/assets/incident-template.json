@@ -1,0 +1,9 @@
+{
+  "marker": "ASSET_ORBIT",
+  "situation": "",
+  "evidence": [],
+  "severity": "",
+  "nextCheckpoint": "",
+  "communication": { "audience": "", "nextUpdate": "" },
+  "handoff": { "owner": "", "openHypotheses": [], "pendingApprovals": [] }
+}

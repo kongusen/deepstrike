@@ -1,7 +1,7 @@
 import { mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { scanSkillDir } from "../src/skills/loader.js"
+import { readSkillFile, scanSkillDir } from "../src/skills/loader.js"
 import { skillMetadataToKernel } from "../src/runtime/kernel-step.js"
 
 /**
@@ -57,5 +57,21 @@ describe("P1-B B0: skill allowed_tools pipe", () => {
       name: "plain",
       description: "No grants declared",
     })).toBe(false)
+  })
+})
+
+describe("Anthropic Agent Skills entrypoint", () => {
+  it("resolves a canonical SKILL.md by its frontmatter name", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ds-anthropic-skill-loader-"))
+    await writeFile(
+      join(dir, "SKILL.md"),
+      "---\nname: incident-response\ndescription: Handles incidents\n---\nUse the incident playbook.",
+    )
+
+    const metas = await scanSkillDir(dir)
+    const body = await readSkillFile(dir, "incident-response")
+
+    expect(metas).toEqual([{ name: "incident-response", description: "Handles incidents", whenToUse: undefined, effort: undefined, estimatedTokens: undefined, allowedTools: undefined }])
+    expect(body).toBe("Use the incident playbook.")
   })
 })

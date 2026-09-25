@@ -19,6 +19,7 @@ node benchmark-0.2.74/cli/bench.mjs contract-surface
 node benchmark-0.2.74/cli/bench.mjs agent-facade
 node benchmark-0.2.74/cli/bench.mjs planes-harness-evals
 node benchmark-0.2.74/cli/bench.mjs workflow --compare
+node benchmark-0.2.74/cli/bench.mjs skill-progressive
 npm test --prefix benchmark-0.2.74
 ```
 
@@ -34,9 +35,15 @@ node benchmark-0.2.74/cli/bench.mjs live-smoke --live --provider=openai --timeou
 node benchmark-0.2.74/cli/bench.mjs live-comprehensive --live --provider=openai --max-total-tokens=1200
 # 只重跑未触发的能力
 node benchmark-0.2.74/cli/bench.mjs live-comprehensive --live --provider=openai --features=memory,skill --max-total-tokens=1200
+# 用真实 provider key 驱动模型激活 Anthropic Agent Skills fixture
+node benchmark-0.2.74/cli/bench.mjs live-skill-progressive --live --provider=minimax --timeout-ms=90000 --max-total-tokens=2000
+# 也可切换到 OpenAI 或 Kimi
+node benchmark-0.2.74/cli/bench.mjs live-skill-progressive --live --provider=kimi --timeout-ms=90000 --max-total-tokens=2000
 ```
 
 live smoke 会检查真实鉴权、一次普通 run、一次 stream、usage/evidence，以及模型是否实际完成工具调用。工具调用没有发生时会记录为 `not_exercised`，不会把模型能力差异误报成 SDK 失败。
+
+`skill-progressive` 使用标准 `SKILL.md`、`references/`、`assets/`、`scripts/`、`examples/` 目录，验证 metadata → skill body → 按需资源的渐进式加载，以及 `allowed_tools` 带来的工具面扩大。`live-skill-progressive` 用真实 provider 请求重复这个过程，可选择 OpenAI、MiniMax 或 Kimi。
 
 `live-comprehensive` 进一步覆盖 session、tool、memory host/API 与 memory tool、knowledge tool、skill loader/declaration、output schema、SignalGateway、PermissionManager，以及真实 `RuntimeRunner.runDynamicWorkflow()` 的并行子 agent 和生命周期事件。
 报告会把“工具已执行但模型最终回答未在预算内完成”记为 `completionWarnings`，保留能力执行证据，不把它隐藏成普通成功。
@@ -54,6 +61,7 @@ node benchmark-0.2.74/cli/bench.mjs workflow --variant=default --baseline-check
 - `core/sdk.mjs`：唯一 SDK loader 和版本守卫。
 - `core/runner.mjs`：场景执行、artifact、compare、baseline。
 - `scenarios/`：确定性契约与行为场景。
+- `fixtures/anthropic-progressive-skill/`：复杂 Anthropic Agent Skills fixture，包含 `SKILL.md` 和懒加载资源。
 - `tests/`：Node built-in test。
 - `runs/`：本地运行输出，默认不提交。
 - `baselines/`：被接受的 golden JSON。
