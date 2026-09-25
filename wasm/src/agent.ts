@@ -6,6 +6,7 @@ import { RuntimeRunner } from "./runtime/runner.js"
 import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-plane.js"
 import { InMemorySessionLog, type SessionLog } from "./runtime/session-log.js"
 import { extractJsonValue, validateAgainstSchema } from "./runtime/output-schema.js"
+import type { SignalSource } from "./signals/index.js"
 
 type JsonSchema = Record<string, unknown>
 export interface MemoryReference { kind?: "durable"; namespace?: string }
@@ -28,6 +29,8 @@ export interface AgentRuntimeBinding {
   runtimeOptions?: Partial<import("./runtime/runner.js").RuntimeOptions>
   sessionLog?: SessionLog
   executionPlane?: ExecutionPlane
+  resolveAgent?: (name: string) => Agent | undefined | Promise<Agent | undefined>
+  signalSource?: SignalSource
 }
 export interface AgentOptions {
   name: string; description?: string; instructions?: string; model?: ModelRef
@@ -169,10 +172,26 @@ export class Agent {
     const records = await (this.memory as Memory).search(query, { topK: options.topK ?? 8, kinds: options.kinds, minScore: options.minScore })
     return records.map(record => ({ record, score: 1, why: "memory facade search" }))
   }
-  async delegate(_request: { target: AgentRef; goal: string; metadata?: Record<string, unknown>; providerOptions?: Record<string, unknown> }): Promise<DelegationResult> {
-    throw new Error("WASM delegate requires a host agent resolver; bind one through the runtime adapter")
+  async delegate(request: { target: AgentRef; goal: string; metadata?: Record<string, unknown>; providerOptions?: Record<string, unknown> }): Promise<DelegationResult> {
+    const targetName = typeof request.target === "string" ? request.target : request.target.name
+    const declared = (this.handoffs ?? []).some(h => (typeof h.agent === "string" ? h.agent : h.agent.name) === targetName)
+    if (!declared) throw new Error(`agent "${this.name}" cannot hand off to "${targetName}"`)
+    const resolver = this.runtimeBinding?.resolveAgent
+    if (!resolver) throw new Error(`agent "${this.name}" requires a host target resolver`)
+    const target = await resolver(targetName)
+    if (!target) throw new Error(`target agent "${targetName}" is not registered`)
+    const result = await target.run(request.goal, { metadata: request.metadata, providerOptions: request.providerOptions })
+    return { output: result.output, status: result.status === "cancelled" ? "partial" : result.status }
   }
-  async listen(): Promise<AgentRunResult | null> { throw new Error("WASM signals require a host SignalSource adapter") }
+  async listen(): Promise<AgentRunResult | null> {
+    const source = this.runtimeBinding?.signalSource
+    if (!source) throw new Error("agent signals require runtimeBinding.signalSource")
+    const claim = await source.claimSignal()
+    if (!claim) return null
+    const goal = String(claim.signal.payload.goal ?? claim.signal.payload.summary ?? JSON.stringify(claim.signal.payload))
+    try { const result = await this.run(goal); await source.ackSignal(claim); return result }
+    catch (error) { await source.nackSignal(claim); throw error }
+  }
   async close() {}
   async result(sessionId: string, events: StreamEvent[]): Promise<AgentRunResult> {
     const entries = await this.sessionLog.read(sessionId)
