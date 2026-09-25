@@ -202,7 +202,7 @@ async function runSignal(sdk, options) {
 async function runPermission(sdk) {
   const manager = new sdk.os.PermissionManager(sdk.os.PermissionMode.DEFAULT)
   manager.grant("read_file", "read")
-  manager.grantWithApproval("write_file", "review before write")
+  manager.grantWithApproval("write_file", "write", "review before write")
   manager.revoke("delete_file", "blocked by benchmark")
   const allowed = manager.evaluate("read_file", "read")
   const approval = manager.evaluate("write_file", "write")
