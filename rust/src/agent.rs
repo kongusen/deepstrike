@@ -10,6 +10,11 @@ use std::sync::Arc;
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 
+#[async_trait::async_trait]
+pub trait AgentResolver: Send + Sync {
+    async fn resolve(&self, name: &str) -> Result<Option<Arc<Agent>>>;
+}
+
 use crate::run_event::RunEvent;
 use crate::runtime::session_log::SessionEntry;
 use crate::{MemoryQuery, MemoryRecall, MemoryRecord, Result, RuntimeOptions, RuntimeRunner};
@@ -131,21 +136,30 @@ pub struct AgentEvidence {
 }
 
 /// A high-level agent backed by the canonical Rust runtime.
+#[derive(Clone)]
 pub struct Agent {
     runner: Arc<RuntimeRunner>,
+    resolver: Option<Arc<dyn AgentResolver>>,
 }
 
 impl Agent {
     pub fn new(options: RuntimeOptions) -> Self {
         Self {
             runner: Arc::new(RuntimeRunner::new(options)),
+            resolver: None,
         }
     }
 
     pub fn with_runner(runner: RuntimeRunner) -> Self {
         Self {
             runner: Arc::new(runner),
+            resolver: None,
         }
+    }
+
+    pub fn with_resolver(mut self, resolver: Arc<dyn AgentResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     pub fn runner(&self) -> &RuntimeRunner {
@@ -191,6 +205,20 @@ impl Agent {
             status: "completed".into(),
             ..Default::default()
         }))
+    }
+
+    pub async fn delegate(&self, target: &str, goal: &str) -> Result<AgentRunResult> {
+        let Some(resolver) = &self.resolver else {
+            return Err(crate::Error::Other(
+                "delegate requires Agent::with_resolver".into(),
+            ));
+        };
+        let Some(agent) = resolver.resolve(target).await? else {
+            return Err(crate::Error::Other(format!(
+                "target agent {target:?} is not registered"
+            )));
+        };
+        agent.run(goal).await
     }
 }
 

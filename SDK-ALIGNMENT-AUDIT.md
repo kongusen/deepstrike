@@ -20,7 +20,7 @@
 | remember / recall | ✅ | ✅ | ✅ | ✅ | Rust 支持 typed `MemoryRecord` / `MemoryQuery` |
 | workflow driver | ✅ | ✅ | ✅ | ⚠️ | Rust 暴露 `AgentWorkflow` 手动 executor，不强行引入 async runtime |
 | workflow trace / replay | ✅ | ✅ | ✅ | ⚠️ | Rust 已有 replay message projection；workflow 专用 trace 仍待 typed event contract |
-| delegate / handoff | ✅ | ✅ | ✅ | ⚠️ | Rust 没有通用 host resolver contract |
+| delegate / handoff | ✅ | ✅ | ✅ | ✅ | Rust 通过显式 `AgentResolver` 注入 host 查找能力 |
 | listen / signal lease | ✅ | ✅ | ✅ | ✅ | Rust 已补 claim → run → ack/nack |
 | MCP / execution plane | ✅ | ✅ | ✅ | ✅ | Rust 以 trait 和 proxy plane 暴露 |
 | close / resource lifecycle | ✅ | ✅ | ✅ | ⚠️ | Rust 的 plane 生命周期由宿主持有 |
@@ -39,8 +39,7 @@ WASM 的 Agent facade 已覆盖 Node/Python 的主要 public contract，包括 o
 
 ## 下一步顺序
 
-1. Rust 基于 `SignalSource` 定义可选 handoff resolver trait，补 delegate，不把 host registry 写进 core。
-2. Rust 添加 workflow trace/replay 的 typed projection。
-3. Rust 的 close 只在 execution plane/MCP trait 提供明确 shutdown contract 后实现；当前不伪造 close。
+1. Rust 添加 workflow trace/replay 的 typed projection。
+2. Rust 的 close 只在 execution plane/MCP trait 提供明确 shutdown contract 后实现；当前不伪造 close。
 
 每一步都应先补共享 fixture 或 Rust 行为测试，再更新矩阵，避免只增加同名 API。
