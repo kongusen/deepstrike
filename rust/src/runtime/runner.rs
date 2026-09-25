@@ -2592,9 +2592,33 @@ impl RuntimeRunner {
                 | KernelObservation::LocalRunnableTrace { .. } => {}
                 // W0-ABI workflow lifecycle. The rust SDK has no workflow drive yet
                 // (node/python only), so these are observed-but-ignored here.
-                KernelObservation::WorkflowBatchSpawned { .. } => {}
-                KernelObservation::WorkflowSpawnFailed { .. } => {}
-                KernelObservation::WorkflowCompleted { .. } => {}
+                KernelObservation::WorkflowBatchSpawned { turn, nodes, .. } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::WorkflowBatchSpawned { turn, nodes },
+                    )
+                    .await;
+                }
+                KernelObservation::WorkflowSpawnFailed { turn, error } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::WorkflowSpawnFailed { turn, error },
+                    )
+                    .await;
+                }
+                KernelObservation::WorkflowCompleted {
+                    turn,
+                    node_outcomes,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::WorkflowCompleted {
+                            turn,
+                            node_outcomes,
+                        },
+                    )
+                    .await;
+                }
                 KernelObservation::NodesRejected { .. } => {}
                 KernelObservation::AgentPreempted { .. } => {}
                 KernelObservation::AgentPreemptFailed { .. } => {}
@@ -2676,7 +2700,23 @@ impl RuntimeRunner {
                 KernelObservation::Resumed { .. } => {}
                 // R3-1: submission bookkeeping — the rust SDK has no workflow driver, so the
                 // base-index observation has no session record to enrich here.
-                KernelObservation::WorkflowNodesSubmitted { .. } => {}
+                KernelObservation::WorkflowNodesSubmitted {
+                    turn,
+                    base,
+                    count,
+                    submitter,
+                } => {
+                    self.log(
+                        session_id,
+                        SessionEvent::WorkflowNodesSubmitted {
+                            turn,
+                            base,
+                            count,
+                            submitter,
+                        },
+                    )
+                    .await;
+                }
                 // ③ loop-agent pacing: the rust SDK has no loop driver yet; the decision also
                 // rides LoopResult.pace_decision for embedders that want it.
                 KernelObservation::RoundPaced { .. } => {}

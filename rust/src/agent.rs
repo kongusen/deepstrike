@@ -167,6 +167,13 @@ pub struct SessionReplay {
     pub latest_seq: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowTrace {
+    pub events: Vec<SessionEntry>,
+    pub node_outcomes: Vec<deepstrike_core::orchestration::workflow::WorkflowNodeOutcome>,
+    pub completed: bool,
+}
+
 /// A high-level agent backed by the canonical Rust runtime.
 #[derive(Clone)]
 pub struct Agent {
@@ -395,6 +402,40 @@ impl AgentSession {
                 crate::runtime::replay_fixture::extract_recorded_messages_from_entries(&entries),
             is_mid_run: crate::runtime::replay::is_mid_run(&entries),
             latest_seq: self.runner.latest_session_seq(&self.session_id).await?,
+        })
+    }
+
+    pub async fn workflow_trace(&self) -> Result<WorkflowTrace> {
+        let events: Vec<_> = self
+            .history()
+            .await?
+            .into_iter()
+            .filter(|entry| {
+                matches!(
+                    entry.event,
+                    deepstrike_core::runtime::session::SessionEvent::WorkflowBatchSpawned { .. }
+                        | deepstrike_core::runtime::session::SessionEvent::WorkflowSpawnFailed { .. }
+                        | deepstrike_core::runtime::session::SessionEvent::WorkflowCompleted { .. }
+                        | deepstrike_core::runtime::session::SessionEvent::WorkflowNodesSubmitted { .. }
+                )
+            })
+            .collect();
+        let mut node_outcomes = Vec::new();
+        let mut completed = false;
+        for entry in &events {
+            if let deepstrike_core::runtime::session::SessionEvent::WorkflowCompleted {
+                node_outcomes: outcomes,
+                ..
+            } = &entry.event
+            {
+                node_outcomes = outcomes.clone();
+                completed = true;
+            }
+        }
+        Ok(WorkflowTrace {
+            events,
+            node_outcomes,
+            completed,
         })
     }
 

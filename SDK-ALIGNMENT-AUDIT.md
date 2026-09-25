@@ -20,7 +20,7 @@
 | usage / evidence result projection | ✅ | ✅ | ✅ | ✅ | Rust 从 `ContextPrepared` 和 terminal 事件投影 usage/evidence |
 | remember / recall | ✅ | ✅ | ✅ | ✅ | Rust 支持 typed `MemoryRecord` / `MemoryQuery` |
 | workflow driver | ✅ | ✅ | ✅ | ⚠️ | Rust 暴露 `AgentWorkflow` 手动 executor，不强行引入 async runtime |
-| workflow trace / replay | ✅ | ✅ | ✅ | ⚠️ | Rust 已有 typed session replay；workflow 专用 trace 仍待 typed event contract |
+| workflow trace / replay | ✅ | ✅ | ✅ | ✅ | Rust 从 typed workflow session events 投影 batch、submit、failure、completion |
 | delegate / handoff | ✅ | ✅ | ✅ | ✅ | Rust 通过显式 `AgentResolver` 注入 host 查找能力 |
 | listen / signal lease | ✅ | ✅ | ✅ | ✅ | Rust 已补 claim → run → ack/nack |
 | MCP / execution plane | ✅ | ✅ | ✅ | ✅ | Rust 以 trait 和 proxy plane 暴露 |
@@ -32,7 +32,7 @@
 
 Rust 的 `RuntimeRunner` 是强类型、可组合的 runtime driver。`AgentSession` 和 `AgentWorkflow` 只做对象模型封装，不复制状态机。workflow 不自动创建 tokio task，也不假设并发执行器；调用方按 `ready_batch`、`spawn_info`、`record_completion` 推进，这与 Rust 的 ownership 和宿主控制模型一致。
 
-剩余差距集中在 runtime contract，而不是基础运行能力缺失：专用 workflow trace/replay 仍需 core typed event contract。
+四端公共运行能力已闭合；Rust workflow 仍保持手动 executor 语义，属于语言级执行模型差异。
 
 ### WASM
 
@@ -40,7 +40,6 @@ WASM 的 Agent facade 已覆盖 Node/Python 的主要 public contract，包括 o
 
 ## 下一步顺序
 
-1. Rust 添加 workflow trace/replay 的 typed projection。
-2. Rust workflow trace/replay 需要 core typed event contract 后再实现。
+1. Rust workflow driver 是否需要 batteries-included 版本，取决于具体 Rust 宿主的并发模型。
 
 每一步都应先补共享 fixture 或 Rust 行为测试，再更新矩阵，避免只增加同名 API。

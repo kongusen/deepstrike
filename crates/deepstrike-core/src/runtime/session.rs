@@ -112,6 +112,24 @@ pub enum SessionEvent {
         turns_used: u32,
         total_tokens: u64,
     },
+    WorkflowBatchSpawned {
+        turn: u32,
+        nodes: Vec<crate::orchestration::workflow::WorkflowSpawnInfo>,
+    },
+    WorkflowSpawnFailed {
+        turn: u32,
+        error: String,
+    },
+    WorkflowCompleted {
+        turn: u32,
+        node_outcomes: Vec<crate::orchestration::workflow::run::WorkflowNodeOutcome>,
+    },
+    WorkflowNodesSubmitted {
+        turn: u32,
+        base: u32,
+        count: u32,
+        submitter: Option<String>,
+    },
 
     // ─── 2. Kernel Governance & Security Gates ───
     /// Tool arguments automatically repaired under white-listed heuristics.
@@ -328,6 +346,10 @@ impl SessionEvent {
             Self::PageOut { .. } => "page_out",
             Self::PageIn { .. } => "page_in",
             Self::RunTerminal { .. } => "run_terminal",
+            Self::WorkflowBatchSpawned { .. } => "workflow_batch_spawned",
+            Self::WorkflowSpawnFailed { .. } => "workflow_spawn_failed",
+            Self::WorkflowCompleted { .. } => "workflow_completed",
+            Self::WorkflowNodesSubmitted { .. } => "workflow_nodes_submitted",
             Self::ToolArgumentRepaired { .. } => "tool_argument_repaired",
             Self::PermissionRequested { .. } => "permission_requested",
             Self::PermissionResolved { .. } => "permission_resolved",
@@ -375,6 +397,10 @@ impl SessionEvent {
                 | Self::EntropySample { .. }
                 | Self::EntropyAlert { .. }
                 | Self::Rollbacked { .. }
+                | Self::WorkflowBatchSpawned { .. }
+                | Self::WorkflowSpawnFailed { .. }
+                | Self::WorkflowCompleted { .. }
+                | Self::WorkflowNodesSubmitted { .. }
                 | Self::AgentProcessChanged { .. }
                 | Self::MilestoneAdvanced { .. }
                 | Self::MilestoneBlocked { .. }
