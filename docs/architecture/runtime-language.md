@@ -1,10 +1,10 @@
 # DeepStrike Runtime Language
 
-This glossary is normative for 0.2.73. It names what data means, who owns it, how it crosses a
+This glossary is normative for 0.2.74. It names what data means, who owns it, how it crosses a
 boundary, and how it becomes durable history. The paired English page is
 [Runtime Language](../en/architecture/runtime-language.md).
 
-## 0.2.73 language layers
+## 0.2.74 language layers
 
 The following registry is normative for the public, host, kernel, and provider boundaries. A term may be referenced by more than one layer when the representation crosses that boundary; `primaryDomain` in the shared fixture remains the classification authority.
 
