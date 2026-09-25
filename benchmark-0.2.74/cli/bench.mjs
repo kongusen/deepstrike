@@ -30,7 +30,7 @@ if (command === "list") {
       console.error(`${scenarioId} requires --live; this command may make external provider requests`)
       process.exitCode = 2
     } else {
-      if (scenario.requiresLive) await loadProjectEnv(root)
+      if (scenario.requiresLive) await loadProjectEnv(resolve(root, ".."))
       const provider = valueFlag("--provider")
       const timeoutMs = numericFlag("--timeout-ms")
       const maxTotalTokens = numericFlag("--max-total-tokens")
