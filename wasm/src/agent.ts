@@ -4,7 +4,7 @@ import type { RegisteredTool } from "./tools/index.js"
 import type { LLMProvider, StreamEvent, ContentPart, UsageEvent } from "./types.js"
 import { RuntimeRunner } from "./runtime/runner.js"
 import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-plane.js"
-import { InMemorySessionLog, type SessionLog } from "./runtime/session-log.js"
+import { InMemorySessionLog, type SessionEvent, type SessionLog } from "./runtime/session-log.js"
 import { extractJsonValue, validateAgainstSchema } from "./runtime/output-schema.js"
 import type { SignalSource } from "./signals/index.js"
 import type { McpExecutionPlane } from "./runtime/mcp-transport.js"
@@ -204,7 +204,20 @@ export class Agent {
     const output = events.filter((e): e is StreamEvent & { delta: unknown } => e.type === "text_delta" && "delta" in e).map(e => String(e.delta)).join("")
     const usage = [...events].reverse().find((e): e is UsageEvent => e.type === "usage")
     const result: AgentRunResult = { output, runId: started?.kind === "run_started" ? started.run_id : undefined, sessionId, status: statusOf(terminal?.kind === "run_terminal" ? terminal.reason : events.some(e => e.type === "error") ? "error" : "completed") }
+    const attempt = [...entries].reverse().find(e => e.event.kind === "provider_attempt")?.event
     if (usage) result.usage = { inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0, totalTokens: usage.totalTokens }
+    else if (attempt?.kind === "provider_attempt" && attempt.usage) {
+      result.usage = { inputTokens: attempt.usage.inputTokens, outputTokens: attempt.usage.outputTokens, totalTokens: attempt.usage.inputTokens + attempt.usage.outputTokens }
+    }
+    const measured = [...entries].reverse().find(e => e.event.kind === "prompt_measured")?.event
+    const prepared = [...entries].reverse().find(e => e.event.kind === "context_prepared")?.event
+    if ((started?.kind === "run_started" && started.route) || (attempt?.kind === "provider_attempt" && attempt.route) || measured || prepared) {
+      result.evidence = {
+        ...((attempt?.kind === "provider_attempt" ? attempt.route : started?.kind === "run_started" ? started.route : undefined) ? { route: attempt?.kind === "provider_attempt" ? attempt.route : (started as Extract<SessionEvent, { kind: "run_started" }>).route } : {}),
+        ...(measured?.kind === "prompt_measured" ? { measurement: measured.measurement } : {}),
+        ...(prepared?.kind === "context_prepared" ? { contextBinding: prepared.preparation.binding } : {}),
+      }
+    }
     if (this.outputSchema) {
       result.outputValidation = validateAgainstSchema(extractJsonValue(output), this.outputSchema)
       if (!result.outputValidation.ok && result.status === "completed") result.status = "failed"

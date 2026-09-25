@@ -1,5 +1,6 @@
 import type { ToolCall, ToolSchema, StreamEvent, ToolResultEvent } from "../types.js"
-import type { ExecutionPlane, RunContext } from "./execution-plane.js"
+import { LocalExecutionPlane, type ExecutionPlane, type RunContext } from "./execution-plane.js"
+import type { RegisteredTool } from "../tools/index.js"
 
 /** Browser-safe MCP connection boundary. Implement HTTP/SSE/custom transports in the host. */
 export interface McpConnection {
@@ -23,6 +24,8 @@ export class McpExecutionPlane implements ExecutionPlane {
   private readonly connections: McpConnection[] = []
   private readonly toolMap = new Map<string, McpConnection>()
   private connected = false
+  private readonly local = new LocalExecutionPlane()
+  private readonly localNames = new Set<string>()
   constructor(private readonly configs: McpServerConfig[], private readonly factory: McpConnectionFactory) {}
 
   async connect(): Promise<void> {
@@ -36,12 +39,15 @@ export class McpExecutionPlane implements ExecutionPlane {
     this.connected = true
   }
 
-  register(): this { return this }
-  unregister(name: string): this { this.toolMap.delete(name); return this }
-  schemas(): ToolSchema[] { return this.connections.flatMap(connection => connection.schemas()) }
+  register(...tools: RegisteredTool[]): this { this.local.register(...tools); for (const tool of tools) this.localNames.add(tool.schema.name); return this }
+  unregister(name: string): this { this.local.unregister(name); this.localNames.delete(name); this.toolMap.delete(name); return this }
+  schemas(): ToolSchema[] { return [...this.local.schemas(), ...this.connections.flatMap(connection => connection.schemas())] }
 
   async *executeAll(calls: ToolCall[], context: RunContext): AsyncIterable<StreamEvent> {
+    const localCalls = calls.filter(call => this.localNames.has(call.name))
+    if (localCalls.length) yield* this.local.executeAll(localCalls, context)
     for (const call of calls) {
+      if (this.localNames.has(call.name)) continue
       const connection = this.toolMap.get(call.name)
       if (!connection) {
         yield { type: "tool_result", callId: call.id, name: call.name, content: `unknown MCP tool: ${call.name}`, isError: true } as ToolResultEvent
