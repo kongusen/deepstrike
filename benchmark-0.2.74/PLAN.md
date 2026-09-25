@@ -14,6 +14,9 @@
 - [ ] SDK compatibility loader, version guard, and public-barrel contract manifest.
   - Acceptance: root plus `providers`, `workflow`, `planes`, `memory`, `harness`, `os`, `advanced`, `runtime`, and `evals` resolve from the 0.2.74 export map; forbidden root leaks are reported.
   - Verify: contract conformance test.
+- [x] Layered contract manifest and exact export-map guard.
+  - Acceptance: every contract is assigned to a known layer; undeclared package subpaths fail the contract report.
+  - Verify: contract conformance test with injected undeclared path.
 - [ ] MetricSet, diff, render, golden utilities.
   - Acceptance: deterministic JSON schema, diff output, tolerance checks.
   - Verify: unit tests.
@@ -28,7 +31,7 @@
 - [ ] Agent facade scenario.
   - Acceptance: root `createAgent` validates run/stream/session/resume/interrupt/result/evidence and memory boundaries through public bindings.
 - [ ] Workflow and dynamic workflow scenarios.
-  - Acceptance: `RuntimeRunner.runWorkflow` and `runDynamicWorkflow` cover scheduler, limits, lifecycle, replay reuse, and mismatch.
+  - Acceptance: `RuntimeRunner.runWorkflow` and `runDynamicWorkflow` cover scheduler, limits, paired lifecycle, replay reuse, and mismatch.
 - [ ] Planes, harness, and eval scenarios.
   - Acceptance: each public surface has at least one deterministic behavior assertion, with no provider network calls.
 - [ ] Run artifact and replay fixture support.

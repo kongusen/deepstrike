@@ -72,6 +72,19 @@ async function runPauseResume(sdk) {
   return { result, lifecycle }
 }
 
+function lifecycleBalance(events) {
+  const started = new Set(events.filter(event => event.kind === "agent_started").map(event => event.nodeId))
+  const completed = new Set(events.filter(event => event.kind === "agent_completed").map(event => event.nodeId))
+  const reused = new Set(events.filter(event => event.kind === "agent_reused").map(event => event.nodeId))
+  return {
+    started: started.size,
+    completed: completed.size,
+    reused: reused.size,
+    unpairedStarts: [...started].filter(nodeId => !completed.has(nodeId)),
+    completedWithoutStart: [...completed].filter(nodeId => !started.has(nodeId)),
+  }
+}
+
 export const dynamicComplex = {
   id: "dynamic-complex",
   description: "complex dynamic workflow phases, bounded fan-out, branch, pipeline, aggregate, pause/resume, and replay",
@@ -95,6 +108,8 @@ export const dynamicComplex = {
     const paused = await runPauseResume(sdk)
     const firstAgentStarted = first.result.progress.agentsStarted
     const secondAgentReused = second.lifecycle.filter(event => event.kind === "agent_reused").length
+    const firstLifecycleBalance = lifecycleBalance(first.lifecycle)
+    const replayLifecycleBalance = lifecycleBalance(second.lifecycle)
     const phases = first.result.progress.phases.map(phase => phase.name)
     const pausedKinds = paused.lifecycle.map(event => event.kind)
     const passed = first.result.progress.status === "completed"
@@ -107,6 +122,13 @@ export const dynamicComplex = {
       && second.result.progress.agentsReused === 11
       && first.calls.length === 11
       && second.calls.length === 0
+      && firstLifecycleBalance.started === 11
+      && firstLifecycleBalance.completed === 11
+      && firstLifecycleBalance.unpairedStarts.length === 0
+      && firstLifecycleBalance.completedWithoutStart.length === 0
+      && replayLifecycleBalance.reused === 11
+      && replayLifecycleBalance.started === 0
+      && replayLifecycleBalance.completed === 0
       && approvals.length === 2
       && paused.result.progress.status === "completed"
       && pausedKinds.includes("pause_requested")
@@ -130,6 +152,9 @@ export const dynamicComplex = {
         replayAgentsReused: count(secondAgentReused),
         firstDispatches: count(first.calls.length),
         replayDispatches: count(second.calls.length),
+        lifecycleStarted: count(firstLifecycleBalance.started),
+        lifecycleCompleted: count(firstLifecycleBalance.completed),
+        unpairedLifecycleEvents: count(firstLifecycleBalance.unpairedStarts.length + firstLifecycleBalance.completedWithoutStart.length),
         boundedFanoutWidth: metric(2, "agents"),
         pausedLifecycleEvents: count(pausedKinds.filter(kind => ["pause_requested", "paused", "resumed"].includes(kind)).length),
       },
@@ -144,6 +169,8 @@ export const dynamicComplex = {
         approvals,
         replayAgentsReused: second.result.progress.agentsReused,
         replayDispatches: second.calls.length,
+        lifecycleBalance: firstLifecycleBalance,
+        replayLifecycleBalance,
       },
     }
   },

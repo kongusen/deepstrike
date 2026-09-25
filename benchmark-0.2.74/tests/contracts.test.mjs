@@ -21,6 +21,14 @@ test("the package export map keeps import and declaration entry points aligned",
   assert.equal(checkPackageExportMap(sdk).passed, true)
 })
 
+test("the package export map rejects undeclared public paths", async () => {
+  const sdk = await loadSdk()
+  const clone = { ...sdk, packageJson: { ...sdk.packageJson, exports: { ...sdk.packageJson.exports, "./internal": { import: "./dist/internal.js", types: "./dist/internal.d.ts" } } } }
+  const report = checkPackageExportMap(clone)
+  assert.equal(report.passed, false)
+  assert.deepEqual(report.unexpected, ["./internal"])
+})
+
 test("contract report identifies drift without hiding missing or leaked symbols", async () => {
   const sdk = await loadSdk()
   const clone = { ...sdk, surfaces: { ...sdk.surfaces, root: { ...sdk.root, RuntimeRunner: class {} } } }

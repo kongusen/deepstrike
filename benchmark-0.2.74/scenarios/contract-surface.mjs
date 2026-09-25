@@ -15,8 +15,9 @@ export const contractSurface = {
         contractsPassed: count(report.results.filter(result => result.passed).length),
         contractsTotal: count(report.results.length),
         surfaces: count(new Set(report.results.map(result => result.surface)).size),
+        layers: count(new Set(report.results.filter(result => result.layer).map(result => result.layer)).size),
       },
-      evidence: { contracts: report.results.map(result => ({ id: result.id, surface: result.surface, passed: result.passed })) },
+      evidence: { contracts: report.results.map(result => ({ id: result.id, surface: result.surface, layer: result.layer, passed: result.passed })) },
     }
   },
 }

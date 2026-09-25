@@ -1,6 +1,7 @@
 export const PUBLIC_CONTRACTS = [
   {
     id: "root.intent",
+    layer: "intent",
     surface: "root",
     required: [
       "createAgent", "tool", "streamingTool", "safeTool", "ok", "fail",
@@ -15,11 +16,13 @@ export const PUBLIC_CONTRACTS = [
   },
   {
     id: "providers.backend",
+    layer: "provider",
     surface: "providers",
     required: ["deepseek", "kimi", "qwen", "glm", "minimax", "gemini", "ollama", "OpenAIChatProvider", "endpointProfiles", "modelRegistry", "CircuitBreaker"],
   },
   {
     id: "workflow.orchestration",
+    layer: "orchestration",
     surface: "workflow",
     required: [
       "SubAgentOrchestrator", "spawnStandalone", "builtinReducers", "createWorkflow", "lowerWorkflowDefinition",
@@ -29,36 +32,43 @@ export const PUBLIC_CONTRACTS = [
   },
   {
     id: "planes.execution",
+    layer: "execution",
     surface: "planes",
     required: ["WorktreeExecutionPlane", "ProcessSandboxPlane", "McpProxyPlane", "FilteredExecutionPlane", "FileArchiveStore", "InMemoryCredentialVault"],
   },
   {
     id: "memory.boundary",
+    layer: "state",
     surface: "memory",
     required: ["WorkingMemory", "DurableMemory", "InMemoryMemoryStore", "rankMemories", "extractSessionMemories", "parseExtractedMemories"],
   },
   {
     id: "harness.evaluation",
+    layer: "evaluation",
     surface: "harness",
     required: ["AttemptLoop", "RuntimeAttemptBody", "VerdictFnJudge", "LlmEvalJudge", "HybridJudge", "judge", "composeSystemPrompt", "manifestDigest", "NudgeEngine"],
   },
   {
     id: "os.replay",
+    layer: "replay",
     surface: "os",
     required: ["osProfile", "assertNativeProfile", "SignalGateway", "PermissionManager", "ReplayProvider", "extractRecordedMessages", "primitiveForKind"],
   },
   {
     id: "advanced.runtime",
+    layer: "runtime",
     surface: "advanced",
     required: ["RuntimeRunner", "LocalExecutionPlane", "InMemorySessionLog", "FileSessionLog", "runAgent", "runFanout", "collectText"],
   },
   {
     id: "runtime.host",
+    layer: "runtime",
     surface: "runtime",
     required: ["RuntimeRunner", "ContextManager", "InMemorySessionLog", "FileSessionLog", "runAgent", "runFanout"],
   },
   {
     id: "evals.trace",
+    layer: "evaluation",
     surface: "evals",
     required: ["evaluate", "judge", "buildEvalMessages", "parseVerdict", "verdictOutputSchema"],
   },
@@ -77,9 +87,21 @@ export const EXPECTED_EXPORTS = {
   "./evals": { import: "./dist/evals/public.js", types: "./dist/evals/public.d.ts" },
 }
 
+export const CONTRACT_LAYERS = Object.freeze([
+  "intent",
+  "provider",
+  "orchestration",
+  "execution",
+  "state",
+  "evaluation",
+  "replay",
+  "runtime",
+])
+
 export function checkPackageExportMap(sdk, expected = EXPECTED_EXPORTS) {
   const actual = sdk.packageJson?.exports ?? {}
   const missing = Object.keys(expected).filter(path => !(path in actual))
+  const unexpected = Object.keys(actual).filter(path => !(path in expected))
   const wrong = Object.entries(expected).flatMap(([path, contract]) => {
     const value = actual[path]
     if (!value) return []
@@ -90,22 +112,25 @@ export function checkPackageExportMap(sdk, expected = EXPECTED_EXPORTS) {
       actual: value[condition],
     }))
   })
-  return { passed: missing.length === 0 && wrong.length === 0, missing, wrong }
+  return { passed: missing.length === 0 && unexpected.length === 0 && wrong.length === 0, missing, unexpected, wrong }
 }
 
 export function checkPublicContracts(sdk, contracts = PUBLIC_CONTRACTS) {
   const failures = []
   const results = []
   const exportMap = checkPackageExportMap(sdk)
-  results.push({ id: "package.export-map", surface: "package.json", passed: exportMap.passed, missing: exportMap.missing, wrong: exportMap.wrong })
-  if (!exportMap.passed) failures.push({ id: "package.export-map", surface: "package.json", missing: exportMap.missing, wrong: exportMap.wrong })
+  results.push({ id: "package.export-map", surface: "package.json", passed: exportMap.passed, missing: exportMap.missing, unexpected: exportMap.unexpected, wrong: exportMap.wrong })
+  if (!exportMap.passed) failures.push({ id: "package.export-map", surface: "package.json", missing: exportMap.missing, unexpected: exportMap.unexpected, wrong: exportMap.wrong })
   for (const contract of contracts) {
     const module = sdk.surfaces?.[contract.surface]
     const missing = module ? contract.required.filter(name => !(name in module)) : [...contract.required]
     const forbiddenPresent = module ? (contract.forbidden ?? []).filter(name => name in module) : []
     const passed = missing.length === 0 && forbiddenPresent.length === 0
-    results.push({ id: contract.id, surface: contract.surface, passed, missing, forbiddenPresent })
-    if (!passed) failures.push({ id: contract.id, surface: contract.surface, missing, forbiddenPresent })
+    const layerValid = CONTRACT_LAYERS.includes(contract.layer)
+    const layer = contract.layer
+    const contractPassed = passed && layerValid
+    results.push({ id: contract.id, surface: contract.surface, layer, passed: contractPassed, missing, forbiddenPresent, ...(layerValid ? {} : { invalidLayer: true }) })
+    if (!contractPassed) failures.push({ id: contract.id, surface: contract.surface, layer, missing, forbiddenPresent, ...(layerValid ? {} : { invalidLayer: true }) })
   }
   return { passed: failures.length === 0, failures, results }
 }
@@ -113,7 +138,7 @@ export function checkPublicContracts(sdk, contracts = PUBLIC_CONTRACTS) {
 export function assertPublicContracts(sdk, contracts = PUBLIC_CONTRACTS) {
   const report = checkPublicContracts(sdk, contracts)
   if (!report.passed) {
-    const detail = report.failures.map(f => `${f.id}: missing=[${(f.missing ?? []).join(",")}] forbidden=[${(f.forbiddenPresent ?? []).join(",")}] wrong=[${(f.wrong ?? []).map(item => `${item.path}.${item.condition}`).join(",")}]`).join("; ")
+    const detail = report.failures.map(f => `${f.id}: missing=[${(f.missing ?? []).join(",")}] unexpected=[${(f.unexpected ?? []).join(",")}] forbidden=[${(f.forbiddenPresent ?? []).join(",")}] wrong=[${(f.wrong ?? []).map(item => `${item.path}.${item.condition}`).join(",")}]${f.invalidLayer ? " invalidLayer=true" : ""}`).join("; ")
     throw new Error(`public contract failure: ${detail}`)
   }
   return report

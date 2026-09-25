@@ -897,6 +897,14 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
     this.progress.agentsStarted = this.agentCount
     this.progress.activeAgents += misses.length
     if (currentPhase) currentPhase.agentsStarted += misses.length
+    for (const entry of misses) {
+      this.emitLifecycle?.({
+        kind: "agent_started",
+        runId: this.runId,
+        nodeId: entry.nodeId,
+        promptFingerprint: entry.promptFingerprint,
+      })
+    }
     this.emit()
     try {
       let outcome: WorkflowOutcome
@@ -952,6 +960,17 @@ class DynamicWorkflowContextImpl<TArgs extends Record<string, unknown>> implemen
           resultDigest: digestDynamicWorkflowResult(""),
           termination: "workflow_rejected",
         })))
+        for (const entry of misses) {
+          this.emitLifecycle?.({
+            kind: "agent_completed",
+            runId: this.runId,
+            nodeId: entry.nodeId,
+            status: "failed",
+            termination: "workflow_rejected",
+          })
+          this.progress.agentsCompleted += 1
+          if (currentPhase) currentPhase.agentsCompleted += 1
+        }
         return replayable.map(entry => entry.record ? this.replayResult(entry.options, entry.record) : null)
       }
       const results = new Map<string, DynamicWorkflowAgentResult | null>()

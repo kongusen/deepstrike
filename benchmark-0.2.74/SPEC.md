@@ -11,6 +11,8 @@
 3. 新 SDK 的可验证性是否成立：ReplayProvider、dynamic workflow replay、session evidence 与 eval trace 能否让同一输入得到可比较的结果。
 4. 同一份运行结果能否被保存、重放、比较，并作为 golden regression 基线。
 
+契约按八个层级组织：`intent`、`provider`、`orchestration`、`execution`、`state`、`evaluation`、`replay`、`runtime`。测评不仅检查必需导出，也检查 export map 不出现未声明的公开路径；行为层必须提供可审计的 lifecycle、replay 和限制证据。
+
 评测默认不需要外部 LLM API。需要模型的场景通过 `ReplayProvider` 使用固定 fixture；真实 provider 作为显式的 live 模式扩展。
 
 ## Commands
@@ -76,7 +78,8 @@ export const workflowScheduler = {
 - **Unit tests:** metric aggregation, diff significance, golden tolerance, fixture handling.
 - **Contract conformance:** load every 0.2.74 public barrel, assert required exports and root leakage rules, and report the contract IDs.
 - **Facade behavior:** exercise root `createAgent` with `ReplayProvider`, `LocalExecutionPlane`, and `InMemorySessionLog`; check result status, session identity, evidence, stream, memory, and interruption boundaries.
-- **Workflow behavior:** exercise `RuntimeRunner.runWorkflow` and `runDynamicWorkflow` with a deterministic host; check scheduler, limits, lifecycle, replay reuse, and mismatch behavior.
+- **Workflow behavior:** exercise `RuntimeRunner.runWorkflow` and `runDynamicWorkflow` with a deterministic host; check scheduler, limits, paired lifecycle, replay reuse, and mismatch behavior.
+- **Cross-layer invariants:** require every declared contract to belong to a known layer, require exact export-map conformance, and require dynamic agent execution events to be paired for every admitted node.
 - **Execution and evaluation:** check a public execution plane, `harness` attempt loop/manifest surfaces, and `evals.evaluate` trace/result contracts.
 - **Replay integration:** use recorded provider and dynamic workflow fixtures and verify stable output across runs.
 - Live provider tests are opt-in and are not part of the default test command.
