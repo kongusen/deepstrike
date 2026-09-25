@@ -95,7 +95,7 @@ async function runMemory(sdk, options) {
   const agent = makeAgent(sdk, "live-comprehensive-memory", built.provider, log, { memoryStore: store })
   const saved = await agent.remember({ name: "release-codename", content: "The release codename is ORBIT.", kind: "project" })
   const recalled = await agent.recall("release codename")
-  const result = await withTimeout(signal => agent.run("Use the memory tool to find the release codename, then reply exactly MEMORY_ORBIT.", {
+  const result = await withTimeout(signal => agent.run("You must call the memory tool before answering. Do not infer or answer from your own knowledge. Query for 'release codename', read the returned memory, then reply exactly MEMORY_ORBIT.", {
     session: { id: "comprehensive-memory" }, maxTurns: 4, maxTotalTokens: options.maxTotalTokens, signal,
   }), options.timeoutMs)
   const events = await log.read("comprehensive-memory")
@@ -130,7 +130,7 @@ async function runSkill(sdk, options) {
   const agent = makeAgent(sdk, "live-comprehensive-skill", built.provider, log, {
     skills: [{ name: "benchmark-skill", description: "A benchmark verification skill", instructions: "The skill verification phrase is SKILL_ORBIT. Return it when asked." }],
   })
-  const result = await withTimeout(signal => agent.run("Call the benchmark-skill skill, then reply exactly SKILL_ORBIT.", {
+  const result = await withTimeout(signal => agent.run("You must call the skill tool before answering. Use the skill name benchmark-skill. Do not answer until the skill tool has returned, then reply exactly SKILL_ORBIT.", {
     session: { id: "comprehensive-skill" }, maxTurns: 5, maxTotalTokens: options.maxTotalTokens, signal,
   }), options.timeoutMs)
   const events = await log.read("comprehensive-skill")
@@ -184,8 +184,7 @@ export const liveComprehensive = {
   requiresLive: true,
   async run({ sdk, options }) {
     const liveOptions = { ...options, timeoutMs: options.timeoutMs ?? 90_000, maxTotalTokens: options.maxTotalTokens ?? 1_200 }
-    const features = []
-    for (const [featureName, feature] of [
+    const allFeatures = [
       ["core", runCore],
       ["tool", runTool],
       ["memory", runMemory],
@@ -193,7 +192,13 @@ export const liveComprehensive = {
       ["skill", runSkill],
       ["output-schema", runOutputSchema],
       ["dynamic-workflow", runDynamicWorkflow],
-    ]) {
+    ]
+    const requestedFeatures = options.features
+      ? new Set(String(options.features).split(",").map(value => value.trim()).filter(Boolean))
+      : null
+    const selectedFeatures = requestedFeatures ? allFeatures.filter(([name]) => requestedFeatures.has(name)) : allFeatures
+    const features = []
+    for (const [featureName, feature] of selectedFeatures) {
       features.push(await runFeature(featureName, () => feature(sdk, liveOptions)))
     }
     const exercised = features.filter(feature => feature.status !== "not_exercised")

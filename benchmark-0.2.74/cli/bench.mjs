@@ -32,11 +32,12 @@ if (command === "list") {
     } else {
       if (scenario.requiresLive) await loadProjectEnv(resolve(root, ".."))
       const provider = valueFlag("--provider")
+      const features = valueFlag("--features")
       const timeoutMs = numericFlag("--timeout-ms")
       const maxTotalTokens = numericFlag("--max-total-tokens")
       const result = flags.has("--compare")
-        ? await compareScenario(scenarioId, { provider, timeoutMs, maxTotalTokens })
-        : await runScenario(scenarioId, { variant, provider, timeoutMs, maxTotalTokens })
+        ? await compareScenario(scenarioId, { provider, features, timeoutMs, maxTotalTokens })
+        : await runScenario(scenarioId, { variant, provider, features, timeoutMs, maxTotalTokens })
       if (flags.has("--baseline-save")) {
         const artifacts = result.artifacts ?? [result]
         for (const artifact of artifacts) console.log(`baseline: ${await saveBaseline(root, artifact)}`)
