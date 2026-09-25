@@ -182,6 +182,35 @@ async function runOutputSchema(sdk, options) {
   return passed("output-schema", { validation: result.outputValidation, outputType: typeof result.output })
 }
 
+async function runSignal(sdk, options) {
+  const built = providerFromEnv(sdk, "openai")
+  if (!built.provider) return notExercised("signal", built.skipReason)
+  const gateway = new sdk.os.SignalGateway()
+  try {
+    const agent = makeAgent(sdk, "live-comprehensive-signal", built.provider, new sdk.advanced.InMemorySessionLog(), {
+      runtimeOptions: { signalSource: gateway },
+    })
+    gateway.ingest({ source: "gateway", signalType: "event", urgency: "normal", payload: { goal: "Reply exactly SIGNAL_ORBIT." } })
+    const result = await agent.listen({ leaseMs: options.timeoutMs })
+    if (!result || result.status !== "completed") return { name: "signal", status: "failed", runStatus: result?.status ?? "empty" }
+    return passed("signal", { runStatus: result.status, outputPrefix: String(result.output).slice(0, 80), queueDepthAfterAck: gateway.depth })
+  } finally {
+    gateway.destroy()
+  }
+}
+
+async function runPermission(sdk) {
+  const manager = new sdk.os.PermissionManager(sdk.os.PermissionMode.DEFAULT)
+  manager.grant("read_file", "read")
+  manager.grantWithApproval("write_file", "review before write")
+  manager.revoke("delete_file", "blocked by benchmark")
+  const allowed = manager.evaluate("read_file", "read")
+  const approval = manager.evaluate("write_file", "write")
+  const denied = manager.evaluate("delete_file", "delete")
+  if (!allowed.allowed || approval.allowed || !approval.requiresApproval || denied.allowed) return { name: "permission", status: "failed" }
+  return passed("permission", { allowed: allowed.reason, approval: approval.reason, denied: denied.reason })
+}
+
 async function runDynamicWorkflow(sdk, options) {
   const built = providerFromEnv(sdk, "openai")
   if (!built.provider) return notExercised("dynamic-workflow", built.skipReason)
@@ -222,6 +251,8 @@ export const liveComprehensive = {
       ["knowledge", runKnowledge],
       ["skill", runSkill],
       ["output-schema", runOutputSchema],
+      ["signal", runSignal],
+      ["permission", runPermission],
       ["dynamic-workflow", runDynamicWorkflow],
     ]
     const requestedFeatures = options.features
