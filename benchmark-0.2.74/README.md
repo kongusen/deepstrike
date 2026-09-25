@@ -19,6 +19,7 @@ node benchmark-0.2.74/cli/bench.mjs contract-surface
 node benchmark-0.2.74/cli/bench.mjs agent-facade
 node benchmark-0.2.74/cli/bench.mjs planes-harness-evals
 node benchmark-0.2.74/cli/bench.mjs workflow --compare
+node benchmark-0.2.74/cli/bench.mjs dynamic-complex
 node benchmark-0.2.74/cli/bench.mjs skill-progressive
 npm test --prefix benchmark-0.2.74
 ```
@@ -44,6 +45,8 @@ node benchmark-0.2.74/cli/bench.mjs live-skill-progressive --live --provider=kim
 live smoke 会检查真实鉴权、一次普通 run、一次 stream、usage/evidence，以及模型是否实际完成工具调用。工具调用没有发生时会记录为 `not_exercised`，不会把模型能力差异误报成 SDK 失败。
 
 `skill-progressive` 使用标准 `SKILL.md`、`references/`、`assets/`、`scripts/`、`examples/` 目录，验证 metadata → skill body → 按需资源的渐进式加载，以及 `allowed_tools` 带来的工具面扩大。`live-skill-progressive` 用真实 provider 请求重复这个过程，可选择 OpenAI、MiniMax 或 Kimi。
+
+`dynamic-complex` 覆盖动态 workflow 的 phase、串行 pipeline、有并发上限的 fan-out、条件分支、聚合、审批、pause/resume 和 replay。
 
 `live-comprehensive` 进一步覆盖 session、tool、memory host/API 与 memory tool、knowledge tool、skill loader/declaration、output schema、SignalGateway、PermissionManager，以及真实 `RuntimeRunner.runDynamicWorkflow()` 的并行子 agent 和生命周期事件。
 报告会把“工具已执行但模型最终回答未在预算内完成”记为 `completionWarnings`，保留能力执行证据，不把它隐藏成普通成功。

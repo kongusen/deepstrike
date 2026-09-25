@@ -6,6 +6,7 @@ import { liveSmoke } from "./live-smoke.mjs"
 import { liveComprehensive } from "./live-comprehensive.mjs"
 import { skillProgressive } from "./skill-progressive.mjs"
 import { liveSkillProgressive } from "./live-skill-progressive.mjs"
+import { dynamicComplex } from "./dynamic-complex.mjs"
 
-export const SCENARIOS = [contractSurface, agentFacade, workflow, planesHarnessEvals, skillProgressive, liveSmoke, liveComprehensive, liveSkillProgressive]
+export const SCENARIOS = [contractSurface, agentFacade, workflow, planesHarnessEvals, dynamicComplex, skillProgressive, liveSmoke, liveComprehensive, liveSkillProgressive]
 export const SCENARIO_MAP = new Map(SCENARIOS.map(scenario => [scenario.id, scenario]))

@@ -14,9 +14,11 @@ test("metric diff compares nested metric values", () => {
 test("contract and behavior scenarios emit passed artifacts", async () => {
   const contract = await runScenario("contract-surface")
   const behavior = await runScenario("planes-harness-evals")
+  const dynamic = await runScenario("dynamic-complex")
   const skill = await runScenario("skill-progressive")
   assert.equal(contract.status, "passed")
   assert.equal(behavior.status, "passed")
+  assert.equal(dynamic.status, "passed")
   assert.equal(skill.status, "passed")
   assert.equal(behavior.sdkVersion, "0.2.74")
 })
