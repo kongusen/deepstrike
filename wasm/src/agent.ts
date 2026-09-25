@@ -1,199 +1,141 @@
-import type { AgentCapabilityFilter } from "./runtime/types/agent.js"
+import type { AgentCapabilityFilter, WorkflowOutcome, WorkflowSpec } from "./runtime/types/agent.js"
 import type { Memory, WorkingMemory } from "./memory/index.js"
 import type { RegisteredTool } from "./tools/index.js"
-import type { LLMProvider, StreamEvent } from "./types.js"
-import { RuntimeRunner, type RuntimeOptions } from "./runtime/runner.js"
-import { LocalExecutionPlane } from "./runtime/execution-plane.js"
-import { InMemorySessionLog } from "./runtime/session-log.js"
+import type { LLMProvider, StreamEvent, ContentPart, UsageEvent } from "./types.js"
+import { RuntimeRunner } from "./runtime/runner.js"
+import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-plane.js"
+import { InMemorySessionLog, type SessionLog } from "./runtime/session-log.js"
+import { extractJsonValue, validateAgainstSchema } from "./runtime/output-schema.js"
 
 type JsonSchema = Record<string, unknown>
-
-export interface MemoryReference {
-  kind?: "durable"
-  namespace?: string
-}
-
+export interface MemoryReference { kind?: "durable"; namespace?: string }
 export type AgentMemory = Memory | WorkingMemory | MemoryReference
 export type ModelRef = string | ModelRequirement
-
-export interface ModelRequirement {
-  capability?: { reasoning?: boolean; vision?: boolean; toolUse?: boolean }
-  contextWindow?: number
-  latencyClass?: string
-  costClass?: string
-}
-
-export interface AgentToolDefinition {
-  name: string
-  description?: string
-  parameters?: Record<string, unknown>
-  providerOptions?: Record<string, unknown>
-}
-
-export type McpTransport =
-  | { kind: "stdio"; command: string; args?: string[] }
-  | { kind: "http"; url: string }
-  | { kind: "sse"; url: string }
-  | { kind: "custom"; [key: string]: unknown }
-
-export interface MCPServer {
-  name?: string
-  transport: McpTransport
-  tools?: string[]
-  resources?: boolean
-  prompts?: boolean
-  auth?: Record<string, unknown>
-  metadata?: Record<string, unknown>
-  providerOptions?: Record<string, unknown>
-}
-
-export interface Skill {
-  name: string
-  description?: string
-  instructions?: string
-  resources?: unknown[]
-  scripts?: unknown[]
-  tools?: unknown[]
-  mcpServers?: unknown[]
-  knowledge?: unknown[]
-  metadata?: Record<string, unknown>
-  providerOptions?: Record<string, unknown>
-}
-
-export type KnowledgeSourceRef =
-  | { kind: "file"; path: string }
-  | { kind: "directory"; path: string }
-  | { kind: "text"; content: string }
-  | { kind: "url"; url: string }
-  | { kind: "vector"; retriever: unknown }
-  | { kind: "custom"; [key: string]: unknown }
-
-export interface Knowledge {
-  id?: string
-  name?: string
-  source: KnowledgeSourceRef
-  description?: string
-  metadata?: Record<string, unknown>
-  providerOptions?: Record<string, unknown>
-}
-
+export interface ModelRequirement { capability?: { reasoning?: boolean; vision?: boolean; toolUse?: boolean }; contextWindow?: number; latencyClass?: string; costClass?: string }
+export interface AgentToolDefinition { name: string; description?: string; parameters?: Record<string, unknown>; providerOptions?: Record<string, unknown> }
+export type McpTransport = { kind: "stdio"; command: string; args?: string[] } | { kind: "http" | "sse"; url: string } | { kind: "custom"; [key: string]: unknown }
+export interface MCPServer { name?: string; transport: McpTransport; tools?: string[]; resources?: boolean; prompts?: boolean; auth?: Record<string, unknown>; metadata?: Record<string, unknown>; providerOptions?: Record<string, unknown> }
+export interface Skill { name: string; description?: string; instructions?: string; resources?: unknown[]; scripts?: unknown[]; tools?: unknown[]; mcpServers?: unknown[]; knowledge?: unknown[]; metadata?: Record<string, unknown>; providerOptions?: Record<string, unknown> }
+export type KnowledgeSourceRef = { kind: "file" | "directory" | "text" | "url" | "vector" | "custom"; [key: string]: unknown }
+export interface Knowledge { id?: string; name?: string; source: KnowledgeSourceRef; description?: string; metadata?: Record<string, unknown>; providerOptions?: Record<string, unknown> }
 export type AgentRef = string | { name: string }
+export interface Handoff { agent: AgentRef; description?: string; inputSchema?: JsonSchema; metadata?: Record<string, unknown>; providerOptions?: Record<string, unknown> }
+export interface Guardrail { name: string; description?: string; metadata?: Record<string, unknown> }
 
-export interface Handoff {
-  agent: AgentRef
-  description?: string
-  inputSchema?: JsonSchema
-  metadata?: Record<string, unknown>
-  providerOptions?: Record<string, unknown>
+export interface AgentRuntimeBinding {
+  provider?: LLMProvider
+  providerFor?: (model: string) => LLMProvider | undefined
+  runtimeOptions?: Partial<import("./runtime/runner.js").RuntimeOptions>
+  sessionLog?: SessionLog
+  executionPlane?: ExecutionPlane
 }
-
-export interface Guardrail {
-  name: string
-  description?: string
-  metadata?: Record<string, unknown>
-}
-
 export interface AgentOptions {
-  name: string
-  description?: string
-  instructions?: string
-  model?: ModelRef
-  capabilityFilter?: AgentCapabilityFilter
-  tools?: Array<RegisteredTool | AgentToolDefinition>
-  mcpServers?: MCPServer[]
-  skills?: Skill[]
-  memory?: AgentMemory
-  knowledge?: Knowledge[]
-  handoffs?: Handoff[]
-  providerOptions?: Record<string, unknown>
-  outputSchema?: JsonSchema
-  metadata?: Record<string, unknown>
-  guardrails?: Guardrail[]
-  runtimeBinding?: {
-    provider?: LLMProvider
-    providerFor?: (model: string) => LLMProvider | undefined
-    runtimeOptions?: Partial<RuntimeOptions>
-  }
+  name: string; description?: string; instructions?: string; model?: ModelRef
+  capabilityFilter?: AgentCapabilityFilter; tools?: Array<RegisteredTool | AgentToolDefinition>
+  mcpServers?: MCPServer[]; skills?: Skill[]; memory?: AgentMemory; knowledge?: Knowledge[]
+  handoffs?: Handoff[]; providerOptions?: Record<string, unknown>; outputSchema?: JsonSchema
+  metadata?: Record<string, unknown>; guardrails?: Guardrail[]; runtimeBinding?: AgentRuntimeBinding
+}
+export interface AgentRunOptions {
+  sessionId?: string; maxTurns?: number; maxTotalTokens?: number; timeoutMs?: number
+  metadata?: Record<string, unknown>; providerOptions?: Record<string, unknown>
+  attachments?: ContentPart[]; cancelSignal?: AbortSignal
+}
+export interface AgentRunResult {
+  output: string; runId?: string; sessionId: string
+  status: "completed" | "partial" | "failed" | "cancelled"
+  usage?: { inputTokens: number; outputTokens: number; totalTokens: number }
+  outputValidation?: { ok: boolean; errors: string[] }
+  evidence?: { route?: unknown; measurement?: unknown; contextBinding?: unknown }
 }
 
-export interface AgentRunResult {
-  output: string
-  sessionId: string
-  status: "completed" | "partial" | "failed" | "cancelled"
+function statusOf(reason: string): AgentRunResult["status"] {
+  if (["completed", "success", "done"].includes(reason)) return "completed"
+  if (["cancelled", "user", "user_abort", "deadline", "timeout"].includes(reason)) return "cancelled"
+  if (["failed", "error", "invalid_arg"].includes(reason)) return "failed"
+  return "partial"
+}
+
+export class AgentSession {
+  readonly id: string
+  private activeRunner?: RuntimeRunner
+  constructor(private readonly owner: Agent, id: string) { this.id = id }
+  history(fromSeq = 0) { return this.owner.sessionLog.read(this.id, fromSeq) }
+  latestSeq() { return this.owner.sessionLog.latestSeq(this.id) }
+  private runner(goal: string, options: AgentRunOptions = {}) { return this.owner.createRunner(goal, this.id, options) }
+
+  async *stream(goal: string, options: Omit<AgentRunOptions, "sessionId"> = {}): AsyncIterable<StreamEvent> {
+    const runner = await this.runner(goal, { ...options, sessionId: this.id })
+    this.activeRunner = runner
+    const abort = () => runner.interrupt("user")
+    if (options.cancelSignal?.aborted) abort()
+    else options.cancelSignal?.addEventListener("abort", abort, { once: true })
+    try { yield* runner.run({ sessionId: this.id, goal, attachments: options.attachments, extensions: options.providerOptions }) }
+    finally { options.cancelSignal?.removeEventListener("abort", abort); this.activeRunner = undefined }
+  }
+  async run(goal: string, options: Omit<AgentRunOptions, "sessionId"> = {}) {
+    const events: StreamEvent[] = []
+    for await (const event of this.stream(goal, options)) events.push(event)
+    return this.owner.result(this.id, events)
+  }
+  async *resume(options: Omit<AgentRunOptions, "sessionId"> = {}): AsyncIterable<StreamEvent> {
+    const runner = await this.runner("resume", { ...options, sessionId: this.id })
+    this.activeRunner = runner
+    try { yield* runner.wake(this.id, options.providerOptions) }
+    finally { this.activeRunner = undefined }
+  }
+  interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user") { this.activeRunner?.interrupt(reason) }
+  async workflow(spec: WorkflowSpec): Promise<WorkflowOutcome> {
+    const runner = await this.runner("workflow", { sessionId: this.id }); this.activeRunner = runner
+    try { return await runner.runWorkflow(spec, { sessionId: this.id }) } finally { this.activeRunner = undefined }
+  }
 }
 
 export class Agent {
-  readonly name: string
-  readonly description?: string
-  readonly instructions?: string
-  readonly model?: ModelRef
-  readonly capabilityFilter?: AgentCapabilityFilter
-  readonly tools?: Array<RegisteredTool | AgentToolDefinition>
-  readonly mcpServers?: MCPServer[]
-  readonly skills?: Skill[]
-  readonly memory?: AgentMemory
-  readonly knowledge?: Knowledge[]
-  readonly handoffs?: Handoff[]
-  readonly providerOptions?: Record<string, unknown>
-  readonly outputSchema?: JsonSchema
-  readonly metadata?: Record<string, unknown>
-  readonly guardrails?: Guardrail[]
-  readonly runtimeBinding?: AgentOptions["runtimeBinding"]
-
+  readonly name: string; readonly description?: string; readonly instructions?: string; readonly model?: ModelRef
+  readonly capabilityFilter?: AgentCapabilityFilter; readonly tools?: Array<RegisteredTool | AgentToolDefinition>
+  readonly mcpServers?: MCPServer[]; readonly skills?: Skill[]; readonly memory?: AgentMemory; readonly knowledge?: Knowledge[]
+  readonly handoffs?: Handoff[]; readonly providerOptions?: Record<string, unknown>; readonly outputSchema?: JsonSchema
+  readonly metadata?: Record<string, unknown>; readonly guardrails?: Guardrail[]; readonly runtimeBinding?: AgentRuntimeBinding
+  readonly sessionLog: SessionLog
+  private readonly sessions = new Map<string, AgentSession>()
   constructor(options: AgentOptions) {
-    this.name = options.name
-    this.description = options.description
-    this.instructions = options.instructions
-    this.model = options.model
-    this.capabilityFilter = options.capabilityFilter
-    this.tools = options.tools
-    this.mcpServers = options.mcpServers
-    this.skills = options.skills
-    this.memory = options.memory
-    this.knowledge = options.knowledge
-    this.handoffs = options.handoffs
-    this.providerOptions = options.providerOptions
-    this.outputSchema = options.outputSchema
-    this.metadata = options.metadata
-    this.guardrails = options.guardrails
-    this.runtimeBinding = options.runtimeBinding
+    this.name = options.name; this.description = options.description; this.instructions = options.instructions; this.model = options.model
+    this.capabilityFilter = options.capabilityFilter; this.tools = options.tools; this.mcpServers = options.mcpServers
+    this.skills = options.skills; this.memory = options.memory; this.knowledge = options.knowledge; this.handoffs = options.handoffs
+    this.providerOptions = options.providerOptions; this.outputSchema = options.outputSchema; this.metadata = options.metadata; this.guardrails = options.guardrails
+    this.runtimeBinding = options.runtimeBinding; this.sessionLog = options.runtimeBinding?.sessionLog ?? options.runtimeBinding?.runtimeOptions?.sessionLog ?? new InMemorySessionLog()
   }
-
-  async run(goal: string, options: { sessionId?: string; maxTurns?: number } = {}): Promise<AgentRunResult> {
+  session(id = `session-${crypto.randomUUID()}`) { if (!this.sessions.has(id)) this.sessions.set(id, new AgentSession(this, id)); return this.sessions.get(id)! }
+  async createRunner(_goal: string, _sessionId: string, options: AgentRunOptions = {}) {
     const binding = this.runtimeBinding
     const provider = binding?.provider ?? (typeof this.model === "string" ? binding?.providerFor?.(this.model) : undefined)
     if (!provider) throw new Error(`agent "${this.name}" has no runtime provider binding`)
-    const runtime = new RuntimeRunner({
-      provider,
-      executionPlane: new LocalExecutionPlane(),
-      sessionLog: new InMemorySessionLog(),
-      maxTokens: 32_000,
-      agentId: this.name,
-      ...(this.instructions ? { systemPrompt: this.instructions } : {}),
-      ...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
-      ...(binding?.runtimeOptions ?? {}),
-    } as RuntimeOptions)
-    const sessionId = options.sessionId ?? `session-${crypto.randomUUID()}`
-    const events: StreamEvent[] = []
-    for await (const event of runtime.run({ sessionId, goal })) events.push(event)
-    const output = events.filter(event => event.type === "text_delta").map(event => ("delta" in event ? String(event.delta) : "")).join("")
-    const failed = events.some(event => event.type === "error")
-    return { output, sessionId, status: failed ? "failed" : "completed" }
+    const base = { ...(binding?.runtimeOptions ?? {}) } as Record<string, unknown>
+    if (options.maxTurns !== undefined) base.maxTurns = options.maxTurns
+    if (options.maxTotalTokens !== undefined) base.maxTotalTokens = options.maxTotalTokens
+    if (options.timeoutMs !== undefined) base.timeoutMs = options.timeoutMs
+    if (options.providerOptions) base.extensions = { ...((base.extensions as Record<string, unknown> | undefined) ?? {}), ...options.providerOptions }
+    return new RuntimeRunner({ provider, executionPlane: binding?.executionPlane ?? new LocalExecutionPlane(), sessionLog: this.sessionLog, maxTokens: 32_000, agentId: this.name, ...(this.instructions ? { systemPrompt: this.instructions } : {}), ...base } as import("./runtime/runner.js").RuntimeOptions)
   }
-
-  stream(goal: string, options: { sessionId?: string } = {}): AsyncIterable<StreamEvent> {
-    const binding = this.runtimeBinding
-    const provider = binding?.provider ?? (typeof this.model === "string" ? binding?.providerFor?.(this.model) : undefined)
-    if (!provider) throw new Error(`agent "${this.name}" has no runtime provider binding`)
-    const runtime = new RuntimeRunner({
-      provider,
-      executionPlane: new LocalExecutionPlane(),
-      sessionLog: new InMemorySessionLog(),
-      maxTokens: 32_000,
-      agentId: this.name,
-      ...(this.instructions ? { systemPrompt: this.instructions } : {}),
-      ...(binding?.runtimeOptions ?? {}),
-    } as RuntimeOptions)
-    return runtime.run({ sessionId: options.sessionId ?? `session-${crypto.randomUUID()}`, goal })
+  async run(goal: string, options: AgentRunOptions = {}) { return this.session(options.sessionId).run(goal, options) }
+  stream(goal: string, options: AgentRunOptions = {}) { return this.session(options.sessionId).stream(goal, options) }
+  resume(sessionId: string, options: Omit<AgentRunOptions, "sessionId"> = {}) { return this.session(sessionId).resume(options) }
+  interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user", sessionId?: string) { sessionId ? this.session(sessionId).interrupt(reason) : [...this.sessions.values()].forEach(s => s.interrupt(reason)) }
+  workflow(spec: WorkflowSpec, options: { sessionId?: string } = {}) { return this.session(options.sessionId).workflow(spec) }
+  async close() {}
+  async result(sessionId: string, events: StreamEvent[]): Promise<AgentRunResult> {
+    const entries = await this.sessionLog.read(sessionId)
+    const started = [...entries].reverse().find(e => e.event.kind === "run_started")?.event
+    const terminal = [...entries].reverse().find(e => e.event.kind === "run_terminal")?.event
+    const output = events.filter((e): e is StreamEvent & { delta: unknown } => e.type === "text_delta" && "delta" in e).map(e => String(e.delta)).join("")
+    const usage = [...events].reverse().find((e): e is UsageEvent => e.type === "usage")
+    const result: AgentRunResult = { output, runId: started?.kind === "run_started" ? started.run_id : undefined, sessionId, status: statusOf(terminal?.kind === "run_terminal" ? terminal.reason : events.some(e => e.type === "error") ? "error" : "completed") }
+    if (usage) result.usage = { inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0, totalTokens: usage.totalTokens }
+    if (this.outputSchema) {
+      result.outputValidation = validateAgainstSchema(extractJsonValue(output), this.outputSchema)
+      if (!result.outputValidation.ok && result.status === "completed") result.status = "failed"
+    }
+    return result
   }
 }
