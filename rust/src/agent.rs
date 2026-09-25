@@ -312,6 +312,15 @@ impl AgentSession {
         self.runner.wake_streaming(&self.session_id, None).await
     }
 
+    pub async fn resume_with_options<'a>(
+        &'a self,
+        options: &'a AgentRunOptions,
+    ) -> Result<AgentStream<'a>> {
+        self.runner
+            .wake_streaming(&self.session_id, options.extensions.as_ref())
+            .await
+    }
+
     pub async fn history(&self) -> Result<Vec<SessionEntry>> {
         self.runner.read_session(&self.session_id).await
     }
