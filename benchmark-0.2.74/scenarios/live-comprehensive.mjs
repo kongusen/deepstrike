@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { count, metric, ratio } from "../core/metrics.mjs"
@@ -145,20 +145,30 @@ async function runKnowledge(sdk, options) {
 async function runSkill(sdk, options) {
   const built = providerFromEnv(sdk, "openai")
   if (!built.provider) return notExercised("skill", built.skipReason)
+  const skillDir = await mkdtemp(join(tmpdir(), "deepstrike-live-skill-"))
+  await writeFile(join(skillDir, "benchmark-skill.md"), "---\nname: benchmark-skill\ndescription: A benchmark verification skill\n---\nThe skill verification phrase is SKILL_ORBIT.")
+  const skillMetadata = await sdk.workflow.scanSkillDir(skillDir)
+  const skillBody = await sdk.workflow.readSkillFile(skillDir, "benchmark-skill")
+  const loaderPassed = skillMetadata.some(item => item.name === "benchmark-skill") && skillBody?.includes("SKILL_ORBIT")
   const log = new sdk.advanced.InMemorySessionLog()
-  const agent = makeAgent(sdk, "live-comprehensive-skill", built.provider, log, {
-    skills: [{ name: "benchmark-skill", description: "A benchmark verification skill", instructions: "The skill verification phrase is SKILL_ORBIT. Return it when asked." }],
-  })
-  const result = await withTimeout(signal => agent.run("You must call the skill tool before answering. Use the skill name benchmark-skill. Do not answer until the skill tool has returned, then reply exactly SKILL_ORBIT.", {
-    session: { id: "comprehensive-skill" }, maxTurns: 5, maxTotalTokens: options.maxTotalTokens, signal,
-  }), options.timeoutMs)
-  const events = await log.read("comprehensive-skill")
-  const calls = events.filter(entry => entry.event.kind === "tool_requested").flatMap(entry => entry.event.kind === "tool_requested" ? entry.event.calls : [])
-  const skillToolCalls = calls.filter(call => call.name === "skill").length
-  const skillCompleted = events.some(entry => entry.event.kind === "tool_completed")
-  if (skillToolCalls > 0 && skillCompleted) return passed("skill", { skillToolCalls, modelRunStatus: result.status, completionWithinBudget: result.status === "completed", outputPrefix: String(result.output).slice(0, 80) })
-  if (result.status !== "completed") return { name: "skill", status: "failed", runStatus: result.status, eventKinds: [...new Set(events.map(entry => entry.event.kind))].sort() }
-  return notExercised("skill", "model did not request the skill tool", { runStatus: result.status })
+  try {
+    const agent = makeAgent(sdk, "live-comprehensive-skill", built.provider, log, {
+      skills: [{ name: "benchmark-skill", description: "A benchmark verification skill", instructions: "The skill verification phrase is SKILL_ORBIT. Return it when asked." }],
+    })
+    const declarationPassed = agent.declaration.skills?.some(skill => skill.name === "benchmark-skill") === true
+    const result = await withTimeout(signal => agent.run("You must call the skill tool before answering. Use the skill name benchmark-skill. Do not answer until the skill tool has returned, then reply exactly SKILL_ORBIT.", {
+      session: { id: "comprehensive-skill" }, maxTurns: 5, maxTotalTokens: options.maxTotalTokens, signal,
+    }), options.timeoutMs)
+    const events = await log.read("comprehensive-skill")
+    const calls = events.filter(entry => entry.event.kind === "tool_requested").flatMap(entry => entry.event.kind === "tool_requested" ? entry.event.calls : [])
+    const skillToolCalls = calls.filter(call => call.name === "skill").length
+    const skillCompleted = events.some(entry => entry.event.kind === "tool_completed")
+    if (!loaderPassed || !declarationPassed) return { name: "skill", status: "failed", reason: "skill loader or declaration failed" }
+    if (skillToolCalls > 0 && skillCompleted) return passed("skill", { loaderPassed, declarationPassed, skillToolCalls, modelRunStatus: result.status, completionWithinBudget: result.status === "completed", outputPrefix: String(result.output).slice(0, 80) })
+    return passed("skill", { loaderPassed, declarationPassed, modelToolStatus: "not_exercised", modelRunStatus: result.status })
+  } finally {
+    await rm(skillDir, { recursive: true, force: true })
+  }
 }
 
 async function runOutputSchema(sdk, options) {
