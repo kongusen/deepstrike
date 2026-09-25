@@ -6,7 +6,7 @@ Rust SDK 和 Node、Python、WASM 共用 `deepstrike-core` 的状态机、事件
 |---|---|---:|---|
 | Agent 构造 | `Agent::new(RuntimeOptions)` / `Agent::with_runner` | ✅ | 不复制 runtime，直接持有 canonical `RuntimeRunner` |
 | Session | `Agent::session(id)` | ✅ | session id 由调用方控制，可跨调用恢复 |
-| 单次运行 | `Agent::run` / `AgentSession::run` | ✅ | 返回文本、run id、状态、迭代次数和 token 数 |
+| 单次运行 | `Agent::run` / `AgentSession::run` | ✅ | 返回文本、run id、状态、迭代次数、usage 和 evidence |
 | 单次运行选项 | `AgentRunOptions` | ✅ | criteria、extensions、attachments 按运行传入 |
 | 流式运行 | `Agent::stream` / `AgentSession::stream` | ✅ | 复用 `RunEvent`，保留 Rust `Stream` 语义 |
 | 恢复运行 | `AgentSession::resume` | ✅ | 调用 durable session projection + canonical journal |

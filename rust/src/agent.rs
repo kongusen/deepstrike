@@ -84,6 +84,20 @@ pub struct AgentRunResult {
     pub status: String,
     pub iterations: u32,
     pub total_tokens: u64,
+    pub usage: Option<AgentUsage>,
+    pub evidence: Option<AgentEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentUsage {
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentEvidence {
+    pub context_binding: Option<serde_json::Value>,
+    pub route: Option<serde_json::Value>,
+    pub measurement: Option<serde_json::Value>,
 }
 
 /// A high-level agent backed by the canonical Rust runtime.
@@ -195,6 +209,10 @@ impl AgentSession {
             }
         }
         result.run_id = self.latest_run_id().await?;
+        result.usage = Some(AgentUsage {
+            total_tokens: result.total_tokens,
+        });
+        result.evidence = self.latest_evidence().await?;
         Ok(result)
     }
 
@@ -281,6 +299,29 @@ impl AgentSession {
             } else {
                 None
             }
+        }))
+    }
+
+    async fn latest_evidence(&self) -> Result<Option<AgentEvidence>> {
+        let entry = self.history().await?.into_iter().rev().find(|entry| {
+            matches!(
+                entry.event,
+                deepstrike_core::runtime::session::SessionEvent::ContextPrepared { .. }
+            )
+        });
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        let deepstrike_core::runtime::session::SessionEvent::ContextPrepared {
+            preparation, ..
+        } = entry.event
+        else {
+            unreachable!();
+        };
+        Ok(Some(AgentEvidence {
+            context_binding: serde_json::to_value(preparation.binding).ok(),
+            route: Some(preparation.provider_route),
+            measurement: serde_json::to_value(preparation.prompt_measurement).ok(),
         }))
     }
 }
