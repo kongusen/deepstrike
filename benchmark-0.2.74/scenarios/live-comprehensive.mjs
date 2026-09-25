@@ -101,8 +101,18 @@ async function runMemory(sdk, options) {
   const events = await log.read("comprehensive-memory")
   const calls = events.filter(entry => entry.event.kind === "tool_requested").flatMap(entry => entry.event.kind === "tool_requested" ? entry.event.calls : [])
   if (recalled[0]?.record.record_id !== saved.record_id) return { name: "memory", status: "failed", reason: "host remember/recall mismatch" }
+  const terminal = events.find(entry => entry.event.kind === "run_terminal")
+  const attempt = events.find(entry => entry.event.kind === "provider_attempt")
+  if (result.status !== "completed") return {
+    name: "memory",
+    status: "failed",
+    hostRecallHits: recalled.length,
+    runStatus: result.status,
+    eventKinds: [...new Set(events.map(entry => entry.event.kind))].sort(),
+    ...(terminal?.event.kind === "run_terminal" ? { terminalReason: terminal.event.reason } : {}),
+    ...(attempt?.event.kind === "provider_attempt" ? { providerErrorClass: attempt.event.last_error_class } : {}),
+  }
   if (!calls.some(call => call.name === "memory")) return notExercised("memory", "model did not request the memory tool", { hostRecallHits: recalled.length, runStatus: result.status })
-  if (result.status !== "completed") return { name: "memory", status: "failed", runStatus: result.status }
   return passed("memory", { hostRecallHits: recalled.length, memoryToolCalls: calls.filter(call => call.name === "memory").length, outputPrefix: String(result.output).slice(0, 80) })
 }
 
@@ -118,8 +128,8 @@ async function runKnowledge(sdk, options) {
   }), options.timeoutMs)
   const events = await log.read("comprehensive-knowledge")
   const calls = events.filter(entry => entry.event.kind === "tool_requested").flatMap(entry => entry.event.kind === "tool_requested" ? entry.event.calls : [])
+  if (result.status !== "completed") return { name: "knowledge", status: "failed", runStatus: result.status, eventKinds: [...new Set(events.map(entry => entry.event.kind))].sort() }
   if (!calls.some(call => call.name === "knowledge")) return notExercised("knowledge", "model did not request the knowledge tool", { runStatus: result.status })
-  if (result.status !== "completed") return { name: "knowledge", status: "failed", runStatus: result.status }
   return passed("knowledge", { knowledgeToolCalls: calls.filter(call => call.name === "knowledge").length, outputPrefix: String(result.output).slice(0, 80) })
 }
 
@@ -135,8 +145,8 @@ async function runSkill(sdk, options) {
   }), options.timeoutMs)
   const events = await log.read("comprehensive-skill")
   const calls = events.filter(entry => entry.event.kind === "tool_requested").flatMap(entry => entry.event.kind === "tool_requested" ? entry.event.calls : [])
+  if (result.status !== "completed") return { name: "skill", status: "failed", runStatus: result.status, eventKinds: [...new Set(events.map(entry => entry.event.kind))].sort() }
   if (!calls.some(call => call.name === "skill")) return notExercised("skill", "model did not request the skill tool", { runStatus: result.status })
-  if (result.status !== "completed") return { name: "skill", status: "failed", runStatus: result.status }
   return passed("skill", { skillToolCalls: calls.filter(call => call.name === "skill").length, outputPrefix: String(result.output).slice(0, 80) })
 }
 
