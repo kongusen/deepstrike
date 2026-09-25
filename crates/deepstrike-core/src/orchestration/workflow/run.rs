@@ -320,6 +320,11 @@ impl WorkflowRun {
         self.graph.ready_tasks()
     }
 
+    /// Whether every workflow node has reached a terminal state.
+    pub fn is_complete(&self) -> bool {
+        self.graph.all_done()
+    }
+
     pub fn set_scheduler_policy(
         &mut self,
         policy: crate::scheduler::policy::SchedulerPolicyConfig,

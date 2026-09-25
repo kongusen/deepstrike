@@ -14,6 +14,57 @@ use crate::run_event::RunEvent;
 use crate::runtime::session_log::SessionEntry;
 use crate::{MemoryQuery, MemoryRecall, MemoryRecord, Result, RuntimeOptions, RuntimeRunner};
 
+/// Rust-native workflow handle. It exposes the canonical DAG state machine without imposing an
+/// executor or task runtime; hosts decide how to run each returned spawn descriptor.
+pub struct AgentWorkflow {
+    run: deepstrike_core::orchestration::workflow::WorkflowRun,
+}
+
+impl AgentWorkflow {
+    pub fn new(spec: &deepstrike_core::orchestration::workflow::WorkflowSpec) -> Result<Self> {
+        Ok(Self {
+            run: deepstrike_core::orchestration::workflow::WorkflowRun::new(spec)
+                .map_err(|e| crate::Error::Other(e.to_string()))?,
+        })
+    }
+
+    pub fn ready_batch(&mut self) -> Vec<usize> {
+        self.run.expand_ready_controllers();
+        self.run.ready_batch()
+    }
+
+    pub fn spawn_info(
+        &self,
+        node: usize,
+    ) -> deepstrike_core::orchestration::workflow::WorkflowSpawnInfo {
+        self.run.spawn_info(node)
+    }
+
+    pub fn mark_spawned(&mut self, node: usize, agent_id: &str) {
+        self.run.mark_spawned(node, agent_id);
+    }
+
+    pub fn mark_denied(&mut self, node: usize) {
+        self.run.mark_denied(node);
+    }
+
+    pub fn record_completion(
+        &mut self,
+        agent_id: &str,
+        result: deepstrike_core::types::result::LoopResult,
+    ) -> Option<usize> {
+        self.run.record_completion(agent_id, result)
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.run.is_complete()
+    }
+
+    pub fn outcomes(&self) -> Vec<deepstrike_core::orchestration::workflow::WorkflowNodeOutcome> {
+        self.run.node_outcomes()
+    }
+}
+
 /// Per-run inputs that are intentionally separate from `RuntimeOptions`.
 /// This keeps a reusable `Agent` immutable while allowing each session turn to carry its own
 /// criteria, extensions, and multimodal attachments.

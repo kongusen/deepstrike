@@ -16,7 +16,7 @@ Rust SDK 和 Node、Python、WASM 共用 `deepstrike-core` 的状态机、事件
 | Session Memory facade | `AgentSession::remember` / `recall` | ✅ | 绑定当前 session，仍由 runner 执行校验与审计 |
 | MCP / 执行平面 | `ExecutionPlane`、`McpProxyPlane` | ✅ | Rust 侧保留 trait 与宿主控制能力 |
 | Durable session log | `InMemorySessionLog` / `FileSessionLog` | ✅ | 可替换持久化实现 |
-| Workflow 状态机 | `WorkflowRun`、`WorkflowSpec` | ✅ | Rust 使用手动 executor 组合，避免伪造异步 driver |
+| Workflow 状态机 | `AgentWorkflow`、`WorkflowRun`、`WorkflowSpec` | ✅ | 提供 Agent 入口和手动 executor 组合 |
 | Workflow batteries-included driver | 暂无 | 设计保留 | Rust 的 executor/并发模型与 Node/Python 不同；需要真实消费者后再加 typed driver |
 | Provider / tool / governance | `RuntimeOptions` 及现有模块 | ✅ | provider、tool、治理、配额、信号均走同一内核 |
 
