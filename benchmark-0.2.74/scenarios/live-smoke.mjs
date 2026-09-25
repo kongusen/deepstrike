@@ -46,7 +46,7 @@ export function providerFromEnv(sdk, name) {
   }
 }
 
-async function withTimeout(task, timeoutMs) {
+export async function withTimeout(task, timeoutMs) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(new Error(`live smoke timeout after ${timeoutMs}ms`)), timeoutMs)
   try {

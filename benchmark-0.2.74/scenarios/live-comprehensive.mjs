@@ -3,7 +3,7 @@ import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { count, metric, ratio } from "../core/metrics.mjs"
 import { collectAsync } from "../core/runtime.mjs"
-import { providerFromEnv, redactError } from "./live-smoke.mjs"
+import { providerFromEnv, redactError, withTimeout } from "./live-smoke.mjs"
 
 const scope = { tenant_id: "benchmark-live", namespace: "comprehensive" }
 
@@ -46,10 +46,10 @@ async function runCore(sdk, options) {
   if (!built.provider) return notExercised("core", built.skipReason)
   const log = new sdk.advanced.InMemorySessionLog()
   const agent = makeAgent(sdk, "live-comprehensive-core", built.provider, log)
-  const basic = await agent.run("Reply exactly CORE_OK.", { session: { id: "comprehensive-core" }, maxTurns: 2, maxTotalTokens: options.maxTotalTokens })
-  const stream = await collectAsync(agent.stream("Reply exactly STREAM_OK.", { session: { id: "comprehensive-stream" }, maxTurns: 2, maxTotalTokens: options.maxTotalTokens }))
+  const basic = await withTimeout(signal => agent.run("Reply exactly CORE_OK.", { session: { id: "comprehensive-core" }, maxTurns: 2, maxTotalTokens: options.maxTotalTokens, signal }), options.timeoutMs)
+  const stream = await withTimeout(signal => collectAsync(agent.stream("Reply exactly STREAM_OK.", { session: { id: "comprehensive-stream" }, maxTurns: 2, maxTotalTokens: options.maxTotalTokens, signal })), options.timeoutMs)
   const session = agent.session("comprehensive-session")
-  const sessionRun = await session.run("Reply exactly SESSION_OK.", { maxTurns: 2, maxTotalTokens: options.maxTotalTokens })
+  const sessionRun = await withTimeout(signal => session.run("Reply exactly SESSION_OK.", { maxTurns: 2, maxTotalTokens: options.maxTotalTokens, signal }), options.timeoutMs)
   const streamPassed = stream.some(event => event.type === "text_delta") && stream.some(event => event.type === "done")
   const basicPassed = basic.status === "completed" && /CORE_OK/i.test(basic.output)
   const sessionPassed = sessionRun.status === "completed" && sessionRun.sessionId === "comprehensive-session"
@@ -74,9 +74,9 @@ async function runTool(sdk, options) {
     tools: [add],
     executionPlane: new sdk.advanced.LocalExecutionPlane().register(add),
   })
-  const result = await agent.run("Call add_numbers exactly once with a=2 and b=3, then reply exactly TOOL_OK.", {
-    session: { id: "comprehensive-tool" }, maxTurns: 4, maxTotalTokens: options.maxTotalTokens,
-  })
+  const result = await withTimeout(signal => agent.run("Call add_numbers exactly once with a=2 and b=3, then reply exactly TOOL_OK.", {
+    session: { id: "comprehensive-tool" }, maxTurns: 4, maxTotalTokens: options.maxTotalTokens, signal,
+  }), options.timeoutMs)
   const events = await log.read("comprehensive-tool")
   const requested = events.filter(entry => entry.event.kind === "tool_requested")
   const completed = events.filter(entry => entry.event.kind === "tool_completed")
@@ -95,9 +95,9 @@ async function runMemory(sdk, options) {
   const agent = makeAgent(sdk, "live-comprehensive-memory", built.provider, log, { memoryStore: store })
   const saved = await agent.remember({ name: "release-codename", content: "The release codename is ORBIT.", kind: "project" })
   const recalled = await agent.recall("release codename")
-  const result = await agent.run("Use the memory tool to find the release codename, then reply exactly MEMORY_ORBIT.", {
-    session: { id: "comprehensive-memory" }, maxTurns: 4, maxTotalTokens: options.maxTotalTokens,
-  })
+  const result = await withTimeout(signal => agent.run("Use the memory tool to find the release codename, then reply exactly MEMORY_ORBIT.", {
+    session: { id: "comprehensive-memory" }, maxTurns: 4, maxTotalTokens: options.maxTotalTokens, signal,
+  }), options.timeoutMs)
   const events = await log.read("comprehensive-memory")
   const calls = events.filter(entry => entry.event.kind === "tool_requested").flatMap(entry => entry.event.kind === "tool_requested" ? entry.event.calls : [])
   if (recalled[0]?.record.record_id !== saved.record_id) return { name: "memory", status: "failed", reason: "host remember/recall mismatch" }
@@ -113,9 +113,9 @@ async function runKnowledge(sdk, options) {
   const agent = makeAgent(sdk, "live-comprehensive-knowledge", built.provider, log, {
     knowledge: [{ id: "benchmark-fact", name: "Benchmark Fact", source: { kind: "text", content: "The benchmark verification phrase is KNOWLEDGE_ORBIT." } }],
   })
-  const result = await agent.run("Use the knowledge tool to retrieve the benchmark verification phrase, then reply exactly KNOWLEDGE_ORBIT.", {
-    session: { id: "comprehensive-knowledge" }, maxTurns: 4, maxTotalTokens: options.maxTotalTokens,
-  })
+  const result = await withTimeout(signal => agent.run("Use the knowledge tool to retrieve the benchmark verification phrase, then reply exactly KNOWLEDGE_ORBIT.", {
+    session: { id: "comprehensive-knowledge" }, maxTurns: 4, maxTotalTokens: options.maxTotalTokens, signal,
+  }), options.timeoutMs)
   const events = await log.read("comprehensive-knowledge")
   const calls = events.filter(entry => entry.event.kind === "tool_requested").flatMap(entry => entry.event.kind === "tool_requested" ? entry.event.calls : [])
   if (!calls.some(call => call.name === "knowledge")) return notExercised("knowledge", "model did not request the knowledge tool", { runStatus: result.status })
@@ -130,9 +130,9 @@ async function runSkill(sdk, options) {
   const agent = makeAgent(sdk, "live-comprehensive-skill", built.provider, log, {
     skills: [{ name: "benchmark-skill", description: "A benchmark verification skill", instructions: "The skill verification phrase is SKILL_ORBIT. Return it when asked." }],
   })
-  const result = await agent.run("Call the benchmark-skill skill, then reply exactly SKILL_ORBIT.", {
-    session: { id: "comprehensive-skill" }, maxTurns: 5, maxTotalTokens: options.maxTotalTokens,
-  })
+  const result = await withTimeout(signal => agent.run("Call the benchmark-skill skill, then reply exactly SKILL_ORBIT.", {
+    session: { id: "comprehensive-skill" }, maxTurns: 5, maxTotalTokens: options.maxTotalTokens, signal,
+  }), options.timeoutMs)
   const events = await log.read("comprehensive-skill")
   const calls = events.filter(entry => entry.event.kind === "tool_requested").flatMap(entry => entry.event.kind === "tool_requested" ? entry.event.calls : [])
   if (!calls.some(call => call.name === "skill")) return notExercised("skill", "model did not request the skill tool", { runStatus: result.status })
@@ -146,7 +146,7 @@ async function runOutputSchema(sdk, options) {
   const agent = makeAgent(sdk, "live-comprehensive-schema", built.provider, new sdk.advanced.InMemorySessionLog(), {
     outputSchema: { type: "object", properties: { answer: { type: "string" } }, required: ["answer"], additionalProperties: false },
   })
-  const result = await agent.run("Return a JSON object with answer exactly SCHEMA_ORBIT.", { session: { id: "comprehensive-schema" }, maxTurns: 3, maxTotalTokens: options.maxTotalTokens })
+  const result = await withTimeout(signal => agent.run("Return a JSON object with answer exactly SCHEMA_ORBIT.", { session: { id: "comprehensive-schema" }, maxTurns: 3, maxTotalTokens: options.maxTotalTokens, signal }), options.timeoutMs)
   if (result.status !== "completed" || !result.outputValidation?.ok) return { name: "output-schema", status: "failed", runStatus: result.status, validation: result.outputValidation }
   return passed("output-schema", { validation: result.outputValidation, outputType: typeof result.output })
 }
@@ -163,11 +163,12 @@ async function runDynamicWorkflow(sdk, options) {
     maxTurns: 4,
     subAgentOrchestrator: sdk.workflow.defaultSubAgentOrchestrator,
   })
-  const run = await runner.runDynamicWorkflow(ctx => ctx.parallel(["a", "b"], item => ctx.agent(`Return exactly DYNAMIC_${item.toUpperCase()}.`, { label: item })), {
+  const run = await withTimeout(signal => runner.runDynamicWorkflow(ctx => ctx.parallel(["a", "b"], item => ctx.agent(`Return exactly DYNAMIC_${item.toUpperCase()}.`, { label: item })), {
     runId: "comprehensive-dynamic",
     sessionId: "comprehensive-dynamic",
     limits: { maxAgentsPerRun: 2, maxConcurrentAgents: 2 },
-  })
+    signal,
+  }), options.timeoutMs)
   const values = run.value.map(item => item?.text ?? "")
   if (run.progress.status !== "completed" || run.progress.agentsCompleted !== 2 || !values.every(value => /^DYNAMIC_[AB]/.test(value))) {
     return { name: "dynamic-workflow", status: "failed", progress: run.progress, values }
@@ -182,7 +183,7 @@ export const liveComprehensive = {
   surfaces: ["root", "advanced", "workflow", "memory", "harness", "os"],
   requiresLive: true,
   async run({ sdk, options }) {
-    const liveOptions = { ...options, maxTotalTokens: options.maxTotalTokens ?? 1_200 }
+    const liveOptions = { ...options, timeoutMs: options.timeoutMs ?? 90_000, maxTotalTokens: options.maxTotalTokens ?? 1_200 }
     const features = []
     for (const [featureName, feature] of [
       ["core", runCore],
