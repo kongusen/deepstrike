@@ -5,7 +5,7 @@
  * conformance tests and documentation tooling so each term has one primary layer.
  */
 export const RUNTIME_VOCABULARY = {
-  version: "0.2.73",
+  version: "0.2.74",
   public: [
     "Agent", "Model", "Run", "Session", "Tool", "Skill", "Memory", "Knowledge",
     "MCPServer", "Handoff", "Workflow", "Guardrail", "Eval", "Dataset", "Evaluator",

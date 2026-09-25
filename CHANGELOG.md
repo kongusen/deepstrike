@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.74] - 2026-09-25
+
+### Added — cross-SDK Agent facade alignment
+
+- Aligned the Rust and WASM Agent/Session surfaces with the Node and Python SDKs, including durable sessions, replay, memory, workflow, signal, handoff, evidence, and structured output contracts.
+- Added Rust per-run resource limits, typed run status, typed replay/workflow projections, signal listening, execution-plane shutdown, and explicit AgentResolver handoff support.
+- Added WASM session-scoped memory operations and published the cross-SDK alignment audit and API matrices.
+- Added CI coverage for the `wasm32-unknown-unknown` Rust target and canonical WASM bindings.
+
 ## [0.2.73] - 2026-09-22
 
 ### Breaking changes — semantic closure

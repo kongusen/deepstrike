@@ -1007,12 +1007,6 @@ impl WorkflowRun {
         })
     }
 
-    /// Test instrument: every node reached one of the four terminal statuses.
-    #[cfg(test)]
-    pub(crate) fn is_complete(&self) -> bool {
-        self.graph.all_done()
-    }
-
     /// Close a workflow and return exactly one typed terminal outcome per graph node.
     pub fn finish(&mut self) -> Vec<WorkflowNodeOutcome> {
         for node in 0..self.graph.len() {
