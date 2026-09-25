@@ -103,7 +103,7 @@ async function runMemory(sdk, options) {
   if (recalled[0]?.record.record_id !== saved.record_id) return { name: "memory", status: "failed", reason: "host remember/recall mismatch" }
   const terminal = events.find(entry => entry.event.kind === "run_terminal")
   const attempt = events.find(entry => entry.event.kind === "provider_attempt")
-  const memoryToolCalls = calls.filter(call => call.name === "memory").length
+  const memoryToolCalls = events.filter(entry => entry.event.kind === "memory_queried").length
   const memoryRetrieved = events.some(entry => entry.event.kind === "memory_retrieval_result")
   if (memoryToolCalls > 0 && memoryRetrieved) return passed("memory", {
     hostRecallHits: recalled.length,
