@@ -303,6 +303,21 @@ impl RuntimeRunner {
         self.plane.as_ref()
     }
 
+    /// Read the durable projection for a session.  This is the low-level hook used by the
+    /// ergonomic `AgentSession` facade and is also useful to Rust hosts that need to inspect
+    /// evidence without reconstructing a runner.
+    pub async fn read_session(&self, session_id: &str) -> Result<Vec<SessionEntry>> {
+        self.read_entries(session_id).await
+    }
+
+    /// Return the last projection sequence number, or `-1` when the session is empty.
+    pub async fn latest_session_seq(&self, session_id: &str) -> Result<i64> {
+        let Some(log) = &self.opts.session_log else {
+            return Ok(-1);
+        };
+        Ok(log.latest_seq(session_id).await?)
+    }
+
     pub async fn write_memory(
         &self,
         memory: MemoryRecord,
@@ -2645,6 +2660,8 @@ impl RuntimeRunner {
                 // APIs inspect the observation directly; the generic runner has no host effect.
                 KernelObservation::ControlRequestRejected { .. } => {}
                 KernelObservation::StepPublishedEffects { .. } => {}
+                KernelObservation::DynamicWorkflowPlanCommitted { .. } => {}
+                KernelObservation::DynamicWorkflowReplayRecorded { .. } => {}
             }
         }
         next_archive_start

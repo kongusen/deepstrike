@@ -24,6 +24,21 @@ serde_json = "1"
 
 ## Quick start
 
+For the stable object model, construct an `Agent` and keep an `AgentSession` for resumable work:
+
+```rust,no_run
+use deepstrike_sdk::{Agent, AgentRunResult, RuntimeOptions};
+
+// RuntimeOptions configures the provider, tools, execution plane and persistence.
+let agent = Agent::new(options);
+let session = agent.session("customer-42");
+let result: AgentRunResult = session.run("Summarize the current task").await?;
+let history = session.history().await?;
+```
+
+The facade delegates to the same `RuntimeRunner` used by the lower-level API. See
+[`API-MATRIX.md`](API-MATRIX.md) for the cross-SDK capability map.
+
 ```rust
 use std::sync::Arc;
 use deepstrike_sdk::{

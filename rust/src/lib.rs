@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod governance;
 pub mod harness;
 pub mod harness_loop;
@@ -13,6 +14,7 @@ pub mod tools;
 #[cfg(test)]
 mod tests;
 
+pub use agent::{Agent, AgentRunResult, AgentSession, AgentStream};
 pub use deepstrike_core::context::measurement::{MeasurementConfidence, MeasurementSource};
 // F3 (0.2.66): the core-internal render type is `InternalRenderedContext`; the SDK-visible
 // name stays `RenderedContext` (API stability — this re-export is the crate's public surface).
