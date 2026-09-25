@@ -7,6 +7,7 @@ import { LocalExecutionPlane, type ExecutionPlane } from "./runtime/execution-pl
 import { InMemorySessionLog, type SessionLog } from "./runtime/session-log.js"
 import { extractJsonValue, validateAgainstSchema } from "./runtime/output-schema.js"
 import type { SignalSource } from "./signals/index.js"
+import type { McpExecutionPlane } from "./runtime/mcp-transport.js"
 
 type JsonSchema = Record<string, unknown>
 export interface MemoryReference { kind?: "durable"; namespace?: string }
@@ -29,6 +30,7 @@ export interface AgentRuntimeBinding {
   runtimeOptions?: Partial<import("./runtime/runner.js").RuntimeOptions>
   sessionLog?: SessionLog
   executionPlane?: ExecutionPlane
+  mcpPlane?: McpExecutionPlane
   resolveAgent?: (name: string) => Agent | undefined | Promise<Agent | undefined>
   signalSource?: SignalSource
 }
@@ -145,7 +147,9 @@ export class Agent {
     if (options.maxTotalTokens !== undefined) base.maxTotalTokens = options.maxTotalTokens
     if (options.timeoutMs !== undefined) base.timeoutMs = options.timeoutMs
     if (options.providerOptions) base.extensions = { ...((base.extensions as Record<string, unknown> | undefined) ?? {}), ...options.providerOptions }
-    return new RuntimeRunner({ provider, executionPlane: binding?.executionPlane ?? new LocalExecutionPlane(), sessionLog: this.sessionLog, maxTokens: 32_000, agentId: this.name, ...(this.instructions ? { systemPrompt: this.instructions } : {}), ...base } as import("./runtime/runner.js").RuntimeOptions)
+    const mcpPlane = binding?.mcpPlane
+    if (mcpPlane) await mcpPlane.connect()
+    return new RuntimeRunner({ provider, executionPlane: binding?.executionPlane ?? mcpPlane ?? new LocalExecutionPlane(), sessionLog: this.sessionLog, maxTokens: 32_000, agentId: this.name, ...(this.instructions ? { systemPrompt: this.instructions } : {}), ...base } as import("./runtime/runner.js").RuntimeOptions)
   }
   async run(goal: string, options: AgentRunOptions = {}) { return this.session(options.sessionId).run(goal, options) }
   stream(goal: string, options: AgentRunOptions = {}) { return this.session(options.sessionId).stream(goal, options) }
@@ -192,7 +196,7 @@ export class Agent {
     try { const result = await this.run(goal); await source.ackSignal(claim); return result }
     catch (error) { await source.nackSignal(claim); throw error }
   }
-  async close() {}
+  async close() { await this.runtimeBinding?.mcpPlane?.disconnect() }
   async result(sessionId: string, events: StreamEvent[]): Promise<AgentRunResult> {
     const entries = await this.sessionLog.read(sessionId)
     const started = [...entries].reverse().find(e => e.event.kind === "run_started")?.event

@@ -126,6 +126,8 @@ export {
   extractClassifyBranch, extractJudgeWinner,
 } from "./runtime/workflow-control-flow.js"
 export { Agent } from "./agent.js"
+export { McpExecutionPlane } from "./runtime/mcp-transport.js"
+export type { McpConnection, McpConnectionFactory, McpCredentialVault, McpServerConfig } from "./runtime/mcp-transport.js"
 export type {
   AgentMemory, AgentOptions, AgentRunResult, AgentRunOptions, AgentToolDefinition, AgentRef, Guardrail, Handoff, Knowledge,
   KnowledgeSourceRef, MCPServer, McpTransport, MemoryReference, ModelRef, ModelRequirement, Skill,

@@ -45,6 +45,8 @@ export type {
 } from "./canonical-kernel-step.js"
 export { runAgent, runFanout } from "./facade.js"
 export type { RunAgentOptions, RunFanoutOptions } from "./facade.js"
+export { McpExecutionPlane } from "./mcp-transport.js"
+export type { McpConnection, McpConnectionFactory, McpCredentialVault, McpServerConfig } from "./mcp-transport.js"
 export { builtinReducers, resolveReducer } from "./reducers.js"
 export type { Reducer, ReducerRegistry, ReducerInput } from "./reducers.js"
 export { getKernel } from "./kernel.js"
