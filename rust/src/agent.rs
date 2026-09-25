@@ -192,6 +192,12 @@ impl Agent {
         self.runner.run_streaming(goal, &[], None, None).await
     }
 
+    /// Create a durable session intended for a stream. Call `stream` on the returned handle so
+    /// the session identity remains available for history and resume while the stream is active.
+    pub fn stream_session(&self) -> AgentSession {
+        self.session(uuid::Uuid::new_v4().to_string())
+    }
+
     pub async fn run_with_options(
         &self,
         goal: &str,

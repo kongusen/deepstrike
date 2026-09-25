@@ -10,7 +10,7 @@
 
 | 能力 | Node | Python | WASM | Rust | 判定 |
 |---|---:|---:|---:|---:|---|
-| Agent / Session 对象模型 | ✅ | ✅ | ✅ | ✅ | 四端都有稳定入口 |
+| Agent / Session 对象模型 | ✅ | ✅ | ✅ | ✅ | 四端都有稳定入口；Rust `stream_session` 保证流式调用保留 session identity |
 | run / stream | ✅ | ✅ | ✅ | ✅ | 事件均落到共享 runtime |
 | per-run attachments / provider options | ✅ | ✅ | ✅ | ✅ | Rust 为 `AgentRunOptions` |
 | durable resume / history | ✅ | ✅ | ✅ | ✅ | session log + journal |
