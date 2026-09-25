@@ -116,6 +116,8 @@ export class AgentSession {
     finally { this.activeRunner = undefined }
   }
   interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user") { this.activeRunner?.interrupt(reason) }
+  remember(input: MemoryInput): Promise<MemoryRecord> { return this.owner.remember(input, this.id) }
+  recall(query: string, options: RecallOptions = {}): Promise<MemoryRecall[]> { return this.owner.recall(query, options, this.id) }
   async workflow(spec: WorkflowSpec): Promise<WorkflowOutcome> {
     const runner = await this.runner("workflow", { sessionId: this.id }); this.activeRunner = runner
     try { return await runner.runWorkflow(spec, { sessionId: this.id }) } finally { this.activeRunner = undefined }
@@ -156,7 +158,7 @@ export class Agent {
   resume(sessionId: string, options: Omit<AgentRunOptions, "sessionId"> = {}) { return this.session(sessionId).resume(options) }
   interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user", sessionId?: string) { sessionId ? this.session(sessionId).interrupt(reason) : [...this.sessions.values()].forEach(s => s.interrupt(reason)) }
   workflow(spec: WorkflowSpec, options: { sessionId?: string } = {}) { return this.session(options.sessionId).workflow(spec) }
-  async remember(input: MemoryInput): Promise<MemoryRecord> {
+  async remember(input: MemoryInput, sessionId?: string): Promise<MemoryRecord> {
     if (!this.memory || typeof (this.memory as Memory).put !== "function") throw new Error(`agent "${this.name}" memory is not runtime-bound`)
     const now = Date.now()
     const record: MemoryRecord = {
@@ -164,14 +166,14 @@ export class Agent {
         ?? { tenant_id: "default", namespace: (this.memory as Memory).namespace ?? this.name },
       name: input.name, kind: input.kind ?? "reference", content: input.content,
       description: input.description ?? input.name,
-      provenance: { author: "host", trust: "user_asserted", evidence_refs: [], session_id: `memory-${crypto.randomUUID()}` },
+      provenance: { author: "host", trust: "user_asserted", evidence_refs: [], session_id: sessionId ?? `memory-${crypto.randomUUID()}` },
       created_at: now, updated_at: now, recall_count: 0, confidence: input.confidence ?? 1,
       links: [], pinned: input.pinned ?? false, ...(input.ttlDays === undefined ? {} : { ttl_days: input.ttlDays }),
     }
     await (this.memory as Memory).put(record)
     return record
   }
-  async recall(query: string, options: RecallOptions = {}): Promise<MemoryRecall[]> {
+  async recall(query: string, options: RecallOptions = {}, _sessionId?: string): Promise<MemoryRecall[]> {
     if (!this.memory || typeof (this.memory as Memory).search !== "function") throw new Error(`agent "${this.name}" memory is not runtime-bound`)
     const records = await (this.memory as Memory).search(query, { topK: options.topK ?? 8, kinds: options.kinds, minScore: options.minScore })
     return records.map(record => ({ record, score: 1, why: "memory facade search" }))

@@ -688,6 +688,47 @@ impl RuntimeRunner {
         collect_text(self.run_streaming(goal, criteria, None, None).await?).await
     }
 
+    /// Claim one host signal, execute its goal in the supplied durable session, and acknowledge
+    /// only after the run completes. A failed run is negatively acknowledged for redelivery.
+    pub async fn listen(&self, session_id: &str) -> Result<Option<String>> {
+        let Some(source) = &self.opts.signal_source else {
+            return Err(Error::Other(
+                "listen requires RuntimeOptions::signal_source".into(),
+            ));
+        };
+        let Some(claim) = source.claim_signal().await? else {
+            return Ok(None);
+        };
+        let goal = claim
+            .signal
+            .payload
+            .get("goal")
+            .or_else(|| claim.signal.payload.get("summary"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| claim.signal.payload.to_string());
+        let receipt = SignalDeliveryReceipt {
+            delivery_id: claim.delivery_id,
+            lease_token: claim.lease_token,
+        };
+        match self.run_streaming(&goal, &[], None, Some(session_id)).await {
+            Ok(stream) => match collect_text(stream).await {
+                Ok(output) => {
+                    source.ack_signal(&receipt).await?;
+                    Ok(Some(output))
+                }
+                Err(error) => {
+                    let _ = source.nack_signal(&receipt).await;
+                    Err(error)
+                }
+            },
+            Err(error) => {
+                let _ = source.nack_signal(&receipt).await;
+                Err(error)
+            }
+        }
+    }
+
     pub async fn run_streaming<'a>(
         &'a self,
         goal: &'a str,

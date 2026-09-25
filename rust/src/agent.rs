@@ -134,6 +134,20 @@ impl Agent {
             .run_with_options(goal, options)
             .await
     }
+
+    pub async fn listen(&self, session_id: impl Into<String>) -> Result<Option<AgentRunResult>> {
+        let session = self.session(session_id);
+        let Some(text) = session.runner.listen(&session.session_id).await? else {
+            return Ok(None);
+        };
+        Ok(Some(AgentRunResult {
+            text,
+            run_id: session.latest_run_id().await?,
+            session_id: session.session_id.clone(),
+            status: "completed".into(),
+            ..Default::default()
+        }))
+    }
 }
 
 /// A durable, resumable session handle.

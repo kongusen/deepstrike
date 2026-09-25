@@ -42,3 +42,13 @@ test("Agent facade exposes durable memory through the bound Memory contract", as
   const hits = await agent.recall("blue")
   expect(hits[0]?.record.record_id).toBe(record.record_id)
 })
+
+test("AgentSession shares the agent memory facade and preserves the session identity", async () => {
+  const memory = new DurableMemory(new InMemoryMemoryStore(), "agent", { tenant_id: "t", namespace: "n" })
+  const agent = new Agent({ name: "session-memory", memory, runtimeBinding: { provider: new FakeProvider() } })
+  const session = agent.session("memory-session")
+  const record = await session.remember({ name: "color", content: "blue" })
+  expect(record.provenance.session_id).toBe("memory-session")
+  const hits = await session.recall("blue")
+  expect(hits[0]?.record.record_id).toBe(record.record_id)
+})
