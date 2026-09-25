@@ -242,6 +242,7 @@ export const liveComprehensive = {
         featuresPassed: count(passedFeatures.length),
         featuresFailed: count(failedFeatures.length),
         featuresNotExercised: count(features.filter(feature => feature.status === "not_exercised").length),
+        completionWarnings: count(features.filter(feature => feature.completionWithinBudget === false).length),
         featurePassRate: ratio(passedFeatures.length, exercised.length),
         dynamicAgentsCompleted: metric(features.find(feature => feature.name === "dynamic-workflow")?.progress?.agentsCompleted ?? 0, "agents"),
       },
