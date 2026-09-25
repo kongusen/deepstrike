@@ -11,6 +11,7 @@
 | 能力 | Node | Python | WASM | Rust | 判定 |
 |---|---:|---:|---:|---:|---|
 | Agent / Session 对象模型 | ✅ | ✅ | ✅ | ✅ | 四端都有稳定入口；Rust `stream_session` 保证流式调用保留 session identity |
+| Per-run limits | ✅ | ✅ | ✅ | ✅ | Rust `AgentRunOptions` 传入 canonical runner 的 turns/tokens/wall-clock limits |
 | run / stream | ✅ | ✅ | ✅ | ✅ | 事件均落到共享 runtime |
 | per-run attachments / provider options | ✅ | ✅ | ✅ | ✅ | Rust 为 `AgentRunOptions` |
 | durable resume / history | ✅ | ✅ | ✅ | ✅ | session log + journal |
@@ -31,7 +32,7 @@
 
 Rust 的 `RuntimeRunner` 是强类型、可组合的 runtime driver。`AgentSession` 和 `AgentWorkflow` 只做对象模型封装，不复制状态机。workflow 不自动创建 tokio task，也不假设并发执行器；调用方按 `ready_batch`、`spawn_info`、`record_completion` 推进，这与 Rust 的 ownership 和宿主控制模型一致。
 
-剩余差距集中在 host contract，而不是内核能力缺失：delegate 需要先定义 Rust resolver trait；专用 workflow trace/replay 也应建立在已有 `SessionEvent` 上。
+剩余差距集中在 runtime contract，而不是基础运行能力缺失：专用 workflow trace/replay 仍需 core typed event contract；Rust close 仍由宿主管理 execution plane 生命周期。
 
 ### WASM
 

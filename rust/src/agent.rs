@@ -79,6 +79,9 @@ pub struct AgentRunOptions {
     pub extensions: Option<serde_json::Value>,
     pub attachments: Vec<deepstrike_core::types::message::ContentPart>,
     pub output_schema: Option<serde_json::Value>,
+    pub max_turns: Option<u32>,
+    pub max_total_tokens: Option<u64>,
+    pub timeout_ms: Option<u64>,
 }
 
 /// A completed run projected from the runtime event stream.
@@ -304,12 +307,17 @@ impl AgentSession {
         options: &'a AgentRunOptions,
     ) -> Result<AgentStream<'a>> {
         self.runner
-            .run_streaming_with_attachments(
+            .run_streaming_with_attachments_and_limits(
                 goal,
                 &options.criteria,
                 options.extensions.as_ref(),
                 Some(&self.session_id),
                 &options.attachments,
+                Some(crate::RunLimits {
+                    max_turns: options.max_turns,
+                    max_total_tokens: options.max_total_tokens,
+                    max_wall_ms: options.timeout_ms,
+                }),
             )
             .await
     }

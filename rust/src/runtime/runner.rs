@@ -111,6 +111,13 @@ pub struct KernelReliability {
     pub max_input_bytes: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RunLimits {
+    pub max_turns: Option<u32>,
+    pub max_total_tokens: Option<u64>,
+    pub max_wall_ms: Option<u64>,
+}
+
 /// Configuration for a `RuntimeRunner` (aligned with Node/Python `RuntimeOptions`).
 pub struct RuntimeOptions {
     pub provider: Box<dyn LLMProvider>,
@@ -545,14 +552,18 @@ impl RuntimeRunner {
         &self,
         operation_id: String,
         session_id: &str,
+        limits: Option<&RunLimits>,
     ) -> Result<CanonicalRunnerRuntime> {
         let provider_policy = self.opts.provider.runtime_policy();
-        let effective_max_turns = self
-            .opts
-            .max_turns
+        let effective_max_turns = limits
+            .and_then(|limits| limits.max_turns)
+            .or(self.opts.max_turns)
             .or(provider_policy.max_turns)
             .unwrap_or(25);
-        let effective_timeout = self.opts.timeout_ms.or(provider_policy.timeout_ms);
+        let effective_timeout = limits
+            .and_then(|limits| limits.max_wall_ms)
+            .or(self.opts.timeout_ms)
+            .or(provider_policy.timeout_ms);
         let payload_store = self
             .opts
             .payload_store
@@ -593,7 +604,7 @@ impl RuntimeRunner {
             CanonicalRunnerOptions {
                 max_context_tokens: self.opts.max_tokens,
                 max_turns: Some(effective_max_turns),
-                max_total_tokens: None,
+                max_total_tokens: limits.and_then(|limits| limits.max_total_tokens),
                 max_wall_ms: effective_timeout,
                 artifact_set_digest: self.opts.artifact_set_digest.clone(),
                 memory_binding_id: self
@@ -750,6 +761,26 @@ impl RuntimeRunner {
         session_id: Option<&'a str>,
         attachments: &'a [deepstrike_core::types::message::ContentPart],
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<RunEvent>> + 'a>>> {
+        self.run_streaming_with_attachments_and_limits(
+            goal,
+            criteria,
+            extensions,
+            session_id,
+            attachments,
+            None,
+        )
+        .await
+    }
+
+    pub async fn run_streaming_with_attachments_and_limits<'a>(
+        &'a self,
+        goal: &'a str,
+        criteria: &'a [String],
+        extensions: Option<&'a serde_json::Value>,
+        session_id: Option<&'a str>,
+        attachments: &'a [deepstrike_core::types::message::ContentPart],
+        limits: Option<RunLimits>,
+    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<RunEvent>> + 'a>>> {
         let session_id = session_id
             .map(str::to_string)
             .or_else(|| self.opts.session_id.clone())
@@ -764,7 +795,7 @@ impl RuntimeRunner {
             }) {
                 if self.kernel_journal.head(&operation_id).await?.is_some() {
                     let mut authoritative =
-                        self.create_canonical_runtime(operation_id, &session_id)?;
+                        self.create_canonical_runtime(operation_id, &session_id, None)?;
                     authoritative.restore().await?;
                     mid_run = !authoritative.is_terminal();
                 }
@@ -816,6 +847,7 @@ impl RuntimeRunner {
             prior_events,
             mid_run,
             attachments_owned,
+            limits,
         )))
     }
 
@@ -857,7 +889,7 @@ impl RuntimeRunner {
                 ));
             }
             let mut authoritative =
-                self.create_canonical_runtime(operation_id.clone(), session_id)?;
+                self.create_canonical_runtime(operation_id.clone(), session_id, None)?;
             authoritative.restore().await?;
             if authoritative.is_terminal() {
                 return Ok(Box::pin(futures::stream::empty()));
@@ -873,6 +905,7 @@ impl RuntimeRunner {
             Some(prior),
             true,
             attachments,
+            None,
         )))
     }
 
@@ -890,6 +923,7 @@ impl RuntimeRunner {
         prior_events: Option<Vec<SessionEntry>>,
         resume_mid_run: bool,
         attachments: Vec<deepstrike_core::types::message::ContentPart>,
+        limits: Option<RunLimits>,
     ) -> impl futures::Stream<Item = Result<RunEvent>> + '_ {
         try_stream! {
             self.interrupted.store(false, Ordering::Relaxed);
@@ -899,7 +933,7 @@ impl RuntimeRunner {
                 ks.init().await?;
             }
 
-            let mut runtime = self.create_canonical_runtime(operation_id, &session_id)?;
+            let mut runtime = self.create_canonical_runtime(operation_id, &session_id, limits.as_ref())?;
             if resume_mid_run {
                 runtime.restore().await?;
             }
