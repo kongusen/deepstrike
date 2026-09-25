@@ -22,6 +22,18 @@ node benchmark-0.2.74/cli/bench.mjs workflow --compare
 npm test --prefix benchmark-0.2.74
 ```
 
+真实 provider 测评必须显式开启。它读取项目根目录 `.env`，只输出脱敏状态和指标：
+
+```bash
+node benchmark-0.2.74/cli/bench.mjs live-smoke --live --provider=all
+# 只测一个 provider
+node benchmark-0.2.74/cli/bench.mjs live-smoke --live --provider=openai
+# 限制单次请求时长和累计 token
+node benchmark-0.2.74/cli/bench.mjs live-smoke --live --provider=openai --timeout-ms=90000 --max-total-tokens=1200
+```
+
+live smoke 会检查真实鉴权、一次普通 run、一次 stream、usage/evidence，以及模型是否实际完成工具调用。工具调用没有发生时会记录为 `not_exercised`，不会把模型能力差异误报成 SDK 失败。
+
 保存和检查 baseline：
 
 ```bash
@@ -39,4 +51,4 @@ node benchmark-0.2.74/cli/bench.mjs workflow --variant=default --baseline-check
 - `runs/`：本地运行输出，默认不提交。
 - `baselines/`：被接受的 golden JSON。
 
-真实 provider 测评可以在后续增加为显式的 `live` 模式；默认测评不依赖 API key，也不把 live trace 混入机制基线。
+默认测评不依赖 API key，也不把 live trace 混入机制基线。

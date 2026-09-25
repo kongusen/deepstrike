@@ -8,10 +8,11 @@ export function makeArtifact({ sdk, scenario, variant, result, elapsedMs }) {
     sdkVersion: sdk.version,
     scenario,
     variant,
-    status: "passed",
+    status: result.status ?? "passed",
     elapsedMs,
     metrics: result.metrics,
     evidence: result.evidence,
+    ...(result.error ? { error: result.error } : {}),
   }
 }
 
