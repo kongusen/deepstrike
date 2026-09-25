@@ -16,30 +16,30 @@
 
 ### Phase 1: Agent contract foundation
 
-- [ ] Stable `AgentSession` bound to one `SessionLog`
-- [ ] Structured `AgentRunResult` with status, usage, run id and evidence
-- [ ] Per-run options: metadata, provider options, timeout, token cap, attachments, cancellation
-- [ ] Resume, interrupt and close lifecycle
+- [x] Stable `AgentSession` bound to one `SessionLog`
+- [x] Structured `AgentRunResult` with status, usage, run id and evidence
+- [x] Per-run options: metadata, provider options, timeout, token cap, attachments, cancellation
+- [x] Resume, interrupt and close lifecycle
 
 ### Phase 2: Kernel-backed capabilities
 
-- [ ] Durable memory `remember/recall`
-- [ ] Declared handoff/delegate
-- [ ] Signal `listen` with claim/ack/nack
-- [ ] Workflow execution, trace and replay projection
+- [x] Durable memory `remember/recall`
+- [x] Declared handoff/delegate
+- [x] Signal `listen` with claim/ack/nack
+- [x] Workflow execution, trace and replay projection
 
 ### Phase 3: Browser transport and persistence
 
-- [ ] MCP connection protocol and HTTP/SSE/custom adapter seam
-- [ ] Automatic Agent transport lifecycle
-- [ ] Durable session/payload storage adapter contracts
+- [x] MCP connection protocol and HTTP/SSE/custom adapter seam
+- [x] Automatic Agent transport lifecycle
+- [x] Durable session/payload storage adapter contracts
 
 ### Phase 4: Release verification
 
-- [ ] TypeScript build passes
-- [ ] WASM Jest suite passes
-- [ ] Canonical binding/golden fixture sweep passes
-- [ ] Public API export matrix documented
+- [x] TypeScript build passes
+- [x] WASM Jest suite passes
+- [ ] Canonical binding/golden fixture sweep passes in CI (local host lacks the target)
+- [x] Public API export matrix documented
 
 ## Acceptance criteria
 
