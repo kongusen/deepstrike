@@ -12,13 +12,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::run_event::RunEvent;
 use crate::runtime::session_log::SessionEntry;
-use crate::{Result, RuntimeOptions, RuntimeRunner};
+use crate::{MemoryQuery, MemoryRecall, MemoryRecord, Result, RuntimeOptions, RuntimeRunner};
+
+/// Per-run inputs that are intentionally separate from `RuntimeOptions`.
+/// This keeps a reusable `Agent` immutable while allowing each session turn to carry its own
+/// criteria, extensions, and multimodal attachments.
+#[derive(Debug, Clone, Default)]
+pub struct AgentRunOptions {
+    pub criteria: Vec<String>,
+    pub extensions: Option<serde_json::Value>,
+    pub attachments: Vec<deepstrike_core::types::message::ContentPart>,
+}
 
 /// A completed run projected from the runtime event stream.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentRunResult {
     pub text: String,
     pub run_id: Option<String>,
+    pub session_id: String,
     pub status: String,
     pub iterations: u32,
     pub total_tokens: u64,
@@ -62,6 +73,16 @@ impl Agent {
     pub async fn stream<'a>(&'a self, goal: &'a str) -> Result<AgentStream<'a>> {
         self.runner.run_streaming(goal, &[], None, None).await
     }
+
+    pub async fn run_with_options(
+        &self,
+        goal: &str,
+        options: &AgentRunOptions,
+    ) -> Result<AgentRunResult> {
+        self.session(uuid::Uuid::new_v4().to_string())
+            .run_with_options(goal, options)
+            .await
+    }
 }
 
 /// A durable, resumable session handle.
@@ -79,8 +100,20 @@ impl AgentSession {
     }
 
     pub async fn run(&self, goal: &str) -> Result<AgentRunResult> {
-        let mut stream = self.stream(goal).await?;
-        let mut result = AgentRunResult::default();
+        self.run_with_options(goal, &AgentRunOptions::default())
+            .await
+    }
+
+    pub async fn run_with_options(
+        &self,
+        goal: &str,
+        options: &AgentRunOptions,
+    ) -> Result<AgentRunResult> {
+        let mut stream = self.stream_with_options(goal, options).await?;
+        let mut result = AgentRunResult {
+            session_id: self.session_id.clone(),
+            ..Default::default()
+        };
         while let Some(event) = stream.next().await {
             match event? {
                 RunEvent::TextDelta(delta) => result.text.push_str(&delta),
@@ -106,6 +139,22 @@ impl AgentSession {
             .await
     }
 
+    pub async fn stream_with_options<'a>(
+        &'a self,
+        goal: &'a str,
+        options: &'a AgentRunOptions,
+    ) -> Result<AgentStream<'a>> {
+        self.runner
+            .run_streaming_with_attachments(
+                goal,
+                &options.criteria,
+                options.extensions.as_ref(),
+                Some(&self.session_id),
+                &options.attachments,
+            )
+            .await
+    }
+
     pub async fn resume<'a>(&'a self) -> Result<AgentStream<'a>> {
         self.runner.wake_streaming(&self.session_id, None).await
     }
@@ -116,6 +165,18 @@ impl AgentSession {
 
     pub async fn latest_seq(&self) -> Result<i64> {
         self.runner.latest_session_seq(&self.session_id).await
+    }
+
+    pub async fn remember(&self, memory: MemoryRecord) -> Result<()> {
+        self.runner
+            .write_memory(memory, Some(&self.session_id), None)
+            .await
+    }
+
+    pub async fn recall(&self, query: MemoryQuery) -> Result<Vec<MemoryRecall>> {
+        self.runner
+            .query_memory(query, Some(&self.session_id), None)
+            .await
     }
 
     pub fn interrupt(&self) {

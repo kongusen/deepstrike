@@ -7,11 +7,13 @@ Rust SDK 和 Node、Python、WASM 共用 `deepstrike-core` 的状态机、事件
 | Agent 构造 | `Agent::new(RuntimeOptions)` / `Agent::with_runner` | ✅ | 不复制 runtime，直接持有 canonical `RuntimeRunner` |
 | Session | `Agent::session(id)` | ✅ | session id 由调用方控制，可跨调用恢复 |
 | 单次运行 | `Agent::run` / `AgentSession::run` | ✅ | 返回文本、run id、状态、迭代次数和 token 数 |
+| 单次运行选项 | `AgentRunOptions` | ✅ | criteria、extensions、attachments 按运行传入 |
 | 流式运行 | `Agent::stream` / `AgentSession::stream` | ✅ | 复用 `RunEvent`，保留 Rust `Stream` 语义 |
 | 恢复运行 | `AgentSession::resume` | ✅ | 调用 durable session projection + canonical journal |
 | 历史与序号 | `history` / `latest_seq` | ✅ | 读取 `SessionEntry`，支持审计和证据投影 |
 | 中断 | `AgentSession::interrupt` | ✅ | 委托给 runner 的 cancellation reason 机制 |
 | Memory | `RuntimeRunner::write_memory` / `query_memory` | ✅ | 共享 core memory policy、校验、配额和审计 |
+| Session Memory facade | `AgentSession::remember` / `recall` | ✅ | 绑定当前 session，仍由 runner 执行校验与审计 |
 | MCP / 执行平面 | `ExecutionPlane`、`McpProxyPlane` | ✅ | Rust 侧保留 trait 与宿主控制能力 |
 | Durable session log | `InMemorySessionLog` / `FileSessionLog` | ✅ | 可替换持久化实现 |
 | Workflow 状态机 | `WorkflowRun`、`WorkflowSpec` | ✅ | Rust 使用手动 executor 组合，避免伪造异步 driver |
