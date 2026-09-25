@@ -96,6 +96,28 @@ pub struct OutputValidation {
     pub errors: Vec<String>,
 }
 
+fn validate_output(text: &str, schema: &serde_json::Value) -> OutputValidation {
+    let mut value = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => value,
+        Err(error) => {
+            return OutputValidation {
+                ok: false,
+                errors: vec![format!("structured output is not valid JSON: {error}")],
+            };
+        }
+    };
+    match crate::tools::validate_tool_arguments(schema, &mut value) {
+        Ok(_) => OutputValidation {
+            ok: true,
+            errors: Vec::new(),
+        },
+        Err(error) => OutputValidation {
+            ok: false,
+            errors: vec![error],
+        },
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentUsage {
     pub total_tokens: u64,
@@ -222,21 +244,7 @@ impl AgentSession {
         });
         result.evidence = self.latest_evidence().await?;
         if let Some(schema) = &options.output_schema {
-            let mut value =
-                serde_json::from_str::<serde_json::Value>(&result.text).map_err(|error| {
-                    crate::Error::Other(format!("structured output is not valid JSON: {error}"))
-                })?;
-            let validation = match crate::tools::validate_tool_arguments(schema, &mut value) {
-                Ok(_) => OutputValidation {
-                    ok: true,
-                    errors: Vec::new(),
-                },
-                Err(error) => OutputValidation {
-                    ok: false,
-                    errors: vec![error],
-                },
-            };
-            result.output_validation = Some(validation);
+            result.output_validation = Some(validate_output(&result.text, schema));
         }
         Ok(result)
     }
@@ -348,5 +356,19 @@ impl AgentSession {
             route: Some(preparation.provider_route),
             measurement: serde_json::to_value(preparation.prompt_measurement).ok(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_output;
+
+    #[test]
+    fn structured_output_validation_is_non_fatal() {
+        let schema = serde_json::json!({"type": "object", "required": ["answer"]});
+        assert!(validate_output(r#"{"answer":"ok"}"#, &schema).ok);
+        let invalid = validate_output("not-json", &schema);
+        assert!(!invalid.ok);
+        assert!(invalid.errors[0].contains("not valid JSON"));
     }
 }
