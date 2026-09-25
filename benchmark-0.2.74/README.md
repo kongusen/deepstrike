@@ -72,3 +72,13 @@ node benchmark-0.2.74/cli/bench.mjs workflow --variant=default --baseline-check
 - `baselines/`：被接受的 golden JSON。
 
 默认测评不依赖 API key，也不把 live trace 混入机制基线。
+
+跨 SDK 的协议契约以根目录 `VERSION` 为唯一版本源，Node、Python、Rust 和 WASM 共用 `contracts/manifests/` 生成物。对齐和检查命令：
+
+```bash
+npm run contracts:verify
+node scripts/check-sdk-parity.mjs
+node scripts/run-sdk-conformance.mjs --validate-only
+```
+
+其中 `contracts:verify` 检查 host、kernel、provider、workflow、memory、skill、signal 和 replay 边界 manifest；`check-sdk-parity` 检查各 SDK 的实现标记；`run-sdk-conformance` 使用同一组 canonical fixtures 做跨 SDK 行为比较。SDK 专属能力保留在各自的 public surface，跨 SDK 只对齐共享协议和可观察行为。

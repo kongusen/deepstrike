@@ -1,6 +1,6 @@
 {
   "id": "run-config.configure-run.kernelReliabilityToKernel",
-  "version": "0.2.73",
+  "version": "0.2.74",
   "protocol": {
     "family": "host-to-kernel",
     "direction": "project",

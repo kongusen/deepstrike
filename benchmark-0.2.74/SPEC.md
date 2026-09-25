@@ -84,6 +84,8 @@ export const workflowScheduler = {
 - **Replay integration:** use recorded provider and dynamic workflow fixtures and verify stable output across runs.
 - Live provider tests are opt-in and are not part of the default test command.
 
+跨 SDK 对齐使用根目录 `VERSION`、`contracts/manifests/` 和 `tests/fixtures/sdk-conformance/`。Node、Python、Rust、WASM 不要求拥有完全相同的语言 API；它们必须在共享边界协议、错误 envelope、replay 事实和可观察行为上通过同一套 canonical fixture。语言专属能力需要显式声明覆盖范围，不能静默跳过。
+
 ## Boundaries
 
 - Always: use the 0.2.74 subpath exports; keep default runs deterministic; write JSON artifacts.

@@ -1,5 +1,5 @@
 {
-  "version": "0.2.73",
+  "version": "0.2.74",
   "invariants": [
     {
       "id": "effect-id-kernel-minted",

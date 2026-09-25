@@ -1,6 +1,6 @@
 {
   "id": "provider-stream.finish.OllamaAdapter.finishStreamAtBoundary",
-  "version": "0.2.73",
+  "version": "0.2.74",
   "protocol": {
     "family": "host-provider",
     "direction": "decode",
