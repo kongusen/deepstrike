@@ -19,7 +19,7 @@
 | usage / evidence result projection | ✅ | ✅ | ✅ | ✅ | Rust 从 `ContextPrepared` 和 terminal 事件投影 usage/evidence |
 | remember / recall | ✅ | ✅ | ✅ | ✅ | Rust 支持 typed `MemoryRecord` / `MemoryQuery` |
 | workflow driver | ✅ | ✅ | ✅ | ⚠️ | Rust 暴露 `AgentWorkflow` 手动 executor，不强行引入 async runtime |
-| workflow trace / replay | ✅ | ✅ | ✅ | ⚠️ | Rust 已有 replay message projection；workflow 专用 trace 仍待 typed event contract |
+| workflow trace / replay | ✅ | ✅ | ✅ | ⚠️ | Rust 已有 typed session replay；workflow 专用 trace 仍待 typed event contract |
 | delegate / handoff | ✅ | ✅ | ✅ | ✅ | Rust 通过显式 `AgentResolver` 注入 host 查找能力 |
 | listen / signal lease | ✅ | ✅ | ✅ | ✅ | Rust 已补 claim → run → ack/nack |
 | MCP / execution plane | ✅ | ✅ | ✅ | ✅ | Rust 以 trait 和 proxy plane 暴露 |

@@ -135,6 +135,15 @@ pub struct AgentEvidence {
     pub measurement: Option<serde_json::Value>,
 }
 
+/// A single typed snapshot of the durable session replay surface.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionReplay {
+    pub messages: Vec<deepstrike_core::types::message::CoreMessage>,
+    pub recorded_messages: Vec<deepstrike_core::types::message::CoreMessage>,
+    pub is_mid_run: bool,
+    pub latest_seq: i64,
+}
+
 /// A high-level agent backed by the canonical Rust runtime.
 #[derive(Clone)]
 pub struct Agent {
@@ -329,6 +338,17 @@ impl AgentSession {
 
     pub async fn is_mid_run(&self) -> Result<bool> {
         Ok(crate::runtime::replay::is_mid_run(&self.history().await?))
+    }
+
+    pub async fn replay(&self) -> Result<SessionReplay> {
+        let entries = self.history().await?;
+        Ok(SessionReplay {
+            messages: crate::runtime::replay::replay_messages(&entries),
+            recorded_messages:
+                crate::runtime::replay_fixture::extract_recorded_messages_from_entries(&entries),
+            is_mid_run: crate::runtime::replay::is_mid_run(&entries),
+            latest_seq: self.runner.latest_session_seq(&self.session_id).await?,
+        })
     }
 
     pub async fn latest_seq(&self) -> Result<i64> {
