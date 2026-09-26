@@ -9,6 +9,7 @@ import { readSkillFile } from "../skills/loader.js"
 import type { MemoryStore, MemoryScope } from "../memory/protocols.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { OperationContext } from "./reliability.js"
+import { parseToolCallArguments } from "./tool-arguments.js"
 
 export interface RunContext {
   /** Immutable identity, deadline, and cancellation boundary for this operation. */
@@ -150,7 +151,9 @@ export class LocalExecutionPlane implements ExecutionPlane {
       },
     }
     try {
-      const rawArgs = JSON.parse(call.arguments || "{}") as Record<string, unknown>
+      const parsedArgs = parseToolCallArguments(call.arguments)
+      if (!parsedArgs.ok) return { callId: call.id, output: `invalid arguments: ${parsedArgs.error}`, isError: true }
+      const rawArgs = parsedArgs.args
       const originalArgsStr = JSON.stringify(rawArgs)
       // validation.args, not rawArgs, from here on: a oneOf/anyOf ROOT accepts a repaired probe
       // CLONE — the original reference never sees those repairs (auto-casts, strips, defaults).

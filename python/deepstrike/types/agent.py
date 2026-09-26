@@ -351,6 +351,8 @@ class WorkflowNodeSpec:
   scheduling_factors: dict[str, int] | None = None
   depends_on: list[int] = field(default_factory=list)
   dep_policy: WorkflowDependencyPolicy = "all_success"
+  # Caller-declared wire identity; ``None`` ⇒ the canonical lowering assigns a positional id.
+  node_id: str | None = None
 
 
 @dataclass
@@ -506,6 +508,9 @@ def workflow_node_spec_to_kernel(n: WorkflowNodeSpec) -> dict[str, Any]:
     "context_inheritance": n.context_inheritance,
     "dep_policy": n.dep_policy,
   }
+  # The caller's node id is the node's wire identity (it used to be dropped here).
+  if getattr(n, "node_id", None):
+    node["node_id"] = n.node_id
   if n.model_hint:
     node["model_hint"] = n.model_hint
   if getattr(n, "trust", "trusted") and n.trust != "trusted":
@@ -556,7 +561,7 @@ def workflow_spec_to_kernel(spec: WorkflowSpec) -> dict[str, Any]:
 # (append) and ``start_workflow`` (workflow authoring: author a sub-workflow), so the two tools never drift.
 _workflow_nodes_array_schema: dict[str, Any] = {
   "type": "array",
-  "description": "Workflow nodes (a DAG); each runs as a gated sub-agent.",
+  "description": "Workflow nodes (a DAG); each runs as a gated sub-agent. `depends_on` is batch-relative.",
   "items": {
     "type": "object",
     "properties": {
@@ -564,58 +569,9 @@ _workflow_nodes_array_schema: dict[str, Any] = {
       "role": {"type": "string", "enum": ["explore", "plan", "implement", "verify", "custom"]},
       "isolation": {"type": "string", "enum": ["shared", "read_only", "worktree", "remote"]},
       "context_inheritance": {"type": "string", "enum": ["none", "system_only", "full"]},
-      "trust": {"type": "string", "enum": ["trusted", "quarantined"]},
       "output_schema": {"type": "object", "description": "Optional JSON Schema the node's output must conform to."},
       "model_hint": {"type": "string", "description": "Preferred model for this node (e.g. \"opus\"/\"sonnet\"); the host routes it."},
-      "reducer": {"type": "string", "description": "Make this a deterministic reduce node (no LLM); names a registered reducer."},
-      "loop": {
-        "type": "object",
-        "description": "Make this a loop node: re-run up to max_iters times, ending early when the agent reports done.",
-        "properties": {"max_iters": {"type": "integer", "description": "Hard iteration cap."}},
-        "required": ["max_iters"],
-      },
-      "classify": {
-        "type": "object",
-        "description": "Make this a classify node: pick one branch label; that branch's nodes run, the rest are pruned.",
-        "properties": {
-          "branches": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "label": {"type": "string"},
-                "nodes": {"type": "array", "items": {"type": "integer"}, "description": "Batch-relative node indices for this branch."},
-              },
-              "required": ["label", "nodes"],
-            },
-          },
-        },
-        "required": ["branches"],
-      },
-      "tournament": {
-        "type": "object",
-        "description": "Make this a tournament controller: generate each entrant, then pairwise-judge to one winner.",
-        "properties": {
-          "entrants": {
-            "type": "array",
-            "description": "≥2 candidate tasks to generate and judge.",
-            "items": {
-              "oneOf": [
-                {"type": "string"},
-                {"type": "object", "properties": {"goal": {"type": "string"}, "criteria": {"type": "array", "items": {"type": "string"}}}, "required": ["goal"]},
-              ],
-            },
-          },
-        },
-        "required": ["entrants"],
-      },
-      "token_budget": {"type": "integer", "description": "Cap this node's child run at this many cumulative tokens."},
       "depends_on": {"type": "array", "items": {"type": "integer"}},
-      "dep_policy": {
-        "type": "string",
-        "enum": ["all_success", "accept_partial", "all_terminal", "optional"],
-        "description": "How dependency terminal states gate this node; defaults to all_success.",
-      },
     },
     "required": ["task", "role"],
   },
@@ -626,9 +582,7 @@ submit_workflow_nodes_tool: dict[str, Any] = {
   "description": (
     "Append new nodes to the running workflow DAG (dynamic fan-out / loop-until-done). Each node "
     "spawns as a gated sub-agent. Use when you discover more work that should run as its own node. "
-    "A node may declare ONE control-flow kind — `loop` / `classify` / `tournament` / `reducer` — "
-    "otherwise it is a plain spawn. Within a submission, `depends_on` and `classify.branches[].nodes` "
-    "are batch-relative (index 0 = this batch's first node)."
+    "Within a submission, `depends_on` is batch-relative (index 0 = this batch's first node)."
   ),
   "parameters": json.dumps({
     "type": "object",
@@ -643,9 +597,9 @@ submit_workflow_nodes_tool: dict[str, Any] = {
 start_workflow_tool: dict[str, Any] = {
   "name": "start_workflow",
   "description": (
-    "Author and run a sub-workflow: a DAG of nodes (fan-out / classify / tournament / loop / reduce) "
-    "composed onto the current run. Use to structure a multi-step task as its own harness. The nodes "
-    "spawn as gated sub-agents; `depends_on` / `classify.branches[].nodes` are spec-relative."
+    "Author and run a sub-workflow: a DAG of nodes (fan-out / fan-in) composed onto the current run. "
+    "Use to structure a multi-step task as its own harness. The nodes spawn as gated sub-agents; "
+    "`depends_on` is spec-relative."
   ),
   "parameters": json.dumps({
     "type": "object",

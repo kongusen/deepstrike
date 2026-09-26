@@ -62,6 +62,7 @@
         "role",
         "isolation",
         "context_inheritance",
+        "attempt_id",
         "model_hint",
         "trust",
         "output_schema",
@@ -86,7 +87,6 @@
       ],
       "inferred": [
         "task_id",
-        "attempt_id",
         "launch_token",
         "node_id"
       ]

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
 import { getKernel } from "../kernel.js"
+import { toolArgumentsFromWire } from "./tool-arguments.js"
 import type {
   CanonicalKernelInstance,
   CanonicalPreparation,
@@ -125,7 +126,7 @@ function canonicalDoneFromTerminal(terminal: Record<string, unknown>): KernelRun
           content: String(finalMessage.content ?? ""),
           toolCalls: (Array.isArray(finalMessage.tool_calls) ? finalMessage.tool_calls : []).map(value => {
             const call = asObject(value)
-            return { id: String(call.call_id ?? ""), name: String(call.name ?? ""), arguments: JSON.stringify(call.arguments ?? {}) }
+            return { id: String(call.call_id ?? ""), name: String(call.name ?? ""), arguments: toolArgumentsFromWire(call.arguments) }
           }),
         } } : {}),
         ...(Object.keys(pace).length > 0 ? { paceDecision: {
@@ -171,7 +172,7 @@ export function canonicalActionFromProjectionJson(raw: string): KernelRunnerActi
         return {
           id: String(call.call_id ?? ""),
           name: String(call.name ?? ""),
-          arguments: JSON.stringify(call.arguments ?? {}),
+          arguments: toolArgumentsFromWire(call.arguments),
         }
       }),
     }
@@ -202,7 +203,7 @@ export function canonicalActionFromProjectionJson(raw: string): KernelRunnerActi
         return {
           callId: String(request.call_id ?? ""),
           tool: String(request.tool_name ?? ""),
-          arguments: JSON.stringify(request.arguments ?? {}),
+          arguments: toolArgumentsFromWire(request.arguments),
           reason: String(request.reason ?? ""),
         }
       }),
@@ -217,6 +218,8 @@ export function canonicalActionFromProjectionJson(raw: string): KernelRunnerActi
     }
   }
   if (action.kind === "evaluate_milestone") {
+    // The kernel ABI carries only the phase identity (config.rs `MilestonePhase`); criteria,
+    // evidence and verifier are host data the runner resolves from its own contract by `phaseId`.
     const request = asObject(payload.request)
     return {
       kind: "evaluate_milestone",
@@ -305,6 +308,19 @@ export class CanonicalKernelRejectedError extends Error {
   }
 }
 
+/** Fault codes that name a malformed input — the input was wrong, not the run. */
+const INPUT_SHAPE_FAULTS = new Set(["malformed_envelope", "invalid_config"])
+
+/**
+ * Whether a run-loop failure was the kernel refusing a malformed input (`invalid_arg`) rather than
+ * any other error. Decided by the fault the kernel named, or a binding's argument-conversion
+ * status — never by searching the message text.
+ */
+export function isInvalidInputError(error: unknown): boolean {
+  if (error instanceof CanonicalKernelRejectedError) return INPUT_SHAPE_FAULTS.has(String(error.fault.code))
+  return (error as { code?: unknown } | null)?.code === "InvalidArg"
+}
+
 /**
  * A record is already authoritative once the journal append returns. A later native commit failure
  * is therefore a rebuild boundary, never an abort boundary.
@@ -372,32 +388,47 @@ export class CanonicalKernelHost {
     if (!operationId) throw new TypeError("canonical kernel operationId must not be empty")
   }
 
+  /**
+   * The journal holds one outbound envelope slot per operation, so two transitions of the same
+   * operation must never overlap: the second would overwrite the first's staged bytes before its
+   * append was acknowledged. Every entry point that stages or drains goes through this queue.
+   */
+  private exclusiveTail: Promise<unknown> = Promise.resolve()
+
+  private exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.exclusiveTail.then(work, work)
+    this.exclusiveTail = run.catch(() => undefined)
+    return run
+  }
+
   async transition(
     input: CanonicalKernelInput,
     options: CanonicalTransitionOptions = {},
   ): Promise<CanonicalTransition> {
-    const inputJson = JSON.stringify({
-      operation_id: this.operationId,
-      input_id: options.inputId ?? `node-input-${randomUUID()}`,
-      observed_at_ms: options.observedAtMs ?? String(Date.now()),
-      input,
-    })
-    await this.journal.stageOutboundEnvelope(this.operationId, inputJson)
-    try {
-      const transition = await this.transitionEnvelope(inputJson, 1, 1)
-      await this.journal.clearOutboundEnvelope(this.operationId)
-      return transition
-    } catch (error) {
-      // Append-acked records own the input; rejected inputs will not retry this envelope.
-      // Append-before failures leave the staged bytes so wake can drain byte-identical retries.
-      if (
-        error instanceof CanonicalKernelRebuildRequiredError
-        || error instanceof CanonicalKernelRejectedError
-      ) {
+    return this.exclusive(async () => {
+      const inputJson = JSON.stringify({
+        operation_id: this.operationId,
+        input_id: options.inputId ?? `node-input-${randomUUID()}`,
+        observed_at_ms: options.observedAtMs ?? String(Date.now()),
+        input,
+      })
+      await this.journal.stageOutboundEnvelope(this.operationId, inputJson)
+      try {
+        const transition = await this.transitionEnvelope(inputJson, 1, 1)
         await this.journal.clearOutboundEnvelope(this.operationId)
+        return transition
+      } catch (error) {
+        // Append-acked records own the input; rejected inputs will not retry this envelope.
+        // Append-before failures leave the staged bytes so wake can drain byte-identical retries.
+        if (
+          error instanceof CanonicalKernelRebuildRequiredError
+          || error instanceof CanonicalKernelRejectedError
+        ) {
+          await this.journal.clearOutboundEnvelope(this.operationId)
+        }
+        throw error
       }
-      throw error
-    }
+    })
   }
 
   /** Restore the latest installed checkpoint and its authoritative record tail in place. */
@@ -415,21 +446,23 @@ export class CanonicalKernelHost {
    * No-op when nothing is staged. Clears the stage after commit/replay/reject.
    */
   async drainOutboundEnvelope(): Promise<CanonicalTransition | undefined> {
-    const pending = await this.journal.readOutboundEnvelope(this.operationId)
-    if (!pending) return undefined
-    try {
-      const transition = await this.transitionEnvelope(pending, 1, 1)
-      await this.journal.clearOutboundEnvelope(this.operationId)
-      return transition
-    } catch (error) {
-      if (
-        error instanceof CanonicalKernelRebuildRequiredError
-        || error instanceof CanonicalKernelRejectedError
-      ) {
+    return this.exclusive(async () => {
+      const pending = await this.journal.readOutboundEnvelope(this.operationId)
+      if (!pending) return undefined
+      try {
+        const transition = await this.transitionEnvelope(pending, 1, 1)
         await this.journal.clearOutboundEnvelope(this.operationId)
+        return transition
+      } catch (error) {
+        if (
+          error instanceof CanonicalKernelRebuildRequiredError
+          || error instanceof CanonicalKernelRejectedError
+        ) {
+          await this.journal.clearOutboundEnvelope(this.operationId)
+        }
+        throw error
       }
-      throw error
-    }
+    })
   }
 
   /** Execute the full §12.3 install/ack/reclaim boundary. */
@@ -574,7 +607,35 @@ export interface CanonicalRunnerRuntimeOptions {
   }>
 }
 
-function canonicalProviderMessage(raw: Record<string, unknown>): Record<string, unknown> {
+/** Host-reported per-task failures: `[{ agent_id, error, kind? }]`. */
+function launchFailures(raw: unknown): Map<string, { kind: string; message: string }> {
+  const failures = new Map<string, { kind: string; message: string }>()
+  for (const value of Array.isArray(raw) ? raw : []) {
+    const failure = asObject(value)
+    const taskId = String(failure.agent_id ?? failure.task_id ?? "")
+    if (!taskId) continue
+    failures.set(taskId, {
+      kind: String(failure.kind ?? "unknown"),
+      message: String(failure.error ?? failure.message ?? ""),
+    })
+  }
+  return failures
+}
+
+/** Child usage as observed: the split only when the host measured it, never an invented zero. */
+function childUsage(result: Record<string, unknown>): Record<string, unknown> {
+  const usage: Record<string, unknown> = {}
+  if (result.input_tokens !== undefined) usage.input_tokens = String(result.input_tokens)
+  if (result.output_tokens !== undefined) usage.output_tokens = String(result.output_tokens)
+  if (result.total_tokens_used !== undefined) usage.total_tokens = String(result.total_tokens_used)
+  if (result.turns_used !== undefined) usage.turns = Number(result.turns_used)
+  return usage
+}
+
+function canonicalProviderMessage(
+  raw: Record<string, unknown>,
+  appendBase: WorkflowNodeIdBase = 0,
+): Record<string, unknown> {
   const content = raw.content
   return {
     role: String(raw.role ?? "assistant"),
@@ -586,10 +647,9 @@ function canonicalProviderMessage(raw: Record<string, unknown>): Record<string, 
             return {
               call_id: String(call.call_id ?? call.id ?? ""),
               name: String(call.name ?? ""),
-              arguments: canonicalProviderToolArguments(
-                String(call.name ?? ""),
-                asObject(call.arguments),
-              ),
+              arguments: typeof call.arguments === "string"
+                ? call.arguments
+                : canonicalProviderToolArguments(String(call.name ?? ""), asObject(call.arguments), appendBase),
             }
           }),
         }
@@ -601,6 +661,22 @@ function canonicalProviderMessage(raw: Record<string, unknown>): Record<string, 
 function canonicalProviderToolArguments(
   name: string,
   argumentsValue: Record<string, unknown>,
+  appendBase: WorkflowNodeIdBase,
+): Record<string, unknown> {
+  try {
+    return canonicalWorkflowToolArguments(name, argumentsValue, appendBase)
+  } catch {
+    // The model wrote a workflow the canonical DAG cannot express. That is the model's bad
+    // arguments, not a host protocol violation: forward them verbatim so the kernel's syscall
+    // decoder answers with a model-visible rejection instead of the host failing the whole run.
+    return argumentsValue
+  }
+}
+
+function canonicalWorkflowToolArguments(
+  name: string,
+  argumentsValue: Record<string, unknown>,
+  appendBase: WorkflowNodeIdBase,
 ): Record<string, unknown> {
   if (name === "start_workflow") {
     const wrapped = asObject(argumentsValue.spec)
@@ -609,23 +685,60 @@ function canonicalProviderToolArguments(
   if (name === "submit_workflow_nodes") {
     const spec = canonicalWorkflowSpec({
       nodes: Array.isArray(argumentsValue.nodes) ? argumentsValue.nodes : [],
-    })
+    }, false, appendBase)
     return { nodes: spec.nodes }
   }
   return argumentsValue
 }
 
+/** Positional ids for anonymous appended nodes. A known DAG size yields `wf-node{base+i}`, the same
+ *  id the kernel gives the node internally; an unknown size (after a restore) yields a batch-scoped
+ *  id that cannot collide with anything already declared. */
+export type WorkflowNodeIdBase = number | string
+
+function anonymousNodeId(base: WorkflowNodeIdBase, index: number): string {
+  return typeof base === "number" ? `wf-node${base + index}` : `${base}-${index}`
+}
+
 function canonicalInitialMessage(raw: Record<string, unknown>): Record<string, unknown> {
+  const tokens = raw.token_count !== undefined ? { tokens: Number(raw.token_count) } : {}
   if (Array.isArray(raw.content)) {
+    // A lone tool result is a structural pairing, not opaque parts: send it as `tool_call_id` so
+    // the kernel keeps it bound to the assistant call that produced it.
+    const parts = raw.content.map(asObject)
+    if (parts.length === 1 && parts[0].type === "tool_result" && typeof parts[0].call_id === "string") {
+      return {
+        role: String(raw.role ?? "tool"),
+        content: String(parts[0].output ?? ""),
+        tool_call_id: parts[0].call_id,
+        ...(parts[0].is_error === true ? { is_error: true } : {}),
+        ...tokens,
+      }
+    }
     return {
       role: String(raw.role ?? "user"),
       content: encodeCanonicalContentParts(raw.content),
-      ...(raw.token_count !== undefined ? { tokens: Number(raw.token_count) } : {}),
+      ...tokens,
     }
   }
-  const message = canonicalProviderMessage(raw)
-  delete message.tool_calls
-  return message
+  // History tool calls are replayed facts, not new syscalls: keep them verbatim.
+  const content = raw.content
+  const toolCalls = Array.isArray(raw.tool_calls) ? raw.tool_calls.map(asObject) : []
+  return {
+    role: String(raw.role ?? "assistant"),
+    content: typeof content === "string" ? content : JSON.stringify(content ?? ""),
+    ...(toolCalls.length > 0
+      ? {
+          tool_calls: toolCalls.map(call => ({
+            call_id: String(call.call_id ?? call.id ?? ""),
+            name: String(call.name ?? ""),
+            arguments: asObject(call.arguments),
+          })),
+        }
+      : {}),
+    ...(typeof raw.tool_call_id === "string" ? { tool_call_id: raw.tool_call_id } : {}),
+    ...tokens,
+  }
 }
 
 function logicalRunSpec(raw: Record<string, unknown> | undefined, goal: string): Record<string, unknown> | undefined {
@@ -678,9 +791,18 @@ function logicalRunSpec(raw: Record<string, unknown> | undefined, goal: string):
 function canonicalWorkflowSpec(
   raw: Record<string, unknown>,
   allowHostSchedulingFactors = false,
+  nodeIdBase: WorkflowNodeIdBase = 0,
 ): Record<string, unknown> {
   const nodes = Array.isArray(raw.nodes) ? raw.nodes.map(asObject) : []
-  const nodeIds = nodes.map((_node, index) => `wf-node${index}`)
+  // A caller-declared id is the node's wire identity. Only an anonymous node gets a positional id,
+  // offset by the DAG's current size so ids stay unique across appended batches — the kernel
+  // refuses an append whose id is already declared.
+  const nodeIds = nodes.map((node, index) => {
+    const declared = node.node_id ?? node.nodeId
+    return typeof declared === "string" && declared.length > 0
+      ? declared
+      : anonymousNodeId(nodeIdBase, index)
+  })
   return {
     nodes: nodes.map((node, index) => {
       const unsupported: string[] = []
@@ -801,9 +923,17 @@ export class CanonicalRunnerRuntime {
   private started = false
   private turns = 0
   private lastAction: KernelRunnerAction | null = null
+  /** Live policy revision (§13.2): 0 at genesis, then each `live_policy_changed`. Unknown after a
+   *  restore, when a patch must name the revision it expects explicitly. */
+  private policyRevision: number | undefined = 0
+  /** Kernel-minted attempt per launched task, learned from each launch acknowledgement. */
+  private readonly taskAttempts = new Map<string, string>()
   private readonly newMessages: ModelMessage[] = []
   private readonly hostObservations: KernelObservationLike[] = []
   private spawnedTasks = 0
+  /** Nodes in the active workflow DAG, mirrored from committed facts so anonymous appended nodes get
+   *  unique positional ids. `undefined` after a restore until the next committed submission. */
+  private workflowNodeCount: number | undefined = 0
   private readonly memoryBindingId: string
   private payloadInlineThreshold = 50 * 1024
   private payloadPreviewBytes = 2 * 1024
@@ -871,6 +1001,11 @@ export class CanonicalRunnerRuntime {
     return ["completed", "cancelled", "failed"].includes(this.host.kernel.lifecycle())
   }
 
+  /** Whether the operation has a root — the precondition for any live host control command. */
+  hasStarted(): boolean {
+    return this.started
+  }
+
   recoveryContentBytes(): number {
     return Math.max(1_024, this.options.maxContextTokens * 4)
   }
@@ -898,11 +1033,15 @@ export class CanonicalRunnerRuntime {
 
   async restore(): Promise<void> {
     await this.host.restore()
+    this.workflowNodeCount = undefined
+    this.policyRevision = undefined
     this.configured = this.host.kernel.lifecycle() !== "created"
     this.started = !["created", "configured"].includes(this.host.kernel.lifecycle())
     // A crash between stage and append-ack leaves a byte-identical envelope; drain it before
     // the host effect loop so retries never remint observed_at_ms.
-    await this.host.drainOutboundEnvelope()
+    // The crash-window envelope commits here, so its observations are this run's facts too.
+    const drained = await this.host.drainOutboundEnvelope()
+    if (drained) this.absorbTransition(drained)
     this.lastAction = this.currentAction()
   }
 
@@ -937,15 +1076,17 @@ export class CanonicalRunnerRuntime {
 
   async startWorkflow(specValue: Record<string, unknown>): Promise<KernelRunnerAction | null> {
     await this.ensureConfigured()
+    const spec = canonicalWorkflowSpec(specValue, true)
     const action = await this.commit({
       kind: "start_operation",
       entry: {
         kind: "workflow",
-        spec: canonicalWorkflowSpec(specValue, true),
+        spec,
       },
       initial_context: this.initialContext,
     })
     this.started = true
+    this.workflowNodeCount = (spec.nodes as unknown[]).length
     return action
   }
 
@@ -958,6 +1099,7 @@ export class CanonicalRunnerRuntime {
       initial_context: this.initialContext,
     })
     this.started = true
+    this.workflowNodeCount = 0
     return action
   }
 
@@ -969,10 +1111,14 @@ export class CanonicalRunnerRuntime {
       kind: "host_control",
       command: {
         kind: "append_workflow_nodes",
-        nodes: canonicalWorkflowSpec(specValue, true).nodes,
+        nodes: canonicalWorkflowSpec(specValue, true, this.appendBase()).nodes,
         ...(plan ? { plan: dynamicWorkflowPlanToKernel(plan) } : {}),
       },
     })
+  }
+
+  private appendBase(): WorkflowNodeIdBase {
+    return this.workflowNodeCount ?? `wf-append-${randomUUID().slice(0, 8)}`
   }
 
   async recordDynamicWorkflowReplay(fact: DynamicWorkflowReplayFact): Promise<KernelRunnerAction | null> {
@@ -991,10 +1137,15 @@ export class CanonicalRunnerRuntime {
     if (!this.started && this.applyBootstrapEvent(event)) return null
 
     let input: CanonicalKernelInput | undefined
+    // What this input adds to the host's view (new messages, the turn count) is staged and only
+    // applied once the kernel commits it: a refused input must leave the host exactly where the
+    // kernel still is.
+    const staged: ModelMessage[] = []
+    let stagedTurns = 0
     switch (event.kind) {
       case "provider_result": {
-        const message = canonicalProviderMessage(asObject(event.message))
-        this.newMessages.push({
+        const message = canonicalProviderMessage(asObject(event.message), this.appendBase())
+        staged.push({
           role: message.role as ModelMessage["role"],
           content: String(message.content ?? ""),
           toolCalls: (Array.isArray(message.tool_calls) ? message.tool_calls : []).map(raw => {
@@ -1002,11 +1153,11 @@ export class CanonicalRunnerRuntime {
             return {
               id: String(call.call_id ?? ""),
               name: String(call.name ?? ""),
-              arguments: JSON.stringify(call.arguments ?? {}),
+              arguments: toolArgumentsFromWire(call.arguments),
             }
           }),
         })
-        this.turns += 1
+        stagedTurns += 1
         input = {
           kind: "resolve_effect",
           effect_id: String(event.effect_id ?? ""),
@@ -1093,7 +1244,7 @@ export class CanonicalRunnerRuntime {
               },
             })
           }
-          this.newMessages.push({ role: "tool", content: output, toolCalls: [] })
+          staged.push({ role: "tool", content: output, toolCalls: [] })
         }
         input = this.succeededEffect(event, {
           kind: "tools",
@@ -1110,26 +1261,50 @@ export class CanonicalRunnerRuntime {
         })
         break
       case "workflow_spawn_result": {
-        const spawn = this.lastAction?.kind === "spawn_workflow" ? this.lastAction : undefined
-        this.spawnedTasks += spawn?.nodes.length ?? 0
-        input = this.succeededEffect(event, {
-          kind: "tasks_spawned",
-          attempts: (spawn?.nodes ?? []).map(node => ({
-            task_id: String(node.task_id ?? node.agent_id ?? ""),
-            attempt_id: String(node.attempt_id ?? ""),
-            outcome: { status: "started" },
-          })),
+        // The launch set comes from the kernel's own pending effect (by id, never "the last
+        // action"), and each task's outcome from what the host reports it actually started.
+        const tasks = this.pendingEffectPayload(String(event.effect_id ?? ""), "spawn_tasks", "tasks")
+        const started = Array.isArray(event.started_agent_ids)
+          ? new Set(event.started_agent_ids.map(String))
+          : undefined
+        const failures = launchFailures(event.failures)
+        const attempts = tasks.map(task => {
+          const taskId = String(task.task_id ?? "")
+          const attemptId = String(task.attempt_id ?? "")
+          const failure = failures.get(taskId) ??
+            (started && !started.has(taskId)
+              ? { kind: "protocol_error", message: "the host did not report launching this task" }
+              : undefined)
+          if (!failure) this.taskAttempts.set(taskId, attemptId)
+          return {
+            task_id: taskId,
+            attempt_id: attemptId,
+            outcome: failure ? { status: "failed", failure } : { status: "started" },
+          }
         })
+        this.spawnedTasks += attempts.filter(attempt => attempt.outcome.status === "started").length
+        input = this.succeededEffect(event, { kind: "tasks_spawned", attempts })
         break
       }
       case "preempt_result": {
-        const preempt = this.lastAction?.kind === "preempt_sub_agents" ? this.lastAction : undefined
+        const refs = this.pendingEffectPayload(String(event.effect_id ?? ""), "preempt_tasks", "attempts")
+        const finished = new Set(Array.isArray(event.already_finished_agent_ids)
+          ? event.already_finished_agent_ids.map(String)
+          : [])
+        const failures = launchFailures(event.failures)
         input = this.succeededEffect(event, {
           kind: "tasks_preempted",
-          attempts: (preempt?.attempts ?? []).map(attempt => ({
-            ...attempt,
-            outcome: { status: "preempted" },
-          })),
+          attempts: refs.map(ref => {
+            const taskId = String(ref.task_id ?? "")
+            const failure = failures.get(taskId)
+            return {
+              task_id: taskId,
+              attempt_id: String(ref.attempt_id ?? ""),
+              outcome: failure
+                ? { status: "failed", failure }
+                : { status: finished.has(taskId) ? "already_finished" : "preempted" },
+            }
+          }),
         })
         break
       }
@@ -1140,40 +1315,36 @@ export class CanonicalRunnerRuntime {
           ? raw.submitted_nodes.map(asObject)
           : []
         const taskId = String(raw.agent_id ?? "")
-        const pending = this.pendingEffects().find(effect => {
-          const kind = asObject(effect.effect)
-          return kind.kind === "spawn_tasks" &&
-            (Array.isArray(kind.tasks) ? kind.tasks : []).some(task => asObject(task).task_id === taskId)
-        })
-        const launch = pending
-          ? (Array.isArray(asObject(pending.effect).tasks) ? asObject(pending.effect).tasks as unknown[] : [])
-              .map(asObject).find(task => task.task_id === taskId)
-          : undefined
+        // Child identity is the kernel's: the attempt it minted for this launch, carried by the
+        // host from the spawned node or remembered from the launch acknowledgement.
+        const attemptId = typeof event.attempt_id === "string" && event.attempt_id
+          ? event.attempt_id
+          : this.taskAttempts.get(taskId)
+        if (!attemptId) {
+          throw new Error(`sub_agent_completed for ${taskId} names no kernel-minted attempt id`)
+        }
+        const termination = String(result.termination ?? "error")
+        const status = termination === "completed"
+          ? "completed"
+          : termination === "user_abort" ? "cancelled" : "failed"
+        const output = asObject(result.final_message).content
         input = {
           kind: "deliver_external_event",
           event: {
             kind: "child_completed",
             task_id: taskId,
-            attempt_id: String(launch?.attempt_id ?? `${taskId}:attempt:1`),
+            attempt_id: attemptId,
             result: {
-              status: result.termination === "completed" ? "completed" : "failed",
-              ...(asObject(result.final_message).content
-                ? { output: String(asObject(result.final_message).content) }
-                : {}),
-              ...(!["completed", "max_turns", "token_budget"].includes(String(result.termination))
-                ? { error: String(result.termination ?? "failed") }
-                : {}),
-              usage: {
-                input_tokens: "0",
-                output_tokens: String(result.total_tokens_used ?? 0),
-                turns: Number(result.turns_used ?? 0),
-              },
+              status,
+              ...(output ? { output: String(output) } : {}),
+              ...(status !== "completed" ? { error: termination } : {}),
+              usage: childUsage(result),
             },
             ...(submittedNodes.length > 0
               ? {
                   parent_requests: [{
                     kind: "append_workflow_nodes",
-                    nodes: asObject(canonicalWorkflowSpec({ nodes: submittedNodes })).nodes,
+                    nodes: asObject(canonicalWorkflowSpec({ nodes: submittedNodes }, false, this.appendBase())).nodes,
                   }],
                 }
               : {}),
@@ -1182,31 +1353,44 @@ export class CanonicalRunnerRuntime {
         break
       }
       case "memory_persist_result":
+        // A receipt names what the store actually holds. Without the write's record ref and
+        // content digest there is nothing to attest: fail the effect rather than resolve it with
+        // an identity minted here (non-retryable — re-publishing cannot conjure a receipt).
         input = event.error
           ? this.failedEffect(event, "storage_unavailable", String(event.error), true)
-          : this.succeededEffect(event, {
-              kind: "memory_persisted",
-              receipt: {
-                binding_id: this.memoryBindingId,
-                record_ref: String(event.record_ref ?? `memory:${randomUUID()}`),
-                digest: String(event.digest ?? sha256(String(event.record_ref ?? event.effect_id ?? ""))),
-              },
-            })
+          : !event.record_ref || !event.digest
+            ? this.failedEffect(event, "storage_unavailable", "memory store returned no record_ref/digest receipt", false)
+            : this.succeededEffect(event, {
+                kind: "memory_persisted",
+                receipt: {
+                  binding_id: this.memoryBindingId,
+                  record_ref: String(event.record_ref),
+                  digest: String(event.digest),
+                },
+              })
         break
       case "memory_query_result":
         input = event.error
           ? this.failedEffect(event, "storage_unavailable", String(event.error), true)
           : this.succeededEffect(event, {
               kind: "memory_queried",
-              recalls: (Array.isArray(event.hits) ? event.hits : []).map(value => {
+              // A recall without a store identity cannot be attributed or re-read; drop it
+              // instead of minting one.
+              recalls: (Array.isArray(event.hits) ? event.hits : []).filter(value =>
+                Boolean(asObject(asObject(value).record).record_id)).map(value => {
                 const hit = asObject(value)
                 const record = asObject(hit.record)
                 return {
-                  record_ref: String(record.record_id ?? `memory:${randomUUID()}`),
+                  record_ref: String(record.record_id),
                   name: String(record.name ?? ""),
                   kind: String(record.kind ?? "reference"),
                   content: String(record.content ?? ""),
                   ...(typeof hit.score === "number" ? { score: hit.score } : {}),
+                  // M3: the store reports the count it holds; the kernel derives the next one.
+                  ...(Number(record.recall_count) > 0
+                    ? { recall_count: String(Math.trunc(Number(record.recall_count))) }
+                    : {}),
+                  ...(record.pinned === true ? { pinned: true } : {}),
                 }
               }),
             })
@@ -1261,7 +1445,7 @@ export class CanonicalRunnerRuntime {
             kind: "append_workflow_nodes",
             nodes: canonicalWorkflowSpec({
               nodes: Array.isArray(event.nodes) ? event.nodes : [],
-            }, true).nodes,
+            }, true, this.appendBase()).nodes,
           },
         }
         break
@@ -1285,6 +1469,54 @@ export class CanonicalRunnerRuntime {
           command: {
             kind: "apply_knowledge_mutation",
             mutation: { remove: [String(event.key ?? "")] },
+          },
+        }
+        break
+      case "force_compact":
+        input = { kind: "host_control", command: { kind: "force_compact" } }
+        break
+      case "admit_memory_write":
+        input = {
+          kind: "host_control",
+          command: {
+            kind: "admit_memory_write",
+            record_id: String(event.record_id ?? ""),
+            name: String(event.name ?? ""),
+            content_bytes: Number(event.content_bytes ?? 0),
+          },
+        }
+        break
+      case "update_deadline":
+        input = {
+          kind: "host_control",
+          command: {
+            kind: "update_deadline",
+            ...(event.deadline_ms !== undefined && event.deadline_ms !== null
+              ? { deadline_ms: String(event.deadline_ms) }
+              : {}),
+          },
+        }
+        break
+      case "apply_policy_patch": {
+        const expected = event.expected_revision ?? this.policyRevision
+        if (expected === undefined) {
+          throw new Error("the live policy revision is unknown after a restore; pass expectedRevision explicitly")
+        }
+        input = {
+          kind: "host_control",
+          command: { kind: "apply_policy_patch", expected_revision: String(expected), patch: event.patch },
+        }
+        break
+      }
+      case "skill_activation":
+        input = {
+          kind: "host_control",
+          command: {
+            kind: "apply_skill_activation",
+            activate: [{
+              name: String(event.name ?? ""),
+              ...(event.lease_turns !== undefined ? { lease_turns: Number(event.lease_turns) } : {}),
+            }],
           },
         }
         break
@@ -1327,7 +1559,18 @@ export class CanonicalRunnerRuntime {
       default:
         throw new Error(`Node host fact has no canonical ABI input: ${String(event.kind)}`)
     }
-    return this.commit(input)
+    const action = await this.commit(input)
+    this.newMessages.push(...staged)
+    this.turns += stagedTurns
+    // A model-authored `start_workflow` replaces the DAG (§10.2); an admitted one publishes its spawn.
+    if (event.kind === "provider_result" && action?.kind === "spawn_workflow") {
+      const message = input.outcome as { result?: { outcome?: { message?: { tool_calls?: unknown[] } } } }
+      const started = (message.result?.outcome?.message?.tool_calls ?? [])
+        .map(asObject)
+        .find(call => call.name === "start_workflow")
+      if (started) this.workflowNodeCount = (asObject(started.arguments).nodes as unknown[] | undefined)?.length ?? 0
+    }
+    return action
   }
 
   private async ensureConfigured(): Promise<void> {
@@ -1354,37 +1597,7 @@ export class CanonicalRunnerRuntime {
         this.lastAction = this.currentAction()
       }
       if (transition) {
-        if (!transition.replayed) {
-          for (const raw of transition.plannedStep.observations ?? []) {
-            const kind = String(raw.kind ?? "")
-            if (!kind) throw new Error("canonical observation is missing kind")
-            this.hostObservations.push({ ...raw, kind })
-          }
-          // §7.11 · a committed step that publishes effects is a fact worth recording in the
-          // host event log: the journal stores only a digest of the step, so this manifest is
-          // what makes the published effect ids + kinds recoverable post-hoc without replaying.
-          const published = JSON.parse(this.host.kernel.publishedEffectsManifestJson(
-            JSON.stringify(transition.plannedStep),
-          )) as Array<{ effect_id: string; kind: string }>
-          if (published.length > 0) {
-            this.hostObservations.push({
-              kind: "step_published_effects",
-              effects: published,
-            })
-          }
-          if (transition.checkpointAdvice) {
-            this.hostObservations.push({
-              kind: "checkpoint_advised",
-              ...transition.checkpointAdvice,
-            })
-          }
-          if (transition.checkpointFailure) {
-            this.hostObservations.push({
-              kind: "checkpoint_deferred",
-              reason: transition.checkpointFailure,
-            })
-          }
-        }
+        this.absorbTransition(transition)
         this.lastAction = canonicalActionFromProjectionJson(
           this.host.kernel.projectPlannedStepJson(JSON.stringify(transition.plannedStep)),
         )
@@ -1397,12 +1610,61 @@ export class CanonicalRunnerRuntime {
     }
   }
 
+  /** Record what a committed transition tells the host: its observations and published effects. */
+  private absorbTransition(transition: CanonicalTransition): void {
+    if (!transition.replayed) {
+      for (const raw of transition.plannedStep.observations ?? []) {
+        const kind = String(raw.kind ?? "")
+        if (!kind) throw new Error("canonical observation is missing kind")
+        if (kind === "workflow_nodes_submitted") {
+          this.workflowNodeCount = Number(raw.base ?? 0) + Number(raw.count ?? 0)
+        }
+        if (kind === "live_policy_changed") this.policyRevision = Number(raw.revision ?? 0)
+        this.hostObservations.push({ ...raw, kind })
+      }
+      // §7.11 · a committed step that publishes effects is a fact worth recording in the
+      // host event log: the journal stores only a digest of the step, so this manifest is
+      // what makes the published effect ids + kinds recoverable post-hoc without replaying.
+      const published = JSON.parse(this.host.kernel.publishedEffectsManifestJson(
+        JSON.stringify(transition.plannedStep),
+      )) as Array<{ effect_id: string; kind: string }>
+      if (published.length > 0) {
+        this.hostObservations.push({
+          kind: "step_published_effects",
+          effects: published,
+        })
+      }
+      if (transition.checkpointAdvice) {
+        this.hostObservations.push({
+          kind: "checkpoint_advised",
+          ...transition.checkpointAdvice,
+        })
+      }
+      if (transition.checkpointFailure) {
+        this.hostObservations.push({
+          kind: "checkpoint_deferred",
+          reason: transition.checkpointFailure,
+        })
+      }
+    }
+  }
+
   private currentAction(): KernelRunnerAction | null {
     return canonicalActionFromProjectionJson(this.host.kernel.projectionJson())
   }
 
   private pendingEffects(): Array<Record<string, unknown>> {
     return JSON.parse(this.host.kernel.pendingEffectsJson()) as Array<Record<string, unknown>>
+  }
+
+  /** One list field of the pending effect `effectId`, which must be of kind `kind`. */
+  private pendingEffectPayload(effectId: string, kind: string, field: string): Array<Record<string, unknown>> {
+    const pending = this.pendingEffects().find(effect => String(effect.effect_id ?? "") === effectId)
+    const effect = asObject(pending?.effect)
+    if (effect.kind !== kind) {
+      throw new Error(`effect ${effectId} is not a pending ${kind} effect`)
+    }
+    return (Array.isArray(effect[field]) ? effect[field] as unknown[] : []).map(asObject)
   }
 
   private succeededEffect(
@@ -1441,11 +1703,16 @@ export class CanonicalRunnerRuntime {
     const effect = asObject(pending?.effect)
     const payload = asObject(effect.payload)
     const content = String(payload.content ?? "")
+    const payloadRef = event.payload_ref ?? event.archive_ref
+    // The kernel later `load_payload`s this ref; a minted ref names bytes no store holds.
+    if (!payloadRef) {
+      return this.failedEffect(event, "storage_unavailable", "archive store returned no payload_ref; nothing was persisted", false)
+    }
     return this.succeededEffect(event, {
       kind: "page_out_archived",
       receipt: {
         handle_id: String(effect.handle_id ?? ""),
-        payload_ref: String(event.payload_ref ?? `payload:${randomUUID()}`),
+        payload_ref: String(payloadRef),
         digest: String(payload.digest ?? sha256(content)),
         original_size: String(payload.original_size ?? Buffer.byteLength(content, "utf8")),
       },
@@ -1454,24 +1721,23 @@ export class CanonicalRunnerRuntime {
 
   private canonicalSignal(event: Record<string, unknown>): Record<string, unknown> {
     const signal = asObject(event.signal)
-    const deliveryId = String(event.delivery_id ?? randomUUID())
-    const payload = deliveryId.startsWith("injected-") && typeof signal.summary === "string"
-      ? signal.summary
-      : signal.payload ?? {}
     return {
       kind: "deliver_signal",
-      delivery_id: deliveryId,
+      delivery_id: String(event.delivery_id ?? randomUUID()),
       attempt: Number(event.attempt ?? 1),
       signal: {
         signal_id: String(signal.signal_id ?? signal.id ?? randomUUID()),
         ...(signal.source ? { source: signal.source } : {}),
-        target: signal.recipient
-          ? { kind: "task", task_id: String(signal.recipient) }
-          : { kind: "operation" },
+        target: signal.target && typeof signal.target === "object"
+          ? signal.target
+          : signal.recipient
+            ? { kind: "task", task_id: String(signal.recipient) }
+            : { kind: "operation" },
         ...(signal.urgency ? { urgency: signal.urgency } : {}),
-        payload,
-        ...(signal.timestamp_ms !== undefined ? { source_timestamp_ms: String(signal.timestamp_ms) } : {}),
+        payload: signal.payload ?? {},
+        ...(signal.source_timestamp_ms !== undefined ? { source_timestamp_ms: String(signal.source_timestamp_ms) } : {}),
         ...(signal.dedupe_key ? { dedupe_key: signal.dedupe_key } : {}),
+        ...(signal.escalate_after_ms !== undefined ? { escalate_after_ms: String(signal.escalate_after_ms) } : {}),
       },
     }
   }

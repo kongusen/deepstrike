@@ -66,7 +66,7 @@ def _runner(source):
     ))
 
 
-def test_signal_lowering_preserves_deadline_and_coalesce_contract():
+def test_signal_lowering_speaks_the_kernel_logical_signal_vocabulary():
     signal = RuntimeSignal(
         source="gateway",
         signal_type="event",
@@ -85,12 +85,20 @@ def test_signal_lowering_preserves_deadline_and_coalesce_contract():
         lease_expires_at_ms=30_000,
     )
 
-    lowered = _signal_to_kernel_event(delivery)
+    lowered = _signal_to_kernel_event(delivery, now_ms=40)
 
-    assert lowered["signal"]["deadline_ms"] == 100
-    assert lowered["signal"]["coalesce_key"] == "updates"
-    assert lowered["signal"]["coalesced_count"] == 3
-    assert "topic" not in lowered["signal"]
+    assert lowered["signal"] == {
+        "signal_id": "79cc2f49-5d63-42be-bc0c-ecfcb9b9a47f",
+        "source": "gateway",
+        "target": {"kind": "operation"},
+        "urgency": "normal",
+        "payload": {"goal": "batch"},
+        # The absolute deadline becomes the duration the kernel anchors to its accepted time.
+        "escalate_after_ms": "60",
+    }
+    # signal_type / coalescing are signal-source concepts the canonical wire does not carry, and
+    # no host clock is stamped on it.
+    assert "timestamp_ms" not in lowered["signal"]
 
 
 @pytest.mark.asyncio

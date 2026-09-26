@@ -6,6 +6,7 @@ import type { RegisteredTool, ToolExecContext } from "../tools/index.js"
 import type { MemoryStore, MemoryScope } from "../memory/index.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
 import { formatToolError } from "../tools/errors.js"
+import { parseToolCallArguments } from "./tool-arguments.js"
 
 export interface ToolSuspendEvent {
   type: "tool_suspend"
@@ -35,7 +36,8 @@ export interface ExecutionPlane {
   executeAll(calls: ToolCall[], ctx: RunContext): AsyncIterable<StreamEvent>
 }
 
-function stripFrontmatter(content: string): string {
+/** A skill file's body without its YAML frontmatter. */
+export function stripSkillFrontmatter(content: string): string {
   const s = content.trimStart()
   if (!s.startsWith("---")) return s
   const rest = s.slice(3)
@@ -72,7 +74,7 @@ export class LocalExecutionPlane implements ExecutionPlane {
       const args = tryParseJson(c.arguments) as Record<string, unknown>
       const name = String(args?.name ?? "")
       const raw = ctx.skillContentMap?.get(name)
-      const content = raw != null ? stripFrontmatter(raw) : null
+      const content = raw != null ? stripSkillFrontmatter(raw) : null
       yield {
         type: "tool_result",
         callId: c.id,
@@ -121,7 +123,12 @@ export class LocalExecutionPlane implements ExecutionPlane {
         },
       }
       try {
-        const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
+        const parsedArgs = parseToolCallArguments(call.arguments)
+        if (!parsedArgs.ok) {
+          yield { type: "tool_result", callId: call.id, name: call.name, content: `invalid arguments: ${parsedArgs.error}`, isError: true } as ToolResultEvent
+          continue
+        }
+        const args = parsedArgs.args
         // M3/G4: pass the run context (incl. `cwd`, `audit`) for tool-ABI parity with Node/Python.
         const output = await registered.execute(args, callCtx)
         for (const f of auditFailures) {

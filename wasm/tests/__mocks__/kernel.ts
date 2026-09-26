@@ -241,11 +241,21 @@ export class CanonicalKernel {
             ])
             break
           }
+          // Like the real kernel, `update_plan` and `skill` are syscalls consumed from the provider
+          // result: they never become host tool effects, and a syscall-only turn simply continues.
+          const hostCalls = toolCalls.filter(call => call.name !== "update_plan" && call.name !== "skill")
+          if (this.phase === 0 && toolCalls.length > 0 && hostCalls.length === 0) {
+            this.phase = 1
+            plannedStepJson = this.planned([
+              this.effect("call_provider", { context: this.providerContext(), tools: [] }),
+            ])
+            break
+          }
           if (this.phase === 0 && toolCalls.length > 0) {
             this.phase = 1
             plannedStepJson = this.planned([
               this.effect("execute_tools", {
-                calls: toolCalls.map(call => ({
+                calls: hostCalls.map(call => ({
                   call_id: call.call_id ?? call.id ?? "c1",
                   name: call.name ?? "",
                   arguments: call.arguments ?? {},
@@ -709,4 +719,38 @@ export function contextVerifyJson(raw: string): string {
     throw new Error("invalid mock context verification")
   }
   return "true"
+}
+
+/** Boundary stand-in only; the canonical-binding node tests exercise the real kernel authority. */
+export function memoryAuthorityJson(raw: string): string {
+  const request = JSON.parse(raw)
+  if (request.op === "check_write") {
+    const policy = request.policy ?? {}
+    if (policy.validation_enabled === false) return JSON.stringify({ admitted: true })
+    const name = String(request.name ?? "")
+    const maxName = policy.max_name_length ?? 100
+    const maxBytes = policy.max_content_bytes ?? 10_000
+    const error = !name.trim() ? "memory name must not be empty"
+      : [...name].length > maxName ? `memory name exceeds ${maxName} characters`
+        : request.content_bytes > maxBytes ? `memory content exceeds ${maxBytes} bytes` : undefined
+    return JSON.stringify(error ? { admitted: false, error } : { admitted: true })
+  }
+  if (request.op === "derive_recall") {
+    const threshold = request.policy?.promotion_recall_threshold === undefined
+      ? undefined : Number(request.policy.promotion_recall_threshold)
+    const seen = new Set<string>()
+    const recalls: unknown[] = []
+    const promotions: unknown[] = []
+    for (const prior of request.recalls ?? []) {
+      if (seen.has(prior.record_id)) continue
+      seen.add(prior.record_id)
+      const count = (prior.recall_count ?? 0) + 1
+      recalls.push({ record_id: prior.record_id, recall_count: count, last_recalled_at: request.recalled_at })
+      if (threshold !== undefined && !prior.pinned && (prior.recall_count ?? 0) < threshold && count >= threshold) {
+        promotions.push({ record_id: prior.record_id, recall_count: count })
+      }
+    }
+    return JSON.stringify({ recalls, promotions })
+  }
+  throw new Error("invalid mock memory authority request")
 }

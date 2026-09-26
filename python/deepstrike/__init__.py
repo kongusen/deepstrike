@@ -176,7 +176,7 @@ from deepstrike.memory import (
     extract_session_memories, parse_extracted_memories,
 )
 from deepstrike.safety import PermissionManager, PermissionMode, Permission, PermissionDecision
-from deepstrike.governance import Governance, GovernancePolicy, GovernancePolicyRule, GovernanceRateLimit, GovernanceVerdict
+from deepstrike.governance import Governance, GovernancePolicy, GovernancePolicyRule, GovernanceRateLimit, GovernanceVerdict, governance_policy_patch
 from deepstrike.harness import (
     AttemptBody, AttemptBodyContext, AttemptBodyEvent, AttemptBodyTerminal,
     AttemptJudge, AttemptLoop, AttemptLoopEvent, AttemptOutcome,
@@ -267,6 +267,7 @@ __all__ = [
     "signal_aware_sleeper",
     "ResourceQuota",
     "GovernancePolicy",
+    "governance_policy_patch",
     "GovernancePolicyRule",
     "GovernanceRateLimit",
     "Governance",

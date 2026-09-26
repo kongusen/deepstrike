@@ -9,7 +9,7 @@ import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 
 describe("kernel cancellation transaction", () => {
   it.each(["user", "deadline", "lease_lost", "host_shutdown"] as const)(
-    "commits the %s reason with its pending provider call",
+    "commits the %s reason without naming the provider effect as a call",
     async reason => {
       const provider: LLMProvider = {
         async complete(): Promise<ModelMessage> {
@@ -31,7 +31,9 @@ describe("kernel cancellation transaction", () => {
         .map(entry => entry.event)
         .find(event => event.kind === "operation_cancelled")
       expect(cancellation).toMatchObject({ kind: "operation_cancelled", reason })
-      expect(cancellation && "pending_call_ids" in cancellation ? cancellation.pending_call_ids : []).toHaveLength(1)
+      // `pending_call_ids` is the logical call-id namespace; an in-flight provider effect is not a
+      // call and is settled by the cancel transition itself.
+      expect(cancellation && "pending_call_ids" in cancellation ? cancellation.pending_call_ids : []).toEqual([])
     },
   )
 

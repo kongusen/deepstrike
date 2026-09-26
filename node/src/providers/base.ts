@@ -1,5 +1,6 @@
 import type { ToolOutputBlock, ModelMessage, ContentPart, RenderedContext } from "../types.js"
 import { normalizeToolResultPart, projectToolOutputToText } from "./content-normalization.js"
+import { toolArgumentsText } from "../runtime/tool-arguments.js"
 
 export class CircuitBreaker {
   private failures = 0
@@ -102,12 +103,10 @@ export function stablePromptCacheKey(parts: string[]): string {
 export function normalizeToolCall(id: string, name: string, args: unknown): { id: string; name: string; arguments: string } | null {
   const n = String(name ?? "").trim()
   if (!n) return null
-  let parsed: Record<string, unknown> = {}
   if (typeof args === "string") {
-    try { parsed = JSON.parse(args || "{}") } catch { parsed = {} }
-  } else if (args && typeof args === "object") {
-    parsed = args as Record<string, unknown>
+    return { id: String(id ?? ""), name: n, arguments: toolArgumentsText(args) }
   }
+  const parsed = args && typeof args === "object" ? args as Record<string, unknown> : {}
   return { id: String(id ?? ""), name: n, arguments: JSON.stringify(parsed) }
 }
 

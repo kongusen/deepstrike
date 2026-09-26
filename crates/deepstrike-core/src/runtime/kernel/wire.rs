@@ -30,6 +30,7 @@ pub mod effect;
 pub mod envelope;
 pub mod event;
 pub mod fault;
+pub mod memory_authority;
 pub mod projection;
 pub mod record;
 pub mod restore;

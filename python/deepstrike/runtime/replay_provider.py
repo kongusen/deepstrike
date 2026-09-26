@@ -24,6 +24,7 @@ from deepstrike.providers.base import (
     RenderedContext,
     StreamEvent,
 )
+from deepstrike.runtime.tool_arguments import malformed_tool_arguments
 
 
 @dataclass
@@ -176,4 +177,10 @@ class ReplayProvider(LLMProvider):
                 args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
             except Exception:
                 args = {}
-            yield {"type": "tool_call", "id": tc_id, "name": name, "arguments": args}  # type: ignore[misc]
+            raw_text = malformed_tool_arguments(raw_args) if isinstance(raw_args, str) else None
+            if not isinstance(args, dict):
+                args = {}
+            yield {  # type: ignore[misc]
+                "type": "tool_call", "id": tc_id, "name": name, "arguments": args,
+                **({"raw_arguments": raw_text} if raw_text is not None else {}),
+            }

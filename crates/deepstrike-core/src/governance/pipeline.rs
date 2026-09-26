@@ -14,6 +14,8 @@ pub struct GovernancePipeline {
     pub veto: VetoAuthority,
     pub rate_limiter: RateLimiter,
     pub constraints: ConstraintValidator,
+    /// Withhold statically denied tools from the provider surface (see [`Self::denies_tool`]).
+    pub hide_denied_tools: bool,
 }
 
 fn severity(v: &GovernanceVerdict) -> u8 {
@@ -32,7 +34,26 @@ impl GovernancePipeline {
             veto: VetoAuthority::new(),
             rate_limiter: RateLimiter::default(),
             constraints: ConstraintValidator::new(),
+            hide_denied_tools: false,
         }
+    }
+
+    /// Whether every call to `name` is denied regardless of its arguments or timing — a veto or a
+    /// `deny` permission. Argument constraints and rate limits are per-call, and `ask_user` is a
+    /// runtime decision, so none of them make a tool statically unusable.
+    pub fn denies_tool(&self, name: &str) -> bool {
+        let probe = ToolCall {
+            id: "governance-surface".into(),
+            name: name.into(),
+            arguments: serde_json::Value::Null,
+        };
+        matches!(
+            self.veto.check(&probe),
+            Some(GovernanceVerdict::Deny { .. })
+        ) || matches!(
+            self.permission.check(&probe),
+            Some(GovernanceVerdict::Deny { .. })
+        )
     }
 
     /// Set the current timestamp for rate limiting.

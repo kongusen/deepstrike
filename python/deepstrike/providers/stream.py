@@ -26,6 +26,9 @@ class ToolCallEvent:
     id: str = ""
     name: str = ""
     arguments: dict = field(default_factory=dict)
+    # The model's argument text, present only when it was not a JSON object (then ``arguments`` is
+    # ``{}``). The runner executes this text so the call fails as invalid instead of running empty.
+    raw_arguments: str | None = None
 
 
 @dataclass

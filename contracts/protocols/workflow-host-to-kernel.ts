@@ -16,6 +16,7 @@ export const WORKFLOW_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
       fields: {
         preserves: ["role", "isolation"],
         renames: {
+          nodeId: "node_id",
           contextInheritance: "context_inheritance",
           modelHint: "model_hint",
           outputSchema: "output_schema",
@@ -25,7 +26,7 @@ export const WORKFLOW_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
           dependsOn: "depends_on",
           depPolicy: "dep_policy",
         },
-        drops: ["nodeId", "agent", "context"],
+        drops: ["agent", "context"],
         derived: ["kind"],
         nested: [
           { source: "task", target: "task", kind: "project", note: "Bare goals normalize to RuntimeTask JSON with criteria defaulted." },

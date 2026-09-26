@@ -2053,10 +2053,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resource_quota_denies_write_memory_syscall() {
+    /// P1-15 · a host write with no live operation is judged by the kernel's own rule. The
+    /// rolling write quota is a per-operation kernel ledger; the SDK no longer keeps a second one.
+    async fn test_memory_policy_judges_a_write_with_no_live_run() {
         use crate::runtime::runner::{MilestonePolicy, RuntimeOptions, RuntimeRunner};
         use crate::runtime::session_log::SessionLog;
-        use deepstrike_core::governance::quota::ResourceQuota;
+        use deepstrike_core::runtime::kernel::wire::MemoryPolicy;
         use std::sync::Arc;
 
         let commits = Arc::new(std::sync::Mutex::new(0usize));
@@ -2125,11 +2127,11 @@ mod tests {
             governance_policy: None,
             signal_policy: None,
             scheduler_policy: None,
-            resource_quota: Some(ResourceQuota {
-                memory_writes_per_window: Some((0, 60_000)),
-                ..Default::default()
+            resource_quota: None,
+            memory_policy: Some(MemoryPolicy {
+                max_content_bytes: Some(8),
+                ..MemoryPolicy::default()
             }),
-            memory_policy: None,
             tokenizer: None,
             enable_plan_tool: None,
             on_tool_suspend: None,
@@ -2145,15 +2147,16 @@ mod tests {
             on_milestone_evaluate: None,
         });
 
-        runner
+        let admitted = runner
             .write_memory(
-                memory_record("too-many-writes", "This write should not be committed."),
+                memory_record("too-large", "This write should not be committed."),
                 Some("memory-quota-rs"),
                 None,
             )
             .await
             .unwrap();
 
+        assert!(!admitted);
         assert_eq!(*commits.lock().unwrap(), 0);
         let events = session_log.read("memory-quota-rs", 0, None).await.unwrap();
         assert!(
@@ -2953,5 +2956,403 @@ mod tests {
             "retired kernel input ABI is still reachable from Rust production modules:\n{}",
             hits.join("\n")
         );
+    }
+
+    // ── P1 boundary regressions (0.2.74 audit) ───────────────────────────────────────────────
+    mod boundary_p1 {
+        use crate::providers::{LLMProvider, StreamEvent};
+        use crate::run_event::RunEvent;
+        use crate::runtime::runner::{RuntimeOptions, RuntimeRunner};
+        use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
+        use deepstrike_core::context::renderer::InternalRenderedContext;
+        use deepstrike_core::types::message::{CoreMessage, ToolSchema};
+        use futures::StreamExt;
+        use std::sync::{Arc, Mutex};
+
+        /// Plays one scripted turn per provider call (then "done") and records each context.
+        struct Scripted {
+            turns: Vec<Vec<StreamEvent>>,
+            contexts: Arc<Mutex<Vec<String>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl LLMProvider for Scripted {
+            async fn complete(
+                &self,
+                _context: &InternalRenderedContext,
+                _tools: &[ToolSchema],
+                _extensions: Option<&serde_json::Value>,
+            ) -> crate::Result<CoreMessage> {
+                unreachable!("the runner streams")
+            }
+            async fn stream(
+                &self,
+                context: &InternalRenderedContext,
+                _tools: &[ToolSchema],
+                _extensions: Option<&serde_json::Value>,
+                _state: Option<&crate::providers::ProviderRunState>,
+            ) -> crate::Result<
+                Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>,
+            > {
+                let mut contexts = self.contexts.lock().unwrap();
+                contexts.push(serde_json::to_string(context).unwrap_or_default());
+                let turn = self
+                    .turns
+                    .get(contexts.len() - 1)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        vec![StreamEvent::TextDelta {
+                            delta: "done".into(),
+                        }]
+                    });
+                let mut events: Vec<crate::Result<StreamEvent>> =
+                    turn.into_iter().map(Ok).collect();
+                events.push(Ok(StreamEvent::Done));
+                Ok(Box::new(futures::stream::iter(events)))
+            }
+        }
+
+        fn options(
+            provider: Scripted,
+            plane: crate::runtime::execution_plane::LocalExecutionPlane,
+            tools: &[&str],
+        ) -> RuntimeOptions {
+            RuntimeOptions {
+                artifact_set_digest: None,
+                provider: Box::new(provider),
+                execution_plane: Some(Box::new(plane)),
+                session_log: Some(Arc::new(InMemorySessionLog::new())),
+                compression_store: None,
+                payload_store: None,
+                kernel_reliability: None,
+                session_id: None,
+                max_tokens: 8000,
+                max_turns: Some(5),
+                timeout_ms: None,
+                extensions: None,
+                agent_id: None,
+                memory_scope: None,
+                system_prompt: None,
+                initial_memory: vec![],
+                skill_dir: None,
+                memory_store: None,
+                knowledge_source: None,
+                signal_source: None,
+                governance: None,
+                os_profile: None,
+                governance_policy: None,
+                signal_policy: None,
+                scheduler_policy: None,
+                resource_quota: None,
+                memory_policy: None,
+                tokenizer: None,
+                enable_plan_tool: None,
+                on_tool_suspend: None,
+                on_permission_request: None,
+                milestone_policy: crate::runtime::MilestonePolicy::Terminate,
+                milestone_contract: None,
+                run_spec: None,
+                allowed_tool_ids: None,
+                baseline_tool_ids: Some(tools.iter().map(|t| t.to_string()).collect()),
+                on_turn_metrics: None,
+                stable_core_tool_ids: vec![],
+                pre_query_memory: None,
+                on_milestone_evaluate: None,
+            }
+        }
+
+        async fn drain(runner: &RuntimeRunner, session_id: &str) -> Vec<RunEvent> {
+            let mut stream = runner
+                .run_streaming("go", &[], None, Some(session_id))
+                .await
+                .expect("run starts");
+            let mut events = Vec::new();
+            while let Some(event) = stream.next().await {
+                events.push(event.expect("run event"));
+            }
+            events
+        }
+
+        /// P1-13 · argument text that is not a JSON object fails the call; the tool never runs.
+        #[tokio::test]
+        async fn a_truncated_call_never_executes() {
+            let executed = Arc::new(Mutex::new(Vec::new()));
+            let seen = executed.clone();
+            let mut plane = crate::runtime::execution_plane::LocalExecutionPlane::new();
+            plane.register(crate::tools::RegisteredTool::text(
+                "write",
+                "write",
+                serde_json::json!({ "type": "object", "properties": { "path": { "type": "string" } } }),
+                move |args| {
+                    seen.lock().unwrap().push(args);
+                    Box::pin(async { Ok("wrote".to_string()) })
+                },
+            ));
+            let contexts = Arc::new(Mutex::new(Vec::new()));
+            let provider = Scripted {
+                turns: vec![vec![StreamEvent::ToolCall {
+                    id: "c1".into(),
+                    name: "write".into(),
+                    arguments: crate::runtime::tool_arguments::from_model_text("{\"path\": \"/tm"),
+                }]],
+                contexts: contexts.clone(),
+            };
+            let runner = RuntimeRunner::new(options(provider, plane, &["write"]));
+            let events = drain(&runner, "p1-13").await;
+            assert!(
+                executed.lock().unwrap().is_empty(),
+                "the tool never ran with invented args"
+            );
+            let result = events.iter().find_map(|e| match e {
+                RunEvent::ToolResult {
+                    content, is_error, ..
+                } => Some((content.clone(), *is_error)),
+                _ => None,
+            });
+            let (content, is_error) = result.expect("a tool result");
+            assert!(
+                is_error && content.contains("invalid arguments"),
+                "{content}"
+            );
+            assert!(contexts.lock().unwrap()[1].contains("invalid arguments"));
+        }
+
+        /// P1-15 · a store whose search returns fixed hits and which records every recall batch.
+        struct RecallStore {
+            hits: Vec<deepstrike_core::mm::memory::MemoryRecord>,
+            recalls: Arc<Mutex<Vec<(String, u64)>>>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::memory::MemoryStore for RecallStore {
+            async fn put(
+                &self,
+                _: &str,
+                _: deepstrike_core::mm::memory::MemoryRecord,
+            ) -> crate::Result<()> {
+                Ok(())
+            }
+            async fn get(
+                &self,
+                _: &str,
+                _: &str,
+            ) -> crate::Result<Option<deepstrike_core::mm::memory::MemoryRecord>> {
+                Ok(None)
+            }
+            async fn delete(&self, _: &str, _: &str) -> crate::Result<()> {
+                Ok(())
+            }
+            async fn search(
+                &self,
+                _: &str,
+                _: &deepstrike_core::mm::memory::MemoryQuery,
+            ) -> crate::Result<Vec<deepstrike_core::mm::memory::MemoryRecall>> {
+                Ok(self
+                    .hits
+                    .iter()
+                    .cloned()
+                    .map(|record| deepstrike_core::mm::memory::MemoryRecall {
+                        record,
+                        score: 0.9,
+                        why: "fixture".into(),
+                    })
+                    .collect())
+            }
+            async fn save_session(
+                &self,
+                _: deepstrike_core::memory::durable::SessionData,
+            ) -> crate::Result<()> {
+                Ok(())
+            }
+            async fn record_recall(
+                &self,
+                _: &str,
+                recalls: &[deepstrike_core::mm::memory::MemoryRecallLifecycle],
+            ) -> crate::Result<()> {
+                self.recalls.lock().unwrap().extend(
+                    recalls
+                        .iter()
+                        .map(|r| (r.record_id.clone(), r.recall_count)),
+                );
+                Ok(())
+            }
+        }
+
+        fn stored(record_id: &str, recall_count: u64) -> deepstrike_core::mm::memory::MemoryRecord {
+            let mut record = super::memory_record(record_id, "fixture body");
+            record.record_id = record_id.into();
+            record.recall_count = recall_count;
+            record
+        }
+
+        /// P1-15 · a model memory query: the kernel derives the next count from the stored one
+        /// and the runner mirrors it — before, a model recall was never counted at all.
+        #[tokio::test]
+        async fn a_model_memory_query_mirrors_the_kernel_derived_count() {
+            let recalls = Arc::new(Mutex::new(Vec::new()));
+            let provider = Scripted {
+                turns: vec![vec![StreamEvent::ToolCall {
+                    id: "m1".into(),
+                    name: "memory".into(),
+                    arguments: serde_json::json!({ "query": "prefs" }),
+                }]],
+                contexts: Arc::new(Mutex::new(Vec::new())),
+            };
+            let mut opts = options(
+                provider,
+                crate::runtime::execution_plane::LocalExecutionPlane::new(),
+                &[],
+            );
+            opts.agent_id = Some("p1-15".into());
+            opts.memory_scope = Some(deepstrike_core::mm::memory::MemoryScope::new(
+                "agent-memory",
+                "rust-tests",
+            ));
+            opts.memory_store = Some(Box::new(RecallStore {
+                hits: vec![stored("crossing", 2)],
+                recalls: recalls.clone(),
+            }));
+            let runner = RuntimeRunner::new(opts);
+            drain(&runner, "p1-15-query").await;
+            assert_eq!(*recalls.lock().unwrap(), vec![("crossing".to_string(), 3)]);
+        }
+
+        /// P1-15 · a host recall is counted by the kernel's derivation, once per record.
+        #[tokio::test]
+        async fn a_host_recall_derives_its_counts_in_the_kernel() {
+            let recalls = Arc::new(Mutex::new(Vec::new()));
+            let provider = Scripted {
+                turns: vec![],
+                contexts: Arc::new(Mutex::new(Vec::new())),
+            };
+            let mut opts = options(
+                provider,
+                crate::runtime::execution_plane::LocalExecutionPlane::new(),
+                &[],
+            );
+            opts.agent_id = Some("p1-15".into());
+            opts.memory_store = Some(Box::new(RecallStore {
+                hits: vec![stored("a", 1), stored("a", 1)],
+                recalls: recalls.clone(),
+            }));
+            let runner = RuntimeRunner::new(opts);
+            runner
+                .query_memory(
+                    deepstrike_core::mm::memory::MemoryQuery {
+                        scope: deepstrike_core::mm::memory::MemoryScope::new(
+                            "agent-memory",
+                            "rust-tests",
+                        ),
+                        query: "a".into(),
+                        top_k: 5,
+                        kinds: Vec::new(),
+                        min_score: None,
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(*recalls.lock().unwrap(), vec![("a".to_string(), 2)]);
+        }
+
+        /// P1-7 · the model's update_plan progress survives a tool batch; the host writes none.
+        #[tokio::test]
+        async fn the_host_never_writes_the_models_task_state() {
+            let mut plane = crate::runtime::execution_plane::LocalExecutionPlane::new();
+            plane.register(crate::tools::RegisteredTool::text(
+                "noop",
+                "noop",
+                serde_json::json!({ "type": "object", "properties": {} }),
+                |_| Box::pin(async { Ok("ok".to_string()) }),
+            ));
+            let contexts = Arc::new(Mutex::new(Vec::new()));
+            let provider = Scripted {
+                turns: vec![
+                    vec![StreamEvent::ToolCall {
+                        id: "plan".into(),
+                        name: "update_plan".into(),
+                        arguments: serde_json::json!({ "progress": "drafting section two" }),
+                    }],
+                    vec![StreamEvent::ToolCall {
+                        id: "noop".into(),
+                        name: "noop".into(),
+                        arguments: serde_json::json!({}),
+                    }],
+                ],
+                contexts: contexts.clone(),
+            };
+            let mut opts = options(provider, plane, &["noop"]);
+            opts.enable_plan_tool = Some(true);
+            let runner = RuntimeRunner::new(opts);
+            let events = drain(&runner, "p1-7").await;
+            assert!(
+                !events.iter().any(|e| matches!(e, RunEvent::Error(_))),
+                "{events:?}"
+            );
+            let contexts = contexts.lock().unwrap();
+            assert!(contexts.len() >= 3);
+            assert!(contexts[2].contains("drafting section two"));
+            assert!(!contexts[2].contains("Executed tools"));
+        }
+
+        /// P1-12 · a cancellation names logical calls only, never the in-flight effect id.
+        #[tokio::test]
+        async fn cancellation_names_logical_calls_only() {
+            let runner_slot: Arc<Mutex<Option<Arc<RuntimeRunner>>>> = Arc::new(Mutex::new(None));
+            let slot = runner_slot.clone();
+            let mut plane = crate::runtime::execution_plane::LocalExecutionPlane::new();
+            plane.register(crate::tools::RegisteredTool::text(
+                "stop_me",
+                "stop",
+                serde_json::json!({ "type": "object", "properties": {} }),
+                move |_| {
+                    if let Some(runner) = slot.lock().unwrap().as_ref() {
+                        runner.interrupt();
+                    }
+                    Box::pin(async { Ok("ok".to_string()) })
+                },
+            ));
+            let provider = Scripted {
+                turns: vec![vec![StreamEvent::ToolCall {
+                    id: "c1".into(),
+                    name: "stop_me".into(),
+                    arguments: serde_json::json!({}),
+                }]],
+                contexts: Arc::new(Mutex::new(Vec::new())),
+            };
+            let log = Arc::new(InMemorySessionLog::new());
+            let mut opts = options(provider, plane, &["stop_me"]);
+            opts.session_log = Some(log.clone());
+            let runner = Arc::new(RuntimeRunner::new(opts));
+            *runner_slot.lock().unwrap() = Some(runner.clone());
+            drain(&runner, "p1-12").await;
+            let entries = log.read("p1-12", 0, None).await.unwrap();
+            let pending = entries.iter().find_map(|entry| match &entry.event {
+                deepstrike_core::runtime::session::SessionEvent::OperationCancelled {
+                    pending_call_ids,
+                    ..
+                } => Some(pending_call_ids.clone()),
+                _ => None,
+            });
+            assert_eq!(pending, Some(vec![]));
+            *runner_slot.lock().unwrap() = None;
+        }
+
+        /// P1-14 · the runner's control methods need a run, and apply a revision-guarded patch.
+        #[tokio::test]
+        async fn control_commands_require_an_active_run() {
+            let provider = Scripted {
+                turns: vec![],
+                contexts: Arc::new(Mutex::new(Vec::new())),
+            };
+            let runner = RuntimeRunner::new(options(
+                provider,
+                crate::runtime::execution_plane::LocalExecutionPlane::new(),
+                &[],
+            ));
+            let error = runner.force_compact().await.expect_err("no active run");
+            assert!(error.to_string().contains("requires an active run"));
+        }
     }
 }

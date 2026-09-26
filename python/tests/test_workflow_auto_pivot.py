@@ -44,45 +44,60 @@ class AuthoringProvider:
             yield TextDelta(delta="synthesized the sub-workflow results")
 
 
-class _Stub:
-    async def run(self, ctx):
-        raise AssertionError("workflow nodes must not run under canonical auto-pivot cutover")
+class _Orchestrator:
+  """Canned workflow driver: each authored node returns a result naming its agent id."""
+
+  def __init__(self) -> None:
+    self.ran: list[str] = []
+
+  async def run(self, ctx):
+    agent_id = ctx.spec.identity.agent_id
+    self.ran.append(agent_id)
+    return SubAgentResult(agent_id=agent_id, result=LoopResult(
+      termination="completed",
+      turns_used=1,
+      total_tokens_used=1,
+      final_message=ModelMessage(role="assistant", content=f"result of {agent_id}"),
+    ))
 
 
 async def _noop(**_kwargs) -> str:
-    return ""
+  return ""
 
 
 @pytest.mark.asyncio
-async def test_top_level_start_workflow_does_not_auto_pivot_under_canonical_host():
-    orch = _Stub()
-    provider = AuthoringProvider()
-    plane = LocalExecutionPlane().register(RegisteredTool(_noop, ToolSchema(
-        name=start_workflow_tool["name"],
-        description=start_workflow_tool["description"],
-        parameters=start_workflow_tool["parameters"],
-    )))
-    runner = RuntimeRunner(RuntimeOptions(
-        provider=provider,
-        session_log=InMemorySessionLog(),
-        execution_plane=plane,
-            sub_agent_orchestrator=orch,
-            max_tokens=8000,
-            max_turns=5,
-            baseline_tool_ids=["start_workflow"],
-    ))
+async def test_top_level_start_workflow_drives_the_authored_sub_workflow_and_resumes():
+  # Parity with Node `workflow-auto-pivot.test.ts`: the model's `start_workflow` is lowered to the
+  # canonical DAG, the kernel drives it, and the agent resumes with the node results in context.
+  orch = _Orchestrator()
+  provider = AuthoringProvider()
+  plane = LocalExecutionPlane().register(RegisteredTool(_noop, ToolSchema(
+    name=start_workflow_tool["name"],
+    description=start_workflow_tool["description"],
+    parameters=start_workflow_tool["parameters"],
+  )))
+  runner = RuntimeRunner(RuntimeOptions(
+    provider=provider,
+    session_log=InMemorySessionLog(),
+    execution_plane=plane,
+    sub_agent_orchestrator=orch,
+    max_tokens=8000,
+    max_turns=5,
+    baseline_tool_ids=["start_workflow"],
+  ))
 
-    text = ""
-    async for evt in runner.run(goal="explore the topic two ways then synthesize"):
-        if isinstance(evt, TextDelta):
-            text += evt.delta
+  text = ""
+  async for evt in runner.run(goal="explore the topic two ways then synthesize"):
+    if isinstance(evt, TextDelta):
+      text += evt.delta
 
-    # Canonical host does not drive the authored sub-workflow in-run.
-    assert "synthesized the sub-workflow results" in text
-    assert not any("result of wf-node" in (
-        "\n".join(filter(None, [
-            ctx.system_text, ctx.system_stable, ctx.system_knowledge,
-            getattr(ctx.state_turn, "content", None) if ctx.state_turn else None,
-            *[m.content for m in ctx.turns if isinstance(m.content, str)],
-        ]))
-    ) for ctx in provider.contexts)
+  assert sorted(orch.ran) == ["wf-node0", "wf-node1"]
+  assert len(provider.contexts) >= 2
+  second = provider.contexts[1]
+  rendered = "\n".join(filter(None, [
+    second.system_text, second.system_stable, second.system_knowledge,
+    getattr(second.state_turn, "content", None) if second.state_turn else None,
+    *[m.content for m in second.turns if isinstance(m.content, str)],
+  ]))
+  assert "result of wf-node0" in rendered
+  assert "synthesized the sub-workflow results" in text

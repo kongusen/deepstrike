@@ -7,6 +7,7 @@ import type {
   MediaSource,
 } from "../types.js"
 import type { RollbackReason } from "./session-log.js"
+import { toolArgumentsFromWire, toolArgumentsToWire } from "./tool-arguments.js"
 
 interface TaskUpdate {
   plan?: string[]
@@ -246,7 +247,7 @@ export function messageToKernelMessage(message: ModelMessage): Record<string, un
     tool_calls: (message.toolCalls ?? []).map(tc => ({
       id: tc.id,
       name: tc.name,
-      arguments: tryParseJson(tc.arguments) ?? {},
+      arguments: toolArgumentsToWire(tc.arguments),
     })),
   }
   // Multimodal: serialize typed content parts to the kernel `Content::Parts` shape when present
@@ -332,10 +333,11 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): ModelMessage {
             .map(part => String(part.text ?? ""))
             .join("")
         : "",
+    // The canonical ProviderMessage names a call `call_id`; `id` is the legacy SDK spelling.
     toolCalls: ((raw.tool_calls as Array<Record<string, unknown>>) ?? []).map(tc => ({
-      id: String(tc.id ?? ""),
+      id: String(tc.call_id ?? tc.id ?? ""),
       name: String(tc.name ?? ""),
-      arguments: JSON.stringify(tc.arguments ?? {}),
+      arguments: toolArgumentsFromWire(tc.arguments),
     })),
   }
   if (typeof content === "string") {
@@ -376,6 +378,15 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): ModelMessage {
       }
       message.contentParts = contentParts
     }
+  }
+  // A tool message the kernel paired through `tool_call_id` is a structural tool result.
+  if (!message.contentParts && typeof raw.tool_call_id === "string") {
+    message.contentParts = [{
+      type: "tool_result",
+      callId: raw.tool_call_id,
+      output: message.content,
+      isError: raw.is_error === true,
+    }]
   }
   return message
 }

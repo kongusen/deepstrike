@@ -16,6 +16,7 @@ import type {
 } from "./content-normalization.js"
 import { normalizeCanonicalContext } from "./content-normalization.js"
 import { normalizeToolCall, UnsupportedModalityError } from "./base.js"
+import { malformedToolArguments } from "../runtime/tool-arguments.js"
 import { normalizeOpenAIUsage } from "./usage-normalizer.js"
 import {
   type AdapterDecodeInput,
@@ -309,7 +310,10 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
       }
       let args: Record<string, unknown> = {}
       try { args = JSON.parse(call.argsBuffer || "{}") as Record<string, unknown> } catch { args = {} }
-      events.push({ type: "tool_call", id: call.id, name: call.name, arguments: args } as ToolCallEvent)
+      events.push({
+        type: "tool_call", id: call.id, name: call.name, arguments: args,
+        ...malformedToolArguments(call.argsBuffer),
+      } as ToolCallEvent)
     } else if (chunk.type === "response.completed" || chunk.type === "response.incomplete") {
       const response = chunk.response as Record<string, any>
       runStatePatch = {

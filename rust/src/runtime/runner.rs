@@ -7,7 +7,7 @@ use async_stream::try_stream;
 use deepstrike_core::governance::quota::ResourceQuota;
 use deepstrike_core::mm::memory::{
     MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
-    MemoryScope, MemoryTrustLevel, validate_memory_write,
+    MemoryScope, MemoryTrustLevel,
 };
 use deepstrike_core::runtime::kernel::wire::{CancellationReason, MemoryPolicy};
 use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
@@ -15,10 +15,6 @@ use deepstrike_core::runtime::session::SessionEvent;
 use deepstrike_core::scheduler::policy::SchedulerPolicyConfig;
 use deepstrike_core::types::message::{CoreMessage, ToolCall};
 use deepstrike_core::types::milestone::MilestoneCheckResult;
-use deepstrike_core::types::signal::{
-    RuntimeSignal as KernelSignal, SignalSource as KernelSignalSource,
-    SignalType as KernelSignalType, Urgency,
-};
 use deepstrike_core::types::task::RuntimeTask;
 use futures::StreamExt;
 
@@ -50,7 +46,6 @@ use crate::runtime::session_log::{InMemorySessionLog, SessionEntry, SessionLog};
 use crate::runtime::{InMemoryKernelJournal, KernelJournal};
 use crate::{Error, Result};
 use crate::{SignalDeliveryReceipt, SignalSource};
-use deepstrike_core::context::task_state::TaskUpdate;
 use deepstrike_core::runtime::repair::repair_llm_completed;
 
 /// Controls what the runner does when the state machine returns
@@ -260,8 +255,16 @@ pub struct RuntimeRunner {
     cancellation_reason: AtomicU8,
     active_kernel:
         std::sync::Mutex<Option<std::sync::Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>>>,
-    memory_write_timestamps: tokio::sync::Mutex<std::collections::VecDeque<u64>>,
     local_page_out_cache: std::sync::Mutex<Vec<CoreMessage>>,
+    /// Host control commands queued by the public control methods, each with the channel its
+    /// caller awaits. The run loop applies them between effects so a command that publishes an
+    /// effect never races an in-flight one.
+    pending_control: std::sync::Mutex<Vec<PendingControl>>,
+}
+
+struct PendingControl {
+    event: serde_json::Value,
+    done: tokio::sync::oneshot::Sender<Result<()>>,
 }
 
 impl RuntimeRunner {
@@ -291,9 +294,89 @@ impl RuntimeRunner {
             interrupted: AtomicBool::new(false),
             cancellation_reason: AtomicU8::new(0),
             active_kernel: std::sync::Mutex::new(None),
-            memory_write_timestamps: tokio::sync::Mutex::new(std::collections::VecDeque::new()),
             local_page_out_cache: std::sync::Mutex::new(Vec::new()),
+            pending_control: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// §13.2 live policy patch (signal / governance / resource quota / recovery), guarded by the
+    /// policy revision. The runtime tracks the committed revision; after a restore it is unknown
+    /// and `expected_revision` must be given. Errors when the kernel refuses the patch.
+    pub async fn apply_policy_patch(
+        &self,
+        patch: serde_json::Value,
+        expected_revision: Option<u64>,
+    ) -> Result<()> {
+        let mut event = serde_json::json!({ "kind": "apply_policy_patch", "patch": patch });
+        if let Some(revision) = expected_revision {
+            event["expected_revision"] = revision.into();
+        }
+        self.enqueue_control(event).await
+    }
+
+    /// Move the operation's absolute deadline (epoch ms), or clear it with `None`.
+    pub async fn update_deadline(&self, deadline_ms: Option<u64>) -> Result<()> {
+        self.enqueue_control(
+            serde_json::json!({ "kind": "update_deadline", "deadline_ms": deadline_ms }),
+        )
+        .await
+    }
+
+    /// Ask the kernel to compact context now; any archive it owes runs as a normal page-out effect.
+    pub async fn force_compact(&self) -> Result<()> {
+        self.enqueue_control(serde_json::json!({ "kind": "force_compact" }))
+            .await
+    }
+
+    /// Host-driven skill activation, admitted by the kernel against the operation's skill catalog.
+    pub async fn activate_skill(&self, name: &str, lease_turns: Option<u32>) -> Result<()> {
+        let mut event = serde_json::json!({ "kind": "skill_activation", "name": name });
+        if let Some(lease) = lease_turns {
+            event["lease_turns"] = lease.into();
+        }
+        self.enqueue_control(event).await
+    }
+
+    /// Host-driven skill deactivation (there is deliberately no model-facing unload).
+    pub async fn deactivate_skill(&self, name: &str) -> Result<()> {
+        self.enqueue_control(serde_json::json!({ "kind": "skill_deactivated", "name": name }))
+            .await
+    }
+
+    async fn enqueue_control(&self, event: serde_json::Value) -> Result<()> {
+        if self.active_kernel.lock().unwrap().is_none() {
+            return Err(Error::Other(format!(
+                "{} requires an active run",
+                event["kind"].as_str().unwrap_or("control command")
+            )));
+        }
+        let (done, outcome) = tokio::sync::oneshot::channel();
+        self.pending_control
+            .lock()
+            .unwrap()
+            .push(PendingControl { event, done });
+        outcome.await.map_err(|_| {
+            Error::Other("the run ended before the control command was applied".into())
+        })?
+    }
+
+    /// Apply queued control commands; `true` when any ran (the caller re-reads the kernel action).
+    async fn apply_pending_control(
+        &self,
+        kernel: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
+        pending_observations: &mut Vec<KernelObservation>,
+    ) -> bool {
+        let queued = std::mem::take(&mut *self.pending_control.lock().unwrap());
+        if queued.is_empty() {
+            return false;
+        }
+        for control in queued {
+            let outcome = kernel_transition(kernel, pending_observations, control.event)
+                .await
+                .map(|_| ());
+            let _ = control.done.send(outcome);
+        }
+        true
     }
 
     pub fn interrupt(&self) {
@@ -330,93 +413,42 @@ impl RuntimeRunner {
         Ok(log.latest_seq(session_id).await?)
     }
 
+    /// §22.13 · a host-authored memory write. The kernel decides whether it may happen: a live
+    /// operation answers through `admit_memory_write` (the model's validation rule and rolling
+    /// write quota); with no live operation the same kernel rule answers statelessly. Returns
+    /// whether the record was persisted.
     pub async fn write_memory(
         &self,
         memory: MemoryRecord,
         session_id: Option<&str>,
         agent_id: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let Some(store) = &self.opts.memory_store else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(agent_id) = agent_id.or(self.opts.agent_id.as_deref()) else {
-            return Ok(());
+            return Ok(false);
         };
 
         let turn = self.active_kernel_turn().await;
-        let validation = match self.opts.memory_policy.as_ref() {
-            Some(policy) if policy.validation_enabled == Some(false) => Ok(()),
-            Some(policy) => {
-                let mut validation = deepstrike_core::mm::memory::MemoryValidation::default();
-                if let Some(max_content_bytes) = policy.max_content_bytes {
-                    validation.max_size_bytes = max_content_bytes;
-                }
-                if let Some(max_name_length) = policy.max_name_length {
-                    validation.max_name_length = max_name_length as usize;
-                }
-                validation.validate(&memory)
-            }
-            None => validate_memory_write(&memory),
+        let refusal = match memory_record_shape_error(&memory) {
+            Some(error) => Some(error),
+            None => self.admit_memory_write(&memory).await?,
         };
-        if let Err(error) = validation {
+        if let Some(error) = refusal {
             self.append_memory_syscall_observations(
                 session_id,
                 vec![KernelObservation::MemoryValidationFailed {
                     turn,
                     record_id: memory.record_id.clone(),
-                    error: format!("{error:?}"),
+                    error,
                 }],
             )
             .await;
-            return Ok(());
-        }
-
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        let write_limit = self
-            .opts
-            .resource_quota
-            .as_ref()
-            .and_then(|quota| quota.memory_writes_per_window);
-        let mut quota_guard = if write_limit.is_some() {
-            Some(self.memory_write_timestamps.lock().await)
-        } else {
-            None
-        };
-        if let (Some((max_writes, window_ms)), Some(timestamps)) =
-            (write_limit, quota_guard.as_mut())
-        {
-            let cutoff = now_ms.saturating_sub(window_ms);
-            while timestamps
-                .front()
-                .is_some_and(|timestamp| *timestamp < cutoff)
-            {
-                timestamps.pop_front();
-            }
-            if window_ms == 0 || timestamps.len() >= max_writes as usize {
-                drop(quota_guard);
-                self.append_memory_syscall_observations(
-                    session_id,
-                    vec![KernelObservation::MemoryValidationFailed {
-                        turn,
-                        record_id: memory.record_id.clone(),
-                        error: format!(
-                            "memory write quota exceeded: max {max_writes} writes per {window_ms}ms"
-                        ),
-                    }],
-                )
-                .await;
-                return Ok(());
-            }
+            return Ok(false);
         }
 
         store.put(agent_id, memory.clone()).await?;
-        if let Some(timestamps) = quota_guard.as_mut() {
-            timestamps.push_back(now_ms);
-        }
-        drop(quota_guard);
         self.append_memory_syscall_observations(
             session_id,
             vec![KernelObservation::MemoryWritten {
@@ -429,7 +461,43 @@ impl RuntimeRunner {
             }],
         )
         .await;
-        Ok(())
+        Ok(true)
+    }
+
+    /// The kernel's verdict on a host-authored write, or `None` when it is admitted.
+    async fn admit_memory_write(&self, memory: &MemoryRecord) -> Result<Option<String>> {
+        let active = self.active_kernel.lock().unwrap().clone();
+        if let Some(kernel) = active {
+            let mut runtime = kernel.lock().await;
+            if runtime.has_started() && !runtime.is_terminal() {
+                // Boxed: the transition future is large, and this call sits inside the run stream
+                // (session extraction), whose own future must stay within a thread's stack.
+                Box::pin(runtime.apply_host_event(serde_json::json!({
+                    "kind": "admit_memory_write",
+                    "record_id": memory.record_id,
+                    "name": memory.name,
+                    "content_bytes": memory.content.len(),
+                })))
+                .await?;
+                // The caller logs the verdict itself, so the fact is taken here rather than left
+                // for the per-turn drain (which would log it a second time).
+                let mut refusal = None;
+                for observation in runtime.drain_host_observations() {
+                    match observation {
+                        KernelObservation::MemoryValidationFailed {
+                            record_id, error, ..
+                        } if record_id == memory.record_id => refusal = Some(error),
+                        other => runtime.requeue_host_observation(other),
+                    }
+                }
+                return Ok(refusal);
+            }
+        }
+        let policy = deepstrike_core::runtime::kernel::wire::config::ResolvedMemoryPolicy::resolve(
+            self.opts.memory_policy.as_ref(),
+        )
+        .map_err(|rejection| Error::Other(rejection.message))?;
+        Ok(policy.check_write(&memory.name, memory.content.len()).err())
     }
 
     pub async fn query_memory(
@@ -456,6 +524,7 @@ impl RuntimeRunner {
             canonical_query.top_k = canonical_query.top_k.min(top_k as usize);
         }
         let hits = store.search(agent_id, &canonical_query).await?;
+        self.record_host_memory_recall(&hits, agent_id).await?;
         self.append_memory_syscall_observations(
             session_id,
             vec![KernelObservation::MemoryQueried {
@@ -470,6 +539,42 @@ impl RuntimeRunner {
         self.log_memory_retrieval_result(session_id, hits.clone())
             .await;
         Ok(hits)
+    }
+
+    /// M3 · a host-initiated recall. The store reports the counts it holds; the kernel derives the
+    /// next counts (the same derivation a model `query_memory` resolution journals as
+    /// `memory_recalled`) and the store only mirrors them.
+    async fn record_host_memory_recall(&self, hits: &[MemoryRecall], agent_id: &str) -> Result<()> {
+        let Some(store) = &self.opts.memory_store else {
+            return Ok(());
+        };
+        if hits.is_empty() {
+            return Ok(());
+        }
+        let policy = deepstrike_core::runtime::kernel::wire::config::ResolvedMemoryPolicy::resolve(
+            self.opts.memory_policy.as_ref(),
+        )
+        .map_err(|rejection| Error::Other(rejection.message))?;
+        let priors: Vec<_> = hits
+            .iter()
+            .map(|hit| deepstrike_core::mm::memory::MemoryRecallPrior {
+                record_id: hit.record.record_id.clone(),
+                recall_count: hit.record.recall_count,
+                pinned: hit.record.pinned,
+            })
+            .collect();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let (recalls, _promotions) = deepstrike_core::mm::memory::derive_recall_lifecycle(
+            &priors,
+            now_ms,
+            policy
+                .promotion_recall_threshold
+                .map(|threshold| threshold.get()),
+        );
+        store.record_recall(agent_id, &recalls).await
     }
 
     async fn extract_session_memories(
@@ -956,6 +1061,10 @@ impl RuntimeRunner {
                     if let Ok(mut active) = self.runner.active_kernel.lock() {
                         *active = None;
                     }
+                    // Dropping each sender fails its caller with "the run ended before ...".
+                    if let Ok(mut pending) = self.runner.pending_control.lock() {
+                        pending.clear();
+                    }
                 }
             }
             let _guard = ActiveKernelGuard { runner: self };
@@ -1200,12 +1309,20 @@ impl RuntimeRunner {
                     ) {
                         let queries = pre(goal.as_str());
                         let mut recalled = Vec::new();
+                        let mut recalled_hits: Vec<MemoryRecall> = Vec::new();
                         for q in &queries {
                             if q.query.trim().is_empty() {
                                 continue;
                             }
                             if let Ok(hits) = store.search(agent_id, q).await {
                                 for hit in hits {
+                                    if recalled_hits
+                                        .iter()
+                                        .any(|seen| seen.record.record_id == hit.record.record_id)
+                                    {
+                                        continue;
+                                    }
+                                    recalled_hits.push(hit.clone());
                                     recalled.push(format!(
                                         "[memory record_id={} trust={} score={:.3}] {}",
                                         hit.record.record_id,
@@ -1230,6 +1347,9 @@ impl RuntimeRunner {
                                 }),
                             ).await?;
                         }
+                        // M3 · the prefetch is a recall too; its counts are the kernel's to derive.
+                        let _ = Box::pin(self.record_host_memory_recall(&recalled_hits, agent_id))
+                            .await;
                     }
                 }
             }
@@ -1313,60 +1433,28 @@ impl RuntimeRunner {
                     break;
                 }
 
+                if self.apply_pending_control(&kernel, &mut pending_observations).await {
+                    // A command can publish an effect ahead of the one in hand (a forced
+                    // compaction's page-out); the kernel's projection decides what runs next.
+                    let (resumed, terminal) = {
+                        let mut runtime = kernel.lock().await;
+                        (runtime.resume_action()?, runtime.is_terminal())
+                    };
+                    if let Some(resumed) = resumed {
+                        action = resumed;
+                    }
+                    if terminal {
+                        break;
+                    }
+                }
+
                 if let Some(ss) = &self.opts.signal_source {
                     if let Some(claim) = ss.claim_signal().await? {
-                        let urgency = match claim.signal.urgency.as_str() {
-                            "low" => Urgency::Low,
-                            "high" => Urgency::High,
-                            "critical" => Urgency::Critical,
-                            _ => Urgency::Normal,
-                        };
-                        let source = match claim.signal.source.as_str() {
-                            "cron" => KernelSignalSource::Cron,
-                            "gateway" => KernelSignalSource::Gateway,
-                            "heartbeat" => KernelSignalSource::Heartbeat,
-                            _ => KernelSignalSource::Custom,
-                        };
-                        let signal_type = match claim.signal.signal_type.as_str() {
-                            "job" => KernelSignalType::Job,
-                            "alert" => KernelSignalType::Alert,
-                            _ => KernelSignalType::Event,
-                        };
-                        let summary = claim
-                            .signal
-                            .payload
-                            .get("goal")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("signal");
-                        let mut kernel_sig = KernelSignal::new(
-                            source,
-                            signal_type,
-                            urgency,
-                            summary,
-                        )
-                        .with_payload(claim.signal.payload.clone())
-                        .with_timestamp(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_millis() as u64,
-                        );
-                        // §7.7 · the claim's signal id is the business identity, kept verbatim; it
-                        // no longer has to parse as a UUID.
-                        kernel_sig.id = claim.signal_id.as_str().into();
-                        if let Some(dedupe_key) = &claim.signal.dedupe_key {
-                            kernel_sig = kernel_sig.with_dedupe(dedupe_key.clone());
-                        }
-                        if let Some(recipient) = &claim.signal.recipient {
-                            kernel_sig = kernel_sig.with_recipient(recipient.clone());
-                        }
-                        if let Some(deadline_ms) = claim.signal.deadline_ms {
-                            kernel_sig = kernel_sig.with_deadline(deadline_ms);
-                        }
-                        if let Some(coalesce_key) = &claim.signal.coalesce_key {
-                            kernel_sig = kernel_sig.with_coalesce(coalesce_key.clone());
-                        }
-                        kernel_sig.coalesced_count = claim.signal.coalesced_count.max(1);
+                        let now_ms = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64;
+                        let kernel_sig = signal_to_logical_signal(&claim.signal_id, &claim.signal, now_ms);
                         // Kernel-routed (parity with node/py): the kernel's attention policy decides
                         // the disposition (dedup / queue / interrupt / preempt) and emits
                         // `signal_delivery_disposed`; an actionable disposition yields the next action to
@@ -1442,29 +1530,10 @@ impl RuntimeRunner {
                         let mut turn_cache_creation_tokens: u32 = 0;
                         let mut turn_cache_read_by_slot: Option<crate::providers::CacheReadBySlot> = None;
                         let mut turn_stop_reason: Option<String> = None;
-                        // I5: governance schema-level pre-filter. When a GovernancePolicy is loaded
-                        // and `surface_denied_in_system` is true (default), drop denied tools from
-                        // the schema before the provider sees them.
-                        let (filtered_tools, filtered_context_storage);
-                        let (provider_tools, provider_context): (&[_], &_) = if let Some(policy) = self.opts.governance_policy.as_ref() {
-                            if policy.surface_denied_in_system {
-                                let (allowed, denied) = crate::runtime::governance_filter_schema(tools, policy);
-                                if !denied.is_empty() {
-                                    filtered_tools = allowed;
-                                    let mut cloned = context.clone();
-                                    let note = format!("[governance] the following tools are denied for this run and will fail if called: {}.", denied.join(", "));
-                                    cloned.system_knowledge = if cloned.system_knowledge.is_empty() {
-                                        note
-                                    } else {
-                                        format!("{}\n\n{}", cloned.system_knowledge, note)
-                                    };
-                                    filtered_context_storage = cloned;
-                                    (&filtered_tools[..], &filtered_context_storage)
-                                } else {
-                                    (&tools[..], context)
-                                }
-                            } else { (&tools[..], context) }
-                        } else { (&tools[..], context) };
+                        // I5: the kernel itself withholds statically denied tools
+                        // (`hide_denied_tools`) and renders the denial note — the host sends exactly
+                        // the context and surface the kernel committed.
+                        let (provider_tools, provider_context): (&[_], &_) = (&tools[..], context);
                         // P0-C: snapshot the exposed-tool count now — `tools` borrows `action`, which is
                         // reassigned before the metrics emit below.
                         let tools_exposed = provider_tools.len();
@@ -1606,7 +1675,6 @@ impl RuntimeRunner {
                                     "kind": "cancel_operation",
                                     "operation_id": operation_id,
                                     "reason": cancellation_reason_from_code(self.cancellation_reason.load(Ordering::Relaxed)),
-                                    "pending_call_ids": [provider_effect_id],
                                 }),
                             ).await?;
                             break;
@@ -1794,9 +1862,9 @@ impl RuntimeRunner {
                             }),
                         ).await?;
                     }
-                    HostEffect::PreemptSubAgents { .. } => {
-                        // RuntimeRunner does not launch external child runners, so
-                        // there is no host process to cancel before acknowledging.
+                    HostEffect::PreemptSubAgents { agent_ids, .. } => {
+                        // RuntimeRunner does not launch external child runners, so there is no
+                        // host process to cancel: every named attempt is already finished.
                         let preempt_effect_id = action.effect_id.clone();
                         action = kernel_action(
                             &kernel,
@@ -1804,23 +1872,24 @@ impl RuntimeRunner {
                             serde_json::json!({
                                 "kind": "preempt_result",
                                 "effect_id": preempt_effect_id,
+                                "already_finished_agent_ids": agent_ids,
                             }),
                         ).await?;
                     }
                     HostEffect::PersistMemory { memory } => {
                         let effect_id = action.effect_id.clone();
+                        let mut memory = memory.clone();
                         let error = match (
                             self.opts.memory_store.as_ref(),
                             self.opts.agent_id.as_deref(),
                         ) {
                             (Some(store), Some(agent_id)) => {
-                                let mut memory = memory.clone();
                                 if let Some(scope) = self.opts.memory_scope.as_ref() {
                                     memory.scope = scope.clone();
                                 }
                                 memory.provenance.session_id = Some(session_id.clone());
                                 store
-                                    .put(agent_id, memory)
+                                    .put(agent_id, memory.clone())
                                     .await
                                     .err()
                                     .map(|error| error.to_string())
@@ -1830,15 +1899,24 @@ impl RuntimeRunner {
                                     .to_string(),
                             ),
                         };
-                        action = kernel_action(
-                            &kernel,
-                            &mut pending_observations,
-                            serde_json::json!({
+                        // The receipt names what the store now holds: the record id and a digest
+                        // of its content.
+                        let event = match error {
+                            Some(error) => serde_json::json!({
                                 "kind": "memory_persist_result",
                                 "effect_id": effect_id,
                                 "error": error,
                             }),
-                        ).await?;
+                            None => serde_json::json!({
+                                "kind": "memory_persist_result",
+                                "effect_id": effect_id,
+                                "record_ref": memory.record_id,
+                                "digest": deepstrike_core::runtime::kernel::wire::canonical_digest(
+                                    memory.content.as_bytes(),
+                                ).as_str(),
+                            }),
+                        };
+                        action = kernel_action(&kernel, &mut pending_observations, event).await?;
                     }
                     HostEffect::QueryMemory { query, requested_k } => {
                         let effect_id = action.effect_id.clone();
@@ -1880,7 +1958,14 @@ impl RuntimeRunner {
                             }),
                         ).await?;
                     }
-                    HostEffect::ArchivePageOut { archived, tier, action: pressure_action, .. } => {
+                    HostEffect::ArchivePageOut {
+                        archived,
+                        tier,
+                        action: pressure_action,
+                        payload_content,
+                        payload_digest,
+                        ..
+                    } => {
                         let effect_id = action.effect_id.clone();
                         let archived = archived.clone();
                         let tier = tier.clone();
@@ -1893,7 +1978,22 @@ impl RuntimeRunner {
                                 .map(|path| (!path.is_empty()).then_some(path))
                         } else {
                             Ok(None)
-                        };
+                        }
+                        .and_then(|archive_ref| {
+                            // The kernel later `load_payload`s the reported ref from the payload
+                            // store, so its opaque body must really be stored under that ref.
+                            let archive_ref = archive_ref.unwrap_or_else(|| {
+                                let hex = payload_digest.trim_start_matches("sha256:");
+                                format!("payload:{}", &hex[..hex.len().min(32)])
+                            });
+                            self.opts
+                                .payload_store
+                                .as_ref()
+                                .expect("runtime constructor installs a payload store")
+                                .persist(&session_id, &archive_ref, payload_content)
+                                .map(|()| Some(archive_ref))
+                                .map_err(Into::into)
+                        });
                         let (archive_ref, error) = match archive_result {
                             Ok(archive_ref) => {
                                 self.local_page_out_cache.lock().unwrap().extend(archived.clone());
@@ -1981,40 +2081,19 @@ impl RuntimeRunner {
                         };
 
                         let mut tool_results = Vec::new();
-                        let mut normal_calls = Vec::new();
-                        let mut plan_calls = Vec::new();
-
-                        for call in &tool_calls {
-                            if call.name == "update_plan" {
-                                plan_calls.push(call);
-                            } else {
-                                normal_calls.push(call.clone());
-                            }
+                        // Syscall tools (`update_plan` included) are consumed by core from the
+                        // provider result: the kernel decodes and applies them itself. One reaching
+                        // this host effect projection is boundary drift and fails closed — the host
+                        // never re-applies a model plan as its own `update_task`.
+                        if let Some(call) = tool_calls.iter().find(|call| {
+                            matches!(call.name.as_str(), "update_plan" | "submit_workflow_nodes" | "start_workflow")
+                        }) {
+                            Err(Error::Other(format!(
+                                "canonical kernel published model syscall {} as a host tool effect",
+                                call.name
+                            )))?;
                         }
-
-                        for call in plan_calls {
-                            let update = parse_update_plan_args(&call.arguments);
-                            kernel_apply(
-                                &kernel,
-                                &mut pending_observations,
-                                serde_json::json!({ "kind": "update_task", "update": update }),
-                            ).await?;
-                            tool_results.push(deepstrike_core::types::message::ToolResult {
-                                call_id: call.id.clone(),
-                                output: deepstrike_core::types::message::Content::Text("success".to_string()),
-                                durable_content: None,
-                                is_error: false,
-                                is_fatal: false,
-                                error_kind: None,
-                            });
-                            yield RunEvent::ToolResult {
-                                call_id: call.id.to_string(),
-                                content: "success".to_string(),
-                                is_error: false,
-                                is_fatal: false,
-                                error_kind: None,
-                            };
-                        }
+                        let normal_calls: Vec<_> = tool_calls.clone();
 
                         if !normal_calls.is_empty() {
                             let plane_stream = self.plane.execute_all(&normal_calls, run_ctx);
@@ -2030,12 +2109,14 @@ impl RuntimeRunner {
                                     } => {
                                         tool_results.push(deepstrike_core::types::message::ToolResult {
                                             call_id: compact_str::CompactString::new(&call_id),
-                                            output: deepstrike_core::types::message::Content::Text(content),
+                                            output: deepstrike_core::types::message::Content::Text(content.clone()),
                                             durable_content: None,
                                             is_error,
                                             is_fatal,
-                                            error_kind,
+                                            error_kind: error_kind.clone(),
                                         });
+                                        // Consumers (the harness loop included) observe each result.
+                                        yield RunEvent::ToolResult { call_id, content, is_error, is_fatal, error_kind };
                                     }
                                     RunEvent::ToolArgumentRepaired { call_id, name, original_arguments, repaired_arguments } => {
                                         self.log(
@@ -2098,18 +2179,6 @@ impl RuntimeRunner {
                                     other => yield other,
                                 }
                             }
-                            let names: Vec<String> = normal_calls.iter().map(|c| c.name.to_string()).collect();
-                            kernel_apply(
-                                &kernel,
-                                &mut pending_observations,
-                                serde_json::json!({
-                                    "kind": "update_task",
-                                    "update": TaskUpdate {
-                                        progress: Some(format!("Executed tools: {}", names.join(", "))),
-                                        ..Default::default()
-                                    },
-                                }),
-                            ).await?;
                         }
 
                         self.log(
@@ -2624,10 +2693,16 @@ impl RuntimeRunner {
                 KernelObservation::AgentPreemptFailed { .. } => {}
                 KernelObservation::MemoryWriteFailed { .. } => {}
                 KernelObservation::MemoryQueryFailed { .. } => {}
-                // M3/M4 lifecycle observations. Durable-store mirroring is a Node/Python SDK
-                // concern; this Rust session-log loop does not persist them (parity follow-up).
-                KernelObservation::MemoryRecalled { .. }
-                | KernelObservation::PromotionSuggested { .. } => {}
+                // M3 · mirror the recall counts the kernel derived; the store never computes them.
+                KernelObservation::MemoryRecalled { recalls, .. } => {
+                    if let (Some(store), Some(agent_id)) =
+                        (&self.opts.memory_store, self.opts.agent_id.as_deref())
+                    {
+                        let _ = store.record_recall(agent_id, &recalls).await;
+                    }
+                }
+                // M4 promotion suggestions are advisory; the Rust runner has no host callback yet.
+                KernelObservation::PromotionSuggested { .. } => {}
                 // Governance flagged a tool call for user approval. The kernel does
                 // not block it; the SDK-side human-approval workflow is a follow-up.
                 KernelObservation::ToolGated { .. } => {}
@@ -2779,6 +2854,8 @@ impl RuntimeRunner {
                 // Rejections are already durable in the kernel transaction record. Call-specific
                 // APIs inspect the observation directly; the generic runner has no host effect.
                 KernelObservation::ControlRequestRejected { .. } => {}
+                // The runner's skill-content bookkeeping reads this from the provider resolution.
+                KernelObservation::SkillAdmitted { .. } => {}
                 KernelObservation::StepPublishedEffects { .. } => {}
                 KernelObservation::DynamicWorkflowPlanCommitted { .. } => {}
                 KernelObservation::DynamicWorkflowReplayRecorded { .. } => {}
@@ -3071,21 +3148,33 @@ fn cancellation_reason_from_code(code: u8) -> CancellationReason {
     }
 }
 
+/// Logical tool calls a cancellation abandons. The kernel's `pending_call_ids` is the call-id
+/// namespace only: provider/host effect ids and sub-agent ids are not calls and are settled by the
+/// cancel transition itself.
 fn pending_call_ids(action: &HostAction) -> Vec<String> {
     match &action.effect {
-        HostEffect::CallProvider { .. } => vec![action.effect_id.clone()],
         HostEffect::ExecuteTool { calls } => calls.iter().map(|call| call.id.to_string()).collect(),
         HostEffect::RequestApproval { requests } => requests
             .iter()
             .map(|request| request.call_id.clone())
             .collect(),
-        HostEffect::SpawnWorkflow { nodes, .. } => {
-            nodes.iter().map(|node| node.agent_id.clone()).collect()
-        }
-        HostEffect::PreemptSubAgents { agent_ids, .. } => agent_ids.clone(),
-        HostEffect::Done { .. } => Vec::new(),
-        _ => vec![action.effect_id.clone()],
+        _ => Vec::new(),
     }
+}
+
+/// A record's shape — identity, scope, description — checked before it is offered to the kernel.
+/// The admission rule itself (name and content limits) is the kernel's alone.
+fn memory_record_shape_error(memory: &MemoryRecord) -> Option<String> {
+    if memory.record_id.trim().is_empty() {
+        return Some("missing required field: record_id".into());
+    }
+    if memory.scope.tenant_id.is_empty() || memory.scope.namespace.is_empty() {
+        return Some("missing required field: scope".into());
+    }
+    if memory.description.trim().is_empty() {
+        return Some("missing required field: description".into());
+    }
+    None
 }
 
 /// Map the ergonomic [`MemoryPolicy`] onto the SDK-owned bootstrap fact.
@@ -3137,53 +3226,41 @@ fn rendered_context_from_messages(
     }
 }
 
-fn parse_update_plan_args(val: &serde_json::Value) -> TaskUpdate {
-    let plan = val.get("plan").and_then(|v| {
-        v.as_array().map(|arr| {
-            arr.iter()
-                .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                .collect()
-        })
+/// Lower a claimed signal straight into the kernel's `LogicalSignal` vocabulary.
+///
+/// `signal_type` / `coalesce_key` / `coalesced_count` are signal-source concepts the canonical wire
+/// deliberately does not carry (§5n); the absolute `deadline_ms` becomes the duration the kernel
+/// anchors to its own accepted time, and no host clock is stamped on the wire.
+fn signal_to_logical_signal(
+    signal_id: &str,
+    signal: &crate::signals::RuntimeSignal,
+    now_ms: u64,
+) -> serde_json::Value {
+    let mut wire = serde_json::json!({
+        "signal_id": signal_id,
+        "source": match signal.source.as_str() {
+            "cron" | "gateway" | "heartbeat" => signal.source.as_str(),
+            _ => "custom",
+        },
+        "target": match &signal.recipient {
+            Some(recipient) => serde_json::json!({ "kind": "task", "task_id": recipient }),
+            None => serde_json::json!({ "kind": "operation" }),
+        },
+        "urgency": match signal.urgency.as_str() {
+            "low" | "high" | "critical" => signal.urgency.as_str(),
+            _ => "normal",
+        },
+        "payload": signal.payload,
     });
-    let current_step = val
-        .get("current_step")
-        .or_else(|| val.get("currentStep"))
-        .and_then(|v| v.as_u64().map(|x| x as usize));
-    let progress = val
-        .get("progress")
-        .and_then(|v| v.as_str().map(|s| s.to_string()));
-    let scratchpad = val
-        .get("scratchpad")
-        .and_then(|v| v.as_str().map(|s| s.to_string()));
-    let blocked_on = val
-        .get("blocked_on")
-        .or_else(|| val.get("blockedOn"))
-        .and_then(|v| {
-            v.as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-        });
-    let preserved_refs = val
-        .get("preserved_refs")
-        .or_else(|| val.get("preservedRefs"))
-        .and_then(|v| {
-            v.as_array().map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                    .collect()
-            })
-        });
-    TaskUpdate {
-        plan,
-        current_step,
-        progress,
-        scratchpad,
-        blocked_on,
-        preserved_refs,
-        // Directives are promoted in-kernel from acted-on signals; the SDK update path leaves them
-        // untouched here (use `..` semantics) unless a future control plane curates them explicitly.
-        directives: None,
+    let object = wire.as_object_mut().expect("a signal is an object");
+    if let Some(key) = &signal.dedupe_key {
+        object.insert("dedupe_key".into(), key.clone().into());
     }
+    if let Some(deadline) = signal.deadline_ms {
+        object.insert(
+            "escalate_after_ms".into(),
+            deadline.saturating_sub(now_ms).to_string().into(),
+        );
+    }
+    wire
 }

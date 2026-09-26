@@ -1,7 +1,7 @@
 import { signalToKernelEvent } from "../src/runtime/runner.js"
 
 describe("signal host-to-kernel boundary", () => {
-  it("projects leased signal data without host lease callbacks", () => {
+  it("projects a leased signal straight into the kernel's LogicalSignal vocabulary", () => {
     const event = signalToKernelEvent({
       signalId: "sig-1",
       deliveryId: "delivery-1",
@@ -13,10 +13,11 @@ describe("signal host-to-kernel boundary", () => {
         payload: { goal: "refresh" },
         dedupeKey: "refresh-1",
         recipient: "session-1",
-        deadlineMs: 123,
+        deadlineMs: 10_500,
         coalesceKey: "refresh",
         coalescedCount: 3,
       },
+      nowMs: 10_000,
     })
 
     expect(event).toEqual({
@@ -24,28 +25,39 @@ describe("signal host-to-kernel boundary", () => {
       delivery_id: "delivery-1",
       attempt: 2,
       signal: {
-        id: "sig-1",
+        signal_id: "sig-1",
         source: "gateway",
-        signal_type: "event",
+        target: { kind: "task", task_id: "session-1" },
         urgency: "high",
-        summary: "refresh",
         payload: { goal: "refresh" },
         dedupe_key: "refresh-1",
-        recipient: "session-1",
-        deadline_ms: 123,
-        coalesce_key: "refresh",
-        coalesced_count: 3,
-        timestamp_ms: expect.any(Number),
+        // The absolute deadline becomes the duration the kernel anchors to its accepted time.
+        escalate_after_ms: "500",
       },
     })
+    // No host clock on the wire: the kernel stamps admission time itself.
+    expect(JSON.stringify(event)).not.toMatch(/timestamp/)
   })
 
-  it("uses a stable fallback summary for payloads without a goal", () => {
+  it("clamps a deadline already in the past to immediate escalation", () => {
     expect(signalToKernelEvent({
-      signalId: "sig-2",
-      deliveryId: "delivery-2",
+      signalId: "sig-late",
+      deliveryId: "delivery-late",
       deliveryAttempt: 1,
-      signal: { source: "custom", signalType: "alert", urgency: "normal", payload: {} },
-    }).signal.summary).toBe("signal")
+      signal: { source: "cron", signalType: "job", urgency: "low", payload: {}, deadlineMs: 5 },
+      nowMs: 1_000,
+    }).signal.escalate_after_ms).toBe("0")
+  })
+
+  it("sends a host note as its own plain-text payload, not via an id convention", () => {
+    const event = signalToKernelEvent({
+      signalId: "sig-note",
+      deliveryId: "any-delivery-id",
+      deliveryAttempt: 1,
+      signal: { source: "custom", signalType: "event", urgency: "normal", payload: { goal: "ignored" } },
+      note: "check the build output",
+    })
+    expect(event.signal.payload).toBe("check the build output")
+    expect(event.signal.target).toEqual({ kind: "operation" })
   })
 })

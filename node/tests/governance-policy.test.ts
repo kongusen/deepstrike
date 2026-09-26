@@ -24,10 +24,11 @@ describe("governancePolicyToKernelEvent", () => {
       vetoed_tools: ["rm_rf"],
       rate_limits: [{ tool: "fetch", max_calls: 3, window_ms: 60_000 }],
       constraints: [
-        { kind: "required", tool: "write", path: "path" },
-        { kind: "enum", tool: "mode", path: "kind", values: ["a", "b"] },
-        { kind: "range", tool: "scale", path: "n", min: 0, max: 10 },
+        { kind: "required", tool: "write", param_path: "path" },
+        { kind: "enum", tool: "mode", param_path: "kind", values: ["a", "b"] },
+        { kind: "range", tool: "scale", param_path: "n", min_micros: 0, max_micros: 10_000_000 },
       ],
+      hide_denied_tools: true,
     })
   })
 
@@ -39,6 +40,7 @@ describe("governancePolicyToKernelEvent", () => {
       vetoed_tools: [],
       rate_limits: [],
       constraints: [],
+      hide_denied_tools: true,
     })
     expect(event).not.toHaveProperty("default_action")
   })
@@ -48,7 +50,7 @@ describe("governancePolicyToKernelEvent", () => {
       constraints: [{ kind: "range", tool: "t", path: "p", max: 5 }],
     })
     const constraints = (event as { constraints: Array<Record<string, unknown>> }).constraints
-    expect(constraints[0]).toEqual({ kind: "range", tool: "t", path: "p", max: 5 })
+    expect(constraints[0]).toEqual({ kind: "range", tool: "t", param_path: "p", max_micros: 5_000_000 })
     expect(constraints[0]).not.toHaveProperty("min")
   })
 })

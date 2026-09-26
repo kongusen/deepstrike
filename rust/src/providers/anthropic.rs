@@ -657,8 +657,8 @@ fn parse_anthropic_sse(
                     } else if kind == "content_block_stop" {
                         let idx = evt["index"].as_u64().unwrap_or(0) as usize;
                         if let Some((id, name, args_buf)) = tool_blocks.remove(&idx) {
-                            let arguments: Value = serde_json::from_str(&args_buf)
-                                .unwrap_or(Value::Object(Default::default()));
+                            let arguments =
+                                crate::runtime::tool_arguments::from_model_text(&args_buf);
                             if let Some(block) = native_blocks.lock().unwrap().get_mut(&idx) {
                                 block["input"] = arguments.clone();
                             }

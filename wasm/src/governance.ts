@@ -8,31 +8,10 @@ export interface GovernancePolicy {
   vetoes?: string[]
   rateLimits?: { tool: string; maxCalls: number; windowMs: number }[]
   constraints?: GovernanceConstraint[]
-  /** I5: when true (default), the runner pre-filters denied tools out of the schema. */
+  /** I5: when true (default), the kernel withholds statically denied tools (vetoes and `deny`
+   *  rules, evaluated exactly as the call gate evaluates them) from the provider surface and names
+   *  them once in the knowledge slot. Mirrors Node. */
   surfaceDeniedInSystem?: boolean
-}
-
-/** I5: bucket tools into allowed/denied per the policy. Pure. Mirrors Node. */
-export function governanceFilterSchema<T extends { name: string }>(
-  tools: T[],
-  policy: GovernancePolicy | undefined,
-): { allowed: T[]; denied: string[] } {
-  if (!policy) return { allowed: tools, denied: [] }
-  const vetoes = new Set(policy.vetoes ?? [])
-  const allowed: T[] = []
-  const denied: string[] = []
-  const matches = (pat: string, name: string): boolean =>
-    pat === name || (pat.endsWith("*") && name.startsWith(pat.slice(0, -1)))
-  for (const tool of tools) {
-    if (vetoes.has(tool.name)) { denied.push(tool.name); continue }
-    let action: GovernancePolicyAction = policy.defaultAction ?? "allow"
-    for (const r of policy.rules ?? []) {
-      if (matches(r.pattern, tool.name)) action = r.action
-    }
-    if (action === "deny") denied.push(tool.name)
-    else allowed.push(tool)
-  }
-  return { allowed, denied }
 }
 
 export type GovernanceConstraint =
@@ -40,7 +19,9 @@ export type GovernanceConstraint =
   | { kind: "enum"; tool: string; path: string; values: string[] }
   | { kind: "range"; tool: string; path: string; min?: number; max?: number }
 
-export function governancePolicyToKernelEvent(policy: GovernancePolicy): Record<string, unknown> {
+export function governancePolicyToKernelEvent(policy: GovernancePolicy): Record<string, unknown> & {
+  rate_limits: Array<{ tool: string; max_calls: number; window_ms: number }>
+} {
   return {
     kind: "load_governance_policy",
     ...(policy.defaultAction ? { default_action: policy.defaultAction } : {}),
@@ -53,10 +34,50 @@ export function governancePolicyToKernelEvent(policy: GovernancePolicy): Record<
     })),
     constraints: (policy.constraints ?? []).map(c =>
       c.kind === "enum"
-        ? { kind: "enum", tool: c.tool, path: c.path, values: c.values }
+        ? { kind: "enum", tool: c.tool, param_path: c.path, values: c.values }
         : c.kind === "range"
-          ? { kind: "range", tool: c.tool, path: c.path, ...(c.min !== undefined ? { min: c.min } : {}), ...(c.max !== undefined ? { max: c.max } : {}) }
-          : { kind: "required", tool: c.tool, path: c.path },
+          ? {
+              kind: "range", tool: c.tool, param_path: c.path,
+              // The wire carries fixed-point micro-units so a bound replays byte-identically.
+              ...(c.min !== undefined ? { min_micros: toMicros(c.min) } : {}),
+              ...(c.max !== undefined ? { max_micros: toMicros(c.max) } : {}),
+            }
+          : { kind: "required", tool: c.tool, param_path: c.path },
     ),
+    hide_denied_tools: policy.surfaceDeniedInSystem !== false,
   }
 }
+
+/** A §13.2 live-policy patch replacing the governance posture, for `RuntimeRunner.applyPolicyPatch`. */
+export function governancePolicyPatch(policy: GovernancePolicy): {
+  kind: "replace_governance_policy"
+  policy: Record<string, unknown>
+} {
+  const { kind: _kind, ...wire } = governancePolicyToKernelEvent(policy)
+  return {
+    kind: "replace_governance_policy",
+    policy: {
+      ...wire,
+      rate_limits: wire.rate_limits.map(limit => ({ ...limit, window_ms: String(limit.window_ms) })),
+    },
+  }
+}
+
+function toMicros(value: number): number {
+  if (!Number.isFinite(value)) throw new RangeError(`governance range bound must be finite, got ${value}`)
+  return Math.round(value * 1_000_000)
+}
+
+/** A §13.2 live policy patch in kernel vocabulary — the closed set of policies that may change
+ *  while an operation runs. Use `governancePolicyPatch` to build the governance variant. */
+export type LivePolicyPatch =
+  | { kind: "replace_signal_policy"; policy: Record<string, unknown> }
+  | { kind: "replace_governance_policy"; policy: Record<string, unknown> }
+  | { kind: "replace_recovery_policy"; policy: Record<string, unknown> }
+  | {
+      kind: "tighten_resource_quota"
+      max_concurrent_subagents?: number
+      max_total_subagents?: number
+      max_spawn_depth?: number
+      max_workflow_nodes?: number
+    }

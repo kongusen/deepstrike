@@ -6,6 +6,53 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.75] - 2026-09-26
+
+### Changed — API notes
+
+- Rust `RuntimeRunner::write_memory` now returns `Result<bool>` (whether the record was persisted);
+  Node, WASM and Python `writeMemory` / `write_memory` likewise resolve to a boolean.
+- Node native kernel faults are thrown with napi status `GenericFailure` (previously `InvalidArg`);
+  the message is still the fault JSON.
+- The napi `SignalRouter.ingest` refuses unknown `source` / `signalType` / `urgency` values and a
+  non-JSON payload instead of silently defaulting them.
+- The canonical wire gains additive, optional fields: `is_error` on `ProviderMessage` /
+  `LogicalMessage`, `recall_count` / `pinned` on `MemoryRecall`, and the `admit_memory_write`
+  host command. Existing records and inputs decode unchanged.
+
+### Fixed — SDK → kernel boundary audit (Node, WASM, Python, Rust)
+
+- **Correctness (P0):** resumed history keeps assistant tool calls paired with their results;
+  unsupported workflow node kinds become a kernel rejection the model sees instead of crashing
+  the run; caller node ids are preserved and appended anonymous ids no longer collide; milestone
+  criteria reach `onMilestoneEvaluate`; `onToolResult` redaction covers every consumer; the host
+  no longer fabricates page-out refs or memory digests.
+- **Authority and contracts (P1):** the model's `update_plan` is no longer re-submitted as a host
+  task update; skill content follows the kernel's admission; the provider sees exactly the context
+  the kernel committed; launch/preemption/completion facts are the host's observations; signals
+  keep deadline, coalesce key and type; `pending_call_ids` carries logical call ids only; truncated
+  tool arguments fail the call instead of running it with `{}`; the live control plane (policy
+  patch, deadline, forced compaction, skill activation) is reachable from every runner.
+- **Tool failures are marked as failures:** `ProviderMessage` / `LogicalMessage` carry an optional
+  `is_error`, so a failed tool result reaches the next provider request as a failure. The Rust
+  runner now surfaces every tool result to its consumers.
+- **One memory authority:** the kernel validates the model's `write_memory` proposals (it did not
+  before), a new `admit_memory_write` host command admits host-authored writes by the same rule and
+  rolling write quota, and a stateless `memoryAuthorityJson` binding answers host writes and recalls
+  with no live operation. Recall counts and promotion suggestions are derived by the kernel
+  (`memory_recalled` / `promotion_suggested` are now emitted for model recalls); hosts report the
+  stored count and never compute `recall_count + 1`. The Rust SDK's private write-quota ledger is
+  removed, and `MemoryStore::record_recall` is a new default trait method.
+- **Robustness (P2):** every fallible napi method is panic-guarded; kernel faults surface as
+  `GenericFailure` with the fault JSON (argument errors stay `InvalidArg`); `invalid_arg` run
+  terminals are classified by fault code, not message text; unknown signal vocabulary or a bad
+  signal payload is refused instead of defaulted. A refused input no longer advances the host's
+  turn count or message list. Transitions of one operation are serialized over the journal's single
+  outbound slot; a restore keeps the observations of the envelope it drains; the file journals
+  (Node, Python, Rust) find their head without listing the record directory on every append.
+  Workflow nodes stream: each completion is fed back as it lands, with no round barrier. Replaying a
+  page-out archive keeps tool-result structure. Global invariants cite tests that assert them.
+
 ## [0.2.74] - 2026-09-25
 
 ### Added — cross-SDK Agent facade alignment

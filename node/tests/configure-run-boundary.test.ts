@@ -16,7 +16,8 @@ describe("configure_run policy adapters", () => {
       rules: [],
       vetoed_tools: ["shell"],
       rate_limits: [{ tool: "search", max_calls: 2, window_ms: 1000 }],
-      constraints: [{ kind: "required", tool: "search", path: "query" }],
+      constraints: [{ kind: "required", tool: "search", param_path: "query" }],
+      hide_denied_tools: true,
     })
 
     expect(normalizeContextPolicy(contextPolicy({ preserveRecentTurns: 3 }))).toMatchObject({

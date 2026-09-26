@@ -2,6 +2,7 @@ import { requestSnapshot } from "./prepared-request.js"
 import type { PreparedProviderRequest, ProviderRunState } from "../types.js"
 import type { RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, LLMProvider, ModelMessage, ProviderDescriptor } from "../types.js"
 import { collectStreamMessage, toOpenAIMessages } from "./base.js"
+import { malformedToolArguments } from "../runtime/tool-arguments.js"
 
 const DEEPSEEK_REASONERS = new Set(["deepseek-reasoner", "deepseek-r1"])
 const MINIMAX_REASONERS = new Set(["MiniMax-M1", "minimax-m1"])
@@ -125,7 +126,7 @@ export class OpenAIProvider implements LLMProvider {
     for (const tb of Object.values(toolAccum)) {
       let args: Record<string, unknown> = {}
       try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
-      yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
+      yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args, ...malformedToolArguments(tb.argsBuf) } as ToolCallEvent
     }
   }
 

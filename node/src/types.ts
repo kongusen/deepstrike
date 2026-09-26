@@ -142,6 +142,10 @@ export interface ToolCallEvent extends StreamEvent {
   id: string
   name: string
   arguments: Record<string, unknown>
+  /** The model's argument text, present only when it was not a JSON object (then `arguments` is
+   *  `{}`). The runner executes this text so the call fails as invalid instead of running with
+   *  empty arguments. */
+  rawArguments?: string
 }
 
 export interface UsageEvent extends StreamEvent {

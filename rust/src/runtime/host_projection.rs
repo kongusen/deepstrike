@@ -57,6 +57,10 @@ pub(crate) enum HostEffect {
         summary: Option<String>,
         archived: Vec<CoreMessage>,
         tier: String,
+        /// The kernel's opaque archive body and its digest. The host must store exactly these
+        /// bytes under the ref it reports, because the kernel later `load_payload`s that ref.
+        payload_content: String,
+        payload_digest: String,
     },
     LoadPayload {
         handle_id: String,

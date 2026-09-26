@@ -464,6 +464,10 @@ pub struct ProviderMessage {
     pub tool_calls: Vec<ToolCall>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<CallId>,
+    /// Set on a paired tool message whose result was a failure, so the provider request tells
+    /// the model the call failed instead of presenting the error text as a success.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u32>,
 }
@@ -1057,6 +1061,14 @@ pub struct MemoryRecall {
     /// thresholds that gate kernel decisions use fixed-point `Ppm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub score: Option<FiniteF64>,
+    /// M3 · how many times the store says this record had been recalled *before* this hit. The
+    /// host reports the state it holds; the kernel derives the next count from it and journals it
+    /// on `memory_recalled`, so no host ever computes `recall_count + 1` itself.
+    #[serde(default, skip_serializing_if = "WireU64::is_zero")]
+    pub recall_count: WireU64,
+    /// A pinned record is already where a promotion would put it, so it is never suggested.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1517,6 +1529,7 @@ mod tests {
                         content: "done".to_string(),
                         tool_calls: Vec::new(),
                         tool_call_id: None,
+                        is_error: false,
                         tokens: None,
                     },
                     observed_input_tokens: Some(120),
@@ -1579,6 +1592,8 @@ mod tests {
                     kind: MemoryKind::Project,
                     content: "tag v* publishes".to_string(),
                     score: Some(FiniteF64::new(0.82).unwrap()),
+                    recall_count: WireU64::ZERO,
+                    pinned: false,
                 }],
             }),
             EffectSuccess::PageOutArchived(PageOutArchivedSuccess {

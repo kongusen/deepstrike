@@ -410,16 +410,49 @@ impl CanonicalOperationDriver {
             HostCommand::RecordDynamicWorkflowReplay(fact) => {
                 self.plan_dynamic_workflow_replay(context, fact)
             }
-            HostCommand::CompleteDynamicWorkflow(_) => {
-                self.plan_dynamic_workflow_complete(context)
-            }
+            HostCommand::CompleteDynamicWorkflow(_) => self.plan_dynamic_workflow_complete(context),
             HostCommand::ApplyCapabilityPatch(patch) => self.plan_capability_patch(patch),
             HostCommand::ApplyKnowledgeMutation(mutation) => self.plan_knowledge_mutation(mutation),
             HostCommand::SeedKnowledge(seed) => self.plan_seed_knowledge(seed),
             HostCommand::ApplySkillActivation(activation) => self.plan_skill_activation(activation),
             HostCommand::ApplyPolicyPatch(patch) => self.plan_policy_patch(patch),
             HostCommand::UpdateDeadline(deadline) => self.plan_update_deadline(deadline),
+            HostCommand::AdmitMemoryWrite(admit) => self.plan_admit_memory_write(context, admit),
         }
+    }
+
+    /// §22.13 · admit a host-authored memory write by the rule the model's proposals obey.
+    ///
+    /// Validation runs before metering, exactly as on the syscall path, so a write the policy
+    /// refuses spends no quota. The refusal is an audit fact rather than a fault: the content is
+    /// usually model-derived (an extraction, a summary), so a refused write is expected behaviour
+    /// and not a host bug.
+    pub(super) fn plan_admit_memory_write(
+        &mut self,
+        context: &PlanContext<'_>,
+        admit: &AdmitMemoryWriteCommand,
+    ) -> Result<PlannedStep, KernelFault> {
+        let policy = context.config.memory_policy;
+        let engine = self.engine_mut()?;
+        let refusal = match policy.check_write(&admit.name, admit.content_bytes as usize) {
+            Err(error) => Some(error),
+            Ok(()) => {
+                let disposition = engine.gate_memory_write_proposal();
+                (!disposition.is_allowed())
+                    .then(|| denial_reason(&disposition, "memory write denied"))
+            }
+        };
+        if let Some(error) = refusal {
+            let turn = engine.turn;
+            engine
+                .observations
+                .push(KernelObservation::MemoryValidationFailed {
+                    turn,
+                    record_id: admit.record_id.clone(),
+                    error,
+                });
+        }
+        Ok(self.quiet_step())
     }
 
     /// Grow a root dynamic workflow from the host controller while keeping the same kernel-owned
@@ -475,7 +508,10 @@ impl CanonicalOperationDriver {
                 {
                     return Err(KernelFault::new(
                         KernelFaultCode::InvalidConfig,
-                        format!("dynamic workflow plan node {:?} cannot depend on itself", planned.node_id),
+                        format!(
+                            "dynamic workflow plan node {:?} cannot depend on itself",
+                            planned.node_id
+                        ),
                     ));
                 }
             }
@@ -485,6 +521,7 @@ impl CanonicalOperationDriver {
             nodes: append.nodes.clone(),
         };
         let core_spec = build_core_spec(&wire_spec)?;
+        ensure_fresh_node_ids(&self.node_ids, &wire_spec.nodes)?;
         let node_ids = wire_node_ids(&wire_spec);
         // A host append is the explicit append operation, even though the underlying DAG is the
         // same one used by model-authored workflow growth. Keeping the `SubmitNodes` gate and
@@ -591,7 +628,9 @@ impl CanonicalOperationDriver {
     ) -> Result<PlannedStep, KernelFault> {
         if self.root_kind != Some(RootKind::Workflow)
             || !self.engine().is_some_and(LoopStateMachine::workflow_active)
-            || !self.engine().is_some_and(LoopStateMachine::is_dynamic_workflow_open)
+            || !self
+                .engine()
+                .is_some_and(LoopStateMachine::is_dynamic_workflow_open)
         {
             return Err(KernelFault::new(
                 KernelFaultCode::InvalidAuthority,

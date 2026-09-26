@@ -13,6 +13,7 @@ from deepstrike.providers.stop_reason import canonicalize_stop_reason
 from deepstrike.providers.stream import TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 from deepstrike.providers.usage import ProviderUsage
 from deepstrike.types.content import CanonicalAdapterInput
+from deepstrike.runtime.tool_arguments import malformed_tool_arguments
 
 
 ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER = "<｜｜DSML｜｜tool_calls>"
@@ -285,10 +286,11 @@ class AnthropicMessagesAdapter:
                 except json.JSONDecodeError:
                     args = {}
                 state.native_blocks[idx]["input"] = args
-                call = normalize_tool_call(block["id"], block["name"], args)
+                call = normalize_tool_call(block["id"], block["name"], block["args"] or "")
                 if call:
                     state.final_tool_calls.append(call)
-                    events.append(ToolCallEvent(id=call.id, name=call.name, arguments=args))
+                    events.append(ToolCallEvent(id=call.id, name=call.name, arguments=args,
+                                                raw_arguments=malformed_tool_arguments(block["args"])))
         return AdapterOutput(events=events)
 
     def finish_stream(self, state: AnthropicStreamState, final: Any = None) -> AdapterOutput:

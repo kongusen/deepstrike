@@ -43,6 +43,12 @@ pub enum HostCommand {
     ApplySkillActivation(ApplySkillActivationCommand),
     ApplyPolicyPatch(ApplyPolicyPatchCommand),
     UpdateDeadline(UpdateDeadlineCommand),
+    /// §22.13 · a memory write the host authored while this operation runs (a session extract, a
+    /// semantic archive summary). The host still performs the I/O; the kernel is the one that says
+    /// whether the write may happen, by the same validation rule and the same rolling write quota
+    /// the model's `write_memory` syscall answers to. A refusal is journaled as
+    /// `memory_validation_failed`; an admitted write journals nothing and the host persists it.
+    AdmitMemoryWrite(AdmitMemoryWriteCommand),
 }
 
 /// Cancellation. The operation id lives in the envelope and is **not** repeated here: the
@@ -181,6 +187,16 @@ pub struct SeedKnowledgeCommand {
     pub entries: Vec<KnowledgeEntry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdmitMemoryWriteCommand {
+    /// The host's record id, named by the audit fact when the write is refused.
+    pub record_id: String,
+    pub name: String,
+    /// UTF-8 byte length of the content the host intends to persist.
+    pub content_bytes: u32,
+}
+
 /// §13.2 · skill activation state. Both directions in one command so a swap is atomic.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -265,6 +281,11 @@ pub struct GovernancePolicy {
     pub rate_limits: Vec<RateLimitSpec>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub constraints: Vec<ParamConstraint>,
+    /// Withhold tools this policy statically denies (veto or `deny` permission) from the provider
+    /// surface, and say so once in the knowledge slot. The kernel decides the hidden set with the
+    /// same rules that enforce the calls, so the surface and the gate cannot disagree.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hide_denied_tools: Option<bool>,
 }
 
 /// Per-tool rolling-window rate limit.
@@ -558,6 +579,9 @@ impl LivePolicyPatch {
                 next.governance_policy.vetoed_tools = policy.vetoed_tools.clone();
                 next.governance_policy.rate_limits = policy.rate_limits.clone();
                 next.governance_policy.constraints = policy.constraints.clone();
+                next.governance_policy.hide_denied_tools = policy
+                    .hide_denied_tools
+                    .unwrap_or(current.governance_policy.hide_denied_tools);
                 super::config::validate_governance(
                     &next.governance_policy,
                     current.kernel_limits.collection_limits.governance_rules,

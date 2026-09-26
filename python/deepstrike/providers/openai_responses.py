@@ -36,6 +36,7 @@ from .stop_reason import canonicalize_stop_reason
 from .usage import normalize_usage
 from .protocol_adapter import AdapterOutput, ProtocolResponseError
 from deepstrike.types.content import CanonicalAdapterInput, media_source, normalize_canonical_adapter_input
+from deepstrike.runtime.tool_arguments import malformed_tool_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -317,7 +318,8 @@ class OpenAIResponsesAdapter:
                     args = json.loads(call["args_buf"] or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                events.append(ToolCallEvent(id=call["id"], name=call["name"], arguments=args))
+                events.append(ToolCallEvent(id=call["id"], name=call["name"], arguments=args,
+                                            raw_arguments=malformed_tool_arguments(call["args_buf"])))
         elif kind in {"response.completed", "response.incomplete"}:
             response = self._get(chunk, "response")
             response_id = self._get(response, "id")

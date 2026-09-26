@@ -2,12 +2,11 @@ import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/r
 import type { LLMProvider, StreamEvent } from "../src/types.js"
 import { kernelEvents } from "@deepstrike/wasm-kernel"
 
-// `update_plan` is a kernel meta-tool (exposed via `enablePlanTool`), not a plane-registered tool.
-// Before the fix the wasm runner had no dispatch branch for it, so every call fell through to the
-// execution plane and came back "unknown tool: update_plan" — exposure without execution. The
-// node/python runners resolve it as an `update_task` kernel apply; wasm must match.
+// `update_plan` is a kernel syscall (exposed via `enablePlanTool`): the kernel decodes and applies it
+// from the provider result. The host must neither route it to the execution plane nor re-apply it
+// as its own `update_task` — the model's plan is the model's.
 describe("update_plan meta-tool dispatch", () => {
-  it("resolves update_plan as a kernel task update, never via the execution plane", async () => {
+  it("leaves update_plan to the kernel: no plane call, no host update_task", async () => {
     kernelEvents.length = 0
     let providerCalls = 0
     const provider: LLMProvider = {
@@ -44,25 +43,11 @@ describe("update_plan meta-tool dispatch", () => {
     const events: StreamEvent[] = []
     for await (const event of runner.run({ sessionId: "plan-call", goal: "plan the task" })) events.push(event)
 
-    expect(events).toContainEqual(expect.objectContaining({
-      type: "tool_result",
-      callId: "call_plan",
-      content: "success",
-      isError: false,
-    }))
-    expect(events).not.toContainEqual(expect.objectContaining({
-      callId: "call_plan",
-      isError: true,
-    }))
-
-    const update = kernelEvents.find((e: { kind: string }) => e.kind === "host_control") as
-      | { command?: { update?: Record<string, unknown> } }
-      | undefined
-    expect(update).toBeDefined()
-    expect(update!.command!.update).toEqual(expect.objectContaining({
-      plan: ["step a", "step b"],
-      current_step: 1,
-      progress: "started",
-    }))
+    expect(events.filter(event => event.type === "error")).toEqual([])
+    expect(events).not.toContainEqual(expect.objectContaining({ type: "tool_result", callId: "call_plan" }))
+    expect(providerCalls).toBe(2)
+    const hostUpdates = kernelEvents.filter((e: { kind: string; command?: { kind?: string } }) =>
+      e.kind === "host_control" && e.command?.kind === "update_task")
+    expect(hostUpdates).toEqual([])
   })
 })

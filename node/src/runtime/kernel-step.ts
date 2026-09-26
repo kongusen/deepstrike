@@ -12,6 +12,7 @@ import type { SkillMetadata } from "../skills/loader.js"
 import type { RollbackReason } from "./session-log.js"
 import type { WorkflowBudget, WorkflowSpawnInfo } from "../types/agent.js"
 import { validateSkillKernelProjection } from "./validators/skill-kernel-projection.js"
+import { toolArgumentsFromWire, toolArgumentsToWire } from "./tool-arguments.js"
 
 /**
  * Kernel projection of skill metadata (host-to-kernel crossing).
@@ -129,6 +130,7 @@ export interface KernelWorkflowBudget {
 export function workflowSpawnNodeFromKernel(node: KernelWorkflowSpawnNode): WorkflowSpawnInfo {
   return {
     agent_id: node.agent_id,
+    ...(node.attempt_id ? { attempt_id: node.attempt_id } : {}),
     goal: node.goal,
     role: node.role,
     isolation: node.isolation,
@@ -360,7 +362,7 @@ export interface KernelMessage {
   [key: string]: unknown
   role: ModelMessage["role"]
   content: string | Array<Record<string, unknown>>
-  tool_calls: Array<{ id: string; name: string; arguments: Record<string, unknown> }>
+  tool_calls: Array<{ id: string; name: string; arguments: Record<string, unknown> | string }>
 }
 
 export interface KernelToolResult {
@@ -431,16 +433,11 @@ export function messageToKernelMessage(message: ModelMessage): KernelMessage {
   const out: KernelMessage = {
     role: message.role,
     content: message.content,
-    tool_calls: (message.toolCalls ?? []).map(tc => {
-      const parsed = tryParseJson(tc.arguments)
-      return {
-        id: tc.id,
-        name: tc.name,
-        arguments: parsed && typeof parsed === "object" && !Array.isArray(parsed)
-          ? parsed as Record<string, unknown>
-          : {},
-      }
-    }),
+    tool_calls: (message.toolCalls ?? []).map(tc => ({
+      id: tc.id,
+      name: tc.name,
+      arguments: toolArgumentsToWire(tc.arguments),
+    })),
   }
   if (message.contentParts && message.contentParts.length > 0) {
     out.content = message.contentParts.map(part => {
@@ -650,7 +647,7 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): ModelMessage {
     toolCalls: ((raw.tool_calls as Array<Record<string, unknown>>) ?? []).map(tc => ({
       id: String(tc.call_id ?? tc.id ?? ""),
       name: String(tc.name ?? ""),
-      arguments: JSON.stringify(tc.arguments ?? {}),
+      arguments: toolArgumentsFromWire(tc.arguments),
     })),
   }
   if (structuredContent) {
@@ -690,7 +687,7 @@ export function kernelMessageToSdk(raw: Record<string, unknown>): ModelMessage {
       type: "tool_result",
       callId: raw.tool_call_id,
       output: message.content,
-      isError: false,
+      isError: raw.is_error === true,
     }]
   }
   return message

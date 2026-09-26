@@ -5,34 +5,27 @@
 //!
 //! ## High-level API
 //!
+//! The kernel is a two-phase transaction: every canonical input is prepared, its record appended
+//! to the host's journal, and only then committed. The SDK's `CanonicalKernelHost` drives this;
+//! the raw shape is:
+//!
 //! ```typescript
-//! import {
-//!   ContextEngine, LoopStateMachine, RuntimeTask, LoopPolicy,
-//!   ModelMessage, ToolCall, ToolExecutionResult, ToolSchema,
-//!   SkillMetadata,
-//! } from '@deepstrike/core'
+//! import { CanonicalKernel } from '@deepstrike/core'
 //!
-//! const sm = new LoopStateMachine({ maxTokens: 128_000 })
-//! // Register skills once; the kernel auto-injects the `skill` meta-tool.
-//! sm.setAvailableSkills([
-//!   { name: 'debug', description: 'Debug helper', estimatedTokens: 0 },
-//! ])
-//!
-//! let action = sm.start({ goal: 'Fix the bug' })
-//! while (!sm.isTerminal()) {
-//!   if (action.kind === 'call_llm') {
-//!     // tools list already includes the `skill` meta-tool
-//!     const msg = await callLlm(action.context, action.tools)
-//!     action = sm.feedLlmResponse(msg)
-//!   } else if (action.kind === 'execute_tools') {
-//!     // SDK intercepts calls where name === 'skill' and reads the file
-//!     const results = await execTools(action.calls)
-//!     action = sm.feedToolResults(results)
-//!   } else if (action.kind === 'done') {
-//!     break
-//!   }
+//! const kernel = new CanonicalKernel()
+//! const prepared = kernel.prepare(JSON.stringify(envelope))
+//! if (prepared.status === 'prepared') {
+//!   const head = await journal.compareAndAppend(prepared.expectedHead, prepared.recordBytes)
+//!   const committed = kernel.commit(prepared.prepareToken, head)
+//!   // committed.plannedStepJson → project into the next host action
+//! } else if (prepared.status === 'rejected') {
+//!   // prepared.faultJson names the refusal; nothing was mutated
 //! }
 //! ```
+//!
+//! Every method that can fail returns a thrown error rather than aborting the process: kernel
+//! faults carry their JSON fault as the message (status `GenericFailure`), malformed arguments
+//! are `InvalidArg`, and an internal panic is caught at the boundary (see [`ffi_guard`]).
 
 #![deny(clippy::all)]
 
@@ -254,28 +247,57 @@ fn runtime_signal_to_rust(s: RuntimeSignal) -> Result<RustRuntimeSignal> {
     // §7.7 · the signal id is the caller's own branded ref, kept verbatim. It used to have to
     // parse as a UUID, which forced every non-UUID signal into a minted second identity.
     let id = s.id.clone();
+    // An unknown vocabulary value is refused, never quietly read as the default: a mistyped
+    // `"critcal"` urgency used to arrive as `normal`, and a malformed payload as `null`.
+    let invalid = |field: &str, value: &str, expected: &str| {
+        Error::new(
+            Status::InvalidArg,
+            format!("invalid RuntimeSignal.{field} {value:?}; expected {expected}"),
+        )
+    };
     let source = match s.source.as_str() {
         "cron" => RustSignalSource::Cron,
         "gateway" => RustSignalSource::Gateway,
         "heartbeat" => RustSignalSource::Heartbeat,
-        _ => RustSignalSource::Custom,
+        "custom" => RustSignalSource::Custom,
+        other => return Err(invalid("source", other, "cron|gateway|heartbeat|custom")),
     };
     let signal_type = match s.signal_type.as_str() {
         "job" => RustSignalType::Job,
         "alert" => RustSignalType::Alert,
-        _ => RustSignalType::Event,
+        "event" => RustSignalType::Event,
+        other => return Err(invalid("signalType", other, "job|alert|event")),
     };
     let urgency = match s.urgency.as_str() {
         "critical" => RustUrgency::Critical,
         "high" => RustUrgency::High,
+        "normal" => RustUrgency::Normal,
         "low" => RustUrgency::Low,
-        _ => RustUrgency::Normal,
+        other => return Err(invalid("urgency", other, "critical|high|normal|low")),
     };
-    let payload: serde_json::Value =
-        serde_json::from_str(&s.payload).unwrap_or(serde_json::Value::Null);
+    let payload: serde_json::Value = if s.payload.trim().is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str(&s.payload).map_err(|error| {
+            Error::new(
+                Status::InvalidArg,
+                format!("RuntimeSignal.payload is not JSON: {error}"),
+            )
+        })?
+    };
+    let millis = |field: &str, value: f64| {
+        if value.is_finite() && value >= 0.0 {
+            Ok(value as u64)
+        } else {
+            Err(Error::new(
+                Status::InvalidArg,
+                format!("RuntimeSignal.{field} must be a finite non-negative number, got {value}"),
+            ))
+        }
+    };
     let mut sig = RustRuntimeSignal::new(source, signal_type, urgency, s.summary.as_str())
         .with_payload(payload)
-        .with_timestamp(s.timestamp_ms as u64);
+        .with_timestamp(millis("timestampMs", s.timestamp_ms)?);
     sig.id = id.into();
     if let Some(key) = s.dedupe_key {
         sig = sig.with_dedupe(key.as_str());
@@ -284,7 +306,7 @@ fn runtime_signal_to_rust(s: RuntimeSignal) -> Result<RustRuntimeSignal> {
         sig = sig.with_recipient(recipient.as_str());
     }
     if let Some(deadline_ms) = s.deadline_ms {
-        sig = sig.with_deadline(deadline_ms as u64);
+        sig = sig.with_deadline(millis("deadlineMs", deadline_ms)?);
     }
     if let Some(coalesce_key) = s.coalesce_key {
         sig = sig.with_coalesce(coalesce_key.as_str());
@@ -550,6 +572,12 @@ pub struct CanonicalKernel {
     inner: RustCanonicalKernel,
 }
 
+impl Default for CanonicalKernel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[napi]
 impl CanonicalKernel {
     #[napi(constructor)]
@@ -623,34 +651,40 @@ impl CanonicalKernel {
 
     #[napi(js_name = "checkpointCandidate")]
     pub fn checkpoint_candidate(&self) -> Result<CanonicalCheckpoint> {
-        self.inner
-            .checkpoint_candidate()
-            .map(canonical_checkpoint_from_rust)
-            .map_err(canonical_kernel_error)
+        ffi_guard("CanonicalKernel.checkpointCandidate", || {
+            self.inner
+                .checkpoint_candidate()
+                .map(canonical_checkpoint_from_rust)
+                .map_err(canonical_kernel_error)
+        })
     }
 
     #[napi(js_name = "checkpointRebase")]
     pub fn checkpoint_rebase(&self, checkpoint_bytes: Buffer) -> Result<CanonicalCheckpoint> {
-        let checkpoint = RustKernelCheckpoint::from_checkpoint_bytes(checkpoint_bytes.as_ref())
-            .map_err(|error| canonical_kernel_error(error.fault()))?;
-        self.inner
-            .checkpoint_rebase(&checkpoint)
-            .map(canonical_checkpoint_from_rust)
-            .map_err(canonical_kernel_error)
+        ffi_guard("CanonicalKernel.checkpointRebase", || {
+            let checkpoint = RustKernelCheckpoint::from_checkpoint_bytes(checkpoint_bytes.as_ref())
+                .map_err(|error| canonical_kernel_error(error.fault()))?;
+            self.inner
+                .checkpoint_rebase(&checkpoint)
+                .map(canonical_checkpoint_from_rust)
+                .map_err(canonical_kernel_error)
+        })
     }
 
     #[napi(js_name = "ackCheckpoint")]
     pub fn ack_checkpoint(&mut self, through_step_seq: String, covered_head: String) -> Result<()> {
-        let boundary = RustCheckpointBoundary {
-            through_step_seq: RustWireU64::parse(&through_step_seq)
-                .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?,
-            covered_head: RustDigest::new(covered_head)
-                .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?,
-        };
-        self.inner
-            .note_checkpoint_acked(&boundary)
-            .map(|_| ())
-            .map_err(canonical_kernel_error)
+        ffi_guard("CanonicalKernel.ackCheckpoint", || {
+            let boundary = RustCheckpointBoundary {
+                through_step_seq: RustWireU64::parse(&through_step_seq)
+                    .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?,
+                covered_head: RustDigest::new(covered_head)
+                    .map_err(|error| Error::new(Status::InvalidArg, error.to_string()))?,
+            };
+            self.inner
+                .note_checkpoint_acked(&boundary)
+                .map(|_| ())
+                .map_err(canonical_kernel_error)
+        })
     }
 
     /// Replace this handle in place from checkpoint bytes plus post-checkpoint record bytes.
@@ -660,19 +694,21 @@ impl CanonicalKernel {
         checkpoint_bytes: Option<Buffer>,
         record_bytes: Vec<Buffer>,
     ) -> Result<CanonicalRestoreCost> {
-        let records = record_bytes
-            .into_iter()
-            .map(|bytes| bytes.to_vec())
-            .collect::<Vec<_>>();
-        let cost = self
-            .inner
-            .restore_bytes(checkpoint_bytes.as_deref(), &records)
-            .map_err(canonical_kernel_error)?;
-        Ok(CanonicalRestoreCost {
-            records_before_checkpoint: cost.records_before_checkpoint.to_string(),
-            tail_inputs_replayed: cost.tail_inputs_replayed.to_string(),
-            records_after_checkpoint: cost.records_after_checkpoint.to_string(),
-            bytes_read: cost.bytes_read.to_string(),
+        ffi_guard("CanonicalKernel.restore", || {
+            let records = record_bytes
+                .into_iter()
+                .map(|bytes| bytes.to_vec())
+                .collect::<Vec<_>>();
+            let cost = self
+                .inner
+                .restore_bytes(checkpoint_bytes.as_deref(), &records)
+                .map_err(canonical_kernel_error)?;
+            Ok(CanonicalRestoreCost {
+                records_before_checkpoint: cost.records_before_checkpoint.to_string(),
+                tail_inputs_replayed: cost.tail_inputs_replayed.to_string(),
+                records_after_checkpoint: cost.records_after_checkpoint.to_string(),
+                bytes_read: cost.bytes_read.to_string(),
+            })
         })
     }
 
@@ -692,43 +728,53 @@ impl CanonicalKernel {
 
     #[napi(js_name = "pendingEffectsJson")]
     pub fn pending_effects_json(&self) -> Result<String> {
-        // Publication order, not the map's lexicographic order (`step:10` sorts before `step:9`)
-        // — hosts consume the first pending effect as the next action.
-        serde_json::to_string(&self.inner.pending_effects_in_order()).map_err(json_error)
+        ffi_guard("CanonicalKernel.pendingEffectsJson", || {
+            // Publication order, not the map's lexicographic order (`step:10` sorts before `step:9`)
+            // — hosts consume the first pending effect as the next action.
+            serde_json::to_string(&self.inner.pending_effects_in_order()).map_err(json_error)
+        })
     }
 
     #[napi(js_name = "projectionJson")]
     pub fn projection_json(&self) -> Result<String> {
-        let projection = self
-            .inner
-            .projection()
-            .map_err(|error| napi::Error::from_reason(error.message))?;
-        serde_json::to_string(&projection).map_err(json_error)
+        ffi_guard("CanonicalKernel.projectionJson", || {
+            let projection = self
+                .inner
+                .projection()
+                .map_err(|error| napi::Error::from_reason(error.message))?;
+            serde_json::to_string(&projection).map_err(json_error)
+        })
     }
 
     #[napi(js_name = "projectPlannedStepJson")]
     pub fn project_planned_step_json(&self, planned_step_json: String) -> Result<String> {
-        deepstrike_core::runtime::kernel::wire::projection::project_planned_step_json(
-            &planned_step_json,
-        )
-        .map_err(|error| napi::Error::from_reason(error.message))
+        ffi_guard("CanonicalKernel.projectPlannedStepJson", || {
+            deepstrike_core::runtime::kernel::wire::projection::project_planned_step_json(
+                &planned_step_json,
+            )
+            .map_err(|error| napi::Error::from_reason(error.message))
+        })
     }
 
     #[napi(js_name = "publishedEffectsManifestJson")]
     pub fn published_effects_manifest_json(&self, planned_step_json: String) -> Result<String> {
-        deepstrike_core::runtime::kernel::wire::projection::published_effects_manifest_json(
-            &planned_step_json,
-        )
-        .map_err(|error| napi::Error::from_reason(error.message))
+        ffi_guard("CanonicalKernel.publishedEffectsManifestJson", || {
+            deepstrike_core::runtime::kernel::wire::projection::published_effects_manifest_json(
+                &planned_step_json,
+            )
+            .map_err(|error| napi::Error::from_reason(error.message))
+        })
     }
 
     #[napi(js_name = "terminalJson")]
     pub fn terminal_json(&self) -> Result<Option<String>> {
-        self.inner
-            .terminal()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(json_error)
+        ffi_guard("CanonicalKernel.terminalJson", || {
+            self.inner
+                .terminal()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(json_error)
+        })
     }
 }
 
@@ -798,9 +844,11 @@ fn canonical_checkpoint_from_rust(
     }
 }
 
+/// A kernel fault is the kernel's refusal, not a malformed JS argument — so it is not `InvalidArg`.
+/// The message is the fault JSON, which carries the precise code.
 fn canonical_kernel_error(fault: deepstrike_core::runtime::kernel::wire::KernelFault) -> Error {
     Error::new(
-        Status::InvalidArg,
+        Status::GenericFailure,
         serde_json::to_string(&fault).unwrap_or_else(|_| fault.to_string()),
     )
 }
@@ -829,25 +877,28 @@ impl SignalRouter {
     /// "ignore" | "observe" | "queue" | "run" | "interrupt" | "interrupt_now" | "dropped"
     #[napi]
     pub fn ingest(&mut self, signal: RuntimeSignal, lifecycle: String) -> Result<String> {
-        let rust_sig = runtime_signal_to_rust(signal)?;
-        let lifecycle = match lifecycle.as_str() {
-            "ready" => TaskLifecycle::Ready,
-            "running" => TaskLifecycle::Running,
-            "suspended" => TaskLifecycle::Suspended,
-            "done" => {
-                TaskLifecycle::Done(deepstrike_core::types::result::TerminationReason::Completed)
-            }
-            other => {
-                return Err(Error::from_reason(format!(
-                    "invalid task lifecycle {other:?}; expected ready|running|suspended|done"
-                )));
-            }
-        };
-        Ok(disposition_to_str(self.inner.ingest(rust_sig, lifecycle)).into())
+        ffi_guard("SignalRouter.ingest", || {
+            let rust_sig = runtime_signal_to_rust(signal)?;
+            let lifecycle = match lifecycle.as_str() {
+                "ready" => TaskLifecycle::Ready,
+                "running" => TaskLifecycle::Running,
+                "suspended" => TaskLifecycle::Suspended,
+                "done" => TaskLifecycle::Done(
+                    deepstrike_core::types::result::TerminationReason::Completed,
+                ),
+                other => {
+                    return Err(Error::from_reason(format!(
+                        "invalid task lifecycle {other:?}; expected ready|running|suspended|done"
+                    )));
+                }
+            };
+            Ok(disposition_to_str(self.inner.ingest(rust_sig, lifecycle)).into())
+        })
     }
 
     /// Pull the next queued signal (highest priority first).
     #[napi]
+    #[allow(clippy::should_implement_trait)] // the JS method name; not an iterator
     pub fn next(&mut self) -> Option<RuntimeSignal> {
         self.inner.next().as_ref().map(runtime_signal_from_rust)
     }
@@ -975,27 +1026,43 @@ pub fn verdict_output_schema(extract_skill_on_pass: bool) -> String {
 /// adapter; Rust core owns all inspect/verify/replay/fork semantics.
 #[napi]
 pub fn verifiable_operation_json(request: String) -> Result<String> {
-    deepstrike_core::runtime::verifiable::operation_json(&request)
-        .map_err(|error| Error::from_reason(error))
+    ffi_guard("verifiableOperationJson", || {
+        deepstrike_core::runtime::verifiable::operation_json(&request).map_err(Error::from_reason)
+    })
 }
 
 /// Framework Evolution Runtime bridge. Rust core remains the single E1–E8 validation authority.
 #[napi]
 pub fn evolution_validate_json(request: String) -> Result<String> {
-    deepstrike_core::evolution::validate_evolution_json(&request)
-        .map_err(|error| Error::from_reason(error))
+    ffi_guard("evolutionValidateJson", || {
+        deepstrike_core::evolution::validate_evolution_json(&request).map_err(Error::from_reason)
+    })
+}
+
+/// §22.13 memory authority for a host with no live operation: write admission and the recall
+/// lifecycle, answered by the same kernel functions the in-operation paths use.
+#[napi]
+pub fn memory_authority_json(request: String) -> Result<String> {
+    ffi_guard("memoryAuthorityJson", || {
+        deepstrike_core::runtime::kernel::wire::memory_authority::memory_authority_json(&request)
+            .map_err(Error::from_reason)
+    })
 }
 
 /// Freeze host route and measurement against the kernel's committed Context candidate.
 #[napi]
 pub fn context_prepare_json(request: String) -> Result<String> {
-    deepstrike_core::context::execution::prepare_context_dispatch_json(&request)
-        .map_err(Error::from_reason)
+    ffi_guard("contextPrepareJson", || {
+        deepstrike_core::context::execution::prepare_context_dispatch_json(&request)
+            .map_err(Error::from_reason)
+    })
 }
 
 /// Verify recorded execution evidence against a replayed Context candidate.
 #[napi]
 pub fn context_verify_json(request: String) -> Result<String> {
-    deepstrike_core::context::execution::verify_context_dispatch_json(&request)
-        .map_err(Error::from_reason)
+    ffi_guard("contextVerifyJson", || {
+        deepstrike_core::context::execution::verify_context_dispatch_json(&request)
+            .map_err(Error::from_reason)
+    })
 }

@@ -8,42 +8,11 @@ export interface GovernancePolicy {
   vetoes?: string[]
   rateLimits?: { tool: string; maxCalls: number; windowMs: number }[]
   constraints?: GovernanceConstraint[]
-  /** I5: when true (default), the runner pre-filters denied tools out of the schema passed to the
-   *  provider — the model never sees them and never tries to call them. The denied tool names are
-   *  also surfaced as a single line on the system slot so the model knows not to plan around them.
-   *  Set to false when the agent should learn the denial through a real attempted call and its
-   *  visible error tool result. */
+  /** I5: when true (default), the kernel withholds statically denied tools (vetoes and `deny`
+   *  rules, evaluated exactly as the call gate evaluates them) from the provider surface and names
+   *  them once in the knowledge slot, so the model does not plan around them. Set to false when the
+   *  agent should learn the denial through a real attempted call and its visible error result. */
   surfaceDeniedInSystem?: boolean
-}
-
-/** I5: walk the tool list and bucket each tool into `allowed` / `denied` based on a declarative
- *  policy. A tool is denied when:
- *    - the tool name appears in `vetoes`
- *    - a `rules[i].pattern` matches the tool name and the rule's `action === "deny"`
- *    - or `defaultAction === "deny"` and no `allow` rule matches
- *  `ask_user` is treated as allowed at the schema layer — the runtime decides at call time.
- *  Pattern matching is exact match or a glob with a single trailing `*` (so `"write_*"` denies
- *  `write_file` and `write_db`). Pure — no side effects. */
-export function governanceFilterSchema<T extends { name: string }>(
-  tools: T[],
-  policy: GovernancePolicy | undefined,
-): { allowed: T[]; denied: string[] } {
-  if (!policy) return { allowed: tools, denied: [] }
-  const vetoes = new Set(policy.vetoes ?? [])
-  const allowed: T[] = []
-  const denied: string[] = []
-  const matches = (pat: string, name: string): boolean =>
-    pat === name || (pat.endsWith("*") && name.startsWith(pat.slice(0, -1)))
-  for (const tool of tools) {
-    if (vetoes.has(tool.name)) { denied.push(tool.name); continue }
-    let action: GovernancePolicyAction = policy.defaultAction ?? "allow"
-    for (const r of policy.rules ?? []) {
-      if (matches(r.pattern, tool.name)) action = r.action
-    }
-    if (action === "deny") denied.push(tool.name)
-    else allowed.push(tool)
-  }
-  return { allowed, denied }
 }
 
 export type GovernanceConstraint =
@@ -59,6 +28,7 @@ export interface KernelGovernancePolicy {
   vetoed_tools: string[]
   rate_limits: Array<{ tool: string; max_calls: number; window_ms: number }>
   constraints: Array<Record<string, unknown>>
+  hide_denied_tools: boolean
 }
 
 /**
@@ -78,10 +48,50 @@ export function governancePolicyToKernelEvent(policy: GovernancePolicy): KernelG
     })),
     constraints: (policy.constraints ?? []).map(c =>
       c.kind === "enum"
-        ? { kind: "enum", tool: c.tool, path: c.path, values: c.values }
+        ? { kind: "enum", tool: c.tool, param_path: c.path, values: c.values }
         : c.kind === "range"
-          ? { kind: "range", tool: c.tool, path: c.path, ...(c.min !== undefined ? { min: c.min } : {}), ...(c.max !== undefined ? { max: c.max } : {}) }
-          : { kind: "required", tool: c.tool, path: c.path },
+          ? {
+              kind: "range", tool: c.tool, param_path: c.path,
+              // The wire carries fixed-point micro-units so a bound replays byte-identically.
+              ...(c.min !== undefined ? { min_micros: toMicros(c.min) } : {}),
+              ...(c.max !== undefined ? { max_micros: toMicros(c.max) } : {}),
+            }
+          : { kind: "required", tool: c.tool, param_path: c.path },
     ),
+    hide_denied_tools: policy.surfaceDeniedInSystem !== false,
   }
 }
+
+/** A §13.2 live-policy patch replacing the governance posture, for `RuntimeRunner.applyPolicyPatch`. */
+export function governancePolicyPatch(policy: GovernancePolicy): {
+  kind: "replace_governance_policy"
+  policy: Record<string, unknown>
+} {
+  const { kind: _kind, ...wire } = governancePolicyToKernelEvent(policy)
+  return {
+    kind: "replace_governance_policy",
+    policy: {
+      ...wire,
+      rate_limits: wire.rate_limits.map(limit => ({ ...limit, window_ms: String(limit.window_ms) })),
+    },
+  }
+}
+
+function toMicros(value: number): number {
+  if (!Number.isFinite(value)) throw new RangeError(`governance range bound must be finite, got ${value}`)
+  return Math.round(value * 1_000_000)
+}
+
+/** A §13.2 live policy patch in kernel vocabulary — the closed set of policies that may change
+ *  while an operation runs. Use `governancePolicyPatch` to build the governance variant. */
+export type LivePolicyPatch =
+  | { kind: "replace_signal_policy"; policy: Record<string, unknown> }
+  | { kind: "replace_governance_policy"; policy: Record<string, unknown> }
+  | { kind: "replace_recovery_policy"; policy: Record<string, unknown> }
+  | {
+      kind: "tighten_resource_quota"
+      max_concurrent_subagents?: number
+      max_total_subagents?: number
+      max_spawn_depth?: number
+      max_workflow_nodes?: number
+    }

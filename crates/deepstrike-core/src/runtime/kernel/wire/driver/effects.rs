@@ -136,7 +136,13 @@ impl CanonicalOperationDriver {
                 };
                 let turn = self.engine_mut()?.turn;
                 let mut recalled = Vec::with_capacity(queried.recalls.len());
+                let mut priors = Vec::with_capacity(queried.recalls.len());
                 for recall in &queried.recalls {
+                    priors.push(crate::mm::memory::MemoryRecallPrior {
+                        record_id: recall.record_ref.as_str().to_string(),
+                        recall_count: recall.recall_count.get(),
+                        pinned: recall.pinned,
+                    });
                     // §22.13 · the host answers with records, never with authority: the recall is
                     // rendered into history as content the model reads, and nothing about it
                     // rewrites this operation's binding, trust or provenance.
@@ -173,6 +179,33 @@ impl CanonicalOperationDriver {
                     requested_k: query.requested_k as usize,
                     requires_async_response: false,
                 });
+                // M3/M4 · the recall lifecycle is derived here, from what the store reported it held,
+                // and journaled — the host mirrors these counts and never computes them.
+                let (recalls, promotions) = crate::mm::memory::derive_recall_lifecycle(
+                    &priors,
+                    context.input.observed_at_ms.get(),
+                    context
+                        .config
+                        .memory_policy
+                        .promotion_recall_threshold
+                        .map(|threshold| threshold.get()),
+                );
+                if !recalls.is_empty() {
+                    engine.observations.push(KernelObservation::MemoryRecalled {
+                        turn,
+                        scope: binding_scope(&query.binding_id),
+                        recalls,
+                    });
+                }
+                for promotion in promotions {
+                    engine
+                        .observations
+                        .push(KernelObservation::PromotionSuggested {
+                            turn,
+                            record_id: promotion.record_id,
+                            recall_count: promotion.recall_count,
+                        });
+                }
                 let mut step = self.continue_after(context, action, root_kind)?;
                 step.focus = self.focus.clone();
                 Ok(step)

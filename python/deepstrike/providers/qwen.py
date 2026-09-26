@@ -13,6 +13,7 @@ from .vendor_profiles import QWEN_POLICIES as _QWEN_POLICIES
 from .stop_reason import canonicalize_stop_reason
 from .usage import normalize_usage
 from deepstrike.types.content import media_source
+from deepstrike.runtime.tool_arguments import malformed_tool_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -347,11 +348,11 @@ class _QwenProvider(ReasoningReplayMixin):
                         args = json.loads(tb["args_buf"] or "{}")
                     except json.JSONDecodeError:
                         args = {}
-                    tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
+                    tc_obj = normalize_tool_call(tb["id"], tb["name"], tb["args_buf"] or "")
                     if tc_obj:
                         final_tool_calls.append(tc_obj)
                         emitted_tool_call_indexes.add(idx)
-                        yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
+                        yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args, raw_arguments=malformed_tool_arguments(tb["args_buf"]))
 
         for idx, tb in tool_call_bufs.items():
             if idx in emitted_tool_call_indexes:
@@ -360,10 +361,10 @@ class _QwenProvider(ReasoningReplayMixin):
                 args = json.loads(tb["args_buf"] or "{}")
             except json.JSONDecodeError:
                 args = {}
-            tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
+            tc_obj = normalize_tool_call(tb["id"], tb["name"], tb["args_buf"] or "")
             if tc_obj:
                 final_tool_calls.append(tc_obj)
-                yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
+                yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args, raw_arguments=malformed_tool_arguments(tb["args_buf"]))
 
         self.remember_reasoning_for_turn(final_text, final_tool_calls, reasoning_content)
 

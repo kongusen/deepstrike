@@ -52,7 +52,7 @@ describe("#2-B-ii interrupt aborts the in-flight stream", () => {
   })
 
   it.each(["user", "deadline", "lease_lost", "host_shutdown"] as const)(
-    "commits the %s cancellation reason and pending provider call",
+    "commits the %s cancellation reason without naming the provider effect as a call",
     async reason => {
       const provider = new LongStreamProvider()
       const sessionLog = new InMemorySessionLog()
@@ -72,7 +72,9 @@ describe("#2-B-ii interrupt aborts the in-flight stream", () => {
         .map(entry => entry.event)
         .find(event => event.kind === "operation_cancelled")
       expect(cancellation).toMatchObject({ kind: "operation_cancelled", reason })
-      expect(cancellation && "pending_call_ids" in cancellation ? cancellation.pending_call_ids : []).toHaveLength(1)
+      // `pending_call_ids` is the logical call-id namespace; an in-flight provider effect is not a
+      // call and is settled by the cancel transition itself.
+      expect(cancellation && "pending_call_ids" in cancellation ? cancellation.pending_call_ids : []).toEqual([])
     },
   )
 })

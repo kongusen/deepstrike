@@ -2,6 +2,7 @@ import { requestSnapshot } from "./prepared-request.js"
 import type { PreparedProviderRequest, ProviderRunState } from "../types.js"
 import type { CacheBreakpointStrategy, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, ModelMessage, ProviderDescriptor, ProviderReplay } from "../types.js"
 import { assistantReplayKey, collectStreamMessage, toAnthropicMessages } from "./base.js"
+import { malformedToolArguments, toolArgumentsText } from "../runtime/tool-arguments.js"
 
 /** Anthropic accepts at most this many cache_control breakpoints per request. */
 const MAX_CACHE_BREAKPOINTS = 4
@@ -325,8 +326,8 @@ export class AnthropicProvider implements LLMProvider {
               let args: Record<string, unknown> = {}
               try { args = JSON.parse(tb.argsBuf || "{}") } catch { args = {} }
               nativeBlocks[idx] = { ...nativeBlocks[idx], input: args }
-              finalToolCalls.push({ id: tb.id, name: tb.name, arguments: JSON.stringify(args) })
-              yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args } as ToolCallEvent
+              finalToolCalls.push({ id: tb.id, name: tb.name, arguments: toolArgumentsText(tb.argsBuf) })
+              yield { type: "tool_call", id: tb.id, name: tb.name, arguments: args, ...malformedToolArguments(tb.argsBuf) } as ToolCallEvent
             }
           }
         } catch { /* skip malformed */ }

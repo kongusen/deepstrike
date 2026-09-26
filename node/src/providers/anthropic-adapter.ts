@@ -16,6 +16,7 @@ import type {
 } from "./content-normalization.js"
 import { projectToolOutputToText } from "./content-normalization.js"
 import { normalizeToolCall } from "./base.js"
+import { malformedToolArguments, toolArgumentsText } from "../runtime/tool-arguments.js"
 import {
   type AdapterDecodeInput,
   type AdapterOutput,
@@ -541,13 +542,14 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
       state.finalToolCalls.push({
         id: tool.id,
         name: tool.name,
-        arguments: JSON.stringify(args),
+        arguments: toolArgumentsText(tool.argsBuffer),
       })
       events.push({
         type: "tool_call",
         id: tool.id,
         name: tool.name,
         arguments: args,
+        ...malformedToolArguments(tool.argsBuffer),
       } as ToolCallEvent)
     }
     return { events }

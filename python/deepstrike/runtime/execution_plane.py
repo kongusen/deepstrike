@@ -25,6 +25,7 @@ from deepstrike.providers.stream import (
 from deepstrike.tools.errors import format_tool_error
 from deepstrike.tools.registry import RegisteredTool, normalize_tool_chunk, tool_chunk_text, validate_tool_arguments
 from deepstrike.skills.loader import read_skill_file
+from deepstrike.runtime.tool_arguments import parse_tool_call_arguments
 
 if TYPE_CHECKING:
   from deepstrike.knowledge.source import KnowledgeSource
@@ -222,7 +223,12 @@ class LocalExecutionPlane:
       audit=_audit,
     )
     try:
-      raw_kwargs = json.loads(call.arguments or "{}")
+      raw_kwargs, args_error = parse_tool_call_arguments(call.arguments)
+      if args_error is not None:
+        yield ToolResultEvent(
+          call_id=call.id, name=call.name, content=f"invalid arguments: {args_error}", is_error=True,
+        )
+        return
       original_args_str = json.dumps(raw_kwargs)
       # validation["args"], not raw_kwargs, from here on: a oneOf/anyOf ROOT accepts a repaired
       # probe deep-copy — the original dict never sees those repairs (auto-casts, strips, defaults).

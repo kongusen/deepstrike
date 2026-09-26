@@ -253,6 +253,7 @@ fn provider_result(
                     tool_calls: calls,
                     tool_call_id: None,
                     tokens: None,
+                    is_error: false,
                 },
                 observed_input_tokens: None,
                 observed_output_tokens: None,
@@ -288,6 +289,8 @@ fn memory_queried(recall_content: &str) -> EffectSuccess {
             kind: SyscallMemoryKind::Project,
             content: recall_content.to_string(),
             score: None,
+            recall_count: Default::default(),
+            pinned: false,
         }],
     })
 }

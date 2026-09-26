@@ -14,6 +14,7 @@ from deepstrike.tools.registry import RegisteredTool
 from deepstrike.runtime.execution_plane import LocalExecutionPlane, RunContext
 from deepstrike.runtime.credential_vault import CredentialVault
 from deepstrike.runtime.reliability import run_with_operation
+from deepstrike.runtime.tool_arguments import parse_tool_call_arguments
 
 
 class RemoteVpcPlane:
@@ -96,7 +97,9 @@ class RemoteVpcPlane:
 
   async def _call_remote(self, call: ToolCall, headers: dict[str, str]) -> tuple[str, bool]:
     try:
-      args: Any = json.loads(call.arguments or "{}")
+      args, args_error = parse_tool_call_arguments(call.arguments)
+      if args_error is not None:
+        return f"invalid arguments: {args_error}", True
       timeout = aiohttp.ClientTimeout(total=self._timeout_s)
       async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(

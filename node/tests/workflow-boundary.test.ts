@@ -17,6 +17,8 @@ describe("workflow host-to-kernel boundary", () => {
       depPolicy: "accept_partial",
       loop: { maxIters: 2 },
     })).toEqual({
+      // The caller's node id is the node's wire identity (it used to be dropped here).
+      node_id: "step-1",
       task: { goal: "implement", criteria: [] },
       role: "implement",
       isolation: "read_only",
@@ -59,6 +61,7 @@ describe("workflow host-to-kernel boundary", () => {
       token_budget: 100,
     })).toEqual({
       agent_id: "wf-node0",
+      attempt_id: "attempt-0",
       goal: "implement",
       role: "worker",
       isolation: "shared",

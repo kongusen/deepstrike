@@ -415,7 +415,9 @@ describe("E2E mechanism contract tests", () => {
       if (text.includes("[Compressed: auto_compact]")) {
         const allCtx = [context.systemText, context.systemStable, context.stateTurn?.content, context.turns[0]?.content].filter(Boolean).join("\n")
         const hasSummary = allCtx.includes("[Compressed: auto_compact]")
-        const hasAnchorTool = allCtx.includes("seed_anchor")
+        // The anchor call and its value survive in the preserved tail. (Task state no longer names
+        // it: that came from a host-written "Executed tools" progress the model never authored.)
+        const hasAnchorTool = text.includes("seed_anchor") && text.includes(RETAIN_ANCHOR)
         return [{ type: "text_delta", delta: hasSummary && hasAnchorTool ? "VERIFIED" : "SUMMARY-MISSING" }]
       }
 
@@ -516,7 +518,7 @@ describe("E2E mechanism contract tests", () => {
     // Anchor tool must have been called
     expect(anchorsSeeded.has(RETAIN_ANCHOR)).toBe(true)
 
-    // AutoCompact summary injected into context (systemText/stateTurn) and lists seed_anchor tool
+    // AutoCompact summary injected into context (systemText/stateTurn); seed_anchor kept in the tail
     expect(text).toContain("VERIFIED")
     expect(text).not.toContain("SUMMARY-MISSING")
   })

@@ -209,6 +209,29 @@ impl KnowledgePartition {
         }))
     }
 
+    /// Withdraw content staged under `key` for something the kernel then refused (a skill whose
+    /// activation was rejected). A freshly appended entry has never been rendered, so it is dropped
+    /// outright; an existing entry keeps its rendered bytes, loses the staged upsert, and leaves at
+    /// the next boundary. Returns whether anything was withdrawn.
+    pub fn retract_staged(&mut self, key: &str) -> bool {
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.key.as_deref() == Some(key))
+        else {
+            return false;
+        };
+        let entry = &mut self.entries[index];
+        if entry.pending.take().is_some() {
+            entry.evict_at_boundary = true;
+            return true;
+        }
+        let tokens = entry.tokens;
+        self.entries.remove(index);
+        self.token_count = self.token_count.saturating_sub(tokens);
+        true
+    }
+
     /// Mark the keyed entry for removal at the next boundary. Errs-open: unknown key is a no-op.
     /// Returns whether a matching entry was marked.
     pub fn remove(&mut self, key: &str) -> bool {

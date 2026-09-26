@@ -76,6 +76,14 @@ pub enum KernelObservation {
         subject: Option<String>,
         reason: String,
     },
+    /// A model `skill` syscall the kernel admitted. Hosts pin the skill's content only on this
+    /// fact, never on the raw call: activation is a capability mutation the kernel adjudicates.
+    SkillAdmitted {
+        turn: u32,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires_at_turn: Option<u32>,
+    },
     CapabilityChanged {
         turn: u32,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

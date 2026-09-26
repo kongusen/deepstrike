@@ -6,6 +6,7 @@ a planned step become visible to the host.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -34,6 +35,7 @@ from deepstrike.runtime.kernel_step import (
   encode_canonical_content_parts,
 )
 from deepstrike.providers.provider_error import canonical_provider_failure_kind
+from deepstrike.runtime.tool_arguments import tool_arguments_from_wire
 
 
 MAX_CHAIN_POSITION = 9_007_199_254_740_991
@@ -44,6 +46,18 @@ class CanonicalKernelRejectedError(RuntimeError):
     super().__init__(f"{code}: {message}")
     self.code = code
     self.message = message
+
+
+#: Fault codes that name a malformed input — the input was wrong, not the run.
+_INPUT_SHAPE_FAULTS = frozenset({"malformed_envelope", "invalid_config"})
+
+
+def is_invalid_input_error(error: BaseException) -> bool:
+  """Whether a run-loop failure was the kernel refusing a malformed input (``invalid_arg``).
+
+  Decided by the fault code the kernel named — never by searching the message text.
+  """
+  return isinstance(error, CanonicalKernelRejectedError) and error.code in _INPUT_SHAPE_FAULTS
 
 
 class CanonicalKernelRebuildRequiredError(RuntimeError):
@@ -123,6 +137,10 @@ class CanonicalKernelHost:
     self.kernel = kernel
     self.journal = journal
     self.operation_id = operation_id
+    # The journal holds one outbound envelope slot per operation, so two transitions of the same
+    # operation must never overlap: the second would overwrite the first's staged bytes before its
+    # append was acknowledged. Every entry point that stages or drains holds this lock.
+    self._exclusive = asyncio.Lock()
 
   async def transition(
     self,
@@ -130,6 +148,12 @@ class CanonicalKernelHost:
     *,
     input_id: str | None = None,
     observed_at_ms: str | None = None,
+  ) -> CanonicalTransition:
+    async with self._exclusive:
+      return await self._transition_input(input, input_id=input_id, observed_at_ms=observed_at_ms)
+
+  async def _transition_input(
+    self, input: dict[str, Any], *, input_id: str | None, observed_at_ms: str | None,
   ) -> CanonicalTransition:
     envelope = json.dumps({
       "operation_id": self.operation_id,
@@ -157,6 +181,10 @@ class CanonicalKernelHost:
     )
 
   async def drain_outbound_envelope(self) -> CanonicalTransition | None:
+    async with self._exclusive:
+      return await self._drain_outbound_envelope()
+
+  async def _drain_outbound_envelope(self) -> CanonicalTransition | None:
     envelope = await self.journal.read_outbound_envelope(self.operation_id)
     if envelope is None:
       return None
@@ -336,13 +364,13 @@ def _action_from_core_step(planned_step: dict[str, Any]) -> KernelRunnerAction |
   if kind == "execute_tools":
     return KernelRunnerAction(
       kind="execute_tool", effect_id=effect_id,
-      calls=[ToolCall(str(c.get("call_id") or ""), str(c.get("name") or ""), json.dumps(c.get("arguments") or {}))
+      calls=[ToolCall(str(c.get("call_id") or ""), str(c.get("name") or ""), tool_arguments_from_wire(c.get("arguments")))
              for c in effect.get("calls") or [] if isinstance(c, dict)],
     )
   if kind == "request_approval":
     return KernelRunnerAction(kind="request_approval", effect_id=effect_id, requests=[
       {"call_id": str(r.get("call_id") or ""), "tool": str(r.get("tool_name") or ""),
-       "arguments": json.dumps(r.get("arguments") or {}), "reason": str(r.get("reason") or "")}
+       "arguments": tool_arguments_from_wire(r.get("arguments")), "reason": str(r.get("reason") or "")}
       for r in effect.get("requests") or [] if isinstance(r, dict)
     ])
   if kind == "spawn_tasks":
@@ -398,6 +426,8 @@ def _action_from_core_step(planned_step: dict[str, Any]) -> KernelRunnerAction |
     ) if pressure_action else None
     return KernelRunnerAction(
       kind="archive_page_out", effect_id=effect_id, archived=archived,
+      handle_id=str(effect.get("handle_id") or ""),
+      archive_payload=payload,
       **({"action": pressure_action} if pressure_action else {}),
       **({"summary": str(compressed.get("summary"))} if compressed and compressed.get("summary") else {}),
       **({"tier": tier} if tier else {}),
@@ -479,6 +509,14 @@ class CanonicalRunnerRuntime:
     self._observations: list[dict[str, Any]] = []
     self._new_messages: list[ModelMessage] = []
     self._spawned_tasks = 0
+    # Nodes in the active workflow DAG, mirrored from committed facts so anonymous appended nodes
+    # get unique positional ids. ``None`` after a restore until the next committed submission.
+    self._workflow_node_count: int | None = 0
+    # Kernel-minted attempt per launched task, learned from each launch acknowledgement.
+    self._task_attempts: dict[str, str] = {}
+    # Live policy revision (§13.2): 0 at genesis, then each ``live_policy_changed``. Unknown after
+    # a restore, when a patch must name the revision it expects explicitly.
+    self._policy_revision: int | None = 0
     self._payload_inline_threshold = 50 * 1024
     self._payload_preview_bytes = 2 * 1024
     self._persist_payload = persist_payload
@@ -496,6 +534,10 @@ class CanonicalRunnerRuntime:
 
   def is_terminal(self) -> bool:
     return self.host.kernel.lifecycle() in {"completed", "cancelled", "failed"}
+
+  def has_started(self) -> bool:
+    """Whether the operation has a root — the precondition for any live host control command."""
+    return self._started
 
   def recovery_content_bytes(self) -> int:
     return max(1024, int(self._config["execution_policy"]["max_context_tokens"]) * 4)
@@ -516,10 +558,15 @@ class CanonicalRunnerRuntime:
 
   async def restore(self) -> None:
     await self.host.restore()
+    self._workflow_node_count = None
+    self._policy_revision = None
     lifecycle = self.host.kernel.lifecycle()
     self._configured = lifecycle != "created"
     self._started = lifecycle not in {"created", "configured"}
-    await self.host.drain_outbound_envelope()
+    # The crash-window envelope commits here, so its observations are this run's facts too.
+    drained = await self.host.drain_outbound_envelope()
+    if drained is not None:
+      self._absorb_transition(drained)
     self._last_action = self._current_action()
 
   def resume_action(self) -> KernelRunnerAction | None:
@@ -543,11 +590,20 @@ class CanonicalRunnerRuntime:
 
   async def start_workflow(self, spec: dict[str, Any]) -> KernelRunnerAction | None:
     await self._ensure_configured()
+    lowered = self._workflow_spec(spec, allow_host_scheduling_factors=True)
     action = await self._commit({"kind": "start_operation", "entry": {
-      "kind": "workflow", "spec": self._workflow_spec(spec, allow_host_scheduling_factors=True),
+      "kind": "workflow", "spec": lowered,
     }, "initial_context": self._initial_context})
     self._started = True
+    self._workflow_node_count = len(lowered["nodes"])
     return action
+
+  def _append_base(self) -> int | str:
+    """Positional id base for anonymous appended nodes: the known DAG size, or a batch-scoped
+    prefix that cannot collide with anything already declared when the size is unknown."""
+    if self._workflow_node_count is not None:
+      return self._workflow_node_count
+    return f"wf-append-{uuid.uuid4().hex[:8]}"
 
   async def apply_host_event(self, event: dict[str, Any]) -> KernelRunnerAction | None:
     if not self._started and self._apply_bootstrap(event):
@@ -560,10 +616,9 @@ class CanonicalRunnerRuntime:
       ))
     if kind == "provider_result":
       message = _object(event.get("message"))
-      self._turns += 1
-      self._new_messages.append(_message_from_kernel(message))
-      return await self._resolve(event, {"kind": "provider", "outcome": {
-        "kind": "completed", "message": self._provider_message(message),
+      provider_message = self._provider_message(message, self._append_base())
+      action = await self._resolve(event, {"kind": "provider", "outcome": {
+        "kind": "completed", "message": provider_message,
         **({"observed_input_tokens": int(event["observed_input_tokens"])}
            if event.get("observed_input_tokens") is not None else {}),
         **({"observed_output_tokens": int(event["observed_output_tokens"])}
@@ -571,6 +626,18 @@ class CanonicalRunnerRuntime:
         **({"stop_reason": self._provider_stop_reason(event.get("stop_reason"))}
            if self._provider_stop_reason(event.get("stop_reason")) else {}),
       }})
+      # The host's view advances only once the kernel committed the turn: a refused input must
+      # leave the host exactly where the kernel still is.
+      self._turns += 1
+      self._new_messages.append(_message_from_kernel(message))
+      # A model-authored ``start_workflow`` replaces the DAG (§10.2); an admitted one publishes its spawn.
+      if action is not None and action.kind == "spawn_workflow":
+        started = next((_object(call) for call in provider_message.get("tool_calls") or []
+                        if _object(call).get("name") == "start_workflow"), None)
+        if started is not None:
+          nodes = _object(started.get("arguments")).get("nodes")
+          self._workflow_node_count = len(nodes) if isinstance(nodes, list) else 0
+      return action
     if kind == "provider_error":
       message = str(event.get("message") or "")
       error_kind = event.get("error_kind")
@@ -588,13 +655,14 @@ class CanonicalRunnerRuntime:
     if kind == "tool_results":
       results = []
       measurements = []
+      staged: list[ModelMessage] = []
       for raw in event.get("results") or []:
         result = _object(raw)
         output = str(result.get("output") or "")
         call_id = str(result.get("call_id") or "")
         if result.get("token_count") is not None:
           measurements.append({"call_id": call_id, "tokens": int(result["token_count"])})
-        self._new_messages.append(ModelMessage(role="tool", content=output))
+        staged.append(ModelMessage(role="tool", content=output))
         if len(output.encode()) > self._payload_inline_threshold and self._persist_payload is not None:
           persisted = await self._persist_payload(call_id, output, self._payload_preview_bytes)
           results.append({"kind": "external", "call_id": call_id,
@@ -608,71 +676,107 @@ class CanonicalRunnerRuntime:
           "output": output, **({"is_error": True} if result.get("is_error") else {}),
           "disposition": "fatal" if result.get("is_fatal") else "recoverable",
         }})
-      return await self._resolve(event, {"kind": "tools", "results": results,
-                                         **({"measurements": measurements} if measurements else {})})
+      action = await self._resolve(event, {"kind": "tools", "results": results,
+                                           **({"measurements": measurements} if measurements else {})})
+      self._new_messages.extend(staged)
+      return action
     if kind == "approval_result":
       return await self._resolve(event, {"kind": "approval",
         "approved_call_ids": event.get("approved_calls") or [], "denied_call_ids": event.get("denied_calls") or []})
     if kind == "workflow_spawn_result":
-      spawn = self._last_action if self._last_action and self._last_action.kind == "spawn_workflow" else None
-      nodes = spawn.nodes if spawn and spawn.nodes else []
-      self._spawned_tasks += len(nodes)
-      return await self._resolve(event, {"kind": "tasks_spawned", "attempts": [
-        {"task_id": str(_object(node).get("task_id") or _object(node).get("agent_id") or ""),
-         "attempt_id": str(_object(node).get("attempt_id") or ""),
-         "outcome": {"status": "started"}} for node in nodes
-      ]})
+      # The launch set comes from the kernel's own pending effect (by id, never "the last action"),
+      # and each task's outcome from what the host reports it actually started.
+      tasks = self._pending_effect_payload(str(event.get("effect_id") or ""), "spawn_tasks", "tasks")
+      started_raw = event.get("started_agent_ids")
+      started = {str(a) for a in started_raw} if isinstance(started_raw, list) else None
+      failures = _launch_failures(event.get("failures"))
+      attempts = []
+      for task in tasks:
+        task_id, attempt_id = str(task.get("task_id") or ""), str(task.get("attempt_id") or "")
+        failure = failures.get(task_id) or (
+          {"kind": "protocol_error", "message": "the host did not report launching this task"}
+          if started is not None and task_id not in started else None
+        )
+        if failure is None:
+          self._task_attempts[task_id] = attempt_id
+        attempts.append({
+          "task_id": task_id, "attempt_id": attempt_id,
+          "outcome": {"status": "failed", "failure": failure} if failure else {"status": "started"},
+        })
+      self._spawned_tasks += sum(1 for a in attempts if a["outcome"]["status"] == "started")
+      return await self._resolve(event, {"kind": "tasks_spawned", "attempts": attempts})
     if kind == "preempt_result":
-      preempt = self._last_action if self._last_action and self._last_action.kind == "preempt_sub_agents" else None
-      attempts = getattr(preempt, "attempts", None) or [
-        {"task_id": agent_id, "attempt_id": f"{agent_id}:attempt:1"}
-        for agent_id in (preempt.agent_ids if preempt else [])
-      ]
-      return await self._resolve(event, {"kind": "tasks_preempted", "attempts": [
-        {**_object(attempt), "outcome": {"status": "preempted"}} for attempt in attempts
-      ]})
+      refs = self._pending_effect_payload(str(event.get("effect_id") or ""), "preempt_tasks", "attempts")
+      finished = {str(a) for a in event.get("already_finished_agent_ids") or []}
+      failures = _launch_failures(event.get("failures"))
+      attempts = []
+      for ref in refs:
+        task_id = str(ref.get("task_id") or "")
+        failure = failures.get(task_id)
+        attempts.append({
+          "task_id": task_id, "attempt_id": str(ref.get("attempt_id") or ""),
+          "outcome": {"status": "failed", "failure": failure} if failure
+          else {"status": "already_finished" if task_id in finished else "preempted"},
+        })
+      return await self._resolve(event, {"kind": "tasks_preempted", "attempts": attempts})
     if kind == "sub_agent_completed":
       raw, result = _object(event.get("result")), _object(_object(event.get("result")).get("result"))
       task_id = str(raw.get("agent_id") or "")
-      pending = next((entry for entry in self._pending_effects()
-                      if _object(entry.get("effect")).get("kind") == "spawn_tasks"
-                      and any(str(_object(task).get("task_id") or "") == task_id
-                              for task in _object(entry.get("effect")).get("tasks") or [])), {})
-      launch = next((task for task in _object(pending.get("effect")).get("tasks") or []
-                     if str(_object(task).get("task_id") or "") == task_id), {})
+      # Child identity is the kernel's: the attempt it minted for this launch, carried by the host
+      # from the spawned node or remembered from the launch acknowledgement.
+      attempt_id = event.get("attempt_id") if isinstance(event.get("attempt_id"), str) and event.get("attempt_id") \
+        else self._task_attempts.get(task_id)
+      if not attempt_id:
+        raise RuntimeError(f"sub_agent_completed for {task_id} names no kernel-minted attempt id")
+      termination = str(result.get("termination") or "error")
+      status = "completed" if termination == "completed" else "cancelled" if termination == "user_abort" else "failed"
       final = _object(result.get("final_message"))
       submitted = [_object(node) for node in raw.get("submitted_nodes") or []]
       child: dict[str, Any] = {
-        "kind": "child_completed", "task_id": task_id,
-        "attempt_id": str(_object(launch).get("attempt_id") or f"{task_id}:attempt:1"),
-        "result": {"status": "completed" if result.get("termination") == "completed" else "failed",
+        "kind": "child_completed", "task_id": task_id, "attempt_id": attempt_id,
+        "result": {"status": status,
                    **({"output": str(final["content"])} if final.get("content") else {}),
-                   **({"error": str(result.get("termination") or "failed")}
-                      if result.get("termination") not in {"completed", "max_turns", "token_budget"} else {}),
-                   "usage": {"input_tokens": "0", "output_tokens": str(result.get("total_tokens_used") or 0),
-                             "turns": int(result.get("turns_used") or 0)}},
+                   **({"error": termination} if status != "completed" else {}),
+                   "usage": _child_usage(result)},
       }
       if submitted:
         child["parent_requests"] = [{"kind": "append_workflow_nodes",
-                                      "nodes": self._workflow_spec({"nodes": submitted}).get("nodes") or []}]
+                                      "nodes": self._workflow_spec(
+                                        {"nodes": submitted}, node_id_base=self._append_base(),
+                                      ).get("nodes") or []}]
       return await self._commit({"kind": "deliver_external_event", "event": child})
     if kind == "memory_persist_result":
-      return await (self._failed(event, "storage_unavailable", str(event["error"]), True)
-                    if event.get("error") else self._resolve(event, {"kind": "memory_persisted", "receipt": {
-                      "binding_id": self._memory_binding_id,
-                      "record_ref": str(event.get("record_ref") or f"memory:{uuid.uuid4()}"),
-                      "digest": str(event.get("digest") or self._sha256(str(event.get("record_ref") or event.get("effect_id") or ""))),
-                    }}))
+      if event.get("error"):
+        return await self._failed(event, "storage_unavailable", str(event["error"]), True)
+      # A receipt names what the store actually holds. Without a record ref and content digest
+      # from the write there is nothing to attest, so the effect fails rather than being
+      # resolved with an identity minted here.
+      if not event.get("record_ref") or not event.get("digest"):
+        return await self._failed(event, "storage_unavailable",
+                                  "memory store returned no record_ref/digest receipt", False)
+      return await self._resolve(event, {"kind": "memory_persisted", "receipt": {
+        "binding_id": self._memory_binding_id,
+        "record_ref": str(event["record_ref"]),
+        "digest": str(event["digest"]),
+      }})
     if kind == "memory_query_result":
       if event.get("error"):
         return await self._failed(event, "storage_unavailable", str(event["error"]), True)
       recalls = []
       for raw_hit in event.get("hits") or []:
         hit, record = _object(raw_hit), _object(_object(raw_hit).get("record"))
-        recalls.append({"record_ref": str(record.get("record_id") or f"memory:{uuid.uuid4()}"),
+        # A recall without a store identity cannot be attributed or re-read; drop it instead of
+        # minting one.
+        if not record.get("record_id"):
+          continue
+        recalls.append({"record_ref": str(record["record_id"]),
                         "name": str(record.get("name") or ""), "kind": str(record.get("kind") or "reference"),
                         "content": str(record.get("content") or ""),
-                        **({"score": hit["score"]} if isinstance(hit.get("score"), (float, int)) else {})})
+                        **({"score": hit["score"]} if isinstance(hit.get("score"), (float, int)) else {}),
+                        # M3: the store reports the count it holds; the kernel derives the next one.
+                        **({"recall_count": str(int(record["recall_count"]))}
+                           if int(record.get("recall_count") or 0) > 0 else {}),
+                        **({"pinned": True} if record.get("pinned") is True else {})})
       return await self._resolve(event, {"kind": "memory_queried", "recalls": recalls})
     if kind == "page_out_archive_result":
       if event.get("error"):
@@ -681,9 +785,14 @@ class CanonicalRunnerRuntime:
                       if str(entry.get("effect_id") or "") == str(event.get("effect_id") or "")), {})
       effect, payload = _object(pending.get("effect")), _object(_object(pending.get("effect")).get("payload"))
       content = str(payload.get("content") or "")
+      payload_ref = event.get("payload_ref") or event.get("archive_ref")
+      # The kernel will later `load_payload` this ref; a minted ref names bytes no store holds.
+      if not payload_ref:
+        return await self._failed(event, "storage_unavailable",
+                                  "archive store returned no payload_ref; nothing was persisted", False)
       return await self._resolve(event, {"kind": "page_out_archived", "receipt": {
         "handle_id": str(effect.get("handle_id") or ""),
-        "payload_ref": str(event.get("archive_ref") or f"payload:{uuid.uuid4()}"),
+        "payload_ref": str(payload_ref),
         "digest": str(payload.get("digest") or self._sha256(content)),
         "original_size": str(payload.get("original_size") or len(content.encode())),
       }})
@@ -710,6 +819,36 @@ class CanonicalRunnerRuntime:
     if kind == "remove_knowledge":
       return await self._commit({"kind": "host_control", "command": {
         "kind": "apply_knowledge_mutation", "mutation": {"remove": [str(event.get("key") or "")]}}})
+    if kind == "force_compact":
+      return await self._commit({"kind": "host_control", "command": {"kind": "force_compact"}})
+    if kind == "admit_memory_write":
+      return await self._commit({"kind": "host_control", "command": {
+        "kind": "admit_memory_write",
+        "record_id": str(event.get("record_id") or ""),
+        "name": str(event.get("name") or ""),
+        "content_bytes": int(event.get("content_bytes") or 0),
+      }})
+    if kind == "update_deadline":
+      deadline = event.get("deadline_ms")
+      return await self._commit({"kind": "host_control", "command": {
+        "kind": "update_deadline", **({"deadline_ms": str(int(deadline))} if deadline is not None else {})}})
+    if kind == "apply_policy_patch":
+      expected = event.get("expected_revision")
+      if expected is None:
+        expected = self._policy_revision
+      if expected is None:
+        raise CanonicalKernelRejectedError(
+          "policy_revision_unknown",
+          "the live policy revision is unknown after a restore; pass expected_revision explicitly",
+        )
+      return await self._commit({"kind": "host_control", "command": {
+        "kind": "apply_policy_patch", "expected_revision": str(int(expected)), "patch": event.get("patch")}})
+    if kind == "skill_activation":
+      return await self._commit({"kind": "host_control", "command": {
+        "kind": "apply_skill_activation", "activate": [{
+          "name": str(event.get("name") or ""),
+          **({"lease_turns": int(event["lease_turns"])} if event.get("lease_turns") is not None else {}),
+        }]}})
     if kind == "skill_deactivated":
       return await self._commit({"kind": "host_control", "command": {
         "kind": "apply_skill_activation", "deactivate": [str(event.get("name") or "")]}})
@@ -759,34 +898,7 @@ class CanonicalRunnerRuntime:
         self._observations.append({"kind": "kernel_rebuilt", "reason": str(error)})
         self._last_action = self._current_action()
       if transition is not None:
-        if not transition.replayed:
-          self._observations.extend(
-            _object(item) for item in transition.planned_step.get("observations") or []
-          )
-          # §7.11 · a committed step that publishes effects is a fact worth recording in the
-          # host event log: the journal stores only a digest of the step, so this manifest is
-          # what makes the published effect ids + kinds recoverable post-hoc without replaying.
-          published = json.loads(self.host.kernel.published_effects_manifest_json(
-            json.dumps(transition.planned_step),
-          ))
-          if published:
-            self._observations.append({
-              "kind": "step_published_effects",
-              "effects": [
-                {
-                  "effect_id": str(_object(envelope).get("effect_id") or ""),
-                  "kind": str(_object(envelope).get("kind") or ""),
-                }
-                for envelope in published
-              ],
-            })
-          if transition.checkpoint_advice:
-            self._observations.append({"kind": "checkpoint_advised", **transition.checkpoint_advice})
-          if transition.checkpoint_failure:
-            self._observations.append({
-              "kind": "checkpoint_deferred",
-              "reason": transition.checkpoint_failure,
-            })
+        self._absorb_transition(transition)
         self._last_action = canonical_action_from_projection_json(
           self.host.kernel.project_planned_step_json(json.dumps(transition.planned_step)))
       if self._last_action is None or self._last_action.kind != "unsupported_effect":
@@ -795,6 +907,41 @@ class CanonicalRunnerRuntime:
         self._last_action.effect_id,
         self._last_action.effect_kind or "",
       )
+
+  def _absorb_transition(self, transition: CanonicalTransition) -> None:
+    """Record what a committed transition tells the host: its observations and published effects."""
+    if not transition.replayed:
+      for item in transition.planned_step.get("observations") or []:
+        observation = _object(item)
+        if observation.get("kind") == "workflow_nodes_submitted":
+          self._workflow_node_count = int(observation.get("base") or 0) + int(observation.get("count") or 0)
+        if observation.get("kind") == "live_policy_changed":
+          self._policy_revision = int(observation.get("revision") or 0)
+        self._observations.append(observation)
+      # §7.11 · a committed step that publishes effects is a fact worth recording in the
+      # host event log: the journal stores only a digest of the step, so this manifest is
+      # what makes the published effect ids + kinds recoverable post-hoc without replaying.
+      published = json.loads(self.host.kernel.published_effects_manifest_json(
+        json.dumps(transition.planned_step),
+      ))
+      if published:
+        self._observations.append({
+          "kind": "step_published_effects",
+          "effects": [
+            {
+              "effect_id": str(_object(envelope).get("effect_id") or ""),
+              "kind": str(_object(envelope).get("kind") or ""),
+            }
+            for envelope in published
+          ],
+        })
+      if transition.checkpoint_advice:
+        self._observations.append({"kind": "checkpoint_advised", **transition.checkpoint_advice})
+      if transition.checkpoint_failure:
+        self._observations.append({
+          "kind": "checkpoint_deferred",
+          "reason": transition.checkpoint_failure,
+        })
 
   async def _resolve(self, event: dict[str, Any], result: dict[str, Any]) -> KernelRunnerAction | None:
     return await self._commit({"kind": "resolve_effect", "effect_id": str(event.get("effect_id") or ""),
@@ -811,6 +958,14 @@ class CanonicalRunnerRuntime:
   def _pending_effects(self) -> list[dict[str, Any]]:
     raw = json.loads(self.host.kernel.pending_effects_json())
     return [_object(value) for value in raw] if isinstance(raw, list) else []
+
+  def _pending_effect_payload(self, effect_id: str, kind: str, field: str) -> list[dict[str, Any]]:
+    """One list field of the pending effect ``effect_id``, which must be of kind ``kind``."""
+    pending = next((e for e in self._pending_effects() if str(e.get("effect_id") or "") == effect_id), {})
+    effect = _object(pending.get("effect"))
+    if effect.get("kind") != kind:
+      raise RuntimeError(f"effect {effect_id} is not a pending {kind} effect")
+    return [_object(value) for value in effect.get(field) or []]
 
   @staticmethod
   def _sha256(value: str) -> str:
@@ -851,9 +1006,25 @@ class CanonicalRunnerRuntime:
       }
     return out
 
-  def _workflow_spec(self, raw: dict[str, Any], allow_host_scheduling_factors: bool = False) -> dict[str, Any]:
+  def _workflow_spec(
+    self,
+    raw: dict[str, Any],
+    allow_host_scheduling_factors: bool = False,
+    node_id_base: int | str = 0,
+  ) -> dict[str, Any]:
     nodes = raw.get("nodes") if isinstance(raw.get("nodes"), list) else []
-    ids = [f"wf-node{index}" for index in range(len(nodes))]
+    # A caller-declared id is the node's wire identity. Only an anonymous node gets a positional
+    # id, offset by the DAG's current size so ids stay unique across appended batches — the
+    # kernel refuses an append whose id is already declared.
+    ids = []
+    for index, value in enumerate(nodes):
+      declared = _object(value).get("node_id", _object(value).get("nodeId"))
+      if isinstance(declared, str) and declared:
+        ids.append(declared)
+      elif isinstance(node_id_base, int):
+        ids.append(f"wf-node{node_id_base + index}")
+      else:
+        ids.append(f"{node_id_base}-{index}")
     lowered = []
     for index, value in enumerate(nodes):
       node = _object(value)
@@ -927,19 +1098,23 @@ class CanonicalRunnerRuntime:
   @staticmethod
   def _signal(event: dict[str, Any]) -> dict[str, Any]:
     signal = _object(event.get("signal"))
-    delivery_id = str(event.get("delivery_id") or uuid.uuid4())
-    payload = signal.get("summary") if delivery_id.startswith("injected-") and isinstance(signal.get("summary"), str) else signal.get("payload") or {}
+    target = signal.get("target")
     return {
-      "kind": "deliver_signal", "delivery_id": delivery_id, "attempt": int(event.get("attempt") or 1),
+      "kind": "deliver_signal", "delivery_id": str(event.get("delivery_id") or uuid.uuid4()),
+      "attempt": int(event.get("attempt") or 1),
       "signal": {
         "signal_id": str(signal.get("signal_id") or signal.get("id") or uuid.uuid4()),
         **({"source": signal["source"]} if signal.get("source") else {}),
-        "target": {"kind": "task", "task_id": str(signal["recipient"])}
+        "target": target if isinstance(target, dict)
+                  else {"kind": "task", "task_id": str(signal["recipient"])}
                   if signal.get("recipient") else {"kind": "operation"},
         **({"urgency": signal["urgency"]} if signal.get("urgency") else {}),
-        "payload": payload,
-        **({"source_timestamp_ms": str(signal["timestamp_ms"])} if signal.get("timestamp_ms") is not None else {}),
+        "payload": signal.get("payload") if signal.get("payload") is not None else {},
+        **({"source_timestamp_ms": str(signal["source_timestamp_ms"])}
+           if signal.get("source_timestamp_ms") is not None else {}),
         **({"dedupe_key": signal["dedupe_key"]} if signal.get("dedupe_key") else {}),
+        **({"escalate_after_ms": str(signal["escalate_after_ms"])}
+           if signal.get("escalate_after_ms") is not None else {}),
       },
     }
 
@@ -1081,15 +1256,38 @@ class CanonicalRunnerRuntime:
 
   @staticmethod
   def _initial_message(raw: dict[str, Any]) -> dict[str, Any]:
+    tokens = {"tokens": int(raw["token_count"])} if raw.get("token_count") is not None else {}
     if isinstance(raw.get("content"), list):
+      # A lone tool result is a structural pairing, not opaque parts: send it as ``tool_call_id``
+      # so the kernel keeps it bound to the assistant call that produced it.
+      parts = [_object(part) for part in raw["content"]]
+      if len(parts) == 1 and parts[0].get("type") == "tool_result" and isinstance(parts[0].get("call_id"), str):
+        return {
+          "role": str(raw.get("role") or "tool"),
+          "content": str(parts[0].get("output") or ""),
+          "tool_call_id": parts[0]["call_id"],
+          **({"is_error": True} if parts[0].get("is_error") is True else {}),
+          **tokens,
+        }
       return {
         "role": str(raw.get("role") or "user"),
         "content": encode_canonical_content_parts(raw["content"]),
-        **({"tokens": int(raw["token_count"])} if raw.get("token_count") is not None else {}),
+        **tokens,
       }
-    message = CanonicalRunnerRuntime._provider_message(raw)
-    message.pop("tool_calls", None)
-    return message
+    # History tool calls are replayed facts, not new syscalls: keep them verbatim.
+    content = raw.get("content")
+    return {
+      "role": str(raw.get("role") or "assistant"),
+      "content": content if isinstance(content, str) else json.dumps(content or ""),
+      **({"tool_calls": [{"call_id": str(_object(c).get("call_id") or _object(c).get("id") or ""),
+                           "name": str(_object(c).get("name") or ""),
+                           "arguments": _object(c).get("arguments")
+                           if isinstance(_object(c).get("arguments"), str)
+                           else _object(_object(c).get("arguments"))}
+                          for c in raw.get("tool_calls") or []]} if raw.get("tool_calls") else {}),
+      **({"tool_call_id": raw["tool_call_id"]} if isinstance(raw.get("tool_call_id"), str) else {}),
+      **tokens,
+    }
 
   def _merge_host_config(self, config: dict[str, Any]) -> None:
     if config.get("governance") is not None:
@@ -1157,16 +1355,38 @@ class CanonicalRunnerRuntime:
         limits["max_input_bytes"] = reliability["max_input_bytes"]
         self._config["kernel_limits"] = limits
 
-  @staticmethod
-  def _provider_message(raw: dict[str, Any]) -> dict[str, Any]:
+  def _provider_message(self, raw: dict[str, Any], append_base: int | str = 0) -> dict[str, Any]:
     return {
       "role": str(raw.get("role") or "assistant"),
       "content": raw.get("content") if isinstance(raw.get("content"), str) else json.dumps(raw.get("content") or ""),
       **({"tool_calls": [{"call_id": str(_object(c).get("call_id") or _object(c).get("id") or ""),
                            "name": str(_object(c).get("name") or ""),
-                           "arguments": _object(_object(c).get("arguments"))}
+                           "arguments": _object(c).get("arguments")
+                           if isinstance(_object(c).get("arguments"), str)
+                           else self._provider_tool_arguments(
+                             str(_object(c).get("name") or ""),
+                             _object(_object(c).get("arguments")),
+                             append_base,
+                           )}
                           for c in raw.get("tool_calls") or []]} if raw.get("tool_calls") else {}),
     }
+
+  def _provider_tool_arguments(self, name: str, arguments: dict[str, Any], append_base: int | str) -> dict[str, Any]:
+    """Lower model-authored workflow syscalls to the canonical DAG shape.
+
+    A workflow the canonical DAG cannot express is the model's bad arguments, not a host protocol
+    violation: forward them verbatim so the kernel's syscall decoder answers with a model-visible
+    rejection instead of the host failing the whole run."""
+    try:
+      if name == "start_workflow":
+        wrapped = _object(arguments.get("spec"))
+        return self._workflow_spec(wrapped if wrapped else arguments)
+      if name == "submit_workflow_nodes":
+        nodes = arguments.get("nodes") if isinstance(arguments.get("nodes"), list) else []
+        return {"nodes": self._workflow_spec({"nodes": nodes}, node_id_base=append_base)["nodes"]}
+    except (CanonicalKernelRejectedError, TypeError, ValueError):
+      return arguments
+    return arguments
 
 
 async def apply_host_event(
@@ -1216,3 +1436,31 @@ async def start_workflow(
   action = await runtime.start_workflow(spec)
   pending.extend(runtime.drain_host_observations())
   return action
+
+
+def _launch_failures(raw: Any) -> dict[str, dict[str, str]]:
+  """Host-reported per-task failures: ``[{agent_id, error, kind?}]``."""
+  failures: dict[str, dict[str, str]] = {}
+  for value in raw if isinstance(raw, list) else []:
+    failure = _object(value)
+    task_id = str(failure.get("agent_id") or failure.get("task_id") or "")
+    if task_id:
+      failures[task_id] = {
+        "kind": str(failure.get("kind") or "unknown"),
+        "message": str(failure.get("error") or failure.get("message") or ""),
+      }
+  return failures
+
+
+def _child_usage(result: dict[str, Any]) -> dict[str, Any]:
+  """Child usage as observed: the split only when the host measured it, never an invented zero."""
+  usage: dict[str, Any] = {}
+  if result.get("input_tokens") is not None:
+    usage["input_tokens"] = str(result["input_tokens"])
+  if result.get("output_tokens") is not None:
+    usage["output_tokens"] = str(result["output_tokens"])
+  if result.get("total_tokens_used") is not None:
+    usage["total_tokens"] = str(result["total_tokens_used"])
+  if result.get("turns_used") is not None:
+    usage["turns"] = int(result["turns_used"])
+  return usage

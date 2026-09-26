@@ -26,7 +26,9 @@ use deepstrike_core::runtime::kernel::wire::CancellationReason;
 use deepstrike_core::runtime::kernel::{
     KernelObservation, KernelPressureAction, PublishedEffectRef,
 };
-use deepstrike_core::types::message::{Content, CoreMessage, Role, ToolCall, ToolSchema};
+use deepstrike_core::types::message::{
+    Content, ContentPart, CoreMessage, Role, ToolCall, ToolSchema,
+};
 use deepstrike_core::types::milestone::{MilestoneContract, MilestoneVerifier};
 use deepstrike_core::types::result::{LoopResult, PaceAction, PaceDecision, TerminationReason};
 use serde_json::{Map, Value, json};
@@ -73,6 +75,9 @@ pub(crate) struct CanonicalRunnerRuntime {
     milestone_phases: std::collections::HashMap<String, MilestonePhaseProjection>,
     payload_inline_threshold: usize,
     payload_preview_bytes: usize,
+    /// Live policy revision (§13.2): 0 at genesis, then each `LivePolicyChanged`. Unknown after a
+    /// restore, when a patch must name the revision it expects explicitly.
+    policy_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -157,6 +162,7 @@ impl CanonicalRunnerRuntime {
             configured: false,
             started: false,
             last_action: None,
+            policy_revision: Some(0),
             observations: Vec::new(),
             milestone_phases: std::collections::HashMap::new(),
             payload_inline_threshold: 50 * 1024,
@@ -170,6 +176,11 @@ impl CanonicalRunnerRuntime {
 
     pub fn turn(&self) -> u32 {
         self.host.turn()
+    }
+
+    /// Whether the operation has a root — the precondition for any live host control command.
+    pub fn has_started(&self) -> bool {
+        self.started
     }
 
     pub fn is_terminal(&self) -> bool {
@@ -213,6 +224,11 @@ impl CanonicalRunnerRuntime {
         std::mem::take(&mut self.observations)
     }
 
+    /// Return an observation a caller drained but does not consume to the queue it came from.
+    pub fn requeue_host_observation(&mut self, observation: KernelObservation) {
+        self.observations.push(observation);
+    }
+
     pub fn drain_new_messages(&mut self) -> Vec<CoreMessage> {
         self.host.new_messages()
     }
@@ -238,6 +254,7 @@ impl CanonicalRunnerRuntime {
 
     pub async fn restore(&mut self) -> Result<()> {
         self.host.restore().await?;
+        self.policy_revision = None;
         let lifecycle = self.host.lifecycle();
         self.configured = !matches!(lifecycle, OperationLifecycle::Created);
         self.started = !matches!(
@@ -453,14 +470,32 @@ impl CanonicalRunnerRuntime {
                 .await
             }
             "workflow_spawn_result" => {
-                let attempts_by_id = self.spawn_attempts();
+                // The launch set comes from the kernel's own pending effect (by id), and each
+                // task's outcome from what the host reports it actually started.
+                let attempts_by_id = self.spawn_attempts(&string_value(&event, "effect_id"))?;
+                let started: Option<std::collections::HashSet<String>> = event
+                    .get("started_agent_ids")
+                    .and_then(Value::as_array)
+                    .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_string).collect());
+                let failures = launch_failures(event.get("failures"));
                 let attempts: Vec<Value> = attempts_by_id
                     .iter()
                     .map(|(task_id, attempt_id)| {
+                        let failure = failures.get(task_id).cloned().or_else(|| {
+                            started.as_ref().filter(|set| !set.contains(task_id)).map(|_| {
+                                json!({
+                                    "kind": "protocol_error",
+                                    "message": "the host did not report launching this task",
+                                })
+                            })
+                        });
                         json!({
                             "task_id": task_id,
                             "attempt_id": attempt_id,
-                            "outcome": { "status": "started" },
+                            "outcome": match failure {
+                                Some(failure) => json!({ "status": "failed", "failure": failure }),
+                                None => json!({ "status": "started" }),
+                            },
                         })
                     })
                     .collect();
@@ -471,15 +506,22 @@ impl CanonicalRunnerRuntime {
                 .await
             }
             "preempt_result" => {
-                let attempts_by_id = self.preempt_attempts();
+                let attempts_by_id = self.preempt_attempts(&string_value(&event, "effect_id"))?;
+                let finished: std::collections::HashSet<String> = event
+                    .get("already_finished_agent_ids")
+                    .and_then(Value::as_array)
+                    .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_string).collect())
+                    .unwrap_or_default();
+                let failures = launch_failures(event.get("failures"));
                 let attempts: Vec<Value> = attempts_by_id
                     .iter()
                     .map(|(task_id, attempt_id)| {
-                        json!({
-                            "task_id": task_id,
-                            "attempt_id": attempt_id,
-                            "outcome": { "status": "preempted" },
-                        })
+                        let outcome = match failures.get(task_id) {
+                            Some(failure) => json!({ "status": "failed", "failure": failure }),
+                            None if finished.contains(task_id) => json!({ "status": "already_finished" }),
+                            None => json!({ "status": "preempted" }),
+                        };
+                        json!({ "task_id": task_id, "attempt_id": attempt_id, "outcome": outcome })
                     })
                     .collect();
                 self.resolve(
@@ -502,19 +544,12 @@ impl CanonicalRunnerRuntime {
                     })?;
                 let final_message = object(result.get("final_message"));
                 let termination = string_field(&result, "termination");
-                let status = if termination == "completed" {
-                    "completed"
-                } else {
-                    "failed"
+                let status = match termination.as_str() {
+                    "completed" => "completed",
+                    "user_abort" => "cancelled",
+                    _ => "failed",
                 };
-                let mut child_result = json!({
-                    "status": status,
-                    "usage": {
-                        "input_tokens": "0",
-                        "output_tokens": result.get("total_tokens_used").map(|v| v.to_string()).unwrap_or_else(|| "0".into()),
-                        "turns": result.get("turns_used").and_then(|v| v.as_u64()).unwrap_or(0),
-                    },
-                });
+                let mut child_result = json!({ "status": status, "usage": child_usage(&result) });
                 if let Some(content) = final_message.get("content").and_then(|v| v.as_str()) {
                     if !content.is_empty() {
                         child_result
@@ -523,10 +558,7 @@ impl CanonicalRunnerRuntime {
                             .insert("output".into(), Value::String(content.to_string()));
                     }
                 }
-                if !matches!(
-                    termination.as_str(),
-                    "completed" | "max_turns" | "token_budget" | ""
-                ) {
+                if status != "completed" {
                     child_result.as_object_mut().unwrap().insert(
                         "error".into(),
                         Value::String(if termination.is_empty() {
@@ -569,24 +601,22 @@ impl CanonicalRunnerRuntime {
                     self.failed(&event, "storage_unavailable", &error.to_string(), true)
                         .await
                 } else {
-                    let record_ref = event
-                        .get("record_ref")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| format!("memory:{}", uuid::Uuid::new_v4()));
-                    let digest = event
-                        .get("digest")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| {
-                            sha256_digest(
-                                event
-                                    .get("record_ref")
-                                    .or_else(|| event.get("effect_id"))
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or(""),
+                    // A receipt names what the store actually holds. Without the write's record
+                    // ref and content digest there is nothing to attest, so the effect fails
+                    // (non-retryable) instead of resolving with an identity minted here.
+                    let record_ref = event.get("record_ref").and_then(|v| v.as_str());
+                    let digest = event.get("digest").and_then(|v| v.as_str());
+                    let (Some(record_ref), Some(digest)) = (record_ref, digest) else {
+                        return self
+                            .failed(
+                                &event,
+                                "storage_unavailable",
+                                "memory store returned no record_ref/digest receipt",
+                                false,
                             )
-                        });
+                            .await;
+                    };
+                    let (record_ref, digest) = (record_ref.to_string(), digest.to_string());
                     self.resolve(
                         &event,
                         json!({
@@ -612,11 +642,14 @@ impl CanonicalRunnerRuntime {
                         .cloned()
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|raw| {
+                        // A recall without a store identity cannot be attributed or re-read;
+                        // drop it instead of minting one.
+                        .filter_map(|raw| {
                             let hit = object(Some(&raw));
                             let record = object(hit.get("record"));
+                            let record_id = record.get("record_id").and_then(|v| v.as_str())?.to_string();
                             let mut recall = json!({
-                                "record_ref": record.get("record_id").and_then(|v| v.as_str()).unwrap_or(&format!("memory:{}", uuid::Uuid::new_v4())),
+                                "record_ref": record_id,
                                 "name": string_field(&record, "name"),
                                 "kind": record.get("kind").and_then(|v| v.as_str()).unwrap_or("reference"),
                                 "content": string_field(&record, "content"),
@@ -627,7 +660,25 @@ impl CanonicalRunnerRuntime {
                                     .unwrap()
                                     .insert("score".into(), score.clone());
                             }
-                            recall
+                            // M3: the store reports the count it holds; the kernel derives the
+                            // next one.
+                            if let Some(count) = record
+                                .get("recall_count")
+                                .and_then(|v| v.as_u64())
+                                .filter(|count| *count > 0)
+                            {
+                                recall
+                                    .as_object_mut()
+                                    .unwrap()
+                                    .insert("recall_count".into(), Value::String(count.to_string()));
+                            }
+                            if record.get("pinned").and_then(|v| v.as_bool()) == Some(true) {
+                                recall
+                                    .as_object_mut()
+                                    .unwrap()
+                                    .insert("pinned".into(), Value::Bool(true));
+                            }
+                            Some(recall)
                         })
                         .collect();
                     self.resolve(
@@ -661,12 +712,23 @@ impl CanonicalRunnerRuntime {
                             "0".to_string(),
                         ),
                     };
-                    let payload_ref = event
+                    // The kernel later `load_payload`s this ref; a minted ref names bytes no store
+                    // holds, so a missing ref fails the effect instead.
+                    let Some(payload_ref) = event
                         .get("archive_ref")
                         .or_else(|| event.get("payload_ref"))
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string())
-                        .unwrap_or_else(|| format!("payload:{}", uuid::Uuid::new_v4()));
+                    else {
+                        return self
+                            .failed(
+                                &event,
+                                "storage_unavailable",
+                                "archive store returned no payload_ref; nothing was persisted",
+                                false,
+                            )
+                            .await;
+                    };
                     self.resolve(
                         &event,
                         json!({
@@ -777,6 +839,52 @@ impl CanonicalRunnerRuntime {
                 }))
                 .await
             }
+            "admit_memory_write" => self.commit(admit_memory_write_input(&event)).await,
+            "force_compact" => {
+                self.commit(json!({ "kind": "host_control", "command": { "kind": "force_compact" } }))
+                    .await
+            }
+            "update_deadline" => {
+                let mut command = json!({ "kind": "update_deadline" });
+                if let Some(deadline) = event.get("deadline_ms").and_then(Value::as_u64) {
+                    command["deadline_ms"] = Value::String(deadline.to_string());
+                }
+                self.commit(json!({ "kind": "host_control", "command": command }))
+                    .await
+            }
+            "apply_policy_patch" => {
+                let expected = event
+                    .get("expected_revision")
+                    .and_then(Value::as_u64)
+                    .or(self.policy_revision)
+                    .ok_or_else(|| {
+                        Error::Other(
+                            "the live policy revision is unknown after a restore; pass \
+                             expected_revision explicitly"
+                                .into(),
+                        )
+                    })?;
+                self.commit(json!({
+                    "kind": "host_control",
+                    "command": {
+                        "kind": "apply_policy_patch",
+                        "expected_revision": expected.to_string(),
+                        "patch": event.get("patch").cloned().unwrap_or(Value::Null),
+                    },
+                }))
+                .await
+            }
+            "skill_activation" => {
+                let mut activation = json!({ "name": string_value(&event, "name") });
+                if let Some(lease) = event.get("lease_turns").and_then(Value::as_u64) {
+                    activation["lease_turns"] = json!(lease);
+                }
+                self.commit(json!({
+                    "kind": "host_control",
+                    "command": { "kind": "apply_skill_activation", "activate": [activation] },
+                }))
+                .await
+            }
             "skill_deactivated" => {
                 self.commit(json!({
                     "kind": "host_control",
@@ -873,6 +981,11 @@ impl CanonicalRunnerRuntime {
         publish_observations: bool,
     ) -> Result<Option<HostAction>> {
         if publish_observations {
+            for observation in &transition.planned_step.observations {
+                if let KernelObservation::LivePolicyChanged { revision, .. } = observation {
+                    self.policy_revision = Some(*revision);
+                }
+            }
             self.observations
                 .extend(transition.planned_step.observations.clone());
             // §7.11 · a committed step that publishes effects is a fact worth recording in the
@@ -973,34 +1086,52 @@ impl CanonicalRunnerRuntime {
         action
     }
 
-    fn spawn_attempts(&self) -> Vec<(String, String)> {
-        let mut attempts = Vec::new();
+    /// The launch set of the pending `spawn_tasks` effect `effect_id` — never another effect's.
+    fn spawn_attempts(&self, effect_id: &str) -> Result<Vec<(String, String)>> {
         for effect in self.host.pending_effects() {
+            if effect.effect_id.as_str() != effect_id {
+                continue;
+            }
             if let EffectKind::SpawnTasks(spawn) = &effect.effect {
-                for task in &spawn.tasks {
-                    attempts.push((
-                        task.task_id.as_str().to_string(),
-                        task.attempt_id.as_str().to_string(),
-                    ));
-                }
+                return Ok(spawn
+                    .tasks
+                    .iter()
+                    .map(|task| {
+                        (
+                            task.task_id.as_str().to_string(),
+                            task.attempt_id.as_str().to_string(),
+                        )
+                    })
+                    .collect());
             }
         }
-        attempts
+        Err(Error::Other(format!(
+            "effect {effect_id} is not a pending spawn_tasks effect"
+        )))
     }
 
-    fn preempt_attempts(&self) -> Vec<(String, String)> {
-        let mut attempts = Vec::new();
+    /// The attempts named by the pending `preempt_tasks` effect `effect_id`.
+    fn preempt_attempts(&self, effect_id: &str) -> Result<Vec<(String, String)>> {
         for effect in self.host.pending_effects() {
+            if effect.effect_id.as_str() != effect_id {
+                continue;
+            }
             if let EffectKind::PreemptTasks(preempt) = &effect.effect {
-                for attempt in &preempt.attempts {
-                    attempts.push((
-                        attempt.task_id.as_str().to_string(),
-                        attempt.attempt_id.as_str().to_string(),
-                    ));
-                }
+                return Ok(preempt
+                    .attempts
+                    .iter()
+                    .map(|attempt| {
+                        (
+                            attempt.task_id.as_str().to_string(),
+                            attempt.attempt_id.as_str().to_string(),
+                        )
+                    })
+                    .collect());
             }
         }
-        attempts
+        Err(Error::Other(format!(
+            "effect {effect_id} is not a pending preempt_tasks effect"
+        )))
     }
 
     fn initial_context_json(&self) -> Value {
@@ -1527,8 +1658,18 @@ impl CanonicalRunnerRuntime {
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        let ids: Vec<String> = (0..nodes.len())
-            .map(|index| format!("wf-node{index}"))
+        // A caller-declared id is the node's wire identity; only an anonymous node is positional.
+        let ids: Vec<String> = nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                node.get("node_id")
+                    .or_else(|| node.get("nodeId"))
+                    .and_then(|v| v.as_str())
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("wf-node{index}"))
+            })
             .collect();
         let lowered: Vec<Value> = nodes
             .iter()
@@ -1862,6 +2003,8 @@ fn protocol_action_from_wire(
                 summary,
                 archived,
                 tier,
+                payload_content: archive.payload.content.clone(),
+                payload_digest: archive.payload.digest.as_str().to_string(),
             }
         }
         EffectKind::LoadPayload(_) => {
@@ -2044,7 +2187,22 @@ fn message_from_wire_provider(
             deepstrike_core::runtime::kernel::wire::MessageRole::Assistant => Role::Assistant,
             deepstrike_core::runtime::kernel::wire::MessageRole::Tool => Role::Tool,
         },
-        content: Content::Text(message.content.clone()),
+        // A tool message the kernel paired through `tool_call_id` is a structural tool result —
+        // the provider adapters only serialize `ContentPart::ToolResult`, so a plain-text tool
+        // message would silently drop the result from the request.
+        content: match (&message.tool_call_id, message.role) {
+            (Some(call_id), deepstrike_core::runtime::kernel::wire::MessageRole::Tool) => {
+                Content::Parts(vec![ContentPart::ToolResult {
+                    call_id: CompactString::from(call_id.as_str()),
+                    output: message.content.clone(),
+                    is_error: message.is_error,
+                    durable_content: None,
+                }])
+            }
+            _ => decode_canonical_content_parts(&message.content)
+                .map(Content::Parts)
+                .unwrap_or_else(|| Content::Text(message.content.clone())),
+        },
         tool_calls: message
             .tool_calls
             .iter()
@@ -2111,6 +2269,55 @@ fn logical_run_spec(raw: Map<String, Value>, goal: &str) -> Value {
     Value::Object(out)
 }
 
+/// Host-reported per-task failures: `[{ agent_id, error, kind? }]`.
+fn launch_failures(raw: Option<&Value>) -> std::collections::HashMap<String, Value> {
+    let mut failures = std::collections::HashMap::new();
+    for failure in raw.and_then(Value::as_array).into_iter().flatten() {
+        let task_id = failure
+            .get("agent_id")
+            .or_else(|| failure.get("task_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if task_id.is_empty() {
+            continue;
+        }
+        failures.insert(
+            task_id.to_string(),
+            json!({
+                "kind": failure.get("kind").and_then(Value::as_str).unwrap_or("unknown"),
+                "message": failure
+                    .get("error")
+                    .or_else(|| failure.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            }),
+        );
+    }
+    failures
+}
+
+/// Child usage as observed: the split only when the host measured it, never an invented zero.
+fn child_usage(result: &Map<String, Value>) -> Value {
+    let as_string = |value: &Value| match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    let mut usage = Map::new();
+    for (from, to) in [
+        ("input_tokens", "input_tokens"),
+        ("output_tokens", "output_tokens"),
+        ("total_tokens_used", "total_tokens"),
+    ] {
+        if let Some(value) = result.get(from).filter(|v| !v.is_null()) {
+            usage.insert(to.into(), Value::String(as_string(value)));
+        }
+    }
+    if let Some(turns) = result.get("turns_used").and_then(Value::as_u64) {
+        usage.insert("turns".into(), json!(turns));
+    }
+    Value::Object(usage)
+}
+
 fn canonical_signal(event: &Value) -> Value {
     let signal = object(event.get("signal"));
     let delivery_id = event
@@ -2118,18 +2325,12 @@ fn canonical_signal(event: &Value) -> Value {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let payload = if delivery_id.starts_with("injected-") {
-        if let Some(summary) = signal.get("summary").filter(|v| v.is_string()) {
-            summary.clone()
-        } else {
-            signal.get("payload").cloned().unwrap_or_else(|| json!({}))
-        }
-    } else {
-        signal.get("payload").cloned().unwrap_or_else(|| json!({}))
-    };
+    let payload = signal.get("payload").cloned().unwrap_or_else(|| json!({}));
     let mut wire_signal = json!({
         "signal_id": signal.get("signal_id").or_else(|| signal.get("id")).and_then(|v| v.as_str()).unwrap_or(&uuid::Uuid::new_v4().to_string()),
-        "target": if let Some(recipient) = signal.get("recipient").and_then(|v| v.as_str()) {
+        "target": if let Some(target) = signal.get("target").filter(|v| v.is_object()) {
+            target.clone()
+        } else if let Some(recipient) = signal.get("recipient").and_then(|v| v.as_str()) {
             json!({ "kind": "task", "task_id": recipient })
         } else {
             json!({ "kind": "operation" })
@@ -2148,7 +2349,16 @@ fn canonical_signal(event: &Value) -> Value {
             .unwrap()
             .insert("urgency".into(), urgency.clone());
     }
-    if let Some(ts) = signal.get("timestamp_ms") {
+    if let Some(after) = signal.get("escalate_after_ms") {
+        wire_signal.as_object_mut().unwrap().insert(
+            "escalate_after_ms".into(),
+            Value::String(match after {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            }),
+        );
+    }
+    if let Some(ts) = signal.get("source_timestamp_ms") {
         wire_signal.as_object_mut().unwrap().insert(
             "source_timestamp_ms".into(),
             Value::String(match ts {
@@ -2197,17 +2407,92 @@ fn canonical_capability_command(command: Map<String, Value>) -> Value {
     }
 }
 
+/// Shared cross-SDK marker for structured content the canonical `LogicalMessage` can only carry as
+/// text (Node/Python/WASM `CANONICAL_CONTENT_PARTS_PREFIX`).
+const CANONICAL_CONTENT_PARTS_PREFIX: &str = "[[deepstrike-content-parts]]";
+
+fn encode_canonical_content_parts(parts: &[Value]) -> String {
+    use base64::Engine as _;
+    let json = serde_json::to_string(parts).unwrap_or_else(|_| "[]".into());
+    format!(
+        "{CANONICAL_CONTENT_PARTS_PREFIX}{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+    )
+}
+
+fn decode_canonical_content_parts(content: &str) -> Option<Vec<ContentPart>> {
+    use base64::Engine as _;
+    let encoded = content.strip_prefix(CANONICAL_CONTENT_PARTS_PREFIX)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded.trim_end_matches('='))
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Lower one history message into the canonical `LogicalMessage`, whose `content` is text.
+///
+/// History tool calls are replayed facts, not new syscalls, so they travel verbatim; a lone
+/// tool result becomes `tool_call_id` + its output so the kernel keeps it paired with the call
+/// that produced it. Text-only parts collapse to their text; anything richer (media) is encoded.
 fn initial_message(raw: Map<String, Value>) -> Value {
-    if raw.get("content").map(|v| v.is_array()).unwrap_or(false) {
-        return json!({
-            "role": raw.get("role").and_then(|v| v.as_str()).unwrap_or("user"),
-            "content": raw.get("content").cloned().unwrap_or(json!("")),
-            "tokens": raw.get("token_count").cloned(),
-        });
+    let role = raw
+        .get("role")
+        .and_then(|v| v.as_str())
+        .unwrap_or("user")
+        .to_string();
+    let mut message = Map::new();
+    if let Some(parts) = raw.get("content").and_then(|v| v.as_array()) {
+        let single_tool_result = match parts.as_slice() {
+            [part] if part.get("type").and_then(|v| v.as_str()) == Some("tool_result") => {
+                part.get("call_id").and_then(|v| v.as_str()).map(|call_id| {
+                    (
+                        call_id.to_string(),
+                        string_field(&object(Some(part)), "output"),
+                        part.get("is_error")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                    )
+                })
+            }
+            _ => None,
+        };
+        if let Some((call_id, output, is_error)) = single_tool_result {
+            message.insert("role".into(), json!(role));
+            message.insert("content".into(), json!(output));
+            message.insert("tool_call_id".into(), json!(call_id));
+            if is_error {
+                message.insert("is_error".into(), json!(true));
+            }
+        } else if parts
+            .iter()
+            .all(|part| part.get("type").and_then(|v| v.as_str()) == Some("text"))
+        {
+            let text: String = parts
+                .iter()
+                .filter_map(|part| part.get("text").and_then(|v| v.as_str()))
+                .collect();
+            message.insert("role".into(), json!(role));
+            message.insert("content".into(), json!(text));
+        } else {
+            message.insert("role".into(), json!(role));
+            message.insert(
+                "content".into(),
+                json!(encode_canonical_content_parts(parts)),
+            );
+        }
+    } else {
+        message = provider_message(&raw)
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        if let Some(call_id) = raw.get("tool_call_id").and_then(|v| v.as_str()) {
+            message.insert("tool_call_id".into(), json!(call_id));
+        }
     }
-    let mut message = provider_message(&raw);
-    message.as_object_mut().unwrap().remove("tool_calls");
-    message
+    if let Some(tokens) = raw.get("token_count").filter(|v| !v.is_null()) {
+        message.insert("tokens".into(), tokens.clone());
+    }
+    Value::Object(message)
 }
 
 fn provider_message(raw: &Map<String, Value>) -> Value {
@@ -2265,6 +2550,16 @@ fn string_field(map: &Map<String, Value>, key: &str) -> String {
         .to_string()
 }
 
+/// §22.13 · the canonical input for a host-authored memory write awaiting the kernel's admission.
+fn admit_memory_write_input(event: &Value) -> Value {
+    json!({ "kind": "host_control", "command": {
+        "kind": "admit_memory_write",
+        "record_id": event.get("record_id").and_then(|v| v.as_str()).unwrap_or_default(),
+        "name": event.get("name").and_then(|v| v.as_str()).unwrap_or_default(),
+        "content_bytes": event.get("content_bytes").and_then(|v| v.as_u64()).unwrap_or(0),
+    } })
+}
+
 fn string_value(value: &Value, key: &str) -> String {
     string_field(&object(Some(value)), key)
 }
@@ -2296,8 +2591,9 @@ mod tests {
     use super::{CanonicalRunnerOptions, CanonicalRunnerRuntime};
     use crate::runtime::canonical_kernel::{CanonicalKernel, EffectKind, WireEnvelope};
     use crate::runtime::canonical_kernel_step::CanonicalKernelHost;
-    use crate::runtime::host_projection::HostEffect;
+    use crate::runtime::host_projection::{HostAction, HostEffect};
     use crate::runtime::kernel_journal::{InMemoryKernelJournal, KernelJournal};
+    use deepstrike_core::types::message::{Content, ContentPart, CoreMessage, Role, ToolCall};
 
     #[test]
     fn production_host_has_no_caller_asserted_skill_activation_pipeline() {
@@ -2339,6 +2635,453 @@ mod tests {
             memory_binding_id: "test-binding".into(),
             persist_payload: None,
         }
+    }
+
+    fn tool_result_call_ids(message: &CoreMessage) -> Vec<String> {
+        match &message.content {
+            Content::Parts(parts) => parts
+                .iter()
+                .filter_map(|part| match part {
+                    ContentPart::ToolResult { call_id, .. } => Some(call_id.to_string()),
+                    _ => None,
+                })
+                .collect(),
+            Content::Text(_) => Vec::new(),
+        }
+    }
+
+    fn provider_turns(action: &HostAction) -> Vec<CoreMessage> {
+        match &action.effect {
+            HostEffect::CallProvider { context, .. } => context.turns.clone(),
+            other => panic!("expected call_provider, got {other:?}"),
+        }
+    }
+
+    /// P0-1 · a preloaded history keeps each tool result paired with the assistant call that
+    /// produced it; before, the call was dropped and array content was refused outright.
+    #[tokio::test]
+    async fn preloaded_history_keeps_tool_calls_paired_with_their_results() {
+        let journal: Arc<dyn KernelJournal> = Arc::new(InMemoryKernelJournal::new());
+        let mut runtime = CanonicalRunnerRuntime::new(
+            CanonicalKernel::default(),
+            journal,
+            "op-history-pairing",
+            test_options(),
+        )
+        .expect("runtime");
+        let history = vec![
+            CoreMessage::user("find x"),
+            CoreMessage {
+                role: Role::Assistant,
+                content: Content::Text(String::new()),
+                tool_calls: vec![ToolCall {
+                    id: "call_1".into(),
+                    name: "search".into(),
+                    arguments: json!({ "q": "x" }),
+                }],
+            },
+            CoreMessage {
+                role: Role::Tool,
+                content: Content::Parts(vec![ContentPart::ToolResult {
+                    call_id: "call_1".into(),
+                    output: "result-x".into(),
+                    is_error: false,
+                    durable_content: None,
+                }]),
+                tool_calls: Vec::new(),
+            },
+        ];
+        runtime
+            .apply_host_event(json!({ "kind": "preload_history", "messages": history }))
+            .await
+            .expect("preload");
+        let action = runtime
+            .start_agent_value(json!({ "goal": "continue" }), None)
+            .await
+            .expect("start")
+            .expect("call_provider");
+        let turns = provider_turns(&action);
+        let call = turns
+            .iter()
+            .position(|turn| turn.tool_calls.iter().any(|c| c.id == "call_1"))
+            .expect("the assistant tool call survived preload");
+        let result = turns
+            .iter()
+            .position(|turn| tool_result_call_ids(turn) == vec!["call_1".to_string()])
+            .expect("the tool result is a structural ToolResult part");
+        assert!(result > call);
+    }
+
+    /// A live tool result must reach the provider as a structural `ToolResult`: the adapters
+    /// serialize nothing else for a tool message, so a text-only projection dropped every result.
+    #[tokio::test]
+    async fn live_tool_results_render_as_structural_tool_result_parts() {
+        let journal: Arc<dyn KernelJournal> = Arc::new(InMemoryKernelJournal::new());
+        let mut runtime = CanonicalRunnerRuntime::new(
+            CanonicalKernel::default(),
+            journal,
+            "op-live-pairing",
+            test_options(),
+        )
+        .expect("runtime");
+        runtime
+            .apply_host_event(json!({
+                "kind": "set_tools",
+                "tools": [{ "name": "ping", "description": "ping", "parameters": { "type": "object" } }],
+            }))
+            .await
+            .expect("set_tools");
+        let first = runtime
+            .start_agent_value(
+                json!({ "goal": "use ping then finish" }),
+                Some(json!({ "exposure_baseline": ["ping"] })),
+            )
+            .await
+            .expect("start")
+            .expect("call_provider");
+        let execute = runtime
+            .apply_host_event(json!({
+                "kind": "provider_result",
+                "effect_id": first.effect_id,
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{ "id": "call_ping", "name": "ping", "arguments": {} }],
+                },
+                "stop_reason": "tool_use",
+            }))
+            .await
+            .expect("provider_result")
+            .expect("execute_tool");
+        let next = runtime
+            .apply_host_event(json!({
+                "kind": "tool_results",
+                "effect_id": execute.effect_id,
+                "results": [{ "call_id": "call_ping", "output": "pong", "is_error": false }],
+            }))
+            .await
+            .expect("tool_results")
+            .expect("call_provider");
+        let turns = provider_turns(&next);
+        assert!(
+            turns
+                .iter()
+                .any(|turn| tool_result_call_ids(turn) == vec!["call_ping".to_string()]),
+            "the tool result reaches the provider paired with its call: {turns:?}"
+        );
+    }
+
+    /// P0-3 · a caller-declared node id is the node's wire identity.
+    #[tokio::test]
+    async fn workflow_spec_keeps_caller_node_ids() {
+        let journal: Arc<dyn KernelJournal> = Arc::new(InMemoryKernelJournal::new());
+        let mut runtime = CanonicalRunnerRuntime::new(
+            CanonicalKernel::default(),
+            journal,
+            "op-node-ids",
+            test_options(),
+        )
+        .expect("runtime");
+        runtime
+            .start_workflow_value(json!({
+                "nodes": [{ "node_id": "alpha", "task": "a", "role": "implement" }],
+            }))
+            .await
+            .expect("start")
+            .expect("spawn");
+        let spawn = runtime
+            .host
+            .pending_effects()
+            .into_iter()
+            .find_map(|e| match e.effect {
+                EffectKind::SpawnTasks(spawn) => Some(spawn),
+                _ => None,
+            })
+            .expect("spawn pending");
+        assert_eq!(spawn.tasks[0].node_id.as_str(), "alpha");
+        assert_eq!(spawn.tasks[0].task_id.as_str(), "wf-node0");
+    }
+
+    fn runtime_named(name: &str) -> CanonicalRunnerRuntime {
+        let journal: Arc<dyn KernelJournal> = Arc::new(InMemoryKernelJournal::new());
+        CanonicalRunnerRuntime::new(CanonicalKernel::default(), journal, name, test_options())
+            .expect("runtime")
+    }
+
+    /// P1-10 · the launch acknowledgement is the host's report for *that* effect: a task the host
+    /// failed to launch is failed, and an unknown effect id is refused rather than guessed.
+    #[tokio::test]
+    async fn launch_outcomes_are_the_hosts_report_for_the_named_effect() {
+        let mut runtime = runtime_named("op-launch");
+        runtime
+            .apply_host_event(json!({
+                "kind": "configure_run",
+                "config": { "resource_quota": { "max_concurrent_subagents": 4 } },
+            }))
+            .await
+            .expect("configure");
+        let action = runtime
+            .start_workflow_value(json!({ "nodes": [
+                { "node_id": "a", "task": "a", "role": "implement" },
+                { "node_id": "b", "task": "b", "role": "implement" },
+            ] }))
+            .await
+            .expect("start")
+            .expect("spawn");
+        let _ = runtime.drain_host_observations();
+        assert!(
+            runtime
+                .apply_host_event(json!({ "kind": "workflow_spawn_result", "effect_id": "nope" }))
+                .await
+                .is_err(),
+            "an effect id that is not a pending launch is refused"
+        );
+        runtime
+            .apply_host_event(json!({
+                "kind": "workflow_spawn_result",
+                "effect_id": action.effect_id,
+                "started_agent_ids": ["wf-node0"],
+                "failures": [{ "agent_id": "wf-node1", "error": "no slot", "kind": "resource_exhausted" }],
+            }))
+            .await
+            .expect("resolve spawn");
+        let spawned: Vec<String> = runtime
+            .drain_host_observations()
+            .into_iter()
+            .find_map(|observation| match observation {
+                KernelObservation::WorkflowBatchSpawned { nodes, .. } => {
+                    Some(nodes.into_iter().map(|node| node.agent_id).collect())
+                }
+                _ => None,
+            })
+            .expect("a batch was spawned");
+        assert_eq!(spawned, vec!["wf-node0".to_string()]);
+    }
+
+    /// A failed tool result keeps its failure mark both ways across the kernel boundary: history
+    /// sends it, and a rendered tool message hands it to the provider adapters.
+    #[test]
+    fn a_failed_tool_result_keeps_its_failure_mark_across_the_boundary() {
+        let lowered = super::initial_message(super::object(Some(&json!({
+            "role": "tool",
+            "content": [{ "type": "tool_result", "call_id": "c1", "output": "timeout", "is_error": true }],
+        }))));
+        assert_eq!(lowered["is_error"], true);
+        assert_eq!(lowered["tool_call_id"], "c1");
+
+        let rendered: deepstrike_core::runtime::kernel::wire::ProviderMessage =
+            serde_json::from_value(json!({
+                "role": "tool", "content": "timeout", "tool_call_id": "c1", "is_error": true,
+            }))
+            .unwrap();
+        let message = super::message_from_wire_provider(&rendered).unwrap();
+        assert!(matches!(
+            &message.content,
+            Content::Parts(parts) if matches!(parts.as_slice(), [ContentPart::ToolResult { is_error: true, .. }])
+        ));
+    }
+
+    /// P1-11 · a deadline reaches the kernel as the duration it anchors to its own clock, and a
+    /// signal needs no id convention to carry its payload.
+    #[tokio::test]
+    async fn canonical_signals_keep_their_deadline_as_a_duration() {
+        let mut runtime = runtime_named("op-signal");
+        runtime
+            .start_agent_value(json!({ "goal": "wait" }), None)
+            .await
+            .expect("start");
+        for (id, signal) in [
+            (
+                "d1",
+                json!({ "signal_id": "s1", "source": "cron", "urgency": "low",
+                           "target": { "kind": "operation" }, "payload": { "job": "nightly" },
+                           "escalate_after_ms": "1000" }),
+            ),
+            (
+                "injected-looking-id",
+                json!({ "signal_id": "s2", "source": "custom",
+                           "payload": "deploy finished" }),
+            ),
+        ] {
+            runtime
+                .apply_host_event(json!({ "kind": "deliver_signal", "delivery_id": id, "attempt": 1, "signal": signal }))
+                .await
+                .expect("signal admitted");
+        }
+        let disposed = runtime
+            .drain_host_observations()
+            .into_iter()
+            .filter(|o| matches!(o, KernelObservation::SignalDeliveryDisposed { .. }))
+            .count();
+        assert_eq!(disposed, 2);
+    }
+
+    /// P1-14 · live policy patches carry the committed revision and a stale one is refused.
+    #[tokio::test]
+    async fn live_policy_patches_are_revision_guarded() {
+        let mut runtime = runtime_named("op-policy");
+        runtime
+            .start_agent_value(json!({ "goal": "g" }), None)
+            .await
+            .expect("start");
+        let patch = crate::runtime::GovernancePolicy {
+            default_action: None,
+            rules: vec![],
+            vetoed_tools: vec!["rm".into()],
+            rate_limits: vec![],
+            constraints: vec![],
+            surface_denied_in_system: true,
+        }
+        .into_policy_patch();
+        runtime
+            .apply_host_event(json!({ "kind": "apply_policy_patch", "patch": patch.clone() }))
+            .await
+            .expect("patch at the tracked revision");
+        let stale = runtime
+            .apply_host_event(
+                json!({ "kind": "apply_policy_patch", "patch": patch, "expected_revision": 0 }),
+            )
+            .await
+            .expect_err("a patch at a stale revision is refused");
+        assert!(stale.to_string().contains("revision mismatch"), "{stale}");
+        for event in [
+            json!({ "kind": "update_deadline", "deadline_ms": null }),
+            json!({ "kind": "force_compact" }),
+        ] {
+            runtime
+                .apply_host_event(event)
+                .await
+                .expect("control command admitted");
+        }
+    }
+
+    /// P0-6 · a page-out resolution must name a ref the host really stored. A missing ref used to
+    /// be replaced with a minted `payload:<uuid>`, so the kernel believed an archive existed that
+    /// no `load_payload` could ever read back.
+    #[tokio::test]
+    async fn a_page_out_without_a_stored_ref_fails_instead_of_minting_one() {
+        /// Drive tool turns with large outputs until context pressure publishes a page-out.
+        async fn pressured(name: &str) -> (CanonicalRunnerRuntime, HostAction) {
+            let journal: Arc<dyn KernelJournal> = Arc::new(InMemoryKernelJournal::new());
+            let mut runtime = CanonicalRunnerRuntime::new(
+                CanonicalKernel::default(),
+                journal,
+                name,
+                CanonicalRunnerOptions {
+                    max_context_tokens: 4_000,
+                    ..test_options()
+                },
+            )
+            .expect("runtime");
+            runtime
+                .apply_host_event(json!({
+                    "kind": "set_tools",
+                    "tools": [{ "name": "ping", "description": "ping", "parameters": { "type": "object" } }],
+                }))
+                .await
+                .expect("set_tools");
+            let mut action = runtime
+                .start_agent_value(
+                    json!({ "goal": "keep pinging" }),
+                    Some(json!({ "exposure_baseline": ["ping"] })),
+                )
+                .await
+                .expect("start")
+                .expect("action");
+            for turn in 0..40 {
+                action = match &action.effect {
+                    HostEffect::ArchivePageOut { .. } => return (runtime, action),
+                    HostEffect::CallProvider { .. } => runtime
+                        .apply_host_event(json!({
+                            "kind": "provider_result",
+                            "effect_id": action.effect_id,
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [{ "id": format!("call_{turn}"), "name": "ping", "arguments": { "n": turn } }],
+                            },
+                            "observed_input_tokens": 3_900,
+                            "stop_reason": "tool_use",
+                        }))
+                        .await
+                        .expect("provider_result")
+                        .expect("next action"),
+                    HostEffect::ExecuteTool { calls } => {
+                        let call_id = calls[0].id.to_string();
+                        runtime
+                            .apply_host_event(json!({
+                                "kind": "tool_results",
+                                "effect_id": action.effect_id,
+                                "results": [{
+                                    "call_id": call_id,
+                                    "output": format!("pong {turn}: {}", "a long tool body worth compacting ".repeat(20)),
+                                    "is_error": false,
+                                }],
+                            }))
+                            .await
+                            .expect("tool_results")
+                            .expect("next action")
+                    }
+                    other => panic!("unexpected effect while building pressure: {other:?}"),
+                };
+            }
+            panic!("context pressure never published an archive_page_out");
+        }
+
+        let (mut runtime, action) = pressured("op-page-out-missing-ref").await;
+        let HostEffect::ArchivePageOut {
+            payload_content,
+            payload_digest,
+            ..
+        } = &action.effect
+        else {
+            unreachable!("pressured() returns only on a page-out");
+        };
+        assert!(!payload_content.is_empty());
+        assert!(payload_digest.starts_with("sha256:"));
+
+        runtime
+            .apply_host_event(json!({
+                "kind": "page_out_archive_result",
+                "effect_id": action.effect_id,
+            }))
+            .await
+            .expect("a missing ref is a failed resolution, not a host fault");
+        let observations = runtime.drain_host_observations();
+        assert!(
+            observations
+                .iter()
+                .any(|obs| matches!(obs, KernelObservation::PageOutArchiveFailed { .. })),
+            "the kernel records the page-out as failed"
+        );
+        assert!(
+            !observations
+                .iter()
+                .any(|obs| matches!(obs, KernelObservation::PayloadResidencyChanged { .. })),
+            "no payload is marked paged-out under a ref no store holds"
+        );
+        let archived = runtime
+            .host
+            .pending_effects()
+            .into_iter()
+            .all(|effect| !matches!(effect.effect, EffectKind::ArchivePageOut(_)));
+        assert!(archived, "the archive effect is resolved (as failed)");
+
+        // With a real ref the same step resolves as archived.
+        let (mut ok_runtime, ok_action) = pressured("op-page-out-real-ref").await;
+        ok_runtime
+            .apply_host_event(json!({
+                "kind": "page_out_archive_result",
+                "effect_id": ok_action.effect_id,
+                "archive_ref": "payload:stored",
+            }))
+            .await
+            .expect("archived");
+        assert!(ok_runtime.drain_host_observations().iter().any(|obs| matches!(
+            obs,
+            KernelObservation::PayloadResidencyChanged { payload_ref: Some(payload_ref), .. }
+                if payload_ref == "payload:stored"
+        )));
     }
 
     #[tokio::test]
@@ -2881,6 +3624,51 @@ mod tests {
         assert_eq!(text, RESTART_FINAL_TEXT);
         assert_eq!(executions.load(std::sync::atomic::Ordering::SeqCst), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-15 · a host-authored write inside a live operation is admitted by the kernel's rule and
+    /// its rolling write quota — the same two checks the model's `write_memory` answers to.
+    #[tokio::test]
+    async fn a_host_memory_write_is_admitted_by_the_kernel_rule_and_quota() {
+        use crate::runtime::canonical_kernel::CanonicalKernel;
+        let mut runtime = CanonicalRunnerRuntime::new(
+            CanonicalKernel::default(),
+            std::sync::Arc::new(crate::runtime::kernel_journal::InMemoryKernelJournal::new()),
+            "op-admit".to_string(),
+            restart_kernel_options(),
+        )
+        .expect("runtime");
+        runtime
+            .apply_host_event(serde_json::json!({
+                "kind": "set_resource_quota",
+                "quota": { "memory_writes_per_window": [1, 60_000] },
+            }))
+            .await
+            .expect("quota");
+        drive_to_pending_tool_effect(&mut runtime).await;
+        runtime.drain_host_observations();
+        let mut refusals = Vec::new();
+        for (record_id, name) in [("r-empty", " "), ("r-ok", "brief"), ("r-over", "brief")] {
+            runtime
+                .apply_host_event(serde_json::json!({
+                    "kind": "admit_memory_write",
+                    "record_id": record_id,
+                    "name": name,
+                    "content_bytes": 4,
+                }))
+                .await
+                .expect("admit");
+            for observation in runtime.drain_host_observations() {
+                if let KernelObservation::MemoryValidationFailed { record_id, .. } = observation {
+                    refusals.push(record_id);
+                }
+            }
+        }
+        assert_eq!(
+            refusals,
+            vec!["r-empty".to_string(), "r-over".to_string()],
+            "an invalid write spends no quota; the window then holds exactly one write"
+        );
     }
 
     #[tokio::test]

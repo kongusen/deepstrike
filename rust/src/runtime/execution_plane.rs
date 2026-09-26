@@ -410,6 +410,16 @@ fn execute_all_local<'a>(
                 };
                 continue;
             };
+            if let Err(error) = crate::runtime::tool_arguments::require_object(&call.arguments) {
+                yield RunEvent::ToolResult {
+                    call_id: call.id.to_string(),
+                    content: format!("invalid arguments: {error}"),
+                    is_error: true,
+                    is_fatal: false,
+                    error_kind: Some(deepstrike_core::types::message::ToolErrorKind::Recoverable),
+                };
+                continue;
+            }
             let original_args_str = serde_json::to_string(&call.arguments).unwrap_or_default();
             match validate_tool_arguments(&tool.schema.parameters, &mut call.arguments) {
                 Ok(repaired) => {

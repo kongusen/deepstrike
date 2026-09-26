@@ -1900,6 +1900,7 @@ impl LoopStateMachine {
             history_len: self.checkpoint.history_len as u32,
         });
 
+        self.sync_governance_surface_note();
         let context = self.ctx.render();
         if let Some(overflow) = context.budget_overflow.clone() {
             self.observations
@@ -1943,6 +1944,7 @@ impl LoopStateMachine {
         if !matches!(action, LoopAction::CallLLM { .. }) {
             return;
         }
+        self.sync_governance_surface_note();
         let context = self.ctx.render();
         let tools = if self.pending_termination.is_some() {
             Vec::new()
@@ -1953,8 +1955,75 @@ impl LoopStateMachine {
         *action = LoopAction::CallLLM { context, tools };
     }
 
+    /// Registered task tools the governance policy withholds from the provider surface. Kernel
+    /// meta-tools and syscalls never reach the call gate, so they are never hidden by it either.
+    fn governance_hidden_tools(&self) -> Vec<CompactString> {
+        let Some(pipeline) = self.governance.as_ref().filter(|p| p.hide_denied_tools) else {
+            return Vec::new();
+        };
+        self.tools
+            .iter()
+            .filter(|tool| {
+                !crate::context::manager::is_exposure_exempt_meta_tool(&tool.name)
+                    && !crate::runtime::kernel::wire::driver::SYSCALL_TOOL_NAMES
+                        .contains(&tool.name.as_str())
+            })
+            .filter(|tool| pipeline.denies_tool(&tool.name))
+            .map(|tool| tool.name.clone())
+            .collect()
+    }
+
+    /// Keep the one-line denial note in the knowledge slot in step with the hidden set. An
+    /// unchanged note is left alone so the cached prefix stays byte-stable.
+    fn sync_governance_surface_note(&mut self) {
+        const KEY: &str = "governance:denied-tools";
+        let hidden = self.governance_hidden_tools();
+        let note = (!hidden.is_empty()).then(|| {
+            format!(
+                "[governance] the following tools are denied for this run and will fail if \
+                 called: {}.",
+                hidden.join(", ")
+            )
+        });
+        let current = self
+            .ctx
+            .partitions
+            .knowledge
+            .entries
+            .iter()
+            .find(|entry| entry.key.as_deref() == Some(KEY))
+            .map(|entry| {
+                let message = entry
+                    .pending
+                    .as_ref()
+                    .map_or(&entry.message, |pending| &pending.0);
+                (
+                    message.content.as_text().map(str::to_string),
+                    entry.evict_at_boundary,
+                )
+            });
+        match (note, current) {
+            (Some(note), Some((Some(text), false))) if text == note => {}
+            (Some(note), _) => {
+                let tokens = self.ctx.engine.count(&note).max(1);
+                self.ctx.push_knowledge_entry(
+                    Some(KEY.into()),
+                    CoreMessage::system(note),
+                    tokens,
+                    true,
+                );
+            }
+            (None, Some((_, false))) => {
+                self.ctx.remove_knowledge(KEY);
+            }
+            (None, _) => {}
+        }
+    }
+
     fn provider_tools(&self) -> Vec<ToolSchema> {
         let mut tools = self.tools.clone();
+        let hidden = self.governance_hidden_tools();
+        tools.retain(|tool| !hidden.contains(&tool.name));
         tools.extend(self.ctx.meta_tool_schemas());
 
         if let Some(ref spec) = self.run_spec {

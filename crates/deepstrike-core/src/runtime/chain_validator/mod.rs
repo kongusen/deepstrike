@@ -2097,6 +2097,8 @@ mod tests {
                             ),
                             tokens: Some(64),
                             tool_call_id: None,
+                            is_error: false,
+                            tool_calls: Vec::new(),
                         })
                         .collect(),
                     ..InitialContext::default()
@@ -2184,6 +2186,7 @@ mod tests {
                                     Vec::new()
                                 },
                                 tool_call_id: None,
+                                is_error: false,
                                 tokens: None,
                             },
                             observed_input_tokens: None,

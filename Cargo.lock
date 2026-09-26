@@ -295,6 +295,7 @@ version = "0.2.74"
 dependencies = [
  "async-stream",
  "async-trait",
+ "base64 0.22.1",
  "bytes",
  "compact_str",
  "deepstrike-core",

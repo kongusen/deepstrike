@@ -659,6 +659,8 @@ pub struct ResolvedGovernancePolicy {
     pub vetoed_tools: Vec<String>,
     pub rate_limits: Vec<super::command::RateLimitSpec>,
     pub constraints: Vec<super::command::ParamConstraint>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hide_denied_tools: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -831,6 +833,56 @@ pub struct ResolvedMemoryPolicy {
     pub promotion_recall_threshold: Option<WireU64>,
 }
 
+impl ResolvedMemoryPolicy {
+    /// The baseline every operation starts from, and the policy a host without a live operation
+    /// is judged by when it names none.
+    pub const DEFAULT: Self = Self {
+        stale_warning_days: 2,
+        retrieval_top_k: 5,
+        validation_enabled: true,
+        max_content_bytes: 10_000,
+        max_name_length: 100,
+        promotion_recall_threshold: None,
+    };
+
+    /// §22.13 · the one admission rule for a memory write, whoever proposes it.
+    ///
+    /// The model's `write_memory` syscall, a host write inside a live operation and a host write
+    /// with no operation at all are judged by this function and nothing else — historically each
+    /// SDK carried its own copy, and the copies disagreed about bytes versus characters, about
+    /// which fields were required, and about whether the model's path was checked at all.
+    ///
+    /// The content is judged by its UTF-8 byte length, so a host need not ship a body across the
+    /// boundary just to have it measured.
+    pub fn check_write(&self, name: &str, content_bytes: usize) -> Result<(), String> {
+        if !self.validation_enabled {
+            return Ok(());
+        }
+        if name.trim().is_empty() {
+            return Err("memory name must not be empty".to_string());
+        }
+        if name.chars().count() > self.max_name_length as usize {
+            return Err(format!(
+                "memory name exceeds {} characters",
+                self.max_name_length
+            ));
+        }
+        if content_bytes > self.max_content_bytes as usize {
+            return Err(format!(
+                "memory content exceeds {} bytes",
+                self.max_content_bytes
+            ));
+        }
+        Ok(())
+    }
+
+    /// The same resolution an operation's genesis applies, for a host that holds a policy but no
+    /// live operation: absent fields fall back to [`Self::DEFAULT`] and the same invariants hold.
+    pub fn resolve(policy: Option<&MemoryPolicy>) -> Result<Self, WireRejection> {
+        resolve_memory_policy(policy, &Self::DEFAULT)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResolvedFeaturePolicy {
@@ -887,6 +939,7 @@ impl ConfigDefaults {
                     vetoed_tools: Vec::new(),
                     rate_limits: Vec::new(),
                     constraints: Vec::new(),
+                    hide_denied_tools: false,
                 },
                 scheduler_policy: ResolvedSchedulerPolicy {
                     critical_path_weight: 1_000_000,
@@ -948,14 +1001,7 @@ impl ConfigDefaults {
                     },
                 },
                 memory_access: None,
-                memory_policy: ResolvedMemoryPolicy {
-                    stale_warning_days: 2,
-                    retrieval_top_k: 5,
-                    validation_enabled: true,
-                    max_content_bytes: 10_000,
-                    max_name_length: 100,
-                    promotion_recall_threshold: None,
-                },
+                memory_policy: ResolvedMemoryPolicy::DEFAULT,
                 tool_catalog: Vec::new(),
                 skill_catalog: Vec::new(),
                 verification_contracts: Vec::new(),
@@ -1525,6 +1571,7 @@ fn resolve_governance(
         resolved.vetoed_tools = policy.vetoed_tools.clone();
         resolved.rate_limits = policy.rate_limits.clone();
         resolved.constraints = policy.constraints.clone();
+        resolved.hide_denied_tools = policy.hide_denied_tools.unwrap_or(false);
     }
     validate_governance(&resolved, rule_bound)?;
     Ok(resolved)
@@ -2150,6 +2197,7 @@ mod tests {
                     tool: "write".to_string(),
                     param_path: "destination".to_string(),
                 })],
+                hide_denied_tools: None,
             }),
             scheduler_policy: Some(SchedulerPolicy {
                 critical_path_weight: Some(900_000),
@@ -2440,6 +2488,7 @@ mod tests {
                         window_ms: WireU64::new(1_000),
                     }],
                     constraints: Vec::new(),
+                    hide_denied_tools: None,
                 },
             }),
             LivePolicyPatch::TightenResourceQuota(TightenResourceQuota {

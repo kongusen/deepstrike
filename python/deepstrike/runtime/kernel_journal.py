@@ -661,6 +661,11 @@ class FileKernelJournal(KernelJournal):
 
     def __init__(self, root: str | Path) -> None:
         self._root = Path(root)
+        # The last head this instance observed, per operation. Only a hint: it is trusted only
+        # while the slot after it is still free, which one existence check proves — so an append
+        # costs O(1) file operations instead of a directory listing, and a head another process
+        # advanced is still found (by falling back to the listing).
+        self._known_heads: dict[str, JournalHead] = {}
 
     def _operation_dir(self, operation_id: str) -> Path:
         return self._root / _safe_segment(operation_id)
@@ -771,6 +776,17 @@ class FileKernelJournal(KernelJournal):
         )
 
     async def head(self, operation_id: str) -> JournalHead | None:
+        known = self._known_heads.get(operation_id)
+        if known is not None and not (
+            self._records_dir(operation_id) / f"{_pad(known.step_seq + 1)}.rec"
+        ).exists():
+            return known
+        head = self._scan_head(operation_id)
+        if head is not None:
+            self._known_heads[operation_id] = head
+        return head
+
+    def _scan_head(self, operation_id: str) -> JournalHead | None:
         seqs = self._record_seqs(operation_id)
         if seqs:
             entry = self._read_record(operation_id, seqs[-1])
@@ -811,9 +827,13 @@ class FileKernelJournal(KernelJournal):
             json.dumps(persisted, ensure_ascii=False, separators=(",", ":")),
         )
         if not won:
+            self._known_heads.pop(operation_id, None)
             raise JournalCasConflictError(
                 f"journal step_seq {record.step_seq} was claimed by a concurrent writer"
             )
+        self._known_heads[operation_id] = JournalHead(
+            step_seq=record.step_seq, record_digest=record.record_digest
+        )
         return JournalAppendReceipt(step_seq=record.step_seq, record_digest=record.record_digest)
 
     async def read_from(self, operation_id: str, from_step_seq: int = 0) -> list[JournalEntry]:
@@ -832,7 +852,9 @@ class FileKernelJournal(KernelJournal):
     ) -> list[JournalEntry]:
         if after_head is None:
             return await self.read_from(operation_id, 0)
-        for seq in self._record_seqs(operation_id):
+        # The cursor is almost always recent (a checkpoint's covered head), so search newest-first:
+        # the scan then reads exactly the tail it is about to return, not the whole retained chain.
+        for seq in reversed(self._record_seqs(operation_id)):
             entry = self._read_record(operation_id, seq)
             if entry is not None and entry.record_digest == after_head:
                 return await self.read_from(operation_id, seq + 1)

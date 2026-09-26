@@ -6,6 +6,7 @@ import { LocalExecutionPlane } from "./execution-plane.js"
 import type { CredentialVault } from "./credential-vault.js"
 import { formatToolError } from "../tools/errors.js"
 import { operationAbortSignal } from "./reliability.js"
+import { parseToolCallArguments } from "./tool-arguments.js"
 import type { OperationContext } from "./reliability.js"
 
 export interface RemoteVpcOptions {
@@ -104,7 +105,9 @@ export class RemoteVpcPlane implements ExecutionPlane {
     operation?: OperationContext,
   ): Promise<{ output: string; isError: boolean }> {
     try {
-      const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
+      const parsedArgs = parseToolCallArguments(call.arguments)
+      if (!parsedArgs.ok) return { output: `invalid arguments: ${parsedArgs.error}`, isError: true }
+      const args = parsedArgs.args
       const response = await fetch(`${this.opts.baseUrl}/execute`, {
         method: "POST",
         headers,

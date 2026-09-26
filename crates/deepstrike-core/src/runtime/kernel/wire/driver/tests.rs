@@ -531,6 +531,7 @@ fn provider_result(
                                 content: String::new(),
                                 tool_calls: calls,
                                 tool_call_id: None,
+                                is_error: false,
                                 tokens: None,
                             },
                             observed_input_tokens: None,
@@ -931,6 +932,41 @@ fn a_dynamic_host_append_grows_the_existing_workflow_and_uses_kernel_spawn_gatin
 }
 
 #[test]
+fn a_dynamic_host_append_refuses_a_node_id_already_in_the_dag() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&configure());
+    runtime.submit(&dynamic_workflow_start("dup-start", 1_700_000_001_000));
+    let first = runtime.submit(&control(
+        "dup-append-1",
+        1_700_000_002_000,
+        HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
+            nodes: vec![wire_node("alpha", "first", &[])],
+            plan: None,
+        }),
+    ));
+    let EffectKind::SpawnTasks(spawn) = &sole_effect(&first).effect else {
+        panic!("expected a spawn effect");
+    };
+    assert_eq!(spawn.tasks[0].node_id.as_str(), "alpha");
+
+    // A second batch reusing `alpha` would make two nodes share one wire identity.
+    let fault = runtime.reject(&control(
+        "dup-append-2",
+        1_700_000_003_000,
+        HostCommand::AppendWorkflowNodes(AppendWorkflowNodesCommand {
+            nodes: vec![wire_node("alpha", "second", &[])],
+            plan: None,
+        }),
+    ));
+    assert_eq!(fault.code, KernelFaultCode::InvalidConfig);
+    assert!(
+        fault.message.contains("already declared"),
+        "{}",
+        fault.message
+    );
+}
+
+#[test]
 fn a_dynamic_workflow_root_stays_open_until_host_closes_it() {
     let mut runtime = Runtime::new();
     runtime.submit(&configure());
@@ -960,19 +996,25 @@ fn a_dynamic_workflow_root_stays_open_until_host_closes_it() {
             }),
         }),
     ));
-    assert!(appended.step.observations.iter().any(|observation| matches!(
-        observation,
-        KernelObservation::DynamicWorkflowPlanCommitted {
-            run_id,
-            sequence,
-            node_ids,
-            prompt_fingerprints,
-            ..
-        } if run_id == "dynamic-run"
-            && *sequence == 0
-            && node_ids == &["dynamic-node".to_string()]
-            && prompt_fingerprints == &["prompt-fingerprint".to_string()]
-    )));
+    assert!(
+        appended
+            .step
+            .observations
+            .iter()
+            .any(|observation| matches!(
+                observation,
+                KernelObservation::DynamicWorkflowPlanCommitted {
+                    run_id,
+                    sequence,
+                    node_ids,
+                    prompt_fingerprints,
+                    ..
+                } if run_id == "dynamic-run"
+                    && *sequence == 0
+                    && node_ids == &["dynamic-node".to_string()]
+                    && prompt_fingerprints == &["prompt-fingerprint".to_string()]
+            ))
+    );
     let append_effect = sole_effect(&appended);
     assert_eq!(append_effect.tag(), EffectKindTag::SpawnTasks);
     runtime.submit(&spawned(
@@ -2828,6 +2870,8 @@ fn a_mixed_syscall_and_host_tool_batch_resolves_without_re_emitting_the_tool_bat
                 kind: SyscallMemoryKind::Project,
                 content: "prefers numbered sections".to_string(),
                 score: None,
+                recall_count: WireU64::ZERO,
+                pinned: false,
             }],
         }),
     ));
@@ -4156,6 +4200,7 @@ fn provider_answer(id: &str, at: u64, effect: &EffectId, text: &str) -> WireEnve
                     content: text.to_string(),
                     tool_calls: Vec::new(),
                     tool_call_id: None,
+                    is_error: false,
                     tokens: None,
                 },
                 observed_input_tokens: None,
@@ -4254,6 +4299,9 @@ fn observation_label(observation: &KernelObservation) -> &'static str {
         KernelObservation::AgentPreempted { .. } => "agent_preempted",
         KernelObservation::PayloadResidencyChanged { .. } => "payload_residency_changed",
         KernelObservation::PayloadLoadFailed { .. } => "payload_load_failed",
+        KernelObservation::MemoryValidationFailed { .. } => "memory_validation_failed",
+        KernelObservation::MemoryRecalled { .. } => "memory_recalled",
+        KernelObservation::PromotionSuggested { .. } => "promotion_suggested",
         _ => "other",
     }
 }
@@ -5910,6 +5958,8 @@ fn a_memory_recall_enters_context_before_the_turn_resumes() {
                 kind: SyscallMemoryKind::Project,
                 content: "prefers numbered sections".to_string(),
                 score: None,
+                recall_count: WireU64::ZERO,
+                pinned: false,
             }],
         }),
     ));
@@ -5925,6 +5975,201 @@ fn a_memory_recall_enters_context_before_the_turn_resumes() {
         "{:?}",
         observation_kinds(&runtime)
     );
+}
+
+/// M3/M4 · the store reports what it holds; the kernel derives the next count and the promotion
+/// edge. No host computes `recall_count + 1`.
+#[test]
+fn a_memory_recall_journals_the_kernel_derived_lifecycle() {
+    use crate::runtime::kernel::wire::config::MemoryPolicy;
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.memory_policy = Some(MemoryPolicy {
+            retrieval_top_k: Some(4),
+            promotion_recall_threshold: Some(WireU64::new(3)),
+            ..MemoryPolicy::default()
+        });
+    }));
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let provider = sole_effect(&started).effect_id.clone();
+    let queried = runtime.submit(&provider_result(
+        "in-memory",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call(
+            "call-1",
+            crate::context::manager::MEMORY_TOOL_NAME,
+            json!({"query": "prior briefs"}),
+        )],
+    ));
+    let effect = sole_effect(&queried).effect_id.clone();
+    let recall = |record: &str, recall_count: u64, pinned: bool| MemoryRecall {
+        record_ref: MemoryRecordRef::new(record).unwrap(),
+        name: record.to_string(),
+        kind: SyscallMemoryKind::Project,
+        content: format!("{record} body"),
+        score: None,
+        recall_count: WireU64::new(recall_count),
+        pinned,
+    };
+    runtime.submit(&resolved(
+        "in-recalls",
+        1_700_000_003_000,
+        &effect,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
+            recalls: vec![
+                recall("crossing", 2, false),
+                recall("pinned", 2, true),
+                recall("fresh", 0, false),
+            ],
+        }),
+    ));
+    let recalled = runtime
+        .observations()
+        .iter()
+        .find_map(|observation| match observation {
+            KernelObservation::MemoryRecalled { recalls, .. } => Some(recalls.clone()),
+            _ => None,
+        })
+        .expect("a successful recall journals its lifecycle");
+    assert_eq!(
+        recalled
+            .iter()
+            .map(|recall| (
+                recall.record_id.as_str(),
+                recall.recall_count,
+                recall.last_recalled_at
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("crossing", 3, 1_700_000_003_000),
+            ("pinned", 3, 1_700_000_003_000),
+            ("fresh", 1, 1_700_000_003_000),
+        ],
+        "the count is the stored count plus one, stamped with the accepted time"
+    );
+    let promoted: Vec<_> = runtime
+        .observations()
+        .iter()
+        .filter_map(|observation| match observation {
+            KernelObservation::PromotionSuggested {
+                record_id,
+                recall_count,
+                ..
+            } => Some((record_id.as_str(), *recall_count)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(promoted, vec![("crossing", 3)]);
+}
+
+/// §22.13 · the model's proposal answers to the operation's validation policy — historically the
+/// syscall path was checked by nothing and only host writes were validated.
+#[test]
+fn a_memory_proposal_the_policy_refuses_is_rejected_and_journaled() {
+    use crate::runtime::kernel::wire::config::MemoryPolicy;
+    use crate::runtime::kernel::wire::syscall::{MemoryWriteProposal, RequestMemoryWriteRequest};
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.memory_policy = Some(MemoryPolicy {
+            max_content_bytes: Some(8),
+            ..MemoryPolicy::default()
+        });
+    }));
+    let started = runtime.submit(&workflow_start(
+        "in-start",
+        1_700_000_001_000,
+        two_node_spec(),
+    ));
+    runtime.submit(&spawned(
+        "in-ack",
+        1_700_000_002_000,
+        &effect_id(started.step_seq),
+        &["wf-node0"],
+    ));
+    let answered = runtime.submit(&child_done_with(
+        "in-done",
+        1_700_000_002_500,
+        "wf-node0",
+        "wf-node0:attempt:1",
+        vec![SyscallRequest::RequestMemoryWrite(
+            RequestMemoryWriteRequest {
+                proposal: MemoryWriteProposal {
+                    name: "brief".to_string(),
+                    kind: SyscallMemoryKind::Project,
+                    content: "far more than eight bytes".to_string(),
+                    description: String::new(),
+                    evidence_refs: Vec::new(),
+                },
+            },
+        )],
+    ));
+    assert!(
+        !kinds(&answered).contains(&EffectKindTag::PersistMemory),
+        "a refused proposal publishes no write"
+    );
+    let refused = runtime
+        .observations()
+        .iter()
+        .find_map(|observation| match observation {
+            KernelObservation::MemoryValidationFailed { error, .. } => Some(error.clone()),
+            _ => None,
+        })
+        .expect("the refusal is an audit fact");
+    assert_eq!(refused, "memory content exceeds 8 bytes");
+}
+
+/// §22.13 · a host-authored write inside a live operation is admitted by the same rule and the
+/// same rolling quota as the model's.
+#[test]
+fn a_host_memory_write_is_admitted_by_the_kernel_rule_and_quota() {
+    use crate::runtime::kernel::wire::command::AdmitMemoryWriteCommand;
+    use crate::runtime::kernel::wire::config::{RateWindow, ResourceQuota};
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.resource_quota = Some(ResourceQuota {
+            memory_writes_per_window: Some(RateWindow {
+                max_events: 1,
+                window_ms: WireU64::new(60_000),
+            }),
+            ..ResourceQuota::default()
+        });
+    }));
+    runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let admit = |id: &str, at: u64, name: &str, content_bytes: u32| {
+        control(
+            id,
+            at,
+            HostCommand::AdmitMemoryWrite(AdmitMemoryWriteCommand {
+                record_id: format!("rec-{id}"),
+                name: name.to_string(),
+                content_bytes,
+            }),
+        )
+    };
+    let failures = |runtime: &Runtime| -> Vec<String> {
+        runtime
+            .observations()
+            .iter()
+            .filter_map(|observation| match observation {
+                KernelObservation::MemoryValidationFailed { error, .. } => Some(error.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+
+    runtime.submit(&admit("in-invalid", 1_700_000_002_000, " ", 4));
+    assert_eq!(failures(&runtime), vec!["memory name must not be empty"]);
+
+    runtime.submit(&admit("in-ok", 1_700_000_002_100, "brief", 4));
+    assert!(
+        failures(&runtime).is_empty(),
+        "an invalid write spent no quota, so the first valid one is admitted"
+    );
+
+    runtime.submit(&admit("in-over", 1_700_000_002_200, "brief", 4));
+    let over = failures(&runtime);
+    assert_eq!(over.len(), 1, "the window holds one write: {over:?}");
 }
 
 #[test]
@@ -6107,6 +6352,8 @@ fn agent_start_with_history(id: &str, at: u64, messages: usize) -> WireEnvelope 
                         ),
                         tokens: Some(64),
                         tool_call_id: None,
+                        is_error: false,
+                        tool_calls: Vec::new(),
                     })
                     .collect(),
                 ..InitialContext::default()
@@ -10423,4 +10670,317 @@ fn structured_multi_tool_result_message_has_one_durable_envelope_per_call() {
             .unwrap(),
         results,
     );
+}
+
+/// A preloaded history keeps its tool-call pairing: the assistant's calls and the tool message's
+/// `tool_call_id` both reach the rendered provider context, so a resumed run never presents a tool
+/// result whose call was dropped.
+#[test]
+fn preloaded_history_keeps_assistant_tool_calls_paired_with_their_results() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&configure());
+    let started = runtime.submit(&envelope(
+        "in-history-pairing",
+        1_700_000_001_000,
+        KernelInput::StartOperation(StartOperation {
+            entry: RootEntry::Agent(RootAgentEntry {
+                task: LogicalTask::new("continue"),
+                run_spec: Some(test_agent_spec("continue")),
+            }),
+            initial_context: InitialContext {
+                messages: serde_json::from_value(json!([
+                    { "role": "user", "content": "find x" },
+                    { "role": "assistant", "content": "", "tool_calls": [
+                        { "call_id": "call_1", "name": "search", "arguments": { "q": "x" } }
+                    ] },
+                    { "role": "tool", "content": "result-x", "tool_call_id": "call_1" },
+                    { "role": "assistant", "content": "done" }
+                ]))
+                .expect("history decodes"),
+                ..InitialContext::default()
+            },
+        }),
+    ));
+    let effect = serde_json::to_value(&sole_effect(&started).effect).unwrap();
+    let turns = effect
+        .pointer("/payload/context/turns")
+        .or_else(|| effect.pointer("/context/turns"))
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("provider effect renders turns: {effect}"));
+    let call = turns
+        .iter()
+        .find(|turn| turn["role"] == "assistant" && turn["tool_calls"].is_array())
+        .unwrap_or_else(|| panic!("the assistant tool call survived preload: {turns:?}"));
+    assert_eq!(call["tool_calls"][0]["call_id"], "call_1");
+    assert_eq!(call["tool_calls"][0]["name"], "search");
+    let result = turns
+        .iter()
+        .find(|turn| turn["role"] == "tool")
+        .expect("the tool result survived preload");
+    assert_eq!(result["tool_call_id"], "call_1");
+    assert_eq!(result["content"], "result-x");
+}
+
+#[test]
+fn child_token_spend_is_the_observed_total_or_the_sum_of_its_split() {
+    use crate::runtime::kernel::wire::event::UsageFacts;
+    let tokens = |value: u64| Some(WireU64::new(value));
+    // A host that only knows the total reports it as such, never as output tokens.
+    assert_eq!(
+        child_total_tokens(&UsageFacts {
+            total_tokens: tokens(120),
+            turns: Some(3),
+            ..UsageFacts::default()
+        }),
+        120
+    );
+    // Input spend is not discarded when the split is known.
+    assert_eq!(
+        child_total_tokens(&UsageFacts {
+            input_tokens: tokens(90),
+            output_tokens: tokens(30),
+            ..UsageFacts::default()
+        }),
+        120
+    );
+    assert_eq!(child_total_tokens(&UsageFacts::default()), 0);
+}
+
+fn has_skill_knowledge(runtime: &Runtime, name: &str) -> bool {
+    let key = format!("skill:{name}");
+    runtime
+        .driver
+        .engine()
+        .unwrap()
+        .ctx
+        .partitions
+        .knowledge
+        .entries
+        .iter()
+        .any(|entry| entry.key.as_deref() == Some(key.as_str()) && !entry.evict_at_boundary)
+}
+
+fn stage_skill_knowledge(runtime: &mut Runtime, name: &str) {
+    runtime
+        .driver
+        .engine_mut()
+        .unwrap()
+        .ctx
+        .push_knowledge_entry(
+            Some(format!("skill:{name}").into()),
+            CoreMessage::system(format!("{name} instructions")),
+            4,
+            true,
+        );
+}
+
+#[test]
+fn a_refused_skill_activation_withdraws_the_content_the_host_staged_for_it() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    // A host stages skill content before it resolves the provider call that asks for it.
+    stage_skill_knowledge(&mut runtime, "not-declared");
+    runtime.submit(&provider_result(
+        "in-skill",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call(
+            "call-1",
+            "skill",
+            json!({"name": "not-declared"}),
+        )],
+    ));
+    assert_eq!(rejections(&runtime).len(), 1);
+    assert!(
+        !has_skill_knowledge(&runtime, "not-declared"),
+        "the kernel refused the activation, so the model must never read the staged content"
+    );
+    assert!(
+        !runtime
+            .observations()
+            .iter()
+            .any(|observation| matches!(observation, KernelObservation::SkillAdmitted { .. }))
+    );
+}
+
+#[test]
+fn an_admitted_skill_activation_keeps_its_content_and_says_so() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    stage_skill_knowledge(&mut runtime, "debug");
+    runtime.submit(&provider_result(
+        "in-skill",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call(
+            "call-1",
+            "skill",
+            json!({"name": "debug", "lease_turns": 3}),
+        )],
+    ));
+    assert!(has_skill_knowledge(&runtime, "debug"));
+    let activated = runtime
+        .observations()
+        .iter()
+        .find_map(|observation| match observation {
+            KernelObservation::SkillAdmitted {
+                name,
+                expires_at_turn,
+                ..
+            } => Some((name.clone(), *expires_at_turn)),
+            _ => None,
+        });
+    assert!(matches!(activated, Some((ref name, Some(_))) if name == "debug"));
+}
+
+fn provider_surface_under(
+    policy: crate::runtime::kernel::wire::command::GovernancePolicy,
+) -> (Vec<String>, String) {
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.governance_policy = Some(policy);
+    }));
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let EffectKind::CallProvider(call) = &sole_effect(&started).effect else {
+        panic!("expected a provider call");
+    };
+    (
+        call.tools.iter().map(|tool| tool.name.clone()).collect(),
+        call.context.system_knowledge.clone(),
+    )
+}
+
+#[test]
+fn the_kernel_withholds_statically_denied_tools_with_the_rules_that_enforce_them() {
+    use crate::runtime::kernel::wire::command::{GovernancePolicy, PolicyAction, PolicyRule};
+
+    let vetoed = GovernancePolicy {
+        vetoed_tools: vec!["search".to_string()],
+        ..GovernancePolicy::default()
+    };
+    let (tools, knowledge) = provider_surface_under(vetoed.clone());
+    assert!(
+        tools.iter().any(|tool| tool == "search"),
+        "without the opt-in the surface is unchanged and the gate answers the call"
+    );
+    assert!(!knowledge.contains("[governance]"));
+
+    let (tools, knowledge) = provider_surface_under(GovernancePolicy {
+        hide_denied_tools: Some(true),
+        ..vetoed
+    });
+    assert!(!tools.iter().any(|tool| tool == "search"));
+    assert!(knowledge.contains("[governance] the following tools are denied"));
+    assert!(knowledge.contains("search"));
+    assert!(
+        tools.iter().any(|tool| tool == "skill"),
+        "kernel meta-tools are never governance subjects on the surface"
+    );
+
+    // First matching rule wins, exactly as the call gate evaluates it: an earlier allow keeps
+    // `search` visible even though a later catch-all denies.
+    let (tools, _) = provider_surface_under(GovernancePolicy {
+        rules: vec![
+            PolicyRule {
+                tool_pattern: "search".to_string(),
+                action: PolicyAction::Allow,
+            },
+            PolicyRule {
+                tool_pattern: "*".to_string(),
+                action: PolicyAction::Deny,
+            },
+        ],
+        hide_denied_tools: Some(true),
+        ..GovernancePolicy::default()
+    });
+    assert!(tools.iter().any(|tool| tool == "search"));
+
+    // Syscalls never reach the call gate, so a catch-all deny cannot take them off the surface.
+    let (tools, knowledge) = provider_surface_under(GovernancePolicy {
+        default_action: Some(PolicyAction::Deny),
+        hide_denied_tools: Some(true),
+        ..GovernancePolicy::default()
+    });
+    assert!(!tools.iter().any(|tool| tool == "search"));
+    assert!(tools.iter().any(|tool| tool == "start_workflow"));
+    assert!(!knowledge.contains("start_workflow"));
+}
+
+/// A failed tool result reaches the next provider request marked as a failure — both when the host
+/// resolves it live and when it arrives in preloaded history — so the model is never shown an
+/// error text dressed as a success.
+#[test]
+fn a_failed_tool_result_reaches_the_provider_marked_as_a_failure() {
+    let turns_of = |output: &CommittedTransition<PlannedStep>| {
+        let effect = serde_json::to_value(&sole_effect(output).effect).unwrap();
+        effect
+            .pointer("/payload/context/turns")
+            .or_else(|| effect.pointer("/context/turns"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_else(|| panic!("provider effect renders turns: {effect}"))
+    };
+    let tool_turn = |turns: &[Value], call_id: &str| {
+        turns
+            .iter()
+            .find(|turn| turn["role"] == "tool" && turn["tool_call_id"] == call_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("tool turn {call_id} rendered: {turns:?}"))
+    };
+
+    let mut runtime = Runtime::new();
+    runtime.submit(&payload_config());
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let acted = runtime.submit(&provider_result(
+        "in-acted",
+        1_700_000_002_000,
+        &effect_id(started.step_seq),
+        vec![
+            tool_call("call-ok", "search", json!({"q": "a"})),
+            tool_call("call-bad", "search", json!({"q": "b"})),
+        ],
+    ));
+    let tools = sole_effect(&acted).effect_id.clone();
+    let next = runtime.submit(&tools_resolved(
+        "in-results",
+        1_700_000_003_000,
+        &tools,
+        &[
+            ("call-ok", "found", false),
+            ("call-bad", "invalid arguments", true),
+        ],
+    ));
+    let turns = turns_of(&next);
+    assert_eq!(tool_turn(&turns, "call-bad")["is_error"], true);
+    assert_eq!(
+        tool_turn(&turns, "call-bad")["content"],
+        "invalid arguments"
+    );
+    assert!(
+        tool_turn(&turns, "call-ok").get("is_error").is_none(),
+        "success stays unmarked"
+    );
+
+    let mut resumed = Runtime::new();
+    resumed.submit(&configure());
+    let started = resumed.submit(&envelope(
+        "in-history-error",
+        1_700_000_001_000,
+        KernelInput::StartOperation(StartOperation {
+            entry: RootEntry::Agent(RootAgentEntry {
+                task: LogicalTask::new("continue"),
+                run_spec: Some(test_agent_spec("continue")),
+            }),
+            initial_context: InitialContext {
+                messages: serde_json::from_value(json!([
+                    { "role": "user", "content": "find x" },
+                    { "role": "assistant", "content": "", "tool_calls": [
+                        { "call_id": "call_1", "name": "search", "arguments": { "q": "x" } }
+                    ] },
+                    { "role": "tool", "content": "timeout", "tool_call_id": "call_1", "is_error": true }
+                ]))
+                .expect("history decodes"),
+                ..InitialContext::default()
+            },
+        }),
+    ));
+    assert_eq!(tool_turn(&turns_of(&started), "call_1")["is_error"], true);
 }

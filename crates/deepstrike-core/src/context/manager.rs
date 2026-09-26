@@ -994,6 +994,17 @@ impl ContextManager {
             .is_none()
     }
 
+    /// A refused `skill` activation: withdraw the `skill:<name>` knowledge the host staged for it,
+    /// unless the skill is already active under an earlier admission.
+    pub fn retract_refused_skill(&mut self, name: &str) -> bool {
+        if self.active_skills.contains_key(name) {
+            return false;
+        }
+        self.partitions
+            .knowledge
+            .retract_staged(&format!("skill:{name}"))
+    }
+
     /// K3: deactivate a skill — the toolset re-widens at the next `emit_call_llm` (an epoch event,
     /// same cache cost class as activation) and the skill's `skill:<name>` knowledge pin is marked
     /// for the next boundary sweep. Errs-open: not-active is a no-op (returns false).

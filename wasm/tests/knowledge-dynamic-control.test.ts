@@ -52,12 +52,21 @@ describe("skill lease + deactivation events reach the kernel (K3)", () => {
   it("deactivateSkill emits apply_skill_activation deactivate under host_control", async () => {
     kernelEvents.length = 0
     let runnerRef: RuntimeRunner | undefined
+    let calls = 0
     const provider: LLMProvider = {
       async complete(): Promise<ModelMessage> {
         return { role: "assistant", content: "unused", toolCalls: [] }
       },
       async *stream(): AsyncIterable<StreamEvent> {
-        yield { type: "tool_call", id: "s1", name: "skill", arguments: { name: "debug" } }
+        calls += 1
+        // `skill` is a kernel syscall, so there is no host tool_result to react to: deactivate on
+        // the turn after the activation instead.
+        if (calls === 1) {
+          yield { type: "tool_call", id: "s1", name: "skill", arguments: { name: "debug" } }
+          return
+        }
+        await runnerRef?.deactivateSkill("debug")
+        yield { type: "text_delta", delta: "done" }
       },
     }
 
@@ -72,9 +81,7 @@ describe("skill lease + deactivation events reach the kernel (K3)", () => {
     })
     runnerRef = runner
 
-    for await (const e of runner.run({ sessionId: "skill-lease", goal: "debug it" })) {
-      if (e.type === "tool_result" && runnerRef) runnerRef.deactivateSkill("debug")
-    }
+    for await (const _e of runner.run({ sessionId: "skill-lease", goal: "debug it" })) { /* drain */ }
 
     const deactivated = hostControls().some(event =>
       event.command?.kind === "apply_skill_activation"

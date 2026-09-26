@@ -296,6 +296,8 @@ export function workflowNodeStatusFromTermination(termination: TerminationReason
 }
 
 export interface WorkflowNodeSpec {
+  /** Caller-declared wire identity; absent ⇒ the canonical lowering assigns a positional id. */
+  nodeId?: string
   task: WorkflowTaskSpec
   role: KernelAgentRole
   isolation?: AgentIsolation
@@ -391,6 +393,8 @@ export function workflowNodeOutcomeFromKernel(raw: KernelWorkflowNodeOutcome): W
 /** Per-node spawn descriptor carried in the `workflow_batch_spawned` observation. */
 export interface WorkflowSpawnInfo {
   agent_id: string
+  /** The kernel-minted attempt this launch runs as; echoed back on the node's completion. */
+  attempt_id?: string
   goal: string
   role: string
   isolation: string
@@ -493,6 +497,7 @@ export function workflowNodeSpecToKernel(n: WorkflowNodeSpec): Record<string, un
   const kind = nodeKindToKernel(n)
   const schedulingFactors = schedulingFactorsToKernel(n.schedulingFactors)
   return {
+    ...(n.nodeId ? { node_id: n.nodeId } : {}),
     task: workflowTaskToKernel(n.task),
     role: n.role,
     isolation: n.isolation ?? "shared",
@@ -545,6 +550,7 @@ export function workflowSpecToKernel(spec: WorkflowSpec): Record<string, unknown
  *  (append) and `start_workflow` (workflow authoring: author a sub-workflow), so the two tools never drift. */
 const workflowNodesArraySchema = {
   type: "array",
+  description: "Workflow nodes (a DAG); each runs as a gated sub-agent. `dependsOn` is batch-relative.",
   items: {
     type: "object",
     properties: {
@@ -552,58 +558,9 @@ const workflowNodesArraySchema = {
       role: { type: "string", enum: ["explore", "plan", "implement", "verify", "custom"] },
       isolation: { type: "string", enum: ["shared", "read_only", "worktree", "remote"] },
       contextInheritance: { type: "string", enum: ["none", "system_only", "full"] },
-      trust: { type: "string", enum: ["trusted", "quarantined"] },
       outputSchema: { type: "object", description: "Optional JSON Schema the node's output must conform to." },
       modelHint: { type: "string", description: "Preferred model for this node (e.g. \"opus\"/\"sonnet\"); the host routes it." },
-      reducer: { type: "string", description: "Make this a deterministic reduce node (no LLM); names a registered reducer." },
-      loop: {
-        type: "object",
-        description: "Make this a loop node: re-run up to maxIters times, ending early when the agent reports done.",
-        properties: { maxIters: { type: "integer", description: "Hard iteration cap." } },
-        required: ["maxIters"],
-      },
-      classify: {
-        type: "object",
-        description: "Make this a classify node: pick one branch label; that branch's nodes run, the rest are pruned.",
-        properties: {
-          branches: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                label: { type: "string" },
-                nodes: { type: "array", items: { type: "integer" }, description: "Batch-relative node indices for this branch." },
-              },
-              required: ["label", "nodes"],
-            },
-          },
-        },
-        required: ["branches"],
-      },
-      tournament: {
-        type: "object",
-        description: "Make this a tournament controller: generate each entrant, then pairwise-judge to one winner.",
-        properties: {
-          entrants: {
-            type: "array",
-            description: "≥2 candidate tasks to generate and judge.",
-            items: {
-              oneOf: [
-                { type: "string" },
-                { type: "object", properties: { goal: { type: "string" }, criteria: { type: "array", items: { type: "string" } } }, required: ["goal"] },
-              ],
-            },
-          },
-        },
-        required: ["entrants"],
-      },
-      tokenBudget: { type: "integer", description: "Cap this node's child run at this many cumulative tokens." },
       dependsOn: { type: "array", items: { type: "integer" } },
-      depPolicy: {
-        type: "string",
-        enum: ["all_success", "accept_partial", "all_terminal", "optional"],
-        description: "How dependency terminal states gate this node; defaults to all_success.",
-      },
     },
     required: ["task", "role"],
   },
@@ -614,9 +571,7 @@ export const submitWorkflowNodesTool: ToolSchema = {
   description:
     "Append new nodes to the running workflow DAG (dynamic fan-out / loop-until-done). Each node " +
     "spawns as a gated sub-agent. Use when you discover more work that should run as its own node. " +
-    "A node may declare ONE control-flow kind — `loop` / `classify` / `tournament` / `reducer` — " +
-    "otherwise it is a plain spawn. Within a submission, `dependsOn` and `classify.branches[].nodes` " +
-    "are batch-relative (index 0 = this batch's first node).",
+    "Within a submission, `dependsOn` is batch-relative (index 0 = this batch's first node).",
   parameters: JSON.stringify({
     type: "object",
     properties: { nodes: workflowNodesArraySchema },
@@ -630,9 +585,9 @@ export const submitWorkflowNodesTool: ToolSchema = {
 export const startWorkflowTool: ToolSchema = {
   name: "start_workflow",
   description:
-    "Author and run a sub-workflow: a DAG of nodes (fan-out / classify / tournament / loop / reduce) " +
-    "composed onto the current run. Use to structure a multi-step task as its own harness. The nodes " +
-    "spawn as gated sub-agents; `dependsOn` / `classify.branches[].nodes` are spec-relative.",
+    "Author and run a sub-workflow: a DAG of nodes (fan-out / fan-in) composed onto the current run. " +
+    "Use to structure a multi-step task as its own harness. The nodes spawn as gated sub-agents; " +
+    "`dependsOn` is spec-relative.",
   parameters: JSON.stringify({
     type: "object",
     properties: {

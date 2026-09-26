@@ -58,10 +58,10 @@ use super::checkpoint::{
     TaskWaitConditionState, TaskWaitSetState, WorkflowGraphState, WorkflowNodeState,
 };
 use super::command::{
-    AppendWorkflowNodesCommand, ApplyCapabilityPatchCommand, ApplyKnowledgeMutationCommand,
-    ApplyPolicyPatchCommand, ApplySkillActivationCommand, CancelCommand, CancellationReason,
-    DynamicWorkflowReplayCommand, HostCommand, LivePolicyState, SeedKnowledgeCommand,
-    TaskUpdate as WireTaskUpdate, UpdateDeadlineCommand, UpdateTaskCommand,
+    AdmitMemoryWriteCommand, AppendWorkflowNodesCommand, ApplyCapabilityPatchCommand,
+    ApplyKnowledgeMutationCommand, ApplyPolicyPatchCommand, ApplySkillActivationCommand,
+    CancelCommand, CancellationReason, DynamicWorkflowReplayCommand, HostCommand, LivePolicyState,
+    SeedKnowledgeCommand, TaskUpdate as WireTaskUpdate, UpdateDeadlineCommand, UpdateTaskCommand,
 };
 use super::config::ResolvedOperationConfig;
 use super::effect::{
@@ -1879,6 +1879,26 @@ fn wire_node_ids(spec: &WireSpec) -> Vec<NodeId> {
     spec.nodes.iter().map(|node| node.node_id.clone()).collect()
 }
 
+/// Node identity is unique across the whole DAG, not only within one batch. `build_core_spec`
+/// checks a batch against itself; an append must also be checked against every node the DAG
+/// already holds, or two nodes share one wire id and every later spawn effect and terminal
+/// outcome names the wrong node.
+fn ensure_fresh_node_ids(existing: &[NodeId], nodes: &[WireNode]) -> Result<(), KernelFault> {
+    for node in nodes {
+        if existing.iter().any(|known| known == &node.node_id) {
+            return Err(KernelFault::new(
+                KernelFaultCode::InvalidConfig,
+                format!(
+                    "workflow node id {:?} is already declared in this DAG; node identity is \
+                     unique across every appended batch",
+                    node.node_id
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Wire DAG → the kernel's index-addressed DAG. Node identity is checked here: a duplicate id or a
 /// dependency on a node the spec does not declare is refused before the engine sees the spec.
 fn build_core_spec(spec: &WireSpec) -> Result<CoreWorkflowSpec, KernelFault> {
@@ -2354,10 +2374,21 @@ fn live_policy_label(patch: &super::command::LivePolicyPatch) -> &'static str {
 }
 
 fn logical_message(message: &super::root::LogicalMessage) -> CoreMessage {
+    // A tool message's `tool_call_id` becomes a structural tool-result part, the same shape a
+    // resolved tool effect leaves in history, so the pairing survives rendering and compaction.
+    let content = match (&message.tool_call_id, message.role) {
+        (Some(call_id), MessageRole::Tool) => Content::Parts(vec![ContentPart::ToolResult {
+            call_id: call_id.as_str().into(),
+            output: message.content.clone(),
+            is_error: message.is_error,
+            durable_content: None,
+        }]),
+        _ => Content::Text(message.content.clone()),
+    };
     CoreMessage {
         role: core_role_of(message.role),
-        content: Content::Text(message.content.clone()),
-        tool_calls: Vec::new(),
+        content,
+        tool_calls: message.tool_calls.iter().map(core_tool_call).collect(),
     }
 }
 
@@ -2392,20 +2423,19 @@ fn rendered_context(
 }
 
 fn provider_message(message: &CoreMessage) -> ProviderMessage {
-    let (content, tool_call_id) = match &message.content {
+    let (content, tool_call_id, is_error) = match &message.content {
         Content::Parts(parts) => match parts.as_slice() {
             [
                 ContentPart::ToolResult {
-                    call_id, output, ..
+                    call_id,
+                    output,
+                    is_error,
+                    ..
                 },
-            ] => (output.clone(), Some(call_id.to_string())),
-            _ => message_body_parts(message)
-                .map(|(text, tool_call_id, _is_error)| (text, tool_call_id))
-                .unwrap_or_default(),
+            ] => (output.clone(), Some(call_id.to_string()), *is_error),
+            _ => message_body_parts(message).unwrap_or_default(),
         },
-        Content::Text(_) => message_body_parts(message)
-            .map(|(text, tool_call_id, _is_error)| (text, tool_call_id))
-            .unwrap_or_default(),
+        Content::Text(_) => message_body_parts(message).unwrap_or_default(),
     };
     ProviderMessage {
         role: wire_role_of(message.role),
@@ -2416,6 +2446,7 @@ fn provider_message(message: &CoreMessage) -> ProviderMessage {
             .filter_map(|call| wire_tool_call(call).ok())
             .collect(),
         tool_call_id: tool_call_id.and_then(|call_id| super::scalar::CallId::new(call_id).ok()),
+        is_error,
         tokens: None,
     }
 }
@@ -2462,14 +2493,23 @@ fn sub_agent_result(completed: &ChildCompleted) -> SubAgentResult {
                 .result
                 .usage
                 .as_ref()
-                .and_then(|usage| usage.output_tokens)
-                .map_or(0, WireU64::get),
+                .map_or(0, child_total_tokens),
             loop_continue: None,
             classify_branch: None,
             pace_decision: None,
             tournament_winner: None,
         },
     }
+}
+
+/// The attempt's total token spend: the host's observed total, else the sum of the split.
+fn child_total_tokens(usage: &super::event::UsageFacts) -> u64 {
+    usage.total_tokens.map(WireU64::get).unwrap_or_else(|| {
+        usage
+            .input_tokens
+            .map_or(0, WireU64::get)
+            .saturating_add(usage.output_tokens.map_or(0, WireU64::get))
+    })
 }
 
 fn attempt_ordinal(attempt_id: &AttemptId) -> Option<u32> {
@@ -3125,6 +3165,7 @@ fn core_governance(
     use crate::governance::rate_limit::RateLimit;
 
     if policy.default_action == PolicyAction::Allow
+        && !policy.hide_denied_tools
         && policy.rules.is_empty()
         && policy.vetoed_tools.is_empty()
         && policy.rate_limits.is_empty()
@@ -3135,6 +3176,7 @@ fn core_governance(
     let mut pipeline = crate::governance::pipeline::GovernancePipeline::new(core_policy_action(
         policy.default_action,
     ));
+    pipeline.hide_denied_tools = policy.hide_denied_tools;
     for rule in &policy.rules {
         pipeline.permission.add_rule(PermissionRule {
             tool_pattern: rule.tool_pattern.as_str().into(),

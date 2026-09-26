@@ -7,6 +7,7 @@ from typing import Any
 
 from deepstrike._kernel import ContentPartObj, ModelMessage, TaskUpdate, ToolCall, ToolExecutionResult, ToolSchema
 from deepstrike.providers.base import ContextBudgetOverflow, RenderedContext
+from deepstrike.runtime.tool_arguments import tool_arguments_from_wire, tool_arguments_to_wire
 
 
 CANONICAL_CONTENT_PARTS_PREFIX = "[[deepstrike-content-parts]]"
@@ -68,6 +69,8 @@ class KernelRunnerAction:
   payload_ref: str | None = None
   attempts: list[dict[str, Any]] | None = None
   effect_kind: str | None = None
+  # archive_page_out: the kernel's opaque archive body (content/digest/original_size/preview).
+  archive_payload: dict[str, Any] | None = None
 
 
 def _try_parse_json(value: str) -> Any:
@@ -138,7 +141,7 @@ def message_to_kernel(message: ModelMessage) -> dict[str, Any]:
   out: dict[str, Any] = {
     "role": message.role,
     "tool_calls": [
-      {"id": c.id, "name": c.name, "arguments": _try_parse_json(c.arguments)}
+      {"id": c.id, "name": c.name, "arguments": tool_arguments_to_wire(c.arguments)}
       for c in (message.tool_calls or [])
     ],
   }
@@ -254,7 +257,7 @@ def _message_from_kernel(raw: dict[str, Any]) -> ModelMessage:
       type="tool_result",
       call_id=str(raw.get("tool_call_id") or ""),
       output=text,
-      is_error=False,
+      is_error=raw.get("is_error") is True,
     )]
   return ModelMessage(
     role=str(raw.get("role") or "user"),
@@ -263,7 +266,7 @@ def _message_from_kernel(raw: dict[str, Any]) -> ModelMessage:
       ToolCall(
         id=str(c.get("id") or c.get("call_id") or ""),
         name=str(c.get("name") or ""),
-        arguments=json.dumps(c.get("arguments") or {}),
+        arguments=tool_arguments_from_wire(c.get("arguments")),
       )
       for c in raw.get("tool_calls", []) or []
     ],

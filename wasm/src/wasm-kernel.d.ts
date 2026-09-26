@@ -81,6 +81,7 @@ declare module "@deepstrike/wasm-kernel" {
   export function verdictOutputSchema(extractSkillOnPass: boolean): string
   export function verifiableOperationJson(request: string): string
   export function evolutionValidateJson(request: string): string
+  export function memoryAuthorityJson(request: string): string
   export function contextPrepareJson(request: string): string
   export function contextVerifyJson(request: string): string
 }

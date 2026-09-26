@@ -8,8 +8,11 @@ def test_start_workflow_tool_shares_submit_node_schema():
     p = json.loads(start_workflow_tool["parameters"])
     assert p["required"] == ["spec"]
     items = p["properties"]["spec"]["properties"]["nodes"]["items"]
-    for key in ("task", "role", "loop", "classify", "tournament", "reducer", "token_budget", "depends_on"):
+    for key in ("task", "role", "depends_on"):
         assert key in items["properties"]
+    # Only what the canonical WorkflowNode can run is offered to the model.
+    for key in ("loop", "classify", "tournament", "reducer", "token_budget", "dep_policy", "trust"):
+        assert key not in items["properties"]
     assert items["required"] == ["task", "role"]
     # Same node-item schema as submit_workflow_nodes — they must never drift.
     submit_items = json.loads(submit_workflow_nodes_tool["parameters"])["properties"]["nodes"]["items"]

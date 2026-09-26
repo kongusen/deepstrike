@@ -33,4 +33,6 @@ async def test_interrupt_commits_correlated_cancellation(reason):
     entries = await log.read(f"cancel-{reason}")
     cancellation = next(entry.event for entry in entries if entry.event["kind"] == "operation_cancelled")
     assert cancellation["reason"] == reason
-    assert len(cancellation["pending_call_ids"]) == 1
+    # ``pending_call_ids`` is the logical call-id namespace; an in-flight provider effect is not a
+    # call and is settled by the cancel transition itself.
+    assert cancellation["pending_call_ids"] == []

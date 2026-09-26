@@ -22,6 +22,7 @@ pub mod runner;
 pub mod sandboxed_skill;
 pub mod session_log;
 pub mod skill_watcher;
+pub mod tool_arguments;
 
 pub use archive::{ArchiveStore, FileArchiveStore, NullArchiveStore};
 pub use canonical_kernel::{
@@ -48,7 +49,7 @@ pub use mcp_proxy_plane::{McpProxyPlane, McpServerConfig};
 pub use os_profile::{
     DEFAULT_NATIVE_SIGNAL_POLICY, GovernancePolicy, MemoryWriteRateLimit, NativeOsProfile,
     OsProfile, SchedulerPolicyConfig, SignalPolicy, assert_native_profile,
-    default_native_governance_policy, governance_filter_schema, os_profile,
+    default_native_governance_policy, os_profile,
 };
 pub use payload_store::{FilePayloadStore, PayloadStore};
 pub use process_sandbox_plane::{ProcessSandboxPlane, SandboxOptions};

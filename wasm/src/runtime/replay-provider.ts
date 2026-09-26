@@ -36,6 +36,7 @@ import type {
   ToolSchema,
   UsageEvent,
 } from "../types.js"
+import { malformedToolArguments } from "./tool-arguments.js"
 
 export interface ReplayProviderOpts {
   /**
@@ -142,10 +143,10 @@ export class ReplayProvider implements LLMProvider {
       try {
         args = JSON.parse(tc.arguments || "{}")
       } catch {
-        // Malformed recorded arguments — pass an empty object. The runner's downstream tool
-        // execution will surface the error if the tool needs them.
+        // Malformed recorded arguments: `rawArguments` carries the text so the replayed call
+        // fails as invalid, exactly as the recorded one did.
       }
-      const call: ToolCallEvent = { type: "tool_call", id: tc.id, name: tc.name, arguments: args }
+      const call: ToolCallEvent = { type: "tool_call", id: tc.id, name: tc.name, arguments: args, ...malformedToolArguments(tc.arguments) }
       yield call
     }
   }

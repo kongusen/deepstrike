@@ -77,6 +77,11 @@ impl WireU64 {
         self.0
     }
 
+    /// For `skip_serializing_if`: a zero count is the field's absent form.
+    pub const fn is_zero(&self) -> bool {
+        self.0 == 0
+    }
+
     /// Whether this value survives a round-trip through a JS `number`. Hosts that project to
     /// `bigint` or keep the branded decimal string never need to ask.
     pub const fn is_js_safe(self) -> bool {

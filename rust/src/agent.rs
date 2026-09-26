@@ -447,6 +447,7 @@ impl AgentSession {
         self.runner
             .write_memory(memory, Some(&self.session_id), None)
             .await
+            .map(|_| ())
     }
 
     pub async fn recall(&self, query: MemoryQuery) -> Result<Vec<MemoryRecall>> {

@@ -61,11 +61,13 @@ def normalize_tool_call(call_id: Any, name: Any, arguments: Any) -> ToolCall | N
     normalized_name = str(name or "").strip()
     if not normalized_name:
         return None
-    return ToolCall(
-        id=str(call_id or ""),
-        name=normalized_name,
-        arguments=json.dumps(parse_tool_arguments(arguments)),
-    )
+    if isinstance(arguments, str):
+        from deepstrike.runtime.tool_arguments import tool_arguments_text
+
+        text = tool_arguments_text(arguments)
+    else:
+        text = json.dumps(arguments if isinstance(arguments, dict) else {})
+    return ToolCall(id=str(call_id or ""), name=normalized_name, arguments=text)
 
 
 @dataclass

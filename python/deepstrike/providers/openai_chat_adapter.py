@@ -24,6 +24,7 @@ from deepstrike.providers.stop_reason import canonicalize_stop_reason
 from deepstrike.providers.stream import TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 from deepstrike.providers.usage import normalize_usage
 from deepstrike.types.content import CanonicalAdapterInput
+from deepstrike.runtime.tool_arguments import malformed_tool_arguments
 
 
 @dataclass(frozen=True)
@@ -267,7 +268,8 @@ class OpenAIChatAdapter:
             except json.JSONDecodeError:
                 args = {}
             state.emitted_tool_call_indexes.add(index)
-            events.append(ToolCallEvent(id=call["id"], name=call["name"], arguments=args))
+            events.append(ToolCallEvent(id=call["id"], name=call["name"], arguments=args,
+                                        raw_arguments=malformed_tool_arguments(call["args_buf"])))
         return events
 
     def _stream_replay(self, state: OpenAIChatStreamState) -> dict | None:

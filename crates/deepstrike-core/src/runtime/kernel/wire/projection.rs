@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use super::driver::PlannedStep;
 use super::effect::{
     ArchivePageOutEffect, CallProviderEffect, EffectKind, EffectKindTag, EvaluateMilestoneEffect,
-    ExecuteToolsEffect, KernelEffect, LoadPayloadEffect, PersistMemoryEffect,
-    PreemptTasksEffect, QueryMemoryEffect, RequestApprovalEffect, SpawnTasksEffect,
+    ExecuteToolsEffect, KernelEffect, LoadPayloadEffect, PersistMemoryEffect, PreemptTasksEffect,
+    QueryMemoryEffect, RequestApprovalEffect, SpawnTasksEffect,
 };
 use super::scalar::EffectId;
 

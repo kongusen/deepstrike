@@ -393,6 +393,65 @@ pub struct MemoryRecallLifecycle {
     pub last_recalled_at: u64,
 }
 
+/// What the host's store holds for one record it just recalled — the only input the recall
+/// lifecycle needs. The store reports state; it never reports the *next* state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryRecallPrior {
+    pub record_id: String,
+    #[serde(default)]
+    pub recall_count: u64,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// A recalled record whose count crossed the promotion threshold on this recall (M4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryPromotion {
+    pub record_id: String,
+    pub recall_count: u64,
+}
+
+/// M3/M4 · the one derivation of a recall's lifecycle, shared by the model's `query_memory`
+/// syscall and every host recall route.
+///
+/// Each distinct record counts once per derivation however many hits named it, so a prefetch that
+/// issues several overlapping queries cannot inflate a count. Promotion is edge-triggered — it is
+/// suggested on the recall that crosses the threshold, never again on later ones — and a pinned
+/// record is never suggested, because it is already where a promotion would put it.
+pub fn derive_recall_lifecycle(
+    priors: &[MemoryRecallPrior],
+    recalled_at: u64,
+    promotion_threshold: Option<u64>,
+) -> (Vec<MemoryRecallLifecycle>, Vec<MemoryPromotion>) {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut recalls = Vec::with_capacity(priors.len());
+    let mut promotions = Vec::new();
+    for prior in priors {
+        if !seen.insert(prior.record_id.as_str()) {
+            continue;
+        }
+        let recall_count = prior.recall_count.saturating_add(1);
+        recalls.push(MemoryRecallLifecycle {
+            record_id: prior.record_id.clone(),
+            recall_count,
+            last_recalled_at: recalled_at,
+        });
+        if let Some(threshold) = promotion_threshold
+            && !prior.pinned
+            && prior.recall_count < threshold
+            && recall_count >= threshold
+        {
+            promotions.push(MemoryPromotion {
+                record_id: prior.record_id.clone(),
+                recall_count,
+            });
+        }
+    }
+    (recalls, promotions)
+}
+
 /// Memory validation error.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "error_kind", rename_all = "snake_case")]
@@ -769,5 +828,53 @@ mod tests {
             MemoryUpsertError::RecordIdConflict { record_id, .. } if record_id == "same-id"
         ));
         assert_eq!(store.len(), 1);
+    }
+
+    fn prior(record_id: &str, recall_count: u64, pinned: bool) -> MemoryRecallPrior {
+        MemoryRecallPrior {
+            record_id: record_id.into(),
+            recall_count,
+            pinned,
+        }
+    }
+
+    #[test]
+    fn a_recall_counts_each_record_once_and_suggests_promotion_only_on_the_crossing() {
+        let (recalls, promotions) = derive_recall_lifecycle(
+            &[
+                prior("crossing", 2, false),
+                prior("crossing", 2, false),
+                prior("already_past", 3, false),
+                prior("pinned", 2, true),
+                prior("fresh", 0, false),
+            ],
+            42,
+            Some(3),
+        );
+        assert_eq!(
+            recalls
+                .iter()
+                .map(|recall| (recall.record_id.as_str(), recall.recall_count))
+                .collect::<Vec<_>>(),
+            vec![
+                ("crossing", 3),
+                ("already_past", 4),
+                ("pinned", 3),
+                ("fresh", 1)
+            ]
+        );
+        assert!(recalls.iter().all(|recall| recall.last_recalled_at == 42));
+        assert_eq!(
+            promotions,
+            vec![MemoryPromotion {
+                record_id: "crossing".into(),
+                recall_count: 3
+            }]
+        );
+        assert!(
+            derive_recall_lifecycle(&[prior("crossing", 2, false)], 1, None)
+                .1
+                .is_empty()
+        );
     }
 }

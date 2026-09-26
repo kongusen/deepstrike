@@ -451,8 +451,8 @@ fn parse_openai_sse(
                     if data == "[DONE]" {
                         // flush accumulated tool calls
                         if let Some((_, (id, name, args_buf))) = tool_accum.iter().next() {
-                            let arguments: Value = serde_json::from_str(args_buf)
-                                .unwrap_or(Value::Object(Default::default()));
+                            let arguments =
+                                crate::runtime::tool_arguments::from_model_text(args_buf);
                             let evt = StreamEvent::ToolCall {
                                 id: id.clone(),
                                 name: name.clone(),

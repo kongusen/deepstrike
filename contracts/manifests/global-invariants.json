@@ -8,15 +8,16 @@
       "enforcement": "canonical-kernel-and-session-log",
       "testRefs": [
         {
-          "path": "node/tests/effect-hygiene.test.ts",
+          "path": "node/tests/boundary-p1-regressions.test.ts",
           "selectors": [
-            "R-B27: an unverifiable milestone effect is still resolved"
+            "refuses to acknowledge an effect id that is not a pending launch",
+            "never invents an attempt id for a completion it cannot attribute"
           ]
         },
         {
-          "path": "node/tests/canonical-binding.test.ts",
+          "path": "node/tests/boundary-p2-regressions.test.ts",
           "selectors": [
-            "CanonicalKernel native binding"
+            "does not advance the turn or record messages for a provider result the kernel refused"
           ]
         }
       ]
@@ -28,15 +29,15 @@
       "enforcement": "canonical-kernel-and-signal-drain",
       "testRefs": [
         {
-          "path": "node/tests/signal-boundary.test.ts",
+          "path": "node/tests/boundary-p1-regressions.test.ts",
           "selectors": [
-            "signal host-to-kernel boundary"
+            "admits a deadline-bearing signal and a host note through the real kernel"
           ]
         },
         {
-          "path": "node/tests/signal-addressing.test.ts",
+          "path": "node/tests/signal-boundary.test.ts",
           "selectors": [
-            "SignalGateway recipient addressing (R1/L0)"
+            "signal host-to-kernel boundary"
           ]
         }
       ]
@@ -48,9 +49,9 @@
       "enforcement": "OperationContext-and-session-log",
       "testRefs": [
         {
-          "path": "node/tests/runtime/reliability.test.ts",
+          "path": "node/tests/boundary-p2-regressions.test.ts",
           "selectors": [
-            "ManagedTaskScope"
+            "refuses a receipt addressed from another operation"
           ]
         },
         {

@@ -355,6 +355,13 @@ pub struct LogicalMessage {
     /// Set on a tool message to pair it with its call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<CallId>,
+    /// Set on a paired tool message whose result was a failure.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_error: bool,
+    /// Calls an assistant message issued. Without them a preloaded history carries tool results
+    /// whose calls never happened, which strict providers reject as orphans.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<super::effect::ToolCall>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

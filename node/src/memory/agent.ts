@@ -61,34 +61,21 @@ export async function selectMemories(
 }
 
 /**
- * Validate memory before writing (kernel-side validation mirror).
+ * Check a record's shape before it is offered for writing: identity, scope and description.
  *
- * This SDK-side validation provides early feedback before sending to kernel.
+ * The admission rule itself — name and content limits, and whether validation is on at all — is
+ * the kernel's alone (`admit_memory_write` in a run, the stateless memory authority outside one).
+ * This function deliberately carries no copy of it.
  */
 export function validateMemory(record: MemoryRecord): { valid: boolean; error?: string } {
-  // Check required fields
   if (!record.record_id || record.record_id.trim().length === 0) {
     return { valid: false, error: "Missing required field: record_id" }
   }
   if (!record.scope.tenant_id || !record.scope.namespace) {
     return { valid: false, error: "Missing required field: scope" }
   }
-  if (!record.name || record.name.trim().length === 0) {
-    return { valid: false, error: "Missing required field: name" }
-  }
   if (!record.description || record.description.trim().length === 0) {
     return { valid: false, error: "Missing required field: description" }
   }
-
-  // Check name length
-  if (record.name.length > 100) {
-    return { valid: false, error: `Name too long: ${record.name.length} chars (limit: 100)` }
-  }
-
-  // Check content size
-  if (record.content.length > 10_000) {
-    return { valid: false, error: `Content too large: ${record.content.length} bytes (limit: 10000)` }
-  }
-
   return { valid: true }
 }

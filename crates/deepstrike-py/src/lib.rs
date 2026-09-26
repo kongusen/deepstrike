@@ -1749,6 +1749,14 @@ fn evolution_validate_json(request: String) -> PyResult<String> {
     deepstrike_core::evolution::validate_evolution_json(&request).map_err(PyValueError::new_err)
 }
 
+/// §22.13 memory authority for a host with no live operation: write admission and the recall
+/// lifecycle, answered by the same kernel functions the in-operation paths use.
+#[pyfunction]
+fn memory_authority_json(request: String) -> PyResult<String> {
+    deepstrike_core::runtime::kernel::wire::memory_authority::memory_authority_json(&request)
+        .map_err(PyValueError::new_err)
+}
+
 // ──────────────────────────────────────── module registration ─────────────────────────────────
 
 #[pymodule]
@@ -1791,6 +1799,7 @@ fn _kernel(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verdict_output_schema, m)?)?;
     m.add_function(wrap_pyfunction!(verifiable_operation_json, m)?)?;
     m.add_function(wrap_pyfunction!(evolution_validate_json, m)?)?;
+    m.add_function(wrap_pyfunction!(memory_authority_json, m)?)?;
     m.add_function(wrap_pyfunction!(context_prepare_json, m)?)?;
     m.add_function(wrap_pyfunction!(context_verify_json, m)?)?;
     Ok(())

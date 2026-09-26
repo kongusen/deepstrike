@@ -16,6 +16,7 @@ from .stop_reason import canonicalize_stop_reason
 from .usage import normalize_usage
 from .openai_chat_adapter import OpenAIChatAdapter
 from deepstrike.types.content import normalize_canonical_adapter_input
+from deepstrike.runtime.tool_arguments import malformed_tool_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -598,11 +599,12 @@ class OpenAIProvider(ReasoningReplayMixin):
                         args = json.loads(tb["args_buf"] or "{}")
                     except json.JSONDecodeError:
                         args = {}
-                    tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
+                    tc_obj = normalize_tool_call(tb["id"], tb["name"], tb["args_buf"] or "")
                     if tc_obj:
                         final_tool_calls.append(tc_obj)
                         emitted_tool_call_indexes.add(idx)
-                        yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
+                        yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args,
+                                            raw_arguments=malformed_tool_arguments(tb["args_buf"]))
                 _remember()
 
         if use_tags:
@@ -621,9 +623,10 @@ class OpenAIProvider(ReasoningReplayMixin):
                 args = json.loads(tb["args_buf"] or "{}")
             except json.JSONDecodeError:
                 args = {}
-            tc_obj = normalize_tool_call(tb["id"], tb["name"], args)
+            tc_obj = normalize_tool_call(tb["id"], tb["name"], tb["args_buf"] or "")
             if tc_obj:
                 final_tool_calls.append(tc_obj)
-                yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args)
+                yield ToolCallEvent(id=tc_obj.id, name=tc_obj.name, arguments=args,
+                                    raw_arguments=malformed_tool_arguments(tb["args_buf"]))
 
         _remember()

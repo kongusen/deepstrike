@@ -8,6 +8,7 @@ import { InMemorySessionLog, type SessionEvent, type SessionLog } from "./runtim
 import { extractJsonValue, validateAgainstSchema } from "./runtime/output-schema.js"
 import type { SignalSource } from "./signals/index.js"
 import type { McpExecutionPlane } from "./runtime/mcp-transport.js"
+import { checkMemoryWrite } from "./memory/authority.js"
 
 type JsonSchema = Record<string, unknown>
 export interface MemoryReference { kind?: "durable"; namespace?: string }
@@ -170,6 +171,9 @@ export class Agent {
       created_at: now, updated_at: now, recall_count: 0, confidence: input.confidence ?? 1,
       links: [], pinned: input.pinned ?? false, ...(input.ttlDays === undefined ? {} : { ttl_days: input.ttlDays }),
     }
+    // §22.13 · the kernel's write rule, not a copy of it, decides whether this record may be stored.
+    const refusal = await checkMemoryWrite(undefined, record.name, record.content)
+    if (refusal) throw new Error(`agent "${this.name}" memory write denied: ${refusal}`)
     await (this.memory as Memory).put(record)
     return record
   }

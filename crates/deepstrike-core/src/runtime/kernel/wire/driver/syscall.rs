@@ -81,34 +81,15 @@ impl CanonicalOperationDriver {
                 )
             }
             SyscallRequest::ActivateSkill(activate) => {
-                let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
-                if !engine.ctx.skill_available(&activate.name) {
-                    return Err(SyscallRefusal::Rejected(SyscallRejection::new(
-                        "skill",
-                        format!(
-                            "this operation declares no skill named {:?}; activation is a \
-                             capability mutation and is refused rather than invented",
-                            activate.name
-                        ),
-                    )));
+                let refusal = self.activate_skill(activate, &caller);
+                if let Err(SyscallRefusal::Rejected(_)) = &refusal {
+                    // The host may already have staged this skill's content; a refused activation
+                    // must not leave it for the model to read (the kernel, not the host, admits it).
+                    if let Ok(engine) = self.engine_mut() {
+                        engine.ctx.retract_refused_skill(&activate.name);
+                    }
                 }
-                ensure_skill_grants_are_attenuated(
-                    engine.ctx.skill_capability_grants(&activate.name),
-                    engine.task_capabilities(caller.as_str()),
-                )
-                .map_err(|violations| {
-                    SyscallRefusal::Rejected(SyscallRejection::new(
-                        "skill",
-                        skill_grant_attenuation_message(&activate.name, &violations),
-                    ))
-                })?;
-                let expires_at_turn = activate
-                    .lease_turns
-                    .map(|turns| engine.turn.saturating_add(turns));
-                engine
-                    .ctx
-                    .activate_skill_leased(activate.name.as_str(), expires_at_turn);
-                Ok(SyscallOutcome::default())
+                refusal
             }
             SyscallRequest::UpdateTask(update) => {
                 let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
@@ -347,6 +328,9 @@ impl CanonicalOperationDriver {
         })
         .map_err(|fault| SyscallRefusal::Rejected(SyscallRejection::new(label, fault.message)))?
         .nodes;
+        ensure_fresh_node_ids(&self.node_ids, nodes).map_err(|fault| {
+            SyscallRefusal::Rejected(SyscallRejection::new(label, fault.message))
+        })?;
 
         let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
         let admitted = engine.append_workflow_nodes(
@@ -402,6 +386,25 @@ impl CanonicalOperationDriver {
         self.require_effect_support(context.config, EffectKindTag::PersistMemory)
             .map_err(SyscallRefusal::Fault)?;
         let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        // §22.13 · validated before it is metered: a proposal the policy refuses spends no quota.
+        if let Err(error) = context
+            .config
+            .memory_policy
+            .check_write(&proposal.name, proposal.content.len())
+        {
+            let turn = engine.turn;
+            engine
+                .observations
+                .push(KernelObservation::MemoryValidationFailed {
+                    turn,
+                    record_id: proposal.name.clone(),
+                    error: error.clone(),
+                });
+            return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                "write_memory",
+                error,
+            )));
+        }
         let disposition = engine.gate_memory_write_proposal();
         if !disposition.is_allowed() {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
@@ -587,6 +590,47 @@ impl CanonicalOperationDriver {
             needs_workflow_round: false,
             ack: None,
         })
+    }
+
+    fn activate_skill(
+        &mut self,
+        activate: &super::super::syscall::ActivateSkillRequest,
+        caller: &TaskId,
+    ) -> Result<SyscallOutcome, SyscallRefusal> {
+        let engine = self.engine_mut().map_err(SyscallRefusal::Fault)?;
+        if !engine.ctx.skill_available(&activate.name) {
+            return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                "skill",
+                format!(
+                    "this operation declares no skill named {:?}; activation is a \
+                     capability mutation and is refused rather than invented",
+                    activate.name
+                ),
+            )));
+        }
+        ensure_skill_grants_are_attenuated(
+            engine.ctx.skill_capability_grants(&activate.name),
+            engine.task_capabilities(caller.as_str()),
+        )
+        .map_err(|violations| {
+            SyscallRefusal::Rejected(SyscallRejection::new(
+                "skill",
+                skill_grant_attenuation_message(&activate.name, &violations),
+            ))
+        })?;
+        let expires_at_turn = activate
+            .lease_turns
+            .map(|turns| engine.turn.saturating_add(turns));
+        engine
+            .ctx
+            .activate_skill_leased(activate.name.as_str(), expires_at_turn);
+        let turn = engine.turn;
+        engine.observations.push(KernelObservation::SkillAdmitted {
+            turn,
+            name: activate.name.clone(),
+            expires_at_turn,
+        });
+        Ok(SyscallOutcome::default())
     }
 
     /// Record a refused request as an audit fact the model reads on its next turn (§7.6, §7.7).

@@ -583,6 +583,14 @@ interface PersistedCheckpoint {
  * (`<ordinal>.ckpt`), so two processes installing on the same predecessor also contend for one name.
  */
 export class FileKernelJournal implements KernelJournal {
+  /**
+   * The last head this instance observed, per operation. Only a hint: it is trusted only while
+   * the slot after it is still free, which one `stat`-like read proves — so an append costs O(1)
+   * file operations instead of a directory listing, and a head another process advanced is still
+   * found (by falling back to the listing).
+   */
+  private readonly knownHeads = new Map<string, JournalHead>()
+
   constructor(private readonly root: string) {}
 
   private operationDir(operationId: string): string {
@@ -707,6 +715,25 @@ export class FileKernelJournal implements KernelJournal {
   }
 
   async head(operationId: string): Promise<JournalHead | undefined> {
+    const known = this.knownHeads.get(operationId)
+    if (known && !(await this.recordExists(operationId, known.step_seq + 1))) return known
+    const head = await this.scanHead(operationId)
+    if (head) this.knownHeads.set(operationId, head)
+    return head
+  }
+
+  private async recordExists(operationId: string, stepSeq: number): Promise<boolean> {
+    try {
+      const handle = await openFile(join(this.recordsDir(operationId), `${pad(stepSeq)}.rec`), "r")
+      await handle.close()
+      return true
+    } catch (err) {
+      if ((err as { code?: string }).code === "ENOENT") return false
+      throw new JournalIoError("journal could not probe a record slot", { cause: err })
+    }
+  }
+
+  private async scanHead(operationId: string): Promise<JournalHead | undefined> {
     const seqs = await this.recordSeqs(operationId)
     const last = seqs.at(-1)
     if (last !== undefined) {
@@ -743,10 +770,12 @@ export class FileKernelJournal implements KernelJournal {
       JSON.stringify(persisted),
     )
     if (!won) {
+      this.knownHeads.delete(operationId)
       throw new JournalCasConflictError(
         `journal step_seq ${record.step_seq} was claimed by a concurrent writer`,
       )
     }
+    this.knownHeads.set(operationId, { step_seq: record.step_seq, record_digest: record.record_digest })
     return { step_seq: record.step_seq, record_digest: record.record_digest }
   }
 
@@ -763,7 +792,9 @@ export class FileKernelJournal implements KernelJournal {
 
   async recordsAfter(operationId: string, afterHead?: string): Promise<JournalEntry[]> {
     if (afterHead === undefined) return this.readFrom(operationId, 0)
-    for (const seq of await this.recordSeqs(operationId)) {
+    // The cursor is almost always recent (a checkpoint's covered head), so search newest-first:
+    // the scan then reads exactly the tail it is about to return, not the whole retained chain.
+    for (const seq of (await this.recordSeqs(operationId)).reverse()) {
       const entry = await this.readRecord(operationId, seq)
       if (entry?.record_digest === afterHead) return this.readFrom(operationId, seq + 1)
     }

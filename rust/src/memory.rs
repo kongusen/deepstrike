@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use deepstrike_core::memory::durable::SessionData;
 use deepstrike_core::mm::memory::{
-    MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
-    MemoryScope, MemoryTrustLevel,
+    MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecallLifecycle,
+    MemoryRecord, MemoryScope, MemoryTrustLevel,
 };
 
 /// Durable-memory host storage. Runner writes through `put` only after the kernel's
@@ -27,6 +27,17 @@ pub trait MemoryStore: Send + Sync {
         &self,
         data: deepstrike_core::memory::durable::SessionData,
     ) -> crate::Result<()>;
+
+    /// M3 · mirror a recall lifecycle the kernel derived into durable state. The counts arrive
+    /// already computed — a store never derives `recall_count + 1` itself. The default keeps no
+    /// recall history, which is the behaviour of a store that predates this hook.
+    async fn record_recall(
+        &self,
+        _agent_id: &str,
+        _recalls: &[MemoryRecallLifecycle],
+    ) -> crate::Result<()> {
+        Ok(())
+    }
 }
 
 /// Search options for an agent-bound [`DurableMemory`] descriptor.
@@ -355,6 +366,27 @@ impl MemoryStore for InMemoryMemoryStore {
 
     async fn save_session(&self, data: SessionData) -> crate::Result<()> {
         self.saved_sessions.lock().unwrap().push(data);
+        Ok(())
+    }
+
+    async fn record_recall(
+        &self,
+        agent_id: &str,
+        recalls: &[MemoryRecallLifecycle],
+    ) -> crate::Result<()> {
+        let mut memories = self.memories.lock().unwrap();
+        let records = memories
+            .entry(agent_id.to_string())
+            .or_insert_with(|| self.initial_memories.clone());
+        for recall in recalls {
+            if let Some(record) = records
+                .iter_mut()
+                .find(|record| record.record_id == recall.record_id)
+            {
+                record.recall_count = recall.recall_count;
+                record.last_recalled_at = Some(recall.last_recalled_at);
+            }
+        }
         Ok(())
     }
 }

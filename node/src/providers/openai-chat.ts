@@ -25,6 +25,7 @@ import type {
 } from "./content-normalization.js"
 import { normalizeCanonicalContext, projectToolOutputToText } from "./content-normalization.js"
 import { normalizeToolCall } from "./base.js"
+import { malformedToolArguments, toolArgumentsText } from "../runtime/tool-arguments.js"
 import { normalizeOpenAIUsage } from "./usage-normalizer.js"
 import {
   DEGRADED_REASONING_PLACEHOLDER,
@@ -245,7 +246,7 @@ function finalToolCalls(state: OpenAIChatStreamState): ToolCall[] {
   return Object.values(state.toolCallBuffers).map(call => ({
     id: call.id,
     name: call.name,
-    arguments: call.argsBuffer || "{}",
+    arguments: toolArgumentsText(call.argsBuffer),
   }))
 }
 
@@ -272,7 +273,7 @@ function pendingToolEvents(state: OpenAIChatStreamState): ToolCallEvent[] {
     let args: Record<string, unknown> = {}
     try { args = JSON.parse(call.argsBuffer || "{}") as Record<string, unknown> } catch { args = {} }
     state.emittedToolCallIndexes.add(index)
-    events.push({ type: "tool_call", id: call.id, name: call.name, arguments: args })
+    events.push({ type: "tool_call", id: call.id, name: call.name, arguments: args, ...malformedToolArguments(call.argsBuffer) })
   }
   return events
 }

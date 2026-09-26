@@ -46,7 +46,9 @@
         "signalId",
         "deliveryId",
         "deliveryAttempt",
-        "signal"
+        "signal",
+        "note",
+        "nowMs"
       ]
     },
     "nested": [
@@ -54,7 +56,7 @@
         "source": "signal",
         "target": "signal",
         "kind": "project",
-        "note": "Runtime signal fields are lowered to kernel snake_case."
+        "note": "Lowered straight into the kernel LogicalSignal: recipient→target, deadlineMs→escalate_after_ms (measured against nowMs), note→plain-text payload. signalType / coalesceKey / coalescedCount are signal-source concepts the canonical wire deliberately does not carry (§5n)."
       }
     ]
   },

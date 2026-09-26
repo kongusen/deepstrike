@@ -1044,6 +1044,14 @@ pub fn evolution_validate_json(request: String) -> Result<String, JsValue> {
         .map_err(|error| JsValue::from_str(&error))
 }
 
+/// §22.13 memory authority for a host with no live operation: write admission and the recall
+/// lifecycle, answered by the same kernel functions the in-operation paths use.
+#[wasm_bindgen(js_name = memoryAuthorityJson)]
+pub fn memory_authority_json(request: String) -> Result<String, JsValue> {
+    deepstrike_core::runtime::kernel::wire::memory_authority::memory_authority_json(&request)
+        .map_err(|error| JsValue::from_str(&error))
+}
+
 // ────────────────────────────── Durable-memory wire values ──────────────────────────────────────
 
 #[derive(Tsify, Clone, Serialize, Deserialize)]

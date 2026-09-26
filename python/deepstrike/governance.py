@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -28,38 +29,10 @@ class GovernancePolicy:
     vetoes: list[str] = field(default_factory=list)
     rate_limits: list[GovernanceRateLimit] = field(default_factory=list)
     constraints: list[dict[str, Any]] = field(default_factory=list)
-    # I5: when True (default), the runner pre-filters denied tools out of the schema. Mirrors Node.
+    # I5: when True (default), the kernel withholds statically denied tools (vetoes and ``deny``
+    # rules, evaluated exactly as the call gate evaluates them) from the provider surface and names
+    # them once in the knowledge slot. Mirrors Node.
     surface_denied_in_system: bool = True
-
-
-def governance_filter_schema(tools: list, policy: "GovernancePolicy | None") -> tuple[list, list[str]]:
-    """I5: bucket tools into (allowed, denied) per the policy. Pure. Mirrors Node ``governanceFilterSchema``."""
-    if policy is None:
-        return tools, []
-    vetoes = set(policy.vetoes or [])
-    allowed: list = []
-    denied: list[str] = []
-    def matches(pat: str, name: str) -> bool:
-        return pat == name or (pat.endswith("*") and name.startswith(pat[:-1]))
-    for t in tools:
-        name = t.name if hasattr(t, "name") else (t.get("name") if isinstance(t, dict) else None)
-        if name is None:
-            allowed.append(t)
-            continue
-        if name in vetoes:
-            denied.append(name)
-            continue
-        action = policy.default_action or "allow"
-        for r in (policy.rules or []):
-            pat = r.pattern if hasattr(r, "pattern") else r.get("pattern")
-            act = r.action if hasattr(r, "action") else r.get("action")
-            if pat is not None and matches(pat, name):
-                action = act
-        if action == "deny":
-            denied.append(name)
-        else:
-            allowed.append(t)
-    return allowed, denied
 
 
 def governance_policy_to_kernel_event(policy: GovernancePolicy) -> dict[str, Any]:
@@ -69,18 +42,19 @@ def governance_policy_to_kernel_event(policy: GovernancePolicy) -> dict[str, Any
             constraints.append({
                 "kind": "enum",
                 "tool": c["tool"],
-                "path": c["path"],
+                "param_path": c["path"],
                 "values": c["values"],
             })
         elif c.get("kind") == "range":
-            entry: dict[str, Any] = {"kind": "range", "tool": c["tool"], "path": c["path"]}
-            if "min" in c:
-                entry["min"] = c["min"]
-            if "max" in c:
-                entry["max"] = c["max"]
+            entry: dict[str, Any] = {"kind": "range", "tool": c["tool"], "param_path": c["path"]}
+            # The wire carries fixed-point micro-units so a bound replays byte-identically.
+            if c.get("min") is not None:
+                entry["min_micros"] = _to_micros(c["min"])
+            if c.get("max") is not None:
+                entry["max_micros"] = _to_micros(c["max"])
             constraints.append(entry)
         else:
-            constraints.append({"kind": "required", "tool": c["tool"], "path": c["path"]})
+            constraints.append({"kind": "required", "tool": c["tool"], "param_path": c["path"]})
     return {
         "kind": "load_governance_policy",
         **({"default_action": policy.default_action} if policy.default_action else {}),
@@ -91,7 +65,21 @@ def governance_policy_to_kernel_event(policy: GovernancePolicy) -> dict[str, Any
             for rl in policy.rate_limits
         ],
         "constraints": constraints,
+        "hide_denied_tools": policy.surface_denied_in_system is not False,
     }
+
+
+def governance_policy_patch(policy: GovernancePolicy) -> dict[str, Any]:
+    """A §13.2 live-policy patch replacing the governance posture, for ``RuntimeRunner.apply_policy_patch``."""
+    wire = {k: v for k, v in governance_policy_to_kernel_event(policy).items() if k != "kind"}
+    wire["rate_limits"] = [{**limit, "window_ms": str(limit["window_ms"])} for limit in wire["rate_limits"]]
+    return {"kind": "replace_governance_policy", "policy": wire}
+
+
+def _to_micros(value: float) -> int:
+    if not math.isfinite(float(value)):
+        raise ValueError(f"governance range bound must be finite, got {value}")
+    return round(float(value) * 1_000_000)
 
 
 @dataclass(frozen=True)

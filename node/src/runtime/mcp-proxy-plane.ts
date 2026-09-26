@@ -8,6 +8,7 @@ import { LocalExecutionPlane } from "./execution-plane.js"
 import type { CredentialVault } from "./credential-vault.js"
 import { formatToolError } from "../tools/errors.js"
 import { operationAbortSignal } from "./reliability.js"
+import { parseToolCallArguments } from "./tool-arguments.js"
 
 /** Raw MCP `tools/call` response `content` block shapes we accept (text/image/audio). */
 export interface McpContentBlock {
@@ -179,7 +180,9 @@ class McpConnection {
     signal?: AbortSignal,
   ): Promise<{ output: string; isError: boolean; contentParts?: ToolOutputBlock[] }> {
     try {
-      const args = JSON.parse(call.arguments || "{}") as Record<string, unknown>
+      const parsedArgs = parseToolCallArguments(call.arguments)
+      if (!parsedArgs.ok) return { output: `invalid arguments: ${parsedArgs.error}`, isError: true }
+      const args = parsedArgs.args
       const result = await this.request("tools/call", { name: call.name, arguments: args }, signal) as {
         content?: McpContentBlock[]
         isError?: boolean

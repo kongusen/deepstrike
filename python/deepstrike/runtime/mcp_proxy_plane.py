@@ -15,6 +15,7 @@ from deepstrike.tools.registry import RegisteredTool
 from deepstrike.runtime.execution_plane import ExecutionPlane, LocalExecutionPlane, RunContext
 from deepstrike.runtime.credential_vault import CredentialVault
 from deepstrike.runtime.reliability import run_with_operation
+from deepstrike.runtime.tool_arguments import parse_tool_call_arguments
 
 if TYPE_CHECKING:
   pass
@@ -174,7 +175,9 @@ class _McpConnection:
 
   async def execute(self, call: ToolCall) -> tuple[str, bool, list[dict] | None]:
     try:
-      args = json.loads(call.arguments or "{}")
+      args, args_error = parse_tool_call_arguments(call.arguments)
+      if args_error is not None:
+        return f"invalid arguments: {args_error}", True, None
       result: dict = await self._request("tools/call", {"name": call.name, "arguments": args})
       return mcp_result_to_tool_output(result)
     except Exception as exc:

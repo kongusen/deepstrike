@@ -201,6 +201,10 @@ pub struct UsageFacts {
     pub input_tokens: Option<WireU64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<WireU64>,
+    /// Total tokens the attempt consumed, for hosts that observe the total but not the
+    /// input/output split. When absent the kernel sums the split it was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<WireU64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turns: Option<u32>,
 }

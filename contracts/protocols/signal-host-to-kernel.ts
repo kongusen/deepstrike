@@ -7,9 +7,14 @@ export const SIGNAL_HOST_TO_KERNEL_PROTOCOL: BoundaryProtocol = {
   family: "host-to-kernel",
   direction: "project",
   fields: {
-    envelope: { source: ["signalId", "deliveryId", "deliveryAttempt", "signal"] },
+    envelope: { source: ["signalId", "deliveryId", "deliveryAttempt", "signal", "note", "nowMs"] },
     nested: [
-      { source: "signal", target: "signal", kind: "project", note: "Runtime signal fields are lowered to kernel snake_case." },
+      {
+        source: "signal",
+        target: "signal",
+        kind: "project",
+        note: "Lowered straight into the kernel LogicalSignal: recipient→target, deadlineMs→escalate_after_ms (measured against nowMs), note→plain-text payload. signalType / coalesceKey / coalescedCount are signal-source concepts the canonical wire deliberately does not carry (§5n).",
+      },
     ],
     forbidden: [],
   },

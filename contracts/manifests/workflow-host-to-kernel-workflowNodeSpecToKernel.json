@@ -53,6 +53,7 @@
       ]
     },
     "renames": {
+      "nodeId": "node_id",
       "contextInheritance": "context_inheritance",
       "modelHint": "model_hint",
       "outputSchema": "output_schema",
@@ -64,12 +65,10 @@
     },
     "drops": {
       "declared": [
-        "nodeId",
         "agent",
         "context"
       ],
       "inferred": [
-        "nodeId",
         "agent",
         "context",
         "toolAccess",

@@ -87,7 +87,7 @@ export interface StreamEvent { type: string }
 export interface TextDelta extends StreamEvent { type: "text_delta"; delta: string }
 export interface UsageEvent extends StreamEvent { type: "usage"; totalTokens: number; inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; cacheReadInputTokensBySlot?: { system?: number; tools?: number; messages?: number }; /** Provider stop reason — `max_tokens` (Anthropic) / `length` (OpenAI) flag an output-cap truncation driving the kernel's max-output-tokens recovery. */ stopReason?: string }
 export interface ThinkingDelta extends StreamEvent { type: "thinking_delta"; delta: string }
-export interface ToolCallEvent extends StreamEvent { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown> }
+export interface ToolCallEvent extends StreamEvent { type: "tool_call"; id: string; name: string; arguments: Record<string, unknown>; /** The model's argument text, present only when it was not a JSON object (then `arguments` is `{}`); executed so the call fails as invalid. */ rawArguments?: string }
 export interface ToolResultEvent extends StreamEvent { type: "tool_result"; callId: string; name: string; content: string; isError: boolean; isFatal?: boolean; errorKind?: ToolErrorKind; contentParts?: ToolOutputBlock[] }
 /** R3-1: a workflow node's agent called `submit_workflow_nodes`; the runner surfaces the requested nodes (the workflow lives in the parent kernel) and `runWorkflow` sends them to the parent kernel. */
 export interface WorkflowNodesSubmittedEvent extends StreamEvent { type: "workflow_nodes_submitted"; nodes: WorkflowNodeSpec[] }

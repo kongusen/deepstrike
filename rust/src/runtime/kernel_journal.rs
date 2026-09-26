@@ -850,13 +850,42 @@ struct PersistedCheckpoint {
 /// two processes installing on the same predecessor also contend for one name.
 pub struct FileKernelJournal {
     root: PathBuf,
+    /// The last head this instance observed, per operation. Only a hint: it is trusted only while
+    /// the slot after it is still free, which one existence check proves — so an append costs O(1)
+    /// file operations instead of a directory listing, and a head another process advanced is
+    /// still found (by falling back to the listing).
+    known_heads: std::sync::Mutex<std::collections::HashMap<String, JournalHead>>,
 }
 
 impl FileKernelJournal {
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
+            known_heads: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
+    }
+
+    fn record_path(&self, operation_id: &str, step_seq: u64) -> PathBuf {
+        self.records_dir(operation_id)
+            .join(format!("{}{RECORD_SUFFIX}", pad(step_seq)))
+    }
+
+    async fn scan_head(&self, operation_id: &str) -> JournalResult<Option<JournalHead>> {
+        if let Some(last) = self.record_positions(operation_id).await?.last().copied()
+            && let Some(entry) = self.read_record(operation_id, last).await?
+        {
+            return Ok(Some(JournalHead {
+                step_seq: entry.step_seq,
+                record_digest: entry.record_digest,
+            }));
+        }
+        Ok(self
+            .pruned_anchor(operation_id)
+            .await?
+            .map(|pruned| JournalHead {
+                step_seq: pruned.through_step_seq,
+                record_digest: pruned.covered_head,
+            }))
     }
 
     fn operation_dir(&self, operation_id: &str) -> PathBuf {
@@ -1010,11 +1039,19 @@ impl FileKernelJournal {
             JournalError::integrity(format!("journal record is not encodable: {err}"))
         })?;
         if !self.publish(operation_id, &target, &payload).await? {
+            self.known_heads.lock().unwrap().remove(operation_id);
             return Err(JournalError::conflict(format!(
                 "journal step_seq {} was claimed by a concurrent writer",
                 record.step_seq
             )));
         }
+        self.known_heads.lock().unwrap().insert(
+            operation_id.to_string(),
+            JournalHead {
+                step_seq: record.step_seq,
+                record_digest: record.record_digest.clone(),
+            },
+        );
         Ok(JournalAppendReceipt {
             step_seq: record.step_seq,
             record_digest: record.record_digest.clone(),
@@ -1187,21 +1224,24 @@ impl KernelJournal for FileKernelJournal {
     }
 
     async fn head(&self, operation_id: &str) -> JournalResult<Option<JournalHead>> {
-        if let Some(last) = self.record_positions(operation_id).await?.last().copied() {
-            if let Some(entry) = self.read_record(operation_id, last).await? {
-                return Ok(Some(JournalHead {
-                    step_seq: entry.step_seq,
-                    record_digest: entry.record_digest,
-                }));
+        let known = self.known_heads.lock().unwrap().get(operation_id).cloned();
+        if let Some(known) = known {
+            let next = self.record_path(operation_id, known.step_seq + 1);
+            if !fs::try_exists(&next)
+                .await
+                .map_err(|err| JournalError::io("journal could not probe a record slot", err))?
+            {
+                return Ok(Some(known));
             }
         }
-        Ok(self
-            .pruned_anchor(operation_id)
-            .await?
-            .map(|pruned| JournalHead {
-                step_seq: pruned.through_step_seq,
-                record_digest: pruned.covered_head,
-            }))
+        let head = self.scan_head(operation_id).await?;
+        if let Some(head) = &head {
+            self.known_heads
+                .lock()
+                .unwrap()
+                .insert(operation_id.to_string(), head.clone());
+        }
+        Ok(head)
     }
 
     async fn read_from(
@@ -1230,19 +1270,21 @@ impl KernelJournal for FileKernelJournal {
         let Some(after_head) = after_head else {
             return self.read_from(operation_id, 0).await;
         };
-        for position in self.record_positions(operation_id).await? {
-            if let Some(entry) = self.read_record(operation_id, position).await? {
-                if entry.record_digest == after_head {
-                    return self.read_from(operation_id, position + 1).await;
-                }
+        // The cursor is almost always recent (a checkpoint's covered head), so search newest-first:
+        // the scan then reads exactly the tail it is about to return, not the whole retained chain.
+        for position in self.record_positions(operation_id).await?.into_iter().rev() {
+            if let Some(entry) = self.read_record(operation_id, position).await?
+                && entry.record_digest == after_head
+            {
+                return self.read_from(operation_id, position + 1).await;
             }
         }
-        if let Some(pruned) = self.pruned_anchor(operation_id).await? {
-            if pruned.covered_head == after_head {
-                return self
-                    .read_from(operation_id, pruned.through_step_seq + 1)
-                    .await;
-            }
+        if let Some(pruned) = self.pruned_anchor(operation_id).await?
+            && pruned.covered_head == after_head
+        {
+            return self
+                .read_from(operation_id, pruned.through_step_seq + 1)
+                .await;
         }
         Err(JournalError::integrity(
             "journal cursor digest names no retained record",
@@ -2304,5 +2346,36 @@ mod tests {
             }
             other => panic!("io must stay io, got {other:?}"),
         }
+    }
+
+    /// P2-3 · the file journal trusts the head it last saw only while the next slot is free, so an
+    /// append does not list the whole record directory — yet an append by another instance (another
+    /// process) is still found, and the newest-first cursor returns exactly the tail.
+    #[tokio::test]
+    async fn a_file_journal_head_hint_never_hides_another_writers_append() {
+        let dir = TempDir::new();
+        let journal = FileKernelJournal::new(dir.path());
+        let digests = seed_chain(&journal, 20, OP).await;
+        assert_eq!(journal.head(OP).await.unwrap(), head(20, "d20"));
+
+        let other = FileKernelJournal::new(dir.path());
+        other
+            .compare_and_append(OP, Some(&digests[20]), record(21, "d21"))
+            .await
+            .expect("another writer appends");
+        assert_eq!(
+            journal.head(OP).await.unwrap(),
+            head(21, "d21"),
+            "a stale hint falls back to the listing"
+        );
+        let err = journal
+            .compare_and_append(OP, Some("d20"), record(21, "d21-fork"))
+            .await
+            .expect_err("a stale expected head is still a conflict");
+        assert!(matches!(err, JournalError::CasConflict(_)), "{err:?}");
+        assert_eq!(
+            positions(&journal.records_after(OP, Some("d18")).await.unwrap()),
+            vec![19, 20, 21]
+        );
     }
 }
