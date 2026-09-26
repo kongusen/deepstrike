@@ -22,6 +22,10 @@ jobs:
 
   rust:
     runs-on: ubuntu-latest
+    # The restart checkpoint test builds a large async state machine. Keep the
+    # Linux test-thread stack above the 2 MiB runner default.
+    env:
+      RUST_MIN_STACK: "8388608"
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
