@@ -1,5 +1,5 @@
 // ╔══════════════════════════════════════════════════════════════════════════╗
-// ║ @deepstrike/sdk — root surface (v0.2.74).                                      ║
+// ║ @deepstrike/sdk — root surface (v0.2.75).                                      ║
 // ║                                                                            ║
 // ║ This is the intent layer: run an agent, run a workflow, author a tool,     ║
 // ║ pick a provider. Advanced machinery lives behind subpaths:                 ║

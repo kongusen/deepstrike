@@ -25,7 +25,7 @@ test("SPC-028-01 keeps documentation on the same vocabulary version and terms", 
     join(process.cwd(), "../docs/en/architecture/runtime-language.md"),
   ].map(path => readFileSync(path, "utf8"))
   for (const doc of docs) {
-    expect(doc).toContain(`0.2.74`)
+    expect(doc).toContain(`0.2.75`)
     for (const term of runtimeVocabularyTerms()) expect(doc).toContain(`**${term}**`)
     for (const verb of Object.keys(RUNTIME_VOCABULARY.verbs)) expect(doc).toContain(`**${verb}**`)
   }

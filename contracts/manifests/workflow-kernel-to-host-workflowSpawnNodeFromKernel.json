@@ -1,6 +1,6 @@
 {
   "id": "workflow.kernel-to-host.workflowSpawnNodeFromKernel",
-  "version": "0.2.74",
+  "version": "0.2.75",
   "protocol": {
     "family": "kernel-to-host",
     "direction": "decode",
