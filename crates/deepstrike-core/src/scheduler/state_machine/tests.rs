@@ -6759,3 +6759,21 @@ fn spc_005_06_three_layer_grant_invariant_operation_to_a_to_a1_a2() {
         })
     );
 }
+#[test]
+fn preloaded_history_leaves_headroom_for_the_new_run() {
+    let mut sm = LoopStateMachine::new(SchedulerBudget {
+        max_tokens: 2_000, max_turns: 10, max_total_tokens: 100_000, max_wall_ms: None,
+    });
+    sm.ctx = crate::context::manager::ContextManager::with_config(
+        2_000, crate::context::config::ContextConfig::default(),
+        crate::context::token_engine::ContextTokenEngine::char_approx(),
+    );
+    let messages = (0..40).map(|i| CoreMessage::user(format!("turn {i}: {}", "detail ".repeat(40)))).collect();
+    sm.preload_history(messages);
+    let task = RuntimeTask::new("continue");
+    sm.start(task);
+    assert!(sm.ctx.partitions.total_tokens(&sm.ctx.engine) < 1_500,
+        "preloaded history should compact toward 65%, not fill the next prompt");
+    assert!(sm.observations.iter().any(|obs| matches!(obs, KernelObservation::Compressed { .. })));
+}
+

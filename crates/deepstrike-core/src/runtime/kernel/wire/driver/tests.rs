@@ -41,6 +41,20 @@ use crate::scheduler::tcb::TaskLifecycle;
 
 const OPERATION: &str = "op-driver-1";
 
+#[test]
+fn resolved_context_policy_reaches_the_semantic_engine() {
+    let mut config = ConfigDefaults::default().baseline;
+    config.context_policy.target_after_compress_ppm = Ppm::new(500_000).unwrap();
+    config.context_policy.renewal_carryover_ppm = Ppm::new(400_000).unwrap();
+    config.context_policy.preserve_recent_turns = 5;
+    config.context_policy.idle_micro_compact_minutes = 17;
+    let engine = build_engine(&config);
+    assert_eq!(engine.ctx.config.target_after_compress, 0.5);
+    assert_eq!(engine.ctx.config.carryover_ratio, 0.4);
+    assert_eq!(engine.ctx.plan_compaction_params().1, 5);
+    assert_eq!(engine.ctx.config.micro_compact_idle_minutes, 17);
+}
+
 // -----------------------------------------------------------------------------------------
 // §8.2 host loop: prepare → (CAS append) → commit → fold
 // -----------------------------------------------------------------------------------------

@@ -1152,6 +1152,25 @@ impl LoopStateMachine {
             );
         }
 
+        // Preloaded transcripts are already durable in the host's session log. Compact them
+        // before the first render instead of selecting a nearly full prompt while retaining the
+        // entire oversized history internally. No archive effect may precede an agent's first
+        // provider effect; the summary and the retained history are part of this atomic start.
+        if self.session_history_baseline > 0 && self.ctx.rho() > self.ctx.config.snip_threshold {
+            let action = crate::context::pressure::PressureAction::ContextCollapse;
+            let (saved, summary, archived, invalidates_prefix_at) = self.ctx.compress(action);
+            if saved > 0 || summary.is_some() {
+                self.observations.push(KernelObservation::Compressed {
+                    turn: self.turn,
+                    action: action.into(),
+                    rho_after: self.ctx.rho(),
+                    summary,
+                    archived_count: archived.len() as u32,
+                    invalidates_prefix_at,
+                });
+            }
+            self.session_history_baseline = self.ctx.partitions.history.messages.len();
+        }
         let user_msg = "Proceed with the task described in [TASK STATE].".to_string();
 
         // User message goes into history so it appears at the correct chronological

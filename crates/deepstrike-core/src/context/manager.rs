@@ -367,11 +367,14 @@ impl ContextManager {
     /// from *this* value, so it must NOT discount paged content (else collapse → rho drops →
     /// un-collapse would oscillate).
     pub fn rho(&self) -> f64 {
-        self.pressure.pressure(
+        let observed = self.pressure.pressure(
             &self.partitions,
             &self.engine,
             self.last_observed_prompt_tokens,
-        )
+        );
+        // A provider sees a selected projection, not the entire resident history. Its smaller
+        // count must not suppress compaction while the unselected history still triggers renewal.
+        observed.max(self.pressure.pressure(&self.partitions, &self.engine, None))
     }
 
     pub fn set_observed_prompt_tokens(&mut self, tokens: u32) {
@@ -427,6 +430,10 @@ impl ContextManager {
             target_tokens,
             &self.engine,
         );
+        if result.0 > 0 || !result.2.is_empty() {
+            // The measurement describes the request before this rewrite, not the new context.
+            self.last_observed_prompt_tokens = None;
+        }
         if let Some(ts) = now_ms {
             self.last_compact_ms = Some(ts);
         }
@@ -475,6 +482,7 @@ impl ContextManager {
             .renewal
             .renew(&self.partitions, self.max_tokens, &self.engine);
         self.sprint += 1;
+        self.last_observed_prompt_tokens = None;
         // History was rebuilt wholesale — drop handles anchored to messages it no longer carries,
         // and start a fresh collapse generation (P0-C) since the whole prefix changed.
         self.prune_orphaned_handles();
@@ -1249,6 +1257,18 @@ mod tests {
     use crate::evolution::ContentDigest;
     use crate::types::message::CoreMessage;
     use crate::types::skill::SkillMetadata;
+
+    #[test]
+    fn low_provider_usage_does_not_hide_resident_history_pressure() {
+        let mut mgr = ContextManager::with_config(
+            1_000, ContextConfig::default(), ContextTokenEngine::char_approx(),
+        );
+        mgr.push_history(CoreMessage::user("large history"), 1_100);
+        mgr.set_observed_prompt_tokens(10);
+        assert_eq!(mgr.should_compress(), PressureAction::AutoCompact);
+        mgr.compress(PressureAction::AutoCompact);
+        assert!(!mgr.should_renew());
+    }
 
     #[test]
     fn preparation_freezes_state_plan_and_render_identity() {

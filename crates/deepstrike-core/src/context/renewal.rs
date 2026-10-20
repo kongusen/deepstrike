@@ -61,31 +61,20 @@ impl RenewalPolicy {
         // History: carry recent turns up to carryover budget.
         let carryover_budget = config.carryover_tokens(max_tokens);
         let mut remaining = carryover_budget;
-        let mut carried: Vec<_> = partitions
-            .history
-            .messages
-            .iter()
-            .enumerate()
-            .rev()
-            .take_while(|(index, _msg)| {
-                let t = partitions.history.measured_tokens(*index, engine);
-                if t <= remaining {
-                    remaining = remaining.saturating_sub(t);
-                    true
-                } else {
-                    false
-                }
-            })
-            .map(|(index, msg)| {
-                (
-                    msg.clone(),
-                    partitions.history.measured_tokens(index, engine),
-                )
-            })
-            .collect();
-        carried.reverse();
-        for (msg, t) in carried {
-            renewed.history.push(msg, t);
+        let messages = &partitions.history.messages;
+        let mut start = messages.len();
+        // Carry whole conversational transactions, so a budget boundary cannot strand a result
+        // without its assistant call (or omit one result of a parallel call batch).
+        for unit in super::units::unit_boundaries(messages).into_iter().rev() {
+            let tokens = unit.clone().fold(0u32, |sum, index| {
+                sum.saturating_add(partitions.history.measured_tokens(index, engine))
+            });
+            if tokens > remaining { break; }
+            remaining = remaining.saturating_sub(tokens);
+            start = unit.start;
+        }
+        for (index, msg) in messages.iter().enumerate().skip(start) {
+            renewed.history.push(msg.clone(), partitions.history.measured_tokens(index, engine));
         }
 
         renewed
@@ -145,6 +134,23 @@ mod tests {
         let engine = ContextTokenEngine::fallback_estimator();
         let renewed = make_policy(0.05).renew(&ctx, 1_000, &engine);
         assert!(renewed.history.token_count <= 100);
+    }
+
+    #[test]
+    fn renewal_never_carries_a_tool_result_without_its_call() {
+        use crate::types::message::{ContentPart, ToolCall};
+        let mut ctx = ContextPartitions::new(&ContextConfig::default());
+        ctx.history.push(CoreMessage::user("read"), 10);
+        let mut call = CoreMessage::assistant("");
+        call.tool_calls.push(ToolCall {
+            id: "call-1".into(), name: "read".into(), arguments: serde_json::json!({}),
+        });
+        ctx.history.push(call, 80);
+        ctx.history.push(CoreMessage::tool(vec![ContentPart::ToolResult {
+            call_id: "call-1".into(), output: "result".into(), is_error: false, durable_content: None,
+        }]), 40);
+        let renewed = make_policy(0.1).renew(&ctx, 1_000, &ContextTokenEngine::char_approx());
+        assert!(crate::context::units::strict_tool_pairing_is_valid(&renewed.history.messages));
     }
 
     #[test]

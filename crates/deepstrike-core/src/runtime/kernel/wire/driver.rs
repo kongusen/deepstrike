@@ -3037,6 +3037,27 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
         max_total_tokens: execution.max_total_tokens.get(),
         max_wall_ms: execution.max_wall_ms.map(WireU64::get),
     });
+    let context = &config.context_policy;
+    let thresholds = &context.pressure_thresholds_ppm;
+    engine.ctx.apply_context_policy(&crate::context::policy::ContextPolicy {
+        pressure_thresholds_ppm: crate::context::policy::PressureThresholdsPpm {
+            snip: thresholds.snip.get(),
+            micro: thresholds.micro.get(),
+            collapse: thresholds.collapse.get(),
+            auto: thresholds.auto.get(),
+            renewal: thresholds.renewal.get(),
+        },
+        target_after_compress_ppm: context.target_after_compress_ppm.get(),
+        preserve_recent_turns: context.preserve_recent_turns,
+        renewal_carryover_ppm: context.renewal_carryover_ppm.get(),
+        collapse_old_assistant_narration: context.collapse_old_assistant_narration,
+        idle_micro_compact_minutes: context.idle_micro_compact_minutes,
+    });
+    engine.ctx.set_prompt_budget(crate::context::config::PromptBudgetConfig {
+        prompt_overhead_tokens: context.prompt_budget.prompt_overhead_tokens,
+        output_reserve_tokens: context.prompt_budget.output_reserve_tokens,
+        safety_margin_tokens: context.prompt_budget.safety_margin_tokens,
+    });
     if let Some(grant) = config.budget_grant.clone() {
         engine.set_budget_grant(grant);
     }
