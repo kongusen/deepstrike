@@ -325,7 +325,7 @@ impl CanonicalOperationDriver {
                 attempt_id: completed.attempt_id.clone(),
                 request_seq: seq as u32,
             });
-            match self.apply_syscall(context, &causation, request, &mut index) {
+            match self.apply_syscall(context, &causation, request, &mut index, &effects) {
                 Ok(outcome) => effects.extend(outcome.effects),
                 Err(SyscallRefusal::Fault(fault)) => self.note_rejection(
                     SyscallRejection::new(

@@ -9,6 +9,7 @@ impl CanonicalOperationDriver {
         causation: &SyscallCausation,
         request: &SyscallRequest,
         effect_index: &mut u32,
+        planned_effects: &[KernelEffect],
     ) -> Result<SyscallOutcome, SyscallRefusal> {
         let caller = causation_task(causation);
         let quarantined = self
@@ -53,6 +54,17 @@ impl CanonicalOperationDriver {
                     )
                 } else {
                     self.enter_nested_workflow(context, &submit.spec, effect_index)
+                        .map_err(|refusal| match refusal {
+                            SyscallRefusal::Fault(fault)
+                                if fault.code == KernelFaultCode::InvalidAuthority =>
+                            {
+                                SyscallRefusal::Rejected(SyscallRejection::new(
+                                    "start_workflow",
+                                    fault.message,
+                                ))
+                            }
+                            other => other,
+                        })
                 }
             }
             SyscallRequest::AppendWorkflowNodes(append) => {
@@ -99,9 +111,13 @@ impl CanonicalOperationDriver {
             SyscallRequest::RequestMemoryWrite(write) => {
                 self.plan_memory_write(context, causation, &write.proposal, effect_index)
             }
-            SyscallRequest::RequestMemoryQuery(query) => {
-                self.plan_memory_query(context, causation, &query.query, effect_index)
-            }
+            SyscallRequest::RequestMemoryQuery(query) => self.plan_memory_query(
+                context,
+                causation,
+                &query.query,
+                effect_index,
+                planned_effects,
+            ),
             SyscallRequest::PageIn(page_in) => {
                 self.plan_page_in(context, &caller, &page_in.handle_id, effect_index)
             }
@@ -450,6 +466,7 @@ impl CanonicalOperationDriver {
         causation: &SyscallCausation,
         proposal: &super::super::syscall::MemoryQueryProposal,
         effect_index: &mut u32,
+        planned_effects: &[KernelEffect],
     ) -> Result<SyscallOutcome, SyscallRefusal> {
         let Some(binding) = context.config.memory_access.clone() else {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
@@ -469,6 +486,30 @@ impl CanonicalOperationDriver {
         // and a model cannot widen it by asking for more.
         let ceiling = context.config.memory_policy.retrieval_top_k;
         let requested_k = proposal.limit.unwrap_or(ceiling).clamp(1, ceiling);
+        if let Some(pending) = context
+            .pending
+            .iter()
+            .chain(planned_effects)
+            .find_map(|effect| match &effect.effect {
+                EffectKind::QueryMemory(query) => Some(query),
+                _ => None,
+            })
+        {
+            if pending.binding == binding
+                && pending.query.text == proposal.text
+                && pending.query.kinds == proposal.kinds
+                && pending.requested_k == requested_k
+            {
+                return Ok(SyscallOutcome {
+                    ack: Some("Reusing the identical pending memory query; its results will arrive before the next turn.".into()),
+                    ..Default::default()
+                });
+            }
+            return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                "query_memory",
+                "A different memory query is already pending. Retry this query after its result arrives.",
+            )));
+        }
         let authored = AuthoredMemoryQuery {
             binding_id: binding.binding_id.clone(),
             text: proposal.text.clone(),

@@ -44,15 +44,27 @@ const OPERATION: &str = "op-driver-1";
 #[test]
 fn resolved_context_policy_reaches_the_semantic_engine() {
     let mut config = ConfigDefaults::default().baseline;
+    config.execution_policy.max_context_tokens = 1_000;
     config.context_policy.target_after_compress_ppm = Ppm::new(500_000).unwrap();
     config.context_policy.renewal_carryover_ppm = Ppm::new(400_000).unwrap();
     config.context_policy.preserve_recent_turns = 5;
     config.context_policy.idle_micro_compact_minutes = 17;
-    let engine = build_engine(&config);
+    let mut engine = build_engine(&config);
     assert_eq!(engine.ctx.config.target_after_compress, 0.5);
     assert_eq!(engine.ctx.config.carryover_ratio, 0.4);
     assert_eq!(engine.ctx.plan_compaction_params().1, 5);
     assert_eq!(engine.ctx.config.micro_compact_idle_minutes, 17);
+    for i in 0..6 {
+        engine
+            .ctx
+            .push_history(CoreMessage::user(format!("turn {i}")), 100);
+    }
+    engine.ctx.renew();
+    assert_eq!(
+        engine.ctx.partitions.history.messages.len(),
+        4,
+        "the renewal component must use the installed 40% policy rather than its 5% default"
+    );
 }
 
 // -----------------------------------------------------------------------------------------
@@ -2838,6 +2850,89 @@ fn a_memory_query_is_clamped_to_the_operations_retrieval_policy() {
         );
     }
     assert_eq!(effect.binding.binding_id.as_str(), "mem-binding-1");
+}
+
+#[test]
+fn parallel_memory_queries_reuse_or_refuse_without_terminating_the_turn() {
+    for duplicate in [true, false] {
+        let (mut runtime, provider) = agent_awaiting_provider();
+        let queried = runtime.submit(&provider_result(
+            "in-parallel-recall",
+            1_700_000_002_000,
+            &provider,
+            vec![
+                tool_call("call-1", "memory", json!({"query": "past briefs"})),
+                tool_call(
+                    "call-2",
+                    "memory",
+                    json!({"query": if duplicate { "past briefs" } else { "other projects" }}),
+                ),
+            ],
+        ));
+        assert_eq!(kinds(&queried), vec![EffectKindTag::QueryMemory]);
+        assert!(runtime.tx.terminal().is_none());
+        let history = &runtime
+            .driver
+            .engine()
+            .unwrap()
+            .ctx
+            .partitions
+            .history
+            .messages;
+        let result = history.iter().find_map(|message| {
+            let Content::Parts(parts) = &message.content else {
+                return None;
+            };
+            parts.iter().find_map(|part| match part {
+                ContentPart::ToolResult {
+                    call_id, is_error, ..
+                } if call_id == "call-2" => Some(*is_error),
+                _ => None,
+            })
+        });
+        assert_eq!(result, Some(!duplicate));
+        assert!(crate::context::units::strict_tool_pairing_is_valid(history));
+        let restored = Runtime::restore_with(None, &runtime.journal);
+        assert_eq!(
+            restored.pending_effect_kinds(),
+            vec![EffectKindTag::QueryMemory]
+        );
+        let resumed = runtime.submit(&resolved(
+            "in-recall-done",
+            1_700_000_003_000,
+            &sole_effect(&queried).effect_id,
+            EffectSuccess::MemoryQueried(MemoryQueriedSuccess { recalls: vec![] }),
+        ));
+        assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+    }
+}
+
+#[test]
+fn workflow_focus_refusal_is_answered_to_the_model() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    // Exercise the focus guard independently of the active-DAG flatten path. A stale focus
+    // must produce a model-visible denial rather than poison the whole provider resolution.
+    runtime.driver.focus = Some(ExecutionFocus::workflow_controller(
+        WorkflowId::new("existing-workflow").unwrap(),
+        Some(root_task_id()),
+    ));
+    let resumed = runtime.submit(&provider_result(
+        "in-second-workflow",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call(
+            "call-1",
+            "start_workflow",
+            serde_json::to_value(two_node_spec()).unwrap(),
+        )],
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+    assert!(runtime.tx.terminal().is_none());
+    assert!(
+        history_text(&runtime)
+            .iter()
+            .any(|text| text.contains("workflows do not stack"))
+    );
 }
 
 /// §7.6 + §15.3 · a provider turn that mixes an effect-publishing syscall (`memory`) with host

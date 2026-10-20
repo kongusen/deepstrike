@@ -69,12 +69,17 @@ impl RenewalPolicy {
             let tokens = unit.clone().fold(0u32, |sum, index| {
                 sum.saturating_add(partitions.history.measured_tokens(index, engine))
             });
-            if tokens > remaining { break; }
+            if tokens > remaining {
+                break;
+            }
             remaining = remaining.saturating_sub(tokens);
             start = unit.start;
         }
         for (index, msg) in messages.iter().enumerate().skip(start) {
-            renewed.history.push(msg.clone(), partitions.history.measured_tokens(index, engine));
+            renewed.history.push(
+                msg.clone(),
+                partitions.history.measured_tokens(index, engine),
+            );
         }
 
         renewed
@@ -143,14 +148,24 @@ mod tests {
         ctx.history.push(CoreMessage::user("read"), 10);
         let mut call = CoreMessage::assistant("");
         call.tool_calls.push(ToolCall {
-            id: "call-1".into(), name: "read".into(), arguments: serde_json::json!({}),
+            id: "call-1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({}),
         });
         ctx.history.push(call, 80);
-        ctx.history.push(CoreMessage::tool(vec![ContentPart::ToolResult {
-            call_id: "call-1".into(), output: "result".into(), is_error: false, durable_content: None,
-        }]), 40);
+        ctx.history.push(
+            CoreMessage::tool(vec![ContentPart::ToolResult {
+                call_id: "call-1".into(),
+                output: "result".into(),
+                is_error: false,
+                durable_content: None,
+            }]),
+            40,
+        );
         let renewed = make_policy(0.1).renew(&ctx, 1_000, &ContextTokenEngine::char_approx());
-        assert!(crate::context::units::strict_tool_pairing_is_valid(&renewed.history.messages));
+        assert!(crate::context::units::strict_tool_pairing_is_valid(
+            &renewed.history.messages
+        ));
     }
 
     #[test]

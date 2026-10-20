@@ -118,7 +118,9 @@ impl CanonicalOperationDriver {
         let mut round_caller: Option<TaskId> = None;
         for (causation, call) in &derived {
             let outcome = match decode_syscall(call) {
-                Ok(request) => self.apply_syscall(context, causation, &request, &mut index),
+                Ok(request) => {
+                    self.apply_syscall(context, causation, &request, &mut index, &effects)
+                }
                 Err(rejection) => Err(SyscallRefusal::Rejected(rejection)),
             };
             match outcome {

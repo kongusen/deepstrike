@@ -1261,7 +1261,9 @@ mod tests {
     #[test]
     fn low_provider_usage_does_not_hide_resident_history_pressure() {
         let mut mgr = ContextManager::with_config(
-            1_000, ContextConfig::default(), ContextTokenEngine::char_approx(),
+            1_000,
+            ContextConfig::default(),
+            ContextTokenEngine::char_approx(),
         );
         mgr.push_history(CoreMessage::user("large history"), 1_100);
         mgr.set_observed_prompt_tokens(10);
