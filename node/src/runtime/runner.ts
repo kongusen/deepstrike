@@ -2736,6 +2736,7 @@ export class RuntimeRunner {
           priorEvents,
           runtime.recoveryContentBytes(),
           loadArchive,
+          true,
         )
         await this.commitKernelApply(runtime, this.pendingObservations, {
           kind: "preload_history",
@@ -4210,8 +4211,10 @@ async function summarizeForLongTermMemory(
  *  Discriminator: only pair an orphan when the run **continued past it** — i.e. a later non-tool
  *  message exists. A tail assistant tool_call with nothing after it is a genuinely PENDING tool the
  *  run stopped in front of (the wake/recovery case), which must stay unpaired so wake executes it.
- *  Pure. */
-export function pairOrphanToolCalls(messages: ModelMessage[]): ModelMessage[] {
+ *  A fresh operation (including inherited transcripts) passes `closePendingTail`: none of its
+ *  historical calls can still execute, so every missing result is an explicit unknown/error.
+ *  Recovery leaves the tail pending for the canonical journal to resolve. Pure. */
+export function pairOrphanToolCalls(messages: ModelMessage[], closePendingTail = false): ModelMessage[] {
   const out: ModelMessage[] = []
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]
@@ -4226,14 +4229,20 @@ export function pairOrphanToolCalls(messages: ModelMessage[]): ModelMessage[] {
       }
     }
     // If nothing follows the tool run, this tool_call is a pending tail (wake case) — leave it.
-    if (j >= messages.length) continue
+    if (j >= messages.length && !closePendingTail) continue
     for (const c of m.toolCalls) {
       if (answered.has(c.id)) continue
       out.push({
         role: "tool",
         content: "",
         toolCalls: [],
-        contentParts: [{ type: "tool_result", callId: c.id, output: `[${c.name} handled by kernel]`, isError: false }],
+        contentParts: [{
+          type: "tool_result", callId: c.id,
+          output: closePendingTail
+            ? `[${c.name}: no result was recorded before this operation ended. Do not assume the action took effect.]`
+            : `[${c.name} handled by kernel]`,
+          isError: closePendingTail,
+        }],
       })
     }
   }
@@ -4310,6 +4319,7 @@ export async function replayMessagesAsync(
   events: Array<{ seq: number; event: SessionEvent }>,
   maxBytes?: number,
   loadArchive?: (archiveRef: string) => Promise<ModelMessage[]>,
+  closePendingTail = false,
 ): Promise<ModelMessage[]> {
   // Build upgraded-summary index: compressed_seq -> upgraded summary
   const upgradedSummaries = new Map<number, string>()
@@ -4395,7 +4405,7 @@ export async function replayMessagesAsync(
       }
     }
   }
-  return pairOrphanToolCalls(messages)
+  return pairOrphanToolCalls(messages, closePendingTail)
 }
 
 /**
