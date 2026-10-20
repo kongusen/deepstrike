@@ -29,6 +29,16 @@ Production recovery is a separate path: the application persists an opaque logic
 
 SessionLog is the Agent's evidence chain. KernelJournal and logical checkpoints own production recovery. The former explains, reproduces, and supports operations; the latter holds the logical state required to continue.
 
+### Fresh Node runs and mid-run recovery
+
+Fresh runs, including `inheritEvents`, never execute abandoned historical tool calls. Missing results become explicit errors saying no result was recorded and the action must not be assumed effective. Mid-run recovery continues canonical pending effects instead.
+
+If an older SDK persisted an invalid provider request containing unanswered inherited calls and projected a failure into SessionLog, Node closes that operation through canonical cancellation before starting a repaired run. A stale or forged `run_terminal` alone cannot replace valid pending work.
+
+A worker loss after `configure_operation` but before staging `start_operation` resumes bootstrap with the original goal. An already staged start is drained before classifying the final lifecycle, avoiding a duplicate root start. Missing or corrupt journals still refuse to infer and execute old tools from SessionLog; retain the checkpoint, journal tail and staged input for diagnosis.
+
+Workflow focus conflicts are tool errors; normal active-DAG appends retain their existing behavior. At most one memory-query effect is pending: identical binding, query, kind filters and retrieval width reuse that query. Different queries return a tool error asking the model to retry after the pending result arrives.
+
 ![Session Replay & Recovery Mechanisms](/session_replay_mechanisms.svg)
 
 ## Level 1: Choose a SessionLog

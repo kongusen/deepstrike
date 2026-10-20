@@ -159,9 +159,19 @@ runner.deactivate_skill("debug")                                        # K3: ex
 
 ## Runtime behavior summary
 
-1. **Compression:** `SnipCompactor` truncates oversized messages → `DropCompactor` drops old turns → `SummarizeCompactor` LLM summary (SDK-side summarizer)
-2. **Renewal:** Very long runs can hand off via `HandoffArtifact`
+1. **Compression:** Snip caps oversized messages, Micro reduces older tool results, and Collapse / Auto archive lower-value conversations. The kernel's deterministic `RuleSummarizer` supplies summaries without an LLM summarizer; Node's optional `asyncSummarizer` upgrades them in the background.
+2. **Renewal:** History is rebuilt only when pressure remains above the renewal threshold after compression. Recent complete conversational transactions are carried within the carryover budget; a transaction that cannot fit is never split between a tool call and its results. System, Knowledge and task state survive.
 3. **Meta-tool exclusion:** `skill`, `memory`, `submit_workflow_nodes`, etc. are excluded from the progress footer
+
+### Node context budgeting and recovery
+
+The kernel installs all `contextPolicy` thresholds, `targetAfterCompress`, `preserveRecentTurns`, `renewalCarryover` and idle settings. Large inherited histories compact toward the target before the first provider call, subject to recent-turn and fixed-context floors.
+
+Node item, system, Knowledge and prompt estimates share the kernel's cl100k BPE estimator with a 10% margin. This is not a native tokenizer for models such as DeepSeek. Encoded-body providers estimate the final body, including reasoning replay added by adapters; custom adapter-input providers estimate context and tool schemas.
+
+Immutable tokenizer tables are shared across operations instead of reloading on each start or restore. Counting and truncation process bounded UTF-8 chunks to limit BPE merge work for long unbroken output. Chunk boundaries can slightly change the estimate, which remains a heuristic.
+
+Actual provider input usage is recorded as a `postflight` measurement for the same request fingerprint and feeds pressure decisions. Compression uses the greater of observed pressure and resident-context estimated pressure, so request selection cannot hide oversized internal history. A context rewrite invalidates the previous request's pressure observation. Billing still uses provider usage alone.
 
 ---
 

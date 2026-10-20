@@ -468,6 +468,7 @@ const runner = new RuntimeRunner({
 |--------|---------|
 | `governancePolicy` | Declarative deny / ask_user / rate-limit / param rules installed before canonical root start |
 | `signalPolicy` | In-kernel signal queue/TTL policy (default queue 64) |
+| `contextPolicy` | Compression thresholds/target, recent-turn preservation, renewal carryover and idle compaction; the kernel supplies rule-based summaries without an LLM summarizer |
 | `promptBudget` | Provider-envelope overhead, output reserve, and safety margin deducted from the context window |
 | `resourceQuota` | M2 declarative limits — `maxConcurrentSubagents` / `maxTotalSubagents` / `maxSpawnDepth` / `maxWorkflowNodes` / `memoryWritesPerWindow` — enforced at the kernel syscall trap (`set_resource_quota`); over-quota spawns roll back, over-rate writes surface as `memory_validation_failed` |
 | `memoryPolicy` | Canonical long-term memory policy: `validationEnabled: false` admits writes without validation, `maxContentBytes` / `maxNameLength` override validation limits, `retrievalTopK` caps `query_memory` breadth, and `staleWarningDays` controls stale recall policy. Storage belongs to the configured `memoryStore`. |
@@ -477,6 +478,24 @@ const runner = new RuntimeRunner({
 | `asyncSummarizer` | Background LLM summary after compression; stored as `summary_upgraded` |
 | `memorySummarizer` | Summarizes `page_out { tier_hint: "semantic" }` into `MemoryStore` during a run |
 | `memoryProvider` | Separate LLM for durable-memory extraction (falls back to `provider`) |
+
+Context budgeting uses the kernel's cl100k BPE estimate plus 10% margin, including for CJK text.
+The immutable tokenizer tables are shared across operations. Counting and truncation use bounded
+UTF-8 chunks so long unbroken tool output cannot trigger unbounded BPE merge work; chunk boundaries
+can slightly change the estimate, which remains advisory rather than a model-exact count.
+For encoded-body providers the prompt estimate covers the final request, including adapter-added
+reasoning replay. This is still a heuristic for other model tokenizers; actual provider usage is
+recorded as `postflight` and fed back to context pressure. Pressure cannot fall below the resident
+history estimate merely because the rendered request omitted older content. Large preloaded
+histories compact toward `targetAfterCompress` before the first request, subject to recent-turn
+and fixed-context floors. Renewal carries complete conversational transactions within its budget.
+
+Fresh runs and `inheritEvents` answer abandoned historical tool calls with an error stating that
+no result was recorded. Mid-run recovery executes canonical pending work instead. A committed
+configuration interrupted before root start resumes with the original goal; an already staged
+start is drained once. Missing or corrupt journals are never reconstructed from presentation rows.
+Identical pending memory queries are reused; a different concurrent query gets a tool error asking
+the model to retry after the current result. Workflow focus refusals also become tool errors.
 
 Rebuild an OS diagnostics snapshot from session events:
 

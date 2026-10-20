@@ -134,9 +134,19 @@ runner.deactivate_skill("debug")                                    # K3：显�
 
 ## 运行时行为摘要
 
-1. **压缩**：`SnipCompactor` 截断 oversized message → `DropCompactor` 丢弃旧 turn → `SummarizeCompactor` LLM 摘要（SDK 侧 summarizer）
-2. **Renewal**：超长期 run 可 handoff（`HandoffArtifact`）
+1. **压缩**：Snip 截断过长消息，Micro 缩减旧工具结果，Collapse / Auto 归档较低价值的旧对话，并由内核 `RuleSummarizer` 生成确定性摘要。无需配置 LLM 摘要器；Node 的 `asyncSummarizer` 可在后台升级摘要。
+2. **Renewal**：分级压缩后仍超过续期阈值，才重建 history。按 carryover 预算保留近期完整对话事务，避免拆开工具调用与结果；单个事务放不进预算时不会保留半个事务。系统、Knowledge 与任务状态继续保留。
 3. **Meta-tools 排除**：`skill`、`memory`、`submit_workflow_nodes` 等不计入 progress footer
+
+### Node 上下文预算与恢复
+
+`contextPolicy` 的阈值、`targetAfterCompress`、`preserveRecentTurns`、`renewalCarryover` 和 idle 设置均在创建 kernel 时安装。大段继承历史在首次 Provider 请求前向压缩目标收缩；近期保留下限和不可压缩的系统、任务状态可能使结果高于目标。
+
+Node 的条目、系统提示、Knowledge 和请求启发式预算统一使用 kernel 的 cl100k BPE 加 10% 余量。它不是 DeepSeek 等模型的原生 tokenizer。适配器提供已编码请求时，请求估算包含最终 body，包括回放的 reasoning 字段；自定义 adapter-input Provider 则估算 `context` 与工具 schema。
+
+默认 tokenizer 的只读表在操作间共享，避免每次启动或恢复重新载入。长文本按有界 UTF-8 分块计数和截断，限制无空格输出的 BPE 合并成本；分块边界可能略微改变估算，因此仍标记为启发式值。
+
+Provider 实际 input usage 写入同一 fingerprint 的 `postflight` 测量，并反馈压力判断。为避免已裁剪的请求掩盖完整内部历史，压缩取实际观测压力与驻留内容估算压力的较大值；压缩或续期改写上下文后废弃旧请求的压力观测。真实计费仍只使用 Provider usage。
 
 ---
 

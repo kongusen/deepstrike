@@ -29,6 +29,16 @@ Agent 需要记住正在做什么，也需要在中断后继续。SessionLog 为
 
 SessionLog 是 Agent 的证据链，KernelJournal 与 logical checkpoint 负责生产恢复。前者用来解释、复现和观测，后者保存可继续运行的逻辑状态。
 
+### Node 的新 run 与中途恢复
+
+新 run（包括 `inheritEvents`）不会重新执行历史中的未答工具调用。SDK 为这些调用补入错误结果，明确说明没有记录到结果、不能假设动作已经生效。中途恢复仍以 canonical pending effects 为准，执行 journal 中已有的工作。
+
+如果旧版本已经把包含未答历史调用的无效 Provider 请求持久化，并在 SessionLog 中记为失败，Node 会先通过 canonical cancel 关闭该操作，再开始修复后的新 run。仅有一条过期或伪造的 `run_terminal` 不会覆盖正常 pending 工作。
+
+Worker 在 `configure_operation` 已提交、`start_operation` 尚未暂存时退出，恢复会用原始目标重建启动上下文。若启动输入已经暂存，先重放原输入，再读取最终 lifecycle，避免重复启动。缺少或损坏的 KernelJournal 仍拒绝从 SessionLog 猜测并执行旧工具；需要保留 checkpoint、journal tail 和暂存输入进行诊断。
+
+模型的工作流焦点冲突以工具错误反馈；正常活跃 DAG 中的追加行为继续沿用现有规则。记忆查询同时最多有一个 pending effect：同 binding、查询、类型过滤和宽度的请求复用已有查询，不同请求返回工具错误，模型可在当前查询完成后重试。
+
 ![Session Replay & Recovery Mechanisms](/session_replay_mechanisms.svg)
 
 ## Level 1：选择 SessionLog
