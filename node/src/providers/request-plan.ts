@@ -2,6 +2,7 @@ import { createHash } from "node:crypto"
 import { createRequire } from "node:module"
 import type { RenderedContext, ToolSchema, ProviderUsage } from "../types.js"
 import type { GenerationProtocol } from "./protocol-capabilities.js"
+import { estimateTextTokens } from "../token-estimate.js"
 
 export interface ProviderRequestEndpoint {
   id: string
@@ -210,9 +211,8 @@ function adapterPackageVersion(): string {
   }
 }
 
-export function estimateProviderPromptTokens(context: RenderedContext, tools: ToolSchema[]): number {
-  const bytes = new TextEncoder().encode(stableJson({ context, tools })).byteLength
-  return Math.max(1, Math.ceil(bytes / 4))
+export function estimateProviderPromptTokens(context: RenderedContext, tools: ToolSchema[], encodedRequest?: unknown): number {
+  return estimateTextTokens(stableJson(encodedRequest ?? { context, tools }))
 }
 
 /** Bind a preflight count to its exact provider-visible request. Replay only reuses matching facts. */

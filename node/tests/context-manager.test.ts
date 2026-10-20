@@ -1,10 +1,14 @@
-import { ContextManager } from "../src/runtime/context-manager.js"
+import { ContextManager, estimateContextTokens } from "../src/runtime/context-manager.js"
+
+test("CJK estimates use the kernel tokenizer instead of dividing character count by four", () => {
+  expect(estimateContextTokens("需求分析与原型设计的详细说明，".repeat(20))).toBeGreaterThan(150)
+})
 
 test("context manager selects pinned and higher priority items within a response reserve", () => {
   const manager = new ContextManager({ maxTokens: 20, responseReserveTokens: 5, now: () => 100 })
-  manager.upsert({ id: "low", kind: "memory", content: "x".repeat(20), scope: "turn", priority: 1, source: { type: "memory" } })
-  manager.upsert({ id: "high", kind: "task", content: "x".repeat(20), scope: "step", priority: 10, source: { type: "task" } })
-  manager.upsert({ id: "pinned", kind: "core", content: "x".repeat(40), scope: "run", priority: 0, pinned: true, source: { type: "policy" } })
+  manager.upsert({ id: "low", kind: "memory", content: "x".repeat(20), tokenCost: 5, scope: "turn", priority: 1, source: { type: "memory" } })
+  manager.upsert({ id: "high", kind: "task", content: "x".repeat(20), tokenCost: 5, scope: "step", priority: 10, source: { type: "task" } })
+  manager.upsert({ id: "pinned", kind: "core", content: "x".repeat(40), tokenCost: 10, scope: "run", priority: 0, pinned: true, source: { type: "policy" } })
   expect(manager.snapshot().selected.map(item => item.id)).toEqual(["pinned", "high"])
   expect(manager.snapshot().availableTokens).toBe(0)
 })

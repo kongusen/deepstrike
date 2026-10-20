@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto"
+import { estimateTextTokens } from "../token-estimate.js"
 
 export type ContextItemKind = "core" | "task" | "skill" | "memory" | "knowledge" | "workflow"
 export type ContextItemScope = "run" | "session" | "step" | "turn"
@@ -41,7 +42,7 @@ export interface ContextSnapshot {
 }
 
 export function estimateContextTokens(content: string): number {
-  return Math.max(1, Math.ceil(content.length / 4))
+  return estimateTextTokens(content)
 }
 
 /** Host-side context budget and lifecycle manager. Kernel context remains the execution authority. */

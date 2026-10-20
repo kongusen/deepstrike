@@ -180,6 +180,7 @@ interface KernelModule {
   memoryAuthorityJson(request: string): string
   contextPrepareJson(request: string): string
   contextVerifyJson(request: string): string
+  estimateTextTokens(text: string): number
 }
 
 const cjsRequire = createRequire(import.meta.url)

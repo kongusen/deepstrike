@@ -44,7 +44,7 @@ impl TokenCounter for CharApproxCounter {
 /// implementation applies the same 0.25 tokens/char divisor to every script). This wraps
 /// `deepstrike-tokenizer`'s real cl100k BPE tokenizer (previously an orphaned crate — not a
 /// workspace member, zero call sites anywhere) and adds a fixed margin on top. That only
-/// guarantees a value above the selected `cl100k_base` estimate; it does not prove that the
+/// guarantees a value above its chunked `cl100k_base` estimate; it does not prove that the
 /// result is conservative for every provider model. Native Anthropic/Gemini token counts take
 /// precedence where callers explicitly request them.
 pub struct FallbackEstimator {
@@ -69,17 +69,54 @@ impl Default for FallbackEstimator {
     }
 }
 
+/// Bound BPE merge work for long unbroken tool output. Chunk boundaries are UTF-8-safe and
+/// deterministic; boundary merges are deliberately sacrificed by this heuristic estimator.
+fn estimation_chunks(mut text: &str) -> impl Iterator<Item = &str> {
+    std::iter::from_fn(move || {
+        if text.is_empty() {
+            return None;
+        }
+        let mut end = text.len().min(1_024);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let (chunk, rest) = text.split_at(end);
+        text = rest;
+        Some(chunk)
+    })
+}
+
 impl TokenCounter for FallbackEstimator {
     fn count(&self, text: &str) -> u32 {
-        let raw = self.tokenizer.count(text) as f64;
-        ((raw * self.safety_margin).ceil() as u32).max(1)
+        let raw = estimation_chunks(text).fold(0u32, |sum, chunk| {
+            sum.saturating_add(self.tokenizer.count(chunk))
+        });
+        ((raw as f64 * self.safety_margin).ceil() as u32).max(1)
     }
 
     fn truncate<'a>(&self, text: &'a str, max_tokens: u32) -> &'a str {
         // Budget in *raw* BPE tokens so that, after the margin is applied by `count`, the
         // truncated text's reported count still fits within `max_tokens`.
         let raw_budget = ((max_tokens as f64) / self.safety_margin).floor() as u32;
-        self.tokenizer.truncate(text, raw_budget)
+        let mut remaining = raw_budget;
+        let mut end = 0;
+        for chunk in estimation_chunks(text) {
+            let tokens = self.tokenizer.count(chunk);
+            if tokens <= remaining {
+                remaining -= tokens;
+                end += chunk.len();
+            } else {
+                let mut prefix_end = self.tokenizer.truncate(chunk, remaining).len();
+                // Retokenizing a prefix can change its last merge. Enforce the same count budget
+                // on the returned prefix, without ever processing another unbounded string.
+                while prefix_end > 0 && self.tokenizer.count(&chunk[..prefix_end]) > remaining {
+                    prefix_end = chunk[..prefix_end].char_indices().next_back().unwrap().0;
+                }
+                end += prefix_end;
+                break;
+            }
+        }
+        &text[..end]
     }
 }
 
@@ -101,7 +138,12 @@ impl ContextTokenEngine {
     /// [`FallbackEstimator`]), replacing the previous `char_approx()` default that
     /// underestimated CJK-heavy text by 40-70%.
     pub fn fallback_estimator() -> Self {
-        Self(Arc::new(FallbackEstimator::default()))
+        static COUNTER: std::sync::OnceLock<Arc<dyn TokenCounter>> = std::sync::OnceLock::new();
+        Self(
+            COUNTER
+                .get_or_init(|| Arc::new(FallbackEstimator::default()))
+                .clone(),
+        )
     }
 
     pub fn count(&self, text: &str) -> u32 {
@@ -186,6 +228,31 @@ fn modality_estimate_tokens(part: &ContentPart) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_engines_share_the_immutable_bpe_tables() {
+        let first = ContextTokenEngine::fallback_estimator();
+        let second = ContextTokenEngine::fallback_estimator();
+        assert!(
+            Arc::ptr_eq(&first.0, &second.0),
+            "starting or restoring an operation must not reload the tokenizer tables"
+        );
+    }
+
+    #[test]
+    fn large_unbroken_estimates_are_bounded_and_truncation_remains_utf8_safe() {
+        let estimator = FallbackEstimator::default();
+        let started = std::time::Instant::now();
+        assert!(estimator.count(&"y".repeat(100 * 1024)) > 20_000);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "100 KiB of unbroken tool output must not stall the host for tens of seconds"
+        );
+        let text = "核实需求与运行结果🙂".repeat(2_000);
+        let truncated = estimator.truncate(&text, 2_000);
+        assert!(text.starts_with(truncated));
+        assert!(estimator.count(truncated) <= 2_000);
+    }
     use crate::types::message::{ContentPart, CoreMessage};
 
     fn engine() -> ContextTokenEngine {

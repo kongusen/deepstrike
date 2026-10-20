@@ -4,6 +4,7 @@ import {
   normalizeProviderUsage,
   priceProviderUsage,
   recordPromptMeasurement,
+  estimateProviderPromptTokens,
 } from "../src/providers/request-plan.js"
 import type { RenderedContext, ToolSchema } from "../src/types.js"
 import { readFileSync } from "node:fs"
@@ -19,6 +20,11 @@ const tools: ToolSchema[] = [{
   description: "Look up a fact.",
   parameters: '{"type":"object","properties":{"q":{"type":"string"}}}',
 }]
+
+it("counts the encoded provider request including adapter-added reasoning replay", () => {
+  const small = estimateProviderPromptTokens(context, tools)
+  expect(estimateProviderPromptTokens(context, tools, { messages: [{ role: "assistant", reasoning_content: "核实上下文与执行结果。".repeat(1000) }] })).toBeGreaterThan(small * 10)
+})
 
 describe("spc_016-01: provider request plans", () => {
   it("uses the shared cross-SDK SHA-256 fingerprint fixture", () => {

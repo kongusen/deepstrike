@@ -1066,3 +1066,17 @@ pub fn context_verify_json(request: String) -> Result<String> {
             .map_err(Error::from_reason)
     })
 }
+
+/// Host-side budgeting uses the same deterministic BPE estimate as the context engine.
+#[napi]
+pub fn estimate_text_tokens(text: String) -> Result<u32> {
+    static ENGINE: std::sync::OnceLock<deepstrike_core::context::token_engine::ContextTokenEngine> =
+        std::sync::OnceLock::new();
+    ffi_guard("estimateTextTokens", || {
+        Ok(ENGINE
+            .get_or_init(
+                deepstrike_core::context::token_engine::ContextTokenEngine::fallback_estimator,
+            )
+            .count(&text))
+    })
+}

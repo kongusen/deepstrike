@@ -1,4 +1,5 @@
 import { prepareProviderRequest } from "../providers/prepared-request.js"
+import { estimateTextTokens } from "../token-estimate.js"
 import { createNativeContextPreparationAdapter } from "./context.js"
 import type {
   LLMProvider, ModelMessage, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolExecutionResult, ToolSchema, ToolOutputBlock,
@@ -955,7 +956,7 @@ export class RuntimeRunner {
         // while preserving the canonical kernel knowledge command underneath.
         await this.pushKnowledge(
           { role: "system", content: hit.record.content, toolCalls: [] },
-          Math.max(1, Math.ceil(hit.record.content.length / 4)),
+          estimateTextTokens(hit.record.content),
           { key: `memory:${hit.record.record_id}` },
         )
       }
@@ -1324,7 +1325,7 @@ export class RuntimeRunner {
     await this.commitKernelApply(this.activeKernel, this.pendingObservations, {
       kind: "add_knowledge_message",
       content,
-      tokens: tokens ?? Math.max(1, Math.ceil(content.length / 4)),
+      tokens: tokens ?? estimateTextTokens(content),
       ...(opts?.key !== undefined ? { key: opts.key } : {}),
       ...(opts?.pinned ? { pinned: true } : {}),
     })
@@ -2680,7 +2681,7 @@ export class RuntimeRunner {
       await this.commitKernelApply(runtime, this.pendingObservations, {
         kind: "add_system_message",
         content: this.composedSystemPrompt,
-        tokens: Math.max(1, Math.ceil(this.composedSystemPrompt.length / 4)),
+        tokens: estimateTextTokens(this.composedSystemPrompt),
       })
     }
 
@@ -2963,13 +2964,13 @@ export class RuntimeRunner {
               ? await withTimeout(preparedRequest.countTokens(), 5_000)
               : undefined
             promptMeasurement = recordPromptMeasurement(providerPlan, count ?? {
-              inputTokens: estimateProviderPromptTokens(context, tools),
+              inputTokens: estimateProviderPromptTokens(context, tools, preparedRequest.scope === "encoded_body" ? preparedRequest.request : undefined),
               source: { kind: "heuristic" },
               confidence: "low_confidence",
             })
           } catch {
             promptMeasurement = recordPromptMeasurement(providerPlan, {
-              inputTokens: estimateProviderPromptTokens(context, tools),
+              inputTokens: estimateProviderPromptTokens(context, tools, preparedRequest.scope === "encoded_body" ? preparedRequest.request : undefined),
               source: { kind: "heuristic" },
               confidence: "low_confidence",
             })
@@ -3249,7 +3250,7 @@ export class RuntimeRunner {
                 const fullContent = [content, ...knowledge].join("\n\n")
                 await this.pushKnowledge(
                   { role: "system", content: fullContent, toolCalls: [] },
-                  Math.max(1, Math.ceil(fullContent.length / 4)),
+                  estimateTextTokens(fullContent),
                   { key: `skill:${name}`, pinned: true },
                 )
               } catch {
