@@ -1097,6 +1097,15 @@ mod tests {
 
     #[tokio::test]
     async fn runner_reactive_compacts_and_retries_prompt_too_long() {
+        check_reactive_context_recovery(20, true).await;
+    }
+
+    #[tokio::test]
+    async fn runner_reactive_stops_when_initial_compaction_exhausts_history() {
+        check_reactive_context_recovery(1, false).await;
+    }
+
+    async fn check_reactive_context_recovery(seed_turns: usize, expect_recovery: bool) {
         use crate::runtime::{InMemorySessionLog, RuntimeOptions, RuntimeRunner, SessionLog};
         use futures::StreamExt;
         use std::sync::Arc;
@@ -1149,72 +1158,113 @@ mod tests {
         });
 
         let session_id = "reactive-compact-rust";
-        session_log
-            .append(
-                session_id,
-                deepstrike_core::runtime::session::SessionEvent::RunStarted {
-                    run_id: "seed".to_string(),
-                    goal: "seed ".repeat(1200),
-                    criteria: vec![],
-                    agent_id: None,
-                    system_prompt: None,
-                    attachments: vec![],
-                },
-            )
-            .await;
-        session_log
-            .append(
-                session_id,
-                deepstrike_core::runtime::session::SessionEvent::LlmCompleted {
-                    turn: 0,
-                    message: deepstrike_core::types::message::CoreMessage {
-                        role: deepstrike_core::types::message::Role::Assistant,
-                        content: deepstrike_core::types::message::Content::Text(
-                            "prior answer ".repeat(400),
-                        ),
-                        tool_calls: vec![],
+        for turn in 0..seed_turns {
+            session_log
+                .append(
+                    session_id,
+                    deepstrike_core::runtime::session::SessionEvent::RunStarted {
+                        run_id: format!("seed-{turn}"),
+                        goal: "seed ".repeat(1200),
+                        criteria: vec![],
+                        agent_id: None,
+                        system_prompt: None,
+                        attachments: vec![],
                     },
-                    provider_replay: None,
-                },
-            )
-            .await;
-        session_log
-            .append(
-                session_id,
-                deepstrike_core::runtime::session::SessionEvent::RunTerminal {
-                    reason: "completed".to_string(),
-                    turns_used: 1,
-                    total_tokens: 0,
-                },
-            )
-            .await;
+                )
+                .await
+                .unwrap();
+            session_log
+                .append(
+                    session_id,
+                    deepstrike_core::runtime::session::SessionEvent::LlmCompleted {
+                        turn: 0,
+                        message: deepstrike_core::types::message::CoreMessage {
+                            role: deepstrike_core::types::message::Role::Assistant,
+                            content: deepstrike_core::types::message::Content::Text(
+                                "prior answer ".repeat(400),
+                            ),
+                            tool_calls: vec![],
+                        },
+                        provider_replay: None,
+                    },
+                )
+                .await
+                .unwrap();
+            session_log
+                .append(
+                    session_id,
+                    deepstrike_core::runtime::session::SessionEvent::RunTerminal {
+                        reason: "completed".to_string(),
+                        turns_used: 1,
+                        total_tokens: 0,
+                    },
+                )
+                .await
+                .unwrap();
+        }
 
-        // The new task goal must itself fit the fixed budget (system + state_turn ≤ max_tokens):
-        // a goal larger than `max_tokens` is an unrecoverable `FixedContext` overflow (compaction
-        // cannot touch system/state), which correctly terminates without a provider call. This test
-        // exercises the *recoverable* path — the over-budget pressure comes from the seeded history
-        // (the prior answer), which the reactive 413 ladder can compact away before retrying.
+        // The goal fits the fixed budget. With many prior turns, proactive compaction leaves
+        // history above the recent-unit floor for the reactive ladder to archive. With only one
+        // prior turn, the initial snip already exhausts compaction: retrying would send the same
+        // rejected prompt again, so the runner must report context overflow without retrying.
         let goal = "resume the prior task".to_string();
         let mut stream = runner
             .run_streaming(&goal, &[], None, Some(session_id))
             .await
             .unwrap();
         let mut text = String::new();
+        let mut errors = vec![];
+        let mut status = None;
         while let Some(evt) = stream.next().await {
-            if let crate::RunEvent::TextDelta(delta) = evt.unwrap() {
-                text.push_str(&delta);
+            match evt.unwrap() {
+                crate::RunEvent::TextDelta(delta) => text.push_str(&delta),
+                crate::RunEvent::Error(error) => errors.push(error),
+                crate::RunEvent::Done {
+                    status: final_status,
+                    ..
+                } => status = Some(final_status),
+                _ => {}
             }
         }
 
-        assert_eq!(text, "recovered");
-        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let expected_calls = if expect_recovery { 2 } else { 1 };
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            expected_calls
+        );
+        if expect_recovery {
+            assert_eq!(text, "recovered");
+            assert!(
+                errors.is_empty(),
+                "recovered errors must stay hidden: {errors:?}"
+            );
+            assert_eq!(status.as_deref(), Some("completed"));
+        } else {
+            assert!(text.is_empty());
+            assert_eq!(errors, ["request exceeded the context window"]);
+            assert_eq!(status.as_deref(), Some("contextoverflow"));
+        }
 
-        let preparations: Vec<_> = session_log
-            .read(session_id, 0, None)
-            .await
-            .unwrap()
-            .into_iter()
-            .filter_map(|entry| match entry.event {
+        let entries = session_log.read(session_id, 0, None).await.unwrap();
+        let first_preparation = entries
+            .iter()
+            .position(|entry| {
+                matches!(
+                    entry.event,
+                    deepstrike_core::runtime::session::SessionEvent::ContextPrepared { .. }
+                )
+            })
+            .unwrap();
+        assert!(
+            entries[..first_preparation].iter().any(|entry| matches!(
+                entry.event,
+                deepstrike_core::runtime::session::SessionEvent::Compressed { .. }
+            )),
+            "inherited history must compact before the first provider request"
+        );
+        let preparations: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| match &entry.event {
                 deepstrike_core::runtime::session::SessionEvent::ContextPrepared {
                     preparation,
                     ..
@@ -1222,11 +1272,17 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(preparations.len(), 2);
-        assert_ne!(
-            preparations[0].execution_input.input_digest,
-            preparations[1].execution_input.input_digest
-        );
+        assert_eq!(preparations.len(), expected_calls);
+        if expect_recovery {
+            assert_ne!(
+                preparations[0].execution_input.input_digest,
+                preparations[1].execution_input.input_digest
+            );
+            assert!(
+                preparations[1].plan.projected_tokens < preparations[0].plan.projected_tokens,
+                "the retry must actually reduce the rejected prompt"
+            );
+        }
         for preparation in &preparations {
             preparation
                 .execution_input
@@ -1234,13 +1290,16 @@ mod tests {
                 .unwrap();
         }
 
-        let entries = session_log.read(session_id, 0, None).await.unwrap();
-        assert!(entries.iter().any(|entry| {
-            matches!(
-                entry.event,
-                deepstrike_core::runtime::session::SessionEvent::Compressed { .. }
-            )
-        }));
+        let reactive_compactions = entries[first_preparation + 1..]
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.event,
+                    deepstrike_core::runtime::session::SessionEvent::Compressed { .. }
+                )
+            })
+            .count();
+        assert_eq!(reactive_compactions, usize::from(expect_recovery));
     }
 
     #[tokio::test]
