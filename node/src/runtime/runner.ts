@@ -2416,7 +2416,20 @@ export class RuntimeRunner {
       if (head) {
         const authoritative = this.createCanonicalRuntime(resumedStart.event.run_id, req.sessionId)
         await authoritative.restore()
-        if (!authoritative.isTerminal()) midRun = true
+        if (!authoritative.isTerminal()) {
+          const action = authoritative.resumeAction()
+          const projectedFailure = prior.slice(prior.indexOf(resumedStart) + 1)
+            .some(entry => entry.event.kind === "run_terminal" && entry.event.reason === "error")
+          if (projectedFailure && action?.kind === "call_provider"
+            && pairOrphanToolCalls(action.context.turns, true).length > action.context.turns.length) {
+            // Older SDKs could project failure but leave an invalid inherited provider request
+            // pending forever. Close that operation durably before starting a repaired transcript.
+            // A stale terminal alone is never authority to replace otherwise valid pending work.
+            await canonicalKernelAction(authoritative, [], { kind: "cancel_operation", reason: "host_shutdown" })
+          } else {
+            midRun = true
+          }
+        }
       }
     }
     const runId = midRun && resumedStart?.event.kind === "run_started"
@@ -2622,7 +2635,25 @@ export class RuntimeRunner {
 
     try {
     const runtime = this.createCanonicalRuntime(runId, sessionId)
-    if (resumeMidRun) await runtime.restore()
+    if (resumeMidRun) {
+      await runtime.restore()
+      if (runtime.needsRootStart()) {
+        // Configure and start are separate durable inputs. Rebuild only the uncommitted bootstrap
+        // context, using the original goal; do not preload this run as its own prior conversation.
+        let startIndex = -1
+        for (let i = (priorEvents?.length ?? 0) - 1; i >= 0; i--) {
+          if (priorEvents![i].event.kind === "run_started") { startIndex = i; break }
+        }
+        const start = startIndex >= 0 ? priorEvents![startIndex].event : undefined
+        if (start?.kind === "run_started") {
+          goal = start.goal
+          criteria = start.criteria
+          attachments = start.attachments
+        }
+        priorEvents = startIndex >= 0 ? priorEvents!.slice(0, startIndex) : undefined
+        resumeMidRun = false
+      }
+    }
     this.activeKernel = runtime
     this.nextArchiveStart = nextCompressedArchiveStart
 

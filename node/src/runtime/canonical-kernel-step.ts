@@ -1006,6 +1006,11 @@ export class CanonicalRunnerRuntime {
     return this.started
   }
 
+  /** A durable configure without a root is a recoverable bootstrap window, not corruption. */
+  needsRootStart(): boolean {
+    return this.configured && !this.started
+  }
+
   recoveryContentBytes(): number {
     return Math.max(1_024, this.options.maxContextTokens * 4)
   }
@@ -1035,13 +1040,15 @@ export class CanonicalRunnerRuntime {
     await this.host.restore()
     this.workflowNodeCount = undefined
     this.policyRevision = undefined
-    this.configured = this.host.kernel.lifecycle() !== "created"
-    this.started = !["created", "configured"].includes(this.host.kernel.lifecycle())
     // A crash between stage and append-ack leaves a byte-identical envelope; drain it before
     // the host effect loop so retries never remint observed_at_ms.
     // The crash-window envelope commits here, so its observations are this run's facts too.
     const drained = await this.host.drainOutboundEnvelope()
     if (drained) this.absorbTransition(drained)
+    // Draining can commit start_operation; classify the final restored lifecycle, not its
+    // checkpoint predecessor, or a configured checkpoint would attempt a second root start.
+    this.configured = this.host.kernel.lifecycle() !== "created"
+    this.started = !["created", "configured"].includes(this.host.kernel.lifecycle())
     this.lastAction = this.currentAction()
   }
 
