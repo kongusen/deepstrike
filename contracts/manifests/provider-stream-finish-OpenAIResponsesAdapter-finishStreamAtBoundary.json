@@ -1,6 +1,6 @@
 {
   "id": "provider-stream.finish.OpenAIResponsesAdapter.finishStreamAtBoundary",
-  "version": "0.2.75",
+  "version": "0.2.76",
   "protocol": {
     "family": "host-provider",
     "direction": "decode",

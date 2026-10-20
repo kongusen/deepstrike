@@ -6,6 +6,35 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.76] - 2026-10-20
+
+### Fixed
+
+- Fresh Node runs and inherited transcripts answer abandoned historical tool calls with explicit
+  error results. Sessions left with invalid pending provider requests can start a repaired run
+  after durably cancelling the failed operation.
+- The kernel installs the complete context policy and prompt reserves. Large preloaded histories
+  compact before the first request; provider usage cannot hide resident history pressure. Renewal
+  carries whole conversational transactions without splitting tool calls from their results.
+- Node recovery resumes the configure-before-start crash window with the original goal and drains
+  an already staged root start exactly once.
+- Workflow focus refusals return tool errors. Identical pending memory queries are reused;
+  different concurrent queries return a tool error asking the model to retry after the result.
+- Node context and prompt estimates share the kernel's BPE estimator, including CJK text and
+  adapter-added reasoning replay in encoded requests. Estimates remain heuristic for other models.
+
+### Performance
+
+- Shared immutable tokenizer tables avoid reloading on every operation start or restore. Bounded
+  UTF-8 counting and truncation prevent long unbroken tool outputs from causing quadratic BPE work.
+- Added `scripts/benchmark-context-estimation.mjs` for repeatable context-estimation measurements.
+
+### Upgrade notes
+
+- Upgrade `@deepstrike/sdk` and `@deepstrike/core` together. Missing or corrupt journals are still
+  rejected rather than reconstructed from SessionLog; verify in-flight journal recovery before
+  rolling out a new kernel to production workers.
+
 ## [0.2.75] - 2026-09-26
 
 ### Changed — API notes
