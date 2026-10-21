@@ -27,6 +27,11 @@ import {
   ProtocolResponseError,
 } from "./protocol-adapter.js"
 import { OPENAI_RESPONSES_PROTOCOL_CAPABILITIES } from "./protocol-capabilities.js"
+import {
+  THINKING_INTENSITY_EXTENSION_KEY,
+  projectOpenAIResponsesThinking,
+  type ThinkingIntensity,
+} from "./thinking-config.js"
 
 export interface OpenAIResponsesRunState {
   previousResponseId?: string
@@ -188,6 +193,7 @@ function requestExtensions(extensions: Readonly<Record<string, unknown>>): Recor
   const blocked = new Set([
     "model", "input", "instructions", "tools", "stream", "previous_response_id",
     "web_search", "builtin_tools", "__deepstrikeThinkingEnabled", "degradeMissingReasoningReplay",
+    THINKING_INTENSITY_EXTENSION_KEY,
   ])
   return Object.fromEntries(Object.entries(extensions).filter(([key]) => !blocked.has(key)))
 }
@@ -244,9 +250,13 @@ export class OpenAIResponsesAdapter implements ProtocolAdapter<
   ): OpenAIResponsesRequestPlan {
     const functionTools = this.buildTools(input.tools)
     const tools = [...functionTools, ...builtinTools(input.extensions)]
+    // Per-turn thinking intensity: project onto OpenAI Responses `reasoning` param.
+    const intensity = input.extensions[THINKING_INTENSITY_EXTENSION_KEY] as ThinkingIntensity | undefined
+    const reasoningProjection = intensity ? projectOpenAIResponsesThinking(intensity) : undefined
     return {
       params: {
         ...requestExtensions(input.extensions),
+        ...(reasoningProjection ?? {}),
         model: input.resolved.identity.modelId,
         input: canonicalInputItems(input.context, state),
         ...(input.context.systemText ? { instructions: input.context.systemText } : {}),

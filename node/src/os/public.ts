@@ -25,7 +25,14 @@ export type { PermissionDecision, Permission } from "../safety/permissions.js"
 export { ReplayProvider } from "../runtime/replay-provider.js"
 export type { ReplayProviderOpts } from "../runtime/replay-provider.js"
 export { extractRecordedMessages } from "../runtime/replay-fixture.js"
-export { ProviderReplayValidationError, DEGRADED_REASONING_PLACEHOLDER } from "../providers/replay-validator.js"
+export {
+  ProviderReplayValidationError,
+  DEGRADED_REASONING_PLACEHOLDER,
+  DEGRADED_TOOL_RESULT_OUTPUT,
+  assessToolResultPairing,
+  patchMissingToolResults,
+} from "../providers/replay-validator.js"
+export type { ToolResultPairingAssessment } from "../providers/replay-validator.js"
 export {
   ProviderReplayProtocolMismatchError,
   assessProviderReplayability,
@@ -54,3 +61,9 @@ export type {
   VerifiableReport,
   VerifiableOperationJson,
 } from "../runtime/verifiable-report.js"
+
+// Thinking intensity control (per-turn reasoning budget for reasoning-capable providers).
+export {
+  THINKING_INTENSITY_EXTENSION_KEY,
+} from "../providers/thinking-config.js"
+export type { ThinkingIntensity } from "../providers/thinking-config.js"

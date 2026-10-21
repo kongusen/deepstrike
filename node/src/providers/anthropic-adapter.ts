@@ -27,6 +27,11 @@ import {
 } from "./protocol-adapter.js"
 import { ANTHROPIC_PROTOCOL_CAPABILITIES } from "./protocol-capabilities.js"
 import { endpointProfiles } from "./endpoints.js"
+import {
+  THINKING_INTENSITY_EXTENSION_KEY,
+  projectAnthropicThinking,
+  type ThinkingIntensity,
+} from "./thinking-config.js"
 
 export const ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER = "<｜｜DSML｜｜tool_calls>"
 const TEXTUAL_TOOL_CALL_CAPTURE_LIMIT = 64 * 1024
@@ -90,6 +95,7 @@ function extensionsForWire(
   const blocked = new Set([
     "model", "messages", "system", "tools", "max_tokens", "stream",
     "__deepstrikeThinkingEnabled", "degradeMissingReasoningReplay", "textualToolCallPolicy",
+    THINKING_INTENSITY_EXTENSION_KEY,
   ])
   return Object.fromEntries(Object.entries(extensions).filter(([key]) => !blocked.has(key)))
 }
@@ -382,11 +388,17 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
     if (!messages.length) messages.push({ role: "user", content: "Proceed." })
     const tools = requestTools(input, system, strategy)
     const wire = extensionsForWire(input.extensions)
-    const betas = Array.isArray(input.extensions.betas) && input.extensions.betas.length
-      ? input.extensions.betas
-      : undefined
+    // Per-turn thinking intensity: project onto Anthropic's native wire shape.
+    const thinkingProjection = projectAnthropicThinking(
+      (input.extensions[THINKING_INTENSITY_EXTENSION_KEY] as ThinkingIntensity | undefined) ?? "auto",
+    )
+    const betas: string[] = [
+      ...(Array.isArray(input.extensions.betas) ? input.extensions.betas as string[] : []),
+      ...(thinkingProjection?.betas ?? []),
+    ]
     const params = {
       ...wire,
+      ...(thinkingProjection?.params ?? {}),
       model: input.resolved.identity.modelId,
       max_tokens: typeof input.extensions.max_tokens === "number"
         ? input.extensions.max_tokens
@@ -394,11 +406,11 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
       ...(system ? { system } : {}),
       messages,
       ...(tools ? { tools } : {}),
-      ...(betas ? { betas } : {}),
+      ...(betas.length ? { betas } : {}),
     }
     assertCacheBudget(params)
     return {
-      transport: betas ? "beta" : "stable",
+      transport: betas.length ? "beta" : "stable",
       params,
       cacheSlots: countSlots(system, tools, messages),
     }

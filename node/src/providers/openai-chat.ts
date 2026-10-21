@@ -53,6 +53,12 @@ export interface OpenAIChatBuildMessageOptions {
   descriptor?: ProviderDescriptor
   requireNonEmptyReasoningForToolCalls?: boolean
   degradeMissingReasoning?: boolean
+  /**
+   * When true, assistant tool-call turns without a matching tool result (e.g.
+   * because the run was interrupted mid-execution) are patched with a synthetic
+   * error result instead of throwing `ProviderReplayValidationError`.
+   */
+  degradeMissingToolResult?: boolean
 }
 
 export interface OpenAIChatRequestPlan {
@@ -520,6 +526,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
       descriptor: options.descriptor,
       requireNonEmptyReasoningForToolCalls: options.requireNonEmptyReasoningForToolCalls,
       degradeMissingReasoning: options.degradeMissingReasoning,
+      degradeMissingToolResult: options.degradeMissingToolResult,
       replayForAssistant: message => compatibilityReplayStore(this).get(assistantReplayKey(message)),
     })
     const canonical = normalizeCanonicalContext(

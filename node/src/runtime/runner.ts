@@ -1,6 +1,7 @@
 import { prepareProviderRequest } from "../providers/prepared-request.js"
 import { estimateTextTokens } from "../token-estimate.js"
 import { createNativeContextPreparationAdapter } from "./context.js"
+import { THINKING_INTENSITY_EXTENSION_KEY, type ThinkingIntensity } from "../providers/thinking-config.js"
 import type {
   LLMProvider, ModelMessage, ContentPart, ProviderUsage, ProviderWireEvidence, RenderedContext, ToolCall, ToolExecutionResult, ToolSchema, ToolOutputBlock,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, UsageEvent,
@@ -734,6 +735,13 @@ function pendingCallIds(action: KernelRunnerAction): string[] {
   }
 }
 
+/** Parse a string value from `set_thinking_intensity` tool args into a canonical ThinkingIntensity.
+ *  Unknown strings fall back to `"auto"` (no-op). */
+function parseThinkingIntensity(value: unknown): ThinkingIntensity {
+  if (value === "minimal" || value === "standard" || value === "deep") return value
+  return "auto"
+}
+
 function utf8Prefix(value: string, maxBytes: number): string {
   if (maxBytes <= 0) return ""
   const bytes = Buffer.from(value, "utf8")
@@ -768,6 +776,12 @@ export class RuntimeRunner {
   private knowledgePushedSkills = new Set<string>()
   /** Host mirror of kernel skill lease expiry, used only to clear ContextManager overlays. */
   private skillLeaseExpirations = new Map<string, number>()
+  /**
+   * Per-turn thinking intensity override. `undefined` means "use the run-level default from
+   * opts.extensions". Set by `setThinkingIntensity` (host) or the `set_thinking_intensity`
+   * meta-tool (agent). Merged into `ext` on every `call_provider` turn.
+   */
+  private pendingThinkingIntensity: ThinkingIntensity | undefined = undefined
   private nextArchiveStart = 0
   private pendingPageOutArchives: Array<{
     archiveStart: number
@@ -1358,6 +1372,22 @@ export class RuntimeRunner {
    *  projects it onto its wall-time budget; a deadline in the past ends the run on the next step. */
   updateDeadline(deadlineMs: number | null): Promise<void> {
     return this.enqueueControl({ kind: "update_deadline", deadline_ms: deadlineMs })
+  }
+
+  /**
+   * Override the thinking intensity for the *next* provider call (and all subsequent calls until
+   * changed again). `"auto"` clears any override and restores the run-level default.
+   *
+   * This is the host-side counterpart of the `set_thinking_intensity` agent meta-tool. Both
+   * write to the same `pendingThinkingIntensity` field, which the main loop merges into
+   * `extensions` immediately before each `call_provider` action.
+   *
+   * Changing intensity mid-run does not invalidate history replay — only future turns are
+   * affected. Because it writes synchronously (no kernel round-trip), it takes effect on the
+   * very next provider call even if called from inside an `onToolResult` hook.
+   */
+  setThinkingIntensity(intensity: ThinkingIntensity): void {
+    this.pendingThinkingIntensity = intensity === "auto" ? undefined : intensity
   }
 
   /** Ask the kernel to compact context now. Any archive it owes is externalised as a normal
@@ -2608,7 +2638,9 @@ export class RuntimeRunner {
     if (this.opts.enableDiagnosticsDashboard) {
       this.dashboard = new KernelPrimitivesDashboard(sessionId)
     }
-    const ext = { ...this.opts.extensions, ...(extensions ?? {}) }
+    const ext: Record<string, unknown> = { ...this.opts.extensions, ...(extensions ?? {}) }
+    // Reset any per-run thinking intensity override at the start of each run.
+    this.pendingThinkingIntensity = undefined
     const providerState = this.opts.provider.createRunState?.()
     // Structured blocks are intentionally operation-local. The durable kernel wire carries the
     // text projection; a wake (same or new Runner) therefore has identical semantics.
@@ -2952,8 +2984,17 @@ export class RuntimeRunner {
         // measurement carries full fields (only the settlement crosses the kernel boundary, B4).
         let turnProviderUsage: ProviderUsage | undefined
 
-        const preparedRequest = prepareProviderRequest(this.opts.provider, context, tools, ext, providerState)
-        const providerPlan = createProviderRequestPlanForProvider(this.opts.provider, context, tools, ext, {
+        // Merge per-turn thinking intensity into extensions just before the provider call.
+        // The agent (via the `set_thinking_intensity` meta-tool) or the host (via
+        // `setThinkingIntensity`) may have updated `pendingThinkingIntensity` since the
+        // last turn. It overrides whatever the run-level ext has (or clears a previous
+        // override when set to "auto").
+        const turnExt: Record<string, unknown> = this.pendingThinkingIntensity !== undefined
+          ? { ...ext, [THINKING_INTENSITY_EXTENSION_KEY]: this.pendingThinkingIntensity }
+          : ext
+
+        const preparedRequest = prepareProviderRequest(this.opts.provider, context, tools, turnExt, providerState)
+        const providerPlan = createProviderRequestPlanForProvider(this.opts.provider, context, tools, turnExt, {
           scope: preparedRequest.scope, request: preparedRequest.request, state: preparedRequest.state,
         })
         const recorded = measurementForPlan(providerPlan, recordedMeasurements.get(providerPlan.fingerprint))
@@ -3528,7 +3569,7 @@ export class RuntimeRunner {
 
         const toolResults: ToolExecutionResult[] = []
         const normalCalls = allCalls.filter(
-          c => c.name !== "update_plan" && c.name !== "submit_workflow_nodes" && c.name !== "start_workflow",
+          c => c.name !== "update_plan" && c.name !== "submit_workflow_nodes" && c.name !== "start_workflow" && c.name !== "set_thinking_intensity",
         )
         // Syscall tools (`update_plan` included) are consumed by core from the provider result:
         // the kernel decodes and applies them itself. If one reaches this host effect projection,
@@ -3536,11 +3577,26 @@ export class RuntimeRunner {
         // model plan update as its own `update_task`.
         const submitCalls = allCalls.filter(c =>
           c.name === "update_plan" || c.name === "submit_workflow_nodes" || c.name === "start_workflow")
+        // The `set_thinking_intensity` meta-tool is a host-consumed syscall: the kernel has already
+        // committed its synthetic result to history; the host reads the call arguments here to apply
+        // the override before the next provider turn. It must not reach the execution plane.
+        const thinkingCalls = allCalls.filter(c => c.name === "set_thinking_intensity")
 
         for (const call of submitCalls) {
           throw new Error(
             `canonical kernel published model syscall ${call.name} as a host tool effect`,
           )
+        }
+
+        for (const call of thinkingCalls) {
+          try {
+            const args = JSON.parse(call.arguments || "{}") as { intensity?: string }
+            const intensity = parseThinkingIntensity(args.intensity)
+            this.setThinkingIntensity(intensity)
+          } catch {
+            // Malformed arguments: leave the override unchanged. The kernel's synthetic result
+            // already told the model the call was accepted, so we do not surface a tool error here.
+          }
         }
 
         // O5 (PreToolUse-hook analog): give the host a STATEFUL veto over each kernel-approved

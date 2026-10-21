@@ -1,5 +1,11 @@
 import type { ProviderDescriptor, ProviderReplay, ToolCall } from "../types.js"
 import type { EndpointProfileId, ProviderId } from "./endpoints.js"
+import {
+  THINKING_INTENSITY_EXTENSION_KEY,
+  projectDeepSeekThinking,
+  projectQwenThinking,
+  type ThinkingIntensity,
+} from "./thinking-config.js"
 
 export interface OpenAIChatTurnReasoning {
   reasoningContent: string
@@ -75,14 +81,22 @@ export const openAIChatDialects = {
     descriptor: { reasoning: strictReasoning },
     prepareExtensions: extensions => {
       const thinking = extensions.thinking === false ? "disabled" : "enabled"
+      const intensity = extensions[THINKING_INTENSITY_EXTENSION_KEY] as ThinkingIntensity | undefined
+      const thinkingProjection = intensity ? projectDeepSeekThinking(intensity) : undefined
       return {
-        ...omit(extensions, ["thinking", "reasoningEffort", "exposeReasoning", "extra_body", "reasoning_effort"]),
+        ...omit(extensions, [
+          "thinking", "reasoningEffort", "exposeReasoning", "extra_body", "reasoning_effort",
+          THINKING_INTENSITY_EXTENSION_KEY,
+        ]),
         ...(extensions.degradeMissingReasoningReplay === true
           ? { degradeMissingReasoningReplay: true }
           : {}),
-        __deepstrikeThinkingEnabled: thinking !== "disabled",
-        reasoning_effort: extensions.reasoningEffort === "max" ? "max" : "high",
-        extra_body: { thinking: { type: thinking } },
+        // Thinking projection wins over legacy thinking flag.
+        ...(thinkingProjection ?? {
+          __deepstrikeThinkingEnabled: thinking !== "disabled",
+          reasoning_effort: extensions.reasoningEffort === "max" ? "max" : "high",
+          extra_body: { thinking: { type: thinking } },
+        }),
       }
     },
     cacheKey: "none",
@@ -112,8 +126,12 @@ export const openAIChatDialects = {
     prepareExtensions: extensions => {
       const enableThinking = Boolean(extensions.enableThinking ?? extensions.enable_thinking)
       const thinkingBudget = extensions.thinkingBudget ?? extensions.thinking_budget
+      const intensity = extensions[THINKING_INTENSITY_EXTENSION_KEY] as ThinkingIntensity | undefined
+      const thinkingProjection = intensity ? projectQwenThinking(intensity) : undefined
       const extraBody: Record<string, unknown> = {}
-      if (enableThinking) {
+      if (thinkingProjection?.extra_body) {
+        Object.assign(extraBody, thinkingProjection.extra_body)
+      } else if (enableThinking) {
         extraBody.enable_thinking = true
         if (typeof thinkingBudget === "number") extraBody.thinking_budget = thinkingBudget
       }
@@ -125,6 +143,7 @@ export const openAIChatDialects = {
         ...omit(extensions, [
           "extra_body", "enableThinking", "enable_thinking", "thinkingBudget", "thinking_budget",
           "enable_search", "search_options",
+          THINKING_INTENSITY_EXTENSION_KEY,
         ]),
         ...(Object.keys(extraBody).length ? { extra_body: extraBody } : {}),
       }
