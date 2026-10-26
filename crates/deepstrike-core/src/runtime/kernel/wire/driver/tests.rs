@@ -6228,6 +6228,67 @@ fn a_memory_proposal_the_policy_refuses_is_rejected_and_journaled() {
     assert_eq!(refused, "memory content exceeds 8 bytes");
 }
 
+/// The memory binding is the kernel-enforced write gate: a child's write proposal against a
+/// read-only binding is refused as an audit fact, and no persist effect is planned.
+#[test]
+fn a_memory_proposal_against_a_read_only_binding_is_refused_before_any_effect() {
+    use crate::runtime::kernel::wire::effect::{MemoryAccessBinding, MemoryCapabilities};
+    use crate::runtime::kernel::wire::scalar::MemoryBindingId;
+    use crate::runtime::kernel::wire::syscall::{MemoryWriteProposal, RequestMemoryWriteRequest};
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.memory_access = Some(MemoryAccessBinding {
+            binding_id: MemoryBindingId::new("mem-binding-readonly").unwrap(),
+            capabilities: MemoryCapabilities {
+                read: true,
+                write: false,
+            },
+        });
+    }));
+    let started = runtime.submit(&workflow_start(
+        "in-start",
+        1_700_000_001_000,
+        two_node_spec(),
+    ));
+    runtime.submit(&spawned(
+        "in-ack",
+        1_700_000_002_000,
+        &effect_id(started.step_seq),
+        &["wf-node0"],
+    ));
+    let answered = runtime.submit(&child_done_with(
+        "in-done",
+        1_700_000_002_500,
+        "wf-node0",
+        "wf-node0:attempt:1",
+        vec![SyscallRequest::RequestMemoryWrite(
+            RequestMemoryWriteRequest {
+                proposal: MemoryWriteProposal {
+                    name: "brief".to_string(),
+                    kind: SyscallMemoryKind::Project,
+                    content: "short".to_string(),
+                    description: String::new(),
+                    evidence_refs: Vec::new(),
+                },
+            },
+        )],
+    ));
+    assert!(
+        !kinds(&answered).contains(&EffectKindTag::PersistMemory),
+        "a read-only binding plans no persist effect"
+    );
+    let refused = runtime
+        .observations()
+        .iter()
+        .any(|observation| match observation {
+            KernelObservation::ControlRequestRejected {
+                operation, reason, ..
+            } => operation == "write_memory" && reason.contains("read-only"),
+            _ => false,
+        });
+    assert!(refused, "the refusal is an audit fact naming the read-only binding");
+}
+
 /// §22.13 · a host-authored write inside a live operation is admitted by the same rule and the
 /// same rolling quota as the model's.
 #[test]
