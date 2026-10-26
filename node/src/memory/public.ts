@@ -8,6 +8,10 @@ export { rankMemories } from "./ranking.js"
 export type { RankableMemory, RankedMemory, RankOptions } from "./ranking.js"
 export { extractSessionMemories, parseExtractedMemories } from "./extraction.js"
 export { resolveMemoryRuntimePolicy } from "./runtime-policy.js"
+export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest } from "./candidate-sink.js"
+export type {
+  MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
+} from "./candidate-sink.js"
 export type { MemoryRuntimePolicy, MemoryRetrievalPolicy, MemoryWritePolicy, ResolvedMemoryRuntimePolicy } from "./runtime-policy.js"
 export type {
   MemoryStore, Memory, MemorySearchOptions, SessionData, SessionMessage, MemoryRecord, MemoryRecall,

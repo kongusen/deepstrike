@@ -71,14 +71,14 @@ const recallOnly: MemoryRuntimePolicy = {
 }
 
 describe("memory runtime policy gates (M1, end-to-end through the runner)", () => {
-  it("refuses candidate_sink at runner construction", () => {
+  it("refuses candidate_sink at runner construction when no candidate sink is supplied", () => {
     expect(() => new RuntimeRunner({
       provider: textProvider(),
       sessionLog: new InMemorySessionLog(),
       executionPlane: new LocalExecutionPlane(),
       maxTokens: 1024,
       memoryRuntimePolicy: { ...recallOnly, modelWrites: "candidate_sink" },
-    })).toThrow("needs the memory candidate sink")
+    })).toThrow("needs RuntimeOptions.memoryCandidateSink")
   })
 
   it("sessionExtraction disabled: no auxiliary extraction call, session is still saved", async () => {
@@ -190,6 +190,9 @@ describe("memory runtime policy gates (M1, end-to-end through the runner)", () =
       provider,
       sessionLog,
       executionPlane: plane,
+      // The tool must be in the exposure baseline, or its calls never run, nothing is compacted,
+      // and "nothing was archived" would hold for the wrong reason.
+      baselineToolIds: ["fill"],
       maxTokens: 400,
       maxTurns: 20,
       agentId: "agent-gates",
@@ -203,5 +206,6 @@ describe("memory runtime policy gates (M1, end-to-end through the runner)", () =
     expect(spy.put).toBe(0)
     const events = await sessionLog.read("gates-archive-off")
     expect(events.some(e => e.event.kind === "semantic_archive_pending")).toBe(false)
+    expect(events.some(e => e.event.kind === "compressed")).toBe(true)
   })
 })

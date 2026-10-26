@@ -1,7 +1,8 @@
 // Host-facing memory runtime policy (contract M1). Each capability is an independent switch: a
 // host can keep retrieval while turning off the auxiliary-model writes that run implicitly after a
 // session. `"disabled"` is checked before any auxiliary provider call, so a disabled path costs
-// nothing. `"candidate_sink"` needs the candidate hand-off protocol (M2) and is rejected for now.
+// nothing. `"candidate_sink"` keeps the path on but hands each write to the host's
+// `MemoryCandidateSink` (M2) instead of the memory store; the runner refuses it without a sink.
 
 export type MemoryRetrievalPolicy = "disabled" | "host"
 export type MemoryWritePolicy = "disabled" | "candidate_sink"
@@ -18,6 +19,10 @@ export interface ResolvedMemoryRuntimePolicy {
   sessionExtractionEnabled: boolean
   modelWritesEnabled: boolean
   semanticArchiveEnabled: boolean
+  /** The path is on and its writes go to the candidate sink, not the memory store. */
+  sessionExtractionToCandidateSink: boolean
+  modelWritesToCandidateSink: boolean
+  semanticArchiveToCandidateSink: boolean
 }
 
 const POLICY_FIELDS = ["retrieval", "sessionExtraction", "modelWrites", "semanticArchive"] as const
@@ -36,16 +41,14 @@ export function resolveMemoryRuntimePolicy(policy: MemoryRuntimePolicy | undefin
     if (value === undefined || !allowed.includes(value)) {
       throw new TypeError(`memory runtime policy ${field} must be one of ${allowed.join(" | ")}, got ${String(value)}`)
     }
-    if (value === "candidate_sink") {
-      throw new Error(
-        `memory runtime policy ${field} = "candidate_sink" needs the memory candidate sink, which is not available in this SDK version`,
-      )
-    }
   }
   return {
     retrievalEnabled: policy.retrieval !== "disabled",
     sessionExtractionEnabled: policy.sessionExtraction !== "disabled",
     modelWritesEnabled: policy.modelWrites !== "disabled",
     semanticArchiveEnabled: policy.semanticArchive !== "disabled",
+    sessionExtractionToCandidateSink: policy.sessionExtraction === "candidate_sink",
+    modelWritesToCandidateSink: policy.modelWrites === "candidate_sink",
+    semanticArchiveToCandidateSink: policy.semanticArchive === "candidate_sink",
   }
 }

@@ -18,6 +18,9 @@ describe("memory runtime policy (M1)", () => {
       sessionExtractionEnabled: false,
       modelWritesEnabled: false,
       semanticArchiveEnabled: false,
+      sessionExtractionToCandidateSink: false,
+      modelWritesToCandidateSink: false,
+      semanticArchiveToCandidateSink: false,
     })
   })
 
@@ -28,10 +31,13 @@ describe("memory runtime policy (M1)", () => {
     })
   })
 
-  it("rejects candidate_sink until the candidate sink exists", () => {
-    expect(() => resolveMemoryRuntimePolicy({ ...recallOnly, modelWrites: "candidate_sink" })).toThrow(
-      'memory runtime policy modelWrites = "candidate_sink" needs the memory candidate sink',
-    )
+  it("candidate_sink keeps a write path on and routes it to the sink (M2)", () => {
+    expect(resolveMemoryRuntimePolicy({ ...recallOnly, modelWrites: "candidate_sink" })).toMatchObject({
+      modelWritesEnabled: true,
+      modelWritesToCandidateSink: true,
+      sessionExtractionEnabled: false,
+      sessionExtractionToCandidateSink: false,
+    })
   })
 
   it("rejects unknown field names", () => {
