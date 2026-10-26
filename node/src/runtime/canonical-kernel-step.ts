@@ -1808,9 +1808,11 @@ export class CanonicalRunnerRuntime {
       case "set_memory_enabled":
         this.featurePolicy().memory_enabled = Boolean(event.enabled)
         if (event.enabled) {
+          // The binding is the kernel-enforced gate: `plan_memory_write` / `plan_memory_query`
+          // refuse any syscall whose capability bit is off. Absent bits default to granted.
           this.config.memory_access = {
             binding_id: this.memoryBindingId,
-            capabilities: { read: true, write: true },
+            capabilities: { read: event.read !== false, write: event.write !== false },
           }
         }
         return true

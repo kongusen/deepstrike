@@ -2781,7 +2781,14 @@ export class RuntimeRunner {
     }
 
     if (this.opts.memoryStore && this.opts.agentId) {
-      await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
+      // The kernel binding carries the same capability bits as the JS gates, so a model-driven
+      // syscall (child parent_requests) is refused in the kernel, not only skipped here.
+      await this.commitKernelApply(runtime, this.pendingObservations, {
+        kind: "set_memory_enabled",
+        enabled: true,
+        read: this.memoryPathEnabled("retrievalEnabled"),
+        write: this.memoryPathEnabled("modelWritesEnabled"),
+      })
     }
     // Install optional memory policy. Maps the ergonomic camelCase option onto the kernel's
     // snake_case `set_memory_policy` event; omitted fields fall back to kernel defaults.
