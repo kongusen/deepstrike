@@ -1302,6 +1302,49 @@ export class CanonicalRunnerRuntime {
                 },
               })
         break
+      case "memory_candidate_result":
+        // M2 · the host's answer for a write it holds as a candidate. `pending` is terminal for the
+        // effect and carries no record: nothing is persisted, and the kernel must not present it as
+        // remembered. `accepted` names the record the store now holds, as `memory_persist_result`
+        // does. `rejected` and a missing answer both fail the effect, and only a missing answer is
+        // retryable (the same candidate id is redelivered).
+        if (event.error) {
+          input = this.failedEffect(event, "storage_unavailable", String(event.error), true)
+          break
+        }
+        if (event.status === "pending") {
+          input = !event.candidate_id || !event.receipt_id
+            ? this.failedEffect(event, "storage_unavailable", "memory candidate receipt names no candidate_id/receipt_id", false)
+            : this.succeededEffect(event, {
+                kind: "memory_persisted",
+                candidate: {
+                  binding_id: this.memoryBindingId,
+                  candidate_id: String(event.candidate_id),
+                  receipt_id: String(event.receipt_id),
+                },
+              })
+          break
+        }
+        if (event.status === "accepted") {
+          input = !event.record_ref || !event.digest
+            ? this.failedEffect(event, "storage_unavailable", "memory candidate accepted without record_ref/digest", false)
+            : this.succeededEffect(event, {
+                kind: "memory_persisted",
+                receipt: {
+                  binding_id: this.memoryBindingId,
+                  record_ref: String(event.record_ref),
+                  digest: String(event.digest),
+                },
+              })
+          break
+        }
+        input = this.failedEffect(
+          event,
+          "storage_unavailable",
+          `memory candidate rejected: ${String(event.reason_code ?? "unspecified")}`,
+          false,
+        )
+        break
       case "memory_query_result":
         input = event.error
           ? this.failedEffect(event, "storage_unavailable", String(event.error), true)
