@@ -5983,7 +5983,10 @@ fn a_memory_candidate_is_terminal_and_is_never_observed_as_written() {
             }),
         }),
     ));
-    assert!(settled.published_effects().is_empty(), "a candidate publishes no follow-up effect");
+    assert!(
+        settled.published_effects().is_empty(),
+        "a candidate publishes no follow-up effect"
+    );
     let observations = runtime.observations();
     assert!(
         observations.iter().any(|observation| matches!(
@@ -5993,7 +5996,9 @@ fn a_memory_candidate_is_terminal_and_is_never_observed_as_written() {
         "the pending candidate is an audit fact"
     );
     assert!(
-        !observations.iter().any(|observation| matches!(observation, KernelObservation::MemoryWritten { .. })),
+        !observations
+            .iter()
+            .any(|observation| matches!(observation, KernelObservation::MemoryWritten { .. })),
         "a candidate is never observed as a written record"
     );
 }
@@ -6005,26 +6010,159 @@ fn a_memory_candidate_is_terminal_and_is_never_observed_as_written() {
 fn a_memory_candidate_redelivery_is_a_replay_and_a_conflicting_one_is_refused() {
     use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
     let (mut runtime, effect) = agent_awaiting_memory_write();
-    let candidate = |candidate_id: &str| EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
-        receipt: None,
-        candidate: Some(MemoryCandidateReceipt {
-            binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
-            candidate_id: candidate_id.to_string(),
-            receipt_id: "rcpt-1".to_string(),
-        }),
-    });
-    let first = runtime.submit(&resolved("in-candidate-1", 1_700_000_003_000, &effect, candidate("cand-1")));
+    let candidate = |candidate_id: &str| {
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+            receipt: None,
+            candidate: Some(MemoryCandidateReceipt {
+                binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+                candidate_id: candidate_id.to_string(),
+                receipt_id: "rcpt-1".to_string(),
+            }),
+        })
+    };
+    let first = runtime.submit(&resolved(
+        "in-candidate-1",
+        1_700_000_003_000,
+        &effect,
+        candidate("cand-1"),
+    ));
     let observed = runtime.observations().len();
 
-    let replay = runtime.prepare(&resolved("in-candidate-2", 1_700_000_003_500, &effect, candidate("cand-1")));
+    let replay = runtime.prepare(&resolved(
+        "in-candidate-2",
+        1_700_000_003_500,
+        &effect,
+        candidate("cand-1"),
+    ));
     let RecordPreparation::Replayed(replayed) = replay else {
         panic!("a redelivered candidate acknowledgement is a replay");
     };
     assert_eq!(replayed.step_seq, first.step_seq);
-    assert_eq!(runtime.observations().len(), observed, "a replay records nothing new");
+    assert_eq!(
+        runtime.observations().len(),
+        observed,
+        "a replay records nothing new"
+    );
 
-    let conflict = runtime.reject(&resolved("in-candidate-3", 1_700_000_003_600, &effect, candidate("cand-9")));
+    let conflict = runtime.reject(&resolved(
+        "in-candidate-3",
+        1_700_000_003_600,
+        &effect,
+        candidate("cand-9"),
+    ));
     assert_eq!(conflict.code, KernelFaultCode::UnexpectedEffectOutcome);
+}
+
+/// M2 · why `pending` must be terminal. DEC-3 admits one pending PersistMemory at a time, so a
+/// write held open until a human reviews it would refuse every later write in the run. Settling
+/// the effect with a candidate frees the slot: the next node's write publishes; an unsettled one
+/// does not.
+#[test]
+fn a_pending_candidate_frees_the_memory_write_slot_and_an_unsettled_write_holds_it() {
+    use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
+    use crate::runtime::kernel::wire::syscall::{MemoryWriteProposal, RequestMemoryWriteRequest};
+
+    let write = |name: &str, content: &str| {
+        vec![SyscallRequest::RequestMemoryWrite(
+            RequestMemoryWriteRequest {
+                proposal: MemoryWriteProposal {
+                    name: name.to_string(),
+                    kind: SyscallMemoryKind::Project,
+                    content: content.to_string(),
+                    description: String::new(),
+                    evidence_refs: Vec::new(),
+                },
+            },
+        )]
+    };
+    // Three nodes, so the second write comes from a node whose completion does not end the
+    // operation (§7.12: a terminating completion publishes no effects at all).
+    let spec = WireSpec {
+        name: "brief".to_string(),
+        nodes: vec![
+            wire_node("collect", "collect the sources", &[]),
+            wire_node("write", "write the brief", &["collect"]),
+            wire_node("review", "review the brief", &["write"]),
+        ],
+    };
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config());
+    let started = runtime.submit(&workflow_start("in-start", 1_700_000_001_000, spec));
+    runtime.submit(&spawned(
+        "in-ack",
+        1_700_000_002_000,
+        &effect_id(started.step_seq),
+        &["wf-node0"],
+    ));
+    let completed = runtime.submit(&child_done_with(
+        "in-done",
+        1_700_000_002_500,
+        "wf-node0",
+        "wf-node0:attempt:1",
+        write("brief-style", "prefers numbered sections"),
+    ));
+    let find = |tag: EffectKindTag| {
+        completed
+            .published_effects()
+            .iter()
+            .find(|effect| effect.tag() == tag)
+            .unwrap_or_else(|| panic!("the first node's completion publishes {tag}"))
+            .effect_id
+            .clone()
+    };
+    let (effect, spawn) = (
+        find(EffectKindTag::PersistMemory),
+        find(EffectKindTag::SpawnTasks),
+    );
+    runtime.submit(&spawned(
+        "in-ack-1",
+        1_700_000_002_700,
+        &spawn,
+        &["wf-node1"],
+    ));
+    let second_write = |id: &str, at: u64| {
+        child_done_with(
+            id,
+            at,
+            "wf-node1",
+            "wf-node1:attempt:1",
+            write("brief-length", "keeps briefs under a page"),
+        )
+    };
+
+    // Held open: the second write cannot be published while the first still occupies the slot.
+    let held = runtime.reject(&second_write("in-done-1-held", 1_700_000_002_800));
+    assert_eq!(
+        held.code,
+        KernelFaultCode::ResourceLimitExceeded,
+        "{}",
+        held.message
+    );
+    // The refusal is a kernel fault, not a soft rejection: the host rebuilds from the journal,
+    // which the refused input never entered.
+    let mut runtime = Runtime::restore_with(None, &runtime.journal);
+
+    // Settled as a candidate: the same completion now publishes the second write.
+    runtime.submit(&resolved(
+        "in-candidate",
+        1_700_000_003_000,
+        &effect,
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+            receipt: None,
+            candidate: Some(MemoryCandidateReceipt {
+                binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+                candidate_id: "cand-1".to_string(),
+                receipt_id: "rcpt-1".to_string(),
+            }),
+        }),
+    ));
+    let next = runtime.submit(&second_write("in-done-1", 1_700_000_003_100));
+    assert!(
+        next.published_effects()
+            .iter()
+            .any(|published| published.tag() == EffectKindTag::PersistMemory),
+        "a settled candidate leaves the slot free for the next write"
+    );
 }
 
 /// M2 · a memory write resolves with exactly one of a receipt or a candidate; both or neither is a
@@ -6037,7 +6175,10 @@ fn a_memory_resolution_with_both_or_neither_outcome_is_refused() {
         "in-neither",
         1_700_000_003_000,
         &effect,
-        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess { receipt: None, candidate: None }),
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+            receipt: None,
+            candidate: None,
+        }),
     ));
     assert_eq!(neither.code, KernelFaultCode::UnexpectedEffectOutcome);
     let both = runtime.reject(&resolved(

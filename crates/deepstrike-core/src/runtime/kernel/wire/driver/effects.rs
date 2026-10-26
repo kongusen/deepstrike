@@ -126,13 +126,17 @@ impl CanonicalOperationDriver {
                 let action = self.engine_mut()?.resolve_preempt();
                 self.continue_after(context, action, root_kind)
             }
-            EffectSuccess::MemoryPersisted(persisted) => match (&persisted.receipt, &persisted.candidate) {
-                (Some(receipt), None) => self.commit_memory_write(effect_id, Some(receipt), None),
-                (None, Some(candidate)) => self.commit_memory_candidate(effect_id, candidate),
-                _ => Err(KernelFault::new(
-                    KernelFaultCode::UnexpectedEffectOutcome,
-                    "a memory write resolves with exactly one of a receipt or a candidate",
-                )),
+            EffectSuccess::MemoryPersisted(persisted) => {
+                match (&persisted.receipt, &persisted.candidate) {
+                    (Some(receipt), None) => {
+                        self.commit_memory_write(effect_id, Some(receipt), None)
+                    }
+                    (None, Some(candidate)) => self.commit_memory_candidate(effect_id, candidate),
+                    _ => Err(KernelFault::new(
+                        KernelFaultCode::UnexpectedEffectOutcome,
+                        "a memory write resolves with exactly one of a receipt or a candidate",
+                    )),
+                }
             }
             EffectSuccess::MemoryQueried(queried) => {
                 let root_kind = self.require_root_kind()?;
@@ -594,8 +598,10 @@ impl CanonicalOperationDriver {
     }
 
     /// M2 · the host recorded the write as a pending candidate. The effect is terminal here: no
-    /// record exists, so nothing is observed as written and the model is told the candidate waits
-    /// for review. The entry leaves `pending_memory_writes`, so a second resolution is unowned.
+    /// record exists, so nothing is observed as written; the pending candidate is a host-facing
+    /// audit fact only (the child that proposed the write has already completed, and no model
+    /// context receives it). The entry leaves `pending_memory_writes`, freeing the one
+    /// PersistMemory slot DEC-3 allows; a redelivered resolution replays under DEC-1.
     pub(super) fn commit_memory_candidate(
         &mut self,
         effect_id: &EffectId,
@@ -613,11 +619,13 @@ impl CanonicalOperationDriver {
         }
         let engine = self.engine_mut()?;
         let turn = engine.turn;
-        engine.observations.push(KernelObservation::MemoryCandidatePending {
-            turn,
-            candidate_id: candidate.candidate_id.clone(),
-            name: authored.name,
-        });
+        engine
+            .observations
+            .push(KernelObservation::MemoryCandidatePending {
+                turn,
+                candidate_id: candidate.candidate_id.clone(),
+                name: authored.name,
+            });
         Ok(self.quiet_step())
     }
 
