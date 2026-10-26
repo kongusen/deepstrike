@@ -126,8 +126,13 @@ impl CanonicalOperationDriver {
                 let action = self.engine_mut()?.resolve_preempt();
                 self.continue_after(context, action, root_kind)
             }
-            EffectSuccess::MemoryPersisted(persisted) => {
-                self.commit_memory_write(effect_id, Some(&persisted.receipt), None)
+            EffectSuccess::MemoryPersisted(persisted) => match (&persisted.receipt, &persisted.candidate) {
+                (Some(receipt), None) => self.commit_memory_write(effect_id, Some(receipt), None),
+                (None, Some(candidate)) => self.commit_memory_candidate(effect_id, candidate),
+                _ => Err(KernelFault::new(
+                    KernelFaultCode::UnexpectedEffectOutcome,
+                    "a memory write resolves with exactly one of a receipt or a candidate",
+                )),
             }
             EffectSuccess::MemoryQueried(queried) => {
                 let root_kind = self.require_root_kind()?;
@@ -585,6 +590,34 @@ impl CanonicalOperationDriver {
             }
             (None, None) => unreachable!("a memory resolution is either a receipt or a failure"),
         }
+        Ok(self.quiet_step())
+    }
+
+    /// M2 · the host recorded the write as a pending candidate. The effect is terminal here: no
+    /// record exists, so nothing is observed as written and the model is told the candidate waits
+    /// for review. The entry leaves `pending_memory_writes`, so a second resolution is unowned.
+    pub(super) fn commit_memory_candidate(
+        &mut self,
+        effect_id: &EffectId,
+        candidate: &super::super::effect::MemoryCandidateReceipt,
+    ) -> Result<PlannedStep, KernelFault> {
+        self.require_root_kind()?;
+        let Some(authored) = self.pending_memory_writes.remove(effect_id) else {
+            return Err(unowned_resolution(effect_id, "memory write"));
+        };
+        if candidate.candidate_id.is_empty() || candidate.receipt_id.is_empty() {
+            return Err(KernelFault::new(
+                KernelFaultCode::UnexpectedEffectOutcome,
+                "a memory candidate receipt must name its candidate and receipt ids",
+            ));
+        }
+        let engine = self.engine_mut()?;
+        let turn = engine.turn;
+        engine.observations.push(KernelObservation::MemoryCandidatePending {
+            turn,
+            candidate_id: candidate.candidate_id.clone(),
+            name: authored.name,
+        });
         Ok(self.quiet_step())
     }
 

@@ -2692,6 +2692,9 @@ impl RuntimeRunner {
                 KernelObservation::AgentPreempted { .. } => {}
                 KernelObservation::AgentPreemptFailed { .. } => {}
                 KernelObservation::MemoryWriteFailed { .. } => {}
+                // M2 · a pending candidate is an audit fact in the kernel journal. The SDK session
+                // vocabulary has no event for it yet, so it is not projected here.
+                KernelObservation::MemoryCandidatePending { .. } => {}
                 KernelObservation::MemoryQueryFailed { .. } => {}
                 // M3 · mirror the recall counts the kernel derived; the store never computes them.
                 KernelObservation::MemoryRecalled { recalls, .. } => {

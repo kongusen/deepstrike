@@ -5964,6 +5964,102 @@ fn a_milestone_that_could_not_be_evaluated_terminates_instead_of_advancing() {
 
 // ----- slice 3 · memory / page-out ----------------------------------------------------------
 
+/// M2 · a candidate the host holds for review is terminal for the effect: the kernel records a
+/// pending observation, never a written one, and publishes nothing further.
+#[test]
+fn a_memory_candidate_is_terminal_and_is_never_observed_as_written() {
+    use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
+    let (mut runtime, effect) = agent_awaiting_memory_write();
+    let settled = runtime.submit(&resolved(
+        "in-candidate",
+        1_700_000_003_000,
+        &effect,
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+            receipt: None,
+            candidate: Some(MemoryCandidateReceipt {
+                binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+                candidate_id: "cand-1".to_string(),
+                receipt_id: "rcpt-1".to_string(),
+            }),
+        }),
+    ));
+    assert!(settled.published_effects().is_empty(), "a candidate publishes no follow-up effect");
+    let observations = runtime.observations();
+    assert!(
+        observations.iter().any(|observation| matches!(
+            observation,
+            KernelObservation::MemoryCandidatePending { candidate_id, .. } if candidate_id == "cand-1"
+        )),
+        "the pending candidate is an audit fact"
+    );
+    assert!(
+        !observations.iter().any(|observation| matches!(observation, KernelObservation::MemoryWritten { .. })),
+        "a candidate is never observed as a written record"
+    );
+}
+
+/// M2 · a lost acknowledgement is redelivered as the same candidate: the kernel replays the
+/// original record (DEC-1), so the store is asked nothing new. A different candidate for the same
+/// effect is a conflict and is refused.
+#[test]
+fn a_memory_candidate_redelivery_is_a_replay_and_a_conflicting_one_is_refused() {
+    use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
+    let (mut runtime, effect) = agent_awaiting_memory_write();
+    let candidate = |candidate_id: &str| EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+        receipt: None,
+        candidate: Some(MemoryCandidateReceipt {
+            binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+            candidate_id: candidate_id.to_string(),
+            receipt_id: "rcpt-1".to_string(),
+        }),
+    });
+    let first = runtime.submit(&resolved("in-candidate-1", 1_700_000_003_000, &effect, candidate("cand-1")));
+    let observed = runtime.observations().len();
+
+    let replay = runtime.prepare(&resolved("in-candidate-2", 1_700_000_003_500, &effect, candidate("cand-1")));
+    let RecordPreparation::Replayed(replayed) = replay else {
+        panic!("a redelivered candidate acknowledgement is a replay");
+    };
+    assert_eq!(replayed.step_seq, first.step_seq);
+    assert_eq!(runtime.observations().len(), observed, "a replay records nothing new");
+
+    let conflict = runtime.reject(&resolved("in-candidate-3", 1_700_000_003_600, &effect, candidate("cand-9")));
+    assert_eq!(conflict.code, KernelFaultCode::UnexpectedEffectOutcome);
+}
+
+/// M2 · a memory write resolves with exactly one of a receipt or a candidate; both or neither is a
+/// protocol violation with zero mutation.
+#[test]
+fn a_memory_resolution_with_both_or_neither_outcome_is_refused() {
+    use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
+    let (mut runtime, effect) = agent_awaiting_memory_write();
+    let neither = runtime.reject(&resolved(
+        "in-neither",
+        1_700_000_003_000,
+        &effect,
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess { receipt: None, candidate: None }),
+    ));
+    assert_eq!(neither.code, KernelFaultCode::UnexpectedEffectOutcome);
+    let both = runtime.reject(&resolved(
+        "in-both",
+        1_700_000_003_500,
+        &effect,
+        EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+            receipt: Some(MemoryPersistReceipt {
+                binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+                record_ref: MemoryRecordRef::new("rec-9").unwrap(),
+                digest: Digest::new("sha256:".to_string() + &"0".repeat(64)).unwrap(),
+            }),
+            candidate: Some(MemoryCandidateReceipt {
+                binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+                candidate_id: "cand-1".to_string(),
+                receipt_id: "rcpt-1".to_string(),
+            }),
+        }),
+    ));
+    assert_eq!(both.code, KernelFaultCode::UnexpectedEffectOutcome);
+}
+
 /// §22.13 · a receipt is a locator, never a rewrite of the record the kernel authored.
 #[test]
 fn a_memory_receipt_cannot_restate_what_the_kernel_authored() {
@@ -5973,11 +6069,12 @@ fn a_memory_receipt_cannot_restate_what_the_kernel_authored() {
         1_700_000_003_000,
         &effect,
         EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
-            receipt: MemoryPersistReceipt {
+            receipt: Some(MemoryPersistReceipt {
                 binding_id: MemoryBindingId::new("some-other-binding").unwrap(),
                 record_ref: MemoryRecordRef::new("rec-7").unwrap(),
                 digest: Digest::new("sha256:".to_string() + &"0".repeat(64)).unwrap(),
-            },
+            }),
+            candidate: None,
         }),
     ));
     assert!(

@@ -384,6 +384,13 @@ pub enum KernelObservation {
         record_id: String,
         error: String,
     },
+    /// M2 · the write was recorded as a pending candidate awaiting review. It is not a memory:
+    /// the model must not treat it as remembered.
+    MemoryCandidatePending {
+        turn: u32,
+        candidate_id: String,
+        name: String,
+    },
     /// Memory query request (Phase 7).
     MemoryQueried {
         turn: u32,
