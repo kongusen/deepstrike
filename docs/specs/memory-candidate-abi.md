@@ -116,7 +116,7 @@ Rust core 在 `wire/effect.rs` 定义互斥结果，在 `wire/driver/effects.rs`
 - Rust SDK `canonical_runner_runtime.rs`：`memory_candidate_result` 分支与 node 同语义，由纯函数 `memory_candidate_resolution` 承载，五个单元测试钉住 pending、accepted、pending 缺字段、rejected、传输错误。
 - wasm 桥接（`wasm/src/runtime/canonical-kernel-step.ts`）与 python 桥接（`python/deepstrike/runtime/canonical_kernel_step.py`）：与 node 逐行同语义。测试 `wasm/tests/memory-candidate-bridge.test.ts`、`python/tests/test_memory_candidate_bridge.py` 与 node 的五个用例一一对应。
 
-四层的映射目前靠四份手写测试保持一致，而不是一份共享夹具。`tests/fixtures/sdk-conformance` 按 domain 分发，要收敛到一份夹具，需要新增 domain 并让 node、python、wasm、rust 四个一致性适配器（`scripts/sdk-conformance/`）都实现它，这是单独的工作。
+四层桥接测试现已共同读取 `tests/fixtures/abi/memory_candidate_receipts.json`（61 个案例），每个案例只有一份 expected，不再保留 SDK 特例。直接复用桥接测试，无需新增 sdk-conformance domain。真实内核结算由独立测试覆盖，不能把拦截 commit 的桥接测试当作内核集成验证。
 
 对待决问题的处理：
 
@@ -134,12 +134,12 @@ Rust core 在 `wire/effect.rs` 定义互斥结果，在 `wire/driver/effects.rs`
 约定：
 
 - `RuntimeOptions.memoryCandidateSink`；任一路径取 `"candidate_sink"` 而未提供 sink 时，构造即报错。`resolveMemoryRuntimePolicy` 不再拒绝 `"candidate_sink"`，新增 `*ToCandidateSink` 三个布尔量。未设策略时一律走 store。
-- `receipt_id` 由 sink 生成。`candidate_id` 由写入的规范身份派生（`memoryCandidateId`，对各部分的 JSON 数组取 sha256）：PersistMemory 为 `child_request, operation_id, effect_id, 0`；会话抽取为 `session_extraction, session_id, 序号`；语义归档为 `semantic_archive, session_id, record_id`（记录 id 由效果 id 派生）。
+- `receipt_id` 由 sink 生成。`candidate_id` 由写入的规范身份派生（`memoryCandidateId`，对各部分的 JSON 数组取 sha256）：当前 v2 身份：PersistMemory 为 `v2, agent_id, child_request, operation_id, effect_id, 0`；会话抽取为 `v2, agent_id, session_extraction, session_id, operation_id, 序号`；语义归档为 `v2, agent_id, semantic_archive, session_id, operation_id, effect_id`。
 - sink 合同（`MemoryCandidateSink` 文档）：同 id 同载荷返回原回执且不新增；同 id 异载荷拒绝为 `candidate_conflict`，不覆盖；抛错表示没有得到回答，可用同一 id 重投。载荷比较不含存储 id 与时间戳。`InMemoryMemoryCandidateSink` 是进程内实现，所有候选都记为 `pending`。
 
 验收覆盖：S03 由会话抽取与语义归档两条真实路径的端到端测试覆盖（store 零写入、只有 pending 事件、没有 `memory_written`）；S04 由 PersistMemory 路径覆盖（sink 已存下候选但回答丢失，重投同一效果得到原 `receipt_id`，sink 只持有一个候选）。S05（伪造来源）需要真实的 sink 判定，进程内实现不做。
 
-已知限制：会话抽取在重试时会重新调用辅助模型，内容可能变化，同一 `candidate_id` 的新内容会被 sink 判为 `candidate_conflict`。语义归档在候选 pending 时仍记 `semantic_archive_completed`，其中的 `record_id` 在 store 中并不存在。
+已知限制：会话抽取在重试时会重新调用辅助模型，内容可能变化，同一 `candidate_id` 的新内容会被 sink 判为 `candidate_conflict`。候选归档使用候选结果审计，Node/Python 不再把候选的提议 record_id 写入 `semantic_archive_completed`。
 
 尚未做的：
 
@@ -155,8 +155,22 @@ Python 导出 `MemoryRuntimePolicy`、`MemoryCandidateSink`、`InMemoryMemoryCan
 
 候选身份使用第 8 节的 JSON 数组规则。WASM 使用浏览器可用的同步 SHA256 与 TextEncoder，不依赖 node:crypto/Buffer；固定哈希向量验证与 Node/Python 一致，并确保摘要只有一个 sha256 前缀。两端的归档身份使用捕获的 session/effect ID，不再依赖时间戳。WASM 等待归档提交完成，避免任务跨越运行结束后继续读取可变会话状态；代价是辅助模型/sink 耗时进入运行延迟。
 
-移植同时修复了压缩观察中的 action/tier 在 canonical projection 适配时丢失的问题，否则语义归档可能不被触发。Python 在候选路径只使用候选结果审计，不把提议的 record_id 记为 semantic_archive_completed；Node 第 8 节描述的该限制仍存在。WASM 使用候选审计事件，不新增归档完成事件。
+移植同时修复了压缩观察中的 action/tier 在 canonical projection 适配时丢失的问题，否则语义归档可能不被触发。Python 在候选路径只使用候选结果审计，不把提议的 record_id 记为 semantic_archive_completed；Node 已在第 10 节的收敛中对齐。WASM 使用候选审计事件，不新增归档完成事件。
 
 验证：Python 构建了实际 Linux 原生扩展，独立加载运行测试而未覆盖原有 Mach-O 扩展；实现阶段 114 项相关测试通过，整合复核 95 项通过，归档审计修正后 31 项候选/归档测试通过。覆盖原生 child request 权限、pending/accepted/rejected 结算、真实会话抽取与真实语义压缩路径。未运行全量 Python 测试。WASM TypeScript 检查与 build 通过；全量 Jest 49 套、229 项通过，追加 accepted/畸形回执与 disabled modelWrites 测试后 12 项 runner 测试通过。WASM Jest 使用 mock kernel；归档通过 helper 与投影传递测试覆盖，本次未运行真实 WASM binding 集成测试。
 
-边界保持明确：进程内 sink 不跨进程持久化，也不做 S05 来源认证；SDK 尚无常规 PersistMemory 产生方；抽取候选的 session/ordinal 身份在同会话多次运行或模型重新生成不同内容时可能冲突。幂等载荷只比较 scope、kind、name、description、content，未覆盖 provenance 等全部元数据，也没有新增跨 agent 身份隔离保证。上述事项不属于本次 SDK 移植已完成的保证。
+边界保持明确：进程内 sink 不跨进程持久化，也不做 S05 来源认证；SDK 尚无常规 PersistMemory 产生方。抽取重试重新调用辅助模型时，如果内容不同仍会冲突，不保证生成结果可重现。候选身份和载荷比较已在第 10 节扩展。
+
+## 10. 跨 SDK 契约收敛（2026-10-26）
+
+Node/Python/WASM 的运行时身份使用第 8 节 v2 数组规则。新运行即使复用 session_id，也使用新的 operation_id；恢复同一运行保留 operation_id。归档使用原始 effect_id，不用经过名称清洗后的 record_id 作为幂等身份。进程内 sink 按 `(agent_id, candidate_id)` 隔离，因此不同 agent 使用同一个自定义 ID 不会共享回执；同 agent 同 ID 的 source 变化视为冲突。输入候选、返回回执和查询结果均为深拷贝，调用方不能修改已持有状态。
+
+审核载荷包含 scope、kind、name、description、content、provenance 的 author/trust/session_id/evidence_refs，以及 confidence、links、pinned、ttl_days；source 单独比较。仅存储 record_id、时间戳、召回计数不参与冲突比较。数组顺序有意义。agent_id 是宿主提供的命名空间，不构成认证或防伪来源保证。
+
+迁移注意：v2 改变候选 ID 推导和载荷摘要。已有自定义持久化 sink 不得在尚有旧运行重投时直接切换身份版本；应让旧运行使用原 SDK/身份规则排空，或由宿主保存旧 ID 到新身份的明确映射。本仓库提供的 sink 仅为进程内实现，不执行持久化迁移。
+
+共享回执夹具共 61 例，四个 SDK 对 pending/accepted 必需字段都要求非空字符串；数字、布尔、数组等不得隐式转为回执 ID。accepted 桥接保留旧兼容性，不新要求 candidate_id/receipt_id。非 null 的 error 优先，包含空字符串、0、false；字符串直接作为错误消息，结构值使用紧凑 JSON（对象键排序），结果可重试。拒绝原因不是非空字符串时统一使用 unspecified。每个案例只有一个 canonical outcome，仍保持 candidate/receipt 互斥。
+
+真实 WASM 测试 `wasm/tests/memory-candidate-binding.node.mjs` 已接入 `test:canonical-binding`。从当前源码重建 binding 后，测试实际发布 PersistMemory、经 runner/sink/bridge 结算 pending/accepted/rejected、禁用写权限、回执丢失重投、DEC-1 相同结果重放、不同结果拒绝、journal 恢复以及同会话两次抽取。此前本地 pkg-node 二进制仍为旧 receipt-only 协议，真实提交曾报 unknown field candidate；重建后通过，说明仅加载 binding 但拦截 commit 的测试不足以证明 ABI 兼容。
+
+本轮验证：Node build 与全量 Jest 207 套/1399 项通过（6 套/14 项跳过）；WASM build 与全量 Jest 49 套/291 项通过；重建 binding 的 5 个候选集成场景、canonical binding 检查与 74 项 golden 检查通过；Python 实际 Linux 扩展相关回归 139 项通过，未跑全量；Rust 完整 SDK test target 中共享回执测试通过，遍历 61 例，本轮未跑完整 Rust 测试集。进程重启与并发持久化幂等仍待生产 sink 实现后验证。
