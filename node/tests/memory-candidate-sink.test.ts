@@ -59,3 +59,48 @@ describe("memory candidate sink (M2)", () => {
     expect(memoryCandidateId(["a", "bc"])).not.toBe(memoryCandidateId(["ab", "c"]))
   })
 })
+
+it("isolates an identical caller-supplied ID by agent", async () => {
+  const sink = new InMemoryMemoryCandidateSink()
+  const c = candidate("same-id", "proposal")
+  const a = await sink.submit("a", c)
+  const b = await sink.submit("b", c)
+  expect(a.receipt_id).not.toBe(b.receipt_id)
+  expect(sink.candidates("a")).toHaveLength(1)
+  expect(sink.candidates("b")).toHaveLength(1)
+  expect(await sink.submit("a", c)).toEqual(a)
+})
+
+it("rejects changed source and review metadata without replacing the first proposal", async () => {
+  const sink = new InMemoryMemoryCandidateSink()
+  const c = candidate("c", "proposal")
+  const original = await sink.submit("agent", c)
+  const alternatives: MemoryCandidate[] = [
+    { ...c, source: "child_request" },
+    { ...c, record: { ...c.record, provenance: { ...c.record.provenance, trust: "host_verified" } } },
+    { ...c, record: { ...c.record, provenance: { ...c.record.provenance, evidence_refs: ["new-evidence"] } } },
+    { ...c, record: { ...c.record, confidence: 0.9 } },
+    { ...c, record: { ...c.record, pinned: true } },
+    { ...c, record: { ...c.record, links: ["related"] } },
+    { ...c, record: { ...c.record, ttl_days: 7 } },
+  ]
+  for (const other of alternatives) {
+    expect(await sink.submit("agent", other)).toMatchObject({ status: "rejected", reason_code: "candidate_conflict" })
+  }
+  expect(await sink.submit("agent", c)).toEqual(original)
+  expect(sink.candidates()).toEqual([c])
+})
+
+it("snapshots input, output and receipt so callers cannot mutate held state", async () => {
+  const sink = new InMemoryMemoryCandidateSink()
+  const c = candidate("c", "proposal")
+  const receipt = await sink.submit("agent", c)
+  const original = { ...receipt }
+  c.record.content = "tampered"
+  c.record.provenance.evidence_refs.push("tampered")
+  receipt.receipt_id = "tampered"
+  sink.candidates()[0].record.links.push("tampered")
+  expect(await sink.submit("agent", candidate("c", "proposal"))).toEqual(original)
+  expect(sink.candidates()[0].record.content).toBe("proposal")
+  expect(sink.candidates()[0].record.links).toEqual([])
+})

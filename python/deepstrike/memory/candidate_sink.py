@@ -5,7 +5,7 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Literal, Protocol, Sequence, TypedDict, runtime_checkable
+from typing import Any, Literal, Protocol, Sequence, TypedDict, runtime_checkable
 
 from .protocols import MemoryRecord
 
@@ -54,9 +54,10 @@ class MemoryCandidateSink(Protocol):
     async def submit(self, agent_id: str, candidate: MemoryCandidate) -> MemoryCandidateReceipt: ...
 
 
-def _json_digest(parts: Sequence[str]) -> str:
+def _json_digest(parts: Sequence[Any]) -> str:
     # Match JSON.stringify's compact array identity, including non-ASCII text.
-    return hashlib.sha256(json.dumps(list(parts), ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+    normalized = [int(value) if isinstance(value, float) and value.is_integer() else value for value in parts]
+    return hashlib.sha256(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def memory_candidate_id(parts: Sequence[str]) -> str:
@@ -64,10 +65,12 @@ def memory_candidate_id(parts: Sequence[str]) -> str:
 
 
 def memory_candidate_payload_digest(record: MemoryRecord) -> str:
-    """Exclude store ids, provenance and timestamps that may be regenerated on retry."""
+    """Compare review metadata, excluding store IDs, timestamps and recall counters."""
     return "sha256:" + _json_digest([
         record.scope.tenant_id, record.scope.namespace, record.kind,
         record.name, record.description, record.content,
+        record.provenance.author, record.provenance.trust, record.provenance.session_id,
+        record.provenance.evidence_refs, record.confidence, record.links, record.pinned, record.ttl_days,
     ])
 
 
@@ -75,7 +78,7 @@ class InMemoryMemoryCandidateSink:
     """In-process pending candidate store for tests and local development."""
 
     def __init__(self) -> None:
-        self._held: dict[str, tuple[str, MemoryCandidate, str, MemoryCandidateReceipt]] = {}
+        self._held: dict[tuple[str, str], tuple[str, MemoryCandidate, str, MemoryCandidateReceipt]] = {}
         self._next_receipt = 1
 
     def _mint_receipt_id(self) -> str:
@@ -85,9 +88,10 @@ class InMemoryMemoryCandidateSink:
 
     async def submit(self, agent_id: str, candidate: MemoryCandidate) -> MemoryCandidateReceipt:
         digest = memory_candidate_payload_digest(candidate.record)
-        existing = self._held.get(candidate.candidate_id)
+        key = (agent_id, candidate.candidate_id)
+        existing = self._held.get(key)
         if existing is not None:
-            if existing[2] == digest:
+            if existing[2] == digest and existing[1].source == candidate.source:
                 return deepcopy(existing[3])
             return {
                 "status": "rejected", "candidate_id": candidate.candidate_id,
@@ -97,7 +101,7 @@ class InMemoryMemoryCandidateSink:
             "status": "pending", "candidate_id": candidate.candidate_id,
             "receipt_id": self._mint_receipt_id(),
         }
-        self._held[candidate.candidate_id] = (agent_id, deepcopy(candidate), digest, receipt)
+        self._held[key] = (agent_id, deepcopy(candidate), digest, receipt)
         return deepcopy(receipt)
 
     def candidates(self, agent_id: str | None = None) -> list[MemoryCandidate]:

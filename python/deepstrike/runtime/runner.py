@@ -644,13 +644,13 @@ class RuntimeRunner:
     if sink is None:
       raise RuntimeError("memory candidate writes require memory_candidate_sink")
     receipt = await sink.submit(agent_id, MemoryCandidate(candidate_id, source, record))
-    if receipt.get("candidate_id") != candidate_id or not receipt.get("receipt_id"):
+    if receipt.get("candidate_id") != candidate_id or not isinstance(receipt.get("receipt_id"), str) or not receipt["receipt_id"]:
       raise ValueError(f"memory candidate sink answered without a receipt for {candidate_id}")
     if receipt.get("status") not in ("pending", "accepted", "rejected"):
       raise ValueError(f"memory candidate sink answered with unknown status {receipt.get('status')}")
-    if receipt["status"] == "accepted" and (not receipt.get("record_ref") or not receipt.get("digest")):
+    if receipt["status"] == "accepted" and (not isinstance(receipt.get("record_ref"), str) or not receipt["record_ref"] or not isinstance(receipt.get("digest"), str) or not receipt["digest"]):
       raise ValueError("memory candidate sink accepted a write without record_ref/digest")
-    if receipt["status"] == "rejected" and not receipt.get("reason_code"):
+    if receipt["status"] == "rejected" and (not isinstance(receipt.get("reason_code"), str) or not receipt["reason_code"]):
       raise ValueError("memory candidate sink rejected a write without reason_code")
     return receipt
 
@@ -693,7 +693,7 @@ class RuntimeRunner:
           raise RuntimeError("memory persistence requires agent_id")
         receipt = await self._submit_memory_candidate(
           self._opts.agent_id, "child_request",
-          memory_candidate_id(["child_request", operation_id, effect_id, "0"]), record,
+          memory_candidate_id(["v2", self._opts.agent_id, "child_request", operation_id, effect_id, "0"]), record,
         )
         # Pending/accepted observations are emitted by the kernel. Rejection is a failed
         # effect, so preserve the sink's reason here before handing the failure to the bridge.
@@ -3015,7 +3015,7 @@ class RuntimeRunner:
         })
         if error is None and archive_tier == "semantic" and archived:
           task_scope.spawn("semantic-page-out", self._archive_semantic_page_out(
-            archived, archive_action, session_id, archive_effect_id,
+            archived, archive_action, session_id, archive_effect_id, runtime.operation_id,
           ))
 
       elif action.kind == "execute_tool":
@@ -3411,7 +3411,7 @@ class RuntimeRunner:
             )
             for ordinal, memory in enumerate(extracted):
               candidate = MemoryCandidate(
-                memory_candidate_id(["session_extraction", session_id, str(ordinal)]),
+                memory_candidate_id(["v2", self._opts.agent_id, "session_extraction", session_id, runtime.operation_id, str(ordinal)]),
                 "session_extraction", memory,
               ) if self._memory_path_to_candidate_sink("session_extraction") else None
               await self.write_memory(memory, session_id=session_id, agent_id=self._opts.agent_id, candidate=candidate)
@@ -3618,7 +3618,7 @@ class RuntimeRunner:
       return None
 
   async def _archive_semantic_page_out(
-    self, archived: list[Any], action: str | None, session_id: str, effect_id: str = "unknown",
+    self, archived: list[Any], action: str | None, session_id: str, effect_id: str, operation_id: str,
   ) -> None:
     if not self._memory_path_enabled("semantic_archive"):
       return
@@ -3646,7 +3646,7 @@ class RuntimeRunner:
         created_at=now, updated_at=now, confidence=0.6,
       )
       candidate = MemoryCandidate(
-        memory_candidate_id(["semantic_archive", session_id, record.record_id]), "semantic_archive", record,
+        memory_candidate_id(["v2", self._opts.agent_id, "semantic_archive", session_id, operation_id, effect_id]), "semantic_archive", record,
       ) if self._memory_path_to_candidate_sink("semantic_archive") else None
       written = await self.write_memory(record, session_id=session_id, agent_id=self._opts.agent_id, candidate=candidate)
       # Candidate audit already names the sink's outcome. Its proposed record_id is not a

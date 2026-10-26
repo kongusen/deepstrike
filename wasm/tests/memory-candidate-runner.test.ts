@@ -131,6 +131,23 @@ describe("memory candidate sink through the runner (M2)", () => {
     expect(sink.candidates()).toHaveLength(0)
   })
 
+  it("two runs in the same session produce distinct extraction candidates", async () => {
+    const sink = new InMemoryMemoryCandidateSink()
+    const { store, spy } = storeSpy()
+    const sessionLog = new InMemorySessionLog()
+    const runner = new RuntimeRunner({ provider: textProvider(), sessionLog,
+      executionPlane: new LocalExecutionPlane(), maxTokens: 1024,
+      agentId: "agent-candidates", memoryScope: scope, memoryStore: store,
+      memoryProvider: extractingProvider(), memoryCandidateSink: sink,
+      memoryRuntimePolicy: { ...writesOff, sessionExtraction: "candidate_sink" } })
+    await collectText(runner.run({ sessionId: "reused", goal: "first" }))
+    await collectText(runner.run({ sessionId: "reused", goal: "second" }))
+    expect(sink.candidates()).toHaveLength(4)
+    expect(new Set(sink.candidates().map(c => c.candidate_id)).size).toBe(4)
+    expect(spy.put).toBe(0)
+    expect((await kinds(sessionLog, "reused")).filter(e => e.kind === "memory_candidate_rejected")).toHaveLength(0)
+  })
+
   it("a candidate the sink rejects is audited as rejected, with the sink's reason", async () => {
     const rejecting: MemoryCandidateSink = {
       async submit(_agentId, candidate): Promise<MemoryCandidateReceipt> {
@@ -174,8 +191,8 @@ describe("memory candidate sink through the runner (M2)", () => {
       memorySummarizer: { summarize: async () => { summaries++; return "archived decisions" } },
     })
     const archive = (runner: RuntimeRunner, effectId: string) => (runner as unknown as {
-      archiveSemanticPageOut(messages: ModelMessage[], action: string, sessionId: string, effectId: string): Promise<void>
-    }).archiveSemanticPageOut([{ role: "user", content: "remember decisions", toolCalls: [] }], "auto_compact", "archive", effectId)
+      archiveSemanticPageOut(messages: ModelMessage[], action: string, sessionId: string, effectId: string, operationId: string): Promise<void>
+    }).archiveSemanticPageOut([{ role: "user", content: "remember decisions", toolCalls: [] }], "auto_compact", "archive", effectId, "op-archive")
     const disabled = makeRunner(false)
     await archive(disabled, "effect-1")
     await collectText(disabled.run({ sessionId: "disabled", goal: "done" }))

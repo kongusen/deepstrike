@@ -27,6 +27,7 @@ export type MemoryCandidateReceipt =
  * The host's candidate store. Contract (spec §2.3):
  *
  * - The sink mints `receipt_id`; it is the stable name of its answer.
+ * - Identity is scoped by agentId; source and review metadata are part of conflict detection.
  * - The same `candidate_id` with the same payload returns the original receipt and stores nothing
  *   new, so a write whose acknowledgement was lost can be redelivered safely.
  * - The same `candidate_id` with a different payload is rejected with
@@ -42,7 +43,7 @@ export function memoryCandidateId(parts: readonly string[]): string {
   return `candidate:${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`
 }
 
-/** The part of a record a candidate is judged by. Store ids and timestamps are excluded: a retry
+/** The part of a record a candidate is judged by. Store ids, timestamps and recall counters are excluded: a retry
  *  of the same write may mint them afresh without changing what is being proposed. */
 export function memoryCandidatePayloadDigest(record: MemoryRecord): string {
   const payload = JSON.stringify([
@@ -52,6 +53,14 @@ export function memoryCandidatePayloadDigest(record: MemoryRecord): string {
     record.name,
     record.description,
     record.content,
+    record.provenance.author,
+    record.provenance.trust,
+    record.provenance.session_id ?? null,
+    record.provenance.evidence_refs,
+    record.confidence,
+    record.links,
+    record.pinned,
+    record.ttl_days ?? null,
   ])
   return `sha256:${createHash("sha256").update(payload).digest("hex")}`
 }
@@ -70,9 +79,10 @@ export class InMemoryMemoryCandidateSink implements MemoryCandidateSink {
 
   async submit(agentId: string, candidate: MemoryCandidate): Promise<MemoryCandidateReceipt> {
     const payloadDigest = memoryCandidatePayloadDigest(candidate.record)
-    const existing = this.held.get(candidate.candidate_id)
+    const key = JSON.stringify([agentId, candidate.candidate_id])
+    const existing = this.held.get(key)
     if (existing) {
-      if (existing.payloadDigest === payloadDigest) return existing.receipt
+      if (existing.payloadDigest === payloadDigest && existing.candidate.source === candidate.source) return structuredClone(existing.receipt)
       return {
         status: "rejected",
         candidate_id: candidate.candidate_id,
@@ -85,15 +95,15 @@ export class InMemoryMemoryCandidateSink implements MemoryCandidateSink {
       candidate_id: candidate.candidate_id,
       receipt_id: this.mintReceiptId(),
     }
-    this.held.set(candidate.candidate_id, { agentId, candidate, payloadDigest, receipt })
-    return receipt
+    this.held.set(key, { agentId, candidate: structuredClone(candidate), payloadDigest, receipt })
+    return structuredClone(receipt)
   }
 
   /** Candidates held for `agentId`, in submission order. */
   candidates(agentId?: string): MemoryCandidate[] {
     return [...this.held.values()]
       .filter(held => agentId === undefined || held.agentId === agentId)
-      .map(held => held.candidate)
+      .map(held => structuredClone(held.candidate))
   }
 
   private mintReceiptId(): string {

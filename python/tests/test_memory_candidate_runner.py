@@ -114,7 +114,8 @@ async def test_session_extraction_routes_or_gates_before_auxiliary_provider(mode
     audit = await events(runner)
     assert len([e for e in audit if e["kind"] == "memory_written"]) == (2 if mode == "legacy" else 0)
     if mode == "candidate_sink":
-        assert [c.candidate_id for c in sink.candidates()] == [memory_candidate_id(["session_extraction", "session", str(i)]) for i in range(2)]
+        run_id = next(e["run_id"] for e in audit if e["kind"] == "run_started")
+        assert [c.candidate_id for c in sink.candidates()] == [memory_candidate_id(["v2", "agent", "session_extraction", "session", f"python-operation-{run_id}", str(i)]) for i in range(2)]
         assert len([e for e in audit if e["kind"] == "memory_candidate_pending"]) == 2
 
 
@@ -163,7 +164,7 @@ async def test_model_effect_lost_ack_redelivery_conflict_and_distinct_effect():
     assert "connection reset" in first["error"]
     retry = await runner._persist_memory_effect_result("op", "e", canonical)
     assert retry["kind"] == "memory_candidate_result" and retry["status"] == "pending"
-    assert retry["candidate_id"] == memory_candidate_id(["child_request", "op", "e", "0"])
+    assert retry["candidate_id"] == memory_candidate_id(["v2", "agent", "child_request", "op", "e", "0"])
     assert retry["receipt_id"] == "receipt:1"
     assert len(inner.candidates()) == 1
     conflict = await runner._persist_memory_effect_result("op", "e", {**canonical, "content": "different"}, session_id="session")
@@ -229,13 +230,15 @@ async def test_archive_redelivery_uses_effect_identity():
     sink = InMemoryMemoryCandidateSink()
     runner = runner_with(memory_runtime_policy=replace(OFF, semantic_archive="candidate_sink"),
                          memory_candidate_sink=sink, memory_summarizer=lambda archived, ctx: "same summary")
-    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:1")
-    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:1")
+    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:1", "op")
+    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:1", "op")
     assert len(sink.candidates()) == 1
     pending = [e for e in await events(runner) if e["kind"] == "memory_candidate_pending"]
     assert pending[0]["receipt_id"] == pending[1]["receipt_id"]
-    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:2")
+    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:2", "op")
     assert len(sink.candidates()) == 2
+    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:1", "new-op")
+    assert len(sink.candidates()) == 3
 
 
 @pytest.mark.asyncio
@@ -308,7 +311,7 @@ async def test_malformed_sink_receipt_never_becomes_a_write(fields):
 async def test_semantic_archive_disabled_skips_fallback_provider_too():
     aux = Provider("archive")
     runner = runner_with(memory_runtime_policy=OFF, memory_provider=aux)
-    await runner._archive_semantic_page_out([], "auto_compact", "session", "e")
+    await runner._archive_semantic_page_out([], "auto_compact", "session", "e", "op")
     assert aux.calls == 0 and await events(runner) == []
 
 
@@ -323,3 +326,15 @@ def test_semantic_archive_projection_carries_metadata():
     assert action.kind == "archive_page_out"
     assert action.effect_id == "archive:7"
     assert action.action == "auto_compact" and action.tier == "semantic" and action.summary == "old"
+
+@pytest.mark.asyncio
+async def test_same_session_new_run_gets_distinct_extraction_ids():
+    aux = Provider(json.dumps({"memories": [{"name": "fact", "kind": "project", "content": "same", "description": "fact"}]}))
+    sink = InMemoryMemoryCandidateSink()
+    runner = runner_with(memory_provider=aux, memory_candidate_sink=sink,
+                         memory_runtime_policy=replace(OFF, session_extraction="candidate_sink"))
+    await collect_text(runner.run(session_id="session", goal="first"))
+    await collect_text(runner.run(session_id="session", goal="second"))
+    assert len(sink.candidates()) == 2
+    assert len({c.candidate_id for c in sink.candidates()}) == 2
+    assert runner._opts.memory_store.puts == []

@@ -816,7 +816,7 @@ export class RuntimeRunner {
     if (this.memoryPathToCandidateSink("modelWrites")) {
       try {
         if (!agentId) throw new Error("memory persistence requires RuntimeOptions.agentId")
-        const candidateId = memoryCandidateId(["child_request", operationId, effectId, "0"])
+        const candidateId = memoryCandidateId(["v2", agentId, "child_request", operationId, effectId, "0"])
         const receipt = await this.submitMemoryCandidate(agentId, "child_request", candidateId, record)
         return { kind: "memory_candidate_result", effect_id: effectId, ...receipt }
       } catch (cause) {
@@ -855,16 +855,16 @@ export class RuntimeRunner {
     const sink = this.opts.memoryCandidateSink
     if (!sink) throw new Error("memory candidate writes require RuntimeOptions.memoryCandidateSink")
     const receipt = await sink.submit(agentId, { candidate_id: candidateId, source, record })
-    if (receipt.candidate_id !== candidateId || !receipt.receipt_id) {
+    if (receipt.candidate_id !== candidateId || typeof receipt.receipt_id !== "string" || !receipt.receipt_id) {
       throw new Error(`memory candidate sink answered for ${String(receipt.candidate_id)} without a receipt for ${candidateId}`)
     }
-    if (receipt.status === "accepted" && (!receipt.record_ref || !receipt.digest)) {
+    if (receipt.status === "accepted" && (typeof receipt.record_ref !== "string" || !receipt.record_ref || typeof receipt.digest !== "string" || !receipt.digest)) {
       throw new Error("memory candidate sink accepted a write without record_ref/digest")
     }
     if (!["pending", "accepted", "rejected"].includes(receipt.status)) {
       throw new Error(`memory candidate sink answered with unknown status ${String(receipt.status)}`)
     }
-    if (receipt.status === "rejected" && !receipt.reason_code) {
+    if (receipt.status === "rejected" && (typeof receipt.reason_code !== "string" || !receipt.reason_code)) {
       throw new Error("memory candidate sink rejected a write without reason_code")
     }
     return receipt
@@ -1739,7 +1739,7 @@ export class RuntimeRunner {
           ...(error ? { error } : {}),
         })
         if (!error && archiveTier === "semantic" && archived.length > 0) {
-          await this.archiveSemanticPageOut(archived, archiveAction, sessionId, archiveEffectId)
+          await this.archiveSemanticPageOut(archived, archiveAction, sessionId, archiveEffectId, runtime.operationId)
         }
 
       } else if (action.kind === "load_payload") {
@@ -2075,7 +2075,7 @@ export class RuntimeRunner {
             )
             for (const [ordinal, memory] of extracted.entries()) {
               await this.writeMemory(memory, sessionId, this.memoryPathToCandidateSink("sessionExtraction") ? {
-                source: "session_extraction", candidateId: memoryCandidateId(["session_extraction", sessionId, String(ordinal)]),
+                source: "session_extraction", candidateId: memoryCandidateId(["v2", this.opts.agentId, "session_extraction", sessionId, runtime.operationId, String(ordinal)]),
               } : undefined)
             }
           }
@@ -2726,7 +2726,7 @@ export class RuntimeRunner {
     } catch { /* errs-open */ }
   }
 
-  private async archiveSemanticPageOut(archived: ModelMessage[], action: string | undefined, sessionId: string, effectId: string): Promise<void> {
+  private async archiveSemanticPageOut(archived: ModelMessage[], action: string | undefined, sessionId: string, effectId: string, operationId: string): Promise<void> {
     if (!this.memoryPathEnabled("semanticArchiveEnabled")) return
     if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     try {
@@ -2747,7 +2747,7 @@ export class RuntimeRunner {
           provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
           created_at: now, updated_at: now, recall_count: 0, confidence: 0.6, links: [], pinned: false,
       }, sessionId, this.memoryPathToCandidateSink("semanticArchive") ? {
-        source: "semantic_archive", candidateId: memoryCandidateId(["semantic_archive", sessionId, recordId]),
+        source: "semantic_archive", candidateId: memoryCandidateId(["v2", this.opts.agentId, "semantic_archive", sessionId, operationId, effectId]),
       } : undefined)
     } catch {
       // non-fatal

@@ -51,3 +51,28 @@ async def test_caller_mutation_cannot_change_held_proposal_or_receipt():
     retry = await sink.submit("a", MemoryCandidate("c1", "child_request", record()))
     assert retry["receipt_id"] == "receipt:1"
     assert sink.candidates()[0].record.content == "prefers numbered sections"
+
+@pytest.mark.asyncio
+async def test_identical_id_is_scoped_by_agent():
+    sink = InMemoryMemoryCandidateSink()
+    c = MemoryCandidate("same", "session_extraction", record())
+    a, b = await sink.submit("a", c), await sink.submit("b", c)
+    assert a["receipt_id"] != b["receipt_id"]
+    assert sink.candidates("a") == [c] and sink.candidates("b") == [c]
+    assert await sink.submit("a", c) == a
+
+
+@pytest.mark.asyncio
+async def test_source_and_review_metadata_changes_conflict():
+    sink = InMemoryMemoryCandidateSink()
+    c = MemoryCandidate("c", "session_extraction", record())
+    original = await sink.submit("agent", c)
+    alternatives = [replace(c, source="child_request")]
+    for field, value in [("trust", "host_verified"), ("evidence_refs", ["new-evidence"]), ("session_id", "other")]:
+        alternatives.append(replace(c, record=replace(c.record, provenance=replace(c.record.provenance, **{field: value}))))
+    for field, value in [("confidence", .9), ("pinned", True), ("links", ["related"]), ("ttl_days", 7)]:
+        alternatives.append(replace(c, record=replace(c.record, **{field: value})))
+    for other in alternatives:
+        assert (await sink.submit("agent", other))["reason_code"] == "candidate_conflict"
+    assert await sink.submit("agent", c) == original
+    assert sink.candidates() == [c]
