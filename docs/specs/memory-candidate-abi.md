@@ -1,6 +1,6 @@
 # 记忆候选回执 ABI（草案）
 
-状态：Rust core 与 node 桥接已实现并通过测试；python 与 wasm 桥接未实现。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
+状态：Rust core、Rust SDK 分发与 node 桥接已实现并通过测试；python 与 wasm 桥接未实现。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
 范围：新增一个 canonical 内核结果，使模型发起的记忆写入可以表达“待确认”，而不被记为已持久化。
 非目标：本文不定义六维分类、用户确认流程或来源业务校验，这些归宿主。
 
@@ -115,6 +115,7 @@
 
 - Rust core：`MemoryPersistedSuccess` 的 `receipt` 与新增的 `candidate` 二选一，两者都缺或都有即为 `UnexpectedEffectOutcome`。`pending` 作为效果终态，不写 `MemoryWritten`，产生观察 `MemoryCandidatePending`。同一候选的重投是重放（DEC-1），不同候选是冲突。线上形状由 `a_memory_candidate_outcome_decodes_from_the_bridge_wire_shape` 钉住。
 - node 桥接：`memory_candidate_result`，`pending` 映射为 candidate 结果，`accepted` 同现有持久化路径，`rejected` 为不可重试失败，传输错误为可重试失败。
+- Rust SDK `canonical_runner_runtime.rs`：`memory_candidate_result` 分支与 node 同语义，由纯函数 `memory_candidate_resolution` 承载，四个单元测试钉住 pending、accepted、缺字段与 rejected、传输错误。
 
 对待决问题的处理：
 
@@ -125,5 +126,4 @@
 尚未做的：
 
 - python 与 wasm 的桥接（`canonical_kernel_step.py`、`wasm/src/runtime/canonical-kernel-step.ts`），这两处无法在当前环境验证。
-- Rust SDK 的 `canonical_runner_runtime.rs` 对 `memory_candidate_result` 的解析：目前只有 node 桥接处理它。
 - 运行器侧的 candidate sink 与产生 `memory_candidate_result` 的宿主实现。没有它，任何真实运行都不会走到 pending。
