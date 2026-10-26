@@ -13,6 +13,7 @@ import {
   type KernelJournal,
 } from "./kernel-journal.js"
 import {
+  archivePresentationFromObservations,
   encodeCanonicalContentParts,
   kernelMessageToSdk,
   renderedContextToSdk,
@@ -123,7 +124,7 @@ function canonicalDoneFromTerminal(terminal: Record<string, unknown>): KernelRun
 }
 
 /** Adapt the core-owned KernelProjection JSON into the WASM action surface. */
-export function canonicalActionFromProjectionJson(raw: string): KernelRunnerAction | null {
+export function canonicalActionFromProjectionJson(raw: string, observations: readonly KernelObservation[] = []): KernelRunnerAction | null {
   const projection = asObject(JSON.parse(raw))
   const state = String(projection.state ?? "idle")
   if (state === "idle") return null
@@ -250,6 +251,7 @@ export function canonicalActionFromProjectionJson(raw: string): KernelRunnerActi
     }
     return {
       kind: "archive_page_out",
+      ...archivePresentationFromObservations(observations),
       effectId,
       handleId: String(payload.handle_id ?? ""),
       payload: {
@@ -1549,6 +1551,7 @@ export class CanonicalRunnerRuntime {
         this.absorbTransition(transition)
         this.lastAction = canonicalActionFromProjectionJson(
           this.host.kernel.projectPlannedStepJson(JSON.stringify(transition.plannedStep)),
+          transition.plannedStep.observations as KernelObservation[] | undefined,
         )
       }
       if (this.lastAction?.kind !== "unsupported_effect") return this.lastAction
@@ -1753,7 +1756,7 @@ export class CanonicalRunnerRuntime {
         if (event.enabled) {
           this.config.memory_access = {
             binding_id: this.memoryBindingId,
-            capabilities: { read: true, write: true },
+            capabilities: { read: event.read !== false, write: event.write !== false },
           }
         }
         return true

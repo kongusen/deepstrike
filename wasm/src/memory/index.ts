@@ -78,3 +78,8 @@ export interface SessionStore {
   loadSession(sessionId: string): Promise<SessionData | undefined>
   saveSession(data: SessionData): Promise<void>
 }
+
+export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest } from "./candidate-sink.js"
+export type { MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource } from "./candidate-sink.js"
+export { resolveMemoryRuntimePolicy } from "./runtime-policy.js"
+export type { MemoryRuntimePolicy, MemoryRetrievalPolicy, MemoryWritePolicy, ResolvedMemoryRuntimePolicy } from "./runtime-policy.js"

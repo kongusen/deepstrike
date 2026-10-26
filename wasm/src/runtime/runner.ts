@@ -10,6 +10,8 @@ import type {
 } from "../types.js"
 import type { ToolSuspendEvent } from "./execution-plane.js"
 import type { MemoryStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope, SessionData } from "../memory/index.js"
+import { resolveMemoryRuntimePolicy, type MemoryRuntimePolicy, type ResolvedMemoryRuntimePolicy } from "../memory/runtime-policy.js"
+import { memoryCandidateId, type MemoryCandidateSource, type MemoryCandidateReceipt, type MemoryCandidateSink } from "../memory/candidate-sink.js"
 import { extractSessionMemories } from "../memory/extraction.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
 import type { SignalSource, RuntimeSignal, SignalDeliveryReceipt } from "../signals/index.js"
@@ -299,6 +301,8 @@ export interface RuntimeOptions {
   initialMemory?: string[]
   /** Skill name → markdown body (WASM has no filesystem). */
   skillContentMap?: Map<string, string>
+  memoryRuntimePolicy?: MemoryRuntimePolicy
+  memoryCandidateSink?: MemoryCandidateSink
   memoryStore?: MemoryStore
   /** M4: advisory callback when a recalled record crosses the promotion threshold. */
   onPromotionSuggested?: (info: { recordId: string; recallCount: number }) => void
@@ -445,6 +449,7 @@ function controlRequestRejection(
 }
 
 export class RuntimeRunner {
+  private readonly memoryRuntimeGates: ResolvedMemoryRuntimePolicy | undefined
   private interrupted = false
   private cancellationReason: OperationCancellationReason | undefined
   /** #2-B-ii: aborts the in-flight provider stream on interrupt/preempt. Recreated per `execute`. */
@@ -491,6 +496,12 @@ export class RuntimeRunner {
   private activeProviderInvocationId: string | undefined
 
   constructor(private readonly opts: RuntimeOptions) {
+    this.memoryRuntimeGates = resolveMemoryRuntimePolicy(opts.memoryRuntimePolicy)
+    const sinkPaths = (["sessionExtraction", "modelWrites", "semanticArchive"] as const)
+      .filter(path => this.memoryPathToCandidateSink(path))
+    if (sinkPaths.length && !opts.memoryCandidateSink) {
+      throw new Error(`memory runtime policy ${sinkPaths.join(", ")} = "candidate_sink" needs RuntimeOptions.memoryCandidateSink`)
+    }
     const schemaAttempts = opts.workflowSchemaValidationAttempts ?? 2
     if (!Number.isInteger(schemaAttempts) || schemaAttempts < 1 || schemaAttempts > 16) {
       throw new RangeError("workflowSchemaValidationAttempts must be an integer between 1 and 16")
@@ -740,9 +751,9 @@ export class RuntimeRunner {
    * §22.13 · a host-authored memory write. The kernel decides whether it may happen: a live
    * operation answers through `admit_memory_write` (the model's validation rule and rolling write
    * quota); with no live operation the same kernel rule answers statelessly. Resolves `true` when
-   * the record was persisted.
+   * the record was persisted or submitted as a pending candidate.
    */
-  async writeMemory(memory: MemoryRecord, sessionId?: string): Promise<boolean> {
+  async writeMemory(memory: MemoryRecord, sessionId?: string, candidate?: { source: MemoryCandidateSource; candidateId: string }): Promise<boolean> {
     if (!this.opts.memoryStore || !this.opts.agentId) return false
     const turn = this.activeKernel?.turn() ?? 0
     const error = await this.admitMemoryWrite(memory)
@@ -753,6 +764,11 @@ export class RuntimeRunner {
         })
       }
       return false
+    }
+    if (candidate) {
+      const receipt = await this.submitMemoryCandidate(this.opts.agentId, candidate.source, candidate.candidateId, memory)
+      if (sessionId) await this.opts.sessionLog.append(sessionId, this.memoryCandidateEvent(receipt, candidate.source, memory))
+      return receipt.status !== "rejected"
     }
     try {
       await this.opts.memoryStore.put(this.opts.agentId, memory)
@@ -767,6 +783,128 @@ export class RuntimeRunner {
       })
     }
     return true
+  }
+
+  private async persistMemoryEffectResult(
+    operationId: string,
+    effectId: string,
+    canonicalMemory: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    let error: string | undefined
+    const agentId = this.opts.agentId
+    const record: MemoryRecord = {
+      record_id: `memory:${crypto.randomUUID()}`,
+      scope: this.opts.memoryScope ?? { tenant_id: "default", namespace: agentId ?? "default" },
+      name: String(canonicalMemory.name ?? ""),
+      kind: String(canonicalMemory.kind ?? "reference") as MemoryRecord["kind"],
+      content: String(canonicalMemory.content ?? ""),
+      description: String(canonicalMemory.description ?? ""),
+      provenance: {
+        author: "model",
+        trust: "untrusted",
+        evidence_refs: Array.isArray(canonicalMemory.evidence_refs)
+          ? canonicalMemory.evidence_refs.map(String)
+          : [],
+      },
+      created_at: Number(canonicalMemory.accepted_at_ms ?? Date.now()),
+      updated_at: Number(canonicalMemory.accepted_at_ms ?? Date.now()),
+      recall_count: 0,
+      confidence: 1,
+      links: [],
+      pinned: false,
+    }
+    if (this.memoryPathToCandidateSink("modelWrites")) {
+      try {
+        if (!agentId) throw new Error("memory persistence requires RuntimeOptions.agentId")
+        const candidateId = memoryCandidateId(["child_request", operationId, effectId, "0"])
+        const receipt = await this.submitMemoryCandidate(agentId, "child_request", candidateId, record)
+        return { kind: "memory_candidate_result", effect_id: effectId, ...receipt }
+      } catch (cause) {
+        return { kind: "memory_candidate_result", effect_id: effectId, error: formatToolError(cause) }
+      }
+    }
+    try {
+      if (!this.memoryPathEnabled("modelWritesEnabled")) {
+        throw new Error("model memory writes are disabled by memoryRuntimePolicy.modelWrites")
+      }
+      if (!agentId) throw new Error("memory persistence requires RuntimeOptions.agentId")
+      if (!this.opts.memoryStore) throw new Error("memory persistence requires RuntimeOptions.memoryStore")
+      await this.opts.memoryStore.put(agentId, record)
+    } catch (cause) {
+      error = formatToolError(cause)
+    }
+    return {
+      kind: "memory_persist_result",
+      effect_id: effectId,
+      // The receipt names what the store now holds: the record's id and its content digest.
+      ...(error ? { error } : {
+        record_ref: record.record_id,
+        digest: sha256Hex(record.content),
+      }),
+    }
+  }
+
+  /** M2 · hand a write to the candidate sink and check its answer names this candidate. A sink
+   *  that throws has given no answer; the same candidate id may be redelivered. */
+  private async submitMemoryCandidate(
+    agentId: string,
+    source: MemoryCandidateSource,
+    candidateId: string,
+    record: MemoryRecord,
+  ): Promise<MemoryCandidateReceipt> {
+    const sink = this.opts.memoryCandidateSink
+    if (!sink) throw new Error("memory candidate writes require RuntimeOptions.memoryCandidateSink")
+    const receipt = await sink.submit(agentId, { candidate_id: candidateId, source, record })
+    if (receipt.candidate_id !== candidateId || !receipt.receipt_id) {
+      throw new Error(`memory candidate sink answered for ${String(receipt.candidate_id)} without a receipt for ${candidateId}`)
+    }
+    if (receipt.status === "accepted" && (!receipt.record_ref || !receipt.digest)) {
+      throw new Error("memory candidate sink accepted a write without record_ref/digest")
+    }
+    if (!["pending", "accepted", "rejected"].includes(receipt.status)) {
+      throw new Error(`memory candidate sink answered with unknown status ${String(receipt.status)}`)
+    }
+    if (receipt.status === "rejected" && !receipt.reason_code) {
+      throw new Error("memory candidate sink rejected a write without reason_code")
+    }
+    return receipt
+  }
+
+  /** The audit fact for a sink's answer. Only an accepted candidate is a written record. */
+  private memoryCandidateEvent(
+    receipt: MemoryCandidateReceipt,
+    source: MemoryCandidateSource,
+    memory: MemoryRecord,
+  ): SessionEvent {
+    const turn = this.activeKernel?.turn() ?? 0
+    switch (receipt.status) {
+      case "pending":
+        return {
+          kind: "memory_candidate_pending", turn, candidate_id: receipt.candidate_id, source,
+          name: memory.name, receipt_id: receipt.receipt_id,
+        }
+      case "rejected":
+        return {
+          kind: "memory_candidate_rejected", turn, candidate_id: receipt.candidate_id, source,
+          name: memory.name, receipt_id: receipt.receipt_id, reason_code: receipt.reason_code,
+        }
+      case "accepted":
+        return {
+          kind: "memory_written", turn, record_id: receipt.record_ref, scope: memory.scope,
+          memory_kind: memory.kind, name: memory.name, size_bytes: new TextEncoder().encode(memory.content).byteLength,
+        }
+    }
+  }
+
+  /** Host memory-policy gate: a path is on unless the host set its switch to `"disabled"`. */
+  private memoryPathEnabled(path: keyof ResolvedMemoryRuntimePolicy): boolean {
+    return this.memoryRuntimeGates?.[path] ?? true
+  }
+
+  /** M2 · whether a write path hands its writes to the candidate sink. Off unless the host set the
+   *  path to `"candidate_sink"` — unlike the on/off gates, the default here is the store. */
+  private memoryPathToCandidateSink(path: "sessionExtraction" | "modelWrites" | "semanticArchive"): boolean {
+    return this.memoryRuntimeGates?.[`${path}ToCandidateSink`] ?? false
   }
 
   private async admitMemoryWrite(memory: MemoryRecord): Promise<string | undefined> {
@@ -1072,7 +1210,7 @@ export class RuntimeRunner {
     }
 
     if (this.opts.memoryStore && this.opts.agentId) {
-      await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true })
+      await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true, read: this.memoryPathEnabled("retrievalEnabled"), write: this.memoryPathEnabled("modelWritesEnabled") })
     }
     if (this.opts.knowledgeSource) {
       await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_knowledge_enabled", enabled: true })
@@ -1539,47 +1677,14 @@ export class RuntimeRunner {
         })
 
       } else if (action.kind === "persist_memory") {
-        // The kernel hands over the validated canonical write, which carries no store identity:
-        // build the full record here, and let the receipt name exactly what the store now holds.
-        const canonicalMemory = action.memory
-        const acceptedAt = Number(canonicalMemory.accepted_at_ms ?? Date.now())
-        const record: MemoryRecord = {
-          record_id: `memory:${crypto.randomUUID()}`,
-          scope: this.opts.memoryScope ?? { tenant_id: "default", namespace: this.opts.agentId ?? "default" },
-          name: String(canonicalMemory.name ?? ""),
-          kind: String(canonicalMemory.kind ?? "reference") as MemoryRecord["kind"],
-          content: String(canonicalMemory.content ?? ""),
-          description: String(canonicalMemory.description ?? ""),
-          provenance: {
-            author: "model",
-            trust: "untrusted",
-            evidence_refs: Array.isArray(canonicalMemory.evidence_refs) ? canonicalMemory.evidence_refs.map(String) : [],
-          },
-          created_at: acceptedAt,
-          updated_at: acceptedAt,
-          recall_count: 0,
-          confidence: 1,
-          links: [],
-          pinned: false,
-        }
-        let error: string | undefined
-        try {
-          if (!this.opts.memoryStore || !this.opts.agentId) throw new Error("WASM memory persistence requires memoryStore and agentId")
-          await this.opts.memoryStore.put(this.opts.agentId, record)
-        } catch (cause) { error = formatToolError(cause) }
-        action = await this.commitKernelAction(runtime, this.pendingObservations, {
-          kind: "memory_persist_result",
-          effect_id: action.effectId,
-          ...(error ? { error } : {
-            record_ref: record.record_id,
-            digest: `sha256:${sha256Hex(record.content)}`,
-          }),
-        })
+        action = await this.commitKernelAction(runtime, this.pendingObservations,
+          await this.persistMemoryEffectResult(runtime.operationId, action.effectId, action.memory))
 
       } else if (action.kind === "query_memory") {
         let hits: MemoryRecall[] = []
         let error: string | undefined
         try {
+          if (!this.memoryPathEnabled("retrievalEnabled")) throw new Error("memory retrieval is disabled by memoryRuntimePolicy.retrieval")
           if (!this.opts.memoryStore || !this.opts.agentId) throw new Error("WASM memory queries require memoryStore and agentId")
           hits = await this.opts.memoryStore.search(this.opts.agentId, {
             ...(action.query as unknown as MemoryQuery), top_k: action.requestedK,
@@ -1607,7 +1712,7 @@ export class RuntimeRunner {
           archiveStart: number; compressedSeq: number; action?: string; summary?: string; tier?: "semantic" | "durable"
         } = this.activePageOutArchive
           ?? this.pendingPageOutArchives.shift()
-          ?? { archiveStart: this.nextArchiveStart, compressedSeq: await this.opts.sessionLog.latestSeq(sessionId) }
+          ?? { archiveStart: this.nextArchiveStart, compressedSeq: await this.opts.sessionLog.latestSeq(sessionId), action: action.action, tier: action.tier }
         this.activePageOutArchive = archiveMeta
         let archiveRef: string | undefined
         let error: string | undefined
@@ -1622,9 +1727,10 @@ export class RuntimeRunner {
         } catch (cause) {
           error = formatToolError(cause)
         }
+        const archiveEffectId = action.effectId
         const archived = action.archived
-        const archiveAction = archiveMeta.action ?? "auto_compact"
-        const archiveTier = archiveMeta.tier
+        const archiveAction = archiveMeta.action ?? action.action ?? "auto_compact"
+        const archiveTier = archiveMeta.tier ?? action.tier
         if (!error) this.activePageOutArchive = undefined
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "page_out_archive_result",
@@ -1633,7 +1739,7 @@ export class RuntimeRunner {
           ...(error ? { error } : {}),
         })
         if (!error && archiveTier === "semantic" && archived.length > 0) {
-          void this.archiveSemanticPageOut(archived, archiveAction)
+          await this.archiveSemanticPageOut(archived, archiveAction, sessionId, archiveEffectId)
         }
 
       } else if (action.kind === "load_payload") {
@@ -1960,14 +2066,18 @@ export class RuntimeRunner {
             updatedAtMs: Date.now(),
           }
           await this.opts.memoryStore.saveSession(completedSession)
-          if (this.opts.memoryScope) {
+          if (this.opts.memoryScope && this.memoryPathEnabled("sessionExtractionEnabled")) {
             const extracted = await extractSessionMemories(
               this.opts.memoryProvider ?? this.opts.provider,
               completedSession,
               this.opts.memoryScope,
               this.opts.memorySystemPrompt,
             )
-            for (const memory of extracted) await this.writeMemory(memory, sessionId)
+            for (const [ordinal, memory] of extracted.entries()) {
+              await this.writeMemory(memory, sessionId, this.memoryPathToCandidateSink("sessionExtraction") ? {
+                source: "session_extraction", candidateId: memoryCandidateId(["session_extraction", sessionId, String(ordinal)]),
+              } : undefined)
+            }
           }
         } catch { /* non-fatal */ }
       }
@@ -2585,6 +2695,7 @@ export class RuntimeRunner {
     runtime: CanonicalRunnerRuntime,
     phase: "initial" | "renewal",
   ): Promise<void> {
+    if (!this.memoryPathEnabled("retrievalEnabled")) return
     if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     // P10: recall is default-on (CC session-start recall) — with no hook configured,
     // the goal itself is the query. preQueryMemory stays as the targeting override.
@@ -2615,7 +2726,8 @@ export class RuntimeRunner {
     } catch { /* errs-open */ }
   }
 
-  private async archiveSemanticPageOut(archived: ModelMessage[], action?: string): Promise<void> {
+  private async archiveSemanticPageOut(archived: ModelMessage[], action: string | undefined, sessionId: string, effectId: string): Promise<void> {
+    if (!this.memoryPathEnabled("semanticArchiveEnabled")) return
     if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     try {
       const summary = this.opts.memorySummarizer
@@ -2626,14 +2738,17 @@ export class RuntimeRunner {
           this.opts.memorySystemPrompt,
         )
       const now = Date.now()
-      const name = `page-out-${now}`
+      const name = `page-out-${effectId.replace(/[^a-zA-Z0-9._:-]/g, "_") || "unknown"}`
+      const recordId = `${this.opts.memoryScope.tenant_id}:${this.opts.memoryScope.namespace}:project:${name}`
       await this.writeMemory({
-          record_id: `${this.opts.memoryScope.tenant_id}:${this.opts.memoryScope.namespace}:project:${name}`,
+          record_id: recordId,
           scope: this.opts.memoryScope, name, kind: "project", content: summary,
           description: `auto summary of ${action ?? "compaction"} archive`,
           provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
           created_at: now, updated_at: now, recall_count: 0, confidence: 0.6, links: [], pinned: false,
-      }, this.currentSessionId ?? undefined)
+      }, sessionId, this.memoryPathToCandidateSink("semanticArchive") ? {
+        source: "semantic_archive", candidateId: memoryCandidateId(["semantic_archive", sessionId, recordId]),
+      } : undefined)
     } catch {
       // non-fatal
     }

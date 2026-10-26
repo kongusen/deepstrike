@@ -214,3 +214,8 @@ export { createContextPreparationAdapter, createNativeContextPreparationAdapter 
 export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextProviderPreparationRequest } from "./runtime/context.js"
 
 export type { PreparedProviderRequest } from "./types.js"
+
+export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest } from "./memory/candidate-sink.js"
+export type { MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource } from "./memory/candidate-sink.js"
+export { resolveMemoryRuntimePolicy } from "./memory/runtime-policy.js"
+export type { MemoryRuntimePolicy, MemoryRetrievalPolicy, MemoryWritePolicy, ResolvedMemoryRuntimePolicy } from "./memory/runtime-policy.js"

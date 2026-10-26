@@ -1,5 +1,5 @@
 import { CanonicalKernel } from "@deepstrike/wasm-kernel"
-import { CanonicalRunnerRuntime } from "../src/runtime/canonical-kernel-step.js"
+import { CanonicalRunnerRuntime, canonicalActionFromProjectionJson } from "../src/runtime/canonical-kernel-step.js"
 import { InMemoryKernelJournal } from "../src/runtime/kernel-journal.js"
 
 /** M2 bridge: how a host's `memory_candidate_result` becomes the kernel effect input. The commit
@@ -71,3 +71,20 @@ describe("memory_candidate_result bridge (M2)", () => {
     expect(input.outcome).toMatchObject({ status: "failed", failure: { retryable: false } })
   })
 })
+
+it("preserves semantic archive metadata from committed observations", () => {
+  const action = canonicalActionFromProjectionJson(JSON.stringify({
+    state: "action", action: { kind: "archive_page_out", effect_id: "archive:7",
+      payload: { payload: { content: '[]' } } },
+  }), [{ kind: "compressed", action: "auto_compact", summary: "old" }])
+  expect(action).toMatchObject({ kind: "archive_page_out", action: "auto_compact", tier: "semantic", summary: "old" })
+})
+
+it.each([[false, false], [true, false], [false, true], [true, true]])(
+  "projects independent memory read=%s and write=%s capabilities", async (read, write) => {
+    const runtime = new CanonicalRunnerRuntime(new CanonicalKernel(), new InMemoryKernelJournal(), "op-policy", { maxContextTokens: 10000 })
+    await runtime.applyHostEvent({ kind: "set_memory_enabled", enabled: true, read, write })
+    expect((runtime as unknown as { config: { memory_access: unknown } }).config.memory_access)
+      .toMatchObject({ capabilities: { read, write } })
+  },
+)

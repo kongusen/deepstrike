@@ -93,6 +93,9 @@ export type KernelRunnerAction =
   | { kind: "query_memory"; effectId: string; query: Record<string, unknown>; requestedK: number }
   | {
       kind: "archive_page_out"
+      action?: string
+      summary?: string
+      tier?: "semantic" | "durable"
       effectId: string
       archived: ModelMessage[]
       handleId?: string
