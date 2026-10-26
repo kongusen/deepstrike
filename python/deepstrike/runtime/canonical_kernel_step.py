@@ -765,32 +765,39 @@ class CanonicalRunnerRuntime:
       # M2 · the host's answer for a write it holds as a candidate. `pending` is terminal for the
       # effect and carries no record: nothing is persisted, and the kernel must not present it as
       # remembered. `accepted` names the record the store now holds, as `memory_persist_result`
-      # does. `rejected` and a missing answer both fail the effect, and only a missing answer is
-      # retryable (the same candidate id is redelivered).
-      if event.get("error"):
-        return await self._failed(event, "storage_unavailable", str(event["error"]), True)
+      # does. Malformed receipts and rejections fail non-retryably; a non-null error takes
+      # precedence and fails retryably (the same candidate id is redelivered).
+      error = event.get("error")
+      if error is not None:
+        message = error if isinstance(error, str) else json.dumps(
+          error, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return await self._failed(event, "storage_unavailable", message, True)
       status = event.get("status")
       if status == "pending":
-        if not event.get("candidate_id") or not event.get("receipt_id"):
+        if any(not isinstance(event.get(key), str) or not event[key]
+               for key in ("candidate_id", "receipt_id")):
           return await self._failed(event, "storage_unavailable",
                                     "memory candidate receipt names no candidate_id/receipt_id", False)
         return await self._resolve(event, {"kind": "memory_persisted", "candidate": {
           "binding_id": self._memory_binding_id,
-          "candidate_id": str(event["candidate_id"]),
-          "receipt_id": str(event["receipt_id"]),
+          "candidate_id": event["candidate_id"],
+          "receipt_id": event["receipt_id"],
         }})
       if status == "accepted":
-        if not event.get("record_ref") or not event.get("digest"):
+        if any(not isinstance(event.get(key), str) or not event[key]
+               for key in ("record_ref", "digest")):
           return await self._failed(event, "storage_unavailable",
                                     "memory candidate accepted without record_ref/digest", False)
         return await self._resolve(event, {"kind": "memory_persisted", "receipt": {
           "binding_id": self._memory_binding_id,
-          "record_ref": str(event["record_ref"]),
-          "digest": str(event["digest"]),
+          "record_ref": event["record_ref"],
+          "digest": event["digest"],
         }})
+      reason = event.get("reason_code")
+      if not isinstance(reason, str) or not reason:
+        reason = "unspecified"
       return await self._failed(
-        event, "storage_unavailable",
-        f"memory candidate rejected: {event.get('reason_code', 'unspecified')}", False)
+        event, "storage_unavailable", f"memory candidate rejected: {reason}", False)
     if kind == "memory_query_result":
       if event.get("error"):
         return await self._failed(event, "storage_unavailable", str(event["error"]), True)

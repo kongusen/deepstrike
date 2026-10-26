@@ -2577,9 +2577,12 @@ fn memory_candidate_resolution(
 ) -> std::result::Result<Value, MemoryCandidateFailure> {
     let fail = |message: String, retryable: bool| MemoryCandidateFailure { message, retryable };
     if let Some(error) = event.get("error").filter(|v| !v.is_null()) {
-        return Err(fail(error.to_string(), true));
+        return Err(fail(
+            error.as_str().map(str::to_owned).unwrap_or_else(|| error.to_string()),
+            true,
+        ));
     }
-    let text = |key: &str| event.get(key).and_then(|v| v.as_str());
+    let text = |key: &str| event.get(key).and_then(|v| v.as_str()).filter(|v| !v.is_empty());
     match text("status") {
         Some("pending") => match (text("candidate_id"), text("receipt_id")) {
             (Some(candidate_id), Some(receipt_id)) => Ok(json!({
@@ -2693,78 +2696,33 @@ mod tests {
         );
     }
 
-    /// M2 · a `pending` candidate answer resolves PersistMemory as a candidate receipt: the
-    /// kernel gets the candidate arm, not a record, so nothing is presented as remembered.
+    /// The same host receipts are exercised by Node, Python and WASM. This pure mapping
+    /// test checks the terminal outcome and closed result union, not kernel idempotency.
     #[test]
-    fn a_pending_candidate_answer_resolves_as_a_candidate_receipt_not_a_record() {
-        let resolved = super::memory_candidate_resolution(
-            &json!({ "status": "pending", "candidate_id": "cand-1", "receipt_id": "rcpt-1" }),
-            "node-memory",
-        )
-        .expect("a pending answer with its receipt resolves");
-        assert_eq!(
-            resolved,
-            json!({
-                "kind": "memory_persisted",
-                "candidate": {
-                    "binding_id": "node-memory",
-                    "candidate_id": "cand-1",
-                    "receipt_id": "rcpt-1",
-                },
-            })
-        );
-        assert!(
-            resolved.get("receipt").is_none(),
-            "pending carries no record receipt"
-        );
-    }
-
-    #[test]
-    fn an_accepted_candidate_answer_resolves_like_a_persisted_record() {
-        let resolved = super::memory_candidate_resolution(
-            &json!({ "status": "accepted", "record_ref": "rec-1", "digest": "sha256:ab" }),
-            "node-memory",
-        )
-        .expect("an accepted answer with its record resolves");
-        assert_eq!(
-            resolved["receipt"],
-            json!({ "binding_id": "node-memory", "record_ref": "rec-1", "digest": "sha256:ab" })
-        );
-        assert!(resolved.get("candidate").is_none());
-    }
-
-    #[test]
-    fn a_pending_answer_without_its_receipt_fails_non_retryably() {
-        let failure = super::memory_candidate_resolution(
-            &json!({ "status": "pending", "candidate_id": "cand-1" }),
-            "node-memory",
-        )
-        .err()
-        .expect("a pending answer must name both ids");
-        assert!(!failure.retryable);
-    }
-
-    #[test]
-    fn a_rejected_candidate_fails_non_retryably_and_names_the_reason() {
-        let failure = super::memory_candidate_resolution(
-            &json!({ "status": "rejected", "reason_code": "policy_denied" }),
-            "node-memory",
-        )
-        .err()
-        .expect("a rejected candidate fails the effect");
-        assert!(!failure.retryable);
-        assert_eq!(failure.message, "memory candidate rejected: policy_denied");
-    }
-
-    #[test]
-    fn a_transport_error_on_a_candidate_fails_retryably() {
-        let failure = super::memory_candidate_resolution(
-            &json!({ "error": "connection reset" }),
-            "node-memory",
-        )
-        .err()
-        .expect("a transport error fails the effect");
-        assert!(failure.retryable, "the same candidate id is redelivered");
+    fn memory_candidate_bridge_shared_receipts() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/abi/memory_candidate_receipts.json"
+        ))
+        .expect("the shared candidate receipt fixture parses");
+        for case in fixture["cases"].as_array().expect("receipt cases") {
+            let outcome = match super::memory_candidate_resolution(
+                &case["event"],
+                fixture["binding_id"].as_str().expect("binding id"),
+            ) {
+                Ok(result) => json!({ "status": "succeeded", "result": result }),
+                Err(failure) => json!({
+                    "status": "failed",
+                    "failure": {
+                        "kind": "storage_unavailable",
+                        "message": failure.message,
+                        "retryable": failure.retryable,
+                    },
+                }),
+            };
+            let expected = &case["expected"];
+            // Exact equality forbids a result containing both candidate and receipt arms.
+            assert_eq!(&outcome, expected, "receipt case {}", case["id"]);
+        }
     }
 
     fn test_options() -> CanonicalRunnerOptions {

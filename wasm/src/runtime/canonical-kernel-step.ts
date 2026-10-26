@@ -61,6 +61,17 @@ function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? value as Record<string, unknown> : {}
 }
 
+// Keep structured candidate errors compact and deterministic across SDKs.
+function memoryCandidateErrorJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(memoryCandidateErrorJson).join(",")}]`
+  if (value !== null && typeof value === "object") {
+    const object = value as Record<string, unknown>
+    return `{${Object.keys(object).sort().map(key =>
+      `${JSON.stringify(key)}:${memoryCandidateErrorJson(object[key])}`).join(",")}}`
+  }
+  return JSON.stringify(value)
+}
+
 function totalUsageTokens(terminal: Record<string, unknown>): number {
   const usage = asObject(terminal.usage)
   const input = Number(usage.input_tokens ?? 0)
@@ -1308,34 +1319,36 @@ export class CanonicalRunnerRuntime {
         // M2 · the host's answer for a write it holds as a candidate. `pending` is terminal for the
         // effect and carries no record: nothing is persisted, and the kernel must not present it as
         // remembered. `accepted` names the record the store now holds, as `memory_persist_result`
-        // does. `rejected` and a missing answer both fail the effect, and only a missing answer is
-        // retryable (the same candidate id is redelivered).
-        if (event.error) {
-          input = this.failedEffect(event, "storage_unavailable", String(event.error), true)
+        // does. Malformed receipts and rejections fail non-retryably; a non-null error takes
+        // precedence and fails retryably (the same candidate id is redelivered).
+        if (event.error !== undefined && event.error !== null) {
+          input = this.failedEffect(event, "storage_unavailable", typeof event.error === "string" ? event.error : memoryCandidateErrorJson(event.error), true)
           break
         }
         if (event.status === "pending") {
-          input = !event.candidate_id || !event.receipt_id
+          input = typeof event.candidate_id !== "string" || !event.candidate_id
+            || typeof event.receipt_id !== "string" || !event.receipt_id
             ? this.failedEffect(event, "storage_unavailable", "memory candidate receipt names no candidate_id/receipt_id", false)
             : this.succeededEffect(event, {
                 kind: "memory_persisted",
                 candidate: {
                   binding_id: this.memoryBindingId,
-                  candidate_id: String(event.candidate_id),
-                  receipt_id: String(event.receipt_id),
+                  candidate_id: event.candidate_id,
+                  receipt_id: event.receipt_id,
                 },
               })
           break
         }
         if (event.status === "accepted") {
-          input = !event.record_ref || !event.digest
+          input = typeof event.record_ref !== "string" || !event.record_ref
+            || typeof event.digest !== "string" || !event.digest
             ? this.failedEffect(event, "storage_unavailable", "memory candidate accepted without record_ref/digest", false)
             : this.succeededEffect(event, {
                 kind: "memory_persisted",
                 receipt: {
                   binding_id: this.memoryBindingId,
-                  record_ref: String(event.record_ref),
-                  digest: String(event.digest),
+                  record_ref: event.record_ref,
+                  digest: event.digest,
                 },
               })
           break
@@ -1343,7 +1356,7 @@ export class CanonicalRunnerRuntime {
         input = this.failedEffect(
           event,
           "storage_unavailable",
-          `memory candidate rejected: ${String(event.reason_code ?? "unspecified")}`,
+          `memory candidate rejected: ${typeof event.reason_code === "string" && event.reason_code ? event.reason_code : "unspecified"}`,
           false,
         )
         break

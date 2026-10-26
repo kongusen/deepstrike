@@ -1,0 +1,1111 @@
+{
+  "description": "Shared host memory_candidate_result bridge mappings. Pending emits one terminal successful effect resolution with only the candidate arm; accepted emits only the record receipt arm. These tests do not exercise kernel idempotency or receipt validation inside the kernel.",
+  "mapping_notes": [
+    "Pending requires nonempty string candidate_id and receipt_id; accepted requires nonempty string record_ref and digest but does not require candidate IDs.",
+    "Missing or invalid receipt fields fail non-retryably with storage_unavailable.",
+    "Every provided non-null error takes precedence and fails retryably. String messages are unchanged; other JSON values use compact JSON with recursively sorted object keys and unescaped Unicode.",
+    "Rejected and fallback statuses fail non-retryably; reason_code must be a nonempty string, otherwise unspecified."
+  ],
+  "binding_id": "fixture-memory",
+  "effect_id": "effect-7",
+  "cases": [
+    {
+      "id": "pending_terminal_candidate",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "succeeded",
+        "result": {
+          "kind": "memory_persisted",
+          "candidate": {
+            "binding_id": "fixture-memory",
+            "candidate_id": "cand-1",
+            "receipt_id": "rcpt-1"
+          }
+        }
+      }
+    },
+    {
+      "id": "accepted_record_receipt",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "status": "succeeded",
+        "result": {
+          "kind": "memory_persisted",
+          "receipt": {
+            "binding_id": "fixture-memory",
+            "record_ref": "rec-3",
+            "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    {
+      "id": "pending_ignores_record_fields",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "candidate_id": "cand-1",
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "succeeded",
+        "result": {
+          "kind": "memory_persisted",
+          "candidate": {
+            "binding_id": "fixture-memory",
+            "candidate_id": "cand-1",
+            "receipt_id": "rcpt-1"
+          }
+        }
+      }
+    },
+    {
+      "id": "accepted_ignores_candidate_fields",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "candidate_id": "cand-1",
+        "receipt_id": "rcpt-1",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "status": "succeeded",
+        "result": {
+          "kind": "memory_persisted",
+          "receipt": {
+            "binding_id": "fixture-memory",
+            "record_ref": "rec-3",
+            "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    {
+      "id": "pending_candidate_id_missing",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_candidate_id_null",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": null,
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_candidate_id_empty",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "",
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_candidate_id_numeric",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": 7,
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_receipt_id_missing",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_receipt_id_null",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": null
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_receipt_id_empty",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": ""
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_receipt_id_numeric",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": 7
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_record_ref_missing",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_record_ref_null",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": null,
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_record_ref_empty",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_record_ref_numeric",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": 7,
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_digest_missing",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_digest_null",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": null
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_digest_empty",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": ""
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_digest_numeric",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": 7
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "rejected_reason",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "rejected",
+        "reason_code": "source_unverifiable"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: source_unverifiable",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "rejected_missing_reason",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "rejected"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "rejected_null_reason",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "rejected",
+        "reason_code": null
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "missing_status",
+      "event": {
+        "kind": "memory_candidate_result"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "unknown_status",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "unknown",
+        "candidate_id": "cand-1",
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "null_status",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": null,
+        "candidate_id": "cand-1",
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "transport_error_alone",
+      "event": {
+        "kind": "memory_candidate_result",
+        "error": "sink timeout"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "sink timeout",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "transport_error_over_pending",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": "rcpt-1",
+        "error": "sink timeout"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "sink timeout",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "transport_error_over_accepted",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "error": "sink timeout"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "sink timeout",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "transport_error_over_rejected",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "rejected",
+        "reason_code": "policy_denied",
+        "error": "sink timeout"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "sink timeout",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "null_error_preserves_pending",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": "rcpt-1",
+        "error": null
+      },
+      "expected": {
+        "status": "succeeded",
+        "result": {
+          "kind": "memory_persisted",
+          "candidate": {
+            "binding_id": "fixture-memory",
+            "candidate_id": "cand-1",
+            "receipt_id": "rcpt-1"
+          }
+        }
+      }
+    },
+    {
+      "id": "empty_error_over_pending",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": "rcpt-1",
+        "error": ""
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "false_error_over_pending",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": "rcpt-1",
+        "error": false
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "false",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "pending_candidate_id_boolean",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": true,
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_candidate_id_object",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": {
+          "id": "invalid"
+        },
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_candidate_id_array",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": [
+          "invalid"
+        ],
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_receipt_id_boolean",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": true
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_receipt_id_object",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": {
+          "id": "invalid"
+        }
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "pending_receipt_id_array",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": "cand-1",
+        "receipt_id": [
+          "invalid"
+        ]
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate receipt names no candidate_id/receipt_id",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_record_ref_boolean",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": true,
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_record_ref_object",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": {
+          "id": "invalid"
+        },
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_record_ref_array",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": [
+          "invalid"
+        ],
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_digest_boolean",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": true
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_digest_object",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": {
+          "id": "invalid"
+        }
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_digest_array",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": [
+          "invalid"
+        ]
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate accepted without record_ref/digest",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "rejected_empty_reason",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "rejected",
+        "reason_code": ""
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "rejected_boolean_reason",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "rejected",
+        "reason_code": true
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "rejected_numeric_reason",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "rejected",
+        "reason_code": 7
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "rejected_object_reason",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "rejected",
+        "reason_code": {
+          "code": "denied"
+        }
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "rejected_array_reason",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "rejected",
+        "reason_code": [
+          "denied"
+        ]
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "unknown_status_with_reason",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "unknown",
+        "reason_code": "policy_denied"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: policy_denied",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "nonstring_status",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": [
+          "pending"
+        ],
+        "candidate_id": "cand-1",
+        "receipt_id": "rcpt-1"
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "memory candidate rejected: unspecified",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "id": "accepted_invalid_candidate_ids_ignored",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "candidate_id": {},
+        "receipt_id": false
+      },
+      "expected": {
+        "status": "succeeded",
+        "result": {
+          "kind": "memory_persisted",
+          "receipt": {
+            "binding_id": "fixture-memory",
+            "record_ref": "rec-3",
+            "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    {
+      "id": "null_error_preserves_accepted",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "error": null
+      },
+      "expected": {
+        "status": "succeeded",
+        "result": {
+          "kind": "memory_persisted",
+          "receipt": {
+            "binding_id": "fixture-memory",
+            "record_ref": "rec-3",
+            "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+          }
+        }
+      }
+    },
+    {
+      "id": "zero_error_over_accepted",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "error": 0
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "0",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "empty_object_error_over_accepted",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "error": {}
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "{}",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "empty_array_error_over_accepted",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "error": []
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "[]",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "object_unicode_error_over_accepted",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "error": {
+          "message": "存储失败 café 🚫",
+          "detail": {
+            "z": false,
+            "a": [
+              0,
+              null,
+              "行\n\"quoted\""
+            ]
+          }
+        }
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "{\"detail\":{\"a\":[0,null,\"行\\n\\\"quoted\\\"\"],\"z\":false},\"message\":\"存储失败 café 🚫\"}",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "array_unicode_error_over_accepted",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "error": [
+          "不可用",
+          "café",
+          false,
+          0,
+          {
+            "z": 2,
+            "a": "🚫"
+          }
+        ]
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "[\"不可用\",\"café\",false,0,{\"a\":\"🚫\",\"z\":2}]",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "string_unicode_error_over_accepted",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "accepted",
+        "record_ref": "rec-3",
+        "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "error": "  存储失败 café 🚫\n\"quoted\"  "
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "  存储失败 café 🚫\n\"quoted\"  ",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "id": "error_precedes_invalid_receipt",
+      "event": {
+        "kind": "memory_candidate_result",
+        "status": "pending",
+        "candidate_id": {},
+        "error": false
+      },
+      "expected": {
+        "status": "failed",
+        "failure": {
+          "kind": "storage_unavailable",
+          "message": "false",
+          "retryable": true
+        }
+      }
+    }
+  ]
+}
