@@ -631,6 +631,15 @@ impl CanonicalRunnerRuntime {
                     .await
                 }
             }
+            "memory_candidate_result" => {
+                match memory_candidate_resolution(&event, &self.memory_binding_id) {
+                    Ok(result) => self.resolve(&event, result).await,
+                    Err(failure) => {
+                        self.failed(&event, "storage_unavailable", &failure.message, failure.retryable)
+                            .await
+                    }
+                }
+            }
             "memory_query_result" => {
                 if let Some(error) = event.get("error").filter(|v| !v.is_null()) {
                     self.failed(&event, "storage_unavailable", &error.to_string(), true)
@@ -2551,6 +2560,65 @@ fn string_field(map: &Map<String, Value>, key: &str) -> String {
 }
 
 /// §22.13 · the canonical input for a host-authored memory write awaiting the kernel's admission.
+/// Why a candidate answer failed the PersistMemory effect.
+#[derive(Debug)]
+struct MemoryCandidateFailure {
+    message: String,
+    retryable: bool,
+}
+
+/// M2 · how a host's answer for a write it holds as a candidate resolves the PersistMemory effect.
+/// Mirrors the node bridge: `pending` resolves with a candidate receipt and persists nothing,
+/// `accepted` resolves like `memory_persist_result`, any other answer (`rejected`) fails
+/// non-retryably, and a transport error fails retryably so the same candidate id is redelivered.
+fn memory_candidate_resolution(
+    event: &Value,
+    binding_id: &str,
+) -> std::result::Result<Value, MemoryCandidateFailure> {
+    let fail = |message: String, retryable: bool| MemoryCandidateFailure { message, retryable };
+    if let Some(error) = event.get("error").filter(|v| !v.is_null()) {
+        return Err(fail(error.to_string(), true));
+    }
+    let text = |key: &str| event.get(key).and_then(|v| v.as_str());
+    match text("status") {
+        Some("pending") => match (text("candidate_id"), text("receipt_id")) {
+            (Some(candidate_id), Some(receipt_id)) => Ok(json!({
+                "kind": "memory_persisted",
+                "candidate": {
+                    "binding_id": binding_id,
+                    "candidate_id": candidate_id,
+                    "receipt_id": receipt_id,
+                },
+            })),
+            _ => Err(fail(
+                "memory candidate receipt names no candidate_id/receipt_id".into(),
+                false,
+            )),
+        },
+        Some("accepted") => match (text("record_ref"), text("digest")) {
+            (Some(record_ref), Some(digest)) => Ok(json!({
+                "kind": "memory_persisted",
+                "receipt": {
+                    "binding_id": binding_id,
+                    "record_ref": record_ref,
+                    "digest": digest,
+                },
+            })),
+            _ => Err(fail(
+                "memory candidate accepted without record_ref/digest".into(),
+                false,
+            )),
+        },
+        _ => Err(fail(
+            format!(
+                "memory candidate rejected: {}",
+                text("reason_code").unwrap_or("unspecified")
+            ),
+            false,
+        )),
+    }
+}
+
 fn admit_memory_write_input(event: &Value) -> Value {
     json!({ "kind": "host_control", "command": {
         "kind": "admit_memory_write",
@@ -2623,6 +2691,80 @@ mod tests {
             expected["effect_id"].as_str().unwrap(),
             "the host acts on the first (syscall-minted) effect"
         );
+    }
+
+    /// M2 · a `pending` candidate answer resolves PersistMemory as a candidate receipt: the
+    /// kernel gets the candidate arm, not a record, so nothing is presented as remembered.
+    #[test]
+    fn a_pending_candidate_answer_resolves_as_a_candidate_receipt_not_a_record() {
+        let resolved = super::memory_candidate_resolution(
+            &json!({ "status": "pending", "candidate_id": "cand-1", "receipt_id": "rcpt-1" }),
+            "node-memory",
+        )
+        .expect("a pending answer with its receipt resolves");
+        assert_eq!(
+            resolved,
+            json!({
+                "kind": "memory_persisted",
+                "candidate": {
+                    "binding_id": "node-memory",
+                    "candidate_id": "cand-1",
+                    "receipt_id": "rcpt-1",
+                },
+            })
+        );
+        assert!(
+            resolved.get("receipt").is_none(),
+            "pending carries no record receipt"
+        );
+    }
+
+    #[test]
+    fn an_accepted_candidate_answer_resolves_like_a_persisted_record() {
+        let resolved = super::memory_candidate_resolution(
+            &json!({ "status": "accepted", "record_ref": "rec-1", "digest": "sha256:ab" }),
+            "node-memory",
+        )
+        .expect("an accepted answer with its record resolves");
+        assert_eq!(
+            resolved["receipt"],
+            json!({ "binding_id": "node-memory", "record_ref": "rec-1", "digest": "sha256:ab" })
+        );
+        assert!(resolved.get("candidate").is_none());
+    }
+
+    #[test]
+    fn a_pending_answer_without_its_receipt_fails_non_retryably() {
+        let failure = super::memory_candidate_resolution(
+            &json!({ "status": "pending", "candidate_id": "cand-1" }),
+            "node-memory",
+        )
+        .err()
+        .expect("a pending answer must name both ids");
+        assert!(!failure.retryable);
+    }
+
+    #[test]
+    fn a_rejected_candidate_fails_non_retryably_and_names_the_reason() {
+        let failure = super::memory_candidate_resolution(
+            &json!({ "status": "rejected", "reason_code": "policy_denied" }),
+            "node-memory",
+        )
+        .err()
+        .expect("a rejected candidate fails the effect");
+        assert!(!failure.retryable);
+        assert_eq!(failure.message, "memory candidate rejected: policy_denied");
+    }
+
+    #[test]
+    fn a_transport_error_on_a_candidate_fails_retryably() {
+        let failure = super::memory_candidate_resolution(
+            &json!({ "error": "connection reset" }),
+            "node-memory",
+        )
+        .err()
+        .expect("a transport error fails the effect");
+        assert!(failure.retryable, "the same candidate id is redelivered");
     }
 
     fn test_options() -> CanonicalRunnerOptions {
