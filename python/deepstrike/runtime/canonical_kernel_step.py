@@ -759,6 +759,36 @@ class CanonicalRunnerRuntime:
         "record_ref": str(event["record_ref"]),
         "digest": str(event["digest"]),
       }})
+    if kind == "memory_candidate_result":
+      # M2 · the host's answer for a write it holds as a candidate. `pending` is terminal for the
+      # effect and carries no record: nothing is persisted, and the kernel must not present it as
+      # remembered. `accepted` names the record the store now holds, as `memory_persist_result`
+      # does. `rejected` and a missing answer both fail the effect, and only a missing answer is
+      # retryable (the same candidate id is redelivered).
+      if event.get("error"):
+        return await self._failed(event, "storage_unavailable", str(event["error"]), True)
+      status = event.get("status")
+      if status == "pending":
+        if not event.get("candidate_id") or not event.get("receipt_id"):
+          return await self._failed(event, "storage_unavailable",
+                                    "memory candidate receipt names no candidate_id/receipt_id", False)
+        return await self._resolve(event, {"kind": "memory_persisted", "candidate": {
+          "binding_id": self._memory_binding_id,
+          "candidate_id": str(event["candidate_id"]),
+          "receipt_id": str(event["receipt_id"]),
+        }})
+      if status == "accepted":
+        if not event.get("record_ref") or not event.get("digest"):
+          return await self._failed(event, "storage_unavailable",
+                                    "memory candidate accepted without record_ref/digest", False)
+        return await self._resolve(event, {"kind": "memory_persisted", "receipt": {
+          "binding_id": self._memory_binding_id,
+          "record_ref": str(event["record_ref"]),
+          "digest": str(event["digest"]),
+        }})
+      return await self._failed(
+        event, "storage_unavailable",
+        f"memory candidate rejected: {event.get('reason_code', 'unspecified')}", False)
     if kind == "memory_query_result":
       if event.get("error"):
         return await self._failed(event, "storage_unavailable", str(event["error"]), True)
