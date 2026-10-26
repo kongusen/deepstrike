@@ -4,6 +4,15 @@
 范围：新增一个 canonical 内核结果，使模型发起的记忆写入可以表达“待确认”，而不被记为已持久化。
 非目标：本文不定义六维分类、用户确认流程或来源业务校验，这些归宿主。
 
+## 0. 前提修正（2026-10-26 核实）
+
+本草案原先假定“模型写入”是模型可以直接发起的记忆写入。源码不是这样：
+
+- `crates/deepstrike-core/src/runtime/kernel/wire/driver.rs:1692` 的 F15 裁定明确：内核没有面向模型的记忆写入工具，`memory` 工具只读。
+- `RequestMemoryWrite` 的唯一调用通道是子 agent 的 `parent_requests`（子到父），由 `plan_memory_write`（`driver/syscall.rs:387`）转成 `persist_memory` 效果。
+
+因此，本规格覆盖的“待确认回执”实际作用于子 agent 提出的写入请求，而不是模型直接写入。`source = model_write` 应改为 `source = child_request`，或在宿主侧把子请求也归类为候选。若要真正开放模型写入入口，需要先推翻 F15 裁定，这是单独的产品决策，不属于本规格。
+
 ## 1. 现状
 
 内核只有一种记忆写入回执。
