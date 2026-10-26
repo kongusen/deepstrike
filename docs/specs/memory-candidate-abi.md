@@ -1,6 +1,6 @@
 # 记忆候选回执 ABI（草案）
 
-状态：草案，未实现。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
+状态：Rust core 与 node 桥接已实现并通过测试；python 与 wasm 桥接未实现。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
 范围：新增一个 canonical 内核结果，使模型发起的记忆写入可以表达“待确认”，而不被记为已持久化。
 非目标：本文不定义六维分类、用户确认流程或来源业务校验，这些归宿主。
 
@@ -108,3 +108,22 @@
 1. `pending` 是否应使效果进入终态。本草案假定是终态，且不可重试；如果需要等待确认后再结束效果，则应改用挂起（suspend）语义，这需要另外的 ABI 设计。
 2. 新事件是否进入现有 journal 的 `Mm` 类别，还是需要独立类别。
 3. `replay.rs` 的计数字段命名，是否需要为 `pending` 单独计数。
+
+## 7. 实现状态（已落地的部分）
+
+按上面的草案，已做的是：
+
+- Rust core：`MemoryPersistedSuccess` 的 `receipt` 与新增的 `candidate` 二选一，两者都缺或都有即为 `UnexpectedEffectOutcome`。`pending` 作为效果终态，不写 `MemoryWritten`，产生观察 `MemoryCandidatePending`。同一候选的重投是重放（DEC-1），不同候选是冲突。线上形状由 `a_memory_candidate_outcome_decodes_from_the_bridge_wire_shape` 钉住。
+- node 桥接：`memory_candidate_result`，`pending` 映射为 candidate 结果，`accepted` 同现有持久化路径，`rejected` 为不可重试失败，传输错误为可重试失败。
+
+对待决问题的处理：
+
+1. `pending` 按终态实现（采纳本文档的建议）。内核负责人确认前，这是可以撤回的假设。
+2. 新观察 `memory_candidate_pending` 没有加入共享的会话事件词表，它经由通用的 `kernel_observation` 事件（带 `observation_kind`）进入审计流。要做成一等事件，需要同步 `tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json`、python 与 wasm 的词表。
+3. 计数字段未单独为 pending 计数。
+
+尚未做的：
+
+- python 与 wasm 的桥接（`canonical_kernel_step.py`、`wasm/src/runtime/canonical-kernel-step.ts`），这两处无法在当前环境验证。
+- Rust SDK 的 `canonical_runner_runtime.rs` 对 `memory_candidate_result` 的解析：目前只有 node 桥接处理它。
+- 运行器侧的 candidate sink 与产生 `memory_candidate_result` 的宿主实现。没有它，任何真实运行都不会走到 pending。
