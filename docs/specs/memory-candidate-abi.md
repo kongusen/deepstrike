@@ -106,6 +106,17 @@
 ## 6. 待内核负责人确认的问题
 
 1. `pending` 是否应使效果进入终态。本草案假定是终态，且不可重试；如果需要等待确认后再结束效果，则应改用挂起（suspend）语义，这需要另外的 ABI 设计。
+
+   研究结论：应为终态。挂起语义与内核现有的四条规则冲突，而终态与记忆写入现有的形状一致。
+
+   - DEC-3（`transaction.rs`，“每种 kind 至多一个待决效果”）：挂起到人工审核结束的 PersistMemory 会占住唯一的名额，运行中之后的每一次写入都会触发 `ResourceLimitExceeded`。这是内核故障，宿主必须从 journal 重建，不是一次普通的拒绝。由 `a_pending_candidate_frees_the_memory_write_slot_and_an_unsettled_write_holds_it` 钉住。
+   - §5k（`driver/effects.rs`，记忆查询与 payload 读回的恢复）：同一轮里只要还有兄弟效果未结算，轮次就停在 `AwaitingResume`。挂起的写入会让同轮的查询一直等到审核结束。
+   - 终态清空待决效果（`transaction.rs`，“A terminal ends the operation; nothing is left waiting on the host”）：人工审核通常晚于运行结束，挂起的效果在审核结果到达之前就已被清掉，结果无处落地。
+   - 形状一致：审批（RequestApproval）的结算调用 `continue_after`，循环的走向取决于结果，因此挂起合理；记忆写入的结算只返回 `quiet_step`，没有任何后续依赖它，写入请求本身也是 `needs_workflow_round: false`。
+
+   终态的代价：本次运行的审计流只记录“候选待审”，不记录事后的接受或拒绝。候选存储是最终结果的唯一记录来源；接受后的记录在之后的召回中出现。如果需要在同一运行里告知模型审核结果，应由宿主经现有的信号通道投递，而不是把效果挂着。
+
+   附带发现：写入请求的唯一通道是子 agent 的 `parent_requests`，提出写入的子 agent 在效果结算时已经结束，`MemoryCandidatePending` 只是面向宿主的观察，没有任何模型上下文收到它（`MemoryWritten` 也一样）。因此第 2.2 节“给模型的观察信息必须区分三种状态”在当前通道上没有可落地的位置，S03 的“观察信息”只能落在宿主的会话事件与审计流上。另外，§7.12 规定终止运行的那次子任务完成不能发布任何效果：最后一个节点的完成如果带着写入请求，整个完成事件会被内核以 `InvalidLifecycle` 拒绝（写这条测试时实测到）。这与 pending 语义无关，但候选写入的宿主实现需要知道这一点。
 2. 新事件是否进入现有 journal 的 `Mm` 类别，还是需要独立类别。
 3. `replay.rs` 的计数字段命名，是否需要为 `pending` 单独计数。
 
@@ -122,7 +133,7 @@
 
 对待决问题的处理：
 
-1. `pending` 按终态实现（采纳本文档的建议）。内核负责人确认前，这是可以撤回的假设。
+1. `pending` 按终态实现。第 6 节问题 1 的研究给出了四条依据，仍待内核负责人签字确认。
 2. 新观察 `memory_candidate_pending` 没有加入共享的会话事件词表，它经由通用的 `kernel_observation` 事件（带 `observation_kind`）进入审计流。要做成一等事件，需要同步 `tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json`、python 与 wasm 的词表。
 3. 计数字段未单独为 pending 计数。
 
