@@ -7,6 +7,8 @@ export { memoryRetentionScore } from "./retention.js"
 export { rankMemories } from "./ranking.js"
 export type { RankableMemory, RankedMemory, RankOptions } from "./ranking.js"
 export { extractSessionMemories, parseExtractedMemories } from "./extraction.js"
+export { resolveMemoryRuntimePolicy } from "./runtime-policy.js"
+export type { MemoryRuntimePolicy, MemoryRetrievalPolicy, MemoryWritePolicy, ResolvedMemoryRuntimePolicy } from "./runtime-policy.js"
 export type {
   MemoryStore, Memory, MemorySearchOptions, SessionData, SessionMessage, MemoryRecord, MemoryRecall,
   MemoryQuery, MemoryScope, MemoryProvenance, MemoryRecallLifecycle,

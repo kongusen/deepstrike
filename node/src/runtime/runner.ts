@@ -19,6 +19,11 @@ import type {
   MemoryQuery,
 } from "../memory/protocols.js"
 import { extractSessionMemories } from "../memory/extraction.js"
+import {
+  resolveMemoryRuntimePolicy,
+  type MemoryRuntimePolicy,
+  type ResolvedMemoryRuntimePolicy,
+} from "../memory/runtime-policy.js"
 import { validateMemory } from "../memory/agent.js"
 import { checkMemoryWrite, deriveMemoryRecall, type KernelMemoryPolicyWire } from "../memory/authority.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
@@ -558,6 +563,12 @@ export interface RuntimeOptions {
    * `agentId`; storage location is configured on that host store, not in the kernel contract.
    */
   memoryPolicy?: MemoryPolicy
+  /**
+   * Host switches for the memory paths (contract M1). Omitted ⇒ every path stays enabled, as before.
+   * Each `"disabled"` is checked before the path's auxiliary provider call, so it costs nothing.
+   * `"candidate_sink"` is rejected at construction until the candidate hand-off protocol lands.
+   */
+  memoryRuntimePolicy?: MemoryRuntimePolicy
   tokenizer?: string
   enablePlanTool?: boolean
   /** Storage for canonical opaque external payload locators. */
@@ -819,6 +830,9 @@ export class RuntimeRunner {
   private activeProviderInvocationId: string | undefined
   private providerRetryPending = false
 
+  /** Resolved `memoryRuntimePolicy` gates; `undefined` when the host set no policy. */
+  private readonly memoryRuntimeGates: ResolvedMemoryRuntimePolicy | undefined
+
   constructor(private readonly opts: RuntimeOptions) {
     const schemaAttempts = opts.workflowSchemaValidationAttempts ?? 2
     if (!Number.isInteger(schemaAttempts) || schemaAttempts < 1 || schemaAttempts > 16) {
@@ -826,6 +840,7 @@ export class RuntimeRunner {
     }
     if (opts.kernelReliability) kernelReliabilityToKernel(opts.kernelReliability)
     if (opts.memoryPolicy) memoryPolicyToKernel(opts.memoryPolicy)
+    this.memoryRuntimeGates = resolveMemoryRuntimePolicy(opts.memoryRuntimePolicy)
     this.composedSystemPrompt = composeSystemPrompt(opts.systemPrompt, opts.instructions)
     this.providerRoute = resolveProviderRoute(opts.provider)
     this.usageAccountingPolicy = opts.usageAccountingPolicy ?? FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY
@@ -928,11 +943,17 @@ export class RuntimeRunner {
     await this.opts.memoryStore.put(agentId, memory)
   }
 
+  /** Host memory-policy gate: a path is on unless the host set its switch to `"disabled"`. */
+  private memoryPathEnabled(path: keyof ResolvedMemoryRuntimePolicy): boolean {
+    return this.memoryRuntimeGates?.[path] ?? true
+  }
+
   private async retrieveMemoryFromStore(
     query: MemoryQuery,
     requestedK: number,
     agentId: string,
   ): Promise<MemoryRecall[]> {
+    if (!this.memoryPathEnabled("retrievalEnabled")) return []
     if (!this.opts.memoryStore) throw new Error("memory queries require memoryStore")
     const policyLimit = this.opts.memoryPolicy?.retrievalTopK
     const limit = policyLimit === undefined ? requestedK : Math.min(requestedK, policyLimit)
@@ -3405,6 +3426,9 @@ export class RuntimeRunner {
           pinned: false,
         }
         try {
+          if (!this.memoryPathEnabled("modelWritesEnabled")) {
+            throw new Error("model memory writes are disabled by memoryRuntimePolicy.modelWrites")
+          }
           if (!agentId) throw new Error("memory persistence requires RuntimeOptions.agentId")
           await this.persistMemoryToStore(record, agentId)
         } catch (cause) {
@@ -3932,7 +3956,7 @@ export class RuntimeRunner {
             updatedAtMs: Date.now(),
           }
           await this.opts.memoryStore.saveSession(completedSession)
-          if (this.opts.memoryScope) {
+          if (this.opts.memoryScope && this.memoryPathEnabled("sessionExtractionEnabled")) {
             const extracted = await extractSessionMemories(
               this.opts.memoryProvider ?? this.opts.provider,
               completedSession,
@@ -4130,6 +4154,7 @@ export class RuntimeRunner {
     effectId = "unknown",
   ): Promise<void> {
     if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
+    if (!this.memoryPathEnabled("semanticArchiveEnabled")) return
     await this.opts.sessionLog.append(sessionId, {
       kind: "semantic_archive_pending",
       effect_id: effectId,
