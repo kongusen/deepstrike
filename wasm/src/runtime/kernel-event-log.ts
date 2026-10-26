@@ -18,6 +18,8 @@ export function categoryForKind(kind: string): KernelEventCategory {
     case "memory_written":
     case "memory_queried":
     case "memory_validation_failed":
+    case "memory_candidate_pending":
+    case "memory_candidate_rejected":
       return "mm"
     case "agent_process_changed":
       return "proc"
@@ -218,6 +220,15 @@ export function kernelObservationToSessionEvent(
         memory_kind: obs.memory_kind ?? "",
         name: obs.name ?? "",
         size_bytes: obs.size_bytes ?? 0,
+      }
+    case "memory_candidate_pending":
+      // M2 · the kernel's PersistMemory effect settled as a candidate (the child-request path).
+      return {
+        kind: "memory_candidate_pending" as const,
+        turn: t,
+        candidate_id: String((obs as { candidate_id?: unknown }).candidate_id ?? ""),
+        source: "child_request",
+        name: obs.name ?? "",
       }
     case "memory_queried":
       return {

@@ -350,6 +350,30 @@ class MemoryWriteFailedEvent(TypedDict, total=False):
     error: str
 
 
+class MemoryCandidatePendingEvent(TypedDict, total=False):
+    """M2 · a write handed to the candidate sink and held for review: nothing is remembered yet.
+
+    ``receipt_id`` is absent when the fact comes from the kernel's own observation.
+    """
+    kind: Literal["memory_candidate_pending"]
+    turn: int
+    candidate_id: str
+    source: str
+    name: str
+    receipt_id: str
+
+
+class MemoryCandidateRejectedEvent(TypedDict, total=False):
+    """M2 · the candidate sink refused the write."""
+    kind: Literal["memory_candidate_rejected"]
+    turn: int
+    candidate_id: str
+    source: str
+    name: str
+    receipt_id: str
+    reason_code: str
+
+
 class MemoryQueryFailedEvent(TypedDict, total=False):
     kind: Literal["memory_query_failed"]
     turn: int
@@ -485,6 +509,8 @@ SessionEvent = (
     | MemoryQueriedEvent
     | MemoryValidationFailedEvent
     | MemoryWriteFailedEvent
+    | MemoryCandidatePendingEvent
+    | MemoryCandidateRejectedEvent
     | MemoryQueryFailedEvent
     | MemoryRetrievalResultEvent
     | WorkflowNodeCompletedEvent
@@ -544,6 +570,8 @@ SESSION_EVENT_KINDS: tuple[str, ...] = (
     "memory_queried",
     "memory_validation_failed",
     "memory_write_failed",
+    "memory_candidate_pending",
+    "memory_candidate_rejected",
     "memory_query_failed",
     "memory_retrieval_result",
     "workflow_node_completed",

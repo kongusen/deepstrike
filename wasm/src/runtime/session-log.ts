@@ -124,6 +124,11 @@ export type SessionEvent =
   | { kind: "memory_queried"; turn: number; scope: MemoryScope; query: string; requested_k: number; requires_async_response: boolean }
   | { kind: "memory_validation_failed"; turn: number; record_id: string; error: string }
   | { kind: "memory_write_failed"; turn: number; record_id: string; error: string }
+  /** M2 · a write handed to the candidate sink and held for review: nothing is remembered yet.
+   *  `receipt_id` is absent when the fact comes from the kernel's own observation. */
+  | { kind: "memory_candidate_pending"; turn: number; candidate_id: string; source: string; name: string; receipt_id?: string }
+  /** M2 · the candidate sink refused the write. */
+  | { kind: "memory_candidate_rejected"; turn: number; candidate_id: string; source: string; name: string; receipt_id: string; reason_code: string }
   | { kind: "memory_query_failed"; turn: number; scope: MemoryScope; query: string; error: string }
   | { kind: "memory_retrieval_result"; hits: MemoryRecall[] }
   | {
@@ -238,6 +243,8 @@ export const SESSION_EVENT_KINDS = [
   "memory_queried",
   "memory_validation_failed",
   "memory_write_failed",
+  "memory_candidate_pending",
+  "memory_candidate_rejected",
   "memory_query_failed",
   "memory_retrieval_result",
   "workflow_node_completed",

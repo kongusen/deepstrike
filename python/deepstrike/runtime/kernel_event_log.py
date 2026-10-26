@@ -18,6 +18,8 @@ def category_for_kind(kind: str) -> KernelEventCategory:
         "memory_written",
         "memory_queried",
         "memory_validation_failed",
+        "memory_candidate_pending",
+        "memory_candidate_rejected",
     ):
         return "mm"
     if kind == "agent_process_changed":
@@ -236,6 +238,15 @@ def kernel_observation_to_session_event(
             "query": obs.get("query") or "",
             "requested_k": obs.get("requested_k") or 0,
             "requires_async_response": obs.get("requires_async_response") or False,
+        }
+    if kind == "memory_candidate_pending":
+        # M2 · the kernel's PersistMemory effect settled as a candidate (the child-request path).
+        return {
+            "kind": "memory_candidate_pending",
+            "turn": t,
+            "candidate_id": str(obs.get("candidate_id") or ""),
+            "source": "child_request",
+            "name": obs.get("name") or "",
         }
     if kind == "memory_validation_failed":
         return {
