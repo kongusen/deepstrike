@@ -71,6 +71,8 @@ class KernelRunnerAction:
   effect_kind: str | None = None
   # archive_page_out: the kernel's opaque archive body (content/digest/original_size/preview).
   archive_payload: dict[str, Any] | None = None
+  action: str | None = None
+  summary: str | None = None
 
 
 def _try_parse_json(value: str) -> Any:

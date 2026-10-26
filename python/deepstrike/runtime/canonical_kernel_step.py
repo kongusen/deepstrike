@@ -447,7 +447,9 @@ def _action_from_core_step(planned_step: dict[str, Any]) -> KernelRunnerAction |
   )
 
 
-def canonical_action_from_projection_json(raw: str) -> KernelRunnerAction | None:
+def canonical_action_from_projection_json(
+  raw: str, *, observations: list[dict[str, Any]] | None = None,
+) -> KernelRunnerAction | None:
   """Adapt core-owned KernelProjection JSON to the Python action surface."""
   projection = _object(json.loads(raw))
   state = str(projection.get("state") or "idle")
@@ -458,7 +460,7 @@ def canonical_action_from_projection_json(raw: str) -> KernelRunnerAction | None
       "kind": "terminal", "terminal": _object(projection.get("action"))}})
   action = _object(projection.get("action"))
   payload = _object(action.get("payload"))
-  return _action_from_core_step({"disposition": {
+  return _action_from_core_step({"observations": observations or [], "disposition": {
     "kind": "effects", "effects": [{
       "effect_id": action.get("effect_id"),
       "causation_input_id": action.get("causation_input_id"),
@@ -930,7 +932,9 @@ class CanonicalRunnerRuntime:
       if transition is not None:
         self._absorb_transition(transition)
         self._last_action = canonical_action_from_projection_json(
-          self.host.kernel.project_planned_step_json(json.dumps(transition.planned_step)))
+          self.host.kernel.project_planned_step_json(json.dumps(transition.planned_step)),
+          observations=transition.planned_step.get("observations") or [],
+        )
       if self._last_action is None or self._last_action.kind != "unsupported_effect":
         return self._last_action
       next_input = canonical_unsupported_effect_resolution(
@@ -1205,7 +1209,7 @@ class CanonicalRunnerRuntime:
     if kind == "set_memory_enabled":
       self._feature_policy()["memory_enabled"] = bool(event.get("enabled"))
       if event.get("enabled"):
-        self._config["memory_access"] = {"binding_id": self._memory_binding_id, "capabilities": {"read": True, "write": True}}
+        self._config["memory_access"] = {"binding_id": self._memory_binding_id, "capabilities": {"read": event.get("read", True), "write": event.get("write", True)}}
       return True
     if kind == "set_knowledge_enabled":
       self._feature_policy()["knowledge_enabled"] = bool(event.get("enabled"))

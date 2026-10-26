@@ -168,6 +168,22 @@ from deepstrike.tools import (
 from deepstrike.providers.stream import ToolAuditFailedEvent
 from deepstrike.providers.stream import EntropySample, EntropySampleEvent, EntropyAlertEvent
 from deepstrike.memory import (
+    MemoryRetrievalPolicy,
+    MemoryWritePolicy,
+    MemoryRuntimePolicy,
+    ResolvedMemoryRuntimePolicy,
+    resolve_memory_runtime_policy,
+    MemoryCandidateSource,
+    MemoryCandidate,
+    MemoryCandidateReceipt,
+    MemoryCandidateSink,
+    PendingMemoryCandidateReceipt,
+    AcceptedMemoryCandidateReceipt,
+    RejectedMemoryCandidateReceipt,
+    InMemoryMemoryCandidateSink,
+    memory_candidate_id,
+    memory_candidate_payload_digest,
+
     WorkingMemory,
     MemoryStore, Memory, MemorySearchOptions, DurableMemory, SessionData, MemoryRecord, MemoryRecall, MemoryQuery,
     MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
@@ -238,6 +254,22 @@ from deepstrike.runtime.context import (
 )
 
 __all__ = [
+    "MemoryRetrievalPolicy",
+    "MemoryWritePolicy",
+    "MemoryRuntimePolicy",
+    "ResolvedMemoryRuntimePolicy",
+    "resolve_memory_runtime_policy",
+    "MemoryCandidateSource",
+    "MemoryCandidate",
+    "MemoryCandidateReceipt",
+    "MemoryCandidateSink",
+    "PendingMemoryCandidateReceipt",
+    "AcceptedMemoryCandidateReceipt",
+    "RejectedMemoryCandidateReceipt",
+    "InMemoryMemoryCandidateSink",
+    "memory_candidate_id",
+    "memory_candidate_payload_digest",
+
   "ContextPrepared", "ContextProviderPreparationRequest", "ContextPreparationAdapter",
   "create_context_preparation_adapter", "create_native_context_preparation_adapter",
 

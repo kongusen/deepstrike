@@ -22,6 +22,11 @@ from deepstrike._kernel import (
   ToolExecutionResult,
   TaskUpdate,
 )
+from deepstrike.memory.runtime_policy import MemoryRuntimePolicy, resolve_memory_runtime_policy
+from deepstrike.memory.candidate_sink import (
+  MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
+  memory_candidate_id,
+)
 from deepstrike.providers.base import LLMProvider, RenderedContext
 from deepstrike.runtime.context import create_native_context_preparation_adapter
 from deepstrike.providers.prepared_request import prepare_provider_request
@@ -393,6 +398,9 @@ class RuntimeOptions:
   payload_store: "PayloadStore | None" = None
   memory_provider: LLMProvider | None = None
   memory_summarizer: Callable[[list[Any], dict[str, Any]], Awaitable[str] | str] | None = None
+  # Independent host path switches; omitted preserves all existing memory behavior.
+  memory_runtime_policy: MemoryRuntimePolicy | dict[str, str] | None = None
+  memory_candidate_sink: MemoryCandidateSink | None = None
 
 
 OperationCancellationReason = Literal["user", "deadline", "lease_lost", "host_shutdown"]
@@ -452,6 +460,11 @@ class RuntimeRunner:
     ):
       raise ValueError("workflow_schema_validation_attempts must be an integer between 1 and 16")
     self._opts = opts
+    self._memory_runtime_gates = resolve_memory_runtime_policy(opts.memory_runtime_policy)
+    sink_paths = [path for path in ("session_extraction", "model_writes", "semantic_archive")
+                  if self._memory_path_to_candidate_sink(path)]
+    if sink_paths and opts.memory_candidate_sink is None:
+      raise ValueError(f"memory runtime policy {', '.join(sink_paths)} = candidate_sink needs RuntimeOptions.memory_candidate_sink")
     self._interrupted = False
     self._cancellation_reason: OperationCancellationReason | None = None
     self._plane = opts.execution_plane or LocalExecutionPlane()
@@ -618,16 +631,101 @@ class RuntimeRunner:
       self._active_operation.cancelled.set()
     self._active_operation = None
 
+  def _memory_path_enabled(self, path: str) -> bool:
+    return getattr(self._memory_runtime_gates, f"{path}_enabled", True)
+
+  def _memory_path_to_candidate_sink(self, path: str) -> bool:
+    return getattr(self._memory_runtime_gates, f"{path}_to_candidate_sink", False)
+
+  async def _submit_memory_candidate(
+    self, agent_id: str, source: MemoryCandidateSource, candidate_id: str, record: "MemoryRecord",
+  ) -> MemoryCandidateReceipt:
+    sink = self._opts.memory_candidate_sink
+    if sink is None:
+      raise RuntimeError("memory candidate writes require memory_candidate_sink")
+    receipt = await sink.submit(agent_id, MemoryCandidate(candidate_id, source, record))
+    if receipt.get("candidate_id") != candidate_id or not receipt.get("receipt_id"):
+      raise ValueError(f"memory candidate sink answered without a receipt for {candidate_id}")
+    if receipt.get("status") not in ("pending", "accepted", "rejected"):
+      raise ValueError(f"memory candidate sink answered with unknown status {receipt.get('status')}")
+    if receipt["status"] == "accepted" and (not receipt.get("record_ref") or not receipt.get("digest")):
+      raise ValueError("memory candidate sink accepted a write without record_ref/digest")
+    if receipt["status"] == "rejected" and not receipt.get("reason_code"):
+      raise ValueError("memory candidate sink rejected a write without reason_code")
+    return receipt
+
+  def _memory_candidate_event(
+    self, receipt: MemoryCandidateReceipt, source: MemoryCandidateSource, memory: "MemoryRecord",
+  ) -> dict[str, Any]:
+    turn = self._active_kernel.turn() if self._active_kernel else 0
+    if receipt["status"] == "accepted":
+      return {
+        "kind": "memory_written", "turn": turn, "record_id": receipt["record_ref"],
+        "scope": memory.scope, "memory_kind": memory.kind, "name": memory.name,
+        "size_bytes": len(memory.content.encode("utf-8")),
+      }
+    return {
+      "kind": "memory_candidate_" + receipt["status"], "turn": turn,
+      "candidate_id": receipt["candidate_id"], "receipt_id": receipt["receipt_id"],
+      "source": source, "name": memory.name,
+      **({"reason_code": receipt["reason_code"]} if receipt["status"] == "rejected" else {}),
+    }
+
+  async def _persist_memory_effect_result(
+    self, operation_id: str, effect_id: str, canonical: dict[str, Any], *, session_id: str | None = None,
+  ) -> dict[str, Any]:
+    """Resolve an admitted model write; stable effect identity permits safe redelivery."""
+    from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord, MemoryScope
+    accepted_at = int(canonical.get("accepted_at_ms") or time.time() * 1000)
+    record = MemoryRecord(
+      record_id=f"memory:{uuid.uuid4()}",
+      scope=self._opts.memory_scope or MemoryScope("default", self._opts.agent_id or "default"),
+      name=str(canonical.get("name") or ""), kind=str(canonical.get("kind") or "reference"),
+      content=str(canonical.get("content") or ""), description=str(canonical.get("description") or ""),
+      provenance=MemoryProvenance(
+        author="model", trust="untrusted", session_id=session_id,
+        evidence_refs=[str(ref) for ref in canonical.get("evidence_refs") or []],
+      ), created_at=accepted_at, updated_at=accepted_at,
+    )
+    if self._memory_path_to_candidate_sink("model_writes"):
+      try:
+        if not self._opts.agent_id:
+          raise RuntimeError("memory persistence requires agent_id")
+        receipt = await self._submit_memory_candidate(
+          self._opts.agent_id, "child_request",
+          memory_candidate_id(["child_request", operation_id, effect_id, "0"]), record,
+        )
+        # Pending/accepted observations are emitted by the kernel. Rejection is a failed
+        # effect, so preserve the sink's reason here before handing the failure to the bridge.
+        if receipt["status"] == "rejected" and session_id:
+          await self._opts.session_log.append(session_id, self._memory_candidate_event(receipt, "child_request", record))
+        return {"kind": "memory_candidate_result", "effect_id": effect_id, **receipt}
+      except Exception as cause:
+        return {"kind": "memory_candidate_result", "effect_id": effect_id, "error": format_tool_error(cause)}
+    try:
+      if not self._memory_path_enabled("model_writes"):
+        raise RuntimeError("model memory writes are disabled by memory_runtime_policy.model_writes")
+      if not (self._opts.memory_store and self._opts.agent_id):
+        raise RuntimeError("memory persistence requires memory_store and agent_id")
+      await self._opts.memory_store.put(self._opts.agent_id, record)
+      return {
+        "kind": "memory_persist_result", "effect_id": effect_id, "record_ref": record.record_id,
+        "digest": "sha256:" + hashlib.sha256(record.content.encode("utf-8")).hexdigest(),
+      }
+    except Exception as cause:
+      return {"kind": "memory_persist_result", "effect_id": effect_id, "error": format_tool_error(cause)}
+
   async def write_memory(
     self,
     memory: "MemoryRecord",
     *,
     session_id: str | None = None,
     agent_id: str | None = None,
+    candidate: MemoryCandidate | None = None,
   ) -> bool:
     """§22.13 · a host-authored memory write; the kernel decides whether it may happen.
 
-    Returns ``True`` when the record was persisted.
+    Returns ``True`` when persisted or held pending by the candidate sink; rejection is false.
     """
     resolved_session_id = session_id or self._current_session_id
     resolved_agent_id = agent_id or self._opts.agent_id
@@ -645,6 +743,11 @@ class RuntimeRunner:
           "error": error,
         })
       return False
+    if candidate is not None:
+      receipt = await self._submit_memory_candidate(resolved_agent_id, candidate.source, candidate.candidate_id, memory)
+      if resolved_session_id:
+        await self._opts.session_log.append(resolved_session_id, self._memory_candidate_event(receipt, candidate.source, memory))
+      return receipt["status"] != "rejected"
     await self._opts.memory_store.put(resolved_agent_id, memory)
     if resolved_session_id:
       await self._opts.session_log.append(resolved_session_id, {
@@ -697,6 +800,8 @@ class RuntimeRunner:
     requested_k: int,
     agent_id: str,
   ) -> list["MemoryRecall"]:
+    if not self._memory_path_enabled("retrieval"):
+      return []
     if not self._opts.memory_store:
       raise RuntimeError("memory queries require memory_store")
     from dataclasses import replace
@@ -2092,7 +2197,11 @@ class RuntimeRunner:
       })
 
     if not resume_mid_run and self._opts.memory_store and self._opts.agent_id:
-      await apply_host(runtime, self._pending_observations, {"kind": "set_memory_enabled", "enabled": True})
+      await apply_host(runtime, self._pending_observations, {
+        "kind": "set_memory_enabled", "enabled": True,
+        "read": self._memory_path_enabled("retrieval"),
+        "write": self._memory_path_enabled("model_writes"),
+      })
     if not resume_mid_run and self._opts.knowledge_source:
       await apply_host(runtime, self._pending_observations, {"kind": "set_knowledge_enabled", "enabled": True})
     if not resume_mid_run and self._opts.milestone_contract:
@@ -2867,6 +2976,7 @@ class RuntimeRunner:
           })
 
       elif action.kind == "archive_page_out":
+        archive_effect_id = action.effect_id
         if self._active_page_out_archive is None:
           if self._pending_page_out_archives:
             self._active_page_out_archive = self._pending_page_out_archives.pop(0)
@@ -2874,6 +2984,7 @@ class RuntimeRunner:
             self._active_page_out_archive = (
               self._next_archive_start,
               await self._opts.session_log.latest_seq(session_id),
+              action.action, action.summary, action.tier,
             )
         archive_start, _compressed_seq, archive_action, _archive_summary, archive_tier = self._active_page_out_archive
         archive_ref = None
@@ -2892,7 +3003,8 @@ class RuntimeRunner:
             await self._payload_store().persist_payload(session_id, archive_ref, str(archive_payload["content"]))
         except Exception as exc:
           error = format_tool_error(exc)
-        archive_action = archive_action or "auto_compact"
+        archive_action = archive_action or action.action or "auto_compact"
+        archive_tier = archive_tier or action.tier
         if error is None:
           self._active_page_out_archive = None
         action = await action_host(runtime, self._pending_observations, {
@@ -2903,7 +3015,7 @@ class RuntimeRunner:
         })
         if error is None and archive_tier == "semantic" and archived:
           task_scope.spawn("semantic-page-out", self._archive_semantic_page_out(
-            archived, archive_action, session_id,
+            archived, archive_action, session_id, archive_effect_id,
           ))
 
       elif action.kind == "execute_tool":
@@ -3165,42 +3277,10 @@ class RuntimeRunner:
           return
 
       elif action.kind == "persist_memory":
-        # A model-authored long-term write the kernel already validated. The receipt names what
-        # the store actually holds: the persisted record's id and a digest of its content — never
-        # an id or digest minted here without a write behind it.
-        from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord, MemoryScope
-        canonical = action.memory or {}
-        accepted_at = int(canonical.get("accepted_at_ms") or time.time() * 1000)
-        persisted = MemoryRecord(
-          record_id=f"memory:{uuid.uuid4()}",
-          scope=self._opts.memory_scope or MemoryScope("default", self._opts.agent_id or "default"),
-          name=str(canonical.get("name") or ""),
-          kind=str(canonical.get("kind") or "reference"),  # type: ignore[arg-type]
-          content=str(canonical.get("content") or ""),
-          description=str(canonical.get("description") or ""),
-          provenance=MemoryProvenance(
-            author="model", trust="untrusted",
-            evidence_refs=[str(ref) for ref in canonical.get("evidence_refs") or []],
-            session_id=session_id,
-          ),
-          created_at=accepted_at,
-          updated_at=accepted_at,
+        result = await self._persist_memory_effect_result(
+          runtime.operation_id, action.effect_id, action.memory or {}, session_id=session_id,
         )
-        persist_error: str | None = None
-        try:
-          if not (self._opts.memory_store and self._opts.agent_id):
-            raise RuntimeError("memory persistence requires memory_store and agent_id")
-          await self._opts.memory_store.put(self._opts.agent_id, persisted)
-        except Exception as cause:
-          persist_error = format_tool_error(cause)
-        action = await action_host(runtime, self._pending_observations, {
-          "kind": "memory_persist_result",
-          "effect_id": action.effect_id,
-          **({"error": persist_error} if persist_error else {
-            "record_ref": persisted.record_id,
-            "digest": "sha256:" + hashlib.sha256(persisted.content.encode()).hexdigest(),
-          }),
-        })
+        action = await action_host(runtime, self._pending_observations, result)
 
       elif action.kind == "query_memory":
         # The model's ``memory`` syscall. Resolve it with the store's real hits; the kernel owns
@@ -3322,15 +3402,19 @@ class RuntimeRunner:
             updated_at_ms=now_ms,
           )
           await self._opts.memory_store.save_session(completed_session)
-          if self._opts.memory_scope:
+          if self._opts.memory_scope and self._memory_path_enabled("session_extraction"):
             extracted = await extract_session_memories(
               self._opts.memory_provider or self._opts.provider,
               completed_session,
               self._opts.memory_scope,
               self._opts.memory_system_prompt,
             )
-            for memory in extracted:
-              await self.write_memory(memory, session_id=session_id, agent_id=self._opts.agent_id)
+            for ordinal, memory in enumerate(extracted):
+              candidate = MemoryCandidate(
+                memory_candidate_id(["session_extraction", session_id, str(ordinal)]),
+                "session_extraction", memory,
+              ) if self._memory_path_to_candidate_sink("session_extraction") else None
+              await self.write_memory(memory, session_id=session_id, agent_id=self._opts.agent_id, candidate=candidate)
         except Exception:
           pass
 
@@ -3447,6 +3531,8 @@ class RuntimeRunner:
         )
 
   async def _memory_prefetch_queries(self, phase: str) -> list[Any]:
+    if not self._memory_path_enabled("retrieval"):
+      return []
     from deepstrike.memory.protocols import MemoryQuery
     if not (self._opts.memory_store and self._opts.agent_id and self._opts.memory_scope):
       return []
@@ -3532,31 +3618,48 @@ class RuntimeRunner:
       return None
 
   async def _archive_semantic_page_out(
-    self,
-    archived: list[Any],
-    action: str | None,
-    session_id: str,
+    self, archived: list[Any], action: str | None, session_id: str, effect_id: str = "unknown",
   ) -> None:
+    if not self._memory_path_enabled("semantic_archive"):
+      return
     if not self._opts.memory_store or not self._opts.agent_id or not self._opts.memory_scope:
       return
-    if self._opts.memory_summarizer:
-      result = self._opts.memory_summarizer(archived, {"action": action})
-      summary = await result if inspect.isawaitable(result) else result
-    else:
-      summary = await self._summarize_for_long_term_memory(archived)
-    # P2 write-funnel: route through the ONE gated write_memory syscall so validation,
-    # the rolling write quota, dedup, and the memory_written audit all apply. Score is
-    # advisory (0.6) — an automatic summary must never outrank curated content.
-    from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord
-    now = int(time.time() * 1000)
-    name = f"page-out-{now}"
-    await self.write_memory(MemoryRecord(
-      record_id=f"{self._opts.memory_scope.tenant_id}:{self._opts.memory_scope.namespace}:project:{name}",
-      scope=self._opts.memory_scope, name=name, kind="project", content=summary,
-      description=f"auto summary of {action or 'compaction'} archive",
-      provenance=MemoryProvenance(author="extraction", trust="untrusted", session_id=session_id),
-      created_at=now, updated_at=now, confidence=0.6,
-    ), session_id=session_id, agent_id=self._opts.agent_id)
+    await self._opts.session_log.append(session_id, {
+      "kind": "semantic_archive_pending", "effect_id": effect_id,
+      **({"action": action} if action else {}),
+    })
+    try:
+      if self._opts.memory_summarizer:
+        result = self._opts.memory_summarizer(archived, {"action": action})
+        summary = await result if inspect.isawaitable(result) else result
+      else:
+        summary = await self._summarize_for_long_term_memory(archived)
+      from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord
+      now = int(time.time() * 1000)
+      stable_effect_id = re.sub(r"[^a-zA-Z0-9._:-]", "_", effect_id) or "unknown"
+      name = f"page-out-{stable_effect_id}"
+      record = MemoryRecord(
+        record_id=f"{self._opts.memory_scope.tenant_id}:{self._opts.memory_scope.namespace}:project:{name}",
+        scope=self._opts.memory_scope, name=name, kind="project", content=summary,
+        description=f"auto summary of {action or 'compaction'} archive",
+        provenance=MemoryProvenance(author="extraction", trust="untrusted", session_id=session_id),
+        created_at=now, updated_at=now, confidence=0.6,
+      )
+      candidate = MemoryCandidate(
+        memory_candidate_id(["semantic_archive", session_id, record.record_id]), "semantic_archive", record,
+      ) if self._memory_path_to_candidate_sink("semantic_archive") else None
+      written = await self.write_memory(record, session_id=session_id, agent_id=self._opts.agent_id, candidate=candidate)
+      # Candidate audit already names the sink's outcome. Its proposed record_id is not a
+      # store receipt, so never report it as a completed archive (even after acceptance).
+      if written and candidate is None:
+        await self._opts.session_log.append(session_id, {
+          "kind": "semantic_archive_completed", "effect_id": effect_id, "record_id": record.record_id,
+        })
+    except Exception as cause:
+      await self._opts.session_log.append(session_id, {
+        "kind": "semantic_archive_failed", "effect_id": effect_id, "error": format_tool_error(cause),
+      })
+      raise
 
   async def _summarize_for_long_term_memory(self, archived: list[Any]) -> str:
     provider = self._opts.memory_provider or self._opts.provider
