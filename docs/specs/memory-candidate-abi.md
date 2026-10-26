@@ -1,6 +1,6 @@
 # 记忆候选回执 ABI（草案）
 
-状态：Rust core、Rust SDK 分发与 node、wasm、python 三个桥接已实现并通过测试；宿主侧 candidate sink 未实现。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
+状态：Rust core、Rust SDK 分发与 node、wasm、python 三个桥接已实现并通过测试；node 的候选 sink 已实现（第 8 节），其余 SDK 未接。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
 范围：新增一个 canonical 内核结果，使模型发起的记忆写入可以表达“待确认”，而不被记为已持久化。
 非目标：本文不定义六维分类、用户确认流程或来源业务校验，这些归宿主。
 
@@ -129,14 +129,33 @@
 - Rust SDK `canonical_runner_runtime.rs`：`memory_candidate_result` 分支与 node 同语义，由纯函数 `memory_candidate_resolution` 承载，五个单元测试钉住 pending、accepted、pending 缺字段、rejected、传输错误。
 - wasm 桥接（`wasm/src/runtime/canonical-kernel-step.ts`）与 python 桥接（`python/deepstrike/runtime/canonical_kernel_step.py`）：与 node 逐行同语义。测试 `wasm/tests/memory-candidate-bridge.test.ts`、`python/tests/test_memory_candidate_bridge.py` 与 node 的五个用例一一对应。
 
-四层的映射目前靠四份手写测试保持一致，而不是一份共享夹具。`tests/fixtures/sdk-conformance` 按 domain 分发，要收敛到一份夹具，需要新增 domain 并让各 SDK 的一致性运行器实现它（wasm 目前没有接这套运行器），这是单独的工作。
+四层的映射目前靠四份手写测试保持一致，而不是一份共享夹具。`tests/fixtures/sdk-conformance` 按 domain 分发，要收敛到一份夹具，需要新增 domain 并让 node、python、wasm、rust 四个一致性适配器（`scripts/sdk-conformance/`）都实现它，这是单独的工作。
 
 对待决问题的处理：
 
 1. `pending` 按终态实现。第 6 节问题 1 的研究给出了四条依据，仍待内核负责人签字确认。
-2. 新观察 `memory_candidate_pending` 没有加入共享的会话事件词表，它经由通用的 `kernel_observation` 事件（带 `observation_kind`）进入审计流。要做成一等事件，需要同步 `tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json`、python 与 wasm 的词表。
+2. 会话事件词表新增一等事件 `memory_candidate_pending` 与 `memory_candidate_rejected`，node、wasm、python 与共享夹具 `session-event-vocabulary.json` 同步更新（52 个 kind）。内核观察 `memory_candidate_pending` 在三个 SDK 中都映射为同名会话事件（`source = child_request`，无 `receipt_id`），与宿主路径写出的事件同形。Rust SDK 的会话日志没有类型化词表，不参与这项一致性检查。
 3. 计数字段未单独为 pending 计数。
+
+## 8. 候选 sink（node）
+
+实现前核实的事实：PersistMemory 效果在任何 SDK 中都没有产生方。F15 之后模型没有写入入口，四个 SDK 构造 `child_completed` 时都不会填写 `request_memory_write`。真实运行中的记忆写入全部走宿主漏斗 `writeMemory`（`sessionExtraction` 会话抽取、`semanticArchive` 语义归档、宿主显式的 `remember`）：内核只经 `admit_memory_write` 做准入，不参与结算。因此 sink 接在两处，共用一个接口：
+
+- 宿主漏斗：`memoryRuntimePolicy` 的 `sessionExtraction` 或 `semanticArchive` 取 `"candidate_sink"` 时，准入通过的写入交给 sink 而不写 store。会话事件按回执记为 `memory_candidate_pending`、`memory_candidate_rejected`，只有 `accepted` 记为 `memory_written`（`record_id` 为 sink 给出的 `record_ref`）。
+- PersistMemory 效果：`modelWrites` 取 `"candidate_sink"` 时，回执以 `memory_candidate_result` 提交给内核。这条路径目前没有产生方，由单元测试覆盖，留给将来的产生方。
+
+约定：
+
+- `RuntimeOptions.memoryCandidateSink`；任一路径取 `"candidate_sink"` 而未提供 sink 时，构造即报错。`resolveMemoryRuntimePolicy` 不再拒绝 `"candidate_sink"`，新增 `*ToCandidateSink` 三个布尔量。未设策略时一律走 store。
+- `receipt_id` 由 sink 生成。`candidate_id` 由写入的规范身份派生（`memoryCandidateId`，对各部分的 JSON 数组取 sha256）：PersistMemory 为 `child_request, operation_id, effect_id, 0`；会话抽取为 `session_extraction, session_id, 序号`；语义归档为 `semantic_archive, session_id, record_id`（记录 id 由效果 id 派生）。
+- sink 合同（`MemoryCandidateSink` 文档）：同 id 同载荷返回原回执且不新增；同 id 异载荷拒绝为 `candidate_conflict`，不覆盖；抛错表示没有得到回答，可用同一 id 重投。载荷比较不含存储 id 与时间戳。`InMemoryMemoryCandidateSink` 是进程内实现，所有候选都记为 `pending`。
+
+验收覆盖：S03 由会话抽取与语义归档两条真实路径的端到端测试覆盖（store 零写入、只有 pending 事件、没有 `memory_written`）；S04 由 PersistMemory 路径覆盖（sink 已存下候选但回答丢失，重投同一效果得到原 `receipt_id`，sink 只持有一个候选）。S05（伪造来源）需要真实的 sink 判定，进程内实现不做。
+
+已知限制：会话抽取在重试时会重新调用辅助模型，内容可能变化，同一 `candidate_id` 的新内容会被 sink 判为 `candidate_conflict`。语义归档在候选 pending 时仍记 `semantic_archive_completed`，其中的 `record_id` 在 store 中并不存在。
 
 尚未做的：
 
-- 运行器侧的 candidate sink 与产生 `memory_candidate_result` 的宿主实现。没有它，任何真实运行都不会走到 pending。
+- python、wasm、Rust SDK 的 sink 接入（本节只做了 node）。
+- PersistMemory 的产生方：需要推翻或修订 F15 裁定，属于产品决策。
+- S05 与真实 sink 的接入。
