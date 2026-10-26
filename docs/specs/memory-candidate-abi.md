@@ -1,6 +1,6 @@
 # 记忆候选回执 ABI（草案）
 
-状态：Rust core、Rust SDK 分发与 node、wasm、python 三个桥接已实现并通过测试；node 的候选 sink 已实现（第 8 节），其余 SDK 未接。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
+状态：Rust core、Rust SDK 分发与 node、wasm、python 三个桥接已实现；node、python、wasm 的 M1 策略与 M2 候选 sink 已接入（第 8、9 节），Rust SDK sink 未接。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
 范围：新增一个 canonical 内核结果，使模型发起的记忆写入可以表达“待确认”，而不被记为已持久化。
 非目标：本文不定义六维分类、用户确认流程或来源业务校验，这些归宿主。
 
@@ -13,9 +13,9 @@
 
 因此，本规格覆盖的“待确认回执”实际作用于子 agent 提出的写入请求，而不是模型直接写入。`source = model_write` 应改为 `source = child_request`，或在宿主侧把子请求也归类为候选。若要真正开放模型写入入口，需要先推翻 F15 裁定，这是单独的产品决策，不属于本规格。
 
-## 1. 现状
+## 1. 改动前的状态
 
-内核只有一种记忆写入回执。
+本节描述 M2 实施之前的协议；当前协议见第 2、7 节。改动前内核只有一种记忆写入回执。
 
 - 宿主回执：`memory_persist_result`，二选一：
   - 成功：`record_ref` + `digest`。
@@ -23,7 +23,7 @@
 - 内核效果结果：`memory_persisted`，带 `receipt { binding_id, record_ref, digest }`。
 - 失败路径一律 `failedEffect(..., retryable=true)`（`error` 分支）；缺少 `record_ref`/`digest` 时非可重试。
 
-现状的问题：候选写入没有“已接收但待确认”的状态。如果把待确认强行映射成成功，内核会记为 `memory_persisted`，模型会以为记忆已生效。如果映射成失败，效果会被可重试地重放，导致重复提交。两者都违反契约 S03。
+现状的问题：候选写入没有“已接收但待确认”的状态。如果把待确认强行映射成持久化回执，宿主审计会误记为已写入。如果映射成失败，效果会被可重试地重放，导致重复提交。两者都违反契约 S03。
 
 ## 2. 提议
 
@@ -48,45 +48,32 @@
 约束：
 
 - `status = "accepted"` 必须同时带 `record_ref` 和 `digest`，缺失则效果失败且非可重试（与 `memory_persist_result` 一致）。
-- `status = "pending"` 不带 `record_ref`/`digest`。它不是持久化回执，内核不得据此生成 `memory_persisted`。
+- `status = "pending"` 不带 `record_ref`/`digest`。它不是持久化回执；虽沿用 `memory_persisted` 成功类型的 candidate 分支，内核不得据此生成 `MemoryWritten`。
 - `error` 只表示调用没有得到回执。这种情况可以重试，但重试必须使用同一个 `candidate_id`，由宿主做幂等。
 
 ### 2.2 内核效果结果
 
-新增效果结果 `MemoryCandidateRecorded`，带：
+保持 `EffectSuccess` 每个 EffectKind 恰好一个变体的封闭联合。`PersistMemory` 仍使用 `MemoryPersistedSuccess`，其中 `receipt` 与 `candidate` 均为可选，且必须恰好出现一个：
 
 ```text
-{ status, candidate_id, receipt_id, record_ref?, digest? }
+{ kind: "memory_persisted", receipt: { binding_id, record_ref, digest } }
+{ kind: "memory_persisted", candidate: { binding_id, candidate_id, receipt_id } }
 ```
 
-- `pending`：效果以“已记录候选”完成。内核不写入 `memory_persisted`，不改变召回状态。
-- `accepted`：语义与 `memory_persisted` 一致，但保留 `candidate_id` 以便追溯。
-- `rejected`：效果以“拒绝”完成，附 `reason_code`，不可重试。
+`pending` 使用 candidate 分支并使效果进入终态；产生 `MemoryCandidatePending`，不产生 `MemoryWritten`，不改变召回状态。`accepted` 使用旧 receipt 分支；`rejected` 使用不可重试失败。两分支同时存在或同时缺失均为 `UnexpectedEffectOutcome`。旧 receipt-only JSON 保持兼容。
 
-给模型的观察信息必须区分三种状态，禁止统一表达为“已记住”。`pending` 应表达为“候选已提交，等待确认”。
+观察是宿主审计信息，不直接注入模型上下文。候选身份保留在 sink 与宿主事件中，accepted 的 canonical receipt 不额外保存 candidate_id。
 
 ### 2.3 幂等与重放
 
 - `candidate_id` 从规范的 operation、effect 与候选序号派生，恢复时不得重新随机生成。
-- 相同 `candidate_id` 且 payload 相同：返回原回执，不重新调用 sink。
+- 相同 `candidate_id` 且 payload 相同：sink 返回原回执，不新增候选；丢失回答后可以再次调用 sink。
 - 相同 `candidate_id` 但 payload 不同：拒绝（`reason_code = "candidate_conflict"`），不覆盖原记录。
 - 重放 journal 时，效果结果必须来自已持久化的 `receipt_id`，不得重新调用宿主。
 
-## 3. 各层改动清单
+## 3. 已实现的改动位置
 
-以下位置均已在 `main` @ `3ac3b07c` 上核实存在。
-
-| 层 | 位置 | 改动 |
-| --- | --- | --- |
-| Rust core 效果枚举 | `crates/deepstrike-core/src/runtime/kernel/wire/effect.rs:811` 附近 | 新增 `MemoryCandidateRecorded` 变体及 kind 字符串 |
-| Rust core 事件分类 | `crates/deepstrike-core/src/runtime/event_log.rs:92` | 把新事件归入 `Mm` 类别 |
-| Rust core 重放 | `crates/deepstrike-core/src/runtime/replay.rs:79`、`:212` | 增加候选计数，`pending` 不计入 `memory_persisted_count` |
-| Rust 宿主解析 | `rust/src/runtime/canonical_runner_runtime.rs:599` 附近 | 新增 `memory_candidate_result` 分支 |
-| Node 桥接 | `node/src/runtime/canonical-kernel-step.ts:1362` 附近 | 新增 case，映射三种状态 |
-| wasm 桥接 | `wasm/src/runtime/canonical-kernel-step.ts:1288` 附近 | 同上 |
-| Python 桥接 | `python/deepstrike/runtime/canonical_kernel_step.py:748` 附近 | 同上 |
-| 夹具 | `tests/fixtures/kernel-wire/` | 每种状态一份 golden fixture |
-| 契约测试 | `tests/rust/src/t16_kernel_contract_fixtures.rs:73` 附近 | 把新 kind 加入已知列表 |
+Rust core 在 `wire/effect.rs` 定义互斥结果，在 `wire/driver/effects.rs` 结算候选，在 `observation.rs` 提供待审观察。四个 SDK 的 canonical runner bridge 解析 `memory_candidate_result`。node、python、wasm 的 session log 与 kernel event adapter 共享 52-kind 词表。运行时策略、sink 与写入路径见第 8、9 节。跨 SDK outcome golden fixture 尚未统一，不把旧草案中的新增枚举和 replay 计数方案视为已实现。
 
 ## 4. 兼容性
 
@@ -137,7 +124,7 @@
 2. 会话事件词表新增一等事件 `memory_candidate_pending` 与 `memory_candidate_rejected`，node、wasm、python 与共享夹具 `session-event-vocabulary.json` 同步更新（52 个 kind）。内核观察 `memory_candidate_pending` 在三个 SDK 中都映射为同名会话事件（`source = child_request`，无 `receipt_id`），与宿主路径写出的事件同形。Rust SDK 的会话日志没有类型化词表，不参与这项一致性检查。
 3. 计数字段未单独为 pending 计数。
 
-## 8. 候选 sink（node）
+## 8. 候选 sink（node，python/wasm 移植见第 9 节）
 
 实现前核实的事实：PersistMemory 效果在任何 SDK 中都没有产生方。F15 之后模型没有写入入口，四个 SDK 构造 `child_completed` 时都不会填写 `request_memory_write`。真实运行中的记忆写入全部走宿主漏斗 `writeMemory`（`sessionExtraction` 会话抽取、`semanticArchive` 语义归档、宿主显式的 `remember`）：内核只经 `admit_memory_write` 做准入，不参与结算。因此 sink 接在两处，共用一个接口：
 
@@ -156,6 +143,20 @@
 
 尚未做的：
 
-- python、wasm、Rust SDK 的 sink 接入（本节只做了 node）。
+- Rust SDK 的 sink 接入；python、wasm 已完成本节接口与策略的移植。
 - PersistMemory 的产生方：需要推翻或修订 F15 裁定，属于产品决策。
 - S05 与真实 sink 的接入。
+
+## 9. Python / WASM 的 M1 + M2 移植（2026-10-26）
+
+Python 导出 `MemoryRuntimePolicy`、`MemoryCandidateSink`、`InMemoryMemoryCandidateSink` 与身份函数。策略支持 dataclass 或完整 dict，字段为 `retrieval`、`session_extraction`、`model_writes`、`semantic_archive`；RuntimeOptions 使用 `memory_runtime_policy` 和 `memory_candidate_sink`。WASM 使用与 Node 相同的 camelCase 配置和类型，并从包入口及 memory 入口导出。未指定策略保留旧行为；指定策略要求四个开关完整有效，候选路径缺 sink 时构造失败。
+
+两端在预取 hook、会话抽取模型、归档 summarizer/备用模型之前检查开关。canonical memory binding 的 read/write 分别投影 retrieval/modelWrites。宿主漏斗与 PersistMemory 执行共用 sink；accepted 必须包含 record_ref/digest，rejected 必须有 reason_code，pending 不调用 store.put、不产生 memory_written。显式宿主写入保留原接口与直写行为。
+
+候选身份使用第 8 节的 JSON 数组规则。WASM 使用浏览器可用的同步 SHA256 与 TextEncoder，不依赖 node:crypto/Buffer；固定哈希向量验证与 Node/Python 一致，并确保摘要只有一个 sha256 前缀。两端的归档身份使用捕获的 session/effect ID，不再依赖时间戳。WASM 等待归档提交完成，避免任务跨越运行结束后继续读取可变会话状态；代价是辅助模型/sink 耗时进入运行延迟。
+
+移植同时修复了压缩观察中的 action/tier 在 canonical projection 适配时丢失的问题，否则语义归档可能不被触发。Python 在候选路径只使用候选结果审计，不把提议的 record_id 记为 semantic_archive_completed；Node 第 8 节描述的该限制仍存在。WASM 使用候选审计事件，不新增归档完成事件。
+
+验证：Python 构建了实际 Linux 原生扩展，独立加载运行测试而未覆盖原有 Mach-O 扩展；实现阶段 114 项相关测试通过，整合复核 95 项通过，归档审计修正后 31 项候选/归档测试通过。覆盖原生 child request 权限、pending/accepted/rejected 结算、真实会话抽取与真实语义压缩路径。未运行全量 Python 测试。WASM TypeScript 检查与 build 通过；全量 Jest 49 套、229 项通过，追加 accepted/畸形回执与 disabled modelWrites 测试后 12 项 runner 测试通过。WASM Jest 使用 mock kernel；归档通过 helper 与投影传递测试覆盖，本次未运行真实 WASM binding 集成测试。
+
+边界保持明确：进程内 sink 不跨进程持久化，也不做 S05 来源认证；SDK 尚无常规 PersistMemory 产生方；抽取候选的 session/ordinal 身份在同会话多次运行或模型重新生成不同内容时可能冲突。幂等载荷只比较 scope、kind、name、description、content，未覆盖 provenance 等全部元数据，也没有新增跨 agent 身份隔离保证。上述事项不属于本次 SDK 移植已完成的保证。
