@@ -53,8 +53,50 @@ def kernel_observation_to_session_event(
     preserved_refs: list[str] | None = None,
     compression_action: Callable[[str | None], str | None] | None = None,
 ) -> dict[str, Any] | None:
-    t = obs.get("turn") or turn
-    to_action = compression_action or (lambda _a: None)
+    """Project a kernel observation into its durable session event (cross-SDK fixture
+    ``kernel-observation-projection.json``). Absent optional fields are omitted, never ``None``."""
+    event = _project_kernel_observation(
+        obs,
+        turn,
+        next_archive_start=next_archive_start,
+        latest_seq=latest_seq,
+        preserved_refs=preserved_refs,
+        compression_action=compression_action,
+    )
+    if event is None:
+        return None
+    return {key: value for key, value in event.items() if value is not None}
+
+
+_COMPRESSION_ACTIONS = frozenset({"snip_compact", "micro_compact", "context_collapse", "auto_compact"})
+
+
+def canonical_compression_action(action: str | None) -> str | None:
+    return action if action in _COMPRESSION_ACTIONS else None
+
+
+def _get(obs: dict[str, Any], key: str, default: Any) -> Any:
+    # `??` semantics: only an absent / null value falls back (0, "" and False are kept).
+    value = obs.get(key)
+    return default if value is None else value
+
+
+def _text(obs: dict[str, Any], key: str) -> str:
+    value = obs.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _project_kernel_observation(
+    obs: dict[str, Any],
+    turn: int,
+    *,
+    next_archive_start: int,
+    latest_seq: int | None,
+    preserved_refs: list[str] | None,
+    compression_action: Callable[[str | None], str | None] | None,
+) -> dict[str, Any] | None:
+    t = _get(obs, "turn", turn)
+    to_action = compression_action or canonical_compression_action
 
     kind = obs.get("kind")
     if kind == "compressed":
@@ -68,29 +110,29 @@ def kernel_observation_to_session_event(
             "archived_seq_range": (next_archive_start, latest),
             "action": to_action(obs.get("action")),
             "summary": summary,
-            "summary_tokens": max(1, len(summary) // 4) if summary else None,
-            "preserved_refs": preserved_refs or [],
+            "summary_tokens": max(1, -(-len(summary) // 4)) if summary else None,
+            "preserved_refs": preserved_refs if preserved_refs is not None else [],
         }
     if kind == "renewed":
         return {
             "kind": "context_renewed",
             "turn": t,
-            "sprint": obs.get("sprint") or 0,
+            "sprint": _get(obs, "sprint", 0),
             "handoff_ref": "",
         }
     if kind == "rollbacked":
         return {
             "kind": "rollbacked",
             "turn": t,
-            "checkpoint_history_len": obs.get("checkpoint_history_len") or 0,
+            "checkpoint_history_len": _get(obs, "checkpoint_history_len", 0),
             "reason": obs.get("reason"),
         }
     if kind == "capability_changed":
         ev: dict[str, Any] = {
             "kind": "capability_changed",
             "turn": t,
-            "added": obs.get("added") or [],
-            "removed": obs.get("removed") or [],
+            "added": _get(obs, "added", []),
+            "removed": _get(obs, "removed", []),
         }
         for key in ("change_kind", "capability_id", "version", "mounted_by", "mount_reason"):
             if obs.get(key) is not None:
@@ -100,51 +142,51 @@ def kernel_observation_to_session_event(
         return {
             "kind": "milestone_advanced",
             "turn": t,
-            "phase_id": obs.get("phase_id") or "",
-            "capabilities_unlocked": obs.get("capabilities_unlocked") or [],
+            "phase_id": _get(obs, "phase_id", ""),
+            "capabilities_unlocked": _get(obs, "capabilities_unlocked", []),
         }
     if kind == "milestone_blocked":
         return {
             "kind": "milestone_blocked",
             "turn": t,
-            "phase_id": obs.get("phase_id") or "",
-            "reason": obs.get("reason") or "",
+            "phase_id": _get(obs, "phase_id", ""),
+            "reason": _text(obs, "reason"),
         }
     if kind == "checkpoint_taken":
         return {
             "kind": "checkpoint_taken",
             "turn": t,
-            "history_len": obs.get("history_len") or 0,
+            "history_len": _get(obs, "history_len", 0),
         }
     if kind == "entropy_sample":
         return {
             "kind": "entropy_sample",
             "turn": t,
-            "score": obs.get("score") or 0.0,
-            "rho": obs.get("rho") or 0.0,
-            "repeat_pressure": obs.get("repeat_pressure") or 0.0,
-            "failure_rate": obs.get("failure_rate") or 0.0,
-            "rollbacks_in_window": obs.get("rollbacks_in_window") or 0,
-            "window_turns": obs.get("window_turns") or 0,
+            "score": _get(obs, "score", 0.0),
+            "rho": _get(obs, "rho", 0.0),
+            "repeat_pressure": _get(obs, "repeat_pressure", 0.0),
+            "failure_rate": _get(obs, "failure_rate", 0.0),
+            "rollbacks_in_window": _get(obs, "rollbacks_in_window", 0),
+            "window_turns": _get(obs, "window_turns", 0),
         }
     if kind == "entropy_alert":
         return {
             "kind": "entropy_alert",
             "turn": t,
-            "score": obs.get("score") or 0.0,
-            "threshold": obs.get("threshold") or 0.0,
+            "score": _get(obs, "score", 0.0),
+            "threshold": _get(obs, "threshold", 0.0),
         }
     if kind == "agent_process_changed":
         ev = {
             "kind": "agent_process_changed",
             "turn": t,
-            "agent_id": obs.get("agent_id") or "",
-            "parent_task_id": obs.get("parent_task_id") or "",
-            "role": obs.get("role") or "",
-            "isolation": obs.get("isolation") or "",
-            "context_inheritance": obs.get("context_inheritance") or "",
-            "state": obs.get("state") or "running",
-            "permitted_capability_ids": obs.get("permitted_capability_ids") or [],
+            "agent_id": _get(obs, "agent_id", ""),
+            "parent_task_id": _get(obs, "parent_task_id", ""),
+            "role": _get(obs, "role", ""),
+            "isolation": _get(obs, "isolation", ""),
+            "context_inheritance": _get(obs, "context_inheritance", ""),
+            "state": _get(obs, "state", "running"),
+            "permitted_capability_ids": _get(obs, "permitted_capability_ids", []),
         }
         if obs.get("result_termination"):
             ev["result_termination"] = obs["result_termination"]
@@ -153,60 +195,60 @@ def kernel_observation_to_session_event(
         return {
             "kind": "tool_gated",
             "turn": t,
-            "call_id": obs.get("call_id") or "",
-            "tool": obs.get("tool") or "",
-            "reason": obs.get("reason") or "",
+            "call_id": _get(obs, "call_id", ""),
+            "tool": _get(obs, "tool", ""),
+            "reason": _text(obs, "reason"),
         }
     if kind == "signal_delivery_disposed":
         return {
             "kind": "signal_delivery_disposed",
             "turn": t,
-            "operation_id": obs.get("operation_id") or "",
-            "delivery_id": obs.get("delivery_id") or "",
-            "attempt": obs.get("attempt") or 0,
-            "signal_id": obs.get("signal_id") or "",
-            "disposition": obs.get("disposition") or "",
-            "queue_depth": obs.get("queue_depth") or 0,
+            "operation_id": _get(obs, "operation_id", ""),
+            "delivery_id": _get(obs, "delivery_id", ""),
+            "attempt": _get(obs, "attempt", 0),
+            "signal_id": _get(obs, "signal_id", ""),
+            "disposition": _get(obs, "disposition", ""),
+            "queue_depth": _get(obs, "queue_depth", 0),
         }
     if kind == "budget_exceeded":
         return {
             "kind": "budget_exceeded",
             "turn": t,
-            "operation_id": obs.get("operation_id") or "",
-            "reservation_id": obs.get("reservation_id") or "",
-            "budget": obs.get("budget") or "",
+            "operation_id": _get(obs, "operation_id", ""),
+            "reservation_id": obs.get("reservation_id") or None,
+            "budget": _get(obs, "budget", ""),
         }
     if kind == "budget_usage_reported":
         return {
             "kind": "budget_usage_reported",
             "turn": t,
-            "operation_id": obs.get("operation_id") or "",
-            "reservation_id": obs.get("reservation_id") or "",
-            "tokens": obs.get("tokens") or 0,
-            "subagents": obs.get("subagents") or 0,
-            "rounds": obs.get("rounds") or 0,
+            "operation_id": _get(obs, "operation_id", ""),
+            "reservation_id": _get(obs, "reservation_id", ""),
+            "tokens": _get(obs, "tokens", 0),
+            "subagents": _get(obs, "subagents", 0),
+            "rounds": _get(obs, "rounds", 0),
         }
     if kind == "operation_cancelled":
         return {
             "kind": "operation_cancelled",
             "turn": t,
-            "operation_id": obs.get("operation_id") or "",
-            "reason": obs.get("reason") or "user",
-            "pending_call_ids": obs.get("pending_call_ids") or [],
+            "operation_id": _get(obs, "operation_id", ""),
+            "reason": _get(obs, "reason", "user"),
+            "pending_call_ids": _get(obs, "pending_call_ids", []),
         }
     if kind == "suspended":
         return {
             "kind": "suspended",
             "turn": t,
-            "reason": obs.get("reason") or "",
-            "pending_calls": obs.get("pending_calls") or [],
+            "reason": _text(obs, "reason"),
+            "pending_calls": _get(obs, "pending_calls", []),
         }
     if kind == "resumed":
         return {
             "kind": "resumed",
             "turn": t,
-            "approved": obs.get("approved") or [],
-            "denied": obs.get("denied") or [],
+            "approved": _get(obs, "approved", []),
+            "denied": _get(obs, "denied", []),
         }
     if kind == "page_in_requested":
         return None
@@ -217,46 +259,61 @@ def kernel_observation_to_session_event(
             "action": to_action(obs.get("action")),
             "summary": obs.get("summary"),
             "tier_hint": obs.get("tier"),
-            "message_count": obs.get("message_count") or 0,
+            "message_count": _get(obs, "message_count", 0),
             "archive_ref": obs.get("archive_ref"),
         }
     if kind == "memory_written":
         return {
             "kind": "memory_written",
             "turn": t,
-            "record_id": obs.get("record_id") or "",
-            "scope": obs.get("scope") or {"tenant_id": "", "namespace": ""},
-            "memory_kind": obs.get("memory_kind") or "",
-            "name": obs.get("name") or "",
-            "size_bytes": obs.get("size_bytes") or 0,
+            "record_id": _get(obs, "record_id", ""),
+            "scope": _get(obs, "scope", {"tenant_id": "", "namespace": ""}),
+            "memory_kind": _get(obs, "memory_kind", ""),
+            "name": _get(obs, "name", ""),
+            "size_bytes": _get(obs, "size_bytes", 0),
         }
     if kind == "memory_queried":
         return {
             "kind": "memory_queried",
             "turn": t,
-            "scope": obs.get("scope") or {"tenant_id": "", "namespace": ""},
-            "query": obs.get("query") or "",
-            "requested_k": obs.get("requested_k") or 0,
-            "requires_async_response": obs.get("requires_async_response") or False,
+            "scope": _get(obs, "scope", {"tenant_id": "", "namespace": ""}),
+            "query": _get(obs, "query", ""),
+            "requested_k": _get(obs, "requested_k", 0),
+            "requires_async_response": _get(obs, "requires_async_response", False),
         }
     if kind == "memory_candidate_pending":
         # M2 · the kernel's PersistMemory effect settled as a candidate (the child-request path).
         return {
             "kind": "memory_candidate_pending",
             "turn": t,
-            "candidate_id": str(obs.get("candidate_id") or ""),
+            "candidate_id": str(_get(obs, "candidate_id", "")),
             "source": "child_request",
-            "name": obs.get("name") or "",
+            "name": _get(obs, "name", ""),
         }
     if kind == "memory_validation_failed":
         return {
             "kind": "memory_validation_failed",
             "turn": t,
-            "record_id": obs.get("record_id") or "",
-            "error": obs.get("error") or "",
+            "record_id": _get(obs, "record_id", ""),
+            "error": _get(obs, "error", ""),
+        }
+    if kind == "memory_write_failed":
+        return {
+            "kind": "memory_write_failed",
+            "turn": t,
+            "record_id": _get(obs, "record_id", ""),
+            "error": _get(obs, "error", ""),
+        }
+    if kind == "memory_query_failed":
+        return {
+            "kind": "memory_query_failed",
+            "turn": t,
+            "scope": _get(obs, "scope", {"tenant_id": "", "namespace": ""}),
+            "query": _get(obs, "query", ""),
+            "error": _get(obs, "error", ""),
         }
     if kind == "workflow_batch_spawned":
-        nodes = list(obs.get("nodes") or [])
+        nodes = list(_get(obs, "nodes", []))
         return {
             "kind": "workflow_batch_spawned",
             "turn": t,
@@ -264,7 +321,7 @@ def kernel_observation_to_session_event(
             "node_ids": [str(node.get("agent_id") or "") for node in nodes if isinstance(node, dict)],
         }
     if kind == "workflow_completed":
-        node_outcomes = list(obs.get("node_outcomes") or [])
+        node_outcomes = list(_get(obs, "node_outcomes", []))
         return {
             "kind": "workflow_completed",
             "turn": t,

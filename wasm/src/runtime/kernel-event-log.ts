@@ -32,6 +32,19 @@ export function categoryForKind(kind: string): KernelEventCategory {
 
 type CompressionAction = Extract<SessionEvent, { kind: "compressed" }>["action"]
 
+/** The kernel's pressure actions that name a session-level compression action; any other
+ *  action (e.g. `none`) is omitted from the event. Shared rule across all four SDKs. */
+export function canonicalCompressionAction(action?: string): CompressionAction {
+  return action === "snip_compact" || action === "micro_compact" || action === "context_collapse" || action === "auto_compact"
+    ? action
+    : undefined
+}
+
+/**
+ * Project one kernel observation onto its session event (null = not persisted). Pinned across
+ * SDKs by the `kernel_observation_projection` conformance fixture: an absent optional field is
+ * omitted, never written as `null`.
+ */
 export function kernelObservationToSessionEvent(
   obs: KernelObservation,
   turn: number,
@@ -43,8 +56,24 @@ export function kernelObservationToSessionEvent(
     compressionAction?: (action?: string) => CompressionAction
   } = {},
 ): SessionEvent | null {
+  const event = projectKernelObservation(obs, turn, opts)
+  if (!event) return null
+  return Object.fromEntries(Object.entries(event).filter(([, value]) => value !== undefined && value !== null)) as SessionEvent
+}
+
+function projectKernelObservation(
+  obs: KernelObservation,
+  turn: number,
+  opts: {
+    nextArchiveStart?: number
+    latestSeq?: number
+    archiveRef?: string
+    preservedRefs?: string[]
+    compressionAction?: (action?: string) => CompressionAction
+  } = {},
+): SessionEvent | null {
   const t = obs.turn ?? turn
-  const compressionAction = opts.compressionAction ?? (() => undefined)
+  const compressionAction = opts.compressionAction ?? canonicalCompressionAction
 
   switch (obs.kind) {
     case "compressed": {
@@ -244,6 +273,21 @@ export function kernelObservationToSessionEvent(
         kind: "memory_validation_failed" as const,
         turn: t,
         record_id: obs.record_id ?? "",
+        error: obs.error ?? "",
+      }
+    case "memory_write_failed":
+      return {
+        kind: "memory_write_failed" as const,
+        turn: t,
+        record_id: obs.record_id ?? "",
+        error: obs.error ?? "",
+      }
+    case "memory_query_failed":
+      return {
+        kind: "memory_query_failed" as const,
+        turn: t,
+        scope: obs.scope ?? { tenant_id: "", namespace: "" },
+        query: obs.query ?? "",
         error: obs.error ?? "",
       }
     case "workflow_batch_spawned": {

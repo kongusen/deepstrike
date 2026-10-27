@@ -3,12 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, TypedDict
 
 from deepstrike._kernel import ToolCall, ToolExecutionResult
 from deepstrike.runtime.durable_content import decode_durable_content
+from deepstrike.runtime._session_event_registry import (
+    SESSION_EVENT_KINDS as SESSION_EVENT_KINDS,
+    SESSION_EVENT_REGISTRY,
+)
 from deepstrike.runtime.kernel_event_log import (
     primitive_for_kind,
 )
@@ -33,31 +38,44 @@ class RollbackReason(TypedDict, total=False):
     reason: str
 
 
-class RunStartedEvent(TypedDict, total=False):
+class _RunStartedRequired(TypedDict):
     kind: Literal["run_started"]
     run_id: str
     goal: str
     criteria: list[str]
+
+
+class RunStartedEvent(_RunStartedRequired, total=False):
     agent_id: str
     system_prompt: str
     route: dict[str, Any]
+    # Shared wire fields other SDKs write (canonical content parts / host run metadata); the Python
+    # runner reads them back but does not populate them yet.
+    attachments: list[dict[str, Any]]
+    metadata: dict[str, Any]
 
 
-class LlmCompletedEvent(TypedDict, total=False):
+class _LlmCompletedRequired(TypedDict):
     kind: Literal["llm_completed"]
     turn: int
     content: str
-    token_count: int
     tool_calls: list[ToolCall]
+
+
+class LlmCompletedEvent(_LlmCompletedRequired, total=False):
+    token_count: int
     effect_id: str
     invocation_id: str
     wire_evidence: dict[str, Any]
 
 
-class PromptMeasuredEvent(TypedDict, total=False):
+class _PromptMeasuredRequired(TypedDict):
     kind: Literal["prompt_measured"]
     turn: int
     measurement: dict[str, Any]
+
+
+class PromptMeasuredEvent(_PromptMeasuredRequired, total=False):
     effect_id: str
 
 
@@ -68,7 +86,7 @@ class ContextPreparedEvent(TypedDict):
     preparation: dict[str, Any]
 
 
-class ProviderAttemptEvent(TypedDict, total=False):
+class _ProviderAttemptRequired(TypedDict):
     kind: Literal["provider_attempt"]
     effect_id: str
     attempt_seq: int
@@ -76,28 +94,34 @@ class ProviderAttemptEvent(TypedDict, total=False):
     request_fingerprint: str
     status: Literal["success", "transport_exhausted", "aborted", "rejected"]
     transport_rungs: int
-    last_error_class: str
     started_at_ms: int
     finished_at_ms: int
+
+
+class ProviderAttemptEvent(_ProviderAttemptRequired, total=False):
+    last_error_class: str
     usage: dict[str, Any]
     wire_evidence: dict[str, Any]
     accounting_policy_id: str
 
 
-class ToolRequestedEvent(TypedDict, total=False):
+class ToolRequestedEvent(TypedDict):
     kind: Literal["tool_requested"]
     turn: int
     calls: list[ToolCall]
 
 
-class ToolCompletedEvent(TypedDict, total=False):
+class _ToolCompletedRequired(TypedDict):
     kind: Literal["tool_completed"]
     turn: int
     results: list[ToolExecutionResult | dict[str, Any]]
+
+
+class ToolCompletedEvent(_ToolCompletedRequired, total=False):
     effect_id: str
 
 
-class ToolArgumentRepairedEvent(TypedDict, total=False):
+class ToolArgumentRepairedEvent(TypedDict):
     kind: Literal["tool_argument_repaired"]
     turn: int
     tool: str
@@ -105,7 +129,7 @@ class ToolArgumentRepairedEvent(TypedDict, total=False):
     repaired_arguments: str
 
 
-class ToolDeniedEvent(TypedDict, total=False):
+class ToolDeniedEvent(TypedDict):
     kind: Literal["tool_denied"]
     turn: int
     call_id: str
@@ -113,50 +137,62 @@ class ToolDeniedEvent(TypedDict, total=False):
     reason: str
 
 
-class PermissionRequestedEvent(TypedDict, total=False):
+class _PermissionRequestedRequired(TypedDict):
     kind: Literal["permission_requested"]
     turn: int
     tool: str
     arguments: str
+
+
+class PermissionRequestedEvent(_PermissionRequestedRequired, total=False):
     reason: str
 
 
-class PermissionResolvedEvent(TypedDict, total=False):
+class PermissionResolvedEvent(TypedDict):
     kind: Literal["permission_resolved"]
     turn: int
     approved: bool
     responder: str
 
 
-class CompressedEvent(TypedDict, total=False):
+class _CompressedRequired(TypedDict):
     kind: Literal["compressed"]
     turn: int
     archived_seq_range: tuple[int, int]
+
+
+class CompressedEvent(_CompressedRequired, total=False):
     action: str
     summary: str
     summary_tokens: int
     preserved_refs: list[str]
 
 
-class RunTerminalEvent(TypedDict, total=False):
+class RunTerminalEvent(TypedDict):
     kind: Literal["run_terminal"]
     reason: str
     turns_used: int
     total_tokens: int
 
 
-class RollbackedEvent(TypedDict, total=False):
+class _RollbackedRequired(TypedDict):
     kind: Literal["rollbacked"]
     turn: int
     checkpoint_history_len: int
+
+
+class RollbackedEvent(_RollbackedRequired, total=False):
     reason: RollbackReason
 
 
-class CapabilityChangedEvent(TypedDict, total=False):
+class _CapabilityChangedRequired(TypedDict):
     kind: Literal["capability_changed"]
     turn: int
     added: list[str]
     removed: list[str]
+
+
+class CapabilityChangedEvent(_CapabilityChangedRequired, total=False):
     change_kind: str
     capability_id: str
     version: str
@@ -164,27 +200,27 @@ class CapabilityChangedEvent(TypedDict, total=False):
     mount_reason: str
 
 
-class MilestoneAdvancedEvent(TypedDict, total=False):
+class MilestoneAdvancedEvent(TypedDict):
     kind: Literal["milestone_advanced"]
     turn: int
     phase_id: str
     capabilities_unlocked: list[str]
 
 
-class MilestoneBlockedEvent(TypedDict, total=False):
+class MilestoneBlockedEvent(TypedDict):
     kind: Literal["milestone_blocked"]
     turn: int
     phase_id: str
     reason: str
 
 
-class CheckpointTakenEvent(TypedDict, total=False):
+class CheckpointTakenEvent(TypedDict):
     kind: Literal["checkpoint_taken"]
     turn: int
     history_len: int
 
 
-class EntropySampleEvent(TypedDict, total=False):
+class EntropySampleEvent(TypedDict):
     kind: Literal["entropy_sample"]
     turn: int
     score: float
@@ -195,31 +231,37 @@ class EntropySampleEvent(TypedDict, total=False):
     window_turns: int
 
 
-class EntropyAlertEvent(TypedDict, total=False):
+class EntropyAlertEvent(TypedDict):
     kind: Literal["entropy_alert"]
     turn: int
     score: float
     threshold: float
 
 
-class AgentProcessChangedEvent(TypedDict, total=False):
+class _AgentProcessChangedRequired(TypedDict):
     kind: Literal["agent_process_changed"]
     turn: int
     agent_id: str
-    parent_task_id: str
-    # Host audit identity; canonical kernel observations never populate it.
-    parent_session_id: str
     role: str
     isolation: str
     context_inheritance: str
-    state: str
     permitted_capability_ids: list[str]
+
+
+class AgentProcessChangedEvent(_AgentProcessChangedRequired, total=False):
+    parent_task_id: str
+    # Host audit identity; canonical kernel observations never populate it.
+    parent_session_id: str
+    state: str
     result_termination: str
 
 
-class PageOutEvent(TypedDict, total=False):
+class _PageOutRequired(TypedDict):
     kind: Literal["page_out"]
     turn: int
+
+
+class PageOutEvent(_PageOutRequired, total=False):
     action: str
     summary: str
     tier_hint: str
@@ -227,45 +269,54 @@ class PageOutEvent(TypedDict, total=False):
     archive_ref: str
 
 
-class PageInEvent(TypedDict, total=False):
+class PageInEvent(TypedDict):
     kind: Literal["page_in"]
     turn: int
     entry_count: int
 
 
-class SemanticArchivePendingEvent(TypedDict, total=False):
+class _SemanticArchivePendingRequired(TypedDict):
     kind: Literal["semantic_archive_pending"]
     effect_id: str
+
+
+class SemanticArchivePendingEvent(_SemanticArchivePendingRequired, total=False):
     action: str
 
 
-class SemanticArchiveCompletedEvent(TypedDict, total=False):
+class SemanticArchiveCompletedEvent(TypedDict):
     kind: Literal["semantic_archive_completed"]
     effect_id: str
     record_id: str
 
 
-class SemanticArchiveFailedEvent(TypedDict, total=False):
+class SemanticArchiveFailedEvent(TypedDict):
     kind: Literal["semantic_archive_failed"]
     effect_id: str
     error: str
 
 
-class SuspendedEvent(TypedDict, total=False):
+class _SuspendedRequired(TypedDict):
     kind: Literal["suspended"]
     turn: int
     reason: str
+
+
+class SuspendedEvent(_SuspendedRequired, total=False):
     pending_calls: list[str]
 
 
-class ResumedEvent(TypedDict, total=False):
+class _ResumedRequired(TypedDict):
     kind: Literal["resumed"]
     turn: int
+
+
+class ResumedEvent(_ResumedRequired, total=False):
     approved: list[str]
     denied: list[str]
 
 
-class ToolGatedEvent(TypedDict, total=False):
+class ToolGatedEvent(TypedDict):
     kind: Literal["tool_gated"]
     turn: int
     call_id: str
@@ -273,7 +324,7 @@ class ToolGatedEvent(TypedDict, total=False):
     reason: str
 
 
-class SignalDeliveryDisposedEvent(TypedDict, total=False):
+class SignalDeliveryDisposedEvent(TypedDict):
     kind: Literal["signal_delivery_disposed"]
     turn: int
     operation_id: str
@@ -284,15 +335,18 @@ class SignalDeliveryDisposedEvent(TypedDict, total=False):
     queue_depth: int
 
 
-class BudgetExceededEvent(TypedDict, total=False):
+class _BudgetExceededRequired(TypedDict):
     kind: Literal["budget_exceeded"]
     turn: int
     operation_id: str
-    reservation_id: str
     budget: str
 
 
-class BudgetUsageReportedEvent(TypedDict, total=False):
+class BudgetExceededEvent(_BudgetExceededRequired, total=False):
+    reservation_id: str
+
+
+class BudgetUsageReportedEvent(TypedDict):
     kind: Literal["budget_usage_reported"]
     turn: int
     operation_id: str
@@ -302,7 +356,7 @@ class BudgetUsageReportedEvent(TypedDict, total=False):
     rounds: int
 
 
-class OperationCancelledEvent(TypedDict, total=False):
+class OperationCancelledEvent(TypedDict):
     kind: Literal["operation_cancelled"]
     turn: int
     operation_id: str
@@ -310,14 +364,14 @@ class OperationCancelledEvent(TypedDict, total=False):
     pending_call_ids: list[str]
 
 
-class ContextRenewedEvent(TypedDict, total=False):
+class ContextRenewedEvent(TypedDict):
     kind: Literal["context_renewed"]
     turn: int
     sprint: int
     handoff_ref: str
 
 
-class MemoryWrittenEvent(TypedDict, total=False):
+class MemoryWrittenEvent(TypedDict):
     kind: Literal["memory_written"]
     turn: int
     record_id: str
@@ -327,7 +381,7 @@ class MemoryWrittenEvent(TypedDict, total=False):
     size_bytes: int
 
 
-class MemoryQueriedEvent(TypedDict, total=False):
+class MemoryQueriedEvent(TypedDict):
     kind: Literal["memory_queried"]
     turn: int
     scope: dict[str, str]
@@ -336,34 +390,37 @@ class MemoryQueriedEvent(TypedDict, total=False):
     requires_async_response: bool
 
 
-class MemoryValidationFailedEvent(TypedDict, total=False):
+class MemoryValidationFailedEvent(TypedDict):
     kind: Literal["memory_validation_failed"]
     turn: int
     record_id: str
     error: str
 
 
-class MemoryWriteFailedEvent(TypedDict, total=False):
+class MemoryWriteFailedEvent(TypedDict):
     kind: Literal["memory_write_failed"]
     turn: int
     record_id: str
     error: str
 
 
-class MemoryCandidatePendingEvent(TypedDict, total=False):
-    """M2 · a write handed to the candidate sink and held for review: nothing is remembered yet.
-
-    ``receipt_id`` is absent when the fact comes from the kernel's own observation.
-    """
+class _MemoryCandidatePendingRequired(TypedDict):
     kind: Literal["memory_candidate_pending"]
     turn: int
     candidate_id: str
     source: str
     name: str
+
+
+class MemoryCandidatePendingEvent(_MemoryCandidatePendingRequired, total=False):
+    """M2 · a write handed to the candidate sink and held for review: nothing is remembered yet.
+
+    ``receipt_id`` is absent when the fact comes from the kernel's own observation.
+    """
     receipt_id: str
 
 
-class MemoryCandidateRejectedEvent(TypedDict, total=False):
+class MemoryCandidateRejectedEvent(TypedDict):
     """M2 · the candidate sink refused the write."""
     kind: Literal["memory_candidate_rejected"]
     turn: int
@@ -374,7 +431,7 @@ class MemoryCandidateRejectedEvent(TypedDict, total=False):
     reason_code: str
 
 
-class MemoryQueryFailedEvent(TypedDict, total=False):
+class MemoryQueryFailedEvent(TypedDict):
     kind: Literal["memory_query_failed"]
     turn: int
     scope: dict[str, str]
@@ -382,17 +439,20 @@ class MemoryQueryFailedEvent(TypedDict, total=False):
     error: str
 
 
-class MemoryRetrievalResultEvent(TypedDict, total=False):
+class MemoryRetrievalResultEvent(TypedDict):
     kind: Literal["memory_retrieval_result"]
     hits: list[dict[str, Any]]
 
 
-class WorkflowNodeCompletedEvent(TypedDict, total=False):
+class _WorkflowNodeCompletedRequired(TypedDict):
     kind: Literal["workflow_node_completed"]
     turn: int
     agent_id: str
     status: str
     termination: str
+
+
+class WorkflowNodeCompletedEvent(_WorkflowNodeCompletedRequired, total=False):
     # W-1: result-borne control signals, persisted so resume replays control flow faithfully —
     # a classifier re-prunes its rejected branches, a recorded loop stop is honored.
     classify_branch: str
@@ -401,73 +461,85 @@ class WorkflowNodeCompletedEvent(TypedDict, total=False):
     output: dict[str, Any]
 
 
-class WorkflowBatchSpawnedEvent(TypedDict, total=False):
+class WorkflowBatchSpawnedEvent(TypedDict):
     kind: Literal["workflow_batch_spawned"]
     turn: int
     node_count: int
     node_ids: list[str]
 
 
-class WorkflowCompletedEvent(TypedDict, total=False):
+class WorkflowCompletedEvent(TypedDict):
     kind: Literal["workflow_completed"]
     turn: int
     node_outcomes: list[dict[str, Any]]
     total_nodes: int
 
 
-class WorkflowNodesSubmittedEvent(TypedDict, total=False):
+class _WorkflowNodesSubmittedRequired(TypedDict):
     kind: Literal["workflow_nodes_submitted"]
     turn: int
     # Kernel-shape (snake_case) submitted node specs — persisted so resume can re-apply them.
     nodes: list[dict[str, Any]]
+
+
+class WorkflowNodesSubmittedEvent(_WorkflowNodesSubmittedRequired, total=False):
     # R3-1: graph base index the batch was appended at — lets resume rebuild exact indices.
     base_index: int
     # W-N3: the submitting node's agent id (absent = host/bootstrap).
     submitter_agent_id: str
 
 
-class KernelObservationEvent(TypedDict, total=False):
+class KernelObservationEvent(TypedDict):
     kind: Literal["kernel_observation"]
     turn: int
     observation_kind: str
     raw: dict[str, Any]
 
 
-class SummaryUpgradedEvent(TypedDict, total=False):
+class SummaryUpgradedEvent(TypedDict):
     kind: Literal["summary_upgraded"]
     compressed_seq: int
     summary: str
 
 
-class GroupMemberJoinedEvent(TypedDict, total=False):
+class _GroupMemberJoinedRequired(TypedDict):
     kind: Literal["group_member_joined"]
     session_id: str
+
+
+class GroupMemberJoinedEvent(_GroupMemberJoinedRequired, total=False):
     role: str
     member_kind: Literal["peer", "vehicle"]
 
 
-class GroupBudgetChargedEvent(TypedDict, total=False):
+class _GroupBudgetChargedRequired(TypedDict):
     kind: Literal["group_budget_charged"]
     tokens: int
     subagents: int
+
+
+class GroupBudgetChargedEvent(_GroupBudgetChargedRequired, total=False):
     rounds: int
 
 
-class RoundStartedEvent(TypedDict, total=False):
+class RoundStartedEvent(TypedDict):
     kind: Literal["round_started"]
     # 1-based round number within the loop.
     round: int
     goal: str
 
 
-class RoundPacedEvent(TypedDict, total=False):
+class _RoundPacedRequired(TypedDict):
     kind: Literal["round_paced"]
     round: int
     action: Literal["continue", "sleep", "stop"]
+    reason: str
+
+
+class RoundPacedEvent(_RoundPacedRequired, total=False):
     delay_ms: int
     # Absolute wake time for sleep — lets a stateless host re-arm from the log alone.
     wake_at_ms: int
-    reason: str
     coerced_from: str
 
 
@@ -527,78 +599,26 @@ SessionEvent = (
 )
 
 
-# The registered session-event vocabulary (F9 / S3, P7-S4), in `SessionEvent` union order. This
-# list must equal the Node SDK's `SESSION_EVENT_KINDS` — the cross-SDK manifest fixture
-# `tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json` pins both, and any
-# same-commit desync turns conformance red. The assertion below keeps the list and the union in
-# lockstep inside this SDK at import time.
-SESSION_EVENT_KINDS: tuple[str, ...] = (
-    "run_started",
-    "llm_completed",
-    "prompt_measured",
-    "context_prepared",
-    "provider_attempt",
-    "tool_requested",
-    "tool_completed",
-    "tool_argument_repaired",
-    "tool_denied",
-    "permission_requested",
-    "permission_resolved",
-    "compressed",
-    "rollbacked",
-    "capability_changed",
-    "milestone_advanced",
-    "milestone_blocked",
-    "checkpoint_taken",
-    "entropy_sample",
-    "entropy_alert",
-    "agent_process_changed",
-    "page_out",
-    "semantic_archive_pending",
-    "semantic_archive_completed",
-    "semantic_archive_failed",
-    "page_in",
-    "suspended",
-    "resumed",
-    "tool_gated",
-    "signal_delivery_disposed",
-    "budget_exceeded",
-    "budget_usage_reported",
-    "operation_cancelled",
-    "context_renewed",
-    "memory_written",
-    "memory_queried",
-    "memory_validation_failed",
-    "memory_write_failed",
-    "memory_candidate_pending",
-    "memory_candidate_rejected",
-    "memory_query_failed",
-    "memory_retrieval_result",
-    "workflow_node_completed",
-    "workflow_nodes_submitted",
-    "workflow_batch_spawned",
-    "workflow_completed",
-    "kernel_observation",
-    "run_terminal",
-    "summary_upgraded",
-    "group_member_joined",
-    "group_budget_charged",
-    "round_started",
-    "round_paced",
-)
+def _session_event_union_fields() -> dict[str, dict[str, tuple[str, ...]]]:
+    from typing import get_args
 
-
-def _session_event_union_kinds() -> frozenset[str]:
-    from typing import get_args, get_type_hints
-
-    kinds: set[str] = set()
+    fields: dict[str, dict[str, tuple[str, ...]]] = {}
     for member in get_args(SessionEvent):
-        kinds.update(get_args(get_type_hints(member)["kind"]))
-    return frozenset(kinds)
+        # `from __future__ import annotations` leaves `kind` as a ForwardRef to 'Literal["..."]'.
+        annotation = member.__annotations__["kind"]
+        (kind,) = re.findall(r"[\"'](\w+)[\"']", getattr(annotation, "__forward_arg__", str(annotation)))
+        fields[kind] = {
+            "required": tuple(sorted(member.__required_keys__ - {"kind"})),
+            "optional": tuple(sorted(member.__optional_keys__)),
+        }
+    return fields
 
 
-assert frozenset(SESSION_EVENT_KINDS) == _session_event_union_kinds(), (
-    "SESSION_EVENT_KINDS must mirror the SessionEvent union exactly"
+# The registered session-event vocabulary comes from contracts/session-events.json (generated
+# into `_session_event_registry`). The union must carry exactly those kinds, each with exactly the
+# registered required/optional top-level fields, so a drift fails at import rather than on replay.
+assert _session_event_union_fields() == SESSION_EVENT_REGISTRY, (
+    "SessionEvent TypedDicts must match contracts/session-events.json exactly"
 )
 
 

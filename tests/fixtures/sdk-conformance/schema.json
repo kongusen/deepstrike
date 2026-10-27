@@ -17,7 +17,8 @@
         "session_event",
         "content_parts_v1",
         "session_event_vocabulary",
-        "provider_attempt_record"
+        "provider_attempt_record",
+        "kernel_observation_projection"
       ]
     },
     "input": { "type": "object" },

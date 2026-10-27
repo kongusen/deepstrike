@@ -24,4 +24,4 @@ pub use replay::{
     BudgetExceededRecord, BudgetUsageRecord, CancellationRecord, OsSnapshot, ProcessRecord,
     SignalDeliveryDisposedRecord, SuspendRecord, rebuild_os_snapshot_from_events,
 };
-pub use session::{ProviderReplay, SessionEvent};
+pub use session::{ProviderReplay, SessionEvent, WireEvidence};

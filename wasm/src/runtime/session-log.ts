@@ -1,3 +1,4 @@
+import { SESSION_EVENT_KINDS as REGISTERED_SESSION_EVENT_KINDS, SESSION_EVENT_REGISTRY } from "./session-event-registry.generated.js"
 import type { ContextPrepared } from "./context.js"
 import type { ProviderReplay, ProviderWireEvidence, ToolCall, ToolErrorKind } from "../types.js"
 import type { MemoryRecall, MemoryScope } from "../memory/index.js"
@@ -37,7 +38,7 @@ export interface ProviderAttemptRecord {
 
 export type SessionEvent =
   // P4-S1: `route` is the runner-construction ResolvedProviderRoute snapshot (P4 §0.2).
-  | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: import("../types.js").ContentPart[]; route?: ResolvedProviderRoute }
+  | { kind: "run_started"; run_id: string; goal: string; criteria: string[]; agent_id?: string; system_prompt?: string; attachments?: import("../types.js").ContentPart[]; route?: ResolvedProviderRoute; metadata?: Record<string, unknown> }
   // P3-S2 + P4-S1: effect_id (G4) + invocation_id + wire_evidence (D1). The wire evidence bundle
   // is the sole persisted carrier for provider replay state.
   | { kind: "llm_completed"; turn: number; content: string; token_count?: number; tool_calls: ToolCall[]; effect_id?: string; invocation_id?: string; wire_evidence?: ProviderWireEvidence }
@@ -200,71 +201,32 @@ export type SessionEvent =
 export type SessionEventKind = SessionEvent["kind"]
 
 /**
- * The registered session-event vocabulary (F9 / S3, P7-S4). This list must equal the Node SDK's
- * `SESSION_EVENT_KINDS` — the cross-SDK manifest fixture
- * `tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json` pins both, and any
- * same-commit desync turns conformance red. Declared in `SessionEvent` union order.
+ * The registered session-event vocabulary (F9 / S3, P7-S4). The authority is
+ * `contracts/session-events.json`; `session-event-registry.generated.ts` is generated from it
+ * (`node scripts/gen-session-event-registry.mjs`). The assertions below fail compilation when the
+ * `SessionEvent` union and the registry disagree on a kind or on any kind's required/optional
+ * top-level fields, so a new event cannot ship without its registry entry.
  */
-export const SESSION_EVENT_KINDS = [
-  "run_started",
-  "llm_completed",
-  "prompt_measured",
-  "context_prepared",
-  "provider_attempt",
-  "tool_requested",
-  "tool_completed",
-  "tool_argument_repaired",
-  "tool_denied",
-  "permission_requested",
-  "permission_resolved",
-  "compressed",
-  "page_out",
-  "semantic_archive_pending",
-  "semantic_archive_completed",
-  "semantic_archive_failed",
-  "page_in",
-  "rollbacked",
-  "capability_changed",
-  "context_renewed",
-  "suspended",
-  "resumed",
-  "tool_gated",
-  "signal_delivery_disposed",
-  "budget_exceeded",
-  "budget_usage_reported",
-  "operation_cancelled",
-  "milestone_advanced",
-  "milestone_blocked",
-  "checkpoint_taken",
-  "entropy_sample",
-  "entropy_alert",
-  "agent_process_changed",
-  "memory_written",
-  "memory_queried",
-  "memory_validation_failed",
-  "memory_write_failed",
-  "memory_candidate_pending",
-  "memory_candidate_rejected",
-  "memory_query_failed",
-  "memory_retrieval_result",
-  "workflow_node_completed",
-  "workflow_nodes_submitted",
-  "workflow_batch_spawned",
-  "workflow_completed",
-  "kernel_observation",
-  "run_terminal",
-  "summary_upgraded",
-  "group_member_joined",
-  "group_budget_charged",
-  "round_started",
-  "round_paced",
-] as const satisfies readonly SessionEventKind[]
+export const SESSION_EVENT_KINDS = REGISTERED_SESSION_EVENT_KINDS
+export { SESSION_EVENT_REGISTRY }
 
-// Compile-time lockstep: the list above and the union must cover each other exactly.
-// `satisfies` rejects list entries the union lacks; this rejects union members the list lacks.
-type _AssertVocabularyCoversUnion = Exclude<SessionEventKind, (typeof SESSION_EVENT_KINDS)[number]> extends never ? true : never
-const _vocabularyCoversUnion: _AssertVocabularyCoversUnion = true
-void _vocabularyCoversUnion
+type SessionEventOf<K> = Extract<SessionEvent, { kind: K }>
+type OptionalFieldsOf<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? K : never }[keyof T]
+type RequiredFieldsOf<T> = Exclude<keyof T, OptionalFieldsOf<T> | "kind">
+type SameKeys<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
+type RegistryOf = typeof SESSION_EVENT_REGISTRY
+/** Kinds whose union member disagrees with the registry (never = in lockstep). */
+type SessionEventRegistryMismatch = {
+  [K in SessionEventKind]: K extends keyof RegistryOf
+    ? SameKeys<RequiredFieldsOf<SessionEventOf<K>>, RegistryOf[K]["required"][number]> extends true
+      ? SameKeys<OptionalFieldsOf<SessionEventOf<K>>, RegistryOf[K]["optional"][number]> extends true
+        ? never
+        : K
+      : K
+    : K
+}[SessionEventKind] | Exclude<keyof RegistryOf, SessionEventKind>
+const _sessionEventRegistryInLockstep: [SessionEventRegistryMismatch] extends [never] ? true : SessionEventRegistryMismatch = true
+void _sessionEventRegistryInLockstep
 
 /**
  * The business-projection log (spec §9.2): run started/terminal, stream events, observations,

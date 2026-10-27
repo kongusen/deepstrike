@@ -1,3 +1,4 @@
+import { SESSION_EVENT_KINDS as REGISTERED_SESSION_EVENT_KINDS, SESSION_EVENT_REGISTRY } from "./session-event-registry.generated.js"
 import type { ContextPrepared } from "./context.js"
 import { createReadStream } from "node:fs"
 import type { KernelPrimitive } from "./kernel-event-log.js"
@@ -204,71 +205,32 @@ export type SessionEvent =
 export type SessionEventKind = SessionEvent["kind"]
 
 /**
- * The registered session-event vocabulary (F9 / S3, P7-S4). This list is the single authority
- * the cross-SDK manifest fixture pins: a kind added here without the same-commit update to
- * `tests/fixtures/sdk-conformance/canonical/session-event-vocabulary.json` and the python/wasm
- * vocabularies turns cross-SDK conformance red. Declared in `SessionEvent` union order.
+ * The registered session-event vocabulary (F9 / S3, P7-S4). The authority is
+ * `contracts/session-events.json`; `session-event-registry.generated.ts` is generated from it
+ * (`node scripts/gen-session-event-registry.mjs`). The assertions below fail compilation when the
+ * `SessionEvent` union and the registry disagree on a kind or on any kind's required/optional
+ * top-level fields, so a new event cannot ship without its registry entry.
  */
-export const SESSION_EVENT_KINDS = [
-  "run_started",
-  "llm_completed",
-  "prompt_measured",
-  "context_prepared",
-  "provider_attempt",
-  "tool_requested",
-  "tool_completed",
-  "tool_argument_repaired",
-  "tool_denied",
-  "permission_requested",
-  "permission_resolved",
-  "compressed",
-  "page_out",
-  "semantic_archive_pending",
-  "semantic_archive_completed",
-  "semantic_archive_failed",
-  "page_in",
-  "rollbacked",
-  "capability_changed",
-  "context_renewed",
-  "suspended",
-  "resumed",
-  "tool_gated",
-  "signal_delivery_disposed",
-  "budget_exceeded",
-  "budget_usage_reported",
-  "operation_cancelled",
-  "milestone_advanced",
-  "milestone_blocked",
-  "checkpoint_taken",
-  "entropy_sample",
-  "entropy_alert",
-  "agent_process_changed",
-  "memory_written",
-  "memory_queried",
-  "memory_validation_failed",
-  "memory_write_failed",
-  "memory_candidate_pending",
-  "memory_candidate_rejected",
-  "memory_query_failed",
-  "memory_retrieval_result",
-  "workflow_node_completed",
-  "workflow_nodes_submitted",
-  "workflow_batch_spawned",
-  "workflow_completed",
-  "kernel_observation",
-  "run_terminal",
-  "summary_upgraded",
-  "group_member_joined",
-  "group_budget_charged",
-  "round_started",
-  "round_paced",
-] as const satisfies readonly SessionEventKind[]
+export const SESSION_EVENT_KINDS = REGISTERED_SESSION_EVENT_KINDS
+export { SESSION_EVENT_REGISTRY }
 
-// Compile-time lockstep: the list above and the union must cover each other exactly.
-// `satisfies` rejects list entries the union lacks; this rejects union members the list lacks.
-type _AssertVocabularyCoversUnion = Exclude<SessionEventKind, (typeof SESSION_EVENT_KINDS)[number]> extends never ? true : never
-const _vocabularyCoversUnion: _AssertVocabularyCoversUnion = true
-void _vocabularyCoversUnion
+type SessionEventOf<K> = Extract<SessionEvent, { kind: K }>
+type OptionalFieldsOf<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? K : never }[keyof T]
+type RequiredFieldsOf<T> = Exclude<keyof T, OptionalFieldsOf<T> | "kind">
+type SameKeys<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false
+type RegistryOf = typeof SESSION_EVENT_REGISTRY
+/** Kinds whose union member disagrees with the registry (never = in lockstep). */
+type SessionEventRegistryMismatch = {
+  [K in SessionEventKind]: K extends keyof RegistryOf
+    ? SameKeys<RequiredFieldsOf<SessionEventOf<K>>, RegistryOf[K]["required"][number]> extends true
+      ? SameKeys<OptionalFieldsOf<SessionEventOf<K>>, RegistryOf[K]["optional"][number]> extends true
+        ? never
+        : K
+      : K
+    : K
+}[SessionEventKind] | Exclude<keyof RegistryOf, SessionEventKind>
+const _sessionEventRegistryInLockstep: [SessionEventRegistryMismatch] extends [never] ? true : SessionEventRegistryMismatch = true
+void _sessionEventRegistryInLockstep
 
 /**
  * The business-projection log (spec §9.2): run started/terminal, stream events, observations,

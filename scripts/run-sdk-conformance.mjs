@@ -36,15 +36,16 @@ const adapters = {
  * encoding channel exists only in the JSON-projection SDKs. The Rust canonical surface is
  * typed wire values with no string-content smuggle channel, so there is no contract to pin.
  *
- * session_event_vocabulary (F9/S3, P7-S4): the Rust SessionLog is an opaque-JSON projection
- * (events are `kind_str()`, not a typed vocabulary), so there is no local kind list to pin.
+ * provider_attempt_record (P4 §3, 0.2.64 S3): the Rust runner does not write the evidence
+ * plane's `provider_attempt` record yet (see contracts/session-events.json `sdks`), so it holds
+ * no codec to pin.
  *
- * provider_attempt_record (P4 §3, 0.2.64 S3): same Rust rationale — the evidence plane's
- * SessionLog record is a JSON-projection contract; Rust holds no local codec or validator.
+ * session_event_vocabulary runs on every SDK: which kinds an SDK carries is declared once in
+ * contracts/session-events.json, and the runner projects the expectation per SDK
+ * (`expectedFor`) rather than letting an adapter say what it should be compared against.
  */
 const DOMAIN_SDKS = {
   content_parts_v1: ["node", "python", "wasm"],
-  session_event_vocabulary: ["node", "python", "wasm"],
   provider_attempt_record: ["node", "python", "wasm"],
 }
 
@@ -76,7 +77,7 @@ for (const fixture of selected) {
       continue
     }
     const actual = runAdapter(sdk, fixture.path)
-    const difference = compareEnvelope(fixture.value, actual, sdk)
+    const difference = compareEnvelope(expectedFor(fixture.value, sdk), actual, sdk)
     if (difference) {
       failures += 1
       console.error(`FAIL ${sdk} ${fixture.value.id} ${difference.path}: ${difference.message}`)
@@ -219,6 +220,19 @@ function runAdapter(sdk, fixture) {
   } catch (error) {
     return adapterFailure(sdk, `invalid adapter JSON: ${error.message}`)
   }
+}
+
+/**
+ * The registry fixture lists every kind with the SDKs that carry it; each SDK is compared
+ * against only its own kinds, so a missing kind and an undeclared extra kind both fail.
+ */
+function expectedFor(fixture, sdk) {
+  if (fixture.domain !== "session_event_vocabulary" || !fixture.expected.canonical) return fixture
+  const kinds = {}
+  for (const [kind, entry] of Object.entries(fixture.expected.canonical.kinds)) {
+    if (entry.sdks.includes(sdk)) kinds[kind] = { required: entry.required, optional: entry.optional }
+  }
+  return { ...fixture, expected: { canonical: { kinds } } }
 }
 
 function compareEnvelope(fixture, actual, sdk) {

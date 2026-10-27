@@ -1,64 +1,1492 @@
 {
   "id": "session-event-vocabulary",
   "domain": "session_event_vocabulary",
-  "input": {},
+  "input": {
+    "samples": {
+      "run_started": {
+        "kind": "run_started",
+        "run_id": "run-1",
+        "goal": "fix the test",
+        "criteria": [
+          "tests pass"
+        ],
+        "agent_id": "agent-1",
+        "system_prompt": "be careful",
+        "attachments": [
+          {
+            "type": "text",
+            "text": "see attached"
+          }
+        ],
+        "route": {
+          "routeId": "route-1",
+          "provider": "anthropic",
+          "protocol": "anthropic-messages",
+          "model": "claude-opus-5-5",
+          "endpoint": {
+            "id": "anthropic",
+            "protocol": "anthropic-messages",
+            "baseURL": "https://api.anthropic.com"
+          },
+          "adapterVersion": "0.2.77",
+          "capabilitiesRef": "anthropic-messages",
+          "request_fingerprint_scope": "adapter_input"
+        },
+        "metadata": {
+          "ticket": "T-1"
+        }
+      },
+      "llm_completed": {
+        "kind": "llm_completed",
+        "turn": 1,
+        "content": "reading",
+        "token_count": 42,
+        "tool_calls": [
+          {
+            "id": "call-1",
+            "name": "read_file",
+            "arguments": "{\"path\":\"a.txt\"}"
+          }
+        ],
+        "effect_id": "eff-2",
+        "invocation_id": "eff-1",
+        "wire_evidence": {
+          "protocol": "anthropic-messages",
+          "request_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "response_id": "msg_1",
+          "raw_usage": {
+            "input_tokens": 12
+          },
+          "replay_state": {
+            "protocol": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-opus-5-5",
+            "native_blocks": [
+              {
+                "type": "thinking",
+                "thinking": "plan",
+                "signature": "sig"
+              }
+            ],
+            "reasoning_content": "plan",
+            "reasoning_details": {
+              "effort": "high"
+            },
+            "native_message": {
+              "role": "assistant"
+            },
+            "tool_calls": [
+              {
+                "id": "call-1"
+              }
+            ]
+          }
+        }
+      },
+      "context_prepared": {
+        "kind": "context_prepared",
+        "turn": 1,
+        "effect_id": "eff-1",
+        "preparation": {
+          "execution_input": {
+            "schema": "context/v1",
+            "input_digest": "sha256:8042431363177ace74d08dbe622cf75a74b4d3d3ff9c1694bce223abcdfdecb5",
+            "operation_id": "op",
+            "step_id": "step",
+            "input_sequence": 1,
+            "state_digest": "sha256:1d5cc2c2fb50e62e50900d17658182e54cdeea27fd7f7f9eef2c14580f57e2b4",
+            "policy_digest": "sha256:823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+            "plan_digest": "sha256:6d0eab9d3ae74b1132f883382ead109436f46d13b8868c7091a8a0c39082ffef",
+            "rendered_snapshot": "sha256:7a38905296006c575d7d45d1d881690a3ee87361ed67ce64642e2504482da818",
+            "prompt_measurement": "sha256:ab204f84c45b95c83fd79d252c3aab4a28beac7fa73dae3ae64618dee7012f74",
+            "provider_route": "sha256:af0bfbb1818d62000babbfb4c14a6a4dd26c49378825da345843c20d353de0b2",
+            "cache_prefix": null
+          },
+          "plan": {
+            "schema": "context/v1",
+            "plan_id": "sha256:6d0eab9d3ae74b1132f883382ead109436f46d13b8868c7091a8a0c39082ffef",
+            "operation_id": "op",
+            "step_id": "step",
+            "state_digest": "sha256:1d5cc2c2fb50e62e50900d17658182e54cdeea27fd7f7f9eef2c14580f57e2b4",
+            "state_generation": 0,
+            "runtime_inputs": "sha256:574283edaf12534163268364164cfab7c00041a56c780d3fe3a4071fb9ac1914",
+            "policy_digest": "sha256:823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+            "provider_profile_digest": "sha256:af0bfbb1818d62000babbfb4c14a6a4dd26c49378825da345843c20d353de0b2",
+            "measurement_fingerprints": [
+              "sha256:ab204f84c45b95c83fd79d252c3aab4a28beac7fa73dae3ae64618dee7012f74"
+            ],
+            "selections": [
+              {
+                "entry_id": "state:task_state:sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4",
+                "action": "omit",
+                "reason": "empty_state_projection"
+              }
+            ],
+            "input_budget_tokens": 100000,
+            "projected_tokens": 1,
+            "pressure_ppm": 0,
+            "cache_prefix": null
+          },
+          "binding": {
+            "digest": "sha256:455c16bd076f71f17e1a040013b711241fd737f2092572dccb366ff4821c2030",
+            "operation_id": "op",
+            "execution_input": "sha256:8042431363177ace74d08dbe622cf75a74b4d3d3ff9c1694bce223abcdfdecb5",
+            "context_state": "sha256:1d5cc2c2fb50e62e50900d17658182e54cdeea27fd7f7f9eef2c14580f57e2b4",
+            "context_policy": "sha256:823412d1eacb67956220e532959f0104603057c88704863ca38e7cd188fda812",
+            "context_plan": "sha256:6d0eab9d3ae74b1132f883382ead109436f46d13b8868c7091a8a0c39082ffef",
+            "rendered_snapshot": "sha256:7a38905296006c575d7d45d1d881690a3ee87361ed67ce64642e2504482da818",
+            "prompt_measurement": "sha256:ab204f84c45b95c83fd79d252c3aab4a28beac7fa73dae3ae64618dee7012f74",
+            "provider_route": "sha256:af0bfbb1818d62000babbfb4c14a6a4dd26c49378825da345843c20d353de0b2"
+          },
+          "state": {
+            "schema": "context/v1",
+            "generation": 0,
+            "system": [],
+            "knowledge": [],
+            "history": [],
+            "state": [
+              {
+                "entry_id": "state:task_state:sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4",
+                "content_digest": "sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4",
+                "source": "state",
+                "ordinal": 0
+              }
+            ],
+            "task_state": "sha256:e9e57ada1fb0435b2593087f4eab7e29f09ed77c08bd0e2896901870e44436b4",
+            "signals": [],
+            "digest": "sha256:1d5cc2c2fb50e62e50900d17658182e54cdeea27fd7f7f9eef2c14580f57e2b4"
+          },
+          "provider_route": {
+            "model": "model",
+            "protocol": "test"
+          },
+          "prompt_measurement": {
+            "requestFingerprint": "sha256:04dfe8627b03c95eaa80ee17dec9130a7d2ff7b054350eef1f67a853450cbb3d",
+            "inputTokens": 10,
+            "source": {
+              "kind": "heuristic"
+            },
+            "confidence": "low_confidence"
+          }
+        }
+      },
+      "prompt_measured": {
+        "kind": "prompt_measured",
+        "turn": 1,
+        "effect_id": "eff-1",
+        "measurement": {
+          "requestFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inputTokens": 12,
+          "source": {
+            "kind": "heuristic"
+          },
+          "confidence": "low_confidence"
+        }
+      },
+      "provider_attempt": {
+        "kind": "provider_attempt",
+        "effect_id": "eff-1",
+        "attempt_seq": 1,
+        "route": {
+          "routeId": "route-1",
+          "provider": "anthropic",
+          "protocol": "anthropic-messages",
+          "model": "claude-opus-5-5",
+          "endpoint": {
+            "id": "anthropic",
+            "protocol": "anthropic-messages",
+            "baseURL": "https://api.anthropic.com"
+          },
+          "adapterVersion": "0.2.77",
+          "capabilitiesRef": "anthropic-messages",
+          "request_fingerprint_scope": "adapter_input"
+        },
+        "request_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "status": "success",
+        "transport_rungs": 1,
+        "last_error_class": "none",
+        "started_at_ms": 1000,
+        "finished_at_ms": 1500,
+        "usage": {
+          "inputTokens": 12,
+          "outputTokens": 3
+        },
+        "wire_evidence": {
+          "protocol": "anthropic-messages",
+          "request_fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "response_id": "msg_1",
+          "raw_usage": {
+            "input_tokens": 12
+          },
+          "replay_state": {
+            "protocol": "anthropic-messages",
+            "provider": "anthropic",
+            "model": "claude-opus-5-5",
+            "native_blocks": [
+              {
+                "type": "thinking",
+                "thinking": "plan",
+                "signature": "sig"
+              }
+            ],
+            "reasoning_content": "plan",
+            "reasoning_details": {
+              "effort": "high"
+            },
+            "native_message": {
+              "role": "assistant"
+            },
+            "tool_calls": [
+              {
+                "id": "call-1"
+              }
+            ]
+          }
+        },
+        "accounting_policy_id": "policy-1"
+      },
+      "tool_requested": {
+        "kind": "tool_requested",
+        "turn": 1,
+        "calls": [
+          {
+            "id": "call-1",
+            "name": "read_file",
+            "arguments": "{\"path\":\"a.txt\"}"
+          }
+        ]
+      },
+      "tool_completed": {
+        "kind": "tool_completed",
+        "turn": 1,
+        "effect_id": "eff-3",
+        "results": [
+          {
+            "call_id": "call-1",
+            "output": "file body",
+            "is_error": true,
+            "is_fatal": true,
+            "error_kind": "recoverable",
+            "token_count": 3,
+            "content": {
+              "blocks": [
+                {
+                  "type": "text",
+                  "text": "file body"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "tool_argument_repaired": {
+        "kind": "tool_argument_repaired",
+        "turn": 1,
+        "tool": "read_file",
+        "original_arguments": "{path:a}",
+        "repaired_arguments": "{\"path\":\"a\"}"
+      },
+      "tool_denied": {
+        "kind": "tool_denied",
+        "turn": 1,
+        "call_id": "call-1",
+        "tool_name": "rm",
+        "reason": "policy"
+      },
+      "permission_requested": {
+        "kind": "permission_requested",
+        "turn": 1,
+        "tool": "rm",
+        "arguments": "{}",
+        "reason": "destructive"
+      },
+      "permission_resolved": {
+        "kind": "permission_resolved",
+        "turn": 1,
+        "approved": true,
+        "responder": "user"
+      },
+      "compressed": {
+        "kind": "compressed",
+        "turn": 2,
+        "archived_seq_range": [
+          0,
+          4
+        ],
+        "action": "auto_compact",
+        "summary": "earlier work",
+        "summary_tokens": 3,
+        "preserved_refs": [
+          "ref-1"
+        ]
+      },
+      "page_out": {
+        "kind": "page_out",
+        "turn": 2,
+        "action": "auto_compact",
+        "summary": "earlier work",
+        "tier_hint": "warm",
+        "message_count": 4,
+        "archive_ref": "archive-1"
+      },
+      "semantic_archive_pending": {
+        "kind": "semantic_archive_pending",
+        "effect_id": "eff-4",
+        "action": "auto_compact"
+      },
+      "semantic_archive_completed": {
+        "kind": "semantic_archive_completed",
+        "effect_id": "eff-4",
+        "record_id": "t1:ns:project:archive"
+      },
+      "semantic_archive_failed": {
+        "kind": "semantic_archive_failed",
+        "effect_id": "eff-4",
+        "error": "summarizer failed"
+      },
+      "page_in": {
+        "kind": "page_in",
+        "turn": 2,
+        "entry_count": 2
+      },
+      "rollbacked": {
+        "kind": "rollbacked",
+        "turn": 2,
+        "checkpoint_history_len": 3,
+        "reason": {
+          "kind": "provider_failure",
+          "error": "503"
+        }
+      },
+      "capability_changed": {
+        "kind": "capability_changed",
+        "turn": 1,
+        "added": [
+          "skill:debugging"
+        ],
+        "removed": [
+          "skill:old"
+        ],
+        "change_kind": "mount",
+        "capability_id": "skill:debugging",
+        "version": "1",
+        "mounted_by": "kernel",
+        "mount_reason": "skill_admitted"
+      },
+      "context_renewed": {
+        "kind": "context_renewed",
+        "turn": 3,
+        "sprint": 1,
+        "handoff_ref": "handoff-1"
+      },
+      "suspended": {
+        "kind": "suspended",
+        "turn": 1,
+        "reason": "approval",
+        "pending_calls": [
+          "call-1"
+        ]
+      },
+      "resumed": {
+        "kind": "resumed",
+        "turn": 1,
+        "approved": [
+          "call-1"
+        ],
+        "denied": [
+          "call-2"
+        ]
+      },
+      "tool_gated": {
+        "kind": "tool_gated",
+        "turn": 1,
+        "call_id": "call-1",
+        "tool": "rm",
+        "reason": "approval required"
+      },
+      "signal_delivery_disposed": {
+        "kind": "signal_delivery_disposed",
+        "turn": 1,
+        "operation_id": "op-1",
+        "delivery_id": "d-1",
+        "attempt": 1,
+        "signal_id": "sig-1",
+        "disposition": "delivered",
+        "queue_depth": 0
+      },
+      "budget_exceeded": {
+        "kind": "budget_exceeded",
+        "turn": 4,
+        "budget": "max_turns",
+        "operation_id": "op-1",
+        "reservation_id": "res-1"
+      },
+      "budget_usage_reported": {
+        "kind": "budget_usage_reported",
+        "turn": 4,
+        "operation_id": "op-1",
+        "reservation_id": "res-1",
+        "tokens": 100,
+        "subagents": 1,
+        "rounds": 2
+      },
+      "operation_cancelled": {
+        "kind": "operation_cancelled",
+        "turn": 4,
+        "operation_id": "op-1",
+        "reason": "user",
+        "pending_call_ids": [
+          "call-1"
+        ]
+      },
+      "milestone_advanced": {
+        "kind": "milestone_advanced",
+        "turn": 2,
+        "phase_id": "p1",
+        "capabilities_unlocked": [
+          "write"
+        ]
+      },
+      "milestone_blocked": {
+        "kind": "milestone_blocked",
+        "turn": 2,
+        "phase_id": "p1",
+        "reason": "criteria unmet"
+      },
+      "checkpoint_taken": {
+        "kind": "checkpoint_taken",
+        "turn": 1,
+        "history_len": 2
+      },
+      "entropy_sample": {
+        "kind": "entropy_sample",
+        "turn": 1,
+        "score": 0.25,
+        "rho": 0.5,
+        "repeat_pressure": 0.125,
+        "failure_rate": 0,
+        "rollbacks_in_window": 0,
+        "window_turns": 4
+      },
+      "entropy_alert": {
+        "kind": "entropy_alert",
+        "turn": 1,
+        "score": 0.75,
+        "threshold": 0.5
+      },
+      "agent_process_changed": {
+        "kind": "agent_process_changed",
+        "turn": 1,
+        "agent_id": "wf-node0",
+        "parent_task_id": "task-1",
+        "parent_session_id": "s1",
+        "role": "worker",
+        "isolation": "fresh",
+        "context_inheritance": "none",
+        "state": "running",
+        "permitted_capability_ids": [
+          "read_file"
+        ],
+        "result_termination": "completed"
+      },
+      "memory_written": {
+        "kind": "memory_written",
+        "turn": 1,
+        "record_id": "t1:ns:project:note",
+        "scope": {
+          "tenant_id": "t1",
+          "namespace": "ns"
+        },
+        "memory_kind": "project",
+        "name": "note",
+        "size_bytes": 13
+      },
+      "memory_queried": {
+        "kind": "memory_queried",
+        "turn": 1,
+        "scope": {
+          "tenant_id": "t1",
+          "namespace": "ns"
+        },
+        "query": "note",
+        "requested_k": 3,
+        "requires_async_response": true
+      },
+      "memory_validation_failed": {
+        "kind": "memory_validation_failed",
+        "turn": 1,
+        "record_id": "t1:ns:project:note",
+        "error": "too large"
+      },
+      "memory_write_failed": {
+        "kind": "memory_write_failed",
+        "turn": 1,
+        "record_id": "t1:ns:project:note",
+        "error": "store offline"
+      },
+      "memory_candidate_pending": {
+        "kind": "memory_candidate_pending",
+        "turn": 1,
+        "candidate_id": "mc_1",
+        "source": "session_extraction",
+        "name": "note",
+        "receipt_id": "rcpt-1"
+      },
+      "memory_candidate_rejected": {
+        "kind": "memory_candidate_rejected",
+        "turn": 1,
+        "candidate_id": "mc_1",
+        "source": "session_extraction",
+        "name": "note",
+        "receipt_id": "rcpt-1",
+        "reason_code": "policy"
+      },
+      "memory_query_failed": {
+        "kind": "memory_query_failed",
+        "turn": 1,
+        "scope": {
+          "tenant_id": "t1",
+          "namespace": "ns"
+        },
+        "query": "note",
+        "error": "store offline"
+      },
+      "memory_retrieval_result": {
+        "kind": "memory_retrieval_result",
+        "hits": [
+          {
+            "record": {
+              "record_id": "t1:ns:project:note",
+              "scope": {
+                "tenant_id": "t1",
+                "namespace": "ns"
+              },
+              "name": "note",
+              "kind": "project",
+              "content": "remember this",
+              "description": "a note",
+              "provenance": {
+                "session_id": "s1",
+                "author": "extraction",
+                "trust": "untrusted"
+              },
+              "created_at": 1,
+              "updated_at": 1,
+              "recall_count": 0,
+              "confidence": 0.6,
+              "pinned": false
+            },
+            "score": 0.9,
+            "why": "name match"
+          }
+        ]
+      },
+      "workflow_node_completed": {
+        "kind": "workflow_node_completed",
+        "turn": 2,
+        "agent_id": "wf-node0",
+        "status": "completed",
+        "termination": "completed",
+        "classify_branch": "a",
+        "tournament_winner": "wf-node1",
+        "loop_continue": false,
+        "output": {
+          "role": "assistant",
+          "content": "done",
+          "toolCalls": []
+        }
+      },
+      "workflow_nodes_submitted": {
+        "kind": "workflow_nodes_submitted",
+        "turn": 1,
+        "nodes": [
+          {
+            "agent_id": "a",
+            "goal": "g"
+          }
+        ],
+        "base_index": 0,
+        "submitter_agent_id": "wf-node0"
+      },
+      "workflow_batch_spawned": {
+        "kind": "workflow_batch_spawned",
+        "turn": 1,
+        "node_count": 1,
+        "node_ids": [
+          "wf-node0"
+        ]
+      },
+      "workflow_completed": {
+        "kind": "workflow_completed",
+        "turn": 3,
+        "total_nodes": 1,
+        "node_outcomes": [
+          {
+            "node_id": "wf-node0",
+            "status": "completed",
+            "termination": "completed",
+            "output": {
+              "role": "assistant",
+              "content": "done"
+            }
+          }
+        ]
+      },
+      "kernel_observation": {
+        "kind": "kernel_observation",
+        "turn": 1,
+        "observation_kind": "skill_admitted",
+        "raw": {
+          "kind": "skill_admitted",
+          "name": "debugging"
+        }
+      },
+      "run_terminal": {
+        "kind": "run_terminal",
+        "reason": "completed",
+        "turns_used": 3,
+        "total_tokens": 1200
+      },
+      "summary_upgraded": {
+        "kind": "summary_upgraded",
+        "compressed_seq": 5,
+        "summary": "better summary"
+      },
+      "group_member_joined": {
+        "kind": "group_member_joined",
+        "session_id": "s2",
+        "role": "worker",
+        "member_kind": "peer"
+      },
+      "group_budget_charged": {
+        "kind": "group_budget_charged",
+        "tokens": 100,
+        "subagents": 1,
+        "rounds": 1
+      },
+      "round_started": {
+        "kind": "round_started",
+        "round": 1,
+        "goal": "poll"
+      },
+      "round_paced": {
+        "kind": "round_paced",
+        "round": 1,
+        "action": "sleep",
+        "delay_ms": 1000,
+        "wake_at_ms": 2000,
+        "reason": "idle",
+        "coerced_from": "continue"
+      }
+    }
+  },
   "expected": {
     "canonical": {
-      "kinds": [
-        "agent_process_changed",
-        "budget_exceeded",
-        "budget_usage_reported",
-        "capability_changed",
-        "checkpoint_taken",
-        "compressed",
-        "context_prepared",
-        "context_renewed",
-        "entropy_alert",
-        "entropy_sample",
-        "group_budget_charged",
-        "group_member_joined",
-        "kernel_observation",
-        "llm_completed",
-        "memory_candidate_pending",
-        "memory_candidate_rejected",
-        "memory_queried",
-        "memory_query_failed",
-        "memory_retrieval_result",
-        "memory_validation_failed",
-        "memory_write_failed",
-        "memory_written",
-        "milestone_advanced",
-        "milestone_blocked",
-        "operation_cancelled",
-        "page_in",
-        "page_out",
-        "permission_requested",
-        "permission_resolved",
-        "prompt_measured",
-        "provider_attempt",
-        "resumed",
-        "rollbacked",
-        "round_paced",
-        "round_started",
-        "run_started",
-        "run_terminal",
-        "semantic_archive_completed",
-        "semantic_archive_failed",
-        "semantic_archive_pending",
-        "signal_delivery_disposed",
-        "summary_upgraded",
-        "suspended",
-        "tool_argument_repaired",
-        "tool_completed",
-        "tool_denied",
-        "tool_gated",
-        "tool_requested",
-        "workflow_batch_spawned",
-        "workflow_completed",
-        "workflow_node_completed",
-        "workflow_nodes_submitted"
-      ],
-      "count": 52
+      "kinds": {
+        "agent_process_changed": {
+          "required": [
+            "agent_id",
+            "context_inheritance",
+            "isolation",
+            "permitted_capability_ids",
+            "role",
+            "turn"
+          ],
+          "optional": [
+            "parent_session_id",
+            "parent_task_id",
+            "result_termination",
+            "state"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "budget_exceeded": {
+          "required": [
+            "budget",
+            "operation_id",
+            "turn"
+          ],
+          "optional": [
+            "reservation_id"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "budget_usage_reported": {
+          "required": [
+            "operation_id",
+            "reservation_id",
+            "rounds",
+            "subagents",
+            "tokens",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "capability_changed": {
+          "required": [
+            "added",
+            "removed",
+            "turn"
+          ],
+          "optional": [
+            "capability_id",
+            "change_kind",
+            "mount_reason",
+            "mounted_by",
+            "version"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "checkpoint_taken": {
+          "required": [
+            "history_len",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "compressed": {
+          "required": [
+            "archived_seq_range",
+            "turn"
+          ],
+          "optional": [
+            "action",
+            "preserved_refs",
+            "summary",
+            "summary_tokens"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "context_prepared": {
+          "required": [
+            "effect_id",
+            "preparation",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "context_renewed": {
+          "required": [
+            "handoff_ref",
+            "sprint",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "entropy_alert": {
+          "required": [
+            "score",
+            "threshold",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "entropy_sample": {
+          "required": [
+            "failure_rate",
+            "repeat_pressure",
+            "rho",
+            "rollbacks_in_window",
+            "score",
+            "turn",
+            "window_turns"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "group_budget_charged": {
+          "required": [
+            "subagents",
+            "tokens"
+          ],
+          "optional": [
+            "rounds"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "wasm"
+          ]
+        },
+        "group_member_joined": {
+          "required": [
+            "session_id"
+          ],
+          "optional": [
+            "member_kind",
+            "role"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "wasm"
+          ]
+        },
+        "kernel_observation": {
+          "required": [
+            "observation_kind",
+            "raw",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "llm_completed": {
+          "required": [
+            "content",
+            "tool_calls",
+            "turn"
+          ],
+          "optional": [
+            "effect_id",
+            "invocation_id",
+            "token_count",
+            "wire_evidence"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "memory_candidate_pending": {
+          "required": [
+            "candidate_id",
+            "name",
+            "source",
+            "turn"
+          ],
+          "optional": [
+            "receipt_id"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "memory_candidate_rejected": {
+          "required": [
+            "candidate_id",
+            "name",
+            "reason_code",
+            "receipt_id",
+            "source",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "memory_queried": {
+          "required": [
+            "query",
+            "requested_k",
+            "requires_async_response",
+            "scope",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "memory_query_failed": {
+          "required": [
+            "error",
+            "query",
+            "scope",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "memory_retrieval_result": {
+          "required": [
+            "hits"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "memory_validation_failed": {
+          "required": [
+            "error",
+            "record_id",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "memory_write_failed": {
+          "required": [
+            "error",
+            "record_id",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "memory_written": {
+          "required": [
+            "memory_kind",
+            "name",
+            "record_id",
+            "scope",
+            "size_bytes",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "milestone_advanced": {
+          "required": [
+            "capabilities_unlocked",
+            "phase_id",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "milestone_blocked": {
+          "required": [
+            "phase_id",
+            "reason",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "operation_cancelled": {
+          "required": [
+            "operation_id",
+            "pending_call_ids",
+            "reason",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "page_in": {
+          "required": [
+            "entry_count",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "page_out": {
+          "required": [
+            "turn"
+          ],
+          "optional": [
+            "action",
+            "archive_ref",
+            "message_count",
+            "summary",
+            "tier_hint"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "permission_requested": {
+          "required": [
+            "arguments",
+            "tool",
+            "turn"
+          ],
+          "optional": [
+            "reason"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "permission_resolved": {
+          "required": [
+            "approved",
+            "responder",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "prompt_measured": {
+          "required": [
+            "measurement",
+            "turn"
+          ],
+          "optional": [
+            "effect_id"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "wasm"
+          ]
+        },
+        "provider_attempt": {
+          "required": [
+            "attempt_seq",
+            "effect_id",
+            "finished_at_ms",
+            "request_fingerprint",
+            "route",
+            "started_at_ms",
+            "status",
+            "transport_rungs"
+          ],
+          "optional": [
+            "accounting_policy_id",
+            "last_error_class",
+            "usage",
+            "wire_evidence"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "wasm"
+          ]
+        },
+        "resumed": {
+          "required": [
+            "turn"
+          ],
+          "optional": [
+            "approved",
+            "denied"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "rollbacked": {
+          "required": [
+            "checkpoint_history_len",
+            "turn"
+          ],
+          "optional": [
+            "reason"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "round_paced": {
+          "required": [
+            "action",
+            "reason",
+            "round"
+          ],
+          "optional": [
+            "coerced_from",
+            "delay_ms",
+            "wake_at_ms"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "wasm"
+          ]
+        },
+        "round_started": {
+          "required": [
+            "goal",
+            "round"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "wasm"
+          ]
+        },
+        "run_started": {
+          "required": [
+            "criteria",
+            "goal",
+            "run_id"
+          ],
+          "optional": [
+            "agent_id",
+            "attachments",
+            "metadata",
+            "route",
+            "system_prompt"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "run_terminal": {
+          "required": [
+            "reason",
+            "total_tokens",
+            "turns_used"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "semantic_archive_completed": {
+          "required": [
+            "effect_id",
+            "record_id"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "semantic_archive_failed": {
+          "required": [
+            "effect_id",
+            "error"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "semantic_archive_pending": {
+          "required": [
+            "effect_id"
+          ],
+          "optional": [
+            "action"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "signal_delivery_disposed": {
+          "required": [
+            "attempt",
+            "delivery_id",
+            "disposition",
+            "operation_id",
+            "queue_depth",
+            "signal_id",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "summary_upgraded": {
+          "required": [
+            "compressed_seq",
+            "summary"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "wasm"
+          ]
+        },
+        "suspended": {
+          "required": [
+            "reason",
+            "turn"
+          ],
+          "optional": [
+            "pending_calls"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "tool_argument_repaired": {
+          "required": [
+            "original_arguments",
+            "repaired_arguments",
+            "tool",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "tool_completed": {
+          "required": [
+            "results",
+            "turn"
+          ],
+          "optional": [
+            "effect_id"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "tool_denied": {
+          "required": [
+            "call_id",
+            "reason",
+            "tool_name",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "tool_gated": {
+          "required": [
+            "call_id",
+            "reason",
+            "tool",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "tool_requested": {
+          "required": [
+            "calls",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "workflow_batch_spawned": {
+          "required": [
+            "node_count",
+            "node_ids",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "workflow_completed": {
+          "required": [
+            "node_outcomes",
+            "total_nodes",
+            "turn"
+          ],
+          "optional": [],
+          "sdks": [
+            "node",
+            "python",
+            "rust",
+            "wasm"
+          ]
+        },
+        "workflow_node_completed": {
+          "required": [
+            "agent_id",
+            "status",
+            "termination",
+            "turn"
+          ],
+          "optional": [
+            "classify_branch",
+            "loop_continue",
+            "output",
+            "tournament_winner"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "wasm"
+          ]
+        },
+        "workflow_nodes_submitted": {
+          "required": [
+            "nodes",
+            "turn"
+          ],
+          "optional": [
+            "base_index",
+            "submitter_agent_id"
+          ],
+          "sdks": [
+            "node",
+            "python",
+            "wasm"
+          ]
+        }
+      }
     }
   }
 }

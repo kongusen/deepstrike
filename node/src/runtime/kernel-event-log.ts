@@ -43,6 +43,19 @@ export interface KernelObservationSessionEventRequest {
   }
 }
 
+/** The kernel's pressure actions that name a session-level compression action; any other
+ *  action (e.g. `none`) is omitted from the event. Shared rule across all four SDKs. */
+export function canonicalCompressionAction(action?: string): CompressionAction {
+  return action === "snip_compact" || action === "micro_compact" || action === "context_collapse" || action === "auto_compact"
+    ? action
+    : undefined
+}
+
+/**
+ * Project one kernel observation onto its session event (null = not persisted). Pinned across
+ * SDKs by the `kernel_observation_projection` conformance fixture: an absent optional field is
+ * omitted, never written as `null`.
+ */
 export function kernelObservationToSessionEvent(
   obs: KernelObservation,
   turn: number,
@@ -53,8 +66,23 @@ export function kernelObservationToSessionEvent(
     compressionAction?: (action?: string) => CompressionAction
   } = {},
 ): SessionEvent | null {
+  const event = projectKernelObservation(obs, turn, opts)
+  if (!event) return null
+  return Object.fromEntries(Object.entries(event).filter(([, value]) => value !== undefined && value !== null)) as SessionEvent
+}
+
+function projectKernelObservation(
+  obs: KernelObservation,
+  turn: number,
+  opts: {
+    nextArchiveStart?: number
+    latestSeq?: number
+    preservedRefs?: string[]
+    compressionAction?: (action?: string) => CompressionAction
+  } = {},
+): SessionEvent | null {
   const t = obs.turn ?? turn
-  const compressionAction = opts.compressionAction ?? (() => undefined)
+  const compressionAction = opts.compressionAction ?? canonicalCompressionAction
 
   switch (obs.kind) {
     case "compressed": {
