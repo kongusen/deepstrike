@@ -8,6 +8,7 @@ pub mod credential_vault;
 pub mod eval;
 pub mod execution_plane;
 mod host_projection;
+pub mod kernel_event_log;
 pub mod kernel_journal;
 pub mod mcp_proxy_plane;
 pub mod os_profile;

@@ -8,16 +8,11 @@ pub fn seed_provider_replay_from_events(
     events: &[SessionEntry],
 ) {
     for entry in events {
-        if let SessionEvent::LlmCompleted {
-            message,
-            provider_replay,
-            ..
-        } = &entry.event
+        if let (SessionEvent::LlmCompleted { message, .. }, Some(replay)) =
+            (&entry.event, entry.event.provider_replay())
         {
-            if let Some(replay) = provider_replay {
-                let content = message.content.as_text().unwrap_or("").to_string();
-                provider.seed_provider_replay(&content, &message.tool_calls, replay);
-            }
+            let content = message.content.as_text().unwrap_or("").to_string();
+            provider.seed_provider_replay(&content, &message.tool_calls, replay);
         }
     }
 }
@@ -102,27 +97,27 @@ mod tests {
         let entries = vec![
             SessionEntry {
                 seq: 0,
-                event: SessionEvent::LlmCompleted {
-                    turn: 0,
-                    message: CoreMessage {
+                event: SessionEvent::llm_completed(
+                    0,
+                    CoreMessage {
                         role: Role::Assistant,
                         content: Content::Text("without replay".into()),
                         tool_calls: vec![],
                     },
-                    provider_replay: None,
-                },
+                    None,
+                ),
             },
             SessionEntry {
                 seq: 1,
-                event: SessionEvent::LlmCompleted {
-                    turn: 1,
-                    message: CoreMessage {
+                event: SessionEvent::llm_completed(
+                    1,
+                    CoreMessage {
                         role: Role::Assistant,
                         content: Content::Text("with replay".into()),
                         tool_calls: vec![],
                     },
-                    provider_replay: Some(replay.clone()),
-                },
+                    Some(replay.clone()),
+                ),
             },
         ];
 

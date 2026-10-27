@@ -239,6 +239,8 @@ fn reconstruct_messages_with_fallback_success_and_degrade() {
             agent_id: None,
             system_prompt: None,
             attachments: vec![],
+            route: None,
+            metadata: None,
         },
         SessionEvent::Compressed {
             turn: 1,

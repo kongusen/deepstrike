@@ -76,6 +76,8 @@ mod tests {
                 agent_id: None,
                 system_prompt: None,
                 attachments: vec![],
+                route: None,
+                metadata: None,
             },
         }];
         assert!(is_mid_run(&entries));
@@ -93,6 +95,8 @@ mod tests {
                     agent_id: None,
                     system_prompt: None,
                     attachments: vec![],
+                    route: None,
+                    metadata: None,
                 },
             },
             SessionEntry {
@@ -112,6 +116,8 @@ mod tests {
                     agent_id: None,
                     system_prompt: None,
                     attachments: vec![],
+                    route: None,
+                    metadata: None,
                 },
             },
         ];
@@ -140,19 +146,21 @@ mod tests {
                     agent_id: None,
                     system_prompt: None,
                     attachments: vec![],
+                    route: None,
+                    metadata: None,
                 },
             },
             SessionEntry {
                 seq: 1,
-                event: SessionEvent::LlmCompleted {
-                    turn: 0,
-                    message: CoreMessage {
+                event: SessionEvent::llm_completed(
+                    0,
+                    CoreMessage {
                         role: Role::Assistant,
                         content: Content::Text("pong".into()),
                         tool_calls: vec![],
                     },
-                    provider_replay: None,
-                },
+                    None,
+                ),
             },
         ];
         let msgs = replay_messages(&entries);
@@ -176,6 +184,7 @@ mod tests {
                     is_fatal: false,
                     error_kind: None,
                 }],
+                effect_id: None,
             },
         }];
         let msgs = replay_messages(&entries);

@@ -410,14 +410,17 @@ impl AgentSession {
             .history()
             .await?
             .into_iter()
-            .filter(|entry| {
-                matches!(
-                    entry.event,
-                    deepstrike_core::runtime::session::SessionEvent::WorkflowBatchSpawned { .. }
-                        | deepstrike_core::runtime::session::SessionEvent::WorkflowSpawnFailed { .. }
-                        | deepstrike_core::runtime::session::SessionEvent::WorkflowCompleted { .. }
-                        | deepstrike_core::runtime::session::SessionEvent::WorkflowNodesSubmitted { .. }
-                )
+            .filter(|entry| match &entry.event {
+                deepstrike_core::runtime::session::SessionEvent::WorkflowBatchSpawned {
+                    ..
+                }
+                | deepstrike_core::runtime::session::SessionEvent::WorkflowCompleted { .. } => true,
+                // Workflow facts with no session kind of their own are kept as envelopes.
+                deepstrike_core::runtime::session::SessionEvent::KernelObservation {
+                    observation_kind,
+                    ..
+                } => observation_kind.starts_with("workflow_"),
+                _ => false,
             })
             .collect();
         let mut node_outcomes = Vec::new();

@@ -7,6 +7,7 @@
     "test:conformance": "node scripts/run-sdk-conformance.mjs",
     "test:conformance:runner": "node --test scripts/run-sdk-conformance.test.mjs",
     "contracts:check": "node scripts/check-boundary-contracts.mjs",
+    "contracts:session-events": "node scripts/gen-session-event-registry.mjs --check",
     "contracts:verify": "node scripts/check-boundary-contracts.mjs --verify",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
