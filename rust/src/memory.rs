@@ -4,6 +4,7 @@ use deepstrike_core::mm::memory::{
     MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecallLifecycle,
     MemoryRecord, MemoryScope, MemoryTrustLevel,
 };
+use serde::{Deserialize, Serialize};
 
 /// Durable-memory host storage. Runner writes through `put` only after the kernel's
 /// `WriteMemory` gate accepts the record.
@@ -218,6 +219,265 @@ pub(crate) fn parse_extracted_memories(
         .collect()
 }
 
+/// Host-facing memory runtime policy (contract M1). Each capability is an independent switch: a
+/// host can keep retrieval while turning off the auxiliary-model writes that run implicitly after
+/// a session. `Disabled` is checked before any auxiliary provider call, so a disabled path costs
+/// nothing. `CandidateSink` keeps a write path on but hands each write to the host's
+/// [`MemoryCandidateSink`] (M2) instead of the memory store; a run refuses to start without one.
+/// No policy (`RuntimeOptions::memory_runtime_policy = None`) keeps every path on and writing to
+/// the store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemoryRuntimePolicy {
+    pub retrieval: MemoryRetrievalPolicy,
+    pub session_extraction: MemoryWritePolicy,
+    pub model_writes: MemoryWritePolicy,
+    pub semantic_archive: MemoryWritePolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryRetrievalPolicy {
+    Disabled,
+    Host,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryWritePolicy {
+    Disabled,
+    CandidateSink,
+}
+
+impl MemoryRuntimePolicy {
+    /// The write paths set to `CandidateSink`, by their policy field names.
+    pub fn candidate_sink_paths(&self) -> Vec<&'static str> {
+        [
+            ("session_extraction", self.session_extraction),
+            ("model_writes", self.model_writes),
+            ("semantic_archive", self.semantic_archive),
+        ]
+        .into_iter()
+        .filter(|(_, policy)| *policy == MemoryWritePolicy::CandidateSink)
+        .map(|(name, _)| name)
+        .collect()
+    }
+}
+
+/// Which write path produced a candidate. `ChildRequest` is the kernel's PersistMemory effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryCandidateSource {
+    SessionExtraction,
+    SemanticArchive,
+    ChildRequest,
+}
+
+impl MemoryCandidateSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SessionExtraction => "session_extraction",
+            Self::SemanticArchive => "semantic_archive",
+            Self::ChildRequest => "child_request",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MemoryCandidate {
+    /// Deterministic for the write that produced it (see [`memory_candidate_id`]): a retry of the
+    /// same write carries the same id, so the sink can answer it from what it already holds.
+    pub candidate_id: String,
+    pub source: MemoryCandidateSource,
+    pub record: MemoryRecord,
+}
+
+/// The sink's answer. Its JSON form (`status` tag plus fields) is the body of the kernel's
+/// `memory_candidate_result` event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MemoryCandidateReceipt {
+    Pending {
+        candidate_id: String,
+        receipt_id: String,
+    },
+    Accepted {
+        candidate_id: String,
+        receipt_id: String,
+        record_ref: String,
+        digest: String,
+    },
+    Rejected {
+        candidate_id: String,
+        receipt_id: String,
+        reason_code: String,
+    },
+}
+
+impl MemoryCandidateReceipt {
+    pub fn candidate_id(&self) -> &str {
+        match self {
+            Self::Pending { candidate_id, .. }
+            | Self::Accepted { candidate_id, .. }
+            | Self::Rejected { candidate_id, .. } => candidate_id,
+        }
+    }
+
+    pub fn receipt_id(&self) -> &str {
+        match self {
+            Self::Pending { receipt_id, .. }
+            | Self::Accepted { receipt_id, .. }
+            | Self::Rejected { receipt_id, .. } => receipt_id,
+        }
+    }
+}
+
+/// The host's candidate store. Contract (spec §2.3):
+///
+/// - The sink mints `receipt_id`; it is the stable name of its answer.
+/// - Identity is scoped by `agent_id`; source and review metadata are part of conflict detection.
+/// - The same `candidate_id` with the same payload returns the original receipt and stores
+///   nothing new, so a write whose acknowledgement was lost can be redelivered safely.
+/// - The same `candidate_id` with a different payload is rejected with
+///   `reason_code = "candidate_conflict"` and does not overwrite what is held.
+/// - An error means no answer was obtained; the caller may redeliver the same candidate.
+#[async_trait]
+pub trait MemoryCandidateSink: Send + Sync {
+    async fn submit(
+        &self,
+        agent_id: &str,
+        candidate: MemoryCandidate,
+    ) -> crate::Result<MemoryCandidateReceipt>;
+}
+
+/// A candidate id from the write's canonical identity — never random, so a retry repeats it.
+/// The parts are hashed as a compact JSON array, byte-identical to the Node/Python/WASM rule.
+pub fn memory_candidate_id(parts: &[&str]) -> String {
+    format!(
+        "candidate:{}",
+        sha256_hex(&serde_json::to_string(parts).expect("string parts serialize"))
+    )
+}
+
+/// The part of a record a candidate is judged by. Store ids, timestamps and recall counters are
+/// excluded: a retry of the same write may mint them afresh without changing what is proposed.
+pub fn memory_candidate_payload_digest(record: &MemoryRecord) -> String {
+    // JSON.stringify writes an integral number without a fraction; match it so the digest is the
+    // same one the other SDKs compute.
+    let confidence = if record.confidence.fract() == 0.0 && record.confidence.abs() < 1e15 {
+        serde_json::json!(record.confidence as i64)
+    } else {
+        serde_json::json!(record.confidence)
+    };
+    let payload = serde_json::json!([
+        record.scope.tenant_id,
+        record.scope.namespace,
+        record.kind,
+        record.name,
+        record.description,
+        record.content,
+        record.provenance.author,
+        record.provenance.trust,
+        record.provenance.session_id,
+        record.provenance.evidence_refs,
+        confidence,
+        record.links,
+        record.pinned,
+        record.ttl_days,
+    ]);
+    format!("sha256:{}", sha256_hex(&payload.to_string()))
+}
+
+fn sha256_hex(text: &str) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+struct HeldCandidate {
+    agent_id: String,
+    candidate: MemoryCandidate,
+    payload_digest: String,
+    receipt: MemoryCandidateReceipt,
+}
+
+/// In-process sink: every candidate is held as `pending`. For tests and local development; it
+/// does not persist across processes and does not authenticate where a candidate came from.
+#[derive(Default)]
+pub struct InMemoryMemoryCandidateSink {
+    state: std::sync::Mutex<InMemoryCandidateState>,
+}
+
+#[derive(Default)]
+struct InMemoryCandidateState {
+    held: Vec<HeldCandidate>,
+    next_receipt: u64,
+}
+
+impl InMemoryCandidateState {
+    fn mint_receipt_id(&mut self) -> String {
+        self.next_receipt += 1;
+        format!("receipt:{}", self.next_receipt)
+    }
+}
+
+impl InMemoryMemoryCandidateSink {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Candidates held for `agent_id` (all agents when `None`), in submission order.
+    pub fn candidates(&self, agent_id: Option<&str>) -> Vec<MemoryCandidate> {
+        self.state
+            .lock()
+            .unwrap()
+            .held
+            .iter()
+            .filter(|held| agent_id.is_none_or(|agent_id| held.agent_id == agent_id))
+            .map(|held| held.candidate.clone())
+            .collect()
+    }
+}
+
+#[async_trait]
+impl MemoryCandidateSink for InMemoryMemoryCandidateSink {
+    async fn submit(
+        &self,
+        agent_id: &str,
+        candidate: MemoryCandidate,
+    ) -> crate::Result<MemoryCandidateReceipt> {
+        let payload_digest = memory_candidate_payload_digest(&candidate.record);
+        let mut state = self.state.lock().unwrap();
+        if let Some(existing) = state.held.iter().find(|held| {
+            held.agent_id == agent_id && held.candidate.candidate_id == candidate.candidate_id
+        }) {
+            if existing.payload_digest == payload_digest
+                && existing.candidate.source == candidate.source
+            {
+                return Ok(existing.receipt.clone());
+            }
+            return Ok(MemoryCandidateReceipt::Rejected {
+                candidate_id: candidate.candidate_id,
+                receipt_id: state.mint_receipt_id(),
+                reason_code: "candidate_conflict".into(),
+            });
+        }
+        let receipt = MemoryCandidateReceipt::Pending {
+            candidate_id: candidate.candidate_id.clone(),
+            receipt_id: state.mint_receipt_id(),
+        };
+        state.held.push(HeldCandidate {
+            agent_id: agent_id.to_string(),
+            candidate,
+            payload_digest,
+            receipt: receipt.clone(),
+        });
+        Ok(receipt)
+    }
+}
+
 /// In-process scratch pad for within-run state.
 #[derive(Default)]
 pub struct WorkingMemory {
@@ -422,6 +682,168 @@ fn memory_terms(text: &str) -> std::collections::HashSet<String> {
 fn is_han(character: char) -> bool {
     matches!(character as u32,
         0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x3134F)
+}
+
+#[cfg(test)]
+mod candidate_tests {
+    use super::{
+        InMemoryMemoryCandidateSink, MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink,
+        MemoryCandidateSource, MemoryRuntimePolicy, memory_candidate_id,
+        memory_candidate_payload_digest,
+    };
+    use deepstrike_core::mm::memory::{
+        MemoryAuthor, MemoryKind, MemoryProvenance, MemoryRecord, MemoryScope, MemoryTrustLevel,
+    };
+
+    fn record(content: &str) -> MemoryRecord {
+        MemoryRecord {
+            record_id: "memory:1".into(),
+            scope: MemoryScope::new("tenant", "ns"),
+            name: "proposal".into(),
+            kind: MemoryKind::Project,
+            content: content.into(),
+            description: "a proposal".into(),
+            provenance: MemoryProvenance {
+                session_id: None,
+                author: MemoryAuthor::Model,
+                trust: MemoryTrustLevel::Untrusted,
+                evidence_refs: Vec::new(),
+            },
+            created_at: 1,
+            updated_at: 1,
+            last_recalled_at: None,
+            recall_count: 0,
+            confidence: 1.0,
+            links: Vec::new(),
+            pinned: false,
+            ttl_days: None,
+        }
+    }
+
+    fn candidate(id: &str, content: &str) -> MemoryCandidate {
+        MemoryCandidate {
+            candidate_id: id.into(),
+            source: MemoryCandidateSource::ChildRequest,
+            record: record(content),
+        }
+    }
+
+    /// The fixed vector the Node, Python and WASM identity tests pin.
+    #[test]
+    fn candidate_ids_match_the_other_sdks() {
+        assert_eq!(
+            memory_candidate_id(&["child_request", "op-1", "effect-3", "0"]),
+            "candidate:ead40e56240c408c06eeb95c7fe297bbb3b3c187c8cf181e0227aa269bcd7043"
+        );
+        assert_ne!(
+            memory_candidate_id(&["a", "bc"]),
+            memory_candidate_id(&["ab", "c"])
+        );
+    }
+
+    #[test]
+    fn the_payload_digest_ignores_store_ids_timestamps_and_recall_counts() {
+        let base = record("fact");
+        let digest = memory_candidate_payload_digest(&base);
+        assert!(digest.starts_with("sha256:") && digest.len() == 7 + 64);
+        let restamped = MemoryRecord {
+            record_id: "memory:2".into(),
+            created_at: 9,
+            updated_at: 9,
+            recall_count: 4,
+            last_recalled_at: Some(9),
+            ..base.clone()
+        };
+        assert_eq!(memory_candidate_payload_digest(&restamped), digest);
+        let edited = MemoryRecord {
+            confidence: 0.5,
+            ..base
+        };
+        assert_ne!(memory_candidate_payload_digest(&edited), digest);
+    }
+
+    #[tokio::test]
+    async fn the_in_memory_sink_replays_and_rejects_conflicts() {
+        let sink = InMemoryMemoryCandidateSink::new();
+        let first = sink.submit("a", candidate("c-1", "fact")).await.unwrap();
+        assert!(matches!(first, MemoryCandidateReceipt::Pending { .. }));
+        assert_eq!(
+            sink.submit("a", candidate("c-1", "fact")).await.unwrap(),
+            first
+        );
+        let conflict = sink.submit("a", candidate("c-1", "other")).await.unwrap();
+        match &conflict {
+            MemoryCandidateReceipt::Rejected {
+                reason_code,
+                receipt_id,
+                ..
+            } => {
+                assert_eq!(reason_code, "candidate_conflict");
+                assert_ne!(receipt_id, first.receipt_id());
+            }
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        let resourced = MemoryCandidate {
+            source: MemoryCandidateSource::SessionExtraction,
+            ..candidate("c-1", "fact")
+        };
+        assert!(matches!(
+            sink.submit("a", resourced).await.unwrap(),
+            MemoryCandidateReceipt::Rejected { .. }
+        ));
+        // Identity is scoped by agent.
+        let other_agent = sink.submit("b", candidate("c-1", "fact")).await.unwrap();
+        assert_ne!(other_agent.receipt_id(), first.receipt_id());
+        assert_eq!(sink.candidates(Some("a")).len(), 1);
+        assert_eq!(sink.candidates(Some("a"))[0].record.content, "fact");
+        assert_eq!(sink.candidates(None).len(), 2);
+    }
+
+    #[test]
+    fn receipts_and_policies_use_the_shared_wire_shape() {
+        let receipt = MemoryCandidateReceipt::Rejected {
+            candidate_id: "c".into(),
+            receipt_id: "r".into(),
+            reason_code: "candidate_conflict".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&receipt).unwrap(),
+            serde_json::json!({
+                "status": "rejected",
+                "candidate_id": "c",
+                "receipt_id": "r",
+                "reason_code": "candidate_conflict",
+            })
+        );
+        let policy: MemoryRuntimePolicy = serde_json::from_value(serde_json::json!({
+            "retrieval": "host",
+            "session_extraction": "candidate_sink",
+            "model_writes": "disabled",
+            "semantic_archive": "candidate_sink",
+        }))
+        .unwrap();
+        assert_eq!(
+            policy.candidate_sink_paths(),
+            ["session_extraction", "semantic_archive"]
+        );
+        assert!(
+            serde_json::from_value::<MemoryRuntimePolicy>(serde_json::json!({
+                "retrieval": "host",
+                "session_extraction": "store",
+                "model_writes": "disabled",
+                "semantic_archive": "disabled",
+            }))
+            .is_err(),
+            "a write path is disabled or candidate_sink"
+        );
+        assert!(
+            serde_json::from_value::<MemoryRuntimePolicy>(serde_json::json!({
+                "retrieval": "host",
+            }))
+            .is_err(),
+            "every switch is required"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -60,7 +60,10 @@ pub use harness_loop::{
 };
 pub use knowledge::KnowledgeSource;
 pub use memory::{
-    DurableMemory, InMemoryMemoryStore, MemorySearchOptions, MemoryStore, WorkingMemory,
+    DurableMemory, InMemoryMemoryCandidateSink, InMemoryMemoryStore, MemoryCandidate,
+    MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource, MemoryRetrievalPolicy,
+    MemoryRuntimePolicy, MemorySearchOptions, MemoryStore, MemoryWritePolicy, WorkingMemory,
+    memory_candidate_id, memory_candidate_payload_digest,
 };
 pub use providers::RuntimePolicy;
 pub use providers::anthropic::AnthropicProvider;

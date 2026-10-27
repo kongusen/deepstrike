@@ -72,6 +72,8 @@ where
         milestone_contract: None,
         run_spec: None,
         on_milestone_evaluate: None,
+        memory_runtime_policy: None,
+        memory_candidate_sink: None,
         allowed_tool_ids: None,
         baseline_tool_ids: None,
         on_turn_metrics: None,

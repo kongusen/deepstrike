@@ -1335,11 +1335,15 @@ impl CanonicalRunnerRuntime {
                 self.feature_policy()
                     .insert("memory_enabled".into(), json!(enabled));
                 if enabled {
+                    // The binding is the kernel-enforced gate: memory syscalls whose capability
+                    // bit is off are refused in the kernel. Absent bits default to granted.
+                    let granted =
+                        |bit: &str| event.get(bit).and_then(Value::as_bool) != Some(false);
                     self.config.insert(
                         "memory_access".into(),
                         json!({
                             "binding_id": self.memory_binding_id,
-                            "capabilities": { "read": true, "write": true },
+                            "capabilities": { "read": granted("read"), "write": granted("write") },
                         }),
                     );
                 }
@@ -2578,11 +2582,19 @@ fn memory_candidate_resolution(
     let fail = |message: String, retryable: bool| MemoryCandidateFailure { message, retryable };
     if let Some(error) = event.get("error").filter(|v| !v.is_null()) {
         return Err(fail(
-            error.as_str().map(str::to_owned).unwrap_or_else(|| error.to_string()),
+            error
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| error.to_string()),
             true,
         ));
     }
-    let text = |key: &str| event.get(key).and_then(|v| v.as_str()).filter(|v| !v.is_empty());
+    let text = |key: &str| {
+        event
+            .get(key)
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+    };
     match text("status") {
         Some("pending") => match (text("candidate_id"), text("receipt_id")) {
             (Some(candidate_id), Some(receipt_id)) => Ok(json!({
@@ -3628,6 +3640,8 @@ mod tests {
                 stable_core_tool_ids: vec![],
                 pre_query_memory: None,
                 on_milestone_evaluate: None,
+                memory_runtime_policy: None,
+                memory_candidate_sink: None,
             },
             journal,
         )
@@ -3644,6 +3658,8 @@ mod tests {
                 agent_id: None,
                 system_prompt: None,
                 attachments: vec![],
+                route: None,
+                metadata: None,
             },
         )
         .await

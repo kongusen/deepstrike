@@ -1,6 +1,6 @@
 # 记忆候选回执 ABI（草案）
 
-状态：Rust core、Rust SDK 分发与 node、wasm、python 三个桥接已实现；node、python、wasm 的 M1 策略与 M2 候选 sink 已接入（第 8、9 节），Rust SDK sink 未接。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
+状态：Rust core、Rust SDK 分发与 node、wasm、python 三个桥接已实现；node、python、wasm、Rust SDK 的 M1 策略与 M2 候选 sink 均已接入（第 8、9、11 节）。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
 范围：新增一个 canonical 内核结果，使模型发起的记忆写入可以表达“待确认”，而不被记为已持久化。
 非目标：本文不定义六维分类、用户确认流程或来源业务校验，这些归宿主。
 
@@ -121,7 +121,7 @@ Rust core 在 `wire/effect.rs` 定义互斥结果，在 `wire/driver/effects.rs`
 对待决问题的处理：
 
 1. `pending` 按终态实现。第 6 节问题 1 的研究给出了四条依据，仍待内核负责人签字确认。
-2. 会话事件词表新增一等事件 `memory_candidate_pending` 与 `memory_candidate_rejected`，node、wasm、python 与共享夹具 `session-event-vocabulary.json` 同步更新（52 个 kind）。内核观察 `memory_candidate_pending` 在三个 SDK 中都映射为同名会话事件（`source = child_request`，无 `receipt_id`），与宿主路径写出的事件同形。Rust SDK 的会话日志没有类型化词表，不参与这项一致性检查。
+2. 会话事件词表新增一等事件 `memory_candidate_pending` 与 `memory_candidate_rejected`，node、wasm、python 与共享夹具 `session-event-vocabulary.json` 同步更新（52 个 kind）。内核观察 `memory_candidate_pending` 在三个 SDK 中都映射为同名会话事件（`source = child_request`，无 `receipt_id`），与宿主路径写出的事件同形。Rust 的 core `SessionEvent` 已新增同名两个变体（见第 11 节），但 Rust 的会话词表比 52 kind 小，尚未接入共享词表一致性检查。
 3. 计数字段未单独为 pending 计数。
 
 ## 8. 候选 sink（node，python/wasm 移植见第 9 节）
@@ -143,7 +143,6 @@ Rust core 在 `wire/effect.rs` 定义互斥结果，在 `wire/driver/effects.rs`
 
 尚未做的：
 
-- Rust SDK 的 sink 接入；python、wasm 已完成本节接口与策略的移植。
 - PersistMemory 的产生方：需要推翻或修订 F15 裁定，属于产品决策。
 - S05 与真实 sink 的接入。
 
@@ -174,3 +173,15 @@ Node/Python/WASM 的运行时身份使用第 8 节 v2 数组规则。新运行�
 真实 WASM 测试 `wasm/tests/memory-candidate-binding.node.mjs` 已接入 `test:canonical-binding`。从当前源码重建 binding 后，测试实际发布 PersistMemory、经 runner/sink/bridge 结算 pending/accepted/rejected、禁用写权限、回执丢失重投、DEC-1 相同结果重放、不同结果拒绝、journal 恢复以及同会话两次抽取。此前本地 pkg-node 二进制仍为旧 receipt-only 协议，真实提交曾报 unknown field candidate；重建后通过，说明仅加载 binding 但拦截 commit 的测试不足以证明 ABI 兼容。
 
 本轮验证：Node build 与全量 Jest 207 套/1399 项通过（6 套/14 项跳过）；WASM build 与全量 Jest 49 套/291 项通过；重建 binding 的 5 个候选集成场景、canonical binding 检查与 74 项 golden 检查通过；Python 实际 Linux 扩展相关回归 139 项通过，未跑全量；Rust 完整 SDK test target 中共享回执测试通过，遍历 61 例，本轮未跑完整 Rust 测试集。进程重启与并发持久化幂等仍待生产 sink 实现后验证。
+
+## 11. Rust SDK 的 M1 + M2 移植（2026-10-27）
+
+`rust/src/memory.rs` 导出 `MemoryRuntimePolicy`（`retrieval`、`session_extraction`、`model_writes`、`semantic_archive`，serde 为 snake_case，四个开关必填、拒绝未知字段）、`MemoryCandidateSink` trait、`MemoryCandidate`/`MemoryCandidateReceipt`（以 `status` 为标签，JSON 即 `memory_candidate_result` 的主体）、`InMemoryMemoryCandidateSink`，以及 `memory_candidate_id`/`memory_candidate_payload_digest`。身份与载荷摘要沿用第 8、10 节规则；固定向量 `candidate:ead40e56…7043` 与其他 SDK 一致，整数值 confidence 按 JSON.stringify 写法序列化。
+
+`RuntimeOptions` 新增 `memory_runtime_policy` 与 `memory_candidate_sink: Option<Arc<dyn MemoryCandidateSink>>`。因 `RuntimeRunner::new` 不返回 `Result`，缺 sink 的校验放在 `run_streaming*` 入口，运行开始前报错，不调用任何模型。未设策略时保持旧行为。
+
+接入点：`set_memory_enabled` 携带 read/write 位，并修正 Rust 桥接此前忽略这两位、恒授 read/write 的问题；retrieval 关闭时跳过预取 hook、模型 QueryMemory 返回空结果、宿主 `query_memory` 返回空；会话抽取与语义归档在调用辅助模型前检查开关，候选路径经私有漏斗 `write_memory_routed` 交给 sink；PersistMemory 在 `model_writes = candidate_sink` 时以 `memory_candidate_result` 结算，sink 出错为可重试的 `error`。公开 `write_memory` 签名与直写行为不变。
+
+顺带修正：语义归档名由时间戳改为按 page-out effect 派生（与 Node `stableSemanticArchiveName` 同规则），`provenance.session_id` 改用本次运行的 session_id，审计写入本次运行的会话。core `SessionEvent` 新增 `MemoryCandidatePending`（`receipt_id` 可选）与 `MemoryCandidateRejected`，归入 Mm 类别；内核观察 `MemoryCandidatePending` 投影为 `source = child_request`、无 `receipt_id` 的同名会话事件。Rust 未发出 `semantic_archive_pending/completed/failed`，与改动前一致。
+
+验证（Linux 沙箱，rustc 1.99.1）：`deepstrike-sdk` lib 162 项全过，其中新增 15 项（memory.rs 4 项；`runtime/runner_memory_candidate_tests.rs` 11 项，覆盖缺 sink 拒绝启动、S03 会话抽取端到端、无策略直写、全关闭零模型调用/零 store 访问、S04 重投得原回执与冲突拒绝、sink 出错可重试、语义归档同 effect 单候选、归档关闭零调用、内核观察投影、拒绝审计）；`deepstrike-core` lib 1169 项全过；`deepstrike-tests` 187 项通过、23 项忽略；wasm/node/py 绑定 crate `cargo check` 通过。未跑 clippy/rustfmt（最小工具链未装）。

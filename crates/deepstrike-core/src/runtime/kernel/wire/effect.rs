@@ -2516,7 +2516,10 @@ mod tests {
         let EffectSuccess::MemoryPersisted(persisted) = success else {
             panic!("a memory outcome decodes to the memory arm");
         };
-        assert!(persisted.receipt.is_none(), "a pending candidate carries no record receipt");
+        assert!(
+            persisted.receipt.is_none(),
+            "a pending candidate carries no record receipt"
+        );
         let candidate = persisted.candidate.expect("the candidate arm is present");
         assert_eq!(candidate.candidate_id, "cand-1");
         assert_eq!(candidate.receipt_id, "rcpt-1");

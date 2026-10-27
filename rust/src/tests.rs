@@ -595,6 +595,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let mut stream = runner
@@ -707,6 +709,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let mut stream = runner.run_streaming("go", &[], None, None).await.unwrap();
@@ -836,6 +840,8 @@ mod tests {
             stable_core_tool_ids: vec!["bash".to_string()],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let mut stream = runner.run_streaming("go", &[], None, None).await.unwrap();
@@ -1029,6 +1035,8 @@ mod tests {
                 stable_core_tool_ids: vec![],
                 pre_query_memory: None,
                 on_milestone_evaluate: None,
+                memory_runtime_policy: None,
+                memory_candidate_sink: None,
             });
             let mut stream = runner
                 .run_streaming("finish the task", &[], None, Some("context-order"))
@@ -1155,6 +1163,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let session_id = "reactive-compact-rust";
@@ -1169,6 +1179,8 @@ mod tests {
                         agent_id: None,
                         system_prompt: None,
                         attachments: vec![],
+                        route: None,
+                        metadata: None,
                     },
                 )
                 .await
@@ -1176,17 +1188,17 @@ mod tests {
             session_log
                 .append(
                     session_id,
-                    deepstrike_core::runtime::session::SessionEvent::LlmCompleted {
-                        turn: 0,
-                        message: deepstrike_core::types::message::CoreMessage {
+                    deepstrike_core::runtime::session::SessionEvent::llm_completed(
+                        0,
+                        deepstrike_core::types::message::CoreMessage {
                             role: deepstrike_core::types::message::Role::Assistant,
                             content: deepstrike_core::types::message::Content::Text(
                                 "prior answer ".repeat(400),
                             ),
                             tool_calls: vec![],
                         },
-                        provider_replay: None,
-                    },
+                        None,
+                    ),
                 )
                 .await
                 .unwrap();
@@ -1431,6 +1443,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let session_id = "test-rollback";
@@ -1541,6 +1555,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let mut stream = runner
@@ -1632,6 +1648,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let mut stream = runner
@@ -1740,6 +1758,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: Some(verifier),
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let mut stream = runner
@@ -1930,6 +1950,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         // A committed page-out observation is telemetry only. Host persistence must have
@@ -2082,6 +2104,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         runner
@@ -2204,6 +2228,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let admitted = runner
@@ -2373,6 +2399,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let hits = runner
@@ -2486,6 +2514,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let mut invalid = memory_record("invalid", "invalid write");
@@ -2701,6 +2731,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let mut stream = runner
@@ -2807,6 +2839,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let session_id = "s_mid_stream_error_rust";
@@ -2929,6 +2963,8 @@ mod tests {
             stable_core_tool_ids: vec![],
             pre_query_memory: None,
             on_milestone_evaluate: None,
+            memory_runtime_policy: None,
+            memory_candidate_sink: None,
         });
 
         let session_id = "s_milestone_leak_rust";
@@ -3117,6 +3153,8 @@ mod tests {
                 stable_core_tool_ids: vec![],
                 pre_query_memory: None,
                 on_milestone_evaluate: None,
+                memory_runtime_policy: None,
+                memory_candidate_sink: None,
             }
         }
 

@@ -11,7 +11,7 @@ use deepstrike_core::mm::memory::{
 };
 use deepstrike_core::runtime::kernel::wire::{CancellationReason, MemoryPolicy};
 use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
-use deepstrike_core::runtime::session::SessionEvent;
+use deepstrike_core::runtime::session::{SessionEvent, WireEvidence};
 use deepstrike_core::scheduler::policy::SchedulerPolicyConfig;
 use deepstrike_core::types::message::{CoreMessage, ToolCall};
 use deepstrike_core::types::milestone::MilestoneCheckResult;
@@ -20,7 +20,11 @@ use futures::StreamExt;
 
 use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
-use crate::memory::MemoryStore;
+use crate::memory::{
+    MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
+    MemoryRetrievalPolicy, MemoryRuntimePolicy, MemoryStore, MemoryWritePolicy,
+    memory_candidate_id,
+};
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
 use crate::runtime::archive::ArchiveStore;
@@ -34,6 +38,9 @@ use crate::runtime::execution_plane::{
     PermissionResponse, RunContext, ToolSuspendHandler,
 };
 use crate::runtime::host_projection::{HostAction, HostEffect};
+use crate::runtime::kernel_event_log::{
+    ProjectionOptions, canonical_compression_action, kernel_observation_to_session_event,
+};
 use crate::runtime::os_profile::{
     GovernancePolicy, OsProfile, SignalPolicy, assert_native_profile,
 };
@@ -155,6 +162,12 @@ pub struct RuntimeOptions {
     pub resource_quota: Option<ResourceQuota>,
     /// Opt-in long-term memory policy (`set_memory_policy`), enforced at the kernel memory traps.
     pub memory_policy: Option<MemoryPolicy>,
+    /// M1 · per-path memory switches (retrieval, session extraction, model writes, semantic
+    /// archive). `None` keeps every path on and writing to `memory_store`.
+    pub memory_runtime_policy: Option<MemoryRuntimePolicy>,
+    /// M2 · where a write path set to `CandidateSink` hands its writes instead of the store. A run
+    /// refuses to start when any path is `CandidateSink` and this is missing.
+    pub memory_candidate_sink: Option<Arc<dyn MemoryCandidateSink>>,
     pub tokenizer: Option<String>,
     pub enable_plan_tool: Option<bool>,
     pub on_tool_suspend: Option<ToolSuspendHandler>,
@@ -423,6 +436,20 @@ impl RuntimeRunner {
         session_id: Option<&str>,
         agent_id: Option<&str>,
     ) -> Result<bool> {
+        self.write_memory_routed(memory, session_id, agent_id, None)
+            .await
+    }
+
+    /// The one host write funnel. With `candidate`, the admitted write goes to the candidate sink
+    /// instead of the store (M2): it returns true when the sink accepted the write or holds it for
+    /// review, false when the sink rejected it.
+    async fn write_memory_routed(
+        &self,
+        memory: MemoryRecord,
+        session_id: Option<&str>,
+        agent_id: Option<&str>,
+        candidate: Option<(MemoryCandidateSource, String)>,
+    ) -> Result<bool> {
         let Some(store) = &self.opts.memory_store else {
             return Ok(false);
         };
@@ -448,6 +475,21 @@ impl RuntimeRunner {
             return Ok(false);
         }
 
+        if let Some((source, candidate_id)) = candidate {
+            let receipt = self
+                .submit_memory_candidate(agent_id, source, candidate_id, memory.clone())
+                .await?;
+            let accepted = !matches!(receipt, MemoryCandidateReceipt::Rejected { .. });
+            if let Some(session_id) = session_id.or(self.opts.session_id.as_deref()) {
+                self.log(
+                    session_id,
+                    memory_candidate_session_event(turn, &receipt, source, &memory),
+                )
+                .await;
+            }
+            return Ok(accepted);
+        }
+
         store.put(agent_id, memory.clone()).await?;
         self.append_memory_syscall_observations(
             session_id,
@@ -462,6 +504,183 @@ impl RuntimeRunner {
         )
         .await;
         Ok(true)
+    }
+
+    /// M2 · hand a write to the candidate sink and check its answer names this candidate. A sink
+    /// error is no answer; the same candidate id may be redelivered.
+    async fn submit_memory_candidate(
+        &self,
+        agent_id: &str,
+        source: MemoryCandidateSource,
+        candidate_id: String,
+        record: MemoryRecord,
+    ) -> Result<MemoryCandidateReceipt> {
+        let Some(sink) = &self.opts.memory_candidate_sink else {
+            return Err(Error::Other(
+                "memory candidate writes require RuntimeOptions::memory_candidate_sink".into(),
+            ));
+        };
+        let receipt = sink
+            .submit(
+                agent_id,
+                MemoryCandidate {
+                    candidate_id: candidate_id.clone(),
+                    source,
+                    record,
+                },
+            )
+            .await?;
+        if receipt.candidate_id() != candidate_id || receipt.receipt_id().is_empty() {
+            return Err(Error::Other(format!(
+                "memory candidate sink answered for {} without a receipt for {candidate_id}",
+                receipt.candidate_id()
+            )));
+        }
+        match &receipt {
+            MemoryCandidateReceipt::Accepted {
+                record_ref, digest, ..
+            } if record_ref.is_empty() || digest.is_empty() => Err(Error::Other(
+                "memory candidate sink accepted a write without record_ref/digest".into(),
+            )),
+            MemoryCandidateReceipt::Rejected { reason_code, .. } if reason_code.is_empty() => Err(
+                Error::Other("memory candidate sink rejected a write without reason_code".into()),
+            ),
+            _ => Ok(receipt),
+        }
+    }
+
+    /// The host's answer to a PersistMemory effect when `model_writes` is `CandidateSink`: the
+    /// `memory_candidate_result` the kernel bridge resolves it with. The candidate id is derived
+    /// from the operation and the effect, so a redelivery after a lost acknowledgement asks the
+    /// sink for the same candidate (S04).
+    async fn memory_candidate_effect_result(
+        &self,
+        operation_id: &str,
+        effect_id: &str,
+        memory: MemoryRecord,
+    ) -> serde_json::Value {
+        let receipt = match self.opts.agent_id.as_deref() {
+            Some(agent_id) => {
+                let candidate_id = memory_candidate_id(&[
+                    "v2",
+                    agent_id,
+                    MemoryCandidateSource::ChildRequest.label(),
+                    operation_id,
+                    effect_id,
+                    "0",
+                ]);
+                self.submit_memory_candidate(
+                    agent_id,
+                    MemoryCandidateSource::ChildRequest,
+                    candidate_id,
+                    memory,
+                )
+                .await
+            }
+            None => Err(Error::Other(
+                "memory persistence requires RuntimeOptions::agent_id".into(),
+            )),
+        };
+        match receipt {
+            Ok(receipt) => {
+                let mut event = serde_json::to_value(&receipt).expect("a receipt serializes");
+                event["kind"] = "memory_candidate_result".into();
+                event["effect_id"] = effect_id.into();
+                event
+            }
+            Err(error) => serde_json::json!({
+                "kind": "memory_candidate_result",
+                "effect_id": effect_id,
+                "error": error.to_string(),
+            }),
+        }
+    }
+
+    /// M1 · how a write path routes: `None` when the host set no policy (the store), else its
+    /// switch.
+    fn memory_write_policy(&self, source: MemoryCandidateSource) -> Option<MemoryWritePolicy> {
+        self.opts.memory_runtime_policy.map(|policy| match source {
+            MemoryCandidateSource::SessionExtraction => policy.session_extraction,
+            MemoryCandidateSource::SemanticArchive => policy.semantic_archive,
+            MemoryCandidateSource::ChildRequest => policy.model_writes,
+        })
+    }
+
+    /// A write path is on unless the host set its switch to `Disabled`.
+    fn memory_write_enabled(&self, source: MemoryCandidateSource) -> bool {
+        self.memory_write_policy(source) != Some(MemoryWritePolicy::Disabled)
+    }
+
+    /// Off unless the host set the path to `CandidateSink` — without a policy, writes go to the
+    /// store.
+    fn memory_write_to_candidate_sink(&self, source: MemoryCandidateSource) -> bool {
+        self.memory_write_policy(source) == Some(MemoryWritePolicy::CandidateSink)
+    }
+
+    fn memory_retrieval_enabled(&self) -> bool {
+        self.opts
+            .memory_runtime_policy
+            .is_none_or(|policy| policy.retrieval != MemoryRetrievalPolicy::Disabled)
+    }
+
+    /// A `CandidateSink` path with no sink to hand to is a configuration error, reported before
+    /// the run starts rather than at the first write.
+    fn check_memory_runtime_policy(&self) -> Result<()> {
+        let Some(policy) = self.opts.memory_runtime_policy else {
+            return Ok(());
+        };
+        let sink_paths = policy.candidate_sink_paths();
+        if !sink_paths.is_empty() && self.opts.memory_candidate_sink.is_none() {
+            return Err(Error::Other(format!(
+                "memory runtime policy {} = candidate_sink needs RuntimeOptions::memory_candidate_sink",
+                sink_paths.join(", ")
+            )));
+        }
+        Ok(())
+    }
+
+    /// Session extraction after a completed run: one auxiliary-model pass, then each extracted
+    /// record through the write funnel — to the store, or to the candidate sink under an id
+    /// derived from the run (operation) and the record's ordinal.
+    async fn extract_and_write_session_memories(
+        &self,
+        session: &deepstrike_core::memory::durable::SessionData,
+        operation_id: &str,
+    ) {
+        let Some(scope) = self.opts.memory_scope.as_ref() else {
+            return;
+        };
+        if !self.memory_write_enabled(MemoryCandidateSource::SessionExtraction) {
+            return;
+        }
+        let Ok(memories) = self.extract_session_memories(session, scope).await else {
+            return;
+        };
+        let to_sink = self.memory_write_to_candidate_sink(MemoryCandidateSource::SessionExtraction);
+        for (ordinal, memory) in memories.into_iter().enumerate() {
+            let candidate = to_sink.then(|| {
+                let ordinal = ordinal.to_string();
+                (
+                    MemoryCandidateSource::SessionExtraction,
+                    memory_candidate_id(&[
+                        "v2",
+                        &session.agent_id,
+                        MemoryCandidateSource::SessionExtraction.label(),
+                        &session.session_id,
+                        operation_id,
+                        &ordinal,
+                    ]),
+                )
+            });
+            let _ = self
+                .write_memory_routed(
+                    memory,
+                    Some(&session.session_id),
+                    Some(&session.agent_id),
+                    candidate,
+                )
+                .await;
+        }
     }
 
     /// The kernel's verdict on a host-authored write, or `None` when it is admitted.
@@ -512,6 +731,9 @@ impl RuntimeRunner {
         let Some(agent_id) = agent_id.or(self.opts.agent_id.as_deref()) else {
             return Ok(Vec::new());
         };
+        if !self.memory_retrieval_enabled() {
+            return Ok(Vec::new());
+        }
 
         let turn = self.active_kernel_turn().await;
         let mut canonical_query = query;
@@ -740,63 +962,10 @@ impl RuntimeRunner {
             return;
         };
         for obs in observations {
-            match obs {
-                KernelObservation::MemoryWritten {
-                    turn,
-                    record_id,
-                    scope,
-                    memory_kind,
-                    name,
-                    size_bytes,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryWritten {
-                            turn,
-                            record_id,
-                            scope,
-                            memory_kind,
-                            name,
-                            size_bytes,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::MemoryQueried {
-                    turn,
-                    scope,
-                    query,
-                    requested_k,
-                    requires_async_response,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryQueried {
-                            turn,
-                            scope,
-                            query,
-                            requested_k,
-                            requires_async_response,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::MemoryValidationFailed {
-                    turn,
-                    record_id,
-                    error,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryValidationFailed {
-                            turn,
-                            record_id,
-                            error,
-                        },
-                    )
-                    .await;
-                }
-                _ => {}
+            if let Some(event) =
+                kernel_observation_to_session_event(&obs, 0, &ProjectionOptions::default())
+            {
+                self.log(session_id, event).await;
             }
         }
     }
@@ -891,6 +1060,7 @@ impl RuntimeRunner {
         attachments: &'a [deepstrike_core::types::message::ContentPart],
         limits: Option<RunLimits>,
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<RunEvent>> + 'a>>> {
+        self.check_memory_runtime_policy()?;
         let session_id = session_id
             .map(str::to_string)
             .or_else(|| self.opts.session_id.clone())
@@ -936,6 +1106,8 @@ impl RuntimeRunner {
                     agent_id: self.opts.agent_id.clone(),
                     system_prompt: self.opts.system_prompt.clone(),
                     attachments: attachments.to_vec(),
+                    route: None,
+                    metadata: None,
                 },
             )
             .await;
@@ -1128,10 +1300,17 @@ impl RuntimeRunner {
                 ).await?;
 
                 if self.opts.memory_store.is_some() && self.opts.agent_id.is_some() {
+                    // The kernel binding carries the same capability bits as the host gates, so a
+                    // model-driven syscall (child parent_requests) is refused in the kernel.
                     kernel_apply(
                         &kernel,
                         &mut pending_observations,
-                        serde_json::json!({ "kind": "set_memory_enabled", "enabled": true }),
+                        serde_json::json!({
+                            "kind": "set_memory_enabled",
+                            "enabled": true,
+                            "read": self.memory_retrieval_enabled(),
+                            "write": self.memory_write_enabled(MemoryCandidateSource::ChildRequest),
+                        }),
                     ).await?;
                 }
                 if self.opts.knowledge_source.is_some() {
@@ -1301,7 +1480,7 @@ impl RuntimeRunner {
                 // I4: pre-fetch memory into the knowledge partition before the first LLM turn.
                 // Mirrors Node/WASM/Python preQueryMemory. Errs-open: missing memory_store/agent_id
                 // or a faulty closure silently skip the pre-fetch.
-                if !resume_mid_run {
+                if !resume_mid_run && self.memory_retrieval_enabled() {
                     if let (Some(pre), Some(store), Some(agent_id)) = (
                         self.opts.pre_query_memory.clone(),
                         self.opts.memory_store.as_ref(),
@@ -1525,6 +1704,7 @@ impl RuntimeRunner {
                         let mut final_text = String::new();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
                         let mut turn_tokens: u32 = 0;
+                        let mut turn_output_tokens: u32 = 0;
                         let mut turn_input_tokens: u32 = 0;
                         let mut turn_cache_read_tokens: u32 = 0;
                         let mut turn_cache_creation_tokens: u32 = 0;
@@ -1555,6 +1735,10 @@ impl RuntimeRunner {
                         let material_bytes = deepstrike_core::runtime::kernel::wire::record::canonical_bytes(&material)
                             .map_err(|error| Error::Other(error.to_string()))?;
                         let fingerprint = deepstrike_core::evolution::ContentDigest::from_bytes(material_bytes.as_slice());
+                        // The same fingerprint and protocol identify the request in llm_completed's
+                        // wire evidence.
+                        let wire_protocol = route.get("protocol").and_then(|p| p.as_str()).unwrap_or_default().to_string();
+                        let wire_fingerprint = fingerprint.as_str().to_string();
                         // Advisory estimate only; native provider usage settles the execution later.
                         let counted_material = deepstrike_core::runtime::kernel::wire::record::canonical_bytes(
                             prepared_request.get("body").unwrap_or(&prepared_request),
@@ -1647,6 +1831,7 @@ impl RuntimeRunner {
                                 StreamEvent::Usage {
                                     total_tokens,
                                     input_tokens,
+                                    output_tokens,
                                     cache_read_input_tokens,
                                     cache_creation_input_tokens,
                                     cache_read_input_tokens_by_slot,
@@ -1654,6 +1839,7 @@ impl RuntimeRunner {
                                     ..
                                 } => {
                                     turn_tokens = total_tokens;
+                                    turn_output_tokens = output_tokens;
                                     // P0-C: capture input + prompt-cache split for the hit-rate baseline.
                                     turn_input_tokens = input_tokens;
                                     turn_cache_read_tokens = cache_read_input_tokens;
@@ -1711,6 +1897,13 @@ impl RuntimeRunner {
                             &final_tool_calls,
                         );
                         repair_llm_completed(&mut assistant, &mut provider_replay);
+                        let wire_evidence = WireEvidence {
+                            protocol: wire_protocol.clone(),
+                            request_fingerprint: Some(wire_fingerprint.clone()),
+                            response_id: None,
+                            raw_usage: None,
+                            replay_state: provider_replay,
+                        };
 
                         action = kernel_action(
                             &kernel,
@@ -1728,7 +1921,13 @@ impl RuntimeRunner {
                             SessionEvent::LlmCompleted {
                                 turn: kernel.lock().await.turn(),
                                 message: assistant,
-                                provider_replay,
+                                token_count: [turn_output_tokens, turn_tokens]
+                                    .into_iter()
+                                    .find(|tokens| *tokens > 0)
+                                    .map(u64::from),
+                                effect_id: Some(provider_effect_id.clone()),
+                                invocation_id: None,
+                                wire_evidence: Some(wire_evidence),
                             },
                         )
                         .await;
@@ -1879,42 +2078,62 @@ impl RuntimeRunner {
                     HostEffect::PersistMemory { memory } => {
                         let effect_id = action.effect_id.clone();
                         let mut memory = memory.clone();
-                        let error = match (
-                            self.opts.memory_store.as_ref(),
-                            self.opts.agent_id.as_deref(),
-                        ) {
-                            (Some(store), Some(agent_id)) => {
-                                if let Some(scope) = self.opts.memory_scope.as_ref() {
-                                    memory.scope = scope.clone();
+                        if let Some(scope) = self.opts.memory_scope.as_ref() {
+                            memory.scope = scope.clone();
+                        }
+                        memory.provenance.session_id = Some(session_id.clone());
+                        let event = if self
+                            .memory_write_to_candidate_sink(MemoryCandidateSource::ChildRequest)
+                        {
+                            // M2 · the sink holds the write; its answer is the effect's result.
+                            let operation_id = kernel.lock().await.operation_id().to_string();
+                            Box::pin(self.memory_candidate_effect_result(
+                                &operation_id,
+                                &effect_id,
+                                memory,
+                            ))
+                            .await
+                        } else {
+                            let error = if !self
+                                .memory_write_enabled(MemoryCandidateSource::ChildRequest)
+                            {
+                                Some(
+                                    "model memory writes are disabled by memory_runtime_policy.model_writes"
+                                        .to_string(),
+                                )
+                            } else {
+                                match (
+                                    self.opts.memory_store.as_ref(),
+                                    self.opts.agent_id.as_deref(),
+                                ) {
+                                    (Some(store), Some(agent_id)) => store
+                                        .put(agent_id, memory.clone())
+                                        .await
+                                        .err()
+                                        .map(|error| error.to_string()),
+                                    _ => Some(
+                                        "memory persistence is unavailable without memory_store and agent_id"
+                                            .to_string(),
+                                    ),
                                 }
-                                memory.provenance.session_id = Some(session_id.clone());
-                                store
-                                    .put(agent_id, memory.clone())
-                                    .await
-                                    .err()
-                                    .map(|error| error.to_string())
+                            };
+                            // The receipt names what the store now holds: the record id and a
+                            // digest of its content.
+                            match error {
+                                Some(error) => serde_json::json!({
+                                    "kind": "memory_persist_result",
+                                    "effect_id": effect_id,
+                                    "error": error,
+                                }),
+                                None => serde_json::json!({
+                                    "kind": "memory_persist_result",
+                                    "effect_id": effect_id,
+                                    "record_ref": memory.record_id,
+                                    "digest": deepstrike_core::runtime::kernel::wire::canonical_digest(
+                                        memory.content.as_bytes(),
+                                    ).as_str(),
+                                }),
                             }
-                            _ => Some(
-                                "memory persistence is unavailable without memory_store and agent_id"
-                                    .to_string(),
-                            ),
-                        };
-                        // The receipt names what the store now holds: the record id and a digest
-                        // of its content.
-                        let event = match error {
-                            Some(error) => serde_json::json!({
-                                "kind": "memory_persist_result",
-                                "effect_id": effect_id,
-                                "error": error,
-                            }),
-                            None => serde_json::json!({
-                                "kind": "memory_persist_result",
-                                "effect_id": effect_id,
-                                "record_ref": memory.record_id,
-                                "digest": deepstrike_core::runtime::kernel::wire::canonical_digest(
-                                    memory.content.as_bytes(),
-                                ).as_str(),
-                            }),
                         };
                         action = kernel_action(&kernel, &mut pending_observations, event).await?;
                     }
@@ -1924,6 +2143,8 @@ impl RuntimeRunner {
                             self.opts.memory_store.as_ref(),
                             self.opts.agent_id.as_deref(),
                         ) {
+                            // M1 · retrieval off answers with no hits, as the other SDKs do.
+                            _ if !self.memory_retrieval_enabled() => (Vec::new(), None),
                             (Some(store), Some(agent_id)) => {
                                 let mut query = query.clone();
                                 query.top_k = *requested_k;
@@ -1998,7 +2219,15 @@ impl RuntimeRunner {
                             Ok(archive_ref) => {
                                 self.local_page_out_cache.lock().unwrap().extend(archived.clone());
                                 if tier == "semantic" {
-                                    self.archive_semantic_page_out(archived, Some(action_name)).await;
+                                    let operation_id = kernel.lock().await.operation_id().to_string();
+                                    Box::pin(self.archive_semantic_page_out(
+                                        archived,
+                                        Some(action_name),
+                                        &session_id,
+                                        &operation_id,
+                                        &effect_id,
+                                    ))
+                                    .await;
                                 }
                                 (archive_ref, None)
                             }
@@ -2186,6 +2415,7 @@ impl RuntimeRunner {
                             SessionEvent::ToolCompleted {
                                 turn: kernel.lock().await.turn(),
                                 results: tool_results.clone(),
+                                effect_id: Some(action.effect_id.clone()),
                             },
                         )
                         .await;
@@ -2349,13 +2579,9 @@ impl RuntimeRunner {
                                     updated_at_ms: now_ms,
                                 };
                                 let _ = store.save_session(session.clone()).await;
-                                if let Some(scope) = self.opts.memory_scope.as_ref() {
-                                    if let Ok(memories) = self.extract_session_memories(&session, scope).await {
-                                        for memory in memories {
-                                            let _ = self.write_memory(memory, Some(&session_id), Some(agent_id)).await;
-                                        }
-                                    }
-                                }
+                                let operation_id = kernel.lock().await.operation_id().to_string();
+                                Box::pin(self.extract_and_write_session_memories(&session, &operation_id))
+                                    .await;
                             }
                         }
 
@@ -2420,13 +2646,9 @@ impl RuntimeRunner {
                             updated_at_ms: now_ms,
                         };
                         let _ = store.save_session(session.clone()).await;
-                        if let Some(scope) = self.opts.memory_scope.as_ref() {
-                            if let Ok(memories) = self.extract_session_memories(&session, scope).await {
-                                for memory in memories {
-                                    let _ = self.write_memory(memory, Some(&session_id), Some(agent_id)).await;
-                                }
-                            }
-                        }
+                        let operation_id = kernel.lock().await.operation_id().to_string();
+                        Box::pin(self.extract_and_write_session_memories(&session, &operation_id))
+                            .await;
                     }
                 }
             }
@@ -2467,14 +2689,14 @@ impl RuntimeRunner {
         };
 
         for (index, obs) in drained.into_iter().enumerate() {
-            match obs {
+            match &obs {
+                // The archive window depends on this log's seq numbers, and the summary is
+                // counted with the kernel tokenizer rather than the projection's chars/4 estimate.
                 KernelObservation::Compressed {
-                    turn: _,
                     action,
-                    rho_after: _,
                     summary,
                     archived_count,
-                    invalidates_prefix_at: _,
+                    ..
                 } => {
                     let Some(log) = &self.opts.session_log else {
                         continue;
@@ -2484,12 +2706,12 @@ impl RuntimeRunner {
                         continue;
                     }
                     let end = latest;
-                    if archived_count > 0 {
+                    if *archived_count > 0 {
                         pending_page_out_starts.push_back(next_archive_start);
                     }
 
                     let summary_tokens = summary_tokens_by_index.get(index).copied().flatten();
-                    let action_str = action_str_of(action);
+                    let action_str = action_str_of(*action);
 
                     if let Ok(compressed_seq) = log
                         .append(
@@ -2497,7 +2719,8 @@ impl RuntimeRunner {
                             SessionEvent::Compressed {
                                 turn,
                                 archived_seq_range: (next_archive_start, end),
-                                action: Some(action_str),
+                                action: canonical_compression_action(Some(&action_str))
+                                    .map(str::to_string),
                                 summary: summary.clone(),
                                 summary_tokens,
                                 preserved_refs: preserved_refs.clone(),
@@ -2507,361 +2730,24 @@ impl RuntimeRunner {
                     {
                         next_archive_start = compressed_seq + 1;
                     }
+                    continue;
                 }
-                KernelObservation::PageOutArchived {
-                    turn,
-                    action,
-                    summary,
-                    tier,
-                    message_count,
-                    archive_ref,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::PageOut {
-                            turn,
-                            action: Some(action_str_of(action)),
-                            summary,
-                            tier_hint: Some(tier),
-                            message_count,
-                            archive_ref,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::PageOutArchiveFailed { .. } => {}
-                // Payload residency is already durable in the canonical transaction record.
-                KernelObservation::PayloadResidencyChanged { .. }
-                | KernelObservation::PayloadLoadFailed { .. } => {}
-                KernelObservation::Rollbacked {
-                    turn,
-                    checkpoint_history_len,
-                    reason,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::Rollbacked {
-                            turn,
-                            checkpoint_history_len,
-                            reason,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::CapabilityChanged {
-                    turn,
-                    added,
-                    removed,
-                    change_kind,
-                    capability_id,
-                    version,
-                    mounted_by,
-                    mount_reason,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::CapabilityChanged {
-                            turn,
-                            added,
-                            removed,
-                            change_kind,
-                            capability_id,
-                            version,
-                            mounted_by,
-                            mount_reason,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::MilestoneAdvanced {
-                    turn,
-                    phase_id,
-                    capabilities_unlocked,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MilestoneAdvanced {
-                            turn,
-                            phase_id,
-                            capabilities_unlocked,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::MilestoneBlocked {
-                    turn,
-                    phase_id,
-                    reason,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MilestoneBlocked {
-                            turn,
-                            phase_id,
-                            reason,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::Renewed { .. } => {}
-                KernelObservation::ContextBudgetExceeded { .. } => {}
-                KernelObservation::KnowledgeSwept { .. } => {}
-                KernelObservation::KnowledgeBudgetExceeded { .. } => {}
-                KernelObservation::RepeatFuseTripped { .. } => {}
-                KernelObservation::CriteriaGateFired { .. } => {}
-                KernelObservation::CheckpointTaken { turn, history_len } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::CheckpointTaken { turn, history_len },
-                    )
-                    .await;
-                }
-                KernelObservation::EntropySample {
-                    turn,
-                    score,
-                    rho,
-                    repeat_pressure,
-                    failure_rate,
-                    rollbacks_in_window,
-                    window_turns,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::EntropySample {
-                            turn,
-                            score,
-                            rho,
-                            repeat_pressure,
-                            failure_rate,
-                            rollbacks_in_window,
-                            window_turns,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::EntropyAlert {
-                    turn,
-                    score,
-                    threshold,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::EntropyAlert {
-                            turn,
-                            score,
-                            threshold,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::AgentProcessChanged { .. } => {}
-                // Local process supervision and scheduling traces are durable canonical audit
-                // facts. The Rust SDK does not maintain a second session-log projection for them.
-                KernelObservation::ChildSupervised { .. }
-                | KernelObservation::LocalRunnableTrace { .. } => {}
-                // W0-ABI workflow lifecycle. The rust SDK has no workflow drive yet
-                // (node/python only), so these are observed-but-ignored here.
-                KernelObservation::WorkflowBatchSpawned { turn, nodes, .. } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::WorkflowBatchSpawned { turn, nodes },
-                    )
-                    .await;
-                }
-                KernelObservation::WorkflowSpawnFailed { turn, error } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::WorkflowSpawnFailed { turn, error },
-                    )
-                    .await;
-                }
-                KernelObservation::WorkflowCompleted {
-                    turn,
-                    node_outcomes,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::WorkflowCompleted {
-                            turn,
-                            node_outcomes,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::NodesRejected { .. } => {}
-                KernelObservation::AgentPreempted { .. } => {}
-                KernelObservation::AgentPreemptFailed { .. } => {}
-                KernelObservation::MemoryWriteFailed { .. } => {}
-                // M2 · a pending candidate is an audit fact in the kernel journal. The SDK session
-                // vocabulary has no event for it yet, so it is not projected here.
-                KernelObservation::MemoryCandidatePending { .. } => {}
-                KernelObservation::MemoryQueryFailed { .. } => {}
                 // M3 · mirror the recall counts the kernel derived; the store never computes them.
                 KernelObservation::MemoryRecalled { recalls, .. } => {
                     if let (Some(store), Some(agent_id)) =
                         (&self.opts.memory_store, self.opts.agent_id.as_deref())
                     {
-                        let _ = store.record_recall(agent_id, &recalls).await;
+                        let _ = store.record_recall(agent_id, recalls).await;
                     }
                 }
-                // M4 promotion suggestions are advisory; the Rust runner has no host callback yet.
-                KernelObservation::PromotionSuggested { .. } => {}
-                // Governance flagged a tool call for user approval. The kernel does
-                // not block it; the SDK-side human-approval workflow is a follow-up.
-                KernelObservation::ToolGated { .. } => {}
-                // In-kernel signal routing decision. The rust SDK does not yet drive
-                // signals through the kernel attention policy; observation is logged
-                // by the generic observation path elsewhere if needed.
-                KernelObservation::SignalDeliveryDisposed { .. } => {}
-                KernelObservation::SignalDisplaced { .. }
-                | KernelObservation::SignalExpired { .. }
-                | KernelObservation::SignalsPending { .. } => {}
-                KernelObservation::BudgetExceeded {
-                    turn,
-                    operation_id,
-                    reservation_id,
-                    budget,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::BudgetExceeded {
-                            turn,
-                            operation_id,
-                            reservation_id,
-                            budget,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::BudgetUsageReported {
-                    operation_id,
-                    reservation_id,
-                    tokens,
-                    subagents,
-                    rounds,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::BudgetUsageReported {
-                            turn,
-                            operation_id,
-                            reservation_id,
-                            tokens,
-                            subagents,
-                            rounds,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::OperationCancelled {
-                    turn,
-                    operation_id,
-                    reason,
-                    pending_call_ids,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::OperationCancelled {
-                            turn,
-                            operation_id,
-                            reason,
-                            pending_call_ids,
-                        },
-                    )
-                    .await;
-                }
-                // §13.2 · live policy patches are not exposed through this SDK's public runner, so
-                // no host path currently produces this canonical observation.
-                KernelObservation::LivePolicyChanged { .. } => {}
-                KernelObservation::Suspended { .. }
-                | KernelObservation::ApprovalResolutionFailed { .. } => {}
-                KernelObservation::Resumed { .. } => {}
-                // R3-1: submission bookkeeping — the rust SDK has no workflow driver, so the
-                // base-index observation has no session record to enrich here.
-                KernelObservation::WorkflowNodesSubmitted {
-                    turn,
-                    base,
-                    count,
-                    submitter,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::WorkflowNodesSubmitted {
-                            turn,
-                            base,
-                            count,
-                            submitter,
-                        },
-                    )
-                    .await;
-                }
-                // ③ loop-agent pacing: the rust SDK has no loop driver yet; the decision also
-                // rides LoopResult.pace_decision for embedders that want it.
-                KernelObservation::RoundPaced { .. } => {}
-                KernelObservation::MemoryWritten {
-                    turn,
-                    record_id,
-                    scope,
-                    memory_kind,
-                    name,
-                    size_bytes,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryWritten {
-                            turn,
-                            record_id,
-                            scope,
-                            memory_kind,
-                            name,
-                            size_bytes,
-                        },
-                    )
-                    .await;
-                }
-                KernelObservation::MemoryQueried {
-                    turn,
-                    scope,
-                    query,
-                    requested_k,
-                    requires_async_response,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryQueried {
-                            turn,
-                            scope,
-                            query,
-                            requested_k,
-                            requires_async_response,
-                        },
-                    )
-                    .await;
-                }
-                // Phase 7 / M3: no dedicated session kinds yet in rust SDK.
-                KernelObservation::MemoryValidationFailed {
-                    turn,
-                    record_id,
-                    error,
-                } => {
-                    self.log(
-                        session_id,
-                        SessionEvent::MemoryValidationFailed {
-                            turn,
-                            record_id,
-                            error,
-                        },
-                    )
-                    .await;
-                }
-                // Rejections are already durable in the kernel transaction record. Call-specific
-                // APIs inspect the observation directly; the generic runner has no host effect.
-                KernelObservation::ControlRequestRejected { .. } => {}
-                // The runner's skill-content bookkeeping reads this from the provider resolution.
-                KernelObservation::SkillAdmitted { .. } => {}
-                KernelObservation::StepPublishedEffects { .. } => {}
-                KernelObservation::DynamicWorkflowPlanCommitted { .. } => {}
-                KernelObservation::DynamicWorkflowReplayRecorded { .. } => {}
+                _ => {}
+            }
+            // Every other observation is recorded through the shared projection, the same session
+            // event Node/Python/WASM write; one with no session kind stays a `kernel_observation`.
+            if let Some(event) =
+                kernel_observation_to_session_event(&obs, turn, &ProjectionOptions::default())
+            {
+                self.log(session_id, event).await;
             }
         }
         next_archive_start
@@ -2881,7 +2767,14 @@ impl RuntimeRunner {
         }
     }
 
-    async fn archive_semantic_page_out(&self, archived: Vec<CoreMessage>, action: Option<String>) {
+    async fn archive_semantic_page_out(
+        &self,
+        archived: Vec<CoreMessage>,
+        action: Option<String>,
+        session_id: &str,
+        operation_id: &str,
+        effect_id: &str,
+    ) {
         let (Some(_store), Some(agent_id), Some(scope)) = (
             &self.opts.memory_store,
             &self.opts.agent_id,
@@ -2889,20 +2782,44 @@ impl RuntimeRunner {
         ) else {
             return;
         };
-
-        let summary = match self.summarize_for_long_term_memory(&archived).await {
-            Ok(s) => s,
-            Err(_) => return, // non-fatal
-        };
+        // M1 · checked before the summarizer call, so a disabled archive costs no model call.
+        if !self.memory_write_enabled(MemoryCandidateSource::SemanticArchive) {
+            return;
+        }
+        self.log(
+            session_id,
+            SessionEvent::SemanticArchivePending {
+                effect_id: effect_id.to_string(),
+                action: action.clone(),
+            },
+        )
+        .await;
 
         // P2 write-funnel: route through the ONE gated write_memory syscall so validation,
         // the rolling write quota, dedup, and the memory_written audit all apply. Score is
         // advisory (0.6) — an automatic summary must never outrank curated content.
+        let summary = match self.summarize_for_long_term_memory(&archived).await {
+            Ok(s) => s,
+            Err(error) => {
+                self.log(
+                    session_id,
+                    SessionEvent::SemanticArchiveFailed {
+                        effect_id: effect_id.to_string(),
+                        error: error.to_string(),
+                    },
+                )
+                .await;
+                return;
+            }
+        };
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let name = format!("page-out-{now}");
+        // Named by the page-out effect, not the clock: a redelivered archive proposes the same
+        // record, which a candidate sink must see as the same candidate.
+        let name = stable_semantic_archive_name(effect_id);
         let request = MemoryRecord {
             record_id: format!("{}:{}:project:{}", scope.tenant_id, scope.namespace, name),
             scope: scope.clone(),
@@ -2914,7 +2831,7 @@ impl RuntimeRunner {
                 action.as_deref().unwrap_or("compaction")
             ),
             provenance: MemoryProvenance {
-                session_id: self.opts.session_id.clone(),
+                session_id: Some(session_id.to_string()),
                 author: MemoryAuthor::Extraction,
                 trust: MemoryTrustLevel::Untrusted,
                 evidence_refs: Vec::new(),
@@ -2928,7 +2845,48 @@ impl RuntimeRunner {
             pinned: false,
             ttl_days: None,
         };
-        let _ = self.write_memory(request, None, Some(agent_id)).await;
+        let record_id = request.record_id.clone();
+        let to_candidate_sink =
+            self.memory_write_to_candidate_sink(MemoryCandidateSource::SemanticArchive);
+        let candidate = to_candidate_sink.then(|| {
+            (
+                MemoryCandidateSource::SemanticArchive,
+                memory_candidate_id(&[
+                    "v2",
+                    agent_id,
+                    MemoryCandidateSource::SemanticArchive.label(),
+                    session_id,
+                    operation_id,
+                    effect_id,
+                ]),
+            )
+        });
+        match self
+            .write_memory_routed(request, Some(session_id), Some(agent_id), candidate)
+            .await
+        {
+            Ok(true) if !to_candidate_sink => {
+                self.log(
+                    session_id,
+                    SessionEvent::SemanticArchiveCompleted {
+                        effect_id: effect_id.to_string(),
+                        record_id,
+                    },
+                )
+                .await;
+            }
+            Ok(_) => {}
+            Err(error) => {
+                self.log(
+                    session_id,
+                    SessionEvent::SemanticArchiveFailed {
+                        effect_id: effect_id.to_string(),
+                        error: error.to_string(),
+                    },
+                )
+                .await;
+            }
+        }
     }
 
     async fn summarize_for_long_term_memory(
@@ -3167,6 +3125,70 @@ fn pending_call_ids(action: &HostAction) -> Vec<String> {
 
 /// A record's shape — identity, scope, description — checked before it is offered to the kernel.
 /// The admission rule itself (name and content limits) is the kernel's alone.
+#[cfg(test)]
+#[path = "runner_memory_candidate_tests.rs"]
+mod memory_candidate_tests;
+
+/// The audit fact for a candidate sink's answer. Only an accepted candidate is a written record.
+fn memory_candidate_session_event(
+    turn: u32,
+    receipt: &MemoryCandidateReceipt,
+    source: MemoryCandidateSource,
+    memory: &MemoryRecord,
+) -> SessionEvent {
+    match receipt {
+        MemoryCandidateReceipt::Pending {
+            candidate_id,
+            receipt_id,
+        } => SessionEvent::MemoryCandidatePending {
+            turn,
+            candidate_id: candidate_id.clone(),
+            source: source.label().to_string(),
+            name: memory.name.clone(),
+            receipt_id: Some(receipt_id.clone()),
+        },
+        MemoryCandidateReceipt::Rejected {
+            candidate_id,
+            receipt_id,
+            reason_code,
+        } => SessionEvent::MemoryCandidateRejected {
+            turn,
+            candidate_id: candidate_id.clone(),
+            source: source.label().to_string(),
+            name: memory.name.clone(),
+            receipt_id: receipt_id.clone(),
+            reason_code: reason_code.clone(),
+        },
+        MemoryCandidateReceipt::Accepted { record_ref, .. } => SessionEvent::MemoryWritten {
+            turn,
+            record_id: record_ref.clone(),
+            scope: memory.scope.clone(),
+            memory_kind: memory.kind,
+            name: memory.name.clone(),
+            size_bytes: memory.content.len() as u32,
+        },
+    }
+}
+
+/// The semantic archive's record name, from its page-out effect (same rule as the Node SDK).
+fn stable_semantic_archive_name(effect_id: &str) -> String {
+    let stable: String = effect_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | ':' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if stable.is_empty() {
+        "page-out-unknown".into()
+    } else {
+        format!("page-out-{stable}")
+    }
+}
+
 fn memory_record_shape_error(memory: &MemoryRecord) -> Option<String> {
     if memory.record_id.trim().is_empty() {
         return Some("missing required field: record_id".into());

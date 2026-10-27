@@ -6524,7 +6524,10 @@ fn a_memory_proposal_against_a_read_only_binding_is_refused_before_any_effect() 
             } => operation == "write_memory" && reason.contains("read-only"),
             _ => false,
         });
-    assert!(refused, "the refusal is an audit fact naming the read-only binding");
+    assert!(
+        refused,
+        "the refusal is an audit fact naming the read-only binding"
+    );
 }
 
 /// §22.13 · a host-authored write inside a live operation is admitted by the same rule and the
