@@ -23,9 +23,10 @@ from deepstrike._kernel import (
   TaskUpdate,
 )
 from deepstrike.memory.runtime_policy import MemoryRuntimePolicy, resolve_memory_runtime_policy
+from deepstrike.memory.recall_projection import memory_recall_turn
 from deepstrike.memory.candidate_sink import (
   MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
-  memory_candidate_id,
+  memory_candidate_id, session_extraction_candidate_id,
 )
 from deepstrike.providers.base import LLMProvider, RenderedContext
 from deepstrike.runtime.context import create_native_context_preparation_adapter
@@ -2424,10 +2425,10 @@ class RuntimeRunner:
       })
 
     self._current_goal = goal
-    # I4/T5: initial memory prefetch is host-side before root start (add_history_message),
-    # matching Node. Renewal re-seeds after history drop via _prefetch_memory_into_history.
+    # I4/T5: initial memory prefetch is host-side before root start (add_history_message);
+    # renewal re-seeds the same way after the history drop.
     if not resume_mid_run:
-      await self._prefetch_memory_into_initial_context(runtime)
+      await self._prefetch_memory_into_history(runtime, "initial")
 
     # Multimodal upload: seed the user's attachments (images/audio) as a history
     # message before root start pushes the "[TASK STATE]" anchor. init_task does not
@@ -3409,11 +3410,19 @@ class RuntimeRunner:
               self._opts.memory_scope,
               self._opts.memory_system_prompt,
             )
-            for ordinal, memory in enumerate(extracted):
-              candidate = MemoryCandidate(
-                memory_candidate_id(["v2", self._opts.agent_id, "session_extraction", session_id, runtime.operation_id, str(ordinal)]),
-                "session_extraction", memory,
-              ) if self._memory_path_to_candidate_sink("session_extraction") else None
+            to_sink = self._memory_path_to_candidate_sink("session_extraction")
+            proposed: set[str] = set()
+            for memory in extracted:
+              candidate = None
+              if to_sink:
+                candidate_id = session_extraction_candidate_id(
+                  self._opts.agent_id, session_id, runtime.operation_id, memory,
+                )
+                # One answer proposing the same record twice is one candidate.
+                if candidate_id in proposed:
+                  continue
+                proposed.add(candidate_id)
+                candidate = MemoryCandidate(candidate_id, "session_extraction", memory)
               await self.write_memory(memory, session_id=session_id, agent_id=self._opts.agent_id, candidate=candidate)
         except Exception:
           pass
@@ -3551,15 +3560,23 @@ class RuntimeRunner:
       result = await result
     return list(result or [])
 
-  async def _prefetch_memory_into_initial_context(self, runtime: CanonicalRunnerRuntime) -> None:
-    """Seed recalled memory into initial history before ``start_operation`` (Node parity)."""
+  async def _prefetch_memory_into_history(self, runtime: CanonicalRunnerRuntime, phase: str) -> None:
+    """I4 + K4 · M5: put each recalled hit in context as the canonical recall text.
+
+    Called once before ``start_operation`` (``phase="initial"``): each hit is an ordinary
+    ``history`` user turn. Re-fired after each sprint renewal (``phase="renewal"``), which drops
+    the old history with the earlier hits: a running operation accepts history only through
+    effects or external events, so each hit is a keyed ``memory:<record_id>`` knowledge entry
+    instead. One prefetch is one dedupe horizon and one ``memory_retrieval_result``. Errs-open: a
+    faulty prefetch never breaks the run.
+    """
     from deepstrike.memory.protocols import MemoryQuery
     if not (self._opts.memory_store and self._opts.agent_id and self._opts.memory_scope):
       return
     try:
       seen: set[str] = set()
       accepted: list[Any] = []
-      for query in await self._memory_prefetch_queries("initial"):
+      for query in await self._memory_prefetch_queries(phase):
         if not isinstance(query, MemoryQuery) or not query.query.strip():
           continue
         hits = await self._retrieve_memory_from_store(query, query.top_k, self._opts.agent_id)
@@ -3569,53 +3586,22 @@ class RuntimeRunner:
             continue
           seen.add(rid)
           accepted.append(hit)
+          content = memory_recall_turn(hit.record)
           await apply_host(runtime, self._pending_observations, {
             "kind": "add_history_message",
-            "message": {
-              "role": "user",
-              "content": (
-                f"[MEMORY record_id={hit.record.record_id} kind={hit.record.kind}] "
-                f"{hit.record.content}"
-              ),
-            },
-          })
-      await self._apply_host_memory_recall_lifecycle(accepted, self._opts.agent_id)
-    except Exception:
-      pass
-
-  async def _prefetch_memory_into_history(
-    self, runtime: CanonicalRunnerRuntime, phase: str,
-  ) -> KernelRunnerAction | None:
-    """K4 renewal prefetch: re-seed hits after history drop via ``add_knowledge_message``.
-
-    Returns the current resume action so the caller can keep driving; errs-open.
-    """
-    from deepstrike.memory.protocols import MemoryQuery
-    if not (self._opts.memory_store and self._opts.agent_id and self._opts.memory_scope):
-      return None
-    try:
-      seen_record_ids: set[str] = set()
-      for query in await self._memory_prefetch_queries(phase):
-        if not isinstance(query, MemoryQuery) or not query.query.strip():
-          continue
-        hits = await self._retrieve_memory_from_store(query, query.top_k, self._opts.agent_id)
-        accepted = []
-        for hit in hits:
-          rid = hit.record.record_id
-          if rid in seen_record_ids:
-            continue
-          seen_record_ids.add(rid)
-          accepted.append(hit)
-          await apply_host(runtime, self._pending_observations, {
+            "message": {"role": "user", "content": content},
+          } if phase == "initial" else {
             "kind": "add_knowledge_message",
             "key": f"memory:{rid}",
-            "content": hit.record.content,
-            "tokens": max(1, (len(hit.record.content) + 3) // 4),
+            "content": content,
+            "tokens": max(1, (len(content) + 3) // 4),
           })
-        await self._apply_host_memory_recall_lifecycle(accepted, self._opts.agent_id)
-      return runtime.resume_action()
+      if not accepted:
+        return
+      await self._apply_host_memory_recall_lifecycle(accepted, self._opts.agent_id)
+      await self._log_memory_retrieval_result(self._current_session_id, accepted)
     except Exception:
-      return None
+      pass
 
   async def _archive_semantic_page_out(
     self, archived: list[Any], action: str | None, session_id: str, effect_id: str, operation_id: str,

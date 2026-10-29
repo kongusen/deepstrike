@@ -6,7 +6,7 @@ import pytest
 from deepstrike import (
     InMemoryMemoryCandidateSink, InMemorySessionLog, LocalExecutionPlane,
     MemoryCandidate, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord, MemoryRuntimePolicy, MemoryScope,
-    RuntimeOptions, RuntimeRunner, collect_text, memory_candidate_id,
+    RuntimeOptions, RuntimeRunner, collect_text, memory_candidate_id, session_extraction_candidate_id,
 )
 from deepstrike.providers.stream import TextDelta, ToolCallEvent
 from deepstrike.tools.registry import tool
@@ -115,7 +115,10 @@ async def test_session_extraction_routes_or_gates_before_auxiliary_provider(mode
     assert len([e for e in audit if e["kind"] == "memory_written"]) == (2 if mode == "legacy" else 0)
     if mode == "candidate_sink":
         run_id = next(e["run_id"] for e in audit if e["kind"] == "run_started")
-        assert [c.candidate_id for c in sink.candidates()] == [memory_candidate_id(["v2", "agent", "session_extraction", "session", f"python-operation-{run_id}", str(i)]) for i in range(2)]
+        operation_id = f"python-operation-{run_id}"
+        assert [c.candidate_id for c in sink.candidates()] == [
+            session_extraction_candidate_id("agent", "session", operation_id, c.record) for c in sink.candidates()]
+        assert len({c.candidate_id for c in sink.candidates()}) == 2
         assert len([e for e in audit if e["kind"] == "memory_candidate_pending"]) == 2
 
 

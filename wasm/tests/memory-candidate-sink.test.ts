@@ -2,6 +2,7 @@ import {
   InMemoryMemoryCandidateSink,
   memoryCandidateId,
   memoryCandidatePayloadDigest,
+  sessionExtractionCandidateId,
   type MemoryCandidate,
 } from "../src/memory/candidate-sink.js"
 import type { MemoryRecord } from "../src/memory/index.js"
@@ -59,7 +60,37 @@ describe("memory candidate sink (M2)", () => {
     // Part boundaries are part of the identity: ["a", "bc"] and ["ab", "c"] differ.
     expect(memoryCandidateId(["a", "bc"])).not.toBe(memoryCandidateId(["ab", "c"]))
   })
+
+  it("a retried extraction that answers differently proposes new candidates instead of conflicting", async () => {
+    const sink = new InMemoryMemoryCandidateSink()
+    const propose = (content: string, overrides: Partial<MemoryRecord> = {}) => {
+      const proposed = record(content, overrides)
+      return { candidate_id: sessionExtractionCandidateId("agent", "s-1", "op-1", proposed), source: "session_extraction" as const, record: proposed }
+    }
+    const first = await sink.submit("agent", propose("prefers numbered sections"))
+    // The retry re-asks the extraction model: the same proposal (fresh store id and timestamps)
+    // repeats the id and gets the original receipt; a changed answer is a different candidate.
+    const same = await sink.submit("agent", propose("prefers numbered sections", { record_id: "memory:retry", created_at: 9, updated_at: 9 }))
+    const changed = await sink.submit("agent", propose("prefers numbered headings"))
+    expect(same).toEqual(first)
+    expect(changed).toMatchObject({ status: "pending" })
+    expect(changed.candidate_id).not.toBe(first.candidate_id)
+    expect(sink.candidates("agent")).toHaveLength(2)
+  })
+
+  it("scopes an extraction candidate id by agent, session and operation, and pins the cross-SDK vector", () => {
+    const proposed = record("prefers numbered sections")
+    const id = sessionExtractionCandidateId("agent", "s-1", "op-1", proposed)
+    expect(id).toBe(memoryCandidateId(["v3", "agent", "session_extraction", "s-1", "op-1", memoryCandidatePayloadDigest(proposed)]))
+    expect(sessionExtractionCandidateId("agent", "s-1", "op-2", proposed)).not.toBe(id)
+    expect(sessionExtractionCandidateId("agent", "s-2", "op-1", proposed)).not.toBe(id)
+    expect(sessionExtractionCandidateId("other", "s-1", "op-1", proposed)).not.toBe(id)
+    expect(id).toBe(SESSION_EXTRACTION_VECTOR)
+  })
 })
+
+// Same record, agent, session and operation in every SDK's candidate-sink test.
+const SESSION_EXTRACTION_VECTOR = "candidate:8616f8c306bd0e0947ba3915403e02c1e47501fb8aed29e4d3a4ceec3e8207e7"
 
 // Fixed cross-SDK SHA256 vector guards the browser hash helper's prefixed return value.
 it("matches the Node/Python candidate identity wire format", () => {

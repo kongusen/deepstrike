@@ -1,5 +1,5 @@
 import type { AgentCapabilityFilter, WorkflowOutcome, WorkflowSpec } from "./runtime/types/agent.js"
-import type { Memory, WorkingMemory, MemoryRecord, MemoryRecall, MemoryKind } from "./memory/index.js"
+import type { Memory, WorkingMemory, MemoryRecord, MemoryRecall, MemoryKind, MemoryScope, MemoryStore } from "./memory/index.js"
 import type { RegisteredTool } from "./tools/index.js"
 import type { LLMProvider, StreamEvent, ContentPart, UsageEvent } from "./types.js"
 import { RuntimeRunner } from "./runtime/runner.js"
@@ -8,7 +8,7 @@ import { InMemorySessionLog, type SessionEvent, type SessionLog } from "./runtim
 import { extractJsonValue, validateAgainstSchema } from "./runtime/output-schema.js"
 import type { SignalSource } from "./signals/index.js"
 import type { McpExecutionPlane } from "./runtime/mcp-transport.js"
-import { checkMemoryWrite } from "./memory/authority.js"
+import { DurableMemory } from "./memory/durable.js"
 
 type JsonSchema = Record<string, unknown>
 export interface MemoryReference { kind?: "durable"; namespace?: string }
@@ -159,28 +159,53 @@ export class Agent {
   resume(sessionId: string, options: Omit<AgentRunOptions, "sessionId"> = {}) { return this.session(sessionId).resume(options) }
   interrupt(reason: "user" | "deadline" | "lease_lost" | "host_shutdown" = "user", sessionId?: string) { sessionId ? this.session(sessionId).interrupt(reason) : [...this.sessions.values()].forEach(s => s.interrupt(reason)) }
   workflow(spec: WorkflowSpec, options: { sessionId?: string } = {}) { return this.session(options.sessionId).workflow(spec) }
+  /** M4 · the runner a facade memory call goes through, so `remember`/`recall` take the same
+   *  kernel admission, memory runtime policy, candidate routing, recall lifecycle and session
+   *  audit as every other memory path. A `DurableMemory` is routed on its own store; any other
+   *  `Memory` facade is adapted to one. */
+  private memoryRunner(): { runner: RuntimeRunner; scope: MemoryScope } {
+    const memory = this.memory
+    if (!memory || typeof (memory as Memory).put !== "function" || typeof (memory as Memory).search !== "function") {
+      throw new Error(`agent "${this.name}" memory is not runtime-bound`)
+    }
+    const facade = memory as Memory & { scope?: MemoryScope }
+    const scope = facade.scope ?? { tenant_id: "default", namespace: facade.namespace ?? this.name }
+    const durable = memory instanceof DurableMemory ? memory : undefined
+    const binding = this.runtimeBinding
+    const provider = binding?.provider ?? (typeof this.model === "string" ? binding?.providerFor?.(this.model) : undefined)
+    const runner = new RuntimeRunner({
+      ...(binding?.runtimeOptions ?? {}),
+      provider: provider ?? memoryOnlyProvider(this.name),
+      executionPlane: new LocalExecutionPlane(),
+      sessionLog: this.sessionLog,
+      maxTokens: 32_000,
+      agentId: durable?.agentId ?? this.name,
+      memoryScope: scope,
+      memoryStore: durable?.store ?? facadeStore(facade),
+    } as import("./runtime/runner.js").RuntimeOptions)
+    return { runner, scope }
+  }
   async remember(input: MemoryInput, sessionId?: string): Promise<MemoryRecord> {
-    if (!this.memory || typeof (this.memory as Memory).put !== "function") throw new Error(`agent "${this.name}" memory is not runtime-bound`)
+    const { runner, scope } = this.memoryRunner()
     const now = Date.now()
+    const session = sessionId ?? `memory-${crypto.randomUUID()}`
     const record: MemoryRecord = {
-      record_id: crypto.randomUUID(), scope: (this.memory as Memory & { scope?: { tenant_id: string; namespace: string } }).scope
-        ?? { tenant_id: "default", namespace: (this.memory as Memory).namespace ?? this.name },
+      record_id: crypto.randomUUID(), scope,
       name: input.name, kind: input.kind ?? "reference", content: input.content,
       description: input.description ?? input.name,
-      provenance: { author: "host", trust: "user_asserted", evidence_refs: [], session_id: sessionId ?? `memory-${crypto.randomUUID()}` },
+      provenance: { author: "host", trust: "user_asserted", evidence_refs: [], session_id: session },
       created_at: now, updated_at: now, recall_count: 0, confidence: input.confidence ?? 1,
       links: [], pinned: input.pinned ?? false, ...(input.ttlDays === undefined ? {} : { ttl_days: input.ttlDays }),
     }
-    // §22.13 · the kernel's write rule, not a copy of it, decides whether this record may be stored.
-    const refusal = await checkMemoryWrite(undefined, record.name, record.content)
-    if (refusal) throw new Error(`agent "${this.name}" memory write denied: ${refusal}`)
-    await (this.memory as Memory).put(record)
+    if (!await runner.writeMemory(record, session)) throw new Error(`agent "${this.name}" memory write denied`)
     return record
   }
-  async recall(query: string, options: RecallOptions = {}, _sessionId?: string): Promise<MemoryRecall[]> {
-    if (!this.memory || typeof (this.memory as Memory).search !== "function") throw new Error(`agent "${this.name}" memory is not runtime-bound`)
-    const records = await (this.memory as Memory).search(query, { topK: options.topK ?? 8, kinds: options.kinds, minScore: options.minScore })
-    return records.map(record => ({ record, score: 1, why: "memory facade search" }))
+  async recall(query: string, options: RecallOptions = {}, sessionId?: string): Promise<MemoryRecall[]> {
+    const { runner, scope } = this.memoryRunner()
+    return runner.queryMemory({
+      scope, query, top_k: options.topK ?? 8, kinds: options.kinds ?? [],
+      ...(options.minScore === undefined ? {} : { min_score: options.minScore }),
+    }, sessionId ?? `memory-${crypto.randomUUID()}`)
   }
   async delegate(request: { target: AgentRef; goal: string; metadata?: Record<string, unknown>; providerOptions?: Record<string, unknown> }): Promise<DelegationResult> {
     const targetName = typeof request.target === "string" ? request.target : request.target.name
@@ -229,5 +254,26 @@ export class Agent {
       if (!result.outputValidation.ok && result.status === "completed") result.status = "failed"
     }
     return result
+  }
+}
+
+/** The provider a memory-only runner carries: `remember`/`recall` never call the model. */
+function memoryOnlyProvider(agent: string): LLMProvider {
+  const refuse = (): never => { throw new Error(`agent "${agent}" has no runtime provider binding`) }
+  return { complete: async () => refuse(), stream: () => refuse() } as unknown as LLMProvider
+}
+
+/** A `Memory` facade as the store the runner writes through. The facade reports records only,
+ *  so a recall from it carries no retrieval score. */
+function facadeStore(memory: Memory): MemoryStore {
+  return {
+    put: (_agentId, record) => memory.put(record),
+    get: (_agentId, recordId) => memory.get(recordId),
+    delete: (_agentId, recordId) => memory.delete(recordId),
+    search: async (_agentId, query) => (await memory.search(query.query, {
+      topK: query.top_k, kinds: query.kinds,
+      ...(query.min_score === undefined ? {} : { minScore: query.min_score }),
+    })).map(record => ({ record, score: 1, why: "memory facade search" })),
+    saveSession: async () => {},
   }
 }

@@ -6,6 +6,7 @@
 import { createHash } from "node:crypto"
 
 import type { MemoryRecord } from "./protocols.js"
+import { admitMemoryCandidate, type MemoryCandidateAttestation, type MemoryCandidateSourceVerifier } from "./attestation.js"
 
 /** Which write path produced the candidate. `child_request` is the kernel's PersistMemory effect. */
 export type MemoryCandidateSource = "session_extraction" | "semantic_archive" | "child_request"
@@ -16,6 +17,8 @@ export interface MemoryCandidate {
   candidate_id: string
   source: MemoryCandidateSource
   record: MemoryRecord
+  /** Optional host-issued proof required for host_verified provenance. */
+  attestation?: MemoryCandidateAttestation
 }
 
 export type MemoryCandidateReceipt =
@@ -41,6 +44,14 @@ export interface MemoryCandidateSink {
 /** A candidate id from the write's canonical identity — never random, so a retry repeats it. */
 export function memoryCandidateId(parts: readonly string[]): string {
   return `candidate:${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`
+}
+
+/** A session-extraction candidate id. The extraction model is re-asked on retry and may answer
+ *  differently, so the id is addressed by the proposed payload, not by its position in the answer:
+ *  a retry that proposes the same record repeats the id, one that proposes something new mints a
+ *  new candidate instead of colliding with what the first attempt left in the sink. */
+export function sessionExtractionCandidateId(agentId: string, sessionId: string, operationId: string, record: MemoryRecord): string {
+  return memoryCandidateId(["v3", agentId, "session_extraction", sessionId, operationId, memoryCandidatePayloadDigest(record)])
 }
 
 /** The part of a record a candidate is judged by. Store ids, timestamps and recall counters are excluded: a retry
@@ -77,19 +88,18 @@ export class InMemoryMemoryCandidateSink implements MemoryCandidateSink {
   private readonly held = new Map<string, HeldCandidate>()
   private nextReceipt = 1
 
+  constructor(private readonly sourceVerifier?: MemoryCandidateSourceVerifier) {}
+
   async submit(agentId: string, candidate: MemoryCandidate): Promise<MemoryCandidateReceipt> {
     const payloadDigest = memoryCandidatePayloadDigest(candidate.record)
     const key = JSON.stringify([agentId, candidate.candidate_id])
     const existing = this.held.get(key)
     if (existing) {
       if (existing.payloadDigest === payloadDigest && existing.candidate.source === candidate.source) return structuredClone(existing.receipt)
-      return {
-        status: "rejected",
-        candidate_id: candidate.candidate_id,
-        receipt_id: this.mintReceiptId(),
-        reason_code: "candidate_conflict",
-      }
+      return { status: "rejected", candidate_id: candidate.candidate_id, receipt_id: this.mintReceiptId(), reason_code: "candidate_conflict" }
     }
+    const verification = admitMemoryCandidate(agentId, candidate, this.sourceVerifier)
+    if (!verification.valid) return { status: "rejected", candidate_id: candidate.candidate_id, receipt_id: this.mintReceiptId(), reason_code: verification.reason_code }
     const receipt: MemoryCandidateReceipt = {
       status: "pending",
       candidate_id: candidate.candidate_id,

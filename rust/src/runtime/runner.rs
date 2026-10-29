@@ -23,7 +23,7 @@ use crate::knowledge::KnowledgeSource;
 use crate::memory::{
     MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
     MemoryRetrievalPolicy, MemoryRuntimePolicy, MemoryStore, MemoryWritePolicy,
-    memory_candidate_id,
+    memory_candidate_id, memory_recall_turn, session_extraction_candidate_id,
 };
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
@@ -273,6 +273,15 @@ pub struct RuntimeRunner {
     /// caller awaits. The run loop applies them between effects so a command that publishes an
     /// effect never races an in-flight one.
     pending_control: std::sync::Mutex<Vec<PendingControl>>,
+    /// The goal of the live run, so a sprint renewal can re-run the memory prefetch for it.
+    current_goal: std::sync::Mutex<Option<String>>,
+}
+
+/// When a memory prefetch runs: before turn 1, or after a sprint renewal dropped the history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryPrefetchPhase {
+    Initial,
+    Renewal,
 }
 
 struct PendingControl {
@@ -307,6 +316,7 @@ impl RuntimeRunner {
             interrupted: AtomicBool::new(false),
             cancellation_reason: AtomicU8::new(0),
             active_kernel: std::sync::Mutex::new(None),
+            current_goal: std::sync::Mutex::new(None),
             local_page_out_cache: std::sync::Mutex::new(Vec::new()),
             pending_control: std::sync::Mutex::new(Vec::new()),
         }
@@ -527,6 +537,7 @@ impl RuntimeRunner {
                     candidate_id: candidate_id.clone(),
                     source,
                     record,
+                    attestation: None,
                 },
             )
             .await?;
@@ -641,7 +652,7 @@ impl RuntimeRunner {
 
     /// Session extraction after a completed run: one auxiliary-model pass, then each extracted
     /// record through the write funnel — to the store, or to the candidate sink under an id
-    /// derived from the run (operation) and the record's ordinal.
+    /// derived from the run (operation) and the proposed payload.
     async fn extract_and_write_session_memories(
         &self,
         session: &deepstrike_core::memory::durable::SessionData,
@@ -657,21 +668,23 @@ impl RuntimeRunner {
             return;
         };
         let to_sink = self.memory_write_to_candidate_sink(MemoryCandidateSource::SessionExtraction);
-        for (ordinal, memory) in memories.into_iter().enumerate() {
-            let candidate = to_sink.then(|| {
-                let ordinal = ordinal.to_string();
-                (
-                    MemoryCandidateSource::SessionExtraction,
-                    memory_candidate_id(&[
-                        "v2",
-                        &session.agent_id,
-                        MemoryCandidateSource::SessionExtraction.label(),
-                        &session.session_id,
-                        operation_id,
-                        &ordinal,
-                    ]),
-                )
-            });
+        let mut proposed = std::collections::HashSet::new();
+        for memory in memories {
+            let candidate = if to_sink {
+                let id = session_extraction_candidate_id(
+                    &session.agent_id,
+                    &session.session_id,
+                    operation_id,
+                    &memory,
+                );
+                // One answer proposing the same record twice is one candidate.
+                if !proposed.insert(id.clone()) {
+                    continue;
+                }
+                Some((MemoryCandidateSource::SessionExtraction, id))
+            } else {
+                None
+            };
             let _ = self
                 .write_memory_routed(
                     memory,
@@ -766,6 +779,84 @@ impl RuntimeRunner {
     /// M3 · a host-initiated recall. The store reports the counts it holds; the kernel derives the
     /// next counts (the same derivation a model `query_memory` resolution journals as
     /// `memory_recalled`) and the store only mirrors them.
+    /// I4 + K4 · M5: fetch long-term memory hits for `goal` and put each one in context as the
+    /// canonical recall text (`memory_recall_turn`). Before turn 1 (`MemoryPrefetchPhase::Initial`)
+    /// each hit is an ordinary `history` user turn. After a sprint renewal, which drops the old
+    /// history with the earlier hits, a running operation accepts history only through effects or
+    /// external events, so each hit is a keyed `memory:<record_id>` knowledge entry instead. One
+    /// prefetch is one dedupe horizon and one `memory_retrieval_result`. A failing store or hook
+    /// skips the prefetch; only a kernel refusal of the seed command is an error.
+    async fn prefetch_memory(
+        &self,
+        kernel: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
+        pending_observations: &mut Vec<KernelObservation>,
+        phase: MemoryPrefetchPhase,
+        goal: &str,
+        session_id: &str,
+    ) -> Result<()> {
+        if !self.memory_retrieval_enabled() {
+            return Ok(());
+        }
+        let (Some(pre), Some(store), Some(agent_id)) = (
+            self.opts.pre_query_memory.clone(),
+            self.opts.memory_store.as_ref(),
+            self.opts.agent_id.as_deref(),
+        ) else {
+            return Ok(());
+        };
+        let policy_top_k = self
+            .opts
+            .memory_policy
+            .as_ref()
+            .and_then(|policy| policy.retrieval_top_k);
+        let mut accepted: Vec<MemoryRecall> = Vec::new();
+        for mut query in pre(goal) {
+            if query.query.trim().is_empty() {
+                continue;
+            }
+            if let Some(top_k) = policy_top_k {
+                query.top_k = query.top_k.min(top_k as usize);
+            }
+            if query.top_k == 0 {
+                continue;
+            }
+            let Ok(hits) = store.search(agent_id, &query).await else {
+                continue;
+            };
+            for hit in hits.into_iter().take(query.top_k) {
+                if accepted
+                    .iter()
+                    .any(|seen| seen.record.record_id == hit.record.record_id)
+                {
+                    continue;
+                }
+                let content = memory_recall_turn(&hit.record);
+                let command = match phase {
+                    MemoryPrefetchPhase::Initial => serde_json::json!({
+                        "kind": "add_history_message",
+                        "message": CoreMessage::user(content),
+                    }),
+                    MemoryPrefetchPhase::Renewal => serde_json::json!({
+                        "kind": "add_knowledge_message",
+                        "key": format!("memory:{}", hit.record.record_id),
+                        "tokens": ((content.len() / 4) as u32).max(1),
+                        "content": content,
+                    }),
+                };
+                kernel_apply(kernel, pending_observations, command).await?;
+                accepted.push(hit);
+            }
+        }
+        if accepted.is_empty() {
+            return Ok(());
+        }
+        // M3 · the prefetch is a recall too; its counts are the kernel's to derive.
+        let _ = Box::pin(self.record_host_memory_recall(&accepted, agent_id)).await;
+        self.log_memory_retrieval_result(Some(session_id), accepted)
+            .await;
+        Ok(())
+    }
+
     async fn record_host_memory_recall(&self, hits: &[MemoryRecall], agent_id: &str) -> Result<()> {
         let Some(store) = &self.opts.memory_store else {
             return Ok(());
@@ -1477,59 +1568,18 @@ impl RuntimeRunner {
                     ).await?;
                 }
 
-                // I4: pre-fetch memory into the knowledge partition before the first LLM turn.
-                // Mirrors Node/WASM/Python preQueryMemory. Errs-open: missing memory_store/agent_id
-                // or a faulty closure silently skip the pre-fetch.
-                if !resume_mid_run && self.memory_retrieval_enabled() {
-                    if let (Some(pre), Some(store), Some(agent_id)) = (
-                        self.opts.pre_query_memory.clone(),
-                        self.opts.memory_store.as_ref(),
-                        self.opts.agent_id.as_deref(),
-                    ) {
-                        let queries = pre(goal.as_str());
-                        let mut recalled = Vec::new();
-                        let mut recalled_hits: Vec<MemoryRecall> = Vec::new();
-                        for q in &queries {
-                            if q.query.trim().is_empty() {
-                                continue;
-                            }
-                            if let Ok(hits) = store.search(agent_id, q).await {
-                                for hit in hits {
-                                    if recalled_hits
-                                        .iter()
-                                        .any(|seen| seen.record.record_id == hit.record.record_id)
-                                    {
-                                        continue;
-                                    }
-                                    recalled_hits.push(hit.clone());
-                                    recalled.push(format!(
-                                        "[memory record_id={} trust={} score={:.3}] {}",
-                                        hit.record.record_id,
-                                        match hit.record.provenance.trust {
-                                            MemoryTrustLevel::Untrusted => "untrusted",
-                                            MemoryTrustLevel::UserAsserted => "user_asserted",
-                                            MemoryTrustLevel::HostVerified => "host_verified",
-                                        },
-                                        hit.score,
-                                        hit.record.content
-                                    ));
-                                }
-                            }
-                        }
-                        if !recalled.is_empty() {
-                            kernel_apply(
-                                &kernel,
-                                &mut pending_observations,
-                                serde_json::json!({
-                                    "kind": "add_history_message",
-                                    "message": CoreMessage::user(recalled.join("\n")),
-                                }),
-                            ).await?;
-                        }
-                        // M3 · the prefetch is a recall too; its counts are the kernel's to derive.
-                        let _ = Box::pin(self.record_host_memory_recall(&recalled_hits, agent_id))
-                            .await;
-                    }
+                // I4 · M5: pre-fetch memory into history before the first LLM turn; the prefetch
+                // re-fires into knowledge after each sprint renewal (`append_observations`).
+                *self.current_goal.lock().unwrap() = Some(goal.clone());
+                if !resume_mid_run {
+                    self.prefetch_memory(
+                        &kernel,
+                        &mut pending_observations,
+                        MemoryPrefetchPhase::Initial,
+                        &goal,
+                        &session_id,
+                    )
+                    .await?;
                 }
             }
 
@@ -2731,6 +2781,21 @@ impl RuntimeRunner {
                         next_archive_start = compressed_seq + 1;
                     }
                     continue;
+                }
+                // K4 · a sprint renewal dropped the old history, earlier memory hits included, so
+                // the new sprint gets a fresh recall pass (live drain path only).
+                KernelObservation::Renewed { .. } => {
+                    let goal = self.current_goal.lock().unwrap().clone();
+                    if let Some(goal) = goal {
+                        let _ = Box::pin(self.prefetch_memory(
+                            kernel_mutex,
+                            observations,
+                            MemoryPrefetchPhase::Renewal,
+                            &goal,
+                            session_id,
+                        ))
+                        .await;
+                    }
                 }
                 // M3 · mirror the recall counts the kernel derived; the store never computes them.
                 KernelObservation::MemoryRecalled { recalls, .. } => {

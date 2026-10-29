@@ -60,10 +60,14 @@ pub use harness_loop::{
 };
 pub use knowledge::KnowledgeSource;
 pub use memory::{
-    DurableMemory, InMemoryMemoryCandidateSink, InMemoryMemoryStore, MemoryCandidate,
-    MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource, MemoryRetrievalPolicy,
+    DurableMemory, FileMemoryCandidateSink, InMemoryMemoryCandidateSink, InMemoryMemoryStore, MemoryCandidate,
+    Ed25519MemoryCandidateSourceVerifier, HmacMemoryCandidateSourceVerifier, MemoryCandidateAttestation, MemoryCandidateAttestationReasonCode,
+    MemoryCandidateLedgerEntry, MemoryCandidateOutboxEvent, MemoryCandidateReceipt, MemoryCandidateResolution,
+    MemoryCandidateVerificationAttempt,
+    MemoryCandidateSink, MemoryCandidateSource, MemoryCandidateSourceVerifier, MemoryRetrievalPolicy,
     MemoryRuntimePolicy, MemorySearchOptions, MemoryStore, MemoryWritePolicy, WorkingMemory,
-    memory_candidate_id, memory_candidate_payload_digest,
+    admit_memory_candidate, memory_candidate_attestation_canonical_payload, memory_candidate_attestation_digest, memory_candidate_id, memory_candidate_payload_digest, memory_recall_turn, sign_memory_candidate_attestation,
+    session_extraction_candidate_id,
 };
 pub use providers::RuntimePolicy;
 pub use providers::anthropic::AnthropicProvider;
@@ -97,9 +101,14 @@ pub use runtime::{
     OsProfile, SchedulerPolicyConfig, SignalPolicy, assert_native_profile,
     default_native_governance_policy, os_profile,
 };
+pub use runtime::{
+    EvidenceCursor, EvidenceDiagnostic, EvidenceLink, EvidenceRef, EvidenceRetention,
+    EvidenceScope, FileSessionLog, InMemorySessionLog, KnowledgeIdentity, SessionEntry, SessionLog,
+    SharedEvidenceSnapshot, canonical_event_json, knowledge_identity, project_shared_evidence,
+    read_session_evidence, read_shared_evidence_values,
+};
 pub use runtime::{ExecutionPlane, LocalExecutionPlane};
 pub use runtime::{FilePayloadStore, PayloadStore};
-pub use runtime::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
 pub use runtime::{
     KernelReliability, MilestoneEvaluationContext, MilestoneEvaluationHandler, MilestonePolicy,
     RunLimits, RuntimeOptions, RuntimeRunner, collect_text,

@@ -158,7 +158,7 @@ impl SessionLog for FileSessionLog {
             if seq < from_seq {
                 continue;
             }
-            let event: SessionEvent = serde_json::from_value(raw["event"].clone())?;
+            let event = SessionEvent::from_wire_value(raw["event"].clone())?;
             if let Some(pf) = primitive_filter {
                 if primitive_for_kind(event.kind_str()) != pf {
                     continue;

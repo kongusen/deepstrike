@@ -28,6 +28,8 @@ const AGENT: &str = "agent-candidate";
 /// answer, so the main turn, the extraction pass and the archive summary all accept it.
 struct CountingProvider {
     calls: Arc<AtomicUsize>,
+    /// The text of every turn of every context the provider was shown, call by call.
+    seen_turns: Arc<std::sync::Mutex<Vec<Vec<(String, String)>>>>,
 }
 
 const EXTRACTED: &str = r#"{"memories":[{"name":"prefers-focused-tests","kind":"feedback","content":"User prefers focused tests.","description":"stated preference","confidence":1}]}"#;
@@ -45,13 +47,30 @@ impl LLMProvider for CountingProvider {
 
     async fn stream(
         &self,
-        _context: &InternalRenderedContext,
+        context: &InternalRenderedContext,
         _tools: &[ToolSchema],
         _extensions: Option<&serde_json::Value>,
         _state: Option<&crate::providers::ProviderRunState>,
     ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>>
     {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.seen_turns.lock().unwrap().push(
+            context
+                .turns
+                .iter()
+                .map(|turn| {
+                    let role = serde_json::json!(turn.role)
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    let content = serde_json::json!(turn.content)
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    (role, content)
+                })
+                .collect(),
+        );
         Ok(Box::new(futures::stream::iter(vec![
             Ok(StreamEvent::TextDelta {
                 delta: EXTRACTED.into(),
@@ -61,11 +80,12 @@ impl LLMProvider for CountingProvider {
     }
 }
 
-/// Counts writes and searches; holds nothing.
+/// Counts writes and searches; holds nothing but the hits every search answers with.
 #[derive(Default)]
 struct CountingStore {
     puts: Arc<AtomicUsize>,
     searches: Arc<AtomicUsize>,
+    hits: Vec<MemoryRecall>,
 }
 
 #[async_trait::async_trait]
@@ -86,7 +106,7 @@ impl MemoryStore for CountingStore {
         _query: &MemoryQuery,
     ) -> crate::Result<Vec<MemoryRecall>> {
         self.searches.fetch_add(1, Ordering::SeqCst);
-        Ok(Vec::new())
+        Ok(self.hits.clone())
     }
     async fn save_session(
         &self,
@@ -103,6 +123,7 @@ struct Harness {
     model_calls: Arc<AtomicUsize>,
     puts: Arc<AtomicUsize>,
     searches: Arc<AtomicUsize>,
+    seen_turns: Arc<std::sync::Mutex<Vec<Vec<(String, String)>>>>,
 }
 
 fn policy(write: MemoryWritePolicy) -> MemoryRuntimePolicy {
@@ -119,10 +140,28 @@ fn harness(
     with_sink: bool,
     pre_query_calls: Option<Arc<AtomicUsize>>,
 ) -> Harness {
+    harness_with_hits(
+        memory_runtime_policy,
+        with_sink,
+        pre_query_calls,
+        Vec::new(),
+    )
+}
+
+fn harness_with_hits(
+    memory_runtime_policy: Option<MemoryRuntimePolicy>,
+    with_sink: bool,
+    pre_query_calls: Option<Arc<AtomicUsize>>,
+    hits: Vec<MemoryRecall>,
+) -> Harness {
     let log = Arc::new(InMemorySessionLog::new());
     let sink = Arc::new(InMemoryMemoryCandidateSink::new());
     let model_calls = Arc::new(AtomicUsize::new(0));
-    let store = CountingStore::default();
+    let seen_turns = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let store = CountingStore {
+        hits,
+        ..CountingStore::default()
+    };
     let (puts, searches) = (store.puts.clone(), store.searches.clone());
     let pre_query_memory = pre_query_calls.map(|calls| {
         Arc::new(move |goal: &str| {
@@ -140,6 +179,7 @@ fn harness(
         artifact_set_digest: None,
         provider: Box::new(CountingProvider {
             calls: model_calls.clone(),
+            seen_turns: seen_turns.clone(),
         }),
         execution_plane: None,
         session_log: Some(log.clone()),
@@ -189,6 +229,7 @@ fn harness(
         model_calls,
         puts,
         searches,
+        seen_turns,
     }
 }
 
@@ -582,4 +623,165 @@ async fn a_rejected_candidate_is_audited_and_reported_unwritten() {
         .expect("a memory_candidate_rejected audit");
     assert_eq!(rejected.0, "candidate_conflict");
     assert_eq!(rejected.1, "session_extraction");
+}
+
+fn recalled(record_id: &str, content: &str) -> MemoryRecall {
+    MemoryRecall {
+        record: MemoryRecord {
+            record_id: record_id.into(),
+            kind: MemoryKind::Reference,
+            provenance: MemoryProvenance {
+                session_id: None,
+                author: MemoryAuthor::Host,
+                trust: MemoryTrustLevel::HostVerified,
+                evidence_refs: Vec::new(),
+            },
+            ..proposal(content)
+        },
+        score: 0.9,
+        why: "fixture".into(),
+    }
+}
+
+/// M5 · the vector every SDK's recall-projection test pins.
+#[test]
+fn the_recall_turn_matches_the_other_sdks() {
+    let record = MemoryRecord {
+        record_id: "record-v".into(),
+        scope: MemoryScope::new("t", "n"),
+        kind: MemoryKind::Project,
+        provenance: MemoryProvenance {
+            session_id: None,
+            author: MemoryAuthor::Extraction,
+            trust: MemoryTrustLevel::Untrusted,
+            evidence_refs: Vec::new(),
+        },
+        ..proposal("prefers numbered sections")
+    };
+    assert_eq!(
+        crate::memory::memory_recall_turn(&record),
+        "[MEMORY record_id=record-v kind=project trust=untrusted] prefers numbered sections"
+    );
+}
+
+/// M5 · the turn-1 prefetch puts each hit in history as its own canonical recall turn, once per
+/// record however many queries hit it, and audits the prefetch.
+#[tokio::test]
+async fn the_initial_prefetch_lands_each_hit_as_a_canonical_history_turn() {
+    let h = harness_with_hits(
+        None,
+        false,
+        Some(Arc::new(AtomicUsize::new(0))),
+        vec![
+            recalled("record-a", "FACT_A"),
+            recalled("record-a", "FACT_A"),
+        ],
+    );
+    run_to_end(&h.runner, "prefetch").await;
+
+    let first = h.seen_turns.lock().unwrap()[0].clone();
+    let recall_turns: Vec<_> = first
+        .into_iter()
+        .filter(|(_, content)| content.starts_with("[MEMORY "))
+        .collect();
+    assert_eq!(
+        recall_turns,
+        vec![(
+            "user".to_string(),
+            "[MEMORY record_id=record-a kind=reference trust=host_verified] FACT_A".to_string()
+        )]
+    );
+    let audited: Vec<_> = events(&h.log, "prefetch")
+        .await
+        .into_iter()
+        .filter_map(|event| match event {
+            SessionEvent::MemoryRetrievalResult { hits } => Some(hits),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(audited.len(), 1);
+    assert_eq!(audited[0].len(), 1, "the duplicate hit is one recall");
+}
+
+/// K4 · M5: a sprint renewal re-runs the prefetch for the live goal. The hit is seeded as keyed
+/// knowledge, not a history message (a running operation refuses host history), and the
+/// re-fetch is audited.
+#[tokio::test]
+async fn a_renewal_re_runs_the_prefetch_into_keyed_knowledge() {
+    let h = harness_with_hits(
+        None,
+        false,
+        Some(Arc::new(AtomicUsize::new(0))),
+        vec![recalled("record-a", "FACT_A")],
+    );
+    *h.runner.current_goal.lock().unwrap() = Some("keep going".into());
+    let kernel = Arc::new(tokio::sync::Mutex::new(
+        crate::runtime::canonical_runner_runtime::CanonicalRunnerRuntime::new(
+            crate::runtime::canonical_kernel::CanonicalKernel::default(),
+            Arc::new(crate::runtime::InMemoryKernelJournal::new()),
+            "renewal",
+            crate::runtime::canonical_runner_runtime::CanonicalRunnerOptions {
+                max_context_tokens: 1_000,
+                max_turns: Some(3),
+                max_total_tokens: None,
+                max_wall_ms: None,
+                artifact_set_digest: None,
+                memory_binding_id: "memory".into(),
+                persist_payload: None,
+            },
+        )
+        .unwrap(),
+    ));
+    // A running operation: the state a live renewal observation arrives in.
+    kernel
+        .lock()
+        .await
+        .start_agent_value(serde_json::json!({ "goal": "keep going" }), None)
+        .await
+        .unwrap();
+    let mut observations = vec![KernelObservation::Renewed { sprint: 1 }];
+    h.runner
+        .append_observations(
+            "renewal",
+            &kernel,
+            &mut observations,
+            &mut std::collections::VecDeque::new(),
+            0,
+        )
+        .await;
+
+    assert_eq!(h.searches.load(Ordering::SeqCst), 1);
+    // The audit is written only after the kernel accepted every seed command.
+    let audited = events(&h.log, "renewal")
+        .await
+        .into_iter()
+        .filter(|event| matches!(event, SessionEvent::MemoryRetrievalResult { .. }))
+        .count();
+    assert_eq!(audited, 1);
+}
+
+/// M4 · `AgentSession::remember` reports a write the kernel refused instead of returning `Ok`
+/// for a record that never reached the store.
+#[tokio::test]
+async fn a_refused_remember_is_an_error_and_reaches_no_store() {
+    let h = harness(None, false, None);
+    let puts = h.puts.clone();
+    let agent = crate::agent::Agent::with_runner(h.runner);
+    let refused = MemoryRecord {
+        name: "n".repeat(10_000),
+        ..proposal("fact")
+    };
+    let error = agent
+        .session("remember")
+        .remember(refused)
+        .await
+        .expect_err("the kernel refuses an oversized name");
+    assert!(error.to_string().contains("memory write denied"));
+    assert_eq!(puts.load(Ordering::SeqCst), 0);
+    agent
+        .session("remember")
+        .remember(proposal("fact"))
+        .await
+        .expect("an admissible write is stored");
+    assert_eq!(puts.load(Ordering::SeqCst), 1);
 }

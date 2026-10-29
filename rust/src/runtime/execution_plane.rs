@@ -330,8 +330,13 @@ fn execute_all_local<'a>(
                         let text = entries
                             .iter()
                             .map(|e| format!(
-                                "[memory record_id={} score={:.3}] {}",
-                                e.record.record_id, e.score, e.record.content
+                                "[memory record_id={} trust={} score={:.3}] {}",
+                                e.record.record_id,
+                                serde_json::json!(e.record.provenance.trust)
+                                    .as_str()
+                                    .unwrap_or_default(),
+                                e.score,
+                                e.record.content
                             ))
                             .collect::<Vec<_>>()
                             .join("\n---\n");

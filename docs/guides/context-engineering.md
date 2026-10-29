@@ -108,7 +108,8 @@ RuntimeOptions(..., on_turn_metrics=on_metrics)
 | ------ | ------ | ------ |
 | Skill 正文（方法类，整个 run 复用） | `knowledge`，键 `skill:<name>` | 常驻，直到 deactivate / lease 到期 |
 | memory / knowledge 工具检索命中（事实类，用完即弃） | `history` 普通轮次 | 随压缩金字塔自然衰减 |
-| `pre_query_memory` 预取 | `history` 普通轮次 | 同上；renewal 后自动重查 |
+| `pre_query_memory` 初始预取 | `history` 普通轮次 | 同上；每个命中一条 canonical `[MEMORY ...]` turn |
+| `pre_query_memory` renewal 重查 | keyed `knowledge`，键 `memory:<record_id>` | 当前 sprint 可见；按 knowledge 边界 upsert |
 | 宿主钉住的参考材料 | `knowledge`（`push_knowledge(key=..., pinned=True)`） | pinned 不受预算驱逐 |
 
 **键控条目（K1）**：`push_knowledge(content, key="ref")` 同键重推为 upsert，`remove_knowledge("ref")` 定向移除。两者都**延迟到下一个 compaction/renewal 边界生效** —— `system[1]` 的既有字节只在 prompt-cache 前缀反正要重写的时刻改动（追加除外：追加只是延长缓存前缀，立即可见）。
@@ -117,7 +118,7 @@ RuntimeOptions(..., on_turn_metrics=on_metrics)
 
 **Skill 卸载 / 租约（K3）**：`deactivate_skill(name)`（仅宿主驱动，无模型侧 unload）—— 工具集在下一次 provider 调用回宽，knowledge 钉在下一个边界摘除；`skill_lease_turns=N` 让每次激活 N 轮后自动走同一条路径。多阶段长任务不再单调累积早期阶段的 skill。
 
-**Renewal 记忆重查（K4）**：sprint renewal 会整体重建 history（连同早先的 memory 命中一起丢弃），`pre_query_memory` 钩子会以 `phase="renewal"` 自动重发一次，让新 sprint 从新鲜的召回开始（turn-1 那次为 `phase="initial"`）。
+**Renewal 记忆重查（K4/M5）**：sprint renewal 会整体重建 history（连同早先的 memory 命中一起丢弃），`pre_query_memory` 钩子会以 `phase="renewal"` 自动重发一次，让新 sprint 从新鲜的召回开始（turn-1 那次为 `phase="initial"`）。初始预取把每个命中作为一条普通 `history` user turn；renewal 发生在运行中的 canonical operation 内，宿主不能直接追加 history，因此重查命中通过 `add_knowledge_message` 以 `memory:<record_id>` 键写入 `knowledge`。两条路径都使用相同的 `memoryRecallTurn` 文本（包含 `record_id`、`kind` 和 provenance `trust`），按 record ID 去重，并为每次预取写入一个 `memory_retrieval_result` 审计事件。
 
 ```python
 RuntimeOptions(

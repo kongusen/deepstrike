@@ -6,6 +6,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Added a durable file-backed memory candidate ledger for Node, Python, and Rust. It provides
+  `(agent_id, candidate_id)` idempotency, conflict receipts, pending-to-terminal resolution,
+  crash-recoverable snapshots, and a durable outbox. WASM continues to use a host-injected sink.
+- Added shared source admission and host attestation checks. Attestation failures are recorded as
+  verification attempts without occupying candidate identity, so a corrected proof can retry with
+  the same candidate ID. The reference verifier binds agent, scope, source, digest, key ID, policy
+  version, expiry, clock skew, and HMAC signature. Ed25519 public-key verification is also
+  available with the same canonical payload and `ed25519:<base64url>` signature format.
+
 ## [0.2.76] - 2026-10-20
 
 ### Fixed
@@ -862,12 +873,11 @@ non-breaking window before the 0.2.67/0.2.68 deprecation-and-deletion pair.
   fail-closed on throw/malformed return; lineage audit records `tier` + `screenVerdict`.
   Evidence bundles carry a fixed provenance line, and miner/proposer prompts pin down that quoted
   excerpt content is data, never instructions.
-- **Shared-layer gate (design-final, implementation deferred)**: `aggregateSharedEvidence`
-  produces signature-only cross-scope aggregates (no excerpts, no task ids — nothing verbatim
-  from any tenant's transcripts survives, enforced by construction), and `promoteToShared`
-  requires a cluster seen in ≥2 distinct scopes plus an explicit human approval token — there is
-  no auto path to shared promotion. Production aggregation ships with the per-model-profile
-  corpus work.
+- **Shared-layer gate:** the cross-SDK shared-evidence read model now projects session-log,
+  kernel-journal, checkpoint, context-binding, provider-attempt, prompt-measurement, wire-replay,
+  knowledge, memory, and candidate evidence into one read-only snapshot. Canonical event bytes,
+  scope filtering, knowledge identity, candidate receipts, journal pruning, and unresolved links
+  are covered by the shared conformance fixture across Node, Python, WASM, and Rust adapters.
 
 ## [0.2.47] - 2026-07-19
 

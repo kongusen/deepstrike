@@ -16,6 +16,7 @@ dependencies = [
     "openai>=2.6",
     "google-genai>=1.0",
     "dashscope>=1.20",
+    "cryptography>=42.0",
 ]
 
 [tool.maturin]

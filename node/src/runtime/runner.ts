@@ -27,11 +27,13 @@ import {
 import { validateMemory } from "../memory/agent.js"
 import {
   memoryCandidateId,
+  sessionExtractionCandidateId,
   type MemoryCandidateReceipt,
   type MemoryCandidateSink,
   type MemoryCandidateSource,
 } from "../memory/candidate-sink.js"
 import { checkMemoryWrite, deriveMemoryRecall, type KernelMemoryPolicyWire } from "../memory/authority.js"
+import { memoryRecallTurn } from "../memory/recall-projection.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { Skill } from "../skill.js"
 import type { SkillMetadata } from "../skills/loader.js"
@@ -1098,47 +1100,6 @@ export class RuntimeRunner {
     if (limit <= 0) return []
     return (await this.opts.memoryStore.search(agentId, { ...query, top_k: limit }))
       .slice(0, limit)
-  }
-
-  /**
-   * Route a host-originated renewal prefetch into canonical knowledge commands. This is not an
-   * agent syscall: the host selects records from its store, then the kernel owns the write
-   * of live semantic context. `seenRecordIds` is the prefetch's dedupe horizon.
-   */
-  private async prefetchMemoryIntoKnowledge(
-    runtime: CanonicalRunnerRuntime,
-    query: MemoryQuery,
-    agentId: string,
-    sessionId: string | null | undefined,
-    seenRecordIds?: Set<string>,
-  ): Promise<{ hits: MemoryRecall[]; action: KernelRunnerAction | null }> {
-    let hits: MemoryRecall[] = []
-    try {
-      hits = await this.retrieveMemoryFromStore(query, query.top_k, agentId)
-      if (seenRecordIds) {
-        hits = hits.filter(hit => {
-          const id = hit.record.record_id
-          if (seenRecordIds.has(id)) return false
-          seenRecordIds.add(id)
-          return true
-        })
-      }
-      for (const hit of hits) {
-        // Route renewal recalls through the same host context admission path as every other
-        // dynamic knowledge entry. This keeps ContextManager budgets and ledger events in sync
-        // while preserving the canonical kernel knowledge command underneath.
-        await this.pushKnowledge(
-          { role: "system", content: hit.record.content, toolCalls: [] },
-          estimateTextTokens(hit.record.content),
-          { key: `memory:${hit.record.record_id}` },
-        )
-      }
-      await this.recordHostMemoryRecall(hits, agentId)
-      await this.logMemoryRetrievalResult(sessionId, hits)
-    } catch {
-      return { hits: [], action: runtime.resumeAction() }
-    }
-    return { hits, action: runtime.resumeAction() }
   }
 
   /**
@@ -3051,7 +3012,7 @@ export class RuntimeRunner {
       }
     }
     this.currentGoal = goal
-    if (!resumeMidRun) await this.prefetchMemoryIntoInitialContext(runtime)
+    if (!resumeMidRun) await this.prefetchMemoryIntoHistory(runtime, "initial")
 
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before root start pushes the "[TASK STATE]" anchor. init_task does not
@@ -4089,17 +4050,21 @@ export class RuntimeRunner {
               this.opts.memorySystemPrompt,
             )
             const toSink = this.memoryPathToCandidateSink("sessionExtraction")
-            for (const [ordinal, memory] of extracted.entries()) {
+            const proposed = new Set<string>()
+            for (const memory of extracted) {
+              const candidateId = toSink
+                ? sessionExtractionCandidateId(this.opts.agentId, sessionId, runtime.operationId, memory)
+                : undefined
+              // One answer proposing the same record twice is one candidate.
+              if (candidateId !== undefined) {
+                if (proposed.has(candidateId)) continue
+                proposed.add(candidateId)
+              }
               await this.writeMemory(memory, {
                 sessionId,
                 agentId: this.opts.agentId,
-                ...(toSink
-                  ? {
-                      candidate: {
-                        source: "session_extraction" as const,
-                        candidateId: memoryCandidateId(["v2", this.opts.agentId, "session_extraction", sessionId, runtime.operationId, String(ordinal)]),
-                      },
-                    }
+                ...(candidateId !== undefined
+                  ? { candidate: { source: "session_extraction" as const, candidateId } }
                   : {}),
               })
             }
@@ -4131,16 +4096,20 @@ export class RuntimeRunner {
     }
   }
 
-  /** I4 + K4: fetch long-term memory hits for the current goal and land them in `history` as an
-   *  ordinary user turn — single-use retrieval content that decays with the compression pyramid,
-   *  never pinned into `knowledge`. Called once before turn 1 (`phase: "initial"`) and re-fired
-   *  after each sprint renewal (`phase: "renewal"`): renewal drops the old history INCLUDING the
-   *  earlier memory hits, so the new sprint gets a fresh recall pass. Errs-open throughout. */
+  /** I4 + K4 · M5: fetch long-term memory hits for the current goal and put each one in context as
+   *  the canonical recall text ({@link memoryRecallTurn}). Called once before turn 1
+   *  (`phase: "initial"`): each hit is an ordinary `history` user turn — single-use retrieval
+   *  content that decays with the compression pyramid. Re-fired after each sprint renewal
+   *  (`phase: "renewal"`), which drops the old history with the earlier hits: a running operation
+   *  accepts history only through effects or external events, so each hit is a keyed
+   *  `memory:<record_id>` knowledge entry instead, through the same admission path as any other
+   *  dynamic knowledge. One prefetch is one dedupe horizon and one `memory_retrieval_result`.
+   *  Errs-open throughout: a faulty prefetch never breaks the run. */
   private async prefetchMemoryIntoHistory(
     runtime: CanonicalRunnerRuntime,
     phase: "initial" | "renewal",
-  ): Promise<KernelRunnerAction | undefined> {
-    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return undefined
+  ): Promise<void> {
+    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     // P10: recall is default-on (CC session-start recall) — with no hook configured,
     // the goal itself is the query. preQueryMemory stays as the targeting override.
     const preQuery = this.opts.preQueryMemory
@@ -4156,46 +4125,6 @@ export class RuntimeRunner {
         runSpec: this.opts.runSpec,
         phase,
       })
-      // Renewal prefetch is a host policy, not an agent syscall. Store selection stays host-side;
-      // each accepted hit enters the live run through a canonical seed-knowledge command.
-      //
-      // One prefetch = one dedupe horizon: a record hit by several short queries recalls and
-      // injects once. A renewal prefetch starts a fresh horizon — renewal dropped the earlier
-      // injection with the old history, so re-exposure is a genuine new recall.
-      const seenRecordIds = new Set<string>()
-      let resumed: KernelRunnerAction | undefined
-      for (const q of queries ?? []) {
-        if (!q.query.trim()) continue
-        const { action } = await this.prefetchMemoryIntoKnowledge(
-          runtime,
-          q,
-          this.opts.agentId,
-          this.durableSessionId(this.currentSessionId),
-          seenRecordIds,
-        )
-        resumed = action ?? resumed
-      }
-      // Every seed command leaves the pending provider action authoritative; use the last view.
-      return resumed
-    } catch { /* errs-open — a faulty pre-fetch never breaks the run */ }
-    return undefined
-  }
-
-  private async prefetchMemoryIntoInitialContext(runtime: CanonicalRunnerRuntime): Promise<void> {
-    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
-    const preQuery = this.opts.preQueryMemory
-      ?? ((ctx: { goal: string }) => [{
-        scope: this.opts.memoryScope!,
-        query: ctx.goal,
-        top_k: 5,
-        kinds: [],
-      }])
-    try {
-      const queries = await preQuery({
-        goal: this.currentGoal,
-        runSpec: this.opts.runSpec,
-        phase: "initial",
-      })
       const seen = new Set<string>()
       const accepted: MemoryRecall[] = []
       for (const query of queries ?? []) {
@@ -4205,19 +4134,25 @@ export class RuntimeRunner {
           if (seen.has(hit.record.record_id)) continue
           seen.add(hit.record.record_id)
           accepted.push(hit)
-          await this.commitKernelApply(runtime, this.pendingObservations, {
-            kind: "add_history_message",
-            message: {
-              role: "user",
-              content: `[MEMORY record_id=${hit.record.record_id} kind=${hit.record.kind}] ${hit.record.content}`,
-            },
-          })
+          const content = memoryRecallTurn(hit.record)
+          if (phase === "initial") {
+            await this.commitKernelApply(runtime, this.pendingObservations, {
+              kind: "add_history_message",
+              message: { role: "user", content },
+            })
+          } else {
+            await this.pushKnowledge(
+              { role: "system", content, toolCalls: [] },
+              estimateTextTokens(content),
+              { key: `memory:${hit.record.record_id}` },
+            )
+          }
         }
       }
+      if (accepted.length === 0) return
       await this.recordHostMemoryRecall(accepted, this.opts.agentId)
-    } catch {
-      // Prefetch is advisory; store/config failure never blocks the operation.
-    }
+      await this.logMemoryRetrievalResult(this.currentSessionId, accepted)
+    } catch { /* errs-open — a faulty prefetch never breaks the run */ }
   }
 
   private async appendObservations(

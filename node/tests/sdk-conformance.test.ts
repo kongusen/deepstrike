@@ -50,12 +50,28 @@ function providerPlanFixture(reference: string): Record<string, unknown> {
   }
 }
 
+/** The runner's projection (scripts/run-sdk-conformance.mjs `expectedFor`): the registry fixture
+ *  lists every kind with the SDKs that carry it, and each SDK is compared against only its own. */
+function expectedCanonicalFor(
+  fixture: { domain?: string; expected: { canonical?: Record<string, unknown> } },
+  sdk: string,
+): Record<string, unknown> | undefined {
+  const canonical = fixture.expected.canonical
+  if (fixture.domain !== "session_event_vocabulary" || !canonical) return canonical
+  const kinds: Record<string, unknown> = {}
+  for (const [kind, entry] of Object.entries(canonical.kinds as Record<string, { sdks: string[]; required: string[]; optional: string[] }>)) {
+    if (entry.sdks.includes(sdk)) kinds[kind] = { required: entry.required, optional: entry.optional }
+  }
+  return { kinds }
+}
+
 describe("spc_017 Node SDK conformance adapter", () => {
   for (const name of readdirSync(fixturesDir).filter(name => name.endsWith(".json")).sort()) {
     it(`matches ${name}`, async () => {
       const path = join(fixturesDir, name)
       const fixture = JSON.parse(await (await import("node:fs/promises")).readFile(path, "utf8")) as {
         id: string
+        domain?: string
         expected: { canonical?: Record<string, unknown>; error?: { code: string; path: string } }
       }
       const envelope = runFixture(path)
@@ -67,7 +83,7 @@ describe("spc_017 Node SDK conformance adapter", () => {
           ok: true,
           sdk: "node",
           fixture: fixture.id,
-          canonical: fixture.expected.canonical,
+          canonical: expectedCanonicalFor(fixture, "node"),
         })
       } else {
         expect(envelope).toMatchObject({

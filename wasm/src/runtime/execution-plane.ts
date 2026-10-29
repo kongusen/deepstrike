@@ -91,7 +91,7 @@ export class LocalExecutionPlane implements ExecutionPlane {
         ? await ctx.memoryStore.search(ctx.agentId, { scope: ctx.memoryScope, query: String(args?.query ?? ""), top_k: topK, kinds: [] })
         : []
       const content = entries.length
-        ? entries.map(e => `[memory record_id=${e.record.record_id} score=${e.score.toFixed(3)}] ${e.record.content}`).join("\n---\n")
+        ? entries.map(e => `[memory record_id=${e.record.record_id} trust=${e.record.provenance.trust} score=${e.score.toFixed(3)}] ${e.record.content}`).join("\n---\n")
         : "No relevant memories found."
       yield { type: "tool_result", callId: c.id, name: c.name, content, isError: false } as ToolResultEvent
     }

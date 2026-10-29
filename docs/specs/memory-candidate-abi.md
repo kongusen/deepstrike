@@ -134,12 +134,14 @@ Rust core 在 `wire/effect.rs` 定义互斥结果，在 `wire/driver/effects.rs`
 约定：
 
 - `RuntimeOptions.memoryCandidateSink`；任一路径取 `"candidate_sink"` 而未提供 sink 时，构造即报错。`resolveMemoryRuntimePolicy` 不再拒绝 `"candidate_sink"`，新增 `*ToCandidateSink` 三个布尔量。未设策略时一律走 store。
-- `receipt_id` 由 sink 生成。`candidate_id` 由写入的规范身份派生（`memoryCandidateId`，对各部分的 JSON 数组取 sha256）：当前 v2 身份：PersistMemory 为 `v2, agent_id, child_request, operation_id, effect_id, 0`；会话抽取为 `v2, agent_id, session_extraction, session_id, operation_id, 序号`；语义归档为 `v2, agent_id, semantic_archive, session_id, operation_id, effect_id`。
+- `receipt_id` 由 sink 生成。`candidate_id` 由写入的规范身份派生（`memoryCandidateId`，对各部分的 JSON 数组取 sha256）。PersistMemory 仍使用 `v2, agent_id, child_request, operation_id, effect_id, 0`；语义归档仍使用 `v2, agent_id, semantic_archive, session_id, operation_id, effect_id`。会话抽取使用 `v3, agent_id, session_extraction, session_id, operation_id, payload_digest`，其中 `payload_digest` 是候选内容摘要，不包含 `record_id`、时间戳和召回计数。
 - sink 合同（`MemoryCandidateSink` 文档）：同 id 同载荷返回原回执且不新增；同 id 异载荷拒绝为 `candidate_conflict`，不覆盖；抛错表示没有得到回答，可用同一 id 重投。载荷比较不含存储 id 与时间戳。`InMemoryMemoryCandidateSink` 是进程内实现，所有候选都记为 `pending`。
+
+会话抽取的 v3 身份解决了辅助模型重试时的幂等边界：相同 proposal 重试会复用 candidate ID 并得到原回执；内容变化的 proposal 会得到新的 candidate ID，不会被错误地当作同一 ordinal 候选；同一回答内的重复 proposal 由 runner 去重。不同内容是否最终被业务 sink 判为冲突，仍由业务侧为其选择的 candidate ID 和载荷决定。
 
 验收覆盖：S03 由会话抽取与语义归档两条真实路径的端到端测试覆盖（store 零写入、只有 pending 事件、没有 `memory_written`）；S04 由 PersistMemory 路径覆盖（sink 已存下候选但回答丢失，重投同一效果得到原 `receipt_id`，sink 只持有一个候选）。S05（伪造来源）需要真实的 sink 判定，进程内实现不做。
 
-已知限制：会话抽取在重试时会重新调用辅助模型，内容可能变化，同一 `candidate_id` 的新内容会被 sink 判为 `candidate_conflict`。候选归档使用候选结果审计，Node/Python 不再把候选的提议 record_id 写入 `semantic_archive_completed`。
+候选归档使用候选结果审计，Node/Python 不再把候选的提议 record_id 写入 `semantic_archive_completed`。
 
 尚未做的：
 
@@ -158,7 +160,7 @@ Python 导出 `MemoryRuntimePolicy`、`MemoryCandidateSink`、`InMemoryMemoryCan
 
 验证：Python 构建了实际 Linux 原生扩展，独立加载运行测试而未覆盖原有 Mach-O 扩展；实现阶段 114 项相关测试通过，整合复核 95 项通过，归档审计修正后 31 项候选/归档测试通过。覆盖原生 child request 权限、pending/accepted/rejected 结算、真实会话抽取与真实语义压缩路径。未运行全量 Python 测试。WASM TypeScript 检查与 build 通过；全量 Jest 49 套、229 项通过，追加 accepted/畸形回执与 disabled modelWrites 测试后 12 项 runner 测试通过。WASM Jest 使用 mock kernel；归档通过 helper 与投影传递测试覆盖，本次未运行真实 WASM binding 集成测试。
 
-边界保持明确：进程内 sink 不跨进程持久化，也不做 S05 来源认证；SDK 尚无常规 PersistMemory 产生方。抽取重试重新调用辅助模型时，如果内容不同仍会冲突，不保证生成结果可重现。候选身份和载荷比较已在第 10 节扩展。
+边界保持明确：进程内 sink 不跨进程持久化，也不做 S05 来源认证；SDK 尚无常规 PersistMemory 产生方。抽取重试的 candidate identity 已改为 v3 payload-addressed：相同 proposal 可稳定重放，不同内容不会因复用 ordinal 而产生错误冲突。进程重启和并发持久化幂等仍需生产 sink 验证。候选身份和载荷比较已在本节与第 10 节扩展。
 
 ## 10. 跨 SDK 契约收敛（2026-10-26）
 
@@ -182,6 +184,40 @@ Node/Python/WASM 的运行时身份使用第 8 节 v2 数组规则。新运行�
 
 接入点：`set_memory_enabled` 携带 read/write 位，并修正 Rust 桥接此前忽略这两位、恒授 read/write 的问题；retrieval 关闭时跳过预取 hook、模型 QueryMemory 返回空结果、宿主 `query_memory` 返回空；会话抽取与语义归档在调用辅助模型前检查开关，候选路径经私有漏斗 `write_memory_routed` 交给 sink；PersistMemory 在 `model_writes = candidate_sink` 时以 `memory_candidate_result` 结算，sink 出错为可重试的 `error`。公开 `write_memory` 签名与直写行为不变。
 
+四个 SDK 的显式 `remember()` 也经过同一 memory write funnel：先由 kernel 做准入，再按 runtime policy 选择 store 或 candidate sink；拒绝、没有绑定 store 或 sink 返回拒绝时，facade 报错，不返回一个实际上没有写入的 record。显式 `recall()` 经过统一 retrieval gate、`retrievalTopK` 限制、kernel 派生的 recall lifecycle 和 `memory_retrieval_result` 审计；retrieval disabled 时返回空结果。
+
 顺带修正：语义归档名由时间戳改为按 page-out effect 派生（与 Node `stableSemanticArchiveName` 同规则），`provenance.session_id` 改用本次运行的 session_id，审计写入本次运行的会话。core `SessionEvent` 新增 `MemoryCandidatePending`（`receipt_id` 可选）与 `MemoryCandidateRejected`，归入 Mm 类别；内核观察 `MemoryCandidatePending` 投影为 `source = child_request`、无 `receipt_id` 的同名会话事件。Rust 未发出 `semantic_archive_pending/completed/failed`，与改动前一致。
 
 验证（Linux 沙箱，rustc 1.99.1）：`deepstrike-sdk` lib 162 项全过，其中新增 15 项（memory.rs 4 项；`runtime/runner_memory_candidate_tests.rs` 11 项，覆盖缺 sink 拒绝启动、S03 会话抽取端到端、无策略直写、全关闭零模型调用/零 store 访问、S04 重投得原回执与冲突拒绝、sink 出错可重试、语义归档同 effect 单候选、归档关闭零调用、内核观察投影、拒绝审计）；`deepstrike-core` lib 1169 项全过；`deepstrike-tests` 187 项通过、23 项忽略；wasm/node/py 绑定 crate `cargo check` 通过。未跑 clippy/rustfmt（最小工具链未装）。
+
+## 12. Context 投影与门面收敛（2026-10-28）
+
+M4/M5 将显式 memory API 和运行时预取收敛到同一条 kernel-owned 规则链：
+
+- `remember()` 先走 kernel admission，再按 `memoryRuntimePolicy` 选择直接 store 或 candidate sink；`false` 不再被门面吞掉，而是报告写入拒绝。
+- `recall()` 和 `pre_query_memory` 都受 retrieval gate 与 `retrievalTopK` 约束，并经过同一 recall lifecycle；命中会更新 recall 计数、触发 promotion edge，并写 `memory_retrieval_result`。
+- 初始预取把每个命中作为一条普通 history user turn；canonical 文本为 `[MEMORY record_id=<id> kind=<kind> trust=<trust>] <content>`。
+- renewal 期间运行中的 canonical operation 不接受宿主直接追加 history，因此重查命中通过 keyed knowledge `memory:<record_id>` 进入新的 sprint。该条目仍使用相同 canonical 文本，并按 record ID 去重。
+- Node、Python、WASM、Rust 均导出共享的 recall projection/helper，并通过固定向量和跨 SDK conformance 验证。
+
+本轮验证包括四端 shared-evidence snapshot/conformance、Node/Python/WASM/Rust 的 M4/M5 回归、真实 WASM kernel 的 P0/P1/P2 boundary checks、candidate binding 和 renewal re-query。WASM 的 `test:canonical-binding` 入口需要先安装 `wasm-pack` 以重建 `pkg-node`；当前环境缺少该命令，因此本轮使用已有 binding 运行全部真实边界脚本，并先执行 `npm run build` 后通过 renewal binding。Node payload-store 的 age-cleanup 用例仍受沙箱文件时间/删除权限影响；S05 真实来源认证和跨进程生产 sink 仍未实现。
+
+## 13. Durable candidate ledger（2026-10-28）
+
+Node、Python、Rust 新增 `FileMemoryCandidateSink` 作为生产前的文件型参考实现；WASM 继续只接受宿主注入的 `MemoryCandidateSink`。三端共享以下语义：
+
+- 快照以 `(agent_id, candidate_id)` 为唯一键，保存候选 payload digest、source、状态回执、record reference、record digest 和时间戳。
+- 相同键和相同 payload/source 返回已保存的原回执；相同键但 payload 或 source 变化返回新的 `candidate_conflict` 回执，不覆盖原候选。
+- `resolve()` 只允许 pending 到 accepted/rejected 的一次终态转移；重复 resolve 返回原终态回执。accepted 的 `record_ref`/`digest` 和 rejected 的 `reason_code` 会随回执持久化。
+- 候选提交、接受、拒绝和 outbox ack 与 ledger 快照一起原子发布。文件写入使用临时文件、fsync、rename；锁目录串行化跨进程 writer。恢复遇到 JSON 或 schema 损坏时 fail closed，不重建空 ledger。
+- `outbox()` 返回尚未 ack 的宿主事件；`ackOutbox()` 幂等删除指定 event。数据库或消息队列实现可以替换该参考 sink，而不改变 `MemoryCandidateSink.submit()` ABI。
+
+## 14. Source attestation/verifier（2026-10-28）
+
+来源证明与候选业务身份分离。candidate identity 仍只由 `(agent_id, candidate_id, payload_digest, source)` 决定；attestation 不进入业务 payload digest。证明尝试单独记录 `attestation_digest`、issuer、key_id、reason code 和时间，失败不会创建正式 candidate ledger entry，也不会占用 candidate identity。兼容 `submit()` ABI 的 rejected receipt 只表示本次提交未获准入，携带新证明可以用同一 candidate ID 重试。
+
+attestation canonical JSON 数组包含：`issuer`、`key_id`、`agent_id`、`tenant_id`、`namespace`、`candidate_id`、`source`、`payload_digest`、`issued_at`、`expires_at`、`policy_version`。verifier 通过 `verify(agent_id, candidate)` 接收 agent 边界；默认允许 60 秒时钟偏差，最大有效期 10 分钟。HMAC-SHA256 作为便携 reference verifier 保留；Node、Python、Rust 同时提供只持有公钥的 Ed25519 verifier，签名格式为 `ed25519:<base64url>`，两种 verifier 使用同一 canonical payload。
+
+共享 admission helper 在所有内存/文件 sink 前执行：`host_verified` 必须同时由 `host` author、有效 attestation、匹配 agent/scope/source/digest、受信 key 和有效时间窗口证明；model/extraction/child candidate 可以继续以 untrusted 或 user_asserted 进入 pending，但不能通过修改 provenance 自行提升为 host_verified。
+
+当前实现仍不提供租约、TTL、撤销或跨文件系统事务；这些属于后续里程碑。WASM 不包含文件 API，以避免把 Node/Python/Rust 的宿主文件假设带入浏览器包。

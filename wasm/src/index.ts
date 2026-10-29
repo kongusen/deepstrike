@@ -53,6 +53,36 @@ export type {
   VerdictDetail,
   JudgeArgs,
 } from "./runtime/index.js"
+export {
+  SharedEvidenceBuilder,
+  SessionEvidenceReader,
+  createSharedEvidence,
+  readSessionEvidence,
+  canonicalEventJson,
+  knowledgeIdentity,
+} from "./runtime/shared-evidence.js"
+export type {
+  EvidenceAuthority,
+  EvidenceAvailability,
+  EvidenceCompleteness,
+  EvidenceCursor,
+  EvidenceDiagnostic,
+  EvidenceDomain,
+  EvidenceLink,
+  EvidenceRef,
+  EvidenceRelation,
+  EvidenceRetentionObservation,
+  EvidenceScope,
+  EvidenceSidecar,
+  KnowledgeIdentity,
+  MemorySettlement,
+  SessionEvidenceSources,
+  SharedEvidence,
+  SharedEvidenceFacets,
+  SharedEvidenceIdentity,
+  SharedEvidenceInput,
+  SharedEvidenceSnapshot,
+} from "./runtime/shared-evidence.js"
 export type {
   NativeOsProfile,
   OsProfileId,
@@ -215,7 +245,8 @@ export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextPro
 
 export type { PreparedProviderRequest } from "./types.js"
 
-export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest } from "./memory/candidate-sink.js"
+export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest, sessionExtractionCandidateId } from "./memory/candidate-sink.js"
+export { memoryRecallTurn } from "./memory/recall-projection.js"
 export type { MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource } from "./memory/candidate-sink.js"
 export { resolveMemoryRuntimePolicy } from "./memory/runtime-policy.js"
 export type { MemoryRuntimePolicy, MemoryRetrievalPolicy, MemoryWritePolicy, ResolvedMemoryRuntimePolicy } from "./memory/runtime-policy.js"

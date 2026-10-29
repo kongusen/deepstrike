@@ -14,8 +14,18 @@ import { createRunner } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
 import type { MemoryStore, MemoryRecall, MemoryRecallLifecycle } from "../src/memory/protocols.js"
 import type { LLMProvider, ModelMessage, RenderedContext, StreamEvent } from "../src/types.js"
+import { memoryRecallTurn } from "../src/memory/recall-projection.js"
+import type { MemoryRecord } from "../src/memory/protocols.js"
 
 const scope = { tenant_id: "agent-lifecycle", namespace: "t5" }
+
+// The same record and expected turn in every SDK's recall-projection test.
+const recallVectorRecord: MemoryRecord = {
+  record_id: "record-v", scope: { tenant_id: "t", namespace: "n" }, name: "fact", kind: "project", content: "prefers numbered sections",
+  description: "", provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
+  created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.5, links: [], pinned: false,
+}
+const RECALL_TURN_VECTOR = "[MEMORY record_id=record-v kind=project trust=untrusted] prefers numbered sections"
 
 function record(recordId: string, content: string, recallCount: number) {
   return {
@@ -94,6 +104,27 @@ describe("T5 memory recall lifecycle is shared by every query route", () => {
     expect(turnsJson).toContain("[MEMORY record_id=record-t5")
     expect(turnsJson).toContain("LONGTERM_FACT_T5")
     expect(turnsJson).not.toContain("[memory record_id=")
+  })
+
+  it("M5 · each prefetched hit is the canonical recall turn, and the prefetch is audited", async () => {
+    const { store } = trackingStore(0)
+    let turns: RenderedContext["turns"] = []
+    const provider = textProvider(context => { if (turns.length === 0) turns = context.turns })
+    const { runner, sessionLog } = createRunner(provider, [], runnerOpts(store))
+
+    await collectText(runner.run({ sessionId: "t5-projection", goal: "use the fact" }))
+
+    const recallTurns = turns.filter(turn => String(turn.content).startsWith("[MEMORY "))
+    expect(recallTurns.map(turn => [turn.role, turn.content])).toEqual([
+      ["user", "[MEMORY record_id=record-t5 kind=reference trust=host_verified] LONGTERM_FACT_T5"],
+    ])
+    const audited = (await sessionLog.read("t5-projection")).filter(entry => entry.event.kind === "memory_retrieval_result")
+    expect(audited).toHaveLength(1)
+    expect(audited[0]?.event).toMatchObject({ hits: [expect.objectContaining({ record: expect.objectContaining({ record_id: "record-t5" }) })] })
+  })
+
+  it("M5 · the recall turn matches the vector every SDK pins", () => {
+    expect(memoryRecallTurn(recallVectorRecord)).toBe(RECALL_TURN_VECTOR)
   })
 
   it("two prefetch queries hitting the same record recall and inject it once", async () => {

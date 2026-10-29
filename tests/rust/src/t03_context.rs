@@ -255,7 +255,7 @@ fn reconstruct_messages_with_fallback_success_and_degrade() {
             action: Some("auto_compact".to_string()),
             summary: Some("Compressed turn 1 summary".to_string()),
             tier_hint: Some("semantic".to_string()),
-            message_count: 1,
+            message_count: Some(1),
             archive_ref: Some("archive/success.jsonl".to_string()),
         },
         SessionEvent::Compressed {
@@ -271,7 +271,7 @@ fn reconstruct_messages_with_fallback_success_and_degrade() {
             action: Some("auto_compact".to_string()),
             summary: Some("Compressed turn 2 summary".to_string()),
             tier_hint: Some("semantic".to_string()),
-            message_count: 1,
+            message_count: Some(1),
             archive_ref: Some("archive/missing.jsonl".to_string()),
         },
     ];

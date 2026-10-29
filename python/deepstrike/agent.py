@@ -204,7 +204,9 @@ class AgentSession:
             ttl_days=value.get("ttl_days"),
         )
         runner = await self._runner("memory", max_turns=1)
-        await runner.write_memory(record, session_id=record.provenance.session_id, agent_id=self.agent.name)
+        written = await runner.write_memory(record, session_id=record.provenance.session_id, agent_id=self.agent.name)
+        if not written:
+            raise RuntimeError(f'agent "{self.agent.name}" memory write denied')
         return record
 
     async def recall(self, query: str, *, top_k: int = 8, kinds: list[str] | None = None,

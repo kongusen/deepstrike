@@ -43,6 +43,14 @@ export function memoryCandidateId(parts: readonly string[]): string {
   return sha256Hex(JSON.stringify(parts)).replace(/^sha256:/, "candidate:")
 }
 
+/** A session-extraction candidate id. The extraction model is re-asked on retry and may answer
+ *  differently, so the id is addressed by the proposed payload, not by its position in the answer:
+ *  a retry that proposes the same record repeats the id, one that proposes something new mints a
+ *  new candidate instead of colliding with what the first attempt left in the sink. */
+export function sessionExtractionCandidateId(agentId: string, sessionId: string, operationId: string, record: MemoryRecord): string {
+  return memoryCandidateId(["v3", agentId, "session_extraction", sessionId, operationId, memoryCandidatePayloadDigest(record)])
+}
+
 /** The part of a record a candidate is judged by. Store ids, timestamps and recall counters are excluded: a retry
  *  of the same write may mint them afresh without changing what is being proposed. */
 export function memoryCandidatePayloadDigest(record: MemoryRecord): string {

@@ -41,3 +41,30 @@ export { createEvolutionRuntimeAdapter, createNativeEvolutionRuntimeAdapter, Evo
 export type { EvolutionStore } from "./evolution.js"
 export { FULL_FOOTPRINT_USAGE_ACCOUNTING_POLICY, providerAttemptToRecord } from "./execution-evidence.js"
 export type { InvocationOutcome, ModelInvocation, ProviderAttempt, ProviderAttemptRecord, ProviderAttemptStatus, UsageAccountingPolicy, ModelUsageSettlement } from "./execution-evidence.js"
+export {
+  SharedEvidenceBuilder,
+  SessionEvidenceReader,
+  createSharedEvidence,
+  readSessionEvidence,
+} from "./shared-evidence.js"
+export type {
+  EvidenceAuthority,
+  EvidenceAvailability,
+  EvidenceCompleteness,
+  EvidenceCursor,
+  EvidenceDiagnostic,
+  EvidenceDomain,
+  EvidenceLink,
+  EvidenceRef,
+  EvidenceRelation,
+  EvidenceRetentionObservation,
+  EvidenceScope,
+  EvidenceSidecar,
+  MemorySettlement,
+  SessionEvidenceSources,
+  SharedEvidence,
+  SharedEvidenceFacets,
+  SharedEvidenceIdentity,
+  SharedEvidenceInput,
+  SharedEvidenceSnapshot,
+} from "./shared-evidence.js"

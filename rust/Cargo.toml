@@ -23,6 +23,7 @@ notify = { workspace = true }
 sha2 = { workspace = true }
 time = { workspace = true }
 base64 = "0.22"
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

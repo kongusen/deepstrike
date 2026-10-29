@@ -446,11 +446,21 @@ impl AgentSession {
         self.runner.latest_session_seq(&self.session_id).await
     }
 
+    /// Write one host-authored record through the runner's write funnel. A write the kernel
+    /// refuses (or a candidate sink rejects) is an error, not a silently unstored record.
     pub async fn remember(&self, memory: MemoryRecord) -> Result<()> {
-        self.runner
+        let record_id = memory.record_id.clone();
+        if self
+            .runner
             .write_memory(memory, Some(&self.session_id), None)
-            .await
-            .map(|_| ())
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(crate::Error::Other(format!(
+                "memory write denied for record {record_id}: refused by the kernel or the candidate sink, or no memory store is bound"
+            )))
+        }
     }
 
     pub async fn recall(&self, query: MemoryQuery) -> Result<Vec<MemoryRecall>> {

@@ -16,6 +16,7 @@ from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, 
 from deepstrike.runtime.runner import MemoryPolicy
 from deepstrike.providers.base import RenderedContext
 from deepstrike.providers.stream import TextDelta
+from deepstrike.memory import memory_recall_turn
 from deepstrike.memory.protocols import (
     MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope,
 )
@@ -129,6 +130,39 @@ async def test_initial_prefetch_routes_through_kernel():
     assert "[MEMORY record_id=record-t5" in captured["turns"]
     assert "LONGTERM_FACT_T5" in captured["turns"]
     assert "[memory record_id=" not in captured["turns"]
+
+
+@pytest.mark.asyncio
+async def test_prefetched_hit_is_the_canonical_recall_turn_and_is_audited():
+    """M5 · the history turn is the canonical recall text; the prefetch logs its hits."""
+    store = TrackingStore(0)
+    captured = {"turns": None}
+
+    def on_context(context: RenderedContext):
+        if captured["turns"] is None:
+            captured["turns"] = list(context.turns)
+
+    runner = make_runner(store, provider=TextProvider(on_context))
+    await collect_text(runner.run(goal="use the fact", session_id="t5-projection"))
+
+    recall_turns = [(t.role, t.content) for t in captured["turns"] if str(t.content).startswith("[MEMORY ")]
+    assert recall_turns == [
+        ("user", "[MEMORY record_id=record-t5 kind=reference trust=host_verified] LONGTERM_FACT_T5"),
+    ]
+    audited = [e.event for e in await runner._opts.session_log.read("t5-projection")
+               if e.event.get("kind") == "memory_retrieval_result"]
+    assert len(audited) == 1
+    assert [hit["record"]["record_id"] for hit in audited[0]["hits"]] == ["record-t5"]
+
+
+def test_recall_turn_matches_the_vector_every_sdk_pins():
+    vector = MemoryRecord(
+        record_id="record-v", scope=MemoryScope("t", "n"), name="fact", kind="project",
+        content="prefers numbered sections", description="",
+        provenance=MemoryProvenance(author="extraction", trust="untrusted"),
+        created_at=1, updated_at=1, confidence=0.5,
+    )
+    assert memory_recall_turn(vector) == "[MEMORY record_id=record-v kind=project trust=untrusted] prefers numbered sections"
 
 
 @pytest.mark.asyncio

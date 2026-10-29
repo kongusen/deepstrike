@@ -1,12 +1,14 @@
 from dataclasses import replace
 import hashlib
+from pathlib import Path
+import json
 
 import pytest
 
 from deepstrike import (
     InMemoryMemoryCandidateSink, MemoryCandidate, MemoryCandidateSink,
     MemoryProvenance, MemoryRecord, MemoryScope,
-    memory_candidate_id, memory_candidate_payload_digest,
+    memory_candidate_id, memory_candidate_payload_digest, session_extraction_candidate_id,
 )
 
 
@@ -76,3 +78,95 @@ async def test_source_and_review_metadata_changes_conflict():
         assert (await sink.submit("agent", other))["reason_code"] == "candidate_conflict"
     assert await sink.submit("agent", c) == original
     assert sink.candidates() == [c]
+
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+def test_ed25519_attestation_vector_is_canonical():
+    from deepstrike.memory import MemoryCandidateAttestation, memory_candidate_attestation_canonical_payload, memory_candidate_attestation_digest
+    fixture = json.loads((Path(__file__).parents[2] / "tests/fixtures/memory-attestation-ed25519.json").read_text())
+    attestation = MemoryCandidateAttestation(
+        "issuer-a", "ed-key-1", "agent", "t", "n", "host-candidate", "session_extraction",
+        fixture["payload_digest"], 1000, 2000, "memory-attestation-v1", fixture["signature"])
+    assert memory_candidate_attestation_canonical_payload(attestation) == fixture["canonical"]
+    assert memory_candidate_attestation_digest(attestation) == fixture["attestation_digest"]
+
+
+@pytest.mark.asyncio
+async def test_host_source_attestation_is_required_and_verified(tmp_path: Path):
+    from deepstrike.memory import (
+        FileMemoryCandidateSink, HmacMemoryCandidateSourceVerifier, MemoryCandidateAttestation,
+        sign_memory_candidate_attestation,
+    )
+    host_record = replace(record("host fact"), provenance=MemoryProvenance("host", "host_verified"))
+    candidate = MemoryCandidate("host-candidate", "session_extraction", host_record)
+    verifier = HmacMemoryCandidateSourceVerifier({"key-1": {"issuer": "issuer-a", "secret": "secret"}}, now=lambda: 1500)
+    missing = await FileMemoryCandidateSink(tmp_path / "missing.json", source_verifier=verifier).submit("agent", candidate)
+    assert missing["reason_code"] == "attestation_missing"
+    unsigned = MemoryCandidateAttestation("issuer-a", "key-1", "agent", "t", "n", candidate.candidate_id, candidate.source,
+                                          memory_candidate_payload_digest(host_record), 1000, 2000, "memory-attestation-v1", "")
+    signed = replace(unsigned, signature=sign_memory_candidate_attestation(unsigned, "secret"))
+    accepted = await FileMemoryCandidateSink(tmp_path / "valid.json", source_verifier=verifier).submit(
+        "agent", replace(candidate, attestation=signed))
+    assert accepted["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_file_sink_recovers_terminal_receipt_and_outbox(tmp_path: Path):
+    from deepstrike.memory import FileMemoryCandidateSink
+
+    path = tmp_path / "ledger.json"
+    first = FileMemoryCandidateSink(path)
+    pending = await first.submit("agent", MemoryCandidate("durable", "session_extraction", record()))
+    accepted = await first.resolve("agent", "durable", {"status": "accepted", "record_ref": "memory:1", "digest": "sha256:record"})
+    recovered = FileMemoryCandidateSink(path)
+    assert await recovered.submit("agent", MemoryCandidate("durable", "session_extraction", record())) == accepted
+    assert await recovered.resolve("agent", "durable", {"status": "rejected", "reason_code": "late"}) == accepted
+    assert [event.type for event in await recovered.outbox()] == ["candidate_submitted", "candidate_accepted"]
+    assert await recovered.ack_outbox("outbox:1")
+    assert [event.event_id for event in await recovered.outbox()] == ["outbox:2"]
+
+
+@pytest.mark.asyncio
+async def test_file_sink_rejects_corrupt_snapshot(tmp_path: Path):
+    from deepstrike.memory import FileMemoryCandidateSink
+
+    path = tmp_path / "ledger.json"
+    path.write_text("{broken", encoding="utf-8")
+    with pytest.raises(ValueError):
+        await FileMemoryCandidateSink(path).list()
+
+
+# Same record, agent, session and operation in every SDK's candidate-sink test.
+SESSION_EXTRACTION_VECTOR = "candidate:8616f8c306bd0e0947ba3915403e02c1e47501fb8aed29e4d3a4ceec3e8207e7"
+
+
+def test_extraction_candidate_id_is_scoped_and_matches_the_other_sdks():
+    proposed = replace(record(), confidence=0.5)
+    candidate_id = session_extraction_candidate_id("agent", "s-1", "op-1", proposed)
+    assert candidate_id == memory_candidate_id(
+        ["v3", "agent", "session_extraction", "s-1", "op-1", memory_candidate_payload_digest(proposed)])
+    assert session_extraction_candidate_id("agent", "s-1", "op-2", proposed) != candidate_id
+    assert session_extraction_candidate_id("agent", "s-2", "op-1", proposed) != candidate_id
+    assert session_extraction_candidate_id("other", "s-1", "op-1", proposed) != candidate_id
+    assert candidate_id == SESSION_EXTRACTION_VECTOR
+
+
+@pytest.mark.asyncio
+async def test_retried_extraction_with_a_different_answer_proposes_new_candidates():
+    sink = InMemoryMemoryCandidateSink()
+
+    def propose(content, **overrides):
+        proposed = replace(record(content), **overrides)
+        return MemoryCandidate(session_extraction_candidate_id("agent", "s-1", "op-1", proposed),
+                               "session_extraction", proposed)
+
+    first = await sink.submit("agent", propose("prefers numbered sections"))
+    # The retry re-asks the extraction model: the same proposal repeats the id and gets the
+    # original receipt; a changed answer is a different candidate, not a conflict.
+    same = await sink.submit("agent", propose("prefers numbered sections", record_id="retry", updated_at=9))
+    changed = await sink.submit("agent", propose("prefers numbered headings"))
+    assert same == first
+    assert changed["status"] == "pending"
+    assert changed["candidate_id"] != first["candidate_id"]
+    assert len(sink.candidates("agent")) == 2

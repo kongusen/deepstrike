@@ -5,9 +5,11 @@ export class DurableMemory implements Memory {
   readonly namespace: string
   readonly scope: MemoryScope
 
+  /** `store` and `agentId` are the binding a runner uses to route this memory's writes and
+   *  recalls through the kernel funnel (M4). */
   constructor(
-    private readonly store: MemoryStore,
-    private readonly agentId: string,
+    readonly store: MemoryStore,
+    readonly agentId: string,
     scope: MemoryScope,
   ) {
     this.namespace = scope.namespace

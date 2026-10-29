@@ -22,6 +22,7 @@ pub mod replay_provider;
 pub mod runner;
 pub mod sandboxed_skill;
 pub mod session_log;
+pub mod shared_evidence;
 pub mod skill_watcher;
 pub mod tool_arguments;
 
@@ -65,4 +66,10 @@ pub use runner::{
 };
 pub use sandboxed_skill::{PythonSkillPolicy, SkillKind, scan_skill_dir};
 pub use session_log::{FileSessionLog, InMemorySessionLog, SessionEntry, SessionLog};
+pub use shared_evidence::{
+    EvidenceCursor, EvidenceDiagnostic, EvidenceLink, EvidenceRef, EvidenceRetention,
+    EvidenceScope, KnowledgeIdentity, SharedEvidenceSnapshot, canonical_event_json,
+    knowledge_identity, project_shared_evidence, read_session_evidence,
+    read_shared_evidence_values,
+};
 pub use skill_watcher::SkillWatcher;

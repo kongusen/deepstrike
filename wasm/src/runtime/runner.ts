@@ -11,7 +11,7 @@ import type {
 import type { ToolSuspendEvent } from "./execution-plane.js"
 import type { MemoryStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope, SessionData } from "../memory/index.js"
 import { resolveMemoryRuntimePolicy, type MemoryRuntimePolicy, type ResolvedMemoryRuntimePolicy } from "../memory/runtime-policy.js"
-import { memoryCandidateId, type MemoryCandidateSource, type MemoryCandidateReceipt, type MemoryCandidateSink } from "../memory/candidate-sink.js"
+import { memoryCandidateId, sessionExtractionCandidateId, type MemoryCandidateSource, type MemoryCandidateReceipt, type MemoryCandidateSink } from "../memory/candidate-sink.js"
 import { extractSessionMemories } from "../memory/extraction.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
 import type { SignalSource, RuntimeSignal, SignalDeliveryReceipt } from "../signals/index.js"
@@ -23,6 +23,7 @@ import { parseToolCallArguments } from "./tool-arguments.js"
 import { stripSkillFrontmatter } from "./execution-plane.js"
 import { getKernel } from "./kernel.js"
 import { checkMemoryWrite, deriveMemoryRecall, type KernelMemoryPolicyWire } from "../memory/authority.js"
+import { memoryRecallTurn } from "../memory/recall-projection.js"
 import {
   CanonicalRunnerRuntime,
   canonicalKernelAction,
@@ -783,6 +784,23 @@ export class RuntimeRunner {
       })
     }
     return true
+  }
+
+  /**
+   * M4 · a host-initiated recall (an explicit `recall`). Same path as the prefetch: the retrieval
+   * gate, the policy's `retrievalTopK`, the kernel-derived recall lifecycle, and a
+   * `memory_retrieval_result` audit.
+   */
+  async queryMemory(query: MemoryQuery, sessionId?: string): Promise<MemoryRecall[]> {
+    if (!this.opts.memoryStore || !this.opts.agentId) return []
+    if (!this.memoryPathEnabled("retrievalEnabled")) return []
+    const policyLimit = this.opts.memoryPolicy?.retrievalTopK
+    const limit = policyLimit === undefined ? query.top_k : Math.min(query.top_k, policyLimit)
+    if (limit <= 0) return []
+    const hits = (await this.opts.memoryStore.search(this.opts.agentId, { ...query, top_k: limit })).slice(0, limit)
+    await this.recordHostMemoryRecall(hits)
+    if (sessionId) await this.opts.sessionLog.append(sessionId, { kind: "memory_retrieval_result", hits })
+    return hits
   }
 
   private async persistMemoryEffectResult(
@@ -2073,10 +2091,20 @@ export class RuntimeRunner {
               this.opts.memoryScope,
               this.opts.memorySystemPrompt,
             )
-            for (const [ordinal, memory] of extracted.entries()) {
-              await this.writeMemory(memory, sessionId, this.memoryPathToCandidateSink("sessionExtraction") ? {
-                source: "session_extraction", candidateId: memoryCandidateId(["v2", this.opts.agentId, "session_extraction", sessionId, runtime.operationId, String(ordinal)]),
-              } : undefined)
+            const toSink = this.memoryPathToCandidateSink("sessionExtraction")
+            const proposed = new Set<string>()
+            for (const memory of extracted) {
+              const candidateId = toSink
+                ? sessionExtractionCandidateId(this.opts.agentId, sessionId, runtime.operationId, memory)
+                : undefined
+              // One answer proposing the same record twice is one candidate.
+              if (candidateId !== undefined) {
+                if (proposed.has(candidateId)) continue
+                proposed.add(candidateId)
+              }
+              await this.writeMemory(memory, sessionId, candidateId !== undefined
+                ? { source: "session_extraction", candidateId }
+                : undefined)
             }
           }
         } catch { /* non-fatal */ }
@@ -2686,11 +2714,13 @@ export class RuntimeRunner {
     return nextArchiveStart
   }
 
-  /** I4 + K4: fetch long-term memory hits for the current goal and land them in `history` as an
-   *  ordinary user turn — single-use retrieval content that decays with the compression pyramid,
-   *  never pinned into `knowledge`. `phase: "initial"` = once before turn 1; `phase: "renewal"` =
-   *  re-fired after each sprint renewal (renewal drops the old history INCLUDING earlier memory
-   *  hits). Errs-open throughout. */
+  /** I4 + K4 · M5: fetch long-term memory hits for the current goal and put each one in context as
+   *  the canonical recall text ({@link memoryRecallTurn}). `phase: "initial"` = once before turn 1,
+   *  each hit an ordinary `history` user turn. `phase: "renewal"` = re-fired after each sprint
+   *  renewal, which drops the old history with the earlier hits: a running operation accepts
+   *  history only through effects or external events, so each hit is a keyed
+   *  `memory:<record_id>` knowledge entry instead. One prefetch is one dedupe horizon and one
+   *  `memory_retrieval_result`. Errs-open. */
   private async prefetchMemoryIntoHistory(
     runtime: CanonicalRunnerRuntime,
     phase: "initial" | "renewal",
@@ -2703,26 +2733,35 @@ export class RuntimeRunner {
       ?? ((ctx: { goal: string }) => [{ scope: this.opts.memoryScope!, query: ctx.goal, top_k: 5, kinds: [] }])
     try {
       const queries = await preQuery({ goal: this.currentGoal, phase })
-      const lines: string[] = []
+      const policyLimit = this.opts.memoryPolicy?.retrievalTopK
       const seen = new Set<string>()
-      const recalled: MemoryRecall[] = []
+      const accepted: MemoryRecall[] = []
       for (const q of queries ?? []) {
         if (!q.query.trim()) continue
-        const hits = await this.opts.memoryStore.search(this.opts.agentId, q)
+        const limit = policyLimit === undefined ? q.top_k : Math.min(q.top_k, policyLimit)
+        if (limit <= 0) continue
+        const hits = (await this.opts.memoryStore.search(this.opts.agentId, { ...q, top_k: limit })).slice(0, limit)
         for (const hit of hits) {
           if (seen.has(hit.record.record_id)) continue
           seen.add(hit.record.record_id)
-          recalled.push(hit)
-          lines.push(`[memory record_id=${hit.record.record_id} trust=${hit.record.provenance.trust} score=${hit.score.toFixed(3)}] ${hit.record.content}`)
+          accepted.push(hit)
+          const content = memoryRecallTurn(hit.record)
+          if (phase === "initial") {
+            await this.commitKernelApply(runtime, this.pendingObservations, {
+              kind: "add_history_message",
+              message: { role: "user", content },
+            })
+          } else {
+            // pushKnowledge estimates the tokens the same way every host-seeded entry does.
+            await this.pushKnowledge({ role: "system", content, toolCalls: [] }, undefined, { key: `memory:${hit.record.record_id}` })
+          }
         }
       }
-      if (lines.length > 0) {
-        await this.commitKernelApply(runtime, this.pendingObservations, {
-          kind: "add_history_message",
-          message: { role: "user", content: lines.join("\n") },
-        })
+      if (accepted.length === 0) return
+      await this.recordHostMemoryRecall(accepted)
+      if (this.currentSessionId) {
+        await this.opts.sessionLog.append(this.currentSessionId, { kind: "memory_retrieval_result", hits: accepted })
       }
-      await this.recordHostMemoryRecall(recalled)
     } catch { /* errs-open */ }
   }
 

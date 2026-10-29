@@ -18,7 +18,8 @@
         "content_parts_v1",
         "session_event_vocabulary",
         "provider_attempt_record",
-        "kernel_observation_projection"
+        "kernel_observation_projection",
+        "shared_evidence_snapshot"
       ]
     },
     "input": { "type": "object" },

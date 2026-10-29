@@ -7,6 +7,7 @@
  */
 import { RuntimeRunner, InMemorySessionLog, LocalExecutionPlane } from "../src/runtime/index.js"
 import type { MemoryStore, MemoryRecall } from "../src/memory/index.js"
+import { memoryRecallTurn } from "../src/memory/recall-projection.js"
 import type { LLMProvider, ModelMessage, StreamEvent } from "../src/types.js"
 import { kernelEvents } from "@deepstrike/wasm-kernel"
 
@@ -122,6 +123,16 @@ describe("knowledgeBudgetRatio reaches the kernel via configure_operation (K2)",
 })
 
 describe("preQueryMemory prefetch lands in initial history, not knowledge", () => {
+  it("M5 · the recall turn matches the vector every SDK pins", () => {
+    expect(memoryRecallTurn({
+      record_id: "record-v", scope: { tenant_id: "t", namespace: "n" }, name: "fact", kind: "project",
+      content: "prefers numbered sections", description: "",
+      provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
+      created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.5, links: [], pinned: false,
+    })).toBe("[MEMORY record_id=record-v kind=project trust=untrusted] prefers numbered sections")
+  })
+
+
   it("seeds start_operation history with prefetch content, never seed_knowledge/page_in", async () => {
     kernelEvents.length = 0
     const scope = { tenant_id: "agent-prequery", namespace: "prefetch" }
@@ -160,12 +171,19 @@ describe("preQueryMemory prefetch lands in initial history, not knowledge", () =
       preQueryMemory: () => [{ scope, query: "past facts", top_k: 5, kinds: [] }],
     })
 
+    const sessionLog = (runner as unknown as { opts: { sessionLog: InMemorySessionLog } }).opts.sessionLog
     for await (const _e of runner.run({ sessionId: "prequery", goal: "use the fact" })) { /* drain */ }
 
     const start = kernelEvents.find((e: { kind?: string }) => e.kind === "start_operation") as
-      | { initial_context?: { messages?: unknown[] } }
+      | { initial_context?: { messages?: Array<{ role?: string; content?: string }> } }
       | undefined
-    expect(JSON.stringify(start?.initial_context?.messages ?? [])).toContain("PREFETCHED_LONGTERM_FACT")
+    // M5 · one canonical recall turn per hit (the same text every SDK writes), and an audit.
+    expect((start?.initial_context?.messages ?? []).filter(m => String(m.content).startsWith("[MEMORY "))
+      .map(m => [m.role, m.content])).toEqual([
+      ["user", "[MEMORY record_id=record-prefetch kind=reference trust=host_verified] PREFETCHED_LONGTERM_FACT"],
+    ])
+    const audited = (await sessionLog.read("prequery")).filter(entry => entry.event.kind === "memory_retrieval_result")
+    expect(audited).toHaveLength(1)
     expect(hostControls().some(event => event.command?.kind === "seed_knowledge")).toBe(false)
     expect(kernelEvents.some((e: { kind?: string }) => e.kind === "page_in")).toBe(false)
   })

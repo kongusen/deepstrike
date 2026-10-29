@@ -5,9 +5,12 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, Sequence, TypedDict, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Sequence, TypedDict, runtime_checkable
 
 from .protocols import MemoryRecord
+
+if TYPE_CHECKING:
+    from .attestation import MemoryCandidateAttestation
 
 MemoryCandidateSource = Literal["session_extraction", "semantic_archive", "child_request"]
 
@@ -17,6 +20,7 @@ class MemoryCandidate:
     candidate_id: str
     source: MemoryCandidateSource
     record: MemoryRecord
+    attestation: "MemoryCandidateAttestation | None" = None
 
 
 class PendingMemoryCandidateReceipt(TypedDict):
@@ -74,10 +78,22 @@ def memory_candidate_payload_digest(record: MemoryRecord) -> str:
     ])
 
 
-class InMemoryMemoryCandidateSink:
-    """In-process pending candidate store for tests and local development."""
+def session_extraction_candidate_id(agent_id: str, session_id: str, operation_id: str, record: MemoryRecord) -> str:
+    """Address an extracted candidate by its payload, not its position in the extraction answer.
 
-    def __init__(self) -> None:
+    The extraction model is re-asked on retry and may answer differently: a retry that proposes the
+    same record repeats the id, one that proposes something new mints a new candidate instead of
+    colliding with what the first attempt left in the sink.
+    """
+    return memory_candidate_id(["v3", agent_id, "session_extraction", session_id, operation_id,
+                                memory_candidate_payload_digest(record)])
+
+
+class InMemoryMemoryCandidateSink:
+    """In-process candidate store with the shared source-admission boundary."""
+
+    def __init__(self, source_verifier=None) -> None:
+        self._source_verifier = source_verifier
         self._held: dict[tuple[str, str], tuple[str, MemoryCandidate, str, MemoryCandidateReceipt]] = {}
         self._next_receipt = 1
 
@@ -97,6 +113,11 @@ class InMemoryMemoryCandidateSink:
                 "status": "rejected", "candidate_id": candidate.candidate_id,
                 "receipt_id": self._mint_receipt_id(), "reason_code": "candidate_conflict",
             }
+        from .attestation import admit_memory_candidate
+        valid, reason = admit_memory_candidate(agent_id, candidate, self._source_verifier)
+        if not valid:
+            return {"status": "rejected", "candidate_id": candidate.candidate_id,
+                    "receipt_id": self._mint_receipt_id(), "reason_code": reason or "unspecified"}
         receipt: MemoryCandidateReceipt = {
             "status": "pending", "candidate_id": candidate.candidate_id,
             "receipt_id": self._mint_receipt_id(),

@@ -10,6 +10,7 @@ import {
   encodeCanonicalContentParts,
   SESSION_EVENT_REGISTRY,
   kernelObservationToSessionEvent,
+  readSessionEvidence,
 } from "../../node/dist/conformance.js"
 import { createNativeContextPreparationAdapter, providerAttemptToRecord } from "../../node/dist/runtime/public.js"
 import { createProviderRequestPlan, recordPromptMeasurement } from "../../node/dist/providers/public.js"
@@ -139,6 +140,41 @@ async function canonicalFor(fixture) {
       }
       return { kinds }
     }
+    case "shared_evidence_snapshot": {
+      const snapshots = {}
+      for (const item of input.cases) {
+        const sessionLog = new InMemorySessionLog()
+        for (const event of item.events) await sessionLog.append(item.session_id, event)
+        const journal = item.journal
+        const kernelJournal = journal === undefined ? undefined : {
+          readFrom: async () => journal.entries.map(entry => ({
+            step_seq: entry.step_seq, record_digest: entry.record_digest, record_bytes: Uint8Array.from(entry.record_bytes),
+          })),
+          latestCheckpoint: async () => journal.checkpoint === undefined ? undefined : {
+            ...journal.checkpoint, checkpoint_bytes: Uint8Array.from(journal.checkpoint.checkpoint_bytes),
+          },
+        }
+        const sidecar = item.sidecar === undefined ? undefined : {
+          knowledgeProvenance: ({ entryId }) => item.sidecar.knowledge_provenance?.[entryId],
+          memoryCandidateReceipt: ({ candidateId }) => item.sidecar.memory_candidate_receipts?.[candidateId],
+        }
+        const scope = item.scope ?? {}
+        const snapshot = await readSessionEvidence({
+          operationId: item.operation_id,
+          sessionId: item.session_id,
+          scope: {
+            ...(scope.agent_id === undefined ? {} : { agentId: scope.agent_id }),
+            ...(scope.tenant_id === undefined ? {} : { tenantId: scope.tenant_id }),
+            ...(scope.namespace === undefined ? {} : { namespace: scope.namespace }),
+          },
+          sessionLog,
+          ...(kernelJournal === undefined ? {} : { kernelJournal }),
+          ...(sidecar === undefined ? {} : { sidecar }),
+        })
+        snapshots[item.name] = projectEvidenceSnapshot(snapshot)
+      }
+      return { snapshots }
+    }
     case "kernel_observation_projection": {
       const events = {}
       for (const item of input.cases) {
@@ -181,6 +217,42 @@ async function canonicalFor(fixture) {
     }
     default:
       invalid("unsupported_domain", "/domain", `unsupported conformance domain: ${String(fixture.domain)}`)
+  }
+}
+
+/** The SDK-neutral (snake_case) projection the shared_evidence_snapshot fixture pins. Diagnostic
+ *  messages are free text and stay out of the contract; codes, domains and ref ids are pinned. */
+function projectEvidenceSnapshot(snapshot) {
+  const defined = object => Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined))
+  const asOf = snapshot.asOf ?? {}
+  return {
+    as_of: defined({
+      session_log_seq: asOf.sessionLogSeq, journal_step_seq: asOf.journalStepSeq, checkpoint_ordinal: asOf.checkpointOrdinal,
+    }),
+    completeness: snapshot.completeness,
+    diagnostics: snapshot.diagnostics.map(item => defined({ code: item.code, domain: item.domain, ref_id: item.refId })),
+    refs: snapshot.refs.map(ref => defined({
+      domain: ref.domain,
+      ref_id: ref.refId,
+      authority: ref.authority,
+      availability: ref.availability,
+      content_digest: ref.contentDigest,
+      payload_ref: ref.payloadRef,
+      size_bytes: ref.sizeBytes,
+      version: ref.version,
+      provenance: ref.provenance,
+      settlement: ref.settlement,
+      evidence_refs: ref.evidenceRefs === undefined ? undefined : [...ref.evidenceRefs],
+      links: ref.links?.map(link => ({ relation: link.relation, domain: link.domain, ref_id: link.refId })),
+      retention: ref.retention === undefined ? undefined : defined({
+        pinned: ref.retention.pinned, observed_ttl_days: ref.retention.observedTtlDays, prunable: ref.retention.prunable,
+      }),
+    })),
+    verification: {
+      journal: snapshot.verification.journal.length,
+      session_logs: (snapshot.verification.sessionLogs ?? []).map(stream => stream.length),
+      checkpoints: (snapshot.verification.checkpoints ?? []).length,
+    },
   }
 }
 

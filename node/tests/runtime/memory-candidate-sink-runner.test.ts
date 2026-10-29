@@ -149,6 +149,31 @@ describe("memory candidate sink through the runner (M2)", () => {
     expect((await kinds(sessionLog, "reused")).filter(e => e.kind === "memory_candidate_rejected")).toHaveLength(0)
   })
 
+  it("candidate ids are addressed by the proposal, so a repeated proposal is one candidate", async () => {
+    const repeating: LLMProvider = {
+      async complete(): Promise<ModelMessage> {
+        return { role: "assistant", content: "", toolCalls: [] }
+      },
+      async *stream(): AsyncIterable<StreamEvent> {
+        const style = { name: "brief-style", kind: "project", content: "prefers numbered sections", description: "brief formatting" }
+        yield { type: "text_delta", delta: JSON.stringify({ memories: [style, style] }) }
+      },
+    }
+    const sink = new InMemoryMemoryCandidateSink()
+    const sessionLog = new InMemorySessionLog()
+    const runner = new RuntimeRunner({ provider: textProvider(), sessionLog,
+      executionPlane: new LocalExecutionPlane(), maxTokens: 1024,
+      agentId: "agent-candidates", memoryScope: scope, memoryStore: storeSpy().store,
+      memoryProvider: repeating, memoryCandidateSink: sink,
+      memoryRuntimePolicy: { ...writesOff, sessionExtraction: "candidate_sink" } })
+    await collectText(runner.run({ sessionId: "repeated-proposal", goal: "say done" }))
+    const held = sink.candidates("agent-candidates")
+    expect(held).toHaveLength(1)
+    const events = await kinds(sessionLog, "repeated-proposal")
+    expect(events.filter(event => event.kind === "memory_candidate_pending")).toHaveLength(1)
+    expect(events.some(event => event.kind === "memory_candidate_rejected")).toBe(false)
+  })
+
   it("a candidate the sink rejects is audited as rejected, with the sink's reason", async () => {
     const rejecting: MemoryCandidateSink = {
       async submit(_agentId, candidate): Promise<MemoryCandidateReceipt> {
