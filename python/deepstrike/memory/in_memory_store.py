@@ -18,6 +18,7 @@ from deepstrike.memory.protocols import (
 )
 from deepstrike.memory.ranking import rank_memories
 from deepstrike.memory.retention import memory_retention_score
+from deepstrike.memory.lifecycle import memory_record_expired
 
 
 def _now_ms() -> int:
@@ -89,8 +90,10 @@ class InMemoryMemoryStore(MemoryStore):
         ]
 
     async def search(self, agent_id: str, query: MemoryQuery) -> list[MemoryRecall]:
+        now_ms = self._now()
         candidates = [record for record in self._records_for(agent_id)
-                      if record.scope == query.scope
+                      if not memory_record_expired(record, now_ms)
+                      and record.scope == query.scope
                       and (not query.kinds or record.kind in query.kinds)]
         ranked = rank_memories(
             query.query, candidates, query.top_k,

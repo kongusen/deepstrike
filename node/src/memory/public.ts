@@ -14,6 +14,8 @@ export { Ed25519MemoryCandidateSourceVerifier, HmacMemoryCandidateSourceVerifier
 export type { Ed25519MemoryCandidateSourceVerifierOptions, MemoryCandidateAttestation, MemoryCandidateAttestationReasonCode, MemoryCandidateSourceVerifier, MemoryCandidateVerification, HmacMemoryCandidateSourceVerifierOptions } from "./attestation.js"
 export type { FileMemoryCandidateSinkOptions, MemoryCandidateLedgerEntry, MemoryCandidateOutboxEvent, MemoryCandidateResolution, MemoryCandidateVerificationAttempt } from "./durable-candidate-sink.js"
 export { memoryRecallTurn } from "./recall-projection.js"
+export { consumeMemoryLeaseWrite, memoryRecordExpired, memoryScopeMatches, revokeMemoryLease, scopeMatchesMemoryDeletion, verifyMemoryLease } from "./lifecycle.js"
+export type { MemoryLease, MemoryLeaseRejection, MemoryWriteBudget } from "./lifecycle.js"
 export type {
   MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
 } from "./candidate-sink.js"

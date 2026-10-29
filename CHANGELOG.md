@@ -16,6 +16,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the same candidate ID. The reference verifier binds agent, scope, source, digest, key ID, policy
   version, expiry, clock skew, and HMAC signature. Ed25519 public-key verification is also
   available with the same canonical payload and `ed25519:<base64url>` signature format.
+- Added shared memory lifecycle primitives for lease scope checks, expiry, revocation, write budgets,
+  TTL filtering, and deletion scope matching across Node, Python, Rust, and WASM host APIs.
 
 ## [0.2.76] - 2026-10-20
 

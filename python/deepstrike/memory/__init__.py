@@ -16,6 +16,11 @@ from .candidate_sink import (
     session_extraction_candidate_id,
 )
 from .recall_projection import memory_recall_turn
+from .lifecycle import (
+    MemoryLease, MemoryLeaseRejection, MemoryWriteBudget, consume_memory_lease_write,
+    memory_record_expired, memory_scope_matches, revoke_memory_lease,
+    scope_matches_memory_deletion, verify_memory_lease,
+)
 from .working import WorkingMemory
 from .protocols import (
     MemoryStore, Memory, MemorySearchOptions, SessionData, MemoryRecord, MemoryRecall, MemoryRecallLifecycle, MemoryQuery,
@@ -47,6 +52,9 @@ __all__ = [
     "memory_candidate_payload_digest",
     "session_extraction_candidate_id",
     "memory_recall_turn",
+    "MemoryLease", "MemoryLeaseRejection", "MemoryWriteBudget", "consume_memory_lease_write",
+    "memory_record_expired", "memory_scope_matches", "revoke_memory_lease",
+    "scope_matches_memory_deletion", "verify_memory_lease",
 
     "WorkingMemory",
     "MemoryStore", "Memory", "MemorySearchOptions", "DurableMemory", "SessionData", "MemoryRecord", "MemoryRecall", "MemoryRecallLifecycle", "MemoryQuery",

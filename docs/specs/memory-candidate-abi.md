@@ -220,4 +220,4 @@ attestation canonical JSON 数组包含：`issuer`、`key_id`、`agent_id`、`te
 
 共享 admission helper 在所有内存/文件 sink 前执行：`host_verified` 必须同时由 `host` author、有效 attestation、匹配 agent/scope/source/digest、受信 key 和有效时间窗口证明；model/extraction/child candidate 可以继续以 untrusted 或 user_asserted 进入 pending，但不能通过修改 provenance 自行提升为 host_verified。
 
-当前实现仍不提供租约、TTL、撤销或跨文件系统事务；这些属于后续里程碑。WASM 不包含文件 API，以避免把 Node/Python/Rust 的宿主文件假设带入浏览器包。
+本轮新增跨 SDK memory lifecycle 基础规则：lease 绑定 `agent_id + tenant_id + namespace`，按 `expires_at`、撤销时间和 `max_writes` 拒绝写入；`ttl_days` 过期记录不会从 reference in-memory store 的 search 返回；host 可按 tenant/namespace scope predicate 执行删除同步。durable file sink 的 lease 状态和跨文件系统事务仍属于后续接入工作。WASM 不包含文件 API，以避免把 Node/Python/Rust 的宿主文件假设带入浏览器包。

@@ -24,6 +24,7 @@ import type {
 } from "./protocols.js"
 import { rankMemories } from "./ranking.js"
 import { memoryRetentionScore } from "./retention.js"
+import { memoryRecordExpired } from "./lifecycle.js"
 
 export interface InMemoryMemoryStoreOptions {
   /** Cap the per-agent record set; a write past it evicts the lowest-value unpinned records (M3). */
@@ -102,8 +103,10 @@ export class InMemoryMemoryStore implements MemoryStore {
 
   async search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]> {
     const all = this.recordsFor(agentId)
+    const nowMs = this.now()
     const candidates = all.filter(record =>
-      record.scope.tenant_id === query.scope.tenant_id
+      !memoryRecordExpired(record, nowMs)
+      && record.scope.tenant_id === query.scope.tenant_id
       && record.scope.namespace === query.scope.namespace
       && (query.kinds.length === 0 || query.kinds.includes(record.kind)),
     )

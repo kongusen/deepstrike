@@ -1,3 +1,5 @@
+export * from "./lifecycle.js"
+
 export class WorkingMemory {
   private store = new Map<string, unknown>()
   set(key: string, value: unknown): void { this.store.set(key, value) }

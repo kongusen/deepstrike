@@ -51,6 +51,43 @@ pub struct MemorySearchOptions {
     pub min_score: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryLease {
+    pub lease_id: String,
+    pub agent_id: String,
+    pub scope: MemoryScope,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub max_writes: u64,
+    pub writes_used: u64,
+    pub revoked_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryLeaseRejection {
+    LeaseMissing,
+    LeaseScopeMismatch,
+    LeaseExpired,
+    LeaseRevoked,
+    MemoryWriteBudgetExhausted,
+}
+
+pub fn memory_record_expired(record: &MemoryRecord, now_ms: u64) -> bool {
+    record.ttl_days.is_some_and(|days| now_ms > record.updated_at.saturating_add(days as u64 * 86_400_000))
+}
+
+pub fn verify_memory_lease(lease: Option<&MemoryLease>, agent_id: &str, scope: &MemoryScope, now_ms: u64) -> Result<(), MemoryLeaseRejection> {
+    let lease = lease.ok_or(MemoryLeaseRejection::LeaseMissing)?;
+    if lease.agent_id != agent_id || lease.scope != *scope { return Err(MemoryLeaseRejection::LeaseScopeMismatch); }
+    if lease.revoked_at.is_some_and(|at| now_ms >= at) { return Err(MemoryLeaseRejection::LeaseRevoked); }
+    if now_ms >= lease.expires_at { return Err(MemoryLeaseRejection::LeaseExpired); }
+    if lease.writes_used >= lease.max_writes { return Err(MemoryLeaseRejection::MemoryWriteBudgetExhausted); }
+    Ok(())
+}
+
+pub fn consume_memory_lease_write(lease: &mut MemoryLease) { lease.writes_used = lease.writes_used.saturating_add(1); }
+pub fn revoke_memory_lease(lease: &mut MemoryLease, revoked_at: u64) { lease.revoked_at = Some(revoked_at); }
+
 /// Public durable memory bound to one agent and scope.
 ///
 /// This is separate from [`WorkingMemory`], which is an in-process scratch pad, and from
@@ -432,7 +469,7 @@ impl Ed25519MemoryCandidateSourceVerifier {
     }
 
     pub fn with_clock(
-        trusted_issuers: std::collections::HashMap<String, String>,
+        trusted_issuers: std::collections::HashMap<String, (String, String)>,
         now_ms: std::sync::Arc<dyn Fn() -> u64 + Send + Sync>,
     ) -> Self {
         Self { trusted_issuers, now_ms, allowed_clock_skew_ms: 60_000, max_lifetime_ms: 600_000, policy_version: "memory-attestation-v1".into() }
@@ -483,7 +520,7 @@ impl HmacMemoryCandidateSourceVerifier {
     }
 
     pub fn with_clock(
-        trusted_issuers: std::collections::HashMap<String, String>,
+        trusted_issuers: std::collections::HashMap<String, (String, String)>,
         now_ms: std::sync::Arc<dyn Fn() -> u64 + Send + Sync>,
     ) -> Self {
         Self { trusted_issuers, now_ms, allowed_clock_skew_ms: 60_000, max_lifetime_ms: 600_000, policy_version: "memory-attestation-v1".into() }
@@ -528,7 +565,6 @@ pub fn memory_candidate_attestation_digest(attestation: &MemoryCandidateAttestat
 
 pub fn sign_memory_candidate_attestation(attestation: &MemoryCandidateAttestation, key: &str) -> String {
     let canonical = memory_candidate_attestation_canonical_payload(attestation);
-    use sha2::Digest;
     let digest = hmac_sha256(key.as_bytes(), canonical.as_bytes());
     format!("hmac-sha256:{}", digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
 }
@@ -551,6 +587,7 @@ fn constant_time_equal(left: &str, right: &str) -> bool {
         && left.as_bytes().iter().zip(right.as_bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
+#[async_trait]
 pub trait MemoryCandidateSink: Send + Sync {
     async fn submit(
         &self,
@@ -1111,12 +1148,14 @@ impl MemoryStore for InMemoryMemoryStore {
                 .or_insert_with(|| self.initial_memories.clone())
                 .clone()
         };
+        let now = now_ms();
         let query_terms = memory_terms(&query.query);
         let mut ranked = all
             .into_iter()
             .enumerate()
             .filter(|(_, record)| {
-                record.scope == query.scope
+                !memory_record_expired(record, now)
+                    && record.scope == query.scope
                     && (query.kinds.is_empty() || query.kinds.contains(&record.kind))
                     && query
                         .min_score
