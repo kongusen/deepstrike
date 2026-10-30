@@ -8,7 +8,7 @@ import type { LLMProvider, ModelMessage, StreamEvent } from "../../src/types.js"
 import type { MemoryStore, MemoryRecord } from "../../src/memory/protocols.js"
 
 describe("M2 memory single-write path", () => {
-  it("extracts once after saveSession and journals every extracted record through WriteMemory", async () => {
+  it("saves the transcript without performing automatic extraction", async () => {
     const order: string[] = []
     const persisted: MemoryRecord[] = []
     let providerCalls = 0
@@ -18,23 +18,7 @@ describe("M2 memory single-write path", () => {
       },
       async *stream(): AsyncIterable<StreamEvent> {
         providerCalls += 1
-        if (providerCalls === 1) {
-          yield { type: "text_delta", delta: "Use focused tests." }
-          return
-        }
-        yield {
-          type: "text_delta",
-          delta: JSON.stringify({
-            memories: [{
-              name: "prefers-focused-tests",
-              kind: "feedback",
-              content: "Use focused tests.",
-              description: "Stable testing preference",
-              confidence: 0.9,
-              evidence_refs: ["assistant:final"],
-            }],
-          }),
-        }
+        yield { type: "text_delta", delta: "Use focused tests." }
       },
     }
     const memoryStore = {
@@ -55,18 +39,11 @@ describe("M2 memory single-write path", () => {
 
     await collectText(runner.run({ sessionId: "session-m2", goal: "Remember how I test" }))
 
-    expect(providerCalls).toBe(2)
-    expect(order).toEqual(["save", "put"])
-    expect(persisted).toHaveLength(1)
-    expect(persisted[0]).toMatchObject({
-      scope: { tenant_id: "tenant-m2", namespace: "assistant" },
-      name: "prefers-focused-tests",
-      kind: "feedback",
-      content: "Use focused tests.",
-      provenance: { session_id: "session-m2", author: "extraction", trust: "untrusted" },
-    })
+    expect(providerCalls).toBe(1)
+    expect(order).toEqual(["save"])
+    expect(persisted).toHaveLength(0)
     const events = await sessionLog.read("session-m2")
-    expect(events.filter(entry => entry.event.kind === "memory_written")).toHaveLength(1)
+    expect(events.filter(entry => entry.event.kind === "memory_written")).toHaveLength(0)
   })
 
   it("contains no alternate durable-memory write path", () => {

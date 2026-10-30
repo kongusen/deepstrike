@@ -850,27 +850,27 @@
               "ref_id": "7",
               "authority": "host_observation",
               "availability": "resident",
-              "content_digest": "sha256:30a4403129df9ccffab2d792967a9cd5c7d110531735b1ac9e00d451ca1eb7d9",
+              "content_digest": "sha256:9f43c9312807dd09bd26f56e645eb30a724bb9e01546ff9dc03c94c640100b75",
               "payload_ref": "sessionlog:7",
-              "size_bytes": 130
+              "size_bytes": 126
             },
             {
               "domain": "session_event",
               "ref_id": "8",
               "authority": "host_observation",
               "availability": "resident",
-              "content_digest": "sha256:4ad5870503ea0db58c927ee53cd40edc3645acf2326c9b5ff3a8e04d800c6f34",
+              "content_digest": "sha256:36eceedc238f2b0c21f4bf474cd916170bd6e9f50887836a9b3b1faa29acaf67",
               "payload_ref": "sessionlog:8",
-              "size_bytes": 130
+              "size_bytes": 126
             },
             {
               "domain": "session_event",
               "ref_id": "9",
               "authority": "host_observation",
               "availability": "resident",
-              "content_digest": "sha256:abd9a02495111c0c1238e108ab685cb04cc90995c0e3c12da6a9ebdcfac21395",
+              "content_digest": "sha256:035efda259c8a8e8b58b3852c4629208c9e09c705fd9f43f4b1fffad46739adb",
               "payload_ref": "sessionlog:9",
-              "size_bytes": 154
+              "size_bytes": 150
             },
             {
               "domain": "wire_replay",
