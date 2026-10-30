@@ -333,6 +333,8 @@ pub struct AuthoredMemoryQueryState {
     pub binding_id: MemoryBindingId,
     pub text: String,
     pub requested_k: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<String>,
 }
 
 /// §12.1 · the P2 plane: task control blocks and their attempts, budgets and waits, the workflow

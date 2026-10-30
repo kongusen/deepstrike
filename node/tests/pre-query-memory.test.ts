@@ -40,8 +40,8 @@ describe("preQueryMemory prefetch lands in history, not knowledge", () => {
         return { role: "assistant", content: "unused", toolCalls: [] }
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
-        if (JSON.stringify(context.turns).includes(RECALL)) sawInTurns = true
-        if ((context.systemKnowledge ?? "").includes(RECALL)) sawInKnowledge = true
+        if (JSON.stringify(context.turns).includes("prefetch fixture")) sawInTurns = true
+        if ((context.systemKnowledge ?? "").includes("prefetch fixture")) sawInKnowledge = true
         yield { type: "text_delta", delta: "done" }
       },
     }

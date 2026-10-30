@@ -53,6 +53,9 @@ pub(crate) enum HostEffect {
     QueryMemory {
         query: MemoryQuery,
         requested_k: usize,
+        /// `memory(record_id)`: a point read of this record, answered with it or with nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        record_id: Option<String>,
     },
     ArchivePageOut {
         turn: u32,

@@ -4,7 +4,7 @@
  * the live `renewed` observation (phase: "renewal") so the new sprint starts with a fresh recall
  * pass — the symmetric counterpart of the turn-1 fetch (phase: "initial"). A running operation
  * accepts history only through effects or external events, so the renewal hits enter as keyed
- * `memory:<record_id>` knowledge entries carrying the canonical recall text (M5); the turn-1 hits
+ * `memory:<record_id>` knowledge entries carrying the canonical recall index line (M5); the turn-1 hits
  * are ordinary history turns.
  */
 import { createRunner, tool } from "./runtime/helpers.js"
@@ -30,8 +30,8 @@ describe("renewal-boundary memory re-query (K4)", () => {
       saveSession: async () => {},
       search: async () => [{
         record: {
-          record_id: "record-renewal", scope, name: "renewal-fact", kind: "reference", content: RECALL,
-          description: "renewal fixture",
+          record_id: "record-renewal", scope, name: "renewal-fact", kind: "reference", content: "full renewal record",
+          description: RECALL,
           provenance: { author: "host", trust: "host_verified", evidence_refs: [] },
           created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.9, links: [], pinned: false,
         },

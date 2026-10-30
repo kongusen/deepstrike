@@ -1235,16 +1235,18 @@ impl ContextManager {
         }
         Some(ToolSchema {
             name: CompactString::new(MEMORY_TOOL_NAME),
-            description:
-                "Search your long-term memory for relevant past experiences and knowledge."
-                    .to_string(),
+            description: "Read your long-term memory. Pass `query` to search it for relevant past \
+experiences and knowledge, or `record_id` to read one record in full. Recalled memories arrive as \
+index lines `[MEMORY record_id=… kind=… trust=…] <description>`: when one looks relevant to the \
+task, read it by its record_id before relying on it."
+                .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "query": { "type": "string" },
+                    "query": { "type": "string", "description": "What to search for. Omit when passing record_id." },
+                    "record_id": { "type": "string", "description": "Read this one record in full, as named by a recalled index line. Omit when passing query." },
                     "top_k": { "type": "integer" }
-                },
-                "required": ["query"]
+                }
             }),
         })
     }

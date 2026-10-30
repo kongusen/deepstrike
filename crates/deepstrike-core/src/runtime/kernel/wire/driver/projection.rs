@@ -57,6 +57,7 @@ impl CanonicalOperationDriver {
                     binding_id: query.binding_id.clone(),
                     text: query.text.clone(),
                     requested_k: query.requested_k,
+                    record_id: query.record_id.clone(),
                 })
                 .collect(),
             memory_write_window_ms: self
@@ -654,6 +655,7 @@ impl CanonicalOperationDriver {
                         binding_id: query.binding_id.clone(),
                         text: query.text.clone(),
                         requested_k: query.requested_k,
+                        record_id: query.record_id.clone(),
                     },
                 )
             })

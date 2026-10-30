@@ -118,7 +118,7 @@ RuntimeOptions(..., on_turn_metrics=on_metrics)
 
 **Skill 卸载 / 租约（K3）**：`deactivate_skill(name)`（仅宿主驱动，无模型侧 unload）—— 工具集在下一次 provider 调用回宽，knowledge 钉在下一个边界摘除；`skill_lease_turns=N` 让每次激活 N 轮后自动走同一条路径。多阶段长任务不再单调累积早期阶段的 skill。
 
-**Renewal 记忆重查（K4/M5）**：sprint renewal 会整体重建 history（连同早先的 memory 命中一起丢弃），`pre_query_memory` 钩子会以 `phase="renewal"` 自动重发一次，让新 sprint 从新鲜的召回开始（turn-1 那次为 `phase="initial"`）。初始预取把每个命中作为一条普通 `history` user turn；renewal 发生在运行中的 canonical operation 内，宿主不能直接追加 history，因此重查命中通过 `add_knowledge_message` 以 `memory:<record_id>` 键写入 `knowledge`。两条路径都使用相同的 `memoryRecallTurn` 文本（包含 `record_id`、`kind` 和 provenance `trust`），按 record ID 去重，并为每次预取写入一个 `memory_retrieval_result` 审计事件。
+**Renewal 记忆重查（K4/M5）**：sprint renewal 会整体重建 history（连同早先的 memory 命中一起丢弃），`pre_query_memory` 钩子会以 `phase="renewal"` 自动重发一次，让新 sprint 从新鲜的召回开始（turn-1 那次为 `phase="initial"`）。初始预取把每个命中作为一条普通 `history` user turn；renewal 发生在运行中的 canonical operation 内，宿主不能直接追加 history，因此重查命中通过 `add_knowledge_message` 以 `memory:<record_id>` 键写入 `knowledge`。两条路径都使用相同的 `memoryRecallTurn` 索引行 `[MEMORY record_id=… kind=… trust=…] <description>`（没有 description 时用 name），不含记录正文；模型判断相关时用 `memory(record_id=…)` 读取全文。两条路径都按 record ID 去重，并为每次预取写入一个 `memory_retrieval_result` 审计事件。
 
 ```python
 RuntimeOptions(

@@ -521,7 +521,21 @@ impl CanonicalOperationDriver {
         // The retrieval width is the operation's policy, clamped — the host does not re-decide it
         // and a model cannot widen it by asking for more.
         let ceiling = context.config.memory_policy.retrieval_top_k;
-        let requested_k = proposal.limit.unwrap_or(ceiling).clamp(1, ceiling);
+        let record_id = match &proposal.record_id {
+            Some(id) => Some(MemoryRecordRef::new(id.clone()).map_err(|error| {
+                SyscallRefusal::Rejected(SyscallRejection::new(
+                    "query_memory",
+                    format!("malformed record_id: {}", error.message),
+                ))
+            })?),
+            None => None,
+        };
+        // A point fetch answers with one record at most, whatever width was asked for.
+        let requested_k = if record_id.is_some() {
+            1
+        } else {
+            proposal.limit.unwrap_or(ceiling).clamp(1, ceiling)
+        };
         if let Some(pending) = context
             .pending
             .iter()
@@ -534,6 +548,7 @@ impl CanonicalOperationDriver {
             if pending.binding == binding
                 && pending.query.text == proposal.text
                 && pending.query.kinds == proposal.kinds
+                && pending.query.record_id == record_id
                 && pending.requested_k == requested_k
             {
                 return Ok(SyscallOutcome {
@@ -550,12 +565,14 @@ impl CanonicalOperationDriver {
             binding_id: binding.binding_id.clone(),
             text: proposal.text.clone(),
             requested_k,
+            record_id: record_id.as_ref().map(|id| id.as_str().to_string()),
         };
         let effect = EffectKind::QueryMemory(QueryMemoryEffect {
             binding,
             query: CanonicalMemoryQuery {
                 text: proposal.text.clone(),
                 kinds: proposal.kinds.clone(),
+                record_id,
                 accepted_at_ms: context.input.observed_at_ms,
                 causation: causation.clone(),
             },

@@ -811,21 +811,53 @@ pub fn memory_candidate_payload_digest(record: &MemoryRecord) -> String {
     format!("sha256:{}", sha256_hex(&payload.to_string()))
 }
 
-/// M5 · the history turn one recalled record becomes. A host prefetch (turn 1 and after each
-/// sprint renewal) lands every accepted hit in `history` as its own ordinary user turn, never in
-/// `knowledge` (docs/guides/context-engineering.md, Level 5). The header names the record and its
-/// trust level so the model can tell host-verified facts from untrusted ones; the retrieval score
-/// is left out because it changes between retrievals while the record does not. Every SDK pins
-/// the same vector.
+/// M5 · the index line one recalled record becomes. Recall pushes an index line, not the record:
+/// the header names the record, its kind and its trust level so the model can tell host-verified
+/// facts from untrusted ones, and the body is the record's one-line description (its name when it
+/// has none) — never its content. The model reads a record in full with `memory(record_id)` when it
+/// judges it relevant, so a prefetch costs a line per hit, not a record per hit. The turn-1
+/// prefetch lands every accepted hit in `history` as its own ordinary user turn
+/// (docs/guides/context-engineering.md, Level 5); a renewal re-query cannot append to a running
+/// operation's history, so its hits go to keyed knowledge `memory:<record_id>` with the same text.
+/// The retrieval score is left out because it changes between retrievals while the record does
+/// not. Every SDK pins the same vectors.
 pub fn memory_recall_turn(record: &MemoryRecord) -> String {
     let label = |value: serde_json::Value| value.as_str().unwrap_or_default().to_string();
+    let summary = match record.description.trim() {
+        "" => record.name.as_str(),
+        description => description,
+    };
     format!(
         "[MEMORY record_id={} kind={} trust={}] {}",
         record.record_id,
         label(serde_json::json!(record.kind)),
         label(serde_json::json!(record.provenance.trust)),
-        record.content
+        summary
     )
+}
+
+/// The answer to `memory(record_id)`: the record itself, or nothing when it is gone, expired,
+/// outside the query's scope or not one of the kinds asked for. A fetch is a point read, so a
+/// found record carries no ranking — the kernel refuses any record but the one it named.
+pub fn memory_fetch_recall(
+    record: Option<MemoryRecord>,
+    query: &MemoryQuery,
+    now_ms: u64,
+) -> Vec<MemoryRecall> {
+    let Some(record) = record else {
+        return Vec::new();
+    };
+    if record.scope != query.scope
+        || (!query.kinds.is_empty() && !query.kinds.contains(&record.kind))
+        || memory_record_expired(&record, now_ms)
+    {
+        return Vec::new();
+    }
+    vec![MemoryRecall {
+        record,
+        score: 1.0,
+        why: "record_id".to_string(),
+    }]
 }
 
 fn sha256_hex(text: &str) -> String {

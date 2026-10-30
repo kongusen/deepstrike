@@ -84,7 +84,7 @@ export interface SessionStore {
 export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest } from "./candidate-sink.js"
 export { HostMemoryCandidateSourceVerifier, admitMemoryCandidate, verifyMemoryCandidateSource, memoryCandidateAttestationCanonicalPayload, memoryCandidateAttestationDigest, memoryCandidateAttestationMatches } from "./attestation.js"
 export type { MemoryCandidateAttestation, MemoryCandidateSourceVerifier, MemoryCandidateVerification } from "./attestation.js"
-export { memoryRecallTurn } from "./recall-projection.js"
+export { memoryFetchRecall, memoryRecallTurn } from "./recall-projection.js"
 export type { MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource } from "./candidate-sink.js"
 export { resolveMemoryRuntimePolicy } from "./runtime-policy.js"
 export type { MemoryRuntimePolicy, MemoryRetrievalPolicy, MemoryWritePolicy, ResolvedMemoryRuntimePolicy } from "./runtime-policy.js"

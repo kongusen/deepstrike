@@ -2004,6 +2004,11 @@ fn protocol_action_from_wire(
                     min_score: None,
                 },
                 requested_k: query.requested_k as usize,
+                record_id: query
+                    .query
+                    .record_id
+                    .as_ref()
+                    .map(|record_id| record_id.as_str().to_string()),
             }
         }
         EffectKind::ArchivePageOut(_) => {

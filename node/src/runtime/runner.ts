@@ -31,7 +31,7 @@ import {
   type MemoryCandidateSource,
 } from "../memory/candidate-sink.js"
 import { checkMemoryWrite, deriveMemoryRecall, type KernelMemoryPolicyWire } from "../memory/authority.js"
-import { memoryRecallTurn } from "../memory/recall-projection.js"
+import { memoryFetchRecall, memoryRecallTurn } from "../memory/recall-projection.js"
 import type { KnowledgeSource } from "../knowledge/source.js"
 import type { Skill } from "../skill.js"
 import type { SkillMetadata } from "../skills/loader.js"
@@ -1093,6 +1093,17 @@ export class RuntimeRunner {
     if (limit <= 0) return []
     return (await this.opts.memoryStore.search(agentId, { ...query, top_k: limit }))
       .slice(0, limit)
+  }
+
+  /** `memory(record_id)`: a point read under the same retrieval gate as a search. */
+  private async fetchMemoryFromStore(
+    query: MemoryQuery,
+    recordId: string,
+    agentId: string,
+  ): Promise<MemoryRecall[]> {
+    if (!this.memoryPathEnabled("retrievalEnabled")) return []
+    if (!this.opts.memoryStore) throw new Error("memory queries require memoryStore")
+    return memoryFetchRecall(await this.opts.memoryStore.get(agentId, recordId), query, Date.now())
   }
 
   /**
@@ -3540,9 +3551,12 @@ export class RuntimeRunner {
         let hits: MemoryRecall[] = []
         let error: string | undefined
         const agentId = this.opts.agentId
+        const recordId = typeof action.query.record_id === "string" ? action.query.record_id : undefined
         try {
           if (!agentId) throw new Error("memory queries require RuntimeOptions.agentId")
-          hits = await this.retrieveMemoryFromStore(query, action.requestedK, agentId)
+          hits = recordId === undefined
+            ? await this.retrieveMemoryFromStore(query, action.requestedK, agentId)
+            : await this.fetchMemoryFromStore(query, recordId, agentId)
         } catch (cause) {
           error = formatToolError(cause)
         }
@@ -4058,7 +4072,7 @@ export class RuntimeRunner {
   }
 
   /** I4 + K4 · M5: fetch long-term memory hits for the current goal and put each one in context as
-   *  the canonical recall text ({@link memoryRecallTurn}). Called once before turn 1
+   *  the canonical recall index line ({@link memoryRecallTurn}). Called once before turn 1
    *  (`phase: "initial"`): each hit is an ordinary `history` user turn — single-use retrieval
    *  content that decays with the compression pyramid. Re-fired after each sprint renewal
    *  (`phase: "renewal"`), which drops the old history with the earlier hits: a running operation

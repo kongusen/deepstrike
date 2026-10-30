@@ -1,6 +1,6 @@
 # 记忆候选回执 ABI（草案）
 
-状态：Rust core、Rust SDK 分发与 node、wasm、python 三个桥接已实现；node、python、wasm、Rust SDK 的 M1 策略与 M2 候选 sink 均已接入（第 8、9、11 节）。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
+状态：Rust core、Rust SDK 分发与 node、wasm、python 三个桥接已实现；node、python、wasm、Rust SDK 的 M1 策略与 M2 候选 sink 均已接入（第 8、9、11 节）。2026-10-30 起运行时策略只剩 `retrieval` 与 `modelWrites` 两个开关，会话抽取与语义归档两条自动写入路径已删除，模型经 `propose_memory` 提案（第 15 节）；第 8–12 节中涉及这两条路径的内容仅作历史记录。对应契约 M2（`xiaoman-sdk-extension-contract-v2.md` 第 3 节）。
 范围：新增一个 canonical 内核结果，使模型发起的记忆写入可以表达“待确认”，而不被记为已持久化。
 非目标：本文不定义六维分类、用户确认流程或来源业务校验，这些归宿主。
 
@@ -12,6 +12,8 @@
 - `RequestMemoryWrite` 的唯一调用通道是子 agent 的 `parent_requests`（子到父），由 `plan_memory_write`（`driver/syscall.rs:383`）转成 `persist_memory` 效果。
 
 本规格仍保持 `memory` 搜索工具只读，同时新增 capability-gated 的 `propose_memory` 模型入口。该入口只接受 `name`、`kind`、`content`、可选 `description` 与 `evidence_refs`，严格拒绝 scope、record id、trust、时间戳、lease、receipt 和 attestation 等宿主字段；它解码为现有 `RequestMemoryWrite` 并复用 `plan_memory_write`。只有 memory enabled、writable binding、candidate sink 存在且 `model_writes = candidate_sink` 时才暴露，保证模型提案只能进入审核而不会直写 store；宿主仅在开启时下发 `propose_memory_enabled`，旧内核在未启用时仍可接受配置。原有 child request 继续使用 `source = child_request` 与既有 v2 candidate IDs，直接模型提案使用 `source = model_proposal` 的 v3 identity。
+
+这修订了上面的 F15 裁定：模型现在有一个写入入口，但它只能产生待审候选，不能直写 store。这是产品层面的决定，记录在 CHANGELOG 中。
 
 ## 1. 改动前的状态
 
@@ -126,6 +128,8 @@ Rust core 在 `wire/effect.rs` 定义互斥结果，在 `wire/driver/effects.rs`
 
 ## 8. 候选 sink（node，python/wasm 移植见第 9 节）
 
+> 2026-10-30 更新：本节描述的宿主漏斗候选路径（`sessionExtraction`、`semanticArchive` 取 `"candidate_sink"`）与会话抽取的 v3 身份已随两条自动写入路径一起删除。PersistMemory 现在有了产生方（`propose_memory` 与子 agent 请求），sink 只接在 PersistMemory 一处。当前状态见第 15 节。
+
 实现前核实的事实：PersistMemory 效果在任何 SDK 中都没有产生方。F15 之后模型没有写入入口，四个 SDK 构造 `child_completed` 时都不会填写 `request_memory_write`。真实运行中的记忆写入全部走宿主漏斗 `writeMemory`（`sessionExtraction` 会话抽取、`semanticArchive` 语义归档、宿主显式的 `remember`）：内核只经 `admit_memory_write` 做准入，不参与结算。因此 sink 接在两处，共用一个接口：
 
 - 宿主漏斗：`memoryRuntimePolicy` 的 `sessionExtraction` 或 `semanticArchive` 取 `"candidate_sink"` 时，准入通过的写入交给 sink 而不写 store。会话事件按回执记为 `memory_candidate_pending`、`memory_candidate_rejected`，只有 `accepted` 记为 `memory_written`（`record_id` 为 sink 给出的 `record_ref`）。
@@ -145,8 +149,8 @@ Rust core 在 `wire/effect.rs` 定义互斥结果，在 `wire/driver/effects.rs`
 
 尚未做的：
 
-- PersistMemory 的产生方：需要推翻或修订 F15 裁定，属于产品决策。
-- S05 与真实 sink 的接入。
+- ~~PersistMemory 的产生方：需要推翻或修订 F15 裁定，属于产品决策。~~ 已由 `propose_memory` 解决（第 0、15 节）。
+- S05 与真实 sink 的接入。来源认证已在第 14 节实现；生产 sink 仍由宿主提供。
 
 ## 9. Python / WASM 的 M1 + M2 移植（2026-10-26）
 
@@ -221,3 +225,42 @@ attestation canonical JSON 数组包含：`issuer`、`key_id`、`agent_id`、`te
 共享 admission helper 在所有内存/文件 sink 前执行：`host_verified` 必须同时由 `host` author、有效 attestation、匹配 agent/scope/source/digest、受信 key 和有效时间窗口证明；model/extraction/child candidate 可以继续以 untrusted 或 user_asserted 进入 pending，但不能通过修改 provenance 自行提升为 host_verified。
 
 本轮新增跨 SDK memory lifecycle 基础规则：lease 绑定 `agent_id + tenant_id + namespace`，按 `expires_at`、撤销时间和 `max_writes` 拒绝写入；`ttl_days` 过期记录不会从 reference in-memory store 的 search 返回；host 可按 tenant/namespace scope predicate 执行删除同步。durable file sink 的 lease 状态和跨文件系统事务仍属于后续接入工作。WASM 不包含文件 API，以避免把 Node/Python/Rust 的宿主文件假设带入浏览器包。
+
+## 15. 模型提案闭环与自动写入删除（2026-10-30）
+
+本节是当前状态，覆盖第 8–12 节中与会话抽取、语义归档有关的描述。
+
+运行时策略只剩两个开关：`retrieval`（`"disabled" | "host"`）与 `modelWrites`（`"disabled" | "candidate_sink"`）。`sessionExtraction`、`semanticArchive` 两条宿主漏斗与会话抽取的 v3 candidate identity 已删除；未知字段在四端都按校验错误拒绝。记忆写入的来源因此只剩三处：模型的 `propose_memory`（`source = model_proposal`）、子 agent 的 `request_memory_write`（`source = child_request`）、宿主显式的 `remember()`。前两者都落成 PersistMemory，sink 只接在这一处。
+
+`propose_memory` 的调用与结算：
+
+- 调用时模型立即收到工具回执 "memory proposal submitted for review…"，本轮挂起等待 PersistMemory 结算。
+- 宿主结算后，内核把 `[MEMORY PROPOSAL name=<name>] <outcome>` 作为一条 user turn 写入 history，再恢复该轮。outcome 为 `stored`、`pending review as candidate <id>; it is not stored until the host accepts it.` 或 `not stored: <原因>`。同一批次还有未结算的兄弟 effect 时，由最后结算的那个恢复本轮。
+- 子 agent 请求的作者已结束，结算只记审计 observation，不写 history。两者由 `AuthoredMemoryWrite.model_facing` 区分，该字段随 checkpoint 持久化。
+
+DEC-3 只允许一个未结算的 PersistMemory。模型提案撞上时不再报 `ResourceLimitExceeded` 中止整轮：
+
+- 与已挂起的提案 binding、`name`、`kind`、`content` 完全相同：复用原 effect，回执 "already pending review"。
+- 内容不同：作为普通工具拒绝返回 "Another memory proposal is already pending review. Propose this one again after its outcome arrives."，不占配额。
+- 子 agent 请求撞上 DEC-3 仍按 fault 处理。
+
+不做批量提交；一次一条由工具描述约束（`context/manager.rs` 中 `propose_memory` 的描述，同时写明该记什么、不该记什么、先 `memory` 搜索并复用 name）。
+
+尚未做的：
+
+- `model_proposal` 与 `child_request` 使用各自的 candidate ID 体系，sink 侧没有按 payload digest 跨来源去重。
+- 召回放置仍分两种：首轮预取进 history，renewal 重查进 keyed knowledge `memory:<record_id>`（第 12 节）。这是有意的：运行中的 canonical operation 只能经 effect 或外部事件写 history。
+
+## 16. 召回改为索引推送 + 按需拉取（2026-10-30）
+
+宿主预取（首轮 history 与 renewal 的 keyed knowledge）不再注入记录正文，每个命中只推一行索引：`[MEMORY record_id=<id> kind=<kind> trust=<trust>] <summary>`，summary 取 `description`，为空时取 `name`。四端共享两条固定向量：带 description 的 record-v 得 `… how briefs are laid out`，description 为空白时得 `… fact`。
+
+模型用 `memory` 工具的新参数 `record_id` 读取全文：
+
+- 工具 schema 不再要求 `query`；`query` 与 `record_id` 必须且只能给一个，否则作为普通工具拒绝返回，不中止本轮。
+- `CanonicalMemoryQuery` 新增可选 `record_id`（`MemoryRecordRef`），`requested_k` 固定为 1，`text` 为空。checkpoint 的 `AuthoredMemoryQueryState` 同步新增可选 `record_id`，旧 checkpoint 仍可恢复。DEC-3 的复用判断把 `record_id` 计入。
+- 宿主用 `MemoryStore.get` 点查，再经共享 helper（Node/WASM `memoryFetchRecall`，Python `memory_fetch_recall`，Rust `memory_fetch_recall`）过滤：记录不存在、scope 不符、不在请求的 kinds 内或 TTL 过期，一律按未找到返回空；与检索共用同一个 retrieval 开关。
+- 内核只接受恰为所点记录的一条或零条结果；其他记录或多条结果按 `UnexpectedEffectOutcome` 拒绝，不改动状态，effect 仍待结算。命中以 `[MEMORY record_ref=<id> kind=<kind>] <content>` 写入 history，与检索命中相同，并照常推导 recall lifecycle；零条时写入 `[MEMORY record_ref=<id>] not found: …`，让模型知道索引已失效。
+- `memory_queried` 观察的 `query` 字段对点查记为 `record_id=<id>`，未新增事件字段。
+
+模型主动的 `memory(query)` 检索仍返回全文，索引化只针对宿主推送。

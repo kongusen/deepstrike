@@ -3,7 +3,7 @@
 A sprint renewal drops the old history — including earlier memory hits — so the runner re-fires
 the ``pre_query_memory`` prefetch on the live ``renewed`` observation (``phase="renewal"``).
 A running operation accepts history only through effects or external events, so the renewal
-hits enter as keyed ``memory:<record_id>`` knowledge entries carrying the canonical recall text
+hits enter as keyed ``memory:<record_id>`` knowledge entries carrying the canonical recall index
 (M5). Pre-K4 hooks that don't accept ``phase`` keep working (signature-sniffed).
 """
 
@@ -21,8 +21,8 @@ RECALL = "LONGTERM_FACT_FOR_SPRINT"
 RECALL_TURN = f"[MEMORY record_id=record-renewal kind=reference trust=host_verified] {RECALL}"
 SCOPE = MemoryScope("agent-k4", "renewal")
 RECALL_HIT = MemoryRecall(MemoryRecord(
-    record_id="record-renewal", scope=SCOPE, name="renewal", kind="reference", content=RECALL,
-    description="fixture", provenance=MemoryProvenance(author="host", trust="host_verified"),
+    record_id="record-renewal", scope=SCOPE, name="renewal", kind="reference", content="full renewal record",
+    description=RECALL, provenance=MemoryProvenance(author="host", trust="host_verified"),
     created_at=1, updated_at=1, confidence=0.9,
 ), 0.9, "fixture")
 

@@ -20,7 +20,7 @@ use crate::knowledge::KnowledgeSource;
 use crate::memory::{
     MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
     MemoryRetrievalPolicy, MemoryRuntimePolicy, MemoryStore, MemoryWritePolicy,
-    memory_candidate_id, memory_recall_turn,
+    memory_candidate_id, memory_fetch_recall, memory_recall_turn,
 };
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
@@ -730,7 +730,7 @@ impl RuntimeRunner {
     /// next counts (the same derivation a model `query_memory` resolution journals as
     /// `memory_recalled`) and the store only mirrors them.
     /// I4 + K4 · M5: fetch long-term memory hits for `goal` and put each one in context as the
-    /// canonical recall text (`memory_recall_turn`). Before turn 1 (`MemoryPrefetchPhase::Initial`)
+    /// canonical recall index line (`memory_recall_turn`). Before turn 1 (`MemoryPrefetchPhase::Initial`)
     /// each hit is an ordinary `history` user turn. After a sprint renewal, which drops the old
     /// history with the earlier hits, a running operation accepts history only through effects or
     /// external events, so each hit is a keyed `memory:<record_id>` knowledge entry instead. One
@@ -2100,7 +2100,11 @@ impl RuntimeRunner {
                         };
                         action = kernel_action(&kernel, &mut pending_observations, event).await?;
                     }
-                    HostEffect::QueryMemory { query, requested_k } => {
+                    HostEffect::QueryMemory {
+                        query,
+                        requested_k,
+                        record_id,
+                    } => {
                         let effect_id = action.effect_id.clone();
                         let (hits, error) = match (
                             self.opts.memory_store.as_ref(),
@@ -2114,7 +2118,21 @@ impl RuntimeRunner {
                                 if let Some(scope) = self.opts.memory_scope.as_ref() {
                                     query.scope = scope.clone();
                                 }
-                                match store.search(agent_id, &query).await {
+                                // `memory(record_id)` is a point read under the same gate as a
+                                // search: that record, or nothing.
+                                let result = match record_id.as_deref() {
+                                    Some(record_id) => {
+                                        let now_ms = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis() as u64;
+                                        store.get(agent_id, record_id).await.map(|record| {
+                                            memory_fetch_recall(record, &query, now_ms)
+                                        })
+                                    }
+                                    None => store.search(agent_id, &query).await,
+                                };
+                                match result {
                                     Ok(hits) => (hits, None),
                                     Err(error) => (Vec::new(), Some(error.to_string())),
                                 }

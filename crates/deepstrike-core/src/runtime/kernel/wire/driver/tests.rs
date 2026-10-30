@@ -2853,6 +2853,136 @@ fn a_memory_query_is_clamped_to_the_operations_retrieval_policy() {
     assert_eq!(effect.binding.binding_id.as_str(), "mem-binding-1");
 }
 
+fn recall_of(record_id: &str, content: &str) -> MemoryRecall {
+    MemoryRecall {
+        record_ref: MemoryRecordRef::new(record_id).unwrap(),
+        name: "brief-style".to_string(),
+        kind: SyscallMemoryKind::Project,
+        content: content.to_string(),
+        score: None,
+        recall_count: WireU64::ZERO,
+        pinned: false,
+    }
+}
+
+fn fetch_record(runtime: &mut Runtime, provider: &EffectId, record_id: &str) -> KernelEffect {
+    let queried = runtime.submit(&provider_result(
+        "in-fetch",
+        1_700_000_002_000,
+        provider,
+        vec![tool_call(
+            "call-1",
+            crate::context::manager::MEMORY_TOOL_NAME,
+            json!({"record_id": record_id, "top_k": 3}),
+        )],
+    ));
+    sole_effect(&queried).clone()
+}
+
+/// Recall prefetch pushes index lines only; `memory(record_id)` is how the model reads one in
+/// full. The fetch is a point read of width one, and its content enters history like a search hit.
+#[test]
+fn a_memory_fetch_by_record_id_reads_that_record_in_full() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let fetched = fetch_record(&mut runtime, &provider, "rec-1");
+    let EffectKind::QueryMemory(effect) = &fetched.effect else {
+        panic!("expected a memory query, got {:?}", fetched.tag());
+    };
+    assert_eq!(effect.query.record_id.as_ref().map(|id| id.as_str()), Some("rec-1"));
+    assert_eq!(effect.query.text, "");
+    assert_eq!(effect.requested_k, 1, "a fetch answers with one record whatever width was asked");
+
+    let restored = Runtime::restore_with(None, &runtime.journal);
+    assert_eq!(restored.pending_effect_kinds(), vec![EffectKindTag::QueryMemory]);
+
+    let resumed = runtime.submit(&resolved(
+        "in-fetched",
+        1_700_000_003_000,
+        &fetched.effect_id,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
+            recalls: vec![recall_of("rec-1", "prefers numbered sections")],
+        }),
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+    assert!(
+        history_text(&runtime)
+            .iter()
+            .any(|line| line.contains("[MEMORY record_ref=rec-1 kind=project] prefers numbered sections"))
+    );
+}
+
+#[test]
+fn a_memory_fetch_that_finds_nothing_tells_the_model() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let fetched = fetch_record(&mut runtime, &provider, "rec-gone");
+    let resumed = runtime.submit(&resolved(
+        "in-fetched",
+        1_700_000_003_000,
+        &fetched.effect_id,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess { recalls: vec![] }),
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+    assert!(
+        history_text(&runtime)
+            .iter()
+            .any(|line| line.contains("[MEMORY record_ref=rec-gone] not found"))
+    );
+}
+
+/// The host answers a fetch with the record it named or with nothing; any other answer is a
+/// search the kernel never asked for, refused with zero mutation.
+#[test]
+fn a_memory_fetch_answered_with_another_record_is_refused() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let fetched = fetch_record(&mut runtime, &provider, "rec-1");
+    for recalls in [
+        vec![recall_of("rec-2", "someone else's fact")],
+        vec![recall_of("rec-1", "a"), recall_of("rec-1", "b")],
+    ] {
+        let fault = runtime.reject(&resolved(
+            "in-fetched",
+            1_700_000_003_000,
+            &fetched.effect_id,
+            EffectSuccess::MemoryQueried(MemoryQueriedSuccess { recalls }),
+        ));
+        assert_eq!(fault.code, KernelFaultCode::UnexpectedEffectOutcome);
+        assert!(
+            !history_text(&runtime).iter().any(|line| line.contains("fact")),
+            "nothing from a refused answer enters history"
+        );
+    }
+    // the effect is still owed, and the right answer still settles it
+    let resumed = runtime.submit(&resolved(
+        "in-fetched-ok",
+        1_700_000_004_000,
+        &fetched.effect_id,
+        EffectSuccess::MemoryQueried(MemoryQueriedSuccess {
+            recalls: vec![recall_of("rec-1", "prefers numbered sections")],
+        }),
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+}
+
+#[test]
+fn a_memory_call_needs_exactly_one_of_query_or_record_id() {
+    for arguments in [json!({}), json!({"query": "briefs", "record_id": "rec-1"})] {
+        let (mut runtime, provider) = agent_awaiting_provider();
+        let resumed = runtime.submit(&provider_result(
+            "in-bad-memory-call",
+            1_700_000_002_000,
+            &provider,
+            vec![tool_call("call-1", crate::context::manager::MEMORY_TOOL_NAME, arguments)],
+        ));
+        assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+        assert!(runtime.tx.terminal().is_none());
+        assert!(
+            history_text(&runtime)
+                .iter()
+                .any(|line| line.contains("query") && line.contains("record_id"))
+        );
+    }
+}
+
 #[test]
 fn parallel_memory_queries_reuse_or_refuse_without_terminating_the_turn() {
     for duplicate in [true, false] {

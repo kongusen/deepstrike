@@ -50,7 +50,7 @@ class Provider:
 
     async def stream(self, context, tools, extensions=None, state=None):
         self.calls += 1
-        self.saw_recall |= FACT in str(context)
+        self.saw_recall |= "format" in str(context)
         yield TextDelta(delta=self.text)
 
 

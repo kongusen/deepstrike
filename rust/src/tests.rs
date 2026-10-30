@@ -3232,9 +3232,13 @@ mod tests {
             async fn get(
                 &self,
                 _: &str,
-                _: &str,
+                record_id: &str,
             ) -> crate::Result<Option<deepstrike_core::mm::memory::MemoryRecord>> {
-                Ok(None)
+                Ok(self
+                    .hits
+                    .iter()
+                    .find(|record| record.record_id == record_id)
+                    .cloned())
             }
             async fn delete(&self, _: &str, _: &str) -> crate::Result<()> {
                 Ok(())
@@ -3312,6 +3316,66 @@ mod tests {
             let runner = RuntimeRunner::new(opts);
             drain(&runner, "p1-15-query").await;
             assert_eq!(*recalls.lock().unwrap(), vec![("crossing".to_string(), 3)]);
+        }
+
+        /// M5 · `memory(record_id)` reads one record in full; a record outside this agent's memory
+        /// scope is not found, not leaked.
+        #[tokio::test]
+        async fn a_model_memory_fetch_reads_one_record_by_record_id() {
+            let contexts = Arc::new(Mutex::new(Vec::new()));
+            let provider = Scripted {
+                turns: vec![
+                    vec![StreamEvent::ToolCall {
+                        id: "call_a".into(),
+                        name: "memory".into(),
+                        arguments: serde_json::json!({ "record_id": "crossing" }),
+                    }],
+                    vec![StreamEvent::ToolCall {
+                        id: "call_b".into(),
+                        name: "memory".into(),
+                        arguments: serde_json::json!({ "record_id": "elsewhere" }),
+                    }],
+                ],
+                contexts: contexts.clone(),
+            };
+            let mut opts = options(
+                provider,
+                crate::runtime::execution_plane::LocalExecutionPlane::new(),
+                &[],
+            );
+            opts.agent_id = Some("p1-15".into());
+            opts.memory_scope = Some(deepstrike_core::mm::memory::MemoryScope::new(
+                "agent-memory",
+                "rust-tests",
+            ));
+            let mut elsewhere = super::memory_record("elsewhere", "elsewhere body");
+            elsewhere.record_id = "elsewhere".into();
+            elsewhere.scope = deepstrike_core::mm::memory::MemoryScope::new("agent-memory", "other");
+            let mut crossing = super::memory_record("crossing", "crossing body");
+            crossing.record_id = "crossing".into();
+            opts.memory_store = Some(Box::new(RecallStore {
+                hits: vec![crossing, elsewhere],
+                recalls: Arc::new(Mutex::new(Vec::new())),
+            }));
+            let runner = RuntimeRunner::new(opts);
+            let events = drain(&runner, "p1-15-fetch").await;
+            assert!(
+                !events.iter().any(|e| matches!(e, RunEvent::Error(_))),
+                "{events:?}"
+            );
+            let contexts = contexts.lock().unwrap();
+            assert!(contexts.len() >= 3, "{contexts:?}");
+            assert!(
+                contexts[1].contains("[MEMORY record_ref=crossing kind=feedback] crossing body"),
+                "{}",
+                contexts[1]
+            );
+            assert!(
+                contexts[2].contains("[MEMORY record_ref=elsewhere] not found"),
+                "{}",
+                contexts[2]
+            );
+            assert!(!contexts[2].contains("elsewhere body"));
         }
 
         /// P1-15 · a host recall is counted by the kernel's derivation, once per record.

@@ -1,5 +1,5 @@
 // K4 · M5 on the real WASM kernel: a sprint renewal re-fires the memory prefetch, and the hit
-// reaches the new sprint as a keyed knowledge entry carrying the canonical recall text. A running
+// reaches the new sprint as a keyed knowledge entry carrying the canonical recall index line. A running
 // operation refuses host history commands, so a prefetch that pushes history after renewal is
 // dropped by the kernel — a mocked commit cannot show that.
 import assert from "node:assert/strict"
@@ -29,8 +29,8 @@ const memoryStore = {
   saveSession: async () => {},
   search: async () => [{
     record: {
-      record_id: "record-renewal", scope, name: "renewal-fact", kind: "reference", content: RECALL,
-      description: "renewal fixture", provenance: { author: "host", trust: "host_verified", evidence_refs: [] },
+      record_id: "record-renewal", scope, name: "renewal-fact", kind: "reference", content: "full renewal record",
+      description: RECALL, provenance: { author: "host", trust: "host_verified", evidence_refs: [] },
       created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.9, links: [], pinned: false,
     },
     score: 0.9,

@@ -142,10 +142,41 @@ impl CanonicalOperationDriver {
             }
             EffectSuccess::MemoryQueried(queried) => {
                 let root_kind = self.require_root_kind()?;
-                let Some(query) = self.pending_memory_queries.remove(effect_id) else {
+                let Some(query) = self.pending_memory_queries.get(effect_id).cloned() else {
                     return Err(unowned_resolution(effect_id, "memory query"));
                 };
+                // A point fetch names the only record the host may answer with: anything else is a
+                // search the kernel did not ask for, refused before a byte enters history.
+                if let Some(record_id) = &query.record_id
+                    && (queried.recalls.len() > 1
+                        || queried
+                            .recalls
+                            .iter()
+                            .any(|recall| recall.record_ref.as_str() != record_id))
+                {
+                    return Err(KernelFault::new(
+                        KernelFaultCode::UnexpectedEffectOutcome,
+                        format!(
+                            "a fetch of memory record {record_id} must resolve with that record \
+                             or none"
+                        ),
+                    ));
+                }
+                self.pending_memory_queries.remove(effect_id);
                 let turn = self.engine_mut()?.turn;
+                if let Some(record_id) = &query.record_id
+                    && queried.recalls.is_empty()
+                {
+                    // Unlike an empty search, a fetch that finds nothing is an answer the model
+                    // needs: the id it read in an index line no longer resolves.
+                    let content = format!(
+                        "[MEMORY record_ref={record_id}] not found: it was deleted, expired, or is \
+                         outside this memory scope."
+                    );
+                    let engine = self.engine_mut()?;
+                    let tokens = engine.ctx.engine.count(&content).max(1);
+                    engine.ctx.push_history(CoreMessage::user(content), tokens);
+                }
                 let mut recalled = Vec::with_capacity(queried.recalls.len());
                 let mut priors = Vec::with_capacity(queried.recalls.len());
                 for recall in &queried.recalls {
@@ -186,7 +217,11 @@ impl CanonicalOperationDriver {
                 engine.observations.push(KernelObservation::MemoryQueried {
                     turn,
                     scope: binding_scope(&query.binding_id),
-                    query: query.text.clone(),
+                    // The journal keeps one query string; a fetch records which record it named.
+                    query: match &query.record_id {
+                        Some(record_id) => format!("record_id={record_id}"),
+                        None => query.text.clone(),
+                    },
                     requested_k: query.requested_k as usize,
                     requires_async_response: false,
                 });

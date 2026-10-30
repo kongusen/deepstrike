@@ -19,13 +19,15 @@ import type { MemoryRecord } from "../src/memory/protocols.js"
 
 const scope = { tenant_id: "agent-lifecycle", namespace: "t5" }
 
-// The same record and expected turn in every SDK's recall-projection test.
+// The same records and expected index lines in every SDK's recall-projection test: the body is
+// the description, or the name when there is none — never the content.
 const recallVectorRecord: MemoryRecord = {
   record_id: "record-v", scope: { tenant_id: "t", namespace: "n" }, name: "fact", kind: "project", content: "prefers numbered sections",
-  description: "", provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
+  description: "how briefs are laid out", provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
   created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.5, links: [], pinned: false,
 }
-const RECALL_TURN_VECTOR = "[MEMORY record_id=record-v kind=project trust=untrusted] prefers numbered sections"
+const RECALL_TURN_VECTOR = "[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out"
+const RECALL_TURN_NAME_VECTOR = "[MEMORY record_id=record-v kind=project trust=untrusted] fact"
 
 function record(recordId: string, content: string, recallCount: number) {
   return {
@@ -102,7 +104,9 @@ describe("T5 memory recall lifecycle is shared by every query route", () => {
     // Kernel injection shape: one `[MEMORY …]` message per hit — the old hand-assembled
     // combined `[memory …]` message is gone.
     expect(turnsJson).toContain("[MEMORY record_id=record-t5")
-    expect(turnsJson).toContain("LONGTERM_FACT_T5")
+    // An index line, not the record: the content is read on demand with `memory(record_id)`.
+    expect(turnsJson).toContain("t5 fixture")
+    expect(turnsJson).not.toContain("LONGTERM_FACT_T5")
     expect(turnsJson).not.toContain("[memory record_id=")
   })
 
@@ -116,7 +120,7 @@ describe("T5 memory recall lifecycle is shared by every query route", () => {
 
     const recallTurns = turns.filter(turn => String(turn.content).startsWith("[MEMORY "))
     expect(recallTurns.map(turn => [turn.role, turn.content])).toEqual([
-      ["user", "[MEMORY record_id=record-t5 kind=reference trust=host_verified] LONGTERM_FACT_T5"],
+      ["user", "[MEMORY record_id=record-t5 kind=reference trust=host_verified] t5 fixture"],
     ])
     const audited = (await sessionLog.read("t5-projection")).filter(entry => entry.event.kind === "memory_retrieval_result")
     expect(audited).toHaveLength(1)
@@ -125,6 +129,7 @@ describe("T5 memory recall lifecycle is shared by every query route", () => {
 
   it("M5 · the recall turn matches the vector every SDK pins", () => {
     expect(memoryRecallTurn(recallVectorRecord)).toBe(RECALL_TURN_VECTOR)
+    expect(memoryRecallTurn({ ...recallVectorRecord, description: " " })).toBe(RECALL_TURN_NAME_VECTOR)
   })
 
   it("two prefetch queries hitting the same record recall and inject it once", async () => {

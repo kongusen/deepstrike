@@ -46,9 +46,9 @@ class CapturingProvider:
 
     async def stream(self, context: RenderedContext, tools, extensions=None, state=None):
         rendered = repr(context.turns)
-        if RECALL in rendered:
+        if "fixture" in rendered:
             self.saw_in_turns = True
-        if RECALL in (context.system_knowledge or ""):
+        if "fixture" in (context.system_knowledge or ""):
             self.saw_in_knowledge = True
         yield TextDelta(delta="done")
 

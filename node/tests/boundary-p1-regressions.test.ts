@@ -436,6 +436,28 @@ describe("P1-15: memory has one authority — the kernel", () => {
     expect(promotions).toEqual([{ recordId: "crossing", recallCount: 3 }])
   })
 
+  it("reads one record in full by record_id, and tells the model when it is gone", async () => {
+    const records = new Map([["crossing", stored("crossing", 0)], ["elsewhere", { ...stored("elsewhere", 0), scope: { tenant_id: "p1-15", namespace: "other" } }]])
+    const { memoryStore } = store()
+    const gets: string[] = []
+    memoryStore.get = async (_agent, recordId) => { gets.push(recordId); return records.get(recordId) ?? null }
+    const provider = new ScriptedProvider([
+      [{ type: "tool_call", id: "call_a", name: "memory", arguments: { record_id: "crossing" } } as StreamEvent],
+      [{ type: "tool_call", id: "call_b", name: "memory", arguments: { record_id: "elsewhere" } } as StreamEvent],
+    ])
+    const runner = new RuntimeRunner({
+      provider, sessionLog: new InMemorySessionLog(), executionPlane: new LocalExecutionPlane(),
+      maxTokens: 8000, maxTurns: 4, agentId: "p1-15", memoryScope: scope, memoryStore, preQueryMemory: () => [],
+    } as never)
+    for await (const _ of runner.run({ sessionId: "p1-15-fetch", goal: "recall" })) void _
+
+    expect(gets).toEqual(["crossing", "elsewhere"])
+    expect(contextText(provider.contexts[1]!)).toContain("[MEMORY record_ref=crossing kind=reference] crossing body")
+    // a record outside this agent's memory scope is not found, not leaked
+    expect(contextText(provider.contexts[2]!)).toContain("[MEMORY record_ref=elsewhere] not found")
+    expect(contextText(provider.contexts[2]!)).not.toContain("elsewhere body")
+  })
+
   it("admits a host write inside a live run by the kernel's rolling write quota", async () => {
     const { memoryStore, puts } = store()
     const verdicts: boolean[] = []

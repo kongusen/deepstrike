@@ -23,7 +23,7 @@ from deepstrike._kernel import (
   TaskUpdate,
 )
 from deepstrike.memory.runtime_policy import MemoryRuntimePolicy, resolve_memory_runtime_policy
-from deepstrike.memory.recall_projection import memory_recall_turn
+from deepstrike.memory.recall_projection import memory_fetch_recall, memory_recall_turn
 from deepstrike.memory.candidate_sink import (
   MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
   memory_candidate_id,
@@ -822,6 +822,20 @@ class RuntimeRunner:
     hits = await self._opts.memory_store.search(agent_id, replace(query, top_k=requested_k))
     # The kernel faults a memory_query_result whose hit count exceeds requested_k, so cap here.
     return list(hits)[:requested_k]
+
+  async def _fetch_memory_from_store(
+    self,
+    query: "MemoryQuery",
+    record_id: str,
+    agent_id: str,
+  ) -> list["MemoryRecall"]:
+    """``memory(record_id)``: a point read under the same retrieval gate as a search."""
+    if not self._memory_path_enabled("retrieval"):
+      return []
+    if not self._opts.memory_store:
+      raise RuntimeError("memory queries require memory_store")
+    record = await self._opts.memory_store.get(agent_id, record_id)
+    return memory_fetch_recall(record, query, int(time.time() * 1000))
 
   async def _query_memory_through_kernel(
     self,
@@ -3302,12 +3316,16 @@ class RuntimeRunner:
           top_k=int(action.requested_k or 0),
           kinds=[str(kind) for kind in raw_query.get("kinds") or []],  # type: ignore[misc]
         )
+        record_id = raw_query.get("record_id")
         hits: list[Any] = []
         query_error: str | None = None
         try:
           if not self._opts.agent_id:
             raise RuntimeError("memory queries require agent_id")
-          hits = await self._retrieve_memory_from_store(query, int(action.requested_k or 0), self._opts.agent_id)
+          if isinstance(record_id, str):
+            hits = await self._fetch_memory_from_store(query, record_id, self._opts.agent_id)
+          else:
+            hits = await self._retrieve_memory_from_store(query, int(action.requested_k or 0), self._opts.agent_id)
         except Exception as cause:
           query_error = format_tool_error(cause)
         action = await action_host(runtime, self._pending_observations, {
@@ -3547,7 +3565,7 @@ class RuntimeRunner:
     return list(result or [])
 
   async def _prefetch_memory_into_history(self, runtime: CanonicalRunnerRuntime, phase: str) -> None:
-    """I4 + K4 · M5: put each recalled hit in context as the canonical recall text.
+    """I4 + K4 · M5: put each recalled hit in context as the canonical recall index line.
 
     Called once before ``start_operation`` (``phase="initial"``): each hit is an ordinary
     ``history`` user turn. Re-fired after each sprint renewal (``phase="renewal"``), which drops

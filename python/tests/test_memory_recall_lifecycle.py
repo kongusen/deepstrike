@@ -10,6 +10,8 @@ mirrors ``memory_recalled → record_recall`` and surfaces the kernel's edge-tri
 ``promotion_suggested``. Mirrors node/tests/memory-recall-lifecycle.test.ts.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from deepstrike import InMemorySessionLog, LocalExecutionPlane, RuntimeOptions, RuntimeRunner
@@ -128,7 +130,9 @@ async def test_initial_prefetch_routes_through_kernel():
     # Kernel injection shape: one `[MEMORY …]` message per hit — the old hand-assembled
     # combined `[memory …]` message is gone.
     assert "[MEMORY record_id=record-t5" in captured["turns"]
-    assert "LONGTERM_FACT_T5" in captured["turns"]
+    # An index line, not the record: the content is read on demand with `memory(record_id)`.
+    assert "t5 fixture" in captured["turns"]
+    assert "LONGTERM_FACT_T5" not in captured["turns"]
     assert "[memory record_id=" not in captured["turns"]
 
 
@@ -147,7 +151,7 @@ async def test_prefetched_hit_is_the_canonical_recall_turn_and_is_audited():
 
     recall_turns = [(t.role, t.content) for t in captured["turns"] if str(t.content).startswith("[MEMORY ")]
     assert recall_turns == [
-        ("user", "[MEMORY record_id=record-t5 kind=reference trust=host_verified] LONGTERM_FACT_T5"),
+        ("user", "[MEMORY record_id=record-t5 kind=reference trust=host_verified] t5 fixture"),
     ]
     audited = [e.event for e in await runner._opts.session_log.read("t5-projection")
                if e.event.get("kind") == "memory_retrieval_result"]
@@ -158,11 +162,12 @@ async def test_prefetched_hit_is_the_canonical_recall_turn_and_is_audited():
 def test_recall_turn_matches_the_vector_every_sdk_pins():
     vector = MemoryRecord(
         record_id="record-v", scope=MemoryScope("t", "n"), name="fact", kind="project",
-        content="prefers numbered sections", description="",
+        content="prefers numbered sections", description="how briefs are laid out",
         provenance=MemoryProvenance(author="extraction", trust="untrusted"),
         created_at=1, updated_at=1, confidence=0.5,
     )
-    assert memory_recall_turn(vector) == "[MEMORY record_id=record-v kind=project trust=untrusted] prefers numbered sections"
+    assert memory_recall_turn(vector) == "[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out"
+    assert memory_recall_turn(replace(vector, description=" ")) == "[MEMORY record_id=record-v kind=project trust=untrusted] fact"
 
 
 @pytest.mark.asyncio

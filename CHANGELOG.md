@@ -18,6 +18,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   available with the same canonical payload and `ed25519:<base64url>` signature format.
 - Added shared memory lifecycle primitives for lease scope checks, expiry, revocation, write budgets,
   TTL filtering, and deletion scope matching across Node, Python, Rust, and WASM host APIs.
+- The `memory` tool accepts `record_id` to read one record in full. The host answers with a point
+  lookup (`memoryFetchRecall` / `memory_fetch_recall`), and the kernel refuses any record other
+  than the one requested. A missing record is reported to the model as not found.
+
+### Changed
+
+- Memory prefetch pushes an index line per hit,
+  `[MEMORY record_id=… kind=… trust=…] <description>`, instead of the record content. The model
+  reads relevant records with `memory(record_id=…)`. Hosts whose records have no description
+  fall back to the record name.
 
 ## [0.2.76] - 2026-10-20
 

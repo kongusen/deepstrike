@@ -110,6 +110,9 @@ pub struct MemoryQueryProposal {
     pub kinds: Vec<MemoryKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// Fetch this one record by id instead of searching. Exclusive with `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -124,12 +124,14 @@ describe("knowledgeBudgetRatio reaches the kernel via configure_operation (K2)",
 
 describe("preQueryMemory prefetch lands in initial history, not knowledge", () => {
   it("M5 · the recall turn matches the vector every SDK pins", () => {
-    expect(memoryRecallTurn({
+    const vector = {
       record_id: "record-v", scope: { tenant_id: "t", namespace: "n" }, name: "fact", kind: "project",
-      content: "prefers numbered sections", description: "",
+      content: "prefers numbered sections", description: "how briefs are laid out",
       provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
       created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.5, links: [], pinned: false,
-    })).toBe("[MEMORY record_id=record-v kind=project trust=untrusted] prefers numbered sections")
+    } as const
+    expect(memoryRecallTurn(vector)).toBe("[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out")
+    expect(memoryRecallTurn({ ...vector, description: " " })).toBe("[MEMORY record_id=record-v kind=project trust=untrusted] fact")
   })
 
 
@@ -180,7 +182,7 @@ describe("preQueryMemory prefetch lands in initial history, not knowledge", () =
     // M5 · one canonical recall turn per hit (the same text every SDK writes), and an audit.
     expect((start?.initial_context?.messages ?? []).filter(m => String(m.content).startsWith("[MEMORY "))
       .map(m => [m.role, m.content])).toEqual([
-      ["user", "[MEMORY record_id=record-prefetch kind=reference trust=host_verified] PREFETCHED_LONGTERM_FACT"],
+      ["user", "[MEMORY record_id=record-prefetch kind=reference trust=host_verified] fixture"],
     ])
     const audited = (await sessionLog.read("prequery")).filter(entry => entry.event.kind === "memory_retrieval_result")
     expect(audited).toHaveLength(1)

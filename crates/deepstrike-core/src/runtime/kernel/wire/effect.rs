@@ -583,6 +583,10 @@ pub struct CanonicalMemoryQuery {
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub kinds: Vec<MemoryKind>,
+    /// A point fetch: the host answers with this record or with nothing, never with a search.
+    /// Recall prefetch pushes index lines only, and this is how the model reads one in full.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_id: Option<MemoryRecordRef>,
     pub accepted_at_ms: WireU64,
     pub causation: SyscallCausation,
 }
@@ -1507,6 +1511,7 @@ mod tests {
                 query: CanonicalMemoryQuery {
                     text: "release".to_string(),
                     kinds: vec![MemoryKind::Project],
+                    record_id: None,
                     accepted_at_ms: WireU64::new(1_700_000_000_000),
                     causation: causation(),
                 },

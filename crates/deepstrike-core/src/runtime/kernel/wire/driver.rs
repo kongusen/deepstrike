@@ -68,7 +68,7 @@ use super::effect::{
     ApprovalRequest as WireApprovalRequest, ArchivePageOutEffect, CallProviderEffect,
     CanonicalMemoryQuery, CanonicalMemoryWrite, EffectKind, EffectKindTag, EffectOutcome,
     EffectSuccess, EvaluateMilestoneEffect, ExecuteToolsEffect, HostEffectFailure, KernelEffect,
-    LaunchToken, LoadPayloadEffect, PageOutPayload, PayloadRef, PersistMemoryEffect,
+    LaunchToken, LoadPayloadEffect, MemoryRecordRef, PageOutPayload, PayloadRef, PersistMemoryEffect,
     PreemptTasksEffect, ProviderCompleted, ProviderMessage, ProviderOutcome, QueryMemoryEffect,
     RenderedContext as WireRenderedContext, RequestApprovalEffect, SpawnTasksEffect,
     TaskAttemptRef, TaskLaunch, ToolCall as WireToolCall, ToolResultDisposition,
@@ -1502,6 +1502,8 @@ struct AuthoredMemoryQuery {
     binding_id: MemoryBindingId,
     text: String,
     requested_k: u32,
+    /// Set for a point fetch: the only record the host may answer with.
+    record_id: Option<String>,
 }
 
 /// What the kernel published for a pending `LoadPayload` effect (§7.10 rule 4).
@@ -1812,14 +1814,30 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
                 kinds: Vec<WireMemoryKind>,
                 #[serde(default)]
                 top_k: Option<u32>,
+                #[serde(default)]
+                record_id: Option<String>,
             }
             let args: Args = decode(name, arguments)?;
+            let record_id = args.record_id.filter(|id| !id.trim().is_empty());
+            match (&record_id, args.query.trim().is_empty()) {
+                (Some(_), false) => {
+                    return Err(SyscallRejection::new(
+                        name,
+                        "pass either query or record_id, not both",
+                    ));
+                }
+                (None, true) => {
+                    return Err(SyscallRejection::new(name, "pass a query or a record_id"));
+                }
+                _ => {}
+            }
             Ok(SyscallRequest::RequestMemoryQuery(
                 super::syscall::RequestMemoryQueryRequest {
                     query: super::syscall::MemoryQueryProposal {
-                        text: args.query,
+                        text: if record_id.is_some() { String::new() } else { args.query },
                         kinds: args.kinds,
                         limit: args.top_k,
+                        record_id,
                     },
                 },
             ))

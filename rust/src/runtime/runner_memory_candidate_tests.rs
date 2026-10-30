@@ -570,7 +570,7 @@ fn recalled(record_id: &str, content: &str) -> MemoryRecall {
     }
 }
 
-/// M5 · the vector every SDK's recall-projection test pins.
+/// M5 · the vectors every SDK's recall-projection test pins.
 #[test]
 fn the_recall_turn_matches_the_other_sdks() {
     let record = MemoryRecord {
@@ -583,11 +583,22 @@ fn the_recall_turn_matches_the_other_sdks() {
             trust: MemoryTrustLevel::Untrusted,
             evidence_refs: Vec::new(),
         },
+        name: "fact".into(),
+        description: "how briefs are laid out".into(),
         ..proposal("prefers numbered sections")
     };
+    // An index line, not the record: the body is the description, or the name when there is
+    // none — never the content.
     assert_eq!(
         crate::memory::memory_recall_turn(&record),
-        "[MEMORY record_id=record-v kind=project trust=untrusted] prefers numbered sections"
+        "[MEMORY record_id=record-v kind=project trust=untrusted] how briefs are laid out"
+    );
+    assert_eq!(
+        crate::memory::memory_recall_turn(&MemoryRecord {
+            description: " ".into(),
+            ..record
+        }),
+        "[MEMORY record_id=record-v kind=project trust=untrusted] fact"
     );
 }
 
@@ -615,7 +626,8 @@ async fn the_initial_prefetch_lands_each_hit_as_a_canonical_history_turn() {
         recall_turns,
         vec![(
             "user".to_string(),
-            "[MEMORY record_id=record-a kind=reference trust=host_verified] FACT_A".to_string()
+            "[MEMORY record_id=record-a kind=reference trust=host_verified] proposed by a child agent"
+                .to_string()
         )]
     );
     let audited: Vec<_> = events(&h.log, "prefetch")

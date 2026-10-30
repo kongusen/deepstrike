@@ -22,7 +22,7 @@ import { parseToolCallArguments } from "./tool-arguments.js"
 import { stripSkillFrontmatter } from "./execution-plane.js"
 import { getKernel } from "./kernel.js"
 import { checkMemoryWrite, deriveMemoryRecall, type KernelMemoryPolicyWire } from "../memory/authority.js"
-import { memoryRecallTurn } from "../memory/recall-projection.js"
+import { memoryFetchRecall, memoryRecallTurn } from "../memory/recall-projection.js"
 import {
   CanonicalRunnerRuntime,
   canonicalKernelAction,
@@ -1703,9 +1703,15 @@ export class RuntimeRunner {
         try {
           if (!this.memoryPathEnabled("retrievalEnabled")) throw new Error("memory retrieval is disabled by memoryRuntimePolicy.retrieval")
           if (!this.opts.memoryStore || !this.opts.agentId) throw new Error("WASM memory queries require memoryStore and agentId")
-          hits = await this.opts.memoryStore.search(this.opts.agentId, {
-            ...(action.query as unknown as MemoryQuery), top_k: action.requestedK,
-          })
+          const recordId = typeof action.query.record_id === "string" ? action.query.record_id : undefined
+          hits = recordId === undefined
+            ? await this.opts.memoryStore.search(this.opts.agentId, {
+                ...(action.query as unknown as MemoryQuery), top_k: action.requestedK,
+              })
+            : memoryFetchRecall(await this.opts.memoryStore.get(this.opts.agentId, recordId), {
+                scope: this.opts.memoryScope ?? { tenant_id: "default", namespace: this.opts.agentId },
+                kinds: Array.isArray(action.query.kinds) ? action.query.kinds.map(String) as MemoryQuery["kinds"] : [],
+              }, Date.now())
         } catch (cause) { error = formatToolError(cause) }
         const obsStart = this.pendingObservations.length
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
@@ -2684,7 +2690,7 @@ export class RuntimeRunner {
   }
 
   /** I4 + K4 · M5: fetch long-term memory hits for the current goal and put each one in context as
-   *  the canonical recall text ({@link memoryRecallTurn}). `phase: "initial"` = once before turn 1,
+   *  the canonical recall index line ({@link memoryRecallTurn}). `phase: "initial"` = once before turn 1,
    *  each hit an ordinary `history` user turn. `phase: "renewal"` = re-fired after each sprint
    *  renewal, which drops the old history with the earlier hits: a running operation accepts
    *  history only through effects or external events, so each hit is a keyed
