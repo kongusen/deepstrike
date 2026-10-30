@@ -1,5 +1,5 @@
 //! M1/M2 · the memory runtime policy and the candidate sink, through the runner's real write
-//! paths: session extraction, semantic archive, and the PersistMemory effect answer.
+//! paths and the PersistMemory effect answer.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,15 +24,14 @@ use crate::runtime::session_log::{InMemorySessionLog, SessionLog};
 
 const AGENT: &str = "agent-candidate";
 
-/// Answers every call with the same text and counts the calls. The text is a valid extraction
-/// answer, so the main turn, the extraction pass and the archive summary all accept it.
+/// Answers every call with the same ordinary text and counts the calls.
 struct CountingProvider {
     calls: Arc<AtomicUsize>,
     /// The text of every turn of every context the provider was shown, call by call.
     seen_turns: Arc<std::sync::Mutex<Vec<Vec<(String, String)>>>>,
 }
 
-const EXTRACTED: &str = r#"{"memories":[{"name":"prefers-focused-tests","kind":"feedback","content":"User prefers focused tests.","description":"stated preference","confidence":1}]}"#;
+const MODEL_OUTPUT: &str = "done";
 
 #[async_trait::async_trait]
 impl LLMProvider for CountingProvider {
@@ -73,7 +72,7 @@ impl LLMProvider for CountingProvider {
         );
         Ok(Box::new(futures::stream::iter(vec![
             Ok(StreamEvent::TextDelta {
-                delta: EXTRACTED.into(),
+                delta: MODEL_OUTPUT.into(),
             }),
             Ok(StreamEvent::Done),
         ])))
@@ -291,50 +290,23 @@ async fn a_candidate_sink_path_without_a_sink_refuses_to_run() {
     assert_eq!(h.model_calls.load(Ordering::SeqCst), 0);
 }
 
-/// A model-authored memory becomes a pending candidate: the store holds nothing, the session
-/// records `memory_candidate_pending`, and nothing is logged as written.
+/// Ordinary model output does not trigger an automatic extraction or archive write.
 #[tokio::test]
-async fn model_proposal_to_the_candidate_sink_writes_no_record() {
+async fn plain_model_output_does_not_create_memory_candidate() {
     let h = harness(Some(policy(MemoryWritePolicy::CandidateSink)), true, None);
-    run_to_end(&h.runner, "extract-candidate").await;
+    run_to_end(&h.runner, "plain-model-output").await;
 
-    assert_eq!(
-        h.puts.load(Ordering::SeqCst),
-        0,
-        "the store is never written"
+    assert_eq!(h.puts.load(Ordering::SeqCst), 0, "the store is never written");
+    assert!(
+        h.sink.candidates(Some(AGENT)).is_empty(),
+        "memory candidates require an explicit model proposal"
     );
-    let held = h.sink.candidates(Some(AGENT));
-    assert_eq!(held.len(), 1);
-    assert_eq!(held[0].source, MemoryCandidateSource::ModelProposal);
-    assert_eq!(held[0].record.name, "prefers-focused-tests");
-    assert!(held[0].candidate_id.starts_with("candidate:"));
 
-    let log = events(&h.log, "extract-candidate").await;
-    assert!(
-        !log.iter()
-            .any(|event| matches!(event, SessionEvent::MemoryWritten { .. })),
-        "a pending candidate is not a written record"
-    );
-    let pending = log
-        .iter()
-        .find_map(|event| match event {
-            SessionEvent::MemoryCandidatePending {
-                candidate_id,
-                source,
-                receipt_id,
-                name,
-                ..
-            } => Some((candidate_id, source, receipt_id, name)),
-            _ => None,
-        })
-        .expect("a memory_candidate_pending audit");
-    assert_eq!(pending.0, &held[0].candidate_id);
-    assert_eq!(pending.1, "model_proposal");
-    assert!(
-        pending.2.is_some(),
-        "the host path records the sink's receipt"
-    );
-    assert_eq!(pending.3, "prefers-focused-tests");
+    let log = events(&h.log, "plain-model-output").await;
+    assert!(!log.iter().any(|event| matches!(
+        event,
+        SessionEvent::MemoryWritten { .. } | SessionEvent::MemoryCandidatePending { .. }
+    )));
 }
 
 /// M1 · disabled paths are checked before the auxiliary model: the run makes its one turn and
