@@ -630,14 +630,6 @@ export interface AsyncSummarizer {
   summarize(archived: ModelMessage[], action: string): Promise<string>
 }
 
-/**
- * Durable-memory summarizer for semantic `page_out` events (Layer 5 contract).
- * The kernel emits `page_out { tier_hint: "semantic" }`; the SDK persists an LLM summary to MemoryStore.
- */
-export interface MemorySummarizer {
-  summarize(archived: ModelMessage[], context: { action?: string }): Promise<string>
-}
-
 export interface TaskUpdate {
   plan?: string[]
   currentStep?: number

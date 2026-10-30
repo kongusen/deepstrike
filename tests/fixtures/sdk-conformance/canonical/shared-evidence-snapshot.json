@@ -361,7 +361,7 @@
             "kind": "memory_candidate_pending",
             "turn": 1,
             "candidate_id": "cand-a",
-            "source": "session_extraction",
+            "source": "model_proposal",
             "name": "note",
             "receipt_id": "r1"
           },
@@ -369,7 +369,7 @@
             "kind": "memory_candidate_pending",
             "turn": 1,
             "candidate_id": "cand-b",
-            "source": "session_extraction",
+            "source": "model_proposal",
             "name": "note",
             "receipt_id": "r2"
           },
@@ -377,7 +377,7 @@
             "kind": "memory_candidate_rejected",
             "turn": 1,
             "candidate_id": "cand-c",
-            "source": "session_extraction",
+            "source": "model_proposal",
             "name": "note",
             "receipt_id": "r4",
             "reason_code": "policy"
@@ -700,7 +700,7 @@
               "content_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
               "payload_ref": "t1:ns:project:accepted",
               "version": "r9",
-              "provenance": "session_extraction",
+              "provenance": "model_proposal",
               "settlement": "accepted",
               "links": [
                 {
@@ -717,7 +717,7 @@
               "availability": "external",
               "payload_ref": "sessionlog:8",
               "version": "r2",
-              "provenance": "session_extraction",
+              "provenance": "model_proposal",
               "settlement": "pending"
             },
             {
@@ -727,7 +727,7 @@
               "availability": "external",
               "payload_ref": "sessionlog:9",
               "version": "r4",
-              "provenance": "session_extraction",
+              "provenance": "model_proposal",
               "settlement": "rejected"
             },
             {

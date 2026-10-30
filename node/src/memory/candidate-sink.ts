@@ -9,7 +9,7 @@ import type { MemoryRecord } from "./protocols.js"
 import { admitMemoryCandidate, type MemoryCandidateAttestation, type MemoryCandidateSourceVerifier } from "./attestation.js"
 
 /** Which write path produced the candidate. `child_request` is the kernel's PersistMemory effect. */
-export type MemoryCandidateSource = "session_extraction" | "semantic_archive" | "child_request"
+export type MemoryCandidateSource = "child_request" | "model_proposal"
 
 export interface MemoryCandidate {
   /** Deterministic for the write that produced it (see {@link memoryCandidateId}): a retry of the
@@ -44,14 +44,6 @@ export interface MemoryCandidateSink {
 /** A candidate id from the write's canonical identity — never random, so a retry repeats it. */
 export function memoryCandidateId(parts: readonly string[]): string {
   return `candidate:${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`
-}
-
-/** A session-extraction candidate id. The extraction model is re-asked on retry and may answer
- *  differently, so the id is addressed by the proposed payload, not by its position in the answer:
- *  a retry that proposes the same record repeats the id, one that proposes something new mints a
- *  new candidate instead of colliding with what the first attempt left in the sink. */
-export function sessionExtractionCandidateId(agentId: string, sessionId: string, operationId: string, record: MemoryRecord): string {
-  return memoryCandidateId(["v3", agentId, "session_extraction", sessionId, operationId, memoryCandidatePayloadDigest(record)])
 }
 
 /** The part of a record a candidate is judged by. Store ids, timestamps and recall counters are excluded: a retry

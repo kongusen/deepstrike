@@ -538,6 +538,8 @@ pub struct FeaturePolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub propose_memory_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_tool_enabled: Option<bool>,
@@ -887,6 +889,8 @@ impl ResolvedMemoryPolicy {
 #[serde(deny_unknown_fields)]
 pub struct ResolvedFeaturePolicy {
     pub memory_enabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub propose_memory_enabled: bool,
     pub knowledge_enabled: bool,
     pub plan_tool_enabled: bool,
     pub stable_core_tool_ids: Vec<String>,
@@ -1007,6 +1011,7 @@ impl ConfigDefaults {
                 verification_contracts: Vec::new(),
                 feature_policy: ResolvedFeaturePolicy {
                     memory_enabled: false,
+                    propose_memory_enabled: false,
                     knowledge_enabled: false,
                     plan_tool_enabled: false,
                     stable_core_tool_ids: Vec::new(),
@@ -1963,6 +1968,9 @@ fn resolve_features(
         if let Some(value) = policy.memory_enabled {
             resolved.memory_enabled = value;
         }
+        if let Some(value) = policy.propose_memory_enabled {
+            resolved.propose_memory_enabled = value;
+        }
         if let Some(value) = policy.knowledge_enabled {
             resolved.knowledge_enabled = value;
         }
@@ -2328,6 +2336,7 @@ mod tests {
             }],
             feature_policy: Some(FeaturePolicy {
                 memory_enabled: Some(true),
+                propose_memory_enabled: Some(true),
                 knowledge_enabled: Some(true),
                 plan_tool_enabled: Some(true),
                 stable_core_tool_ids: Some(vec!["search".to_string()]),

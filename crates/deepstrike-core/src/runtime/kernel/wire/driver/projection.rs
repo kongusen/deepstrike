@@ -46,6 +46,7 @@ impl CanonicalOperationDriver {
                     name: write.name.clone(),
                     kind: write.kind,
                     size_bytes: write.size_bytes,
+                    model_facing: write.model_facing,
                 })
                 .collect(),
             authored_memory_queries: self
@@ -637,6 +638,7 @@ impl CanonicalOperationDriver {
                         name: write.name.clone(),
                         kind: write.kind,
                         size_bytes: write.size_bytes,
+                        model_facing: write.model_facing,
                     },
                 )
             })

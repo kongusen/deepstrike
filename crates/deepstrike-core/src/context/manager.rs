@@ -19,6 +19,7 @@ use crate::types::skill::SkillMetadata;
 use compact_str::CompactString;
 
 pub const MEMORY_TOOL_NAME: &str = "memory";
+pub const PROPOSE_MEMORY_TOOL_NAME: &str = "propose_memory";
 pub const KNOWLEDGE_TOOL_NAME: &str = "knowledge";
 /// O7: the evicted-result re-fetch meta-tool (see `read_result_tool_schema`).
 pub const READ_RESULT_TOOL_NAME: &str = "read_result";
@@ -30,6 +31,7 @@ const META_TOOL_NAMES: &[&str] = &[
     "update_plan",
     "skill",
     MEMORY_TOOL_NAME,
+    PROPOSE_MEMORY_TOOL_NAME,
     KNOWLEDGE_TOOL_NAME,
     READ_RESULT_TOOL_NAME,
     "submit_workflow_nodes",
@@ -62,6 +64,7 @@ pub(crate) fn is_meta_tool(name: &str) -> bool {
 pub(crate) const EXPOSURE_EXEMPT_META_TOOLS: &[&str] = &[
     "skill",
     MEMORY_TOOL_NAME,
+    PROPOSE_MEMORY_TOOL_NAME,
     KNOWLEDGE_TOOL_NAME,
     "update_plan",
     READ_RESULT_TOOL_NAME,
@@ -102,6 +105,7 @@ pub struct ContextManager {
     pub stable_core_tools: std::collections::HashSet<CompactString>,
     pub capabilities: CapabilityManifest,
     pub memory_enabled: bool,
+    pub propose_memory_enabled: bool,
     pub knowledge_enabled: bool,
     pub plan_tool_enabled: bool,
     /// Monotonic semantic-state generation used to invalidate ContextPlan decisions.
@@ -175,6 +179,7 @@ impl ContextManager {
             stable_core_tools: std::collections::HashSet::new(),
             capabilities: CapabilityManifest::new(),
             memory_enabled: false,
+            propose_memory_enabled: false,
             knowledge_enabled: false,
             plan_tool_enabled: false,
             state_generation: 0,
@@ -1103,6 +1108,19 @@ impl ContextManager {
         }
     }
 
+    pub fn set_propose_memory_enabled(&mut self, enabled: bool) {
+        self.propose_memory_enabled = enabled;
+        if enabled {
+            self.capabilities.add_marker(
+                CapabilityKind::Memory,
+                PROPOSE_MEMORY_TOOL_NAME,
+                "Propose a candidate for long-term memory review.",
+            );
+        } else {
+            self.capabilities.remove(CapabilityKind::Memory, PROPOSE_MEMORY_TOOL_NAME);
+        }
+    }
+
     pub fn set_knowledge_enabled(&mut self, enabled: bool) {
         self.knowledge_enabled = enabled;
         if enabled {
@@ -1141,6 +1159,9 @@ impl ContextManager {
             tools.push(t);
         }
         if let Some(t) = self.memory_tool_schema() {
+            tools.push(t);
+        }
+        if let Some(t) = self.propose_memory_tool_schema() {
             tools.push(t);
         }
         if let Some(t) = self.knowledge_tool_schema() {
@@ -1224,6 +1245,34 @@ impl ContextManager {
                     "top_k": { "type": "integer" }
                 },
                 "required": ["query"]
+            }),
+        })
+    }
+
+    pub fn propose_memory_tool_schema(&self) -> Option<ToolSchema> {
+        if !self.propose_memory_enabled { return None; }
+        Some(ToolSchema {
+            name: CompactString::new(PROPOSE_MEMORY_TOOL_NAME),
+            description: "Propose one fact for long-term memory, so it is available in future sessions. \
+Propose when you learn something that will still matter later and cannot be recovered from the code, files, or this conversation's history: \
+who the user is and how they like to work, a correction or confirmed approach they gave you (with why), \
+a project goal, constraint, or decision, or a pointer to an external resource. \
+Do not propose what the workspace already records, temporary task state, or guesses. \
+Search memory first and reuse an existing name to update a fact rather than duplicating it. \
+The proposal is reviewed before it is stored; its outcome arrives in this conversation before your next turn. \
+Propose one fact per call and wait for the outcome before proposing another. \
+Scope, identity, provenance, and timestamps are derived for you.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "name": { "type": "string", "description": "Short stable kebab-case slug for this fact; reuse an existing name to update it." },
+                    "kind": { "type": "string", "enum": ["user", "feedback", "project", "reference"], "description": "user: who the user is and their preferences. feedback: guidance on how to work. project: goals, constraints, decisions. reference: pointers to external resources." },
+                    "content": { "type": "string", "description": "The fact itself, self-contained and stated so a future session can act on it without this conversation." },
+                    "description": { "type": "string", "description": "One-line summary used to decide relevance at recall time." },
+                    "evidence_refs": { "type": "array", "items": { "type": "string" }, "description": "Optional references (call ids, record ids, paths) supporting the fact." }
+                },
+                "required": ["name", "kind", "content"]
             }),
         })
     }
@@ -1529,17 +1578,29 @@ mod tests {
     }
 
     #[test]
+    fn propose_memory_schema_is_strict_and_capability_gated() {
+        let mut mgr = ContextManager::new(1_000);
+        assert!(mgr.propose_memory_tool_schema().is_none());
+        mgr.set_propose_memory_enabled(true);
+        let schema = mgr.propose_memory_tool_schema().expect("proposal capability");
+        assert_eq!(schema.parameters["additionalProperties"], false);
+        assert_eq!(schema.parameters["required"], serde_json::json!(["name", "kind", "content"]));
+        assert!(schema.parameters["properties"].get("record_id").is_none());
+    }
+
+    #[test]
     fn meta_tool_schemas_are_sorted() {
         let mut mgr = ContextManager::new(1_000);
         mgr.set_available_skills(vec![SkillMetadata::new("debug", "Debug helper")]);
         mgr.set_memory_enabled(true);
+        mgr.set_propose_memory_enabled(true);
         mgr.set_knowledge_enabled(true);
         let names = mgr
             .meta_tool_schemas()
             .into_iter()
             .map(|s| s.name.to_string())
             .collect::<Vec<_>>();
-        assert_eq!(names, ["knowledge", "memory", "skill"]);
+        assert_eq!(names, ["knowledge", "memory", "propose_memory", "skill"]);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use deepstrike_core::memory::durable::SessionData;
 use deepstrike_core::mm::memory::{
-    MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecallLifecycle,
+    MemoryAuthor, MemoryKind, MemoryQuery, MemoryRecall, MemoryRecallLifecycle,
     MemoryRecord, MemoryScope, MemoryTrustLevel,
 };
 use serde::{Deserialize, Serialize};
@@ -162,116 +162,16 @@ impl DurableMemory {
     }
 }
 
-pub(crate) fn parse_extracted_memories(
-    output: &str,
-    session: &SessionData,
-    scope: &MemoryScope,
-) -> Vec<MemoryRecord> {
-    let cleaned = output
-        .trim()
-        .strip_prefix("```json")
-        .or_else(|| output.trim().strip_prefix("```"))
-        .unwrap_or(output.trim())
-        .strip_suffix("```")
-        .unwrap_or(output.trim())
-        .trim();
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(cleaned) else {
-        return Vec::new();
-    };
-    let Some(drafts) = value.get("memories").and_then(serde_json::Value::as_array) else {
-        return Vec::new();
-    };
-    drafts
-        .iter()
-        .take(10)
-        .filter_map(|draft| {
-            let name = draft.get("name")?.as_str()?.trim();
-            let content = draft.get("content")?.as_str()?.trim();
-            if name.is_empty() || content.is_empty() {
-                return None;
-            }
-            let kind = match draft.get("kind")?.as_str()? {
-                "user" => MemoryKind::User,
-                "feedback" => MemoryKind::Feedback,
-                "project" => MemoryKind::Project,
-                "reference" => MemoryKind::Reference,
-                _ => return None,
-            };
-            let confidence = draft
-                .get("confidence")
-                .and_then(serde_json::Value::as_f64)
-                .unwrap_or(0.5)
-                .clamp(0.0, 1.0);
-            let strings = |field: &str| {
-                draft
-                    .get(field)
-                    .and_then(serde_json::Value::as_array)
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(serde_json::Value::as_str)
-                            .map(str::to_string)
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
-            Some(MemoryRecord {
-                record_id: format!(
-                    "{}:{}:{}:{name}",
-                    scope.tenant_id,
-                    scope.namespace,
-                    kind.label()
-                ),
-                scope: scope.clone(),
-                name: name.to_string(),
-                kind,
-                content: content.to_string(),
-                description: draft
-                    .get("description")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string(),
-                provenance: MemoryProvenance {
-                    session_id: Some(session.session_id.clone()),
-                    author: MemoryAuthor::Extraction,
-                    trust: MemoryTrustLevel::Untrusted,
-                    evidence_refs: strings("evidence_refs"),
-                },
-                created_at: session.updated_at_ms,
-                updated_at: session.updated_at_ms,
-                last_recalled_at: None,
-                recall_count: 0,
-                confidence,
-                links: strings("links"),
-                pinned: draft
-                    .get("pinned")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false),
-                ttl_days: draft
-                    .get("ttl_days")
-                    .and_then(serde_json::Value::as_u64)
-                    .and_then(|days| u32::try_from(days).ok())
-                    .filter(|days| *days > 0),
-            })
-        })
-        .collect()
-}
-
 /// Host-facing memory runtime policy (contract M1). Each capability is an independent switch: a
-/// host can keep retrieval while turning off the auxiliary-model writes that run implicitly after
-/// a session. `Disabled` is checked before any auxiliary provider call, so a disabled path costs
-/// nothing. `CandidateSink` keeps a write path on but hands each write to the host's
-/// [`MemoryCandidateSink`] (M2) instead of the memory store; a run refuses to start without one.
-/// No policy (`RuntimeOptions::memory_runtime_policy = None`) keeps every path on and writing to
-/// the store.
+/// host can keep retrieval while turning off the writes the model authors. `CandidateSink` keeps
+/// writes on but hands each one to the host's [`MemoryCandidateSink`] (M2) instead of the memory
+/// store; a run refuses to start without one. No policy
+/// (`RuntimeOptions::memory_runtime_policy = None`) keeps both on and writing to the store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryRuntimePolicy {
     pub retrieval: MemoryRetrievalPolicy,
-    pub session_extraction: MemoryWritePolicy,
     pub model_writes: MemoryWritePolicy,
-    pub semantic_archive: MemoryWritePolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,12 +191,8 @@ pub enum MemoryWritePolicy {
 impl MemoryRuntimePolicy {
     /// The write paths set to `CandidateSink`, by their policy field names.
     pub fn candidate_sink_paths(&self) -> Vec<&'static str> {
-        [
-            ("session_extraction", self.session_extraction),
-            ("model_writes", self.model_writes),
-            ("semantic_archive", self.semantic_archive),
-        ]
-        .into_iter()
+        [("model_writes", self.model_writes)]
+            .into_iter()
         .filter(|(_, policy)| *policy == MemoryWritePolicy::CandidateSink)
         .map(|(name, _)| name)
         .collect()
@@ -307,17 +203,15 @@ impl MemoryRuntimePolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryCandidateSource {
-    SessionExtraction,
-    SemanticArchive,
     ChildRequest,
+    ModelProposal,
 }
 
 impl MemoryCandidateSource {
     pub fn label(self) -> &'static str {
         match self {
-            Self::SessionExtraction => "session_extraction",
-            Self::SemanticArchive => "semantic_archive",
             Self::ChildRequest => "child_request",
+            Self::ModelProposal => "model_proposal",
         }
     }
 }
@@ -934,27 +828,6 @@ pub fn memory_recall_turn(record: &MemoryRecord) -> String {
     )
 }
 
-/// A session-extraction candidate id. The extraction model is re-asked on retry and may answer
-/// differently, so the id is addressed by the proposed payload, not by its position in the answer:
-/// a retry that proposes the same record repeats the id, one that proposes something new mints a
-/// new candidate instead of colliding with what the first attempt left in the sink.
-pub fn session_extraction_candidate_id(
-    agent_id: &str,
-    session_id: &str,
-    operation_id: &str,
-    record: &MemoryRecord,
-) -> String {
-    let digest = memory_candidate_payload_digest(record);
-    memory_candidate_id(&[
-        "v3",
-        agent_id,
-        MemoryCandidateSource::SessionExtraction.label(),
-        session_id,
-        operation_id,
-        &digest,
-    ])
-}
-
 fn sha256_hex(text: &str) -> String {
     use sha2::Digest;
     sha2::Sha256::digest(text.as_bytes())
@@ -1259,7 +1132,6 @@ mod candidate_tests {
         InMemoryMemoryCandidateSink, MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink,
         MemoryCandidateSource, MemoryRuntimePolicy, memory_candidate_attestation_canonical_payload,
         memory_candidate_attestation_digest, memory_candidate_id, memory_candidate_payload_digest,
-        session_extraction_candidate_id,
     };
     use deepstrike_core::mm::memory::{
         MemoryAuthor, MemoryKind, MemoryProvenance, MemoryRecord, MemoryScope, MemoryTrustLevel,
@@ -1270,16 +1142,16 @@ mod candidate_tests {
         let attestation = super::MemoryCandidateAttestation {
             issuer: "issuer-a".into(), key_id: "ed-key-1".into(), agent_id: "agent".into(),
             tenant_id: "t".into(), namespace: "n".into(), candidate_id: "host-candidate".into(),
-            source: MemoryCandidateSource::SessionExtraction,
+            source: MemoryCandidateSource::ModelProposal,
             payload_digest: "sha256:dfac225c1c832a2900dd59d0867840abbf7e396ef13d03308b7c5ff7516e145f".into(),
             issued_at: 1000, expires_at: 2000, policy_version: "memory-attestation-v1".into(),
-            signature: "ed25519:s0c5phB9Nk10XXPf2XQWqZBXfT1S2BZd-gPE7dWdUz2GLf9tpTCJJ9Ypy3aTUJL5X0cxYXrxNiFG2Ld-wHuYAQ".into(),
+            signature: "ed25519:b42wqAxprX4GYjRzFACtrvLWI0Sripq1I1_bSL3ljMW7CuI-MyKfCtgLPzI2hgzozEQviagzpDIF21Izh2VQCA".into(),
         };
         assert_eq!(
             memory_candidate_attestation_canonical_payload(&attestation),
-            "[\"issuer-a\",\"ed-key-1\",\"agent\",\"t\",\"n\",\"host-candidate\",\"session_extraction\",\"sha256:dfac225c1c832a2900dd59d0867840abbf7e396ef13d03308b7c5ff7516e145f\",1000,2000,\"memory-attestation-v1\"]"
+            "[\"issuer-a\",\"ed-key-1\",\"agent\",\"t\",\"n\",\"host-candidate\",\"model_proposal\",\"sha256:dfac225c1c832a2900dd59d0867840abbf7e396ef13d03308b7c5ff7516e145f\",1000,2000,\"memory-attestation-v1\"]"
         );
-        assert_eq!(memory_candidate_attestation_digest(&attestation), "sha256:d1b35cf5fc9eb479e350e6f606c4a162595c95daff94805276f8fdc4773c7a07");
+        assert_eq!(memory_candidate_attestation_digest(&attestation), "sha256:d69f2de333253735f34e09cd5ef2d8d9c2c71b9b066d302e9a7716bb8b19b63e");
     }
 
     fn record(content: &str) -> MemoryRecord {
@@ -1331,54 +1203,6 @@ mod candidate_tests {
 
     /// The record, agent, session and operation every SDK's extraction-identity test pins.
     #[test]
-    fn extraction_candidate_ids_are_payload_addressed_and_match_the_other_sdks() {
-        let proposed = MemoryRecord {
-            scope: MemoryScope::new("t", "n"),
-            name: "brief-style".into(),
-            content: "prefers numbered sections".into(),
-            description: String::new(),
-            provenance: MemoryProvenance {
-                author: MemoryAuthor::Extraction,
-                ..record("").provenance
-            },
-            confidence: 0.5,
-            ..record("")
-        };
-        let id = session_extraction_candidate_id("agent", "s-1", "op-1", &proposed);
-        assert_eq!(
-            id,
-            "candidate:8616f8c306bd0e0947ba3915403e02c1e47501fb8aed29e4d3a4ceec3e8207e7"
-        );
-        assert_ne!(
-            session_extraction_candidate_id("agent", "s-1", "op-2", &proposed),
-            id
-        );
-        assert_ne!(
-            session_extraction_candidate_id("other", "s-1", "op-1", &proposed),
-            id
-        );
-        // A retry that re-mints store id and timestamps proposes the same candidate; a retry
-        // whose extraction answered differently proposes a new one rather than conflicting.
-        let restamped = MemoryRecord {
-            record_id: "memory:retry".into(),
-            updated_at: 9,
-            ..proposed.clone()
-        };
-        assert_eq!(
-            session_extraction_candidate_id("agent", "s-1", "op-1", &restamped),
-            id
-        );
-        let changed = MemoryRecord {
-            content: "prefers numbered headings".into(),
-            ..proposed
-        };
-        assert_ne!(
-            session_extraction_candidate_id("agent", "s-1", "op-1", &changed),
-            id
-        );
-    }
-
-    #[test]
     fn the_payload_digest_ignores_store_ids_timestamps_and_recall_counts() {
         let base = record("fact");
         let digest = memory_candidate_payload_digest(&base);
@@ -1421,7 +1245,7 @@ mod candidate_tests {
             other => panic!("expected a conflict, got {other:?}"),
         }
         let resourced = MemoryCandidate {
-            source: MemoryCandidateSource::SessionExtraction,
+            source: MemoryCandidateSource::ModelProposal,
             attestation: None,
             ..candidate("c-1", "fact")
         };
@@ -1455,24 +1279,26 @@ mod candidate_tests {
         );
         let policy: MemoryRuntimePolicy = serde_json::from_value(serde_json::json!({
             "retrieval": "host",
-            "session_extraction": "candidate_sink",
-            "model_writes": "disabled",
-            "semantic_archive": "candidate_sink",
+            "model_writes": "candidate_sink",
         }))
         .unwrap();
-        assert_eq!(
-            policy.candidate_sink_paths(),
-            ["session_extraction", "semantic_archive"]
+        assert_eq!(policy.candidate_sink_paths(), ["model_writes"]);
+        assert!(
+            serde_json::from_value::<MemoryRuntimePolicy>(serde_json::json!({
+                "retrieval": "host",
+                "model_writes": "store",
+            }))
+            .is_err(),
+            "a write path is disabled or candidate_sink"
         );
         assert!(
             serde_json::from_value::<MemoryRuntimePolicy>(serde_json::json!({
                 "retrieval": "host",
-                "session_extraction": "store",
                 "model_writes": "disabled",
-                "semantic_archive": "disabled",
+                "session_extraction": "disabled",
             }))
             .is_err(),
-            "a write path is disabled or candidate_sink"
+            "the removed auxiliary write paths are unknown fields"
         );
         assert!(
             serde_json::from_value::<MemoryRuntimePolicy>(serde_json::json!({

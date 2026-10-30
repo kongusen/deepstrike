@@ -26,7 +26,7 @@ from deepstrike.memory.runtime_policy import MemoryRuntimePolicy, resolve_memory
 from deepstrike.memory.recall_projection import memory_recall_turn
 from deepstrike.memory.candidate_sink import (
   MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
-  memory_candidate_id, session_extraction_candidate_id,
+  memory_candidate_id,
 )
 from deepstrike.providers.base import LLMProvider, RenderedContext
 from deepstrike.runtime.context import create_native_context_preparation_adapter
@@ -359,7 +359,6 @@ class RuntimeOptions:
   sub_agent_harness: SubAgentHarnessConfig | None = None
   # G2: custom reducers for NodeKind::Reduce nodes, merged over the built-ins. A reduce node runs no LLM.
   reducers: dict | None = None
-  memory_system_prompt: str | None = None
   milestone_policy: "MilestonePolicy | None" = None
   on_milestone_evaluate: Callable[[dict[str, Any]], Awaitable[Any] | Any] | None = None
   milestone_contract: "MilestoneContract | None" = None
@@ -397,11 +396,12 @@ class RuntimeOptions:
   # exactly their declared tools + meta-tools. Opt-in: with no skill declaring tools, never engages.
   stable_core_tool_ids: "list[str] | None" = None
   payload_store: "PayloadStore | None" = None
-  memory_provider: LLMProvider | None = None
-  memory_summarizer: Callable[[list[Any], dict[str, Any]], Awaitable[str] | str] | None = None
   # Independent host path switches; omitted preserves all existing memory behavior.
   memory_runtime_policy: MemoryRuntimePolicy | dict[str, str] | None = None
   memory_candidate_sink: MemoryCandidateSink | None = None
+  # Optional lease/budget store. Only physical memory_store.put writes consume it; candidate-sink
+  # submissions are not metered, since the host's review decides what is stored.
+  memory_lifecycle: Any | None = None
 
 
 OperationCancellationReason = Literal["user", "deadline", "lease_lost", "host_shutdown"]
@@ -462,8 +462,7 @@ class RuntimeRunner:
       raise ValueError("workflow_schema_validation_attempts must be an integer between 1 and 16")
     self._opts = opts
     self._memory_runtime_gates = resolve_memory_runtime_policy(opts.memory_runtime_policy)
-    sink_paths = [path for path in ("session_extraction", "model_writes", "semantic_archive")
-                  if self._memory_path_to_candidate_sink(path)]
+    sink_paths = ["model_writes"] if self._memory_path_to_candidate_sink("model_writes") else []
     if sink_paths and opts.memory_candidate_sink is None:
       raise ValueError(f"memory runtime policy {', '.join(sink_paths)} = candidate_sink needs RuntimeOptions.memory_candidate_sink")
     self._interrupted = False
@@ -692,14 +691,20 @@ class RuntimeRunner:
       try:
         if not self._opts.agent_id:
           raise RuntimeError("memory persistence requires agent_id")
+        causation = canonical.get("causation")
+        source: MemoryCandidateSource = (
+          "model_proposal" if isinstance(causation, dict) and causation.get("kind") == "provider_tool" else "child_request"
+        )
+        # Child requests keep their v2 identity so in-flight redeliveries still match the sink.
+        version = "v3" if source == "model_proposal" else "v2"
         receipt = await self._submit_memory_candidate(
-          self._opts.agent_id, "child_request",
-          memory_candidate_id(["v2", self._opts.agent_id, "child_request", operation_id, effect_id, "0"]), record,
+          self._opts.agent_id, source,
+          memory_candidate_id([version, self._opts.agent_id, source, operation_id, effect_id, "0"]), record,
         )
         # Pending/accepted observations are emitted by the kernel. Rejection is a failed
         # effect, so preserve the sink's reason here before handing the failure to the bridge.
         if receipt["status"] == "rejected" and session_id:
-          await self._opts.session_log.append(session_id, self._memory_candidate_event(receipt, "child_request", record))
+          await self._opts.session_log.append(session_id, self._memory_candidate_event(receipt, source, record))
         return {"kind": "memory_candidate_result", "effect_id": effect_id, **receipt}
       except Exception as cause:
         return {"kind": "memory_candidate_result", "effect_id": effect_id, "error": format_tool_error(cause)}
@@ -708,6 +713,10 @@ class RuntimeRunner:
         raise RuntimeError("model memory writes are disabled by memory_runtime_policy.model_writes")
       if not (self._opts.memory_store and self._opts.agent_id):
         raise RuntimeError("memory persistence requires memory_store and agent_id")
+      if self._opts.memory_lifecycle is not None:
+        admission = await self._opts.memory_lifecycle.consume_write(self._opts.agent_id, record.scope, f"model:{operation_id}:{effect_id}", int(time.time() * 1000))
+        if not admission.get("valid"):
+          raise RuntimeError(f"memory lease rejected: {admission.get('reason_code')}")
       await self._opts.memory_store.put(self._opts.agent_id, record)
       return {
         "kind": "memory_persist_result", "effect_id": effect_id, "record_ref": record.record_id,
@@ -749,6 +758,10 @@ class RuntimeRunner:
       if resolved_session_id:
         await self._opts.session_log.append(resolved_session_id, self._memory_candidate_event(receipt, candidate.source, memory))
       return receipt["status"] != "rejected"
+    if self._opts.memory_lifecycle is not None:
+      admission = await self._opts.memory_lifecycle.consume_write(resolved_agent_id, memory.scope, f"host:{resolved_agent_id}:{memory.record_id}", int(time.time() * 1000))
+      if not admission.get("valid"):
+        return False
     await self._opts.memory_store.put(resolved_agent_id, memory)
     if resolved_session_id:
       await self._opts.session_log.append(resolved_session_id, {
@@ -2202,6 +2215,8 @@ class RuntimeRunner:
         "kind": "set_memory_enabled", "enabled": True,
         "read": self._memory_path_enabled("retrieval"),
         "write": self._memory_path_enabled("model_writes"),
+        # Proposals must land in review, never straight in the store.
+        "propose_memory": bool(self._opts.memory_candidate_sink and self._memory_path_to_candidate_sink("model_writes")),
       })
     if not resume_mid_run and self._opts.knowledge_source:
       await apply_host(runtime, self._pending_observations, {"kind": "set_knowledge_enabled", "enabled": True})
@@ -3004,8 +3019,6 @@ class RuntimeRunner:
             await self._payload_store().persist_payload(session_id, archive_ref, str(archive_payload["content"]))
         except Exception as exc:
           error = format_tool_error(exc)
-        archive_action = archive_action or action.action or "auto_compact"
-        archive_tier = archive_tier or action.tier
         if error is None:
           self._active_page_out_archive = None
         action = await action_host(runtime, self._pending_observations, {
@@ -3014,11 +3027,6 @@ class RuntimeRunner:
           **({"archive_ref": archive_ref} if archive_ref else {}),
           **({"error": error} if error else {}),
         })
-        if error is None and archive_tier == "semantic" and archived:
-          task_scope.spawn("semantic-page-out", self._archive_semantic_page_out(
-            archived, archive_action, session_id, archive_effect_id, runtime.operation_id,
-          ))
-
       elif action.kind == "execute_tool":
         tool_effect_id = action.effect_id
         all_calls = list(action.calls or [])
@@ -3393,7 +3401,6 @@ class RuntimeRunner:
       if new_msgs:
         try:
           from deepstrike.memory.protocols import SessionData
-          from deepstrike.memory.extraction import extract_session_memories
           now_ms = int(time.time() * 1000)
           completed_session = SessionData(
             session_id=session_id,
@@ -3403,27 +3410,6 @@ class RuntimeRunner:
             updated_at_ms=now_ms,
           )
           await self._opts.memory_store.save_session(completed_session)
-          if self._opts.memory_scope and self._memory_path_enabled("session_extraction"):
-            extracted = await extract_session_memories(
-              self._opts.memory_provider or self._opts.provider,
-              completed_session,
-              self._opts.memory_scope,
-              self._opts.memory_system_prompt,
-            )
-            to_sink = self._memory_path_to_candidate_sink("session_extraction")
-            proposed: set[str] = set()
-            for memory in extracted:
-              candidate = None
-              if to_sink:
-                candidate_id = session_extraction_candidate_id(
-                  self._opts.agent_id, session_id, runtime.operation_id, memory,
-                )
-                # One answer proposing the same record twice is one candidate.
-                if candidate_id in proposed:
-                  continue
-                proposed.add(candidate_id)
-                candidate = MemoryCandidate(candidate_id, "session_extraction", memory)
-              await self.write_memory(memory, session_id=session_id, agent_id=self._opts.agent_id, candidate=candidate)
         except Exception:
           pass
 
@@ -3602,72 +3588,6 @@ class RuntimeRunner:
       await self._log_memory_retrieval_result(self._current_session_id, accepted)
     except Exception:
       pass
-
-  async def _archive_semantic_page_out(
-    self, archived: list[Any], action: str | None, session_id: str, effect_id: str, operation_id: str,
-  ) -> None:
-    if not self._memory_path_enabled("semantic_archive"):
-      return
-    if not self._opts.memory_store or not self._opts.agent_id or not self._opts.memory_scope:
-      return
-    await self._opts.session_log.append(session_id, {
-      "kind": "semantic_archive_pending", "effect_id": effect_id,
-      **({"action": action} if action else {}),
-    })
-    try:
-      if self._opts.memory_summarizer:
-        result = self._opts.memory_summarizer(archived, {"action": action})
-        summary = await result if inspect.isawaitable(result) else result
-      else:
-        summary = await self._summarize_for_long_term_memory(archived)
-      from deepstrike.memory.protocols import MemoryProvenance, MemoryRecord
-      now = int(time.time() * 1000)
-      stable_effect_id = re.sub(r"[^a-zA-Z0-9._:-]", "_", effect_id) or "unknown"
-      name = f"page-out-{stable_effect_id}"
-      record = MemoryRecord(
-        record_id=f"{self._opts.memory_scope.tenant_id}:{self._opts.memory_scope.namespace}:project:{name}",
-        scope=self._opts.memory_scope, name=name, kind="project", content=summary,
-        description=f"auto summary of {action or 'compaction'} archive",
-        provenance=MemoryProvenance(author="extraction", trust="untrusted", session_id=session_id),
-        created_at=now, updated_at=now, confidence=0.6,
-      )
-      candidate = MemoryCandidate(
-        memory_candidate_id(["v2", self._opts.agent_id, "semantic_archive", session_id, operation_id, effect_id]), "semantic_archive", record,
-      ) if self._memory_path_to_candidate_sink("semantic_archive") else None
-      written = await self.write_memory(record, session_id=session_id, agent_id=self._opts.agent_id, candidate=candidate)
-      # Candidate audit already names the sink's outcome. Its proposed record_id is not a
-      # store receipt, so never report it as a completed archive (even after acceptance).
-      if written and candidate is None:
-        await self._opts.session_log.append(session_id, {
-          "kind": "semantic_archive_completed", "effect_id": effect_id, "record_id": record.record_id,
-        })
-    except Exception as cause:
-      await self._opts.session_log.append(session_id, {
-        "kind": "semantic_archive_failed", "effect_id": effect_id, "error": format_tool_error(cause),
-      })
-      raise
-
-  async def _summarize_for_long_term_memory(self, archived: list[Any]) -> str:
-    provider = self._opts.memory_provider or self._opts.provider
-    transcript = "\n".join(
-      f"{getattr(m, 'role', m.get('role') if isinstance(m, dict) else 'unknown')}: "
-      f"{getattr(m, 'content', m.get('content') if isinstance(m, dict) else '')}"
-      for m in archived
-    )
-    system_text = "\n\n".join(filter(None, [
-      self._opts.memory_system_prompt,
-      "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
-    ]))
-    context = RenderedContext(system_text=system_text, turns=[
-      ModelMessage(role="user", content=transcript, tool_calls=[]),
-    ])
-    text = ""
-    create_state = getattr(provider, "create_run_state", None)
-    state = create_state() if callable(create_state) else None
-    async for evt in provider.stream(context, [], state=state):
-      if isinstance(evt, TextDelta):
-        text += evt.delta
-    return text.strip() or transcript[:2000]
 
 
 def _entropy_sample_from_observation(obs: dict) -> EntropySample:

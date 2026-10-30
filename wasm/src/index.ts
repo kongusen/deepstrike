@@ -181,7 +181,6 @@ export type { InMemoryMemoryStoreOptions } from "./memory/in-memory-store.js"
 export { memoryRetentionScore } from "./memory/retention.js"
 export { rankMemories } from "./memory/ranking.js"
 export type { RankableMemory, RankedMemory, RankOptions } from "./memory/ranking.js"
-export { extractSessionMemories, parseExtractedMemories } from "./memory/extraction.js"
 export type {
   MemoryStore, Memory, MemorySearchOptions, SessionStore, SessionData, SessionMessage, MemoryRecord, MemoryRecall, MemoryRecallLifecycle,
   MemoryQuery, MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
@@ -245,7 +244,7 @@ export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextPro
 
 export type { PreparedProviderRequest } from "./types.js"
 
-export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest, sessionExtractionCandidateId } from "./memory/candidate-sink.js"
+export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest } from "./memory/candidate-sink.js"
 export { memoryRecallTurn } from "./memory/recall-projection.js"
 export type { MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource } from "./memory/candidate-sink.js"
 export { resolveMemoryRuntimePolicy } from "./memory/runtime-policy.js"

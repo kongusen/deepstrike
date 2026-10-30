@@ -13,7 +13,7 @@ const { RuntimeRunner, collectText } = await import("../dist/runtime/runner.js")
 const { InMemorySessionLog } = await import("../dist/runtime/session-log.js")
 const { LocalExecutionPlane } = await import("../dist/runtime/execution-plane.js")
 const { InMemoryMemoryCandidateSink } = await import("../dist/memory/candidate-sink.js")
-const off = { retrieval: "disabled", sessionExtraction: "disabled", modelWrites: "disabled", semanticArchive: "disabled" }
+const off = { retrieval: "disabled", modelWrites: "disabled" }
 const provider = { async complete() { throw Error("unused") }, async *stream() { yield {type:"text_delta",delta:"done"} } }
 const scope = { tenant_id: "agent", namespace: "candidates" }
 let checks = 0
@@ -76,21 +76,6 @@ for (const status of ["pending", "accepted", "rejected", "disabled"]) {
     restored.restore(undefined,(await journal.recordsAfter(rt.operationId)).map(r => r.record_bytes))
     assert(!restored.projectionJson().includes('"kind":"persist_memory"'))
   }
-  checks++
-}
-// Exercise the real runner's extraction across two operations sharing one session.
-{
-  const sink = new InMemoryMemoryCandidateSink()
-  const runner = new RuntimeRunner({ provider, sessionLog:new InMemorySessionLog(), executionPlane:new LocalExecutionPlane(),
-    maxTokens:1024,agentId:"agent",memoryScope:scope,
-    memoryStore:{async put(){throw Error("pending must not persist")},async search(){return []},async saveSession(){}},
-    memoryCandidateSink:sink,memoryRuntimePolicy:{...off,sessionExtraction:"candidate_sink"},
-    memoryProvider:{...provider,async *stream(){yield {type:"text_delta",delta:JSON.stringify({memories:[{name:"fact",kind:"project",content:"same",description:"fact"}]})}}},
-  })
-  await collectText(runner.run({sessionId:"same-session",goal:"first"}))
-  await collectText(runner.run({sessionId:"same-session",goal:"second"}))
-  assert.equal(sink.candidates().length,2)
-  assert.equal(new Set(sink.candidates().map(c => c.candidate_id)).size,2)
   checks++
 }
 console.log(`Passed ${checks} real WASM candidate scenarios`)

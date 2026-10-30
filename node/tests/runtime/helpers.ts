@@ -2,7 +2,7 @@ import { RuntimeRunner } from "../../src/runtime/runner.js"
 import { InMemorySessionLog } from "../../src/runtime/session-log.js"
 import { LocalExecutionPlane } from "../../src/runtime/execution-plane.js"
 import type { RegisteredTool } from "../../src/tools/index.js"
-import type { AsyncSummarizer, MemorySummarizer, LLMProvider, PermissionRequestEvent, PermissionResponse } from "../../src/types.js"
+import type { AsyncSummarizer, LLMProvider, PermissionRequestEvent, PermissionResponse } from "../../src/types.js"
 import type { ToolSuspendEvent } from "../../src/types.js"
 import type { GovernancePolicy } from "../../src/governance.js"
 import type { MemoryStore } from "../../src/memory/protocols.js"
@@ -28,8 +28,6 @@ export function createRunner(
     governancePolicy?: GovernancePolicy
     signalPolicy?: import("../../src/runtime/os-profile.js").SignalPolicy
     asyncSummarizer?: AsyncSummarizer
-    memorySummarizer?: MemorySummarizer
-    memoryProvider?: LLMProvider
     allowedToolIds?: string[]
     baselineToolIds?: string[]
     enablePlanTool?: boolean
@@ -71,8 +69,6 @@ export function createRunner(
     signalPolicy: opts.signalPolicy,
     promptBudget: opts.promptBudget,
     asyncSummarizer: opts.asyncSummarizer,
-    memorySummarizer: opts.memorySummarizer,
-    memoryProvider: opts.memoryProvider,
     allowedToolIds: opts.allowedToolIds,
     // Tests that exercise tools declare them as the explicit baseline. Individual exposure tests
     // construct RuntimeRunner directly when they need to verify the omitted-baseline contract.

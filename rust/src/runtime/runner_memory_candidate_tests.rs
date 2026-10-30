@@ -129,9 +129,7 @@ struct Harness {
 fn policy(write: MemoryWritePolicy) -> MemoryRuntimePolicy {
     MemoryRuntimePolicy {
         retrieval: MemoryRetrievalPolicy::Host,
-        session_extraction: write,
         model_writes: write,
-        semantic_archive: write,
     }
 }
 
@@ -289,14 +287,14 @@ async fn a_candidate_sink_path_without_a_sink_refuses_to_run() {
     };
     let message = error.to_string();
     assert!(message.contains("memory_candidate_sink"), "{message}");
-    assert!(message.contains("session_extraction, model_writes, semantic_archive"));
+    assert!(message.contains("model_writes"));
     assert_eq!(h.model_calls.load(Ordering::SeqCst), 0);
 }
 
-/// S03 · an extracted memory becomes a pending candidate: the store holds nothing, the session
+/// A model-authored memory becomes a pending candidate: the store holds nothing, the session
 /// records `memory_candidate_pending`, and nothing is logged as written.
 #[tokio::test]
-async fn session_extraction_to_the_candidate_sink_writes_no_record() {
+async fn model_proposal_to_the_candidate_sink_writes_no_record() {
     let h = harness(Some(policy(MemoryWritePolicy::CandidateSink)), true, None);
     run_to_end(&h.runner, "extract-candidate").await;
 
@@ -307,7 +305,7 @@ async fn session_extraction_to_the_candidate_sink_writes_no_record() {
     );
     let held = h.sink.candidates(Some(AGENT));
     assert_eq!(held.len(), 1);
-    assert_eq!(held[0].source, MemoryCandidateSource::SessionExtraction);
+    assert_eq!(held[0].source, MemoryCandidateSource::ModelProposal);
     assert_eq!(held[0].record.name, "prefers-focused-tests");
     assert!(held[0].candidate_id.starts_with("candidate:"));
 
@@ -331,27 +329,12 @@ async fn session_extraction_to_the_candidate_sink_writes_no_record() {
         })
         .expect("a memory_candidate_pending audit");
     assert_eq!(pending.0, &held[0].candidate_id);
-    assert_eq!(pending.1, "session_extraction");
+    assert_eq!(pending.1, "model_proposal");
     assert!(
         pending.2.is_some(),
         "the host path records the sink's receipt"
     );
     assert_eq!(pending.3, "prefers-focused-tests");
-}
-
-/// Without a policy the extraction still writes the store, as before M1.
-#[tokio::test]
-async fn no_policy_keeps_extraction_writing_the_store() {
-    let h = harness(None, false, None);
-    run_to_end(&h.runner, "extract-store").await;
-    assert_eq!(h.puts.load(Ordering::SeqCst), 1);
-    assert!(h.sink.candidates(None).is_empty());
-    assert!(
-        events(&h.log, "extract-store")
-            .await
-            .iter()
-            .any(|event| matches!(event, SessionEvent::MemoryWritten { .. }))
-    );
 }
 
 /// M1 · disabled paths are checked before the auxiliary model: the run makes its one turn and
@@ -405,7 +388,7 @@ async fn a_redelivered_persist_memory_effect_gets_the_original_receipt() {
 
     let first = h
         .runner
-        .memory_candidate_effect_result("op-1", "effect-7", proposal("fact"))
+        .memory_candidate_effect_result("op-1", "effect-7", MemoryCandidateSource::ChildRequest, proposal("fact"))
         .await;
     assert_eq!(first["kind"], "memory_candidate_result");
     assert_eq!(first["effect_id"], "effect-7");
@@ -414,7 +397,7 @@ async fn a_redelivered_persist_memory_effect_gets_the_original_receipt() {
 
     let again = h
         .runner
-        .memory_candidate_effect_result("op-1", "effect-7", proposal("fact"))
+        .memory_candidate_effect_result("op-1", "effect-7", MemoryCandidateSource::ChildRequest, proposal("fact"))
         .await;
     assert_eq!(again, first, "the same answer, not a new candidate");
     assert_eq!(h.sink.candidates(Some(AGENT)).len(), 1);
@@ -425,7 +408,7 @@ async fn a_redelivered_persist_memory_effect_gets_the_original_receipt() {
 
     let conflict = h
         .runner
-        .memory_candidate_effect_result("op-1", "effect-7", proposal("another fact"))
+        .memory_candidate_effect_result("op-1", "effect-7", MemoryCandidateSource::ChildRequest, proposal("another fact"))
         .await;
     assert_eq!(conflict["status"], "rejected");
     assert_eq!(conflict["reason_code"], "candidate_conflict");
@@ -434,7 +417,7 @@ async fn a_redelivered_persist_memory_effect_gets_the_original_receipt() {
 
     let other_effect = h
         .runner
-        .memory_candidate_effect_result("op-1", "effect-8", proposal("fact"))
+        .memory_candidate_effect_result("op-1", "effect-8", MemoryCandidateSource::ChildRequest, proposal("fact"))
         .await;
     assert_eq!(other_effect["status"], "pending");
     assert_ne!(other_effect["candidate_id"], first["candidate_id"]);
@@ -459,7 +442,7 @@ async fn a_sink_error_is_a_retryable_candidate_result() {
     h.runner.opts.memory_candidate_sink = Some(Arc::new(Unreachable));
     let result = h
         .runner
-        .memory_candidate_effect_result("op-1", "effect-1", proposal("fact"))
+        .memory_candidate_effect_result("op-1", "effect-1", MemoryCandidateSource::ChildRequest, proposal("fact"))
         .await;
     assert_eq!(result["kind"], "memory_candidate_result");
     assert!(
@@ -470,61 +453,33 @@ async fn a_sink_error_is_a_retryable_candidate_result() {
     assert!(result.get("status").is_none());
 }
 
-/// The semantic archive proposes one candidate per page-out effect, named by the effect, so a
-/// second archive of the same effect is the same candidate rather than a new one.
+/// Model proposals use a stable candidate identity for redelivery.
 #[tokio::test]
-async fn the_semantic_archive_hands_one_candidate_per_page_out_effect() {
+async fn model_proposals_use_one_candidate_per_effect() {
     let h = harness(Some(policy(MemoryWritePolicy::CandidateSink)), true, None);
-    let archived = vec![CoreMessage::user("we decided to keep tests focused")];
-    for _ in 0..2 {
-        h.runner
-            .archive_semantic_page_out(
-                archived.clone(),
-                Some("auto_compact".into()),
-                "archive-session",
-                "op-archive",
-                "effect:page-out/1",
-            )
-            .await;
-    }
-    let held = h.sink.candidates(Some(AGENT));
-    assert_eq!(held.len(), 1);
-    assert_eq!(held[0].source, MemoryCandidateSource::SemanticArchive);
-    assert_eq!(held[0].record.name, "page-out-effect:page-out_1");
-    assert_eq!(
-        held[0].record.provenance.session_id.as_deref(),
-        Some("archive-session")
-    );
-    assert_eq!(h.puts.load(Ordering::SeqCst), 0);
-    let log = events(&h.log, "archive-session").await;
-    let pending = log
-        .iter()
-        .filter(|event| matches!(event, SessionEvent::MemoryCandidatePending { .. }))
-        .count();
-    assert_eq!(
-        pending, 2,
-        "each delivery is audited with the sink's answer"
-    );
-    assert!(
-        !log.iter()
-            .any(|event| matches!(event, SessionEvent::MemoryWritten { .. }))
-    );
-}
-
-#[tokio::test]
-async fn a_disabled_semantic_archive_makes_no_summarizer_call() {
-    let h = harness(Some(policy(MemoryWritePolicy::Disabled)), false, None);
-    h.runner
-        .archive_semantic_page_out(
-            vec![CoreMessage::user("anything")],
-            None,
-            "archive-off",
-            "op",
-            "effect-1",
-        )
+    let first = h
+        .runner
+        .memory_candidate_effect_result("op-1", "effect-1", MemoryCandidateSource::ModelProposal, proposal("fact"))
         .await;
-    assert_eq!(h.model_calls.load(Ordering::SeqCst), 0);
-    assert_eq!(h.puts.load(Ordering::SeqCst), 0);
+    assert_eq!(first["status"], "pending");
+    let again = h
+        .runner
+        .memory_candidate_effect_result("op-1", "effect-1", MemoryCandidateSource::ModelProposal, proposal("fact"))
+        .await;
+    assert_eq!(again, first);
+    let conflict = h
+        .runner
+        .memory_candidate_effect_result("op-1", "effect-1", MemoryCandidateSource::ModelProposal, proposal("different fact"))
+        .await;
+    assert_eq!(conflict["status"], "rejected");
+    assert_eq!(conflict["reason_code"], "candidate_conflict");
+    let other = h
+        .runner
+        .memory_candidate_effect_result("op-1", "effect-2", MemoryCandidateSource::ModelProposal, proposal("fact"))
+        .await;
+    assert_eq!(other["status"], "pending");
+    assert_ne!(other["candidate_id"], first["candidate_id"]);
+    assert_eq!(h.sink.candidates(Some(AGENT)).len(), 2);
 }
 
 /// The kernel's pending-candidate fact is projected into the session log with its source.
@@ -586,7 +541,7 @@ async fn the_kernel_candidate_observation_is_projected_into_the_session_log() {
 #[tokio::test]
 async fn a_rejected_candidate_is_audited_and_reported_unwritten() {
     let h = harness(Some(policy(MemoryWritePolicy::CandidateSink)), true, None);
-    let source = MemoryCandidateSource::SessionExtraction;
+    let source = MemoryCandidateSource::ModelProposal;
     let first = h
         .runner
         .write_memory_routed(
@@ -622,7 +577,7 @@ async fn a_rejected_candidate_is_audited_and_reported_unwritten() {
         })
         .expect("a memory_candidate_rejected audit");
     assert_eq!(rejected.0, "candidate_conflict");
-    assert_eq!(rejected.1, "session_extraction");
+    assert_eq!(rejected.1, "model_proposal");
 }
 
 fn recalled(record_id: &str, content: &str) -> MemoryRecall {

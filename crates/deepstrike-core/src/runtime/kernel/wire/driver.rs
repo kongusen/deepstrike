@@ -1491,6 +1491,9 @@ struct AuthoredMemoryWrite {
     name: String,
     kind: WireMemoryKind,
     size_bytes: u32,
+    /// Authored from the model's own `propose_memory` call: the turn that made it waits on the
+    /// outcome and reads it back, unlike a child request whose author has already completed.
+    model_facing: bool,
 }
 
 /// What the kernel authored for a pending `QueryMemory` effect.
@@ -1689,17 +1692,17 @@ fn root_task_id() -> TaskId {
 /// choosing — so the kernel never saw a `ProviderTool` causation at all. Here the names are the
 /// kernel's, the arguments are decoded by the kernel, and the caller comes from the pending call.
 ///
-/// F15 ruling (0.2.66, user-adjudicated — resolves the §7.6 SPEC-ISSUE): `RequestMemoryWrite`
-/// has no entry here **by design** — the kernel gains no model-facing memory *write* surface.
-/// `memory` is a search tool, long-term writes are extracted host-side (§22.13's 现状定位), and
-/// the syscall's only caller channel is a child's `parent_requests` (child→parent only). If a
-/// spec revision ever proposes a write surface, it must overturn this ruling explicitly.
+/// The `memory` tool remains search-only. The capability-gated `propose_memory` tool is the
+/// explicit model-facing proposal surface; it decodes to the existing `RequestMemoryWrite` and
+/// reuses `plan_memory_write`, so scope, identity, provenance, timestamps, and admission remain
+/// kernel-owned. Existing operations keep the capability disabled by default.
 pub const SYSCALL_TOOL_NAMES: &[&str] = &[
     "start_workflow",
     "submit_workflow_nodes",
     "skill",
     "update_plan",
     crate::context::manager::MEMORY_TOOL_NAME,
+    crate::context::manager::PROPOSE_MEMORY_TOOL_NAME,
     crate::context::manager::READ_RESULT_TOOL_NAME,
     "send_message",
     "publish_channel",
@@ -1707,6 +1710,13 @@ pub const SYSCALL_TOOL_NAMES: &[&str] = &[
     "receive_channel",
     "read_object",
 ];
+
+/// Syscall tools that are not part of an operation's standing surface. Each one reaches the model
+/// only through its own feature switch (`propose_memory` through
+/// `feature_policy.propose_memory_enabled`), never through a host catalog or exposure baseline,
+/// so a host listing the full meta-tool surface leaves these out.
+pub const FEATURE_GATED_SYSCALL_TOOL_NAMES: &[&str] =
+    &[crate::context::manager::PROPOSE_MEMORY_TOOL_NAME];
 
 fn is_syscall_tool(name: &str) -> bool {
     SYSCALL_TOOL_NAMES.contains(&name)
@@ -1768,6 +1778,31 @@ fn decode_syscall(call: &WireToolCall) -> Result<SyscallRequest, SyscallRejectio
                 update: decode(name, arguments)?,
             },
         )),
+        crate::context::manager::PROPOSE_MEMORY_TOOL_NAME => {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Args {
+                name: String,
+                kind: WireMemoryKind,
+                content: String,
+                #[serde(default)]
+                description: String,
+                #[serde(default)]
+                evidence_refs: Vec<String>,
+            }
+            let args: Args = decode(name, arguments)?;
+            Ok(SyscallRequest::RequestMemoryWrite(
+                super::syscall::RequestMemoryWriteRequest {
+                    proposal: super::syscall::MemoryWriteProposal {
+                        name: args.name,
+                        kind: args.kind,
+                        content: args.content,
+                        description: args.description,
+                        evidence_refs: args.evidence_refs,
+                    },
+                },
+            ))
+        }
         crate::context::manager::MEMORY_TOOL_NAME => {
             #[derive(serde::Deserialize)]
             struct Args {
@@ -2627,6 +2662,10 @@ fn syscall_ack(name: &str) -> &'static str {
             "memory search issued: matching records are added to this conversation before your \
              next turn"
         }
+        crate::context::manager::PROPOSE_MEMORY_TOOL_NAME => {
+            "memory proposal submitted for review: it is not stored until the host accepts it, \
+             and its outcome is added to this conversation before your next turn"
+        }
         crate::context::manager::READ_RESULT_TOOL_NAME => "page-in requested",
         "send_message" | "publish_channel" => "local handle routed",
         "receive_mailbox" | "receive_channel" | "read_object" => "local state returned",
@@ -3094,6 +3133,11 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
     engine
         .ctx
         .set_memory_enabled(config.feature_policy.memory_enabled);
+    engine.ctx.set_propose_memory_enabled(
+        config.feature_policy.propose_memory_enabled
+            && config.feature_policy.memory_enabled
+            && config.memory_access.as_ref().is_some_and(|access| access.capabilities.write),
+    );
     engine
         .ctx
         .set_knowledge_enabled(config.feature_policy.knowledge_enabled);

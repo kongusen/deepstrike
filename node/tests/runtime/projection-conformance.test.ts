@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { canonicalActionFromProjectionJson } from "../../src/runtime/canonical-kernel-step.js"
 import { archivePresentationFromObservations } from "../../src/runtime/kernel-step.js"
-import { stableSemanticArchiveName } from "../../src/runtime/runner.js"
 
 test("core KernelProjection selector matches shared multi-effect fixture", () => {
   const fixture = JSON.parse(readFileSync(join(process.cwd(), "../tests/fixtures/abi/projection_multi_effect.json"), "utf8"))
@@ -42,9 +41,4 @@ test("archive presentation facts come from observations, not projection action",
   expect(archivePresentationFromObservations([
     { kind: "compressed", action: "auto_compact", summary: "semantic summary" },
   ])).toEqual({ action: "auto_compact", summary: "semantic summary", tier: "semantic" })
-})
-
-test("semantic archive idempotency key is stable across retries", () => {
-  expect(stableSemanticArchiveName("op/a:effect:1")).toBe("page-out-op_a:effect:1")
-  expect(stableSemanticArchiveName("op/a:effect:1")).toBe(stableSemanticArchiveName("op/a:effect:1"))
 })

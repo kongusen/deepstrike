@@ -68,7 +68,7 @@ export interface MemoryStore {
   get(agentId: string, recordId: string): Promise<MemoryRecord | null>
   delete(agentId: string, recordId: string): Promise<void>
   search(agentId: string, query: MemoryQuery): Promise<MemoryRecall[]>
-  /** Persist a completed session before the runner's one extraction pass. */
+  /** Persist a completed session's transcript. */
   saveSession(data: SessionData): Promise<void>
   /** M3: mirror the kernel's journaled recall lifecycle into the durable store. Optional. */
   recordRecall?(agentId: string, recalls: MemoryRecallLifecycle[]): Promise<void>
@@ -81,7 +81,9 @@ export interface SessionStore {
   saveSession(data: SessionData): Promise<void>
 }
 
-export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest, sessionExtractionCandidateId } from "./candidate-sink.js"
+export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest } from "./candidate-sink.js"
+export { HostMemoryCandidateSourceVerifier, admitMemoryCandidate, verifyMemoryCandidateSource, memoryCandidateAttestationCanonicalPayload, memoryCandidateAttestationDigest, memoryCandidateAttestationMatches } from "./attestation.js"
+export type { MemoryCandidateAttestation, MemoryCandidateSourceVerifier, MemoryCandidateVerification } from "./attestation.js"
 export { memoryRecallTurn } from "./recall-projection.js"
 export type { MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource } from "./candidate-sink.js"
 export { resolveMemoryRuntimePolicy } from "./runtime-policy.js"

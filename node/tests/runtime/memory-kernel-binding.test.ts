@@ -102,9 +102,7 @@ describe("runner passes the policy bits into the kernel binding", () => {
   it("sends read and write from the resolved policy", async () => {
     const event = await memoryEnabledEvent({
       retrieval: "host",
-      sessionExtraction: "disabled",
       modelWrites: "disabled",
-      semanticArchive: "disabled",
     })
     expect(event).toMatchObject({ kind: "set_memory_enabled", enabled: true, read: true, write: false })
   })
@@ -112,9 +110,7 @@ describe("runner passes the policy bits into the kernel binding", () => {
   it("turns read off when retrieval is disabled", async () => {
     const event = await memoryEnabledEvent({
       retrieval: "disabled",
-      sessionExtraction: "disabled",
       modelWrites: "disabled",
-      semanticArchive: "disabled",
     })
     expect(event).toMatchObject({ kind: "set_memory_enabled", read: false, write: false })
   })

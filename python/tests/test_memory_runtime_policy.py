@@ -7,24 +7,21 @@ from deepstrike import MemoryRuntimePolicy, resolve_memory_runtime_policy
 from deepstrike.runtime.canonical_kernel_step import CanonicalRunnerRuntime
 from deepstrike.runtime.kernel_journal import InMemoryKernelJournal
 
-OFF = MemoryRuntimePolicy("disabled", "disabled", "disabled", "disabled")
+OFF = MemoryRuntimePolicy("disabled", "disabled")
 
 
 def test_no_policy_preserves_legacy_behavior():
     assert resolve_memory_runtime_policy(None) is None
 
 
-@pytest.mark.parametrize("retrieval,extraction,writes,archive", list(product(
-    ("disabled", "host"), *(3 * [("disabled", "candidate_sink")]),
-)))
-def test_switches_project_independently(retrieval, extraction, writes, archive):
-    policy = MemoryRuntimePolicy(retrieval, extraction, writes, archive)
+@pytest.mark.parametrize("retrieval,writes", list(product(("disabled", "host"), ("disabled", "candidate_sink"))))
+def test_switches_project_independently(retrieval, writes):
+    policy = MemoryRuntimePolicy(retrieval, writes)
     gates = resolve_memory_runtime_policy(policy)
     assert gates == resolve_memory_runtime_policy(asdict(policy))
     assert gates.retrieval_enabled == (retrieval == "host")
-    for field, value in [("session_extraction", extraction), ("model_writes", writes), ("semantic_archive", archive)]:
-        assert getattr(gates, field + "_enabled") == (value == "candidate_sink")
-        assert getattr(gates, field + "_to_candidate_sink") == (value == "candidate_sink")
+    assert gates.model_writes_enabled == (writes != "disabled")
+    assert gates.model_writes_to_candidate_sink == (writes == "candidate_sink")
 
 
 @pytest.mark.parametrize("field,value", [("retrieval", "candidate_sink"), ("model_writes", "host"), ("storage", "disk")])
@@ -33,9 +30,14 @@ def test_invalid_policy_rejected(field, value):
         resolve_memory_runtime_policy({**asdict(OFF), field: value})
 
 
-def test_partial_policy_rejected():
-    with pytest.raises(ValueError, match="semantic_archive"):
+def test_unknown_removed_policy_fields_are_rejected():
+    with pytest.raises(ValueError, match="unknown memory runtime policy field"):
         resolve_memory_runtime_policy({"retrieval": "host", "model_writes": "disabled", "session_extraction": "disabled"})
+
+
+def test_partial_policy_rejected():
+    with pytest.raises(ValueError, match="model_writes"):
+        resolve_memory_runtime_policy({"retrieval": "host"})
 
 
 @pytest.mark.asyncio

@@ -451,6 +451,7 @@ fn effect_id_at(step_seq: WireU64, index: u32) -> EffectId {
 fn syscall_tool_catalog() -> Vec<WireToolSchema> {
     SYSCALL_TOOL_NAMES
         .iter()
+        .filter(|name| !FEATURE_GATED_SYSCALL_TOOL_NAMES.contains(name))
         .chain(std::iter::once(&"search"))
         .map(|name| WireToolSchema {
             name: (*name).to_string(),
@@ -11394,4 +11395,246 @@ fn a_failed_tool_result_reaches_the_provider_marked_as_a_failure() {
         }),
     ));
     assert_eq!(tool_turn(&turns_of(&started), "call_1")["is_error"], true);
+}
+
+// ----- propose_memory: the model-facing proposal surface -----
+
+/// A running agent whose operation exposes `propose_memory`, awaiting its first provider turn.
+fn agent_awaiting_provider_with_proposals() -> (Runtime, EffectId) {
+    use crate::runtime::kernel::wire::config::FeaturePolicy;
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.feature_policy = Some(FeaturePolicy {
+            memory_enabled: Some(true),
+            propose_memory_enabled: Some(true),
+            ..FeaturePolicy::default()
+        });
+    }));
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let effect = sole_effect(&started);
+    let EffectKind::CallProvider(call) = &effect.effect else {
+        panic!("expected a provider call");
+    };
+    assert!(
+        call.tools
+            .iter()
+            .any(|tool| tool.name == crate::context::manager::PROPOSE_MEMORY_TOOL_NAME),
+        "the turn must expose the proposal tool the model is about to call"
+    );
+    (runtime, effect.effect_id.clone())
+}
+
+fn proposal_call(call_id: &str, name: &str, content: &str) -> WireToolCall {
+    tool_call(
+        call_id,
+        crate::context::manager::PROPOSE_MEMORY_TOOL_NAME,
+        json!({"name": name, "kind": "feedback", "content": content}),
+    )
+}
+
+/// The result the model reads back for one of its own calls: `(output, is_error)`.
+fn tool_result_for(runtime: &Runtime, call_id: &str) -> Option<(String, bool)> {
+    runtime
+        .driver
+        .engine()?
+        .ctx
+        .partitions
+        .history
+        .messages
+        .iter()
+        .find_map(|message| {
+            let Content::Parts(parts) = &message.content else {
+                return None;
+            };
+            parts.iter().find_map(|part| match part {
+                ContentPart::ToolResult {
+                    call_id: id,
+                    output,
+                    is_error,
+                    ..
+                } if id == call_id => Some((output.clone(), *is_error)),
+                _ => None,
+            })
+        })
+}
+
+fn candidate_settled(candidate_id: &str) -> EffectSuccess {
+    use crate::runtime::kernel::wire::effect::MemoryCandidateReceipt;
+    EffectSuccess::MemoryPersisted(MemoryPersistedSuccess {
+        receipt: None,
+        candidate: Some(MemoryCandidateReceipt {
+            binding_id: MemoryBindingId::new("mem-binding-1").unwrap(),
+            candidate_id: candidate_id.to_string(),
+            receipt_id: "rcpt-1".to_string(),
+        }),
+    })
+}
+
+/// The model learns at call time that its proposal went to review, and the turn that proposed it
+/// resumes once the host settles the proposal — with the outcome in context, not as a silent
+/// audit fact the model never sees.
+#[test]
+fn a_memory_proposal_answers_the_model_and_resumes_its_turn() {
+    let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
+    let proposed = runtime.submit(&provider_result(
+        "in-propose",
+        1_700_000_002_000,
+        &provider,
+        vec![proposal_call(
+            "call-1",
+            "brief-style",
+            "prefers numbered sections",
+        )],
+    ));
+    let write = sole_effect(&proposed);
+    let EffectKind::PersistMemory(effect) = &write.effect else {
+        panic!("expected a memory write, got {:?}", write.tag());
+    };
+    assert!(matches!(
+        effect.memory.causation,
+        SyscallCausation::ProviderTool(_)
+    ));
+    let (ack, is_error) = tool_result_for(&runtime, "call-1").expect("the call is answered");
+    assert!(!is_error);
+    assert!(ack.contains("review"), "{ack}");
+
+    // Restored mid-flight, the kernel still knows the pending write was the model's own.
+    let mut restored = Runtime::restore_with(None, &runtime.journal);
+    for runtime in [&mut runtime, &mut restored] {
+        let resumed = runtime.submit(&resolved(
+            "in-candidate",
+            1_700_000_003_000,
+            &write.effect_id,
+            candidate_settled("cand-1"),
+        ));
+        assert_eq!(
+            kinds(&resumed),
+            vec![EffectKindTag::CallProvider],
+            "a settled proposal must not leave the turn that made it stalled"
+        );
+        assert!(
+            history_text(runtime)
+                .iter()
+                .any(|text| text.contains("brief-style") && text.contains("pending review")),
+            "{:?}",
+            history_text(runtime)
+        );
+        assert!(
+            runtime.observations().iter().any(|observation| matches!(
+                observation,
+                KernelObservation::MemoryCandidatePending { .. }
+            )),
+            "the pending candidate is still journaled as an audit fact"
+        );
+    }
+}
+
+#[test]
+fn a_refused_memory_proposal_tells_the_model_why_and_resumes_its_turn() {
+    let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
+    let proposed = runtime.submit(&provider_result(
+        "in-propose",
+        1_700_000_002_000,
+        &provider,
+        vec![proposal_call(
+            "call-1",
+            "brief-style",
+            "prefers numbered sections",
+        )],
+    ));
+    let resumed = runtime.submit(&failed(
+        "in-refused",
+        1_700_000_003_000,
+        &sole_effect(&proposed).effect_id,
+        HostEffectFailureKind::PermissionDenied,
+        "duplicate_of_existing_record",
+    ));
+    assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+    assert!(
+        history_text(&runtime)
+            .iter()
+            .any(|text| text.contains("brief-style")
+                && text.contains("not stored")
+                && text.contains("duplicate_of_existing_record")),
+        "{:?}",
+        history_text(&runtime)
+    );
+}
+
+/// DEC-3 admits one pending PersistMemory, so a second proposal in the same batch cannot publish.
+/// It must be answered to the model — reused when identical, refused with a retry hint when not —
+/// instead of faulting the whole provider turn.
+#[test]
+fn parallel_memory_proposals_reuse_or_refuse_without_terminating_the_turn() {
+    for duplicate in [true, false] {
+        let (mut runtime, provider) = agent_awaiting_provider_with_proposals();
+        let proposed = runtime.submit(&provider_result(
+            "in-parallel-propose",
+            1_700_000_002_000,
+            &provider,
+            vec![
+                proposal_call("call-1", "brief-style", "prefers numbered sections"),
+                if duplicate {
+                    proposal_call("call-2", "brief-style", "prefers numbered sections")
+                } else {
+                    proposal_call("call-2", "tone", "prefers a terse tone")
+                },
+            ],
+        ));
+        assert_eq!(kinds(&proposed), vec![EffectKindTag::PersistMemory]);
+        assert!(runtime.tx.terminal().is_none());
+        let (second, is_error) = tool_result_for(&runtime, "call-2").expect("call-2 is answered");
+        assert_eq!(is_error, !duplicate, "{second}");
+        if !duplicate {
+            assert!(second.contains("after"), "{second}");
+        }
+        let history = &runtime
+            .driver
+            .engine()
+            .unwrap()
+            .ctx
+            .partitions
+            .history
+            .messages;
+        assert!(crate::context::units::strict_tool_pairing_is_valid(history));
+
+        let resumed = runtime.submit(&resolved(
+            "in-candidate",
+            1_700_000_003_000,
+            &sole_effect(&proposed).effect_id,
+            candidate_settled("cand-1"),
+        ));
+        assert_eq!(kinds(&resumed), vec![EffectKindTag::CallProvider]);
+    }
+}
+
+/// The proposal surface is the kernel's, behind its own switch. A host catalog and baseline that
+/// name `propose_memory` while the feature is off expose nothing, so a model cannot reach a
+/// memory write the operation never opened to review.
+#[test]
+fn a_host_catalog_cannot_expose_propose_memory_while_its_feature_is_off() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&syscall_config_with(|config| {
+        config.tool_catalog.push(super::super::effect::ToolSchema {
+            name: crate::context::manager::PROPOSE_MEMORY_TOOL_NAME.to_string(),
+            description: String::new(),
+            parameters: Default::default(),
+        });
+    }));
+    let started = runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    let EffectKind::CallProvider(call) = &sole_effect(&started).effect else {
+        panic!("expected a provider call");
+    };
+    assert!(
+        call.tools.iter().any(|tool| tool.name == "memory"),
+        "the memory search surface is unaffected"
+    );
+    assert!(
+        !call
+            .tools
+            .iter()
+            .any(|tool| tool.name == crate::context::manager::PROPOSE_MEMORY_TOOL_NAME),
+        "{:?}",
+        call.tools.iter().map(|tool| &tool.name).collect::<Vec<_>>()
+    );
 }

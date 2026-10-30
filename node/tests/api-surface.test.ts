@@ -58,7 +58,7 @@ describe("subpath barrels", () => {
       expect(planes).toHaveProperty(n)
   })
   it("memory carries durable + working memory", () => {
-    for (const n of ["WorkingMemory", "DurableMemory", "InMemoryMemoryStore", "rankMemories", "extractSessionMemories", "parseExtractedMemories"])
+    for (const n of ["WorkingMemory", "DurableMemory", "InMemoryMemoryStore", "rankMemories"])
       expect(memory).toHaveProperty(n)
   })
   it("harness carries the eval harnesses + judge", () => {

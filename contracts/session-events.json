@@ -1208,7 +1208,7 @@
         "kind": "memory_candidate_pending",
         "turn": 1,
         "candidate_id": "mc_1",
-        "source": "session_extraction",
+        "source": "model_proposal",
         "name": "note",
         "receipt_id": "rcpt-1"
       }
@@ -1235,7 +1235,7 @@
         "kind": "memory_candidate_rejected",
         "turn": 1,
         "candidate_id": "mc_1",
-        "source": "session_extraction",
+        "source": "model_proposal",
         "name": "note",
         "receipt_id": "rcpt-1",
         "reason_code": "policy"

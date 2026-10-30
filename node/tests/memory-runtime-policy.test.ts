@@ -2,9 +2,7 @@ import { resolveMemoryRuntimePolicy, type MemoryRuntimePolicy } from "../src/mem
 
 const recallOnly: MemoryRuntimePolicy = {
   retrieval: "host",
-  sessionExtraction: "disabled",
   modelWrites: "disabled",
-  semanticArchive: "disabled",
 }
 
 describe("memory runtime policy (M1)", () => {
@@ -15,19 +13,15 @@ describe("memory runtime policy (M1)", () => {
   it("projects a recall-only policy onto the runner gates", () => {
     expect(resolveMemoryRuntimePolicy(recallOnly)).toEqual({
       retrievalEnabled: true,
-      sessionExtractionEnabled: false,
       modelWritesEnabled: false,
-      semanticArchiveEnabled: false,
-      sessionExtractionToCandidateSink: false,
       modelWritesToCandidateSink: false,
-      semanticArchiveToCandidateSink: false,
     })
   })
 
   it("turns retrieval off independently of the write paths", () => {
     expect(resolveMemoryRuntimePolicy({ ...recallOnly, retrieval: "disabled" })).toMatchObject({
       retrievalEnabled: false,
-      sessionExtractionEnabled: false,
+      modelWritesEnabled: false,
     })
   })
 
@@ -35,8 +29,6 @@ describe("memory runtime policy (M1)", () => {
     expect(resolveMemoryRuntimePolicy({ ...recallOnly, modelWrites: "candidate_sink" })).toMatchObject({
       modelWritesEnabled: true,
       modelWritesToCandidateSink: true,
-      sessionExtractionEnabled: false,
-      sessionExtractionToCandidateSink: false,
     })
   })
 
@@ -50,13 +42,13 @@ describe("memory runtime policy (M1)", () => {
     expect(() => resolveMemoryRuntimePolicy({ ...recallOnly, retrieval: "candidate_sink" } as never)).toThrow(
       "memory runtime policy retrieval must be one of disabled | host",
     )
-    expect(() => resolveMemoryRuntimePolicy({ ...recallOnly, sessionExtraction: "host" } as never)).toThrow(
-      "memory runtime policy sessionExtraction must be one of disabled | candidate_sink",
+    expect(() => resolveMemoryRuntimePolicy({ ...recallOnly, modelWrites: "host" } as never)).toThrow(
+      "memory runtime policy modelWrites must be one of disabled | candidate_sink",
     )
   })
 
   it("rejects a missing field instead of defaulting it", () => {
-    const partial = { retrieval: "host", sessionExtraction: "disabled", modelWrites: "disabled" } as never
-    expect(() => resolveMemoryRuntimePolicy(partial)).toThrow("memory runtime policy semanticArchive must be one of")
+    const partial = { retrieval: "host" } as never
+    expect(() => resolveMemoryRuntimePolicy(partial)).toThrow("memory runtime policy modelWrites must be one of")
   })
 })

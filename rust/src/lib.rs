@@ -70,7 +70,6 @@ pub use memory::{
     MemoryCandidateSink, MemoryCandidateSource, MemoryCandidateSourceVerifier, MemoryRetrievalPolicy,
     MemoryRuntimePolicy, MemorySearchOptions, MemoryStore, MemoryWritePolicy, WorkingMemory,
     admit_memory_candidate, consume_memory_lease_write, memory_candidate_attestation_canonical_payload, memory_candidate_attestation_digest, memory_candidate_id, memory_candidate_payload_digest, memory_record_expired, memory_recall_turn, revoke_memory_lease, sign_memory_candidate_attestation, verify_memory_lease,
-    session_extraction_candidate_id,
 };
 pub use providers::RuntimePolicy;
 pub use providers::anthropic::AnthropicProvider;

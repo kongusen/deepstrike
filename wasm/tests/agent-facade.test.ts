@@ -78,7 +78,7 @@ test("M4 · a disabled retrieval policy answers a facade recall with nothing", a
   const memory = new DurableMemory(new InMemoryMemoryStore(), "agent", { tenant_id: "t", namespace: "n" })
   const agent = new Agent({
     name: "recall-off", memory,
-    runtimeBinding: { runtimeOptions: { memoryRuntimePolicy: { retrieval: "disabled", sessionExtraction: "disabled", modelWrites: "disabled", semanticArchive: "disabled" } } },
+    runtimeBinding: { runtimeOptions: { memoryRuntimePolicy: { retrieval: "disabled", modelWrites: "disabled" } } },
   })
   await agent.remember({ name: "color", content: "blue" })
   expect(await agent.recall("blue")).toEqual([])

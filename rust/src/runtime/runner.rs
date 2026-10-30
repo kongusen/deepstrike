@@ -5,10 +5,7 @@ use crate::runtime::sandboxed_skill::scan_skill_dir;
 use crate::runtime::skill_watcher::SkillWatcher;
 use async_stream::try_stream;
 use deepstrike_core::governance::quota::ResourceQuota;
-use deepstrike_core::mm::memory::{
-    MemoryAuthor, MemoryKind, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord,
-    MemoryScope, MemoryTrustLevel,
-};
+use deepstrike_core::mm::memory::{MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope};
 use deepstrike_core::runtime::kernel::wire::{CancellationReason, MemoryPolicy};
 use deepstrike_core::runtime::kernel::{KernelObservation, KernelPressureAction};
 use deepstrike_core::runtime::session::{SessionEvent, WireEvidence};
@@ -23,7 +20,7 @@ use crate::knowledge::KnowledgeSource;
 use crate::memory::{
     MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
     MemoryRetrievalPolicy, MemoryRuntimePolicy, MemoryStore, MemoryWritePolicy,
-    memory_candidate_id, memory_recall_turn, session_extraction_candidate_id,
+    memory_candidate_id, memory_recall_turn,
 };
 use crate::providers::{LLMProvider, StreamEvent};
 use crate::run_event::RunEvent;
@@ -568,24 +565,25 @@ impl RuntimeRunner {
         &self,
         operation_id: &str,
         effect_id: &str,
+        source: MemoryCandidateSource,
         memory: MemoryRecord,
     ) -> serde_json::Value {
         let receipt = match self.opts.agent_id.as_deref() {
             Some(agent_id) => {
+                // Child requests keep their v2 identity; direct model proposals are v3.
+                let version = match source {
+                    MemoryCandidateSource::ModelProposal => "v3",
+                    _ => "v2",
+                };
                 let candidate_id = memory_candidate_id(&[
-                    "v2",
+                    version,
                     agent_id,
-                    MemoryCandidateSource::ChildRequest.label(),
+                    source.label(),
                     operation_id,
                     effect_id,
                     "0",
                 ]);
-                self.submit_memory_candidate(
-                    agent_id,
-                    MemoryCandidateSource::ChildRequest,
-                    candidate_id,
-                    memory,
-                )
+                self.submit_memory_candidate(agent_id, source, candidate_id, memory)
                 .await
             }
             None => Err(Error::Other(
@@ -611,9 +609,7 @@ impl RuntimeRunner {
     /// switch.
     fn memory_write_policy(&self, source: MemoryCandidateSource) -> Option<MemoryWritePolicy> {
         self.opts.memory_runtime_policy.map(|policy| match source {
-            MemoryCandidateSource::SessionExtraction => policy.session_extraction,
-            MemoryCandidateSource::SemanticArchive => policy.semantic_archive,
-            MemoryCandidateSource::ChildRequest => policy.model_writes,
+            MemoryCandidateSource::ChildRequest | MemoryCandidateSource::ModelProposal => policy.model_writes,
         })
     }
 
@@ -648,52 +644,6 @@ impl RuntimeRunner {
             )));
         }
         Ok(())
-    }
-
-    /// Session extraction after a completed run: one auxiliary-model pass, then each extracted
-    /// record through the write funnel — to the store, or to the candidate sink under an id
-    /// derived from the run (operation) and the proposed payload.
-    async fn extract_and_write_session_memories(
-        &self,
-        session: &deepstrike_core::memory::durable::SessionData,
-        operation_id: &str,
-    ) {
-        let Some(scope) = self.opts.memory_scope.as_ref() else {
-            return;
-        };
-        if !self.memory_write_enabled(MemoryCandidateSource::SessionExtraction) {
-            return;
-        }
-        let Ok(memories) = self.extract_session_memories(session, scope).await else {
-            return;
-        };
-        let to_sink = self.memory_write_to_candidate_sink(MemoryCandidateSource::SessionExtraction);
-        let mut proposed = std::collections::HashSet::new();
-        for memory in memories {
-            let candidate = if to_sink {
-                let id = session_extraction_candidate_id(
-                    &session.agent_id,
-                    &session.session_id,
-                    operation_id,
-                    &memory,
-                );
-                // One answer proposing the same record twice is one candidate.
-                if !proposed.insert(id.clone()) {
-                    continue;
-                }
-                Some((MemoryCandidateSource::SessionExtraction, id))
-            } else {
-                None
-            };
-            let _ = self
-                .write_memory_routed(
-                    memory,
-                    Some(&session.session_id),
-                    Some(&session.agent_id),
-                    candidate,
-                )
-                .await;
-        }
     }
 
     /// The kernel's verdict on a host-authored write, or `None` when it is admitted.
@@ -888,52 +838,6 @@ impl RuntimeRunner {
                 .map(|threshold| threshold.get()),
         );
         store.record_recall(agent_id, &recalls).await
-    }
-
-    async fn extract_session_memories(
-        &self,
-        session: &deepstrike_core::memory::durable::SessionData,
-        scope: &MemoryScope,
-    ) -> Result<Vec<MemoryRecord>> {
-        let transcript = session
-            .messages
-            .iter()
-            .map(|message| {
-                format!(
-                    "[{:?}] {}",
-                    message.role,
-                    message.content.as_text().unwrap_or_default()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-            .chars()
-            .take(8_000)
-            .collect::<String>();
-        let prompt = format!(
-            "{transcript}\n\nReturn {{\"memories\":[{{\"name\":\"stable-kebab-key\",\"kind\":\"user|feedback|project|reference\",\"content\":\"fact\",\"description\":\"why durable\",\"confidence\":0.0,\"links\":[],\"pinned\":false,\"ttl_days\":null,\"evidence_refs\":[]}}]}} with at most 10 items. Return {{\"memories\":[]}} when nothing is durable."
-        );
-        let context = rendered_context_from_messages(vec![
-            CoreMessage::system(
-                "Extract durable, reusable facts from this completed session. Return only JSON; do not include transient progress or guesses.",
-            ),
-            CoreMessage::user(prompt),
-        ]);
-        let state = self.opts.provider.create_run_state();
-        let mut stream = self
-            .opts
-            .provider
-            .stream(&context, &[], None, state.as_ref())
-            .await?;
-        let mut output = String::new();
-        while let Some(event) = stream.next().await {
-            if let StreamEvent::TextDelta { delta } = event? {
-                output.push_str(&delta);
-            }
-        }
-        Ok(crate::memory::parse_extracted_memories(
-            &output, session, scope,
-        ))
     }
 
     async fn log_memory_retrieval_result(&self, session_id: Option<&str>, hits: Vec<MemoryRecall>) {
@@ -1401,6 +1305,9 @@ impl RuntimeRunner {
                             "enabled": true,
                             "read": self.memory_retrieval_enabled(),
                             "write": self.memory_write_enabled(MemoryCandidateSource::ChildRequest),
+                            // Proposals must land in review, never straight in the store.
+                            "propose_memory": self.opts.memory_candidate_sink.is_some()
+                                && self.memory_write_to_candidate_sink(MemoryCandidateSource::ModelProposal),
                         }),
                     ).await?;
                 }
@@ -2125,7 +2032,12 @@ impl RuntimeRunner {
                             }),
                         ).await?;
                     }
-                    HostEffect::PersistMemory { memory } => {
+                    HostEffect::PersistMemory { memory, model_proposal } => {
+                        let source = if *model_proposal {
+                            MemoryCandidateSource::ModelProposal
+                        } else {
+                            MemoryCandidateSource::ChildRequest
+                        };
                         let effect_id = action.effect_id.clone();
                         let mut memory = memory.clone();
                         if let Some(scope) = self.opts.memory_scope.as_ref() {
@@ -2133,19 +2045,20 @@ impl RuntimeRunner {
                         }
                         memory.provenance.session_id = Some(session_id.clone());
                         let event = if self
-                            .memory_write_to_candidate_sink(MemoryCandidateSource::ChildRequest)
+                            .memory_write_to_candidate_sink(source)
                         {
                             // M2 · the sink holds the write; its answer is the effect's result.
                             let operation_id = kernel.lock().await.operation_id().to_string();
                             Box::pin(self.memory_candidate_effect_result(
                                 &operation_id,
                                 &effect_id,
+                                source,
                                 memory,
                             ))
                             .await
                         } else {
                             let error = if !self
-                                .memory_write_enabled(MemoryCandidateSource::ChildRequest)
+                                .memory_write_enabled(source)
                             {
                                 Some(
                                     "model memory writes are disabled by memory_runtime_policy.model_writes"
@@ -2231,16 +2144,12 @@ impl RuntimeRunner {
                     }
                     HostEffect::ArchivePageOut {
                         archived,
-                        tier,
-                        action: pressure_action,
                         payload_content,
                         payload_digest,
                         ..
                     } => {
                         let effect_id = action.effect_id.clone();
                         let archived = archived.clone();
-                        let tier = tier.clone();
-                        let action_name = action_str_of(*pressure_action);
                         let archive_start = *active_page_out_start.get_or_insert_with(|| {
                             pending_page_out_starts.pop_front().unwrap_or(next_archive_start)
                         });
@@ -2268,17 +2177,6 @@ impl RuntimeRunner {
                         let (archive_ref, error) = match archive_result {
                             Ok(archive_ref) => {
                                 self.local_page_out_cache.lock().unwrap().extend(archived.clone());
-                                if tier == "semantic" {
-                                    let operation_id = kernel.lock().await.operation_id().to_string();
-                                    Box::pin(self.archive_semantic_page_out(
-                                        archived,
-                                        Some(action_name),
-                                        &session_id,
-                                        &operation_id,
-                                        &effect_id,
-                                    ))
-                                    .await;
-                                }
                                 (archive_ref, None)
                             }
                             Err(error) => (None, Some(error.to_string())),
@@ -2629,9 +2527,6 @@ impl RuntimeRunner {
                                     updated_at_ms: now_ms,
                                 };
                                 let _ = store.save_session(session.clone()).await;
-                                let operation_id = kernel.lock().await.operation_id().to_string();
-                                Box::pin(self.extract_and_write_session_memories(&session, &operation_id))
-                                    .await;
                             }
                         }
 
@@ -2696,9 +2591,6 @@ impl RuntimeRunner {
                             updated_at_ms: now_ms,
                         };
                         let _ = store.save_session(session.clone()).await;
-                        let operation_id = kernel.lock().await.operation_id().to_string();
-                        Box::pin(self.extract_and_write_session_memories(&session, &operation_id))
-                            .await;
                     }
                 }
             }
@@ -2832,208 +2724,6 @@ impl RuntimeRunner {
         }
     }
 
-    async fn archive_semantic_page_out(
-        &self,
-        archived: Vec<CoreMessage>,
-        action: Option<String>,
-        session_id: &str,
-        operation_id: &str,
-        effect_id: &str,
-    ) {
-        let (Some(_store), Some(agent_id), Some(scope)) = (
-            &self.opts.memory_store,
-            &self.opts.agent_id,
-            &self.opts.memory_scope,
-        ) else {
-            return;
-        };
-        // M1 · checked before the summarizer call, so a disabled archive costs no model call.
-        if !self.memory_write_enabled(MemoryCandidateSource::SemanticArchive) {
-            return;
-        }
-        self.log(
-            session_id,
-            SessionEvent::SemanticArchivePending {
-                effect_id: effect_id.to_string(),
-                action: action.clone(),
-            },
-        )
-        .await;
-
-        // P2 write-funnel: route through the ONE gated write_memory syscall so validation,
-        // the rolling write quota, dedup, and the memory_written audit all apply. Score is
-        // advisory (0.6) — an automatic summary must never outrank curated content.
-        let summary = match self.summarize_for_long_term_memory(&archived).await {
-            Ok(s) => s,
-            Err(error) => {
-                self.log(
-                    session_id,
-                    SessionEvent::SemanticArchiveFailed {
-                        effect_id: effect_id.to_string(),
-                        error: error.to_string(),
-                    },
-                )
-                .await;
-                return;
-            }
-        };
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
-        // Named by the page-out effect, not the clock: a redelivered archive proposes the same
-        // record, which a candidate sink must see as the same candidate.
-        let name = stable_semantic_archive_name(effect_id);
-        let request = MemoryRecord {
-            record_id: format!("{}:{}:project:{}", scope.tenant_id, scope.namespace, name),
-            scope: scope.clone(),
-            name,
-            kind: MemoryKind::Project,
-            content: summary,
-            description: format!(
-                "auto summary of {} archive",
-                action.as_deref().unwrap_or("compaction")
-            ),
-            provenance: MemoryProvenance {
-                session_id: Some(session_id.to_string()),
-                author: MemoryAuthor::Extraction,
-                trust: MemoryTrustLevel::Untrusted,
-                evidence_refs: Vec::new(),
-            },
-            created_at: now,
-            updated_at: now,
-            last_recalled_at: None,
-            recall_count: 0,
-            confidence: 0.6,
-            links: Vec::new(),
-            pinned: false,
-            ttl_days: None,
-        };
-        let record_id = request.record_id.clone();
-        let to_candidate_sink =
-            self.memory_write_to_candidate_sink(MemoryCandidateSource::SemanticArchive);
-        let candidate = to_candidate_sink.then(|| {
-            (
-                MemoryCandidateSource::SemanticArchive,
-                memory_candidate_id(&[
-                    "v2",
-                    agent_id,
-                    MemoryCandidateSource::SemanticArchive.label(),
-                    session_id,
-                    operation_id,
-                    effect_id,
-                ]),
-            )
-        });
-        match self
-            .write_memory_routed(request, Some(session_id), Some(agent_id), candidate)
-            .await
-        {
-            Ok(true) if !to_candidate_sink => {
-                self.log(
-                    session_id,
-                    SessionEvent::SemanticArchiveCompleted {
-                        effect_id: effect_id.to_string(),
-                        record_id,
-                    },
-                )
-                .await;
-            }
-            Ok(_) => {}
-            Err(error) => {
-                self.log(
-                    session_id,
-                    SessionEvent::SemanticArchiveFailed {
-                        effect_id: effect_id.to_string(),
-                        error: error.to_string(),
-                    },
-                )
-                .await;
-            }
-        }
-    }
-
-    async fn summarize_for_long_term_memory(
-        &self,
-        archived: &[CoreMessage],
-    ) -> crate::Result<String> {
-        let transcript = archived
-            .iter()
-            .map(|m| {
-                let role_str = match m.role {
-                    deepstrike_core::types::message::Role::System => "system",
-                    deepstrike_core::types::message::Role::User => "user",
-                    deepstrike_core::types::message::Role::Assistant => "assistant",
-                    deepstrike_core::types::message::Role::Tool => "tool",
-                };
-                let content_str = message_content_as_text(&m.content);
-                format!("{}: {}", role_str, content_str)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let system_prompt_opt = self.opts.system_prompt.as_deref();
-        let system_text = match system_prompt_opt {
-            Some(sp) => format!(
-                "{}\n\nSummarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
-                sp
-            ),
-            None => "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.".to_string(),
-        };
-
-        let context = deepstrike_core::context::renderer::InternalRenderedContext {
-            system_text,
-            system_stable: String::new(),
-            system_knowledge: String::new(),
-            turns: vec![deepstrike_core::types::message::CoreMessage {
-                role: deepstrike_core::types::message::Role::User,
-                content: deepstrike_core::types::message::Content::Text(transcript.clone()),
-                tool_calls: vec![],
-            }],
-            state_turn: None,
-            frozen_prefix_len: None,
-            budget_overflow: None,
-        };
-
-        let synth_state = self.opts.provider.create_run_state();
-        let mut stream = self
-            .opts
-            .provider
-            .stream(&context, &[], None, synth_state.as_ref())
-            .await?;
-
-        let mut synthesis_text = String::new();
-        while let Some(evt) = stream.next().await {
-            if let Ok(StreamEvent::TextDelta { delta }) = evt {
-                synthesis_text.push_str(&delta);
-            }
-        }
-
-        let text = synthesis_text.trim();
-        if text.is_empty() {
-            Ok(transcript.chars().take(2000).collect())
-        } else {
-            Ok(text.to_string())
-        }
-    }
-}
-
-fn message_content_as_text(content: &deepstrike_core::types::message::Content) -> String {
-    match content {
-        deepstrike_core::types::message::Content::Text(s) => s.clone(),
-        deepstrike_core::types::message::Content::Parts(parts) => parts
-            .iter()
-            .filter_map(|p| match p {
-                deepstrike_core::types::message::ContentPart::Text { text } => Some(text.as_str()),
-                deepstrike_core::types::message::ContentPart::ToolResult { output, .. } => {
-                    Some(output.as_str())
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
 }
 
 fn action_str_of(action: KernelPressureAction) -> String {
@@ -3232,25 +2922,6 @@ fn memory_candidate_session_event(
             name: memory.name.clone(),
             size_bytes: memory.content.len() as u32,
         },
-    }
-}
-
-/// The semantic archive's record name, from its page-out effect (same rule as the Node SDK).
-fn stable_semantic_archive_name(effect_id: &str) -> String {
-    let stable: String = effect_id
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | ':' | '-') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    if stable.is_empty() {
-        "page-out-unknown".into()
-    } else {
-        format!("page-out-{stable}")
     }
 }
 

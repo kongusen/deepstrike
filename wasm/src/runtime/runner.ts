@@ -6,13 +6,12 @@ import type {
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
-  MemorySummarizer, RenderedContext,
+  RenderedContext,
 } from "../types.js"
 import type { ToolSuspendEvent } from "./execution-plane.js"
 import type { MemoryStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope, SessionData } from "../memory/index.js"
 import { resolveMemoryRuntimePolicy, type MemoryRuntimePolicy, type ResolvedMemoryRuntimePolicy } from "../memory/runtime-policy.js"
-import { memoryCandidateId, sessionExtractionCandidateId, type MemoryCandidateSource, type MemoryCandidateReceipt, type MemoryCandidateSink } from "../memory/candidate-sink.js"
-import { extractSessionMemories } from "../memory/extraction.js"
+import { memoryCandidateId, type MemoryCandidateSource, type MemoryCandidateReceipt, type MemoryCandidateSink } from "../memory/candidate-sink.js"
 import type { KnowledgeSource } from "../knowledge/index.js"
 import type { SignalSource, RuntimeSignal, SignalDeliveryReceipt } from "../signals/index.js"
 import type { SessionLog, SessionEvent } from "./session-log.js"
@@ -414,9 +413,6 @@ export interface RuntimeOptions {
    *  to exactly their declared tools + meta-tools. (wasm skills come from `skillContentMap`; gating
    *  engages only once that carries per-skill tool lists.) */
   stableCoreToolIds?: string[]
-  memoryProvider?: LLMProvider
-  memorySummarizer?: MemorySummarizer
-  memorySystemPrompt?: string
   payloadStore?: PayloadStore
 }
 
@@ -498,10 +494,8 @@ export class RuntimeRunner {
 
   constructor(private readonly opts: RuntimeOptions) {
     this.memoryRuntimeGates = resolveMemoryRuntimePolicy(opts.memoryRuntimePolicy)
-    const sinkPaths = (["sessionExtraction", "modelWrites", "semanticArchive"] as const)
-      .filter(path => this.memoryPathToCandidateSink(path))
-    if (sinkPaths.length && !opts.memoryCandidateSink) {
-      throw new Error(`memory runtime policy ${sinkPaths.join(", ")} = "candidate_sink" needs RuntimeOptions.memoryCandidateSink`)
+    if (this.memoryPathToCandidateSink("modelWrites") && !opts.memoryCandidateSink) {
+      throw new Error('memory runtime policy modelWrites = "candidate_sink" needs RuntimeOptions.memoryCandidateSink')
     }
     const schemaAttempts = opts.workflowSchemaValidationAttempts ?? 2
     if (!Number.isInteger(schemaAttempts) || schemaAttempts < 1 || schemaAttempts > 16) {
@@ -834,8 +828,13 @@ export class RuntimeRunner {
     if (this.memoryPathToCandidateSink("modelWrites")) {
       try {
         if (!agentId) throw new Error("memory persistence requires RuntimeOptions.agentId")
-        const candidateId = memoryCandidateId(["v2", agentId, "child_request", operationId, effectId, "0"])
-        const receipt = await this.submitMemoryCandidate(agentId, "child_request", candidateId, record)
+        const modelProposal = Boolean(canonicalMemory.causation && typeof canonicalMemory.causation === "object" && (canonicalMemory.causation as Record<string, unknown>).kind === "provider_tool")
+        const source: MemoryCandidateSource = modelProposal ? "model_proposal" : "child_request"
+        // Child requests keep their v2 identity so in-flight redeliveries still match the sink.
+        const candidateId = modelProposal
+          ? memoryCandidateId(["v3", agentId, "model_proposal", operationId, effectId, "0"])
+          : memoryCandidateId(["v2", agentId, "child_request", operationId, effectId, "0"])
+        const receipt = await this.submitMemoryCandidate(agentId, source, candidateId, record)
         return { kind: "memory_candidate_result", effect_id: effectId, ...receipt }
       } catch (cause) {
         return { kind: "memory_candidate_result", effect_id: effectId, error: formatToolError(cause) }
@@ -921,7 +920,7 @@ export class RuntimeRunner {
 
   /** M2 · whether a write path hands its writes to the candidate sink. Off unless the host set the
    *  path to `"candidate_sink"` — unlike the on/off gates, the default here is the store. */
-  private memoryPathToCandidateSink(path: "sessionExtraction" | "modelWrites" | "semanticArchive"): boolean {
+  private memoryPathToCandidateSink(path: "modelWrites"): boolean {
     return this.memoryRuntimeGates?.[`${path}ToCandidateSink`] ?? false
   }
 
@@ -1228,7 +1227,7 @@ export class RuntimeRunner {
     }
 
     if (this.opts.memoryStore && this.opts.agentId) {
-      await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true, read: this.memoryPathEnabled("retrievalEnabled"), write: this.memoryPathEnabled("modelWritesEnabled") })
+      await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_memory_enabled", enabled: true, read: this.memoryPathEnabled("retrievalEnabled"), write: this.memoryPathEnabled("modelWritesEnabled"), propose_memory: Boolean(this.opts.memoryCandidateSink && this.memoryPathToCandidateSink("modelWrites")) })
     }
     if (this.opts.knowledgeSource) {
       await this.commitKernelApply(runtime, this.pendingObservations, { kind: "set_knowledge_enabled", enabled: true })
@@ -1745,10 +1744,6 @@ export class RuntimeRunner {
         } catch (cause) {
           error = formatToolError(cause)
         }
-        const archiveEffectId = action.effectId
-        const archived = action.archived
-        const archiveAction = archiveMeta.action ?? action.action ?? "auto_compact"
-        const archiveTier = archiveMeta.tier ?? action.tier
         if (!error) this.activePageOutArchive = undefined
         action = await this.commitKernelAction(runtime, this.pendingObservations, {
           kind: "page_out_archive_result",
@@ -1756,9 +1751,6 @@ export class RuntimeRunner {
           ...(archiveRef ? { archive_ref: archiveRef } : {}),
           ...(error ? { error } : {}),
         })
-        if (!error && archiveTier === "semantic" && archived.length > 0) {
-          await this.archiveSemanticPageOut(archived, archiveAction, sessionId, archiveEffectId, runtime.operationId)
-        }
 
       } else if (action.kind === "load_payload") {
         const content = await this.payloadStore().loadPayload(sessionId, action.payloadRef)
@@ -2084,29 +2076,6 @@ export class RuntimeRunner {
             updatedAtMs: Date.now(),
           }
           await this.opts.memoryStore.saveSession(completedSession)
-          if (this.opts.memoryScope && this.memoryPathEnabled("sessionExtractionEnabled")) {
-            const extracted = await extractSessionMemories(
-              this.opts.memoryProvider ?? this.opts.provider,
-              completedSession,
-              this.opts.memoryScope,
-              this.opts.memorySystemPrompt,
-            )
-            const toSink = this.memoryPathToCandidateSink("sessionExtraction")
-            const proposed = new Set<string>()
-            for (const memory of extracted) {
-              const candidateId = toSink
-                ? sessionExtractionCandidateId(this.opts.agentId, sessionId, runtime.operationId, memory)
-                : undefined
-              // One answer proposing the same record twice is one candidate.
-              if (candidateId !== undefined) {
-                if (proposed.has(candidateId)) continue
-                proposed.add(candidateId)
-              }
-              await this.writeMemory(memory, sessionId, candidateId !== undefined
-                ? { source: "session_extraction", candidateId }
-                : undefined)
-            }
-          }
         } catch { /* non-fatal */ }
       }
     }
@@ -2764,57 +2733,6 @@ export class RuntimeRunner {
       }
     } catch { /* errs-open */ }
   }
-
-  private async archiveSemanticPageOut(archived: ModelMessage[], action: string | undefined, sessionId: string, effectId: string, operationId: string): Promise<void> {
-    if (!this.memoryPathEnabled("semanticArchiveEnabled")) return
-    if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
-    try {
-      const summary = this.opts.memorySummarizer
-        ? await this.opts.memorySummarizer.summarize(archived, { action })
-        : await summarizeForLongTermMemory(
-          this.opts.memoryProvider ?? this.opts.provider,
-          archived,
-          this.opts.memorySystemPrompt,
-        )
-      const now = Date.now()
-      const name = `page-out-${effectId.replace(/[^a-zA-Z0-9._:-]/g, "_") || "unknown"}`
-      const recordId = `${this.opts.memoryScope.tenant_id}:${this.opts.memoryScope.namespace}:project:${name}`
-      await this.writeMemory({
-          record_id: recordId,
-          scope: this.opts.memoryScope, name, kind: "project", content: summary,
-          description: `auto summary of ${action ?? "compaction"} archive`,
-          provenance: { author: "extraction", trust: "untrusted", evidence_refs: [] },
-          created_at: now, updated_at: now, recall_count: 0, confidence: 0.6, links: [], pinned: false,
-      }, sessionId, this.memoryPathToCandidateSink("semanticArchive") ? {
-        source: "semantic_archive", candidateId: memoryCandidateId(["v2", this.opts.agentId, "semantic_archive", sessionId, operationId, effectId]),
-      } : undefined)
-    } catch {
-      // non-fatal
-    }
-  }
-}
-
-async function summarizeForLongTermMemory(
-  provider: LLMProvider,
-  archived: ModelMessage[],
-  systemPrompt?: string,
-): Promise<string> {
-  const transcript = archived
-    .map(m => `${m.role}: ${m.content}`)
-    .join("\n")
-  const context = {
-    systemText: [
-      systemPrompt,
-      "Summarize the following conversation for long-term memory. Preserve key facts, decisions, and open questions.",
-    ].filter(Boolean).join("\n\n"),
-    turns: [{ role: "user" as const, content: transcript, toolCalls: [] }],
-  }
-  let text = ""
-  const state = provider.createRunState?.()
-  for await (const evt of provider.stream(context, [], undefined, state)) {
-    if (evt.type === "text_delta") text += (evt as TextDelta).delta
-  }
-  return text.trim() || transcript.slice(0, 2000)
 }
 
 function isMidRun(events: Array<{ seq: number; event: SessionEvent }>): boolean {

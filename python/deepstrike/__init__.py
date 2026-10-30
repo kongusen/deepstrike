@@ -184,7 +184,6 @@ from deepstrike.memory import (
     Ed25519MemoryCandidateSourceVerifier, HmacMemoryCandidateSourceVerifier, MemoryCandidateAttestation, admit_memory_candidate, memory_candidate_attestation_canonical_payload, memory_candidate_attestation_digest, sign_memory_candidate_attestation, verify_memory_candidate_source,
     memory_candidate_id,
     memory_candidate_payload_digest,
-    session_extraction_candidate_id,
     memory_recall_turn,
     MemoryLease, MemoryLeaseRejection, MemoryWriteBudget, consume_memory_lease_write,
     memory_record_expired, memory_scope_matches, revoke_memory_lease,
@@ -195,7 +194,6 @@ from deepstrike.memory import (
     MemoryScope, MemoryProvenance, MemoryKind, MemoryAuthor, MemoryTrustLevel,
     InMemoryMemoryStore,
     RankedMemory, rank_memories,
-    extract_session_memories, parse_extracted_memories,
 )
 from deepstrike.safety import PermissionManager, PermissionMode, Permission, PermissionDecision
 from deepstrike.governance import Governance, GovernancePolicy, GovernancePolicyRule, GovernanceRateLimit, GovernanceVerdict, governance_policy_patch
@@ -276,7 +274,6 @@ __all__ = [
     "Ed25519MemoryCandidateSourceVerifier", "HmacMemoryCandidateSourceVerifier", "MemoryCandidateAttestation", "admit_memory_candidate", "memory_candidate_attestation_canonical_payload", "memory_candidate_attestation_digest", "sign_memory_candidate_attestation", "verify_memory_candidate_source",
     "memory_candidate_id",
     "memory_candidate_payload_digest",
-    "session_extraction_candidate_id",
     "memory_recall_turn",
     "MemoryLease", "MemoryLeaseRejection", "MemoryWriteBudget", "consume_memory_lease_write",
     "memory_record_expired", "memory_scope_matches", "revoke_memory_lease",
@@ -420,7 +417,6 @@ __all__ = [
     "MemoryStore", "Memory", "MemorySearchOptions", "DurableMemory", "SessionData", "MemoryRecord", "MemoryRecall", "MemoryQuery",
     "MemoryScope", "MemoryProvenance", "MemoryKind", "MemoryAuthor", "MemoryTrustLevel",
     "InMemoryMemoryStore", "RankedMemory", "rank_memories",
-    "extract_session_memories", "parse_extracted_memories",
     "PermissionManager", "PermissionMode", "Permission", "PermissionDecision",
     "AttemptBody", "AttemptBodyContext", "AttemptBodyEvent", "AttemptBodyTerminal",
     "AttemptJudge", "AttemptLoop", "AttemptLoopEvent", "AttemptOutcome",

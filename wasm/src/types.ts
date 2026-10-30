@@ -272,7 +272,3 @@ export interface LLMProvider {
     signal?: AbortSignal,
   ): AsyncIterable<StreamEvent>
 }
-
-export interface MemorySummarizer {
-  summarize(archived: ModelMessage[], context: { action?: string }): Promise<string>
-}

@@ -1863,6 +1863,9 @@ export class CanonicalRunnerRuntime {
         return true
       case "set_memory_enabled":
         this.featurePolicy().memory_enabled = Boolean(event.enabled)
+        // Only sent when on, so kernels that predate the field still accept memory-enabled runs.
+        if (event.propose_memory) this.featurePolicy().propose_memory_enabled = true
+        else delete this.featurePolicy().propose_memory_enabled
         if (event.enabled) {
           // The binding is the kernel-enforced gate: `plan_memory_write` / `plan_memory_query`
           // refuse any syscall whose capability bit is off. Absent bits default to granted.

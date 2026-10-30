@@ -106,7 +106,7 @@ describe("InMemoryMemoryStore", () => {
   it("discounts a stale record's relevance below a fresh one with equal overlap", async () => {
     const now = 100 * 86_400_000 // day 100
     const fresh = { ...memory("deploy runbook steps", 0.5, now), record_id: "fresh" }
-    const stale = { ...memory("deploy runbook steps", 0.5, 0), record_id: "stale", ttl_days: 5 }
+    const stale = { ...memory("deploy runbook steps", 0.5, now - 4 * 86_400_000), record_id: "stale", ttl_days: 5 }
     const store = new InMemoryMemoryStore([fresh, stale], { now: () => now, staleWarningDays: 2 })
     const hits = await store.search("a1", query("deploy runbook", 2))
     expect(hits.map(h => h.record.record_id)).toEqual(["fresh", "stale"])

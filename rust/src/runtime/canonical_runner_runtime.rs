@@ -327,6 +327,13 @@ impl CanonicalRunnerRuntime {
     /// This is intentionally a JSON-shaped host boundary: the canonical wire DTOs remain owned by
     /// core, while the SDK no longer imports or constructs the retired input enum.
     pub async fn apply_host_event(&mut self, event: Value) -> Result<Option<HostAction>> {
+        // The lowering below awaits a kernel transition whose future is hundreds of KiB in a
+        // debug build. Boxing it here keeps every caller's state machine — above all the runner's
+        // `try_stream!`, which awaits this from dozens of sites — off the thread stack.
+        Box::pin(self.apply_host_event_inner(event)).await
+    }
+
+    async fn apply_host_event_inner(&mut self, event: Value) -> Result<Option<HostAction>> {
         if !self.started && self.apply_bootstrap(&event) {
             return Ok(None);
         }
@@ -1334,6 +1341,17 @@ impl CanonicalRunnerRuntime {
                     .unwrap_or(false);
                 self.feature_policy()
                     .insert("memory_enabled".into(), json!(enabled));
+                let propose = event
+                    .get("propose_memory")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                // Only sent when on, so kernels that predate the field still accept the run.
+                if propose {
+                    self.feature_policy()
+                        .insert("propose_memory_enabled".into(), json!(true));
+                } else {
+                    self.feature_policy().remove("propose_memory_enabled");
+                }
                 if enabled {
                     // The binding is the kernel-enforced gate: memory syscalls whose capability
                     // bit is off are refused in the kernel. Absent bits default to granted.
@@ -1952,6 +1970,10 @@ fn protocol_action_from_wire(
             };
             HostEffect::PersistMemory {
                 memory: memory_record_from_wire(&persist.memory),
+                model_proposal: matches!(
+                    persist.memory.causation,
+                    deepstrike_core::runtime::kernel::wire::syscall::SyscallCausation::ProviderTool(_)
+                ),
             }
         }
         EffectKind::QueryMemory(_) => {

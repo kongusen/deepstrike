@@ -123,7 +123,6 @@ describe("long-session memory paging integration", () => {
         agentId: AGENT_ID,
         memoryScope: MEMORY_SCOPE,
         memoryStore: pagingMemoryStore(),
-        memorySummarizer: { async summarize() { return "archived session summary" } },
         compressionStore: archiveStore,
         // The script deliberately repeats an identical `bulk()` call 9 turns in a row to force
         // compression/paging — incidental to the repeat fuse's intent, so disabled for this test.
@@ -186,7 +185,6 @@ describe("long-session memory paging integration", () => {
         agentId: AGENT_ID,
         memoryScope: MEMORY_SCOPE,
         memoryStore,
-        memorySummarizer: { async summarize() { return "archived session summary" } },
         compressionStore: archiveStore,
       },
     ).sessionLog
@@ -200,7 +198,6 @@ describe("long-session memory paging integration", () => {
         agentId: AGENT_ID,
         memoryScope: MEMORY_SCOPE,
         memoryStore,
-        memorySummarizer: { async summarize() { return "archived session summary" } },
         compressionStore: archiveStore,
         sessionLog: sharedLog,
         // The script deliberately repeats an identical `bulk()` call 14 turns in a row to force
@@ -250,7 +247,6 @@ describe("long-session memory paging integration", () => {
         agentId: AGENT_ID,
         memoryScope: MEMORY_SCOPE,
         memoryStore,
-        memorySummarizer: { async summarize() { return "archived session summary" } },
         compressionStore: archiveStore,
         sessionLog: sharedLog,
       },

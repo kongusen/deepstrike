@@ -46,7 +46,9 @@ use super::config::{
     ConfigDefaults, ExecutionPolicy, HostEffectSupport, MemoryPolicy, OperationConfig,
     ResourceQuota, SkillMetadata,
 };
-use super::driver::{CanonicalOperationDriver, PlannedStep, SYSCALL_TOOL_NAMES};
+use super::driver::{
+    CanonicalOperationDriver, FEATURE_GATED_SYSCALL_TOOL_NAMES, PlannedStep, SYSCALL_TOOL_NAMES,
+};
 use super::effect::{
     EffectKindTag, EffectOutcome, EffectSucceeded, EffectSuccess, InlineToolResult,
     MemoryAccessBinding, MemoryCapabilities, ProviderCompleted, ProviderMessage, ProviderOutcome,
@@ -218,6 +220,7 @@ fn envelope(id: &str, observed_at_ms: u64, input: KernelInput) -> WireEnvelope {
 fn syscall_tool_catalog() -> Vec<super::effect::ToolSchema> {
     SYSCALL_TOOL_NAMES
         .iter()
+        .filter(|name| !FEATURE_GATED_SYSCALL_TOOL_NAMES.contains(name))
         .chain(std::iter::once(&"search"))
         .map(|name| super::effect::ToolSchema {
             name: (*name).to_string(),

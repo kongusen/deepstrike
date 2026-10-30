@@ -403,7 +403,7 @@ describe("readSessionEvidence", () => {
   it("rejects a receipt that renames the logged answer without changing it", async () => {
     const sessionLog = new InMemorySessionLog()
     await sessionLog.append("session-1", {
-      kind: "memory_candidate_pending", turn: 1, candidate_id: "cand-1", source: "session_extraction", name: "n", receipt_id: "r1",
+      kind: "memory_candidate_pending", turn: 1, candidate_id: "cand-1", source: "model_proposal", name: "n", receipt_id: "r1",
     })
     const snapshot = await readSessionEvidence({
       operationId: "op-1", sessionId: "session-1", scope: sourceScope, sessionLog,
@@ -416,8 +416,8 @@ describe("readSessionEvidence", () => {
   it("links an accepted candidate to the record this log wrote under its record_ref", async () => {
     const sessionLog = new InMemorySessionLog()
     for (const event of [
-      { kind: "memory_candidate_pending", turn: 1, candidate_id: "cand-1", source: "session_extraction", name: "n", receipt_id: "r1" },
-      { kind: "memory_candidate_pending", turn: 1, candidate_id: "cand-2", source: "session_extraction", name: "m", receipt_id: "r2" },
+      { kind: "memory_candidate_pending", turn: 1, candidate_id: "cand-1", source: "model_proposal", name: "n", receipt_id: "r1" },
+      { kind: "memory_candidate_pending", turn: 1, candidate_id: "cand-2", source: "model_proposal", name: "m", receipt_id: "r2" },
       { kind: "memory_written", turn: 2, record_id: "rec-1", scope: memoryScope, memory_kind: "project", name: "n", size_bytes: 3 },
     ] as SessionEvent[]) await sessionLog.append("session-1", event)
     const receipts: Record<string, MemoryCandidateReceipt> = {

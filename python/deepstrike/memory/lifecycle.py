@@ -24,6 +24,14 @@ MemoryLeaseRejection = Literal[
     "memory_write_budget_exhausted",
 ]
 
+MemoryLifecycleEventType = Literal[
+    "lease_issued", "lease_renewed", "lease_write_consumed", "lease_revoked",
+    "deletion_requested", "deletion_applied", "deletion_noop",
+]
+MemoryLifecycleWriteResult = dict[str, object]
+MemoryLifecycleEvent = dict[str, object]
+MemoryDeletionReceipt = dict[str, object]
+
 
 @dataclass(frozen=True)
 class MemoryWriteBudget:

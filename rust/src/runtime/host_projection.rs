@@ -46,6 +46,9 @@ pub(crate) enum HostEffect {
     },
     PersistMemory {
         memory: MemoryRecord,
+        /// The write came from the model's `propose_memory` tool rather than a child request.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        model_proposal: bool,
     },
     QueryMemory {
         query: MemoryQuery,

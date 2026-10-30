@@ -52,7 +52,7 @@ use deepstrike_core::runtime::kernel::wire::config::{
     ResourceQuota, SkillMetadata as WireSkill,
 };
 use deepstrike_core::runtime::kernel::wire::driver::{
-    CanonicalOperationDriver, PlannedStep, SYSCALL_TOOL_NAMES,
+    CanonicalOperationDriver, FEATURE_GATED_SYSCALL_TOOL_NAMES, PlannedStep, SYSCALL_TOOL_NAMES,
 };
 use deepstrike_core::runtime::kernel::wire::effect::{
     EffectKindTag, EffectOutcome, EffectSucceeded, EffectSuccess, InlineToolResult,
@@ -142,6 +142,7 @@ fn envelope(operation: &str, id: &str, observed_at_ms: u64, input: KernelInput) 
 fn syscall_config(operation: &str) -> WireEnvelope {
     let tool_catalog = SYSCALL_TOOL_NAMES
         .iter()
+        .filter(|name| !FEATURE_GATED_SYSCALL_TOOL_NAMES.contains(name))
         .chain(std::iter::once(&"search"))
         .map(|name| WireToolSchema {
             name: (*name).to_string(),
@@ -213,6 +214,7 @@ fn agent_start(operation: &str) -> WireEnvelope {
                     exposure_baseline: Some(
                         SYSCALL_TOOL_NAMES
                             .iter()
+                            .filter(|name| !FEATURE_GATED_SYSCALL_TOOL_NAMES.contains(name))
                             .chain(std::iter::once(&"search"))
                             .map(|name| (*name).to_string())
                             .collect(),

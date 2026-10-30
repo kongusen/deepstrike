@@ -1,4 +1,5 @@
 from dataclasses import replace
+from itertools import product
 import json
 
 import pytest
@@ -6,19 +7,19 @@ import pytest
 from deepstrike import (
     InMemoryMemoryCandidateSink, InMemorySessionLog, LocalExecutionPlane,
     MemoryCandidate, MemoryProvenance, MemoryQuery, MemoryRecall, MemoryRecord, MemoryRuntimePolicy, MemoryScope,
-    RuntimeOptions, RuntimeRunner, collect_text, memory_candidate_id, session_extraction_candidate_id,
+    RuntimeOptions, RuntimeRunner, collect_text, memory_candidate_id, memory_candidate_payload_digest,
 )
-from deepstrike.providers.stream import TextDelta, ToolCallEvent
+from deepstrike.providers.stream import TextDelta
 from deepstrike.tools.registry import tool
 
-OFF = MemoryRuntimePolicy("disabled", "disabled", "disabled", "disabled")
+OFF = MemoryRuntimePolicy("disabled", "disabled")
 SCOPE = MemoryScope("agent", "candidates")
 FACT = "RECALLED_FACT_FOR_POLICY"
 
 
 def record():
     return MemoryRecord("r", SCOPE, "brief-style", "project", FACT, "format",
-                        MemoryProvenance("extraction", "untrusted"), 1, 1)
+                        MemoryProvenance("model", "untrusted"), 1, 1)
 
 
 class Store:
@@ -72,7 +73,7 @@ async def events(runner, session="session"):
     return [entry.event for entry in await runner._opts.session_log.read(session)]
 
 
-@pytest.mark.parametrize("path", ["session_extraction", "model_writes", "semantic_archive"])
+@pytest.mark.parametrize("path", ["model_writes"])
 def test_candidate_path_requires_sink_at_construction(path):
     with pytest.raises(ValueError, match="needs RuntimeOptions.memory_candidate_sink"):
         runner_with(memory_runtime_policy=replace(OFF, **{path: "candidate_sink"}))
@@ -82,9 +83,11 @@ def test_candidate_path_requires_sink_at_construction(path):
 @pytest.mark.parametrize("enabled", [False, True])
 async def test_retrieval_gate_precedes_initial_and_renewal_hooks(enabled):
     phases = []
+
     def hook(goal, phase):
         phases.append(phase)
         return [MemoryQuery(SCOPE, goal)]
+
     runner = runner_with(memory_runtime_policy=replace(OFF, retrieval="host" if enabled else "disabled"), pre_query_memory=hook)
     await collect_text(runner.run(session_id="session", goal="facts"))
     await runner._memory_prefetch_queries("renewal")
@@ -97,32 +100,6 @@ async def test_retrieval_gate_precedes_initial_and_renewal_hooks(enabled):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["disabled", "candidate_sink", "legacy"])
-async def test_session_extraction_routes_or_gates_before_auxiliary_provider(mode):
-    aux = Provider(json.dumps({"memories": [
-        {"name": "brief-style", "kind": "project", "content": "numbered sections", "description": "format"},
-        {"name": "brief-length", "kind": "project", "content": "one page", "description": "length"},
-    ]}))
-    sink = InMemoryMemoryCandidateSink()
-    runner = runner_with(memory_provider=aux, memory_candidate_sink=sink,
-                         memory_runtime_policy=None if mode == "legacy" else replace(OFF, session_extraction=mode))
-    await collect_text(runner.run(session_id="session", goal="say done"))
-    assert len(runner._opts.memory_store.sessions) == 1
-    assert aux.calls == (0 if mode == "disabled" else 1)
-    assert len(runner._opts.memory_store.puts) == (2 if mode == "legacy" else 0)
-    assert len(sink.candidates()) == (2 if mode == "candidate_sink" else 0)
-    audit = await events(runner)
-    assert len([e for e in audit if e["kind"] == "memory_written"]) == (2 if mode == "legacy" else 0)
-    if mode == "candidate_sink":
-        run_id = next(e["run_id"] for e in audit if e["kind"] == "run_started")
-        operation_id = f"python-operation-{run_id}"
-        assert [c.candidate_id for c in sink.candidates()] == [
-            session_extraction_candidate_id("agent", "session", operation_id, c.record) for c in sink.candidates()]
-        assert len({c.candidate_id for c in sink.candidates()}) == 2
-        assert len([e for e in audit if e["kind"] == "memory_candidate_pending"]) == 2
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("status,fields,expected_kind,ok", [
     ("pending", {}, "memory_candidate_pending", True),
     ("accepted", {"record_ref": "host-record", "digest": "sha256:" + "0" * 64}, "memory_written", True),
@@ -131,7 +108,8 @@ async def test_session_extraction_routes_or_gates_before_auxiliary_provider(mode
 async def test_host_write_funnel_audits_sink_answer(status, fields, expected_kind, ok):
     runner = runner_with(memory_candidate_sink=ReceiptSink(status, **fields))
     memory = record()
-    assert await runner.write_memory(memory, session_id="session", candidate=MemoryCandidate("c1", "session_extraction", memory)) is ok
+    candidate = MemoryCandidate("c1", "model_proposal", memory)
+    assert await runner.write_memory(memory, session_id="session", candidate=candidate) is ok
     assert runner._opts.memory_store.puts == []
     audit = await events(runner)
     assert len(audit) == 1 and audit[0]["kind"] == expected_kind
@@ -153,14 +131,17 @@ async def test_accepted_receipt_requires_record_ref_and_digest(fields):
 @pytest.mark.asyncio
 async def test_model_effect_lost_ack_redelivery_conflict_and_distinct_effect():
     inner = InMemoryMemoryCandidateSink()
+
     class Lossy:
         drop = True
+
         async def submit(self, agent_id, candidate):
             receipt = await inner.submit(agent_id, candidate)
             if self.drop:
                 self.drop = False
                 raise RuntimeError("connection reset after storing")
             return receipt
+
     runner = runner_with(memory_candidate_sink=Lossy(), memory_runtime_policy=replace(OFF, model_writes="candidate_sink"))
     canonical = {"name": "fact", "content": "durable", "accepted_at_ms": 1}
     first = await runner._persist_memory_effect_result("op", "e", canonical)
@@ -191,63 +172,8 @@ async def test_model_effect_legacy_and_disabled(policy, puts):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["disabled", "candidate_sink"])
-async def test_real_semantic_page_out_routes_or_gates_before_summarizer(mode):
-    calls = []
-    class Fill(Provider):
-        async def stream(self, context, tools, extensions=None, state=None):
-            self.calls += 1
-            if self.calls <= 8:
-                yield ToolCallEvent(id=f"c{self.calls}", name="fill", arguments={})
-            else:
-                yield TextDelta(delta="done")
-    @tool
-    def fill() -> str:
-        """Fill context."""
-        return "w" * 200
-    async def summarize(archived, context):
-        calls.append(context)
-        return "durable archive summary"
-    sink = InMemoryMemoryCandidateSink()
-    runner = runner_with(provider=Fill(), execution_plane=LocalExecutionPlane().register(fill),
-                         baseline_tool_ids=["fill"], max_tokens=400, max_turns=20,
-                         memory_runtime_policy=replace(OFF, semantic_archive=mode),
-                         memory_candidate_sink=sink, memory_summarizer=summarize)
-    await collect_text(runner.run(session_id="session", goal="fill until compact"))
-    audit = await events(runner)
-    assert any(e["kind"] == "compressed" for e in audit)
-    assert runner._opts.memory_store.puts == []
-    assert not any(e["kind"] == "memory_written" for e in audit)
-    if mode == "disabled":
-        assert calls == [] and sink.candidates() == []
-        assert not any(e["kind"] == "semantic_archive_pending" for e in audit)
-    else:
-        assert calls and sink.candidates()
-        assert not any(e["kind"] == "semantic_archive_completed" for e in audit)
-        assert all(c.source == "semantic_archive" for c in sink.candidates())
-        assert len([e for e in audit if e["kind"] == "memory_candidate_pending"]) == len(sink.candidates())
-
-
-@pytest.mark.asyncio
-async def test_archive_redelivery_uses_effect_identity():
-    sink = InMemoryMemoryCandidateSink()
-    runner = runner_with(memory_runtime_policy=replace(OFF, semantic_archive="candidate_sink"),
-                         memory_candidate_sink=sink, memory_summarizer=lambda archived, ctx: "same summary")
-    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:1", "op")
-    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:1", "op")
-    assert len(sink.candidates()) == 1
-    pending = [e for e in await events(runner) if e["kind"] == "memory_candidate_pending"]
-    assert pending[0]["receipt_id"] == pending[1]["receipt_id"]
-    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:2", "op")
-    assert len(sink.candidates()) == 2
-    await runner._archive_semantic_page_out([], "auto_compact", "session", "effect:1", "new-op")
-    assert len(sink.candidates()) == 3
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["pending", "accepted", "rejected", "disabled"])
 async def test_native_child_request_capability_and_candidate_settlement(status):
-    """Real native PersistMemory -> runner sink -> existing bridge -> terminal audit."""
     from deepstrike.kernel.canonical import CanonicalKernel
     from deepstrike.runtime.canonical_kernel_step import CanonicalRunnerRuntime
     from deepstrike.runtime.kernel_journal import InMemoryKernelJournal
@@ -304,40 +230,21 @@ async def test_malformed_sink_receipt_never_becomes_a_write(fields):
     class Malformed:
         async def submit(self, agent_id, candidate):
             return {"status": "pending", "candidate_id": candidate.candidate_id, "receipt_id": "r", **fields}
+
     runner = runner_with(memory_candidate_sink=Malformed(), memory_runtime_policy=replace(OFF, model_writes="candidate_sink"))
     result = await runner._persist_memory_effect_result("op", "e", {"name": "fact", "content": "durable"})
     assert result["kind"] == "memory_candidate_result" and result.get("error")
     assert runner._opts.memory_store.puts == []
 
 
-@pytest.mark.asyncio
-async def test_semantic_archive_disabled_skips_fallback_provider_too():
-    aux = Provider("archive")
-    runner = runner_with(memory_runtime_policy=OFF, memory_provider=aux)
-    await runner._archive_semantic_page_out([], "auto_compact", "session", "e", "op")
-    assert aux.calls == 0 and await events(runner) == []
-
-
-def test_semantic_archive_projection_carries_metadata():
+def test_page_out_projection_carries_context_metadata():
     from deepstrike.runtime.canonical_kernel_step import canonical_action_from_projection_json
     action = canonical_action_from_projection_json(json.dumps({
         "state": "action", "action": {
             "kind": "archive_page_out", "effect_id": "archive:7",
-            "payload": {"payload": {"content": '[{"role":"user","content":"old turns"}]'}},
+            "payload": {"payload": {"content": "[{\"role\":\"user\",\"content\":\"old turns\"}]"}},
         },
     }), observations=[{"kind": "compressed", "action": "auto_compact", "summary": "old"}])
     assert action.kind == "archive_page_out"
     assert action.effect_id == "archive:7"
     assert action.action == "auto_compact" and action.tier == "semantic" and action.summary == "old"
-
-@pytest.mark.asyncio
-async def test_same_session_new_run_gets_distinct_extraction_ids():
-    aux = Provider(json.dumps({"memories": [{"name": "fact", "kind": "project", "content": "same", "description": "fact"}]}))
-    sink = InMemoryMemoryCandidateSink()
-    runner = runner_with(memory_provider=aux, memory_candidate_sink=sink,
-                         memory_runtime_policy=replace(OFF, session_extraction="candidate_sink"))
-    await collect_text(runner.run(session_id="session", goal="first"))
-    await collect_text(runner.run(session_id="session", goal="second"))
-    assert len(sink.candidates()) == 2
-    assert len({c.candidate_id for c in sink.candidates()}) == 2
-    assert runner._opts.memory_store.puts == []

@@ -108,9 +108,13 @@ impl CanonicalOperationDriver {
                 engine.ctx.update_task(core_task_update(&update.update));
                 Ok(SyscallOutcome::default())
             }
-            SyscallRequest::RequestMemoryWrite(write) => {
-                self.plan_memory_write(context, causation, &write.proposal, effect_index)
-            }
+            SyscallRequest::RequestMemoryWrite(write) => self.plan_memory_write(
+                context,
+                causation,
+                &write.proposal,
+                effect_index,
+                planned_effects,
+            ),
             SyscallRequest::RequestMemoryQuery(query) => self.plan_memory_query(
                 context,
                 causation,
@@ -386,6 +390,7 @@ impl CanonicalOperationDriver {
         causation: &SyscallCausation,
         proposal: &super::super::syscall::MemoryWriteProposal,
         effect_index: &mut u32,
+        planned_effects: &[KernelEffect],
     ) -> Result<SyscallOutcome, SyscallRefusal> {
         let Some(binding) = context.config.memory_access.clone() else {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
@@ -421,6 +426,36 @@ impl CanonicalOperationDriver {
                 error,
             )));
         }
+        // DEC-3 admits one pending PersistMemory. A child request that hits it stays a fault, but
+        // the model's own proposal is answered like a parallel memory query — reused when it is
+        // the same proposal, refused with a retry hint when not — before it can spend quota.
+        let model_facing = matches!(causation, SyscallCausation::ProviderTool(_));
+        if model_facing
+            && let Some(pending) =
+                context
+                    .pending
+                    .iter()
+                    .chain(planned_effects)
+                    .find_map(|effect| match &effect.effect {
+                        EffectKind::PersistMemory(write) => Some(write),
+                        _ => None,
+                    })
+        {
+            if pending.binding == binding
+                && pending.memory.name == proposal.name
+                && pending.memory.kind == proposal.kind
+                && pending.memory.content == proposal.content
+            {
+                return Ok(SyscallOutcome {
+                    ack: Some("This proposal is already pending review; its outcome is added to this conversation before your next turn.".into()),
+                    ..Default::default()
+                });
+            }
+            return Err(SyscallRefusal::Rejected(SyscallRejection::new(
+                "write_memory",
+                "Another memory proposal is already pending review. Propose this one again after its outcome arrives.",
+            )));
+        }
         let disposition = engine.gate_memory_write_proposal();
         if !disposition.is_allowed() {
             return Err(SyscallRefusal::Rejected(SyscallRejection::new(
@@ -436,6 +471,7 @@ impl CanonicalOperationDriver {
             name: proposal.name.clone(),
             kind: proposal.kind,
             size_bytes: proposal.content.len() as u32,
+            model_facing,
         };
         let effect = EffectKind::PersistMemory(PersistMemoryEffect {
             binding,

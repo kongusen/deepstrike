@@ -2043,6 +2043,10 @@ impl LoopStateMachine {
         let mut tools = self.tools.clone();
         let hidden = self.governance_hidden_tools();
         tools.retain(|tool| !hidden.contains(&tool.name));
+        // `propose_memory` is the kernel's own schema, present only while its feature is on. A
+        // host catalog entry of that name must not expose it otherwise: the proposal surface is
+        // what keeps a model's memory writes in review instead of the store.
+        tools.retain(|tool| tool.name != crate::context::manager::PROPOSE_MEMORY_TOOL_NAME);
         tools.extend(self.ctx.meta_tool_schemas());
 
         if let Some(ref spec) = self.run_spec {
@@ -2051,7 +2055,9 @@ impl LoopStateMachine {
             tools.retain(|tool| {
                 let kind = match tool.name.as_str() {
                     "skill" => CapabilityKind::Skill,
-                    "memory" => CapabilityKind::Memory,
+                    "memory" | crate::context::manager::PROPOSE_MEMORY_TOOL_NAME => {
+                        CapabilityKind::Memory
+                    }
                     "knowledge" => CapabilityKind::Knowledge,
                     _ => CapabilityKind::Tool,
                 };

@@ -1766,6 +1766,9 @@ export class CanonicalRunnerRuntime {
         return true
       case "set_memory_enabled":
         this.featurePolicy().memory_enabled = Boolean(event.enabled)
+        // Only sent when on, so kernels that predate the field still accept memory-enabled runs.
+        if (event.propose_memory) this.featurePolicy().propose_memory_enabled = true
+        else delete this.featurePolicy().propose_memory_enabled
         if (event.enabled) {
           this.config.memory_access = {
             binding_id: this.memoryBindingId,

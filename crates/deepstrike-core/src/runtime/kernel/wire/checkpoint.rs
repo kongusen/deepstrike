@@ -320,6 +320,10 @@ pub struct AuthoredMemoryWriteState {
     pub name: String,
     pub kind: MemoryKind,
     pub size_bytes: u32,
+    /// The model's own `propose_memory` call authored the write, so its outcome is answered back
+    /// into the model's context. Omitted when false, so child-request checkpoints keep their bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub model_facing: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -6,9 +6,11 @@
 import { sha256Hex } from "../runtime/sha256.js"
 
 import type { MemoryRecord } from "./index.js"
+import { admitMemoryCandidate, type MemoryCandidateAttestation, type MemoryCandidateSourceVerifier } from "./attestation.js"
 
-/** Which write path produced the candidate. `child_request` is the kernel's PersistMemory effect. */
-export type MemoryCandidateSource = "session_extraction" | "semantic_archive" | "child_request"
+/** Which write path produced the candidate. `child_request` is the kernel's PersistMemory effect;
+ *  `model_proposal` is the model's own `propose_memory` call. */
+export type MemoryCandidateSource = "child_request" | "model_proposal"
 
 export interface MemoryCandidate {
   /** Deterministic for the write that produced it (see {@link memoryCandidateId}): a retry of the
@@ -16,6 +18,7 @@ export interface MemoryCandidate {
   candidate_id: string
   source: MemoryCandidateSource
   record: MemoryRecord
+  attestation?: MemoryCandidateAttestation
 }
 
 export type MemoryCandidateReceipt =
@@ -41,14 +44,6 @@ export interface MemoryCandidateSink {
 /** A candidate id from the write's canonical identity — never random, so a retry repeats it. */
 export function memoryCandidateId(parts: readonly string[]): string {
   return sha256Hex(JSON.stringify(parts)).replace(/^sha256:/, "candidate:")
-}
-
-/** A session-extraction candidate id. The extraction model is re-asked on retry and may answer
- *  differently, so the id is addressed by the proposed payload, not by its position in the answer:
- *  a retry that proposes the same record repeats the id, one that proposes something new mints a
- *  new candidate instead of colliding with what the first attempt left in the sink. */
-export function sessionExtractionCandidateId(agentId: string, sessionId: string, operationId: string, record: MemoryRecord): string {
-  return memoryCandidateId(["v3", agentId, "session_extraction", sessionId, operationId, memoryCandidatePayloadDigest(record)])
 }
 
 /** The part of a record a candidate is judged by. Store ids, timestamps and recall counters are excluded: a retry
@@ -85,6 +80,8 @@ export class InMemoryMemoryCandidateSink implements MemoryCandidateSink {
   private readonly held = new Map<string, HeldCandidate>()
   private nextReceipt = 1
 
+  constructor(private readonly sourceVerifier?: MemoryCandidateSourceVerifier) {}
+
   async submit(agentId: string, candidate: MemoryCandidate): Promise<MemoryCandidateReceipt> {
     const payloadDigest = memoryCandidatePayloadDigest(candidate.record)
     const key = JSON.stringify([agentId, candidate.candidate_id])
@@ -96,6 +93,15 @@ export class InMemoryMemoryCandidateSink implements MemoryCandidateSink {
         candidate_id: candidate.candidate_id,
         receipt_id: this.mintReceiptId(),
         reason_code: "candidate_conflict",
+      }
+    }
+    const verification = admitMemoryCandidate(agentId, candidate, this.sourceVerifier)
+    if (!verification.valid) {
+      return {
+        status: "rejected",
+        candidate_id: candidate.candidate_id,
+        receipt_id: this.mintReceiptId(),
+        reason_code: verification.reason_code,
       }
     }
     const receipt: MemoryCandidateReceipt = {

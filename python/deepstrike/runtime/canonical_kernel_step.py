@@ -1215,6 +1215,11 @@ class CanonicalRunnerRuntime:
       return True
     if kind == "set_memory_enabled":
       self._feature_policy()["memory_enabled"] = bool(event.get("enabled"))
+      # Only sent when on, so kernels that predate the field still accept memory-enabled runs.
+      if event.get("propose_memory"):
+        self._feature_policy()["propose_memory_enabled"] = True
+      else:
+        self._feature_policy().pop("propose_memory_enabled", None)
       if event.get("enabled"):
         self._config["memory_access"] = {"binding_id": self._memory_binding_id, "capabilities": {"read": event.get("read", True), "write": event.get("write", True)}}
       return True

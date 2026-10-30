@@ -12,7 +12,7 @@ from .protocols import MemoryRecord
 if TYPE_CHECKING:
     from .attestation import MemoryCandidateAttestation
 
-MemoryCandidateSource = Literal["session_extraction", "semantic_archive", "child_request"]
+MemoryCandidateSource = Literal["child_request", "model_proposal"]
 
 
 @dataclass(frozen=True)
@@ -76,17 +76,6 @@ def memory_candidate_payload_digest(record: MemoryRecord) -> str:
         record.provenance.author, record.provenance.trust, record.provenance.session_id,
         record.provenance.evidence_refs, record.confidence, record.links, record.pinned, record.ttl_days,
     ])
-
-
-def session_extraction_candidate_id(agent_id: str, session_id: str, operation_id: str, record: MemoryRecord) -> str:
-    """Address an extracted candidate by its payload, not its position in the extraction answer.
-
-    The extraction model is re-asked on retry and may answer differently: a retry that proposes the
-    same record repeats the id, one that proposes something new mints a new candidate instead of
-    colliding with what the first attempt left in the sink.
-    """
-    return memory_candidate_id(["v3", agent_id, "session_extraction", session_id, operation_id,
-                                memory_candidate_payload_digest(record)])
 
 
 class InMemoryMemoryCandidateSink:

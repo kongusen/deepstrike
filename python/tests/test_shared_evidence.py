@@ -102,9 +102,9 @@ async def test_unresolved_recall_link_makes_the_snapshot_partial() -> None:
 @pytest.mark.asyncio
 async def test_candidate_receipts_refine_link_and_conflict() -> None:
   log = await log_of(
-    {"kind": "memory_candidate_pending", "turn": 1, "candidate_id": "a", "source": "session_extraction",
+    {"kind": "memory_candidate_pending", "turn": 1, "candidate_id": "a", "source": "model_proposal",
      "name": "n", "receipt_id": "r1"},
-    {"kind": "memory_candidate_pending", "turn": 1, "candidate_id": "b", "source": "session_extraction",
+    {"kind": "memory_candidate_pending", "turn": 1, "candidate_id": "b", "source": "model_proposal",
      "name": "n", "receipt_id": "r2"},
     {"kind": "memory_written", "turn": 2, "record_id": "rec-1", "scope": MEMORY_SCOPE,
      "memory_kind": "project", "name": "n", "size_bytes": 3},

@@ -11,7 +11,7 @@
 - `crates/deepstrike-core/src/runtime/kernel/wire/driver.rs:1692` 的 F15 裁定明确：内核没有面向模型的记忆写入工具，`memory` 工具只读。
 - `RequestMemoryWrite` 的唯一调用通道是子 agent 的 `parent_requests`（子到父），由 `plan_memory_write`（`driver/syscall.rs:383`）转成 `persist_memory` 效果。
 
-因此，本规格覆盖的“待确认回执”实际作用于子 agent 提出的写入请求，而不是模型直接写入。`source = model_write` 应改为 `source = child_request`，或在宿主侧把子请求也归类为候选。若要真正开放模型写入入口，需要先推翻 F15 裁定，这是单独的产品决策，不属于本规格。
+本规格仍保持 `memory` 搜索工具只读，同时新增 capability-gated 的 `propose_memory` 模型入口。该入口只接受 `name`、`kind`、`content`、可选 `description` 与 `evidence_refs`，严格拒绝 scope、record id、trust、时间戳、lease、receipt 和 attestation 等宿主字段；它解码为现有 `RequestMemoryWrite` 并复用 `plan_memory_write`。只有 memory enabled、writable binding、candidate sink 存在且 `model_writes = candidate_sink` 时才暴露，保证模型提案只能进入审核而不会直写 store；宿主仅在开启时下发 `propose_memory_enabled`，旧内核在未启用时仍可接受配置。原有 child request 继续使用 `source = child_request` 与既有 v2 candidate IDs，直接模型提案使用 `source = model_proposal` 的 v3 identity。
 
 ## 1. 改动前的状态
 
