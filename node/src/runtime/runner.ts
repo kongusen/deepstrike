@@ -7,7 +7,7 @@ import type {
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent, UsageEvent,
   ToolSuspendEvent, ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent,
   PermissionResponse, PermissionResolvedEvent, AsyncSummarizer,
-  EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
+  EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions, NativeContextTiers,
 } from "../types.js"
 import { createHash } from "node:crypto"
 import type {
@@ -689,6 +689,18 @@ export function buildConfigureRunPolicyConfig(
   return config
 }
 
+/** The kernel's wire form of the tiers a provider performs natively, or nothing when it performs
+ *  none — an operation that delegates nothing configures exactly as before. */
+export function delegatedContextTiers(
+  native: NativeContextTiers | undefined,
+): { tool_result_clearing?: true; compaction?: true } | undefined {
+  if (!native?.toolResultClearing && !native?.compaction) return undefined
+  return {
+    ...(native.toolResultClearing ? { tool_result_clearing: true as const } : {}),
+    ...(native.compaction ? { compaction: true as const } : {}),
+  }
+}
+
 function controlRequestRejection(
   observations: KernelObservation[],
   operation?: string,
@@ -1334,6 +1346,10 @@ export class RuntimeRunner {
     // (Requires the 0.2.30 core that ships `configure_run`.)
     const osProfile = assertNativeProfile(this.opts.osProfile ?? "native")
     const config = buildConfigureRunPolicyConfig(this.opts, osProfile)
+    const delegated = delegatedContextTiers(this.opts.provider?.descriptor?.().nativeContext)
+    if (delegated) {
+      config.context_policy = { ...(config.context_policy as Record<string, unknown> | undefined), delegated_tiers: delegated }
+    }
     if (this.opts.promptBudget) {
       config.prompt_budget = {
         prompt_overhead_tokens: this.opts.promptBudget.promptOverheadTokens,

@@ -1242,10 +1242,21 @@ impl RuntimeRunner {
             let skill_watcher = self.opts.skill_dir.as_deref().and_then(SkillWatcher::start);
 
             if !resume_mid_run {
+                let native_context = self.opts.provider.native_context_tiers();
                 if self.opts.kernel_reliability.is_some()
                     || self.opts.scheduler_policy.is_some()
+                    || native_context.tool_result_clearing
+                    || native_context.compaction
                 {
                     let mut config = serde_json::Map::new();
+                    if native_context.tool_result_clearing || native_context.compaction {
+                        config.insert("context_policy".into(), serde_json::json!({
+                            "delegated_tiers": {
+                                "tool_result_clearing": native_context.tool_result_clearing,
+                                "compaction": native_context.compaction,
+                            }
+                        }));
+                    }
                     if let Some(reliability) = self.opts.kernel_reliability.as_ref() {
                         config.insert(
                             "reliability".into(),

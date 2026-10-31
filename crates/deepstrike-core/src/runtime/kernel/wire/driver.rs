@@ -3111,6 +3111,8 @@ fn build_engine(config: &ResolvedOperationConfig) -> LoopStateMachine {
             renewal_carryover_ppm: context.renewal_carryover_ppm.get(),
             collapse_old_assistant_narration: context.collapse_old_assistant_narration,
             idle_micro_compact_minutes: context.idle_micro_compact_minutes,
+            delegate_tool_result_clearing: context.delegated_tiers.tool_result_clearing,
+            delegate_compaction: context.delegated_tiers.compaction,
         });
     engine
         .ctx

@@ -123,14 +123,52 @@ function assertCacheBudget(system: unknown, toolCount: number): void {
   }
 }
 
+/** `clear_tool_uses_20250919` settings. Unset fields take the API defaults. */
+export interface AnthropicContextEditing {
+  /** Input tokens above which clearing starts. */
+  triggerInputTokens?: number
+  /** Most recent tool uses kept intact. */
+  keepToolUses?: number
+  /** Skip a clearing that would remove fewer tokens than this — each clearing rewrites the cached prefix. */
+  clearAtLeastInputTokens?: number
+  /** Tools whose uses and results are never cleared. */
+  excludeTools?: string[]
+  /** Also clear the tool-call inputs, not only the results. */
+  clearToolInputs?: boolean
+}
+
+export interface AnthropicProviderOptions {
+  /** Clear old tool results server-side (context editing). The provider then declares the tier
+   *  native and the kernel stops clearing tool results itself; `true` takes the API defaults. */
+  contextEditing?: true | AnthropicContextEditing
+}
+
+const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
+
+function clearToolUsesEdit(config: true | AnthropicContextEditing): Record<string, unknown> {
+  const c = config === true ? {} : config
+  return {
+    type: "clear_tool_uses_20250919",
+    ...(c.triggerInputTokens !== undefined ? { trigger: { type: "input_tokens", value: c.triggerInputTokens } } : {}),
+    ...(c.keepToolUses !== undefined ? { keep: { type: "tool_uses", value: c.keepToolUses } } : {}),
+    ...(c.clearAtLeastInputTokens !== undefined ? { clear_at_least: { type: "input_tokens", value: c.clearAtLeastInputTokens } } : {}),
+    ...(c.excludeTools?.length ? { exclude_tools: [...c.excludeTools] } : {}),
+    ...(c.clearToolInputs !== undefined ? { clear_tool_inputs: c.clearToolInputs } : {}),
+  }
+}
+
 export class AnthropicProvider implements LLMProvider {
   private nativeAssistantBlocks = new Map<string, Array<Record<string, unknown>>>()
+  private readonly contextEditing?: Record<string, unknown>
 
   constructor(
     private readonly apiKey: string,
     private readonly model = "claude-sonnet-4-6",
     private readonly maxTokens = 8096,
-  ) {}
+    options: AnthropicProviderOptions = {},
+  ) {
+    if (options.contextEditing) this.contextEditing = clearToolUsesEdit(options.contextEditing)
+  }
 
   descriptor(): ProviderDescriptor {
     return {
@@ -146,6 +184,7 @@ export class AnthropicProvider implements LLMProvider {
         supported: true,
         requiresStrictPairing: true,
       },
+      ...(this.contextEditing ? { nativeContext: { toolResultClearing: true } } : {}),
     }
   }
 
@@ -215,6 +254,20 @@ export class AnthropicProvider implements LLMProvider {
     if (extensions?.enable_thinking) {
       body.thinking = { type: "enabled", budget_tokens: 8000 }
     }
+    // The kernel stopped clearing tool results on the strength of this edit, so it rides on every request.
+    if (this.contextEditing) {
+      const callerBetas = Array.isArray(extensions?.betas) ? extensions.betas.filter((value): value is string => typeof value === "string") : []
+      const betas = callerBetas.includes(CONTEXT_MANAGEMENT_BETA)
+        ? callerBetas
+        : [...callerBetas, CONTEXT_MANAGEMENT_BETA]
+      body.betas = betas
+      const callerManagement = extensions?.context_management && typeof extensions.context_management === "object"
+        ? extensions.context_management as { edits?: unknown[] }
+        : {}
+      const edits = Array.isArray(callerManagement.edits) ? [...callerManagement.edits] : []
+      if (!edits.some(edit => (edit as { type?: unknown })?.type === "clear_tool_uses_20250919")) edits.push(this.contextEditing)
+      body.context_management = { ...callerManagement, edits }
+    }
 
     const frozenBody = requestSnapshot(body)
     return {
@@ -234,7 +287,10 @@ export class AnthropicProvider implements LLMProvider {
         "x-api-key": this.apiKey,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
-        "anthropic-beta": "prompt-caching-2024-07-31",
+        "anthropic-beta": [
+          "prompt-caching-2024-07-31",
+          ...(Array.isArray(body.betas) ? body.betas.filter((value): value is string => typeof value === "string" && value !== "prompt-caching-2024-07-31") : []),
+        ].filter((value, index, values) => values.indexOf(value) === index).join(","),
       },
       body: JSON.stringify(body),
       ...(signal ? { signal } : {}), // #2-B-ii: a preempt aborts the in-flight request at the socket.

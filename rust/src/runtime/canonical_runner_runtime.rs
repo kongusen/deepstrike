@@ -1566,9 +1566,13 @@ impl CanonicalRunnerRuntime {
             self.config
                 .insert("governance_policy".into(), Value::Object(governance));
         }
-        if let Some(context_policy) = config.get("context_policy") {
-            self.config
-                .insert("context_policy".into(), context_policy.clone());
+        // Merge field by field: earlier host events (knowledge budget, delegated tiers) also
+        // write here, and a later configure_run must not silently drop them.
+        if let Some(Value::Object(context_policy)) = config.get("context_policy") {
+            let target = self.context_policy();
+            for (key, value) in context_policy {
+                target.insert(key.clone(), value.clone());
+            }
         }
         if let Some(signal_policy) = config.get("signal_policy") {
             let mut signal = object(Some(signal_policy));

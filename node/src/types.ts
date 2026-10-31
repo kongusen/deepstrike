@@ -459,6 +459,17 @@ export interface ProviderDescriptor {
     supported: boolean
     requiresStrictPairing: boolean
   }
+  /** Context tiers this provider performs natively as configured. The runner hands each one to
+   *  the provider and the kernel skips its own; renewal is never delegated. */
+  nativeContext?: NativeContextTiers
+}
+
+/** Context-management tiers a provider can perform server-side. */
+export interface NativeContextTiers {
+  /** Old tool results are cleared before the model sees them. */
+  toolResultClearing?: boolean
+  /** Earlier history is summarized server-side. */
+  compaction?: boolean
 }
 
 /** Provider-native fields required to replay a turn across requests (thinking blocks, reasoning_content, etc.). */

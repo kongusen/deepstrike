@@ -447,6 +447,8 @@ class ProviderDescriptor:
     model: str
     reasoning: dict[str, Any] = field(default_factory=dict)
     tool_calls: dict[str, Any] = field(default_factory=dict)
+    # Provider-instance capabilities; an empty value keeps legacy providers neutral.
+    native_context: dict[str, Any] = field(default_factory=dict)
 
 
 @runtime_checkable

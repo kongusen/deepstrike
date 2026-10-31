@@ -30,6 +30,13 @@ pub struct RuntimePolicy {
     pub timeout_ms: Option<u64>,
 }
 
+/// Provider-native context tiers declared for a configured provider instance.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NativeContextTiers {
+    pub tool_result_clearing: bool,
+    pub compaction: bool,
+}
+
 /// Stream event emitted by providers.
 #[derive(Debug, Clone)]
 pub enum StreamEvent {
@@ -109,6 +116,11 @@ pub trait LLMProvider: Send + Sync {
         state: Option<&ProviderRunState>,
     ) -> crate::Result<Box<dyn Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>> {
         self.stream(context, tools, extensions, state).await
+    }
+
+    /// Context tiers performed natively by this configured provider instance.
+    fn native_context_tiers(&self) -> NativeContextTiers {
+        NativeContextTiers::default()
     }
 
     /// Optional per-run state for protocol-native continuation (e.g. Responses API).

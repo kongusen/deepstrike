@@ -8,15 +8,29 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::{LLMProvider, RuntimePolicy, StreamEvent};
+use super::{LLMProvider, NativeContextTiers, RuntimePolicy, StreamEvent};
 use crate::runtime::provider_replay::assistant_replay_key;
 use crate::{Error, Result};
+
+const CONTEXT_MANAGEMENT_BETA: &str = "context-management-2025-06-27";
+const CLEAR_TOOL_USES_EDIT: &str = "clear_tool_uses_20250919";
+
+/// Anthropic context editing (`clear_tool_uses_20250919`). Unset fields take the API defaults.
+#[derive(Debug, Clone, Default)]
+pub struct AnthropicContextEditing {
+    pub trigger_input_tokens: Option<u32>,
+    pub keep_tool_uses: Option<u32>,
+    pub clear_at_least_input_tokens: Option<u32>,
+    pub exclude_tools: Vec<String>,
+    pub clear_tool_inputs: Option<bool>,
+}
 
 pub struct AnthropicProvider {
     client: Client,
     api_key: String,
     model: String,
     max_tokens: u32,
+    context_editing: Option<Value>,
     native_assistant_blocks: Mutex<HashMap<String, Vec<Value>>>,
     stream_native_blocks: Arc<Mutex<HashMap<usize, Value>>>,
 }
@@ -27,11 +41,29 @@ impl AnthropicProvider {
     }
 
     pub fn with_model(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::with_context_editing(api_key, model, None)
+    }
+
+    pub fn with_context_editing(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        config: Option<AnthropicContextEditing>,
+    ) -> Self {
+        let context_editing = config.map(|c| {
+            let mut edit = json!({"type": CLEAR_TOOL_USES_EDIT});
+            if let Some(value) = c.trigger_input_tokens { edit["trigger"] = json!({"type": "input_tokens", "value": value}); }
+            if let Some(value) = c.keep_tool_uses { edit["keep"] = json!({"type": "tool_uses", "value": value}); }
+            if let Some(value) = c.clear_at_least_input_tokens { edit["clear_at_least"] = json!({"type": "input_tokens", "value": value}); }
+            if !c.exclude_tools.is_empty() { edit["exclude_tools"] = json!(c.exclude_tools); }
+            if let Some(value) = c.clear_tool_inputs { edit["clear_tool_inputs"] = json!(value); }
+            edit
+        });
         Self {
             client: Client::new(),
             api_key: api_key.into(),
             model: model.into(),
             max_tokens: 8096,
+            context_editing,
             native_assistant_blocks: Mutex::new(HashMap::new()),
             stream_native_blocks: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -381,6 +413,10 @@ impl LLMProvider for AnthropicProvider {
             "endpoint": "https://api.anthropic.com/v1/messages" })
     }
 
+    fn native_context_tiers(&self) -> NativeContextTiers {
+        NativeContextTiers { tool_result_clearing: self.context_editing.is_some(), compaction: false }
+    }
+
     fn runtime_policy(&self) -> RuntimePolicy {
         match self.model.as_str() {
             "claude-opus-4-7" | "claude-opus-4-6" => RuntimePolicy {
@@ -487,9 +523,48 @@ impl LLMProvider for AnthropicProvider {
             {
                 body["thinking"] = json!({ "type": "enabled", "budget_tokens": 8000 });
             }
+            if let Some(value) = ext.get("context_management") {
+                body["context_management"] = value.clone();
+            }
+        }
+        // Betas are transport metadata (the `anthropic-beta` header), not body fields; they sit
+        // beside the body so sending never has to copy the body to strip them.
+        let mut betas: Vec<String> = extensions
+            .and_then(|ext| ext.get("betas"))
+            .and_then(Value::as_array)
+            .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default();
+        if let Some(configured) = &self.context_editing {
+            if !betas.iter().any(|beta| beta == CONTEXT_MANAGEMENT_BETA) {
+                betas.push(CONTEXT_MANAGEMENT_BETA.to_owned());
+            }
+            let management = body
+                .as_object_mut()
+                .expect("request body is an object")
+                .entry("context_management")
+                .or_insert_with(|| json!({}));
+            if !management.is_object() {
+                *management = json!({});
+            }
+            let edits = management
+                .as_object_mut()
+                .expect("context_management is an object")
+                .entry("edits")
+                .or_insert_with(|| json!([]));
+            if !edits.is_array() {
+                *edits = json!([]);
+            }
+            let edits = edits.as_array_mut().expect("edits is an array");
+            if !edits.iter().any(|edit| edit.get("type").and_then(Value::as_str) == Some(CLEAR_TOOL_USES_EDIT)) {
+                edits.push(configured.clone());
+            }
         }
 
-        Ok(json!({ "scope": "encoded_body", "body": body }))
+        let mut prepared = json!({ "scope": "encoded_body", "body": body });
+        if !betas.is_empty() {
+            prepared["betas"] = json!(betas);
+        }
+        Ok(prepared)
     }
 
     async fn stream(
@@ -520,12 +595,19 @@ impl LLMProvider for AnthropicProvider {
                 Error::Other("prepared provider request must contain an encoded body".into())
             })?;
 
-        let resp = self
+        let mut request = self
             .client
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        if let Some(betas) = prepared.get("betas").and_then(Value::as_array) {
+            let betas = betas.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(",");
+            if !betas.is_empty() {
+                request = request.header("anthropic-beta", betas);
+            }
+        }
+        let resp = request
             .body(body.to_string())
             .send()
             .await
@@ -737,6 +819,67 @@ mod tests {
     use super::*;
     use compact_str::CompactString;
     use deepstrike_core::types::message::{ContentPart, CoreMessage, ToolCall};
+
+    fn question_context() -> InternalRenderedContext {
+        InternalRenderedContext {
+            system_text: String::new(),
+            system_stable: String::new(),
+            system_knowledge: String::new(),
+            turns: vec![CoreMessage::user("question")],
+            state_turn: None,
+            frozen_prefix_len: None,
+            budget_overflow: None,
+        }
+    }
+
+    #[test]
+    fn context_editing_is_off_unless_configured() {
+        let provider = AnthropicProvider::new("test-key");
+        assert_eq!(provider.native_context_tiers(), NativeContextTiers::default());
+        let prepared = provider.prepare_context_request(&question_context(), &[], None, None).unwrap();
+        assert!(prepared.get("betas").is_none());
+        assert!(prepared["body"].get("betas").is_none());
+        assert!(prepared["body"].get("context_management").is_none());
+    }
+
+    #[test]
+    fn context_editing_sends_clear_tool_uses_and_declares_the_tier_native() {
+        let provider = AnthropicProvider::with_context_editing(
+            "test-key",
+            "claude-opus-5-5",
+            Some(AnthropicContextEditing { trigger_input_tokens: Some(60_000), keep_tool_uses: Some(4), ..Default::default() }),
+        );
+        assert_eq!(
+            provider.native_context_tiers(),
+            NativeContextTiers { tool_result_clearing: true, compaction: false }
+        );
+        let prepared = provider.prepare_context_request(&question_context(), &[], None, None).unwrap();
+        assert_eq!(prepared["betas"], json!(["context-management-2025-06-27"]));
+        assert!(prepared["body"].get("betas").is_none());
+        assert_eq!(
+            prepared["body"]["context_management"],
+            json!({"edits": [{
+                "type": "clear_tool_uses_20250919",
+                "trigger": {"type": "input_tokens", "value": 60_000},
+                "keep": {"type": "tool_uses", "value": 4},
+            }]})
+        );
+    }
+
+    #[test]
+    fn context_editing_keeps_caller_betas_and_edits() {
+        let provider = AnthropicProvider::with_context_editing("test-key", "claude-opus-5-5", Some(Default::default()));
+        let ext = json!({
+            "betas": ["other-beta", "context-management-2025-06-27"],
+            "context_management": {"edits": [{"type": "clear_thinking_20251015"}]},
+        });
+        let prepared = provider.prepare_context_request(&question_context(), &[], Some(&ext), None).unwrap();
+        assert_eq!(prepared["betas"], json!(["other-beta", "context-management-2025-06-27"]));
+        assert_eq!(
+            prepared["body"]["context_management"]["edits"],
+            json!([{"type": "clear_thinking_20251015"}, {"type": "clear_tool_uses_20250919"}])
+        );
+    }
 
     #[test]
     fn prepared_request_freezes_native_replay_blocks() {

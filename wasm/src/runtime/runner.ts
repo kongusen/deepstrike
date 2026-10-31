@@ -6,7 +6,7 @@ import type {
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
   ToolArgumentRepairedEvent, ToolDeniedEvent, PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
-  RenderedContext,
+  RenderedContext, NativeContextTiers,
 } from "../types.js"
 import type { ToolSuspendEvent } from "./execution-plane.js"
 import type { MemoryStore, MemoryQuery, MemoryRecall, MemoryRecord, MemoryScope, SessionData } from "../memory/index.js"
@@ -442,6 +442,18 @@ function controlRequestRejection(
     operation: rejected.operation ?? operation ?? "control_request",
     ...(rejected.subject ? { subject: rejected.subject } : {}),
     reason: typeof rejected.reason === "string" ? rejected.reason : "request denied",
+  }
+}
+
+/** The kernel's wire form of the tiers a provider performs natively, or nothing when it performs
+ *  none — an operation that delegates nothing configures exactly as before. */
+export function delegatedContextTiers(
+  native: NativeContextTiers | undefined,
+): { tool_result_clearing?: true; compaction?: true } | undefined {
+  if (!native?.toolResultClearing && !native?.compaction) return undefined
+  return {
+    ...(native.toolResultClearing ? { tool_result_clearing: true as const } : {}),
+    ...(native.compaction ? { compaction: true as const } : {}),
   }
 }
 
@@ -2258,6 +2270,10 @@ export class RuntimeRunner {
     const config: Record<string, unknown> = { governance }
     if (this.opts.contextPolicy) {
       config.context_policy = normalizeContextPolicy(contextPolicy(this.opts.contextPolicy))
+    }
+    const delegated = delegatedContextTiers(this.opts.provider?.descriptor?.().nativeContext)
+    if (delegated) {
+      config.context_policy = { ...(config.context_policy as Record<string, unknown> | undefined), delegated_tiers: delegated }
     }
     config.signal_policy = {
       queue_max: signalPolicy.queueMax,

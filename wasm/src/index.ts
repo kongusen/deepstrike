@@ -164,6 +164,7 @@ export type {
   MemoryInput, RecallOptions, DelegationResult, AgentRuntimeBinding, AgentSession,
 } from "./agent.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
+export type { AnthropicContextEditing, AnthropicProviderOptions } from "./providers/anthropic.js"
 export { OpenAIProvider, qwen, deepseek, minimax, kimi } from "./providers/openai.js"
 export type { OpenAIProviderOptions, BackendProviderOptions } from "./providers/openai.js"
 export { ProviderError, classifyProviderError } from "./providers/provider-error.js"
@@ -242,7 +243,7 @@ export type { DurableContent, DurableContentBlock, DurableSource, DurableToolRes
 export { createContextPreparationAdapter, createNativeContextPreparationAdapter } from "./runtime/context.js"
 export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextProviderPreparationRequest } from "./runtime/context.js"
 
-export type { PreparedProviderRequest } from "./types.js"
+export type { NativeContextTiers, PreparedProviderRequest } from "./types.js"
 
 export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest } from "./memory/candidate-sink.js"
 export { memoryFetchRecall, memoryRecallTurn } from "./memory/recall-projection.js"

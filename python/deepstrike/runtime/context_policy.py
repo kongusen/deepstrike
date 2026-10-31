@@ -16,22 +16,29 @@ class ContextPressureThresholds(TypedDict):
     renewal: float
 
 
-class ContextPolicy(TypedDict):
+class DelegatedContextTiers(TypedDict, total=False):
+    tool_result_clearing: bool
+    compaction: bool
+
+
+class ContextPolicy(TypedDict, total=False):
     pressure_thresholds: ContextPressureThresholds
     target_after_compress: float
     preserve_recent_turns: int
     renewal_carryover: float
     collapse_old_assistant_narration: bool
     idle_micro_compact_minutes: int
+    delegated_tiers: DelegatedContextTiers
 
 
-class ContextPolicyWire(TypedDict):
+class ContextPolicyWire(TypedDict, total=False):
     pressure_thresholds_ppm: dict[str, int]
     target_after_compress_ppm: int
     preserve_recent_turns: int
     renewal_carryover_ppm: int
     collapse_old_assistant_narration: bool
     idle_micro_compact_minutes: int
+    delegated_tiers: DelegatedContextTiers
 
 
 DEFAULT_CONTEXT_POLICY: ContextPolicy = {
@@ -81,7 +88,7 @@ def normalize_context_policy(policy: ContextPolicy) -> ContextPolicyWire:
     if not isinstance(policy["collapse_old_assistant_narration"], bool):
         raise TypeError("collapse_old_assistant_narration must be boolean")
 
-    return {
+    wire: ContextPolicyWire = {
         "pressure_thresholds_ppm": pressure_ppm,
         "target_after_compress_ppm": target_ppm,
         "preserve_recent_turns": policy["preserve_recent_turns"],
@@ -89,6 +96,12 @@ def normalize_context_policy(policy: ContextPolicy) -> ContextPolicyWire:
         "collapse_old_assistant_narration": policy["collapse_old_assistant_narration"],
         "idle_micro_compact_minutes": policy["idle_micro_compact_minutes"],
     }
+    delegated = policy.get("delegated_tiers")
+    if delegated and any(delegated.values()):
+        wire["delegated_tiers"] = {
+            key: bool(value) for key, value in delegated.items() if value
+        }
+    return wire
 
 
 def ratio_to_ppm(value: float, field: str = "ratio") -> int:

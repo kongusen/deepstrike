@@ -133,6 +133,35 @@ runner.deactivate_skill("debug")                                    # K3：显�
 
 ---
 
+## Level 6：交给 Provider 的压缩档位
+
+部分 Provider 能在服务端完成某一档压缩。Anthropic 的 context editing（`clear_tool_uses_20250919`）会在输入超过阈值时，清除较早的工具结果。如果内核也在本地做同样的事，两边会重复处理同一份上下文，还会打乱 prompt cache 前缀。
+
+Provider 配置为执行某一档时，会在 descriptor 里声明 `nativeContext`。runner 把它写入 kernel 配置的 `context_policy.delegated_tiers`，内核随之跳过对应的本地步骤：
+
+| 声明 | 内核跳过 | 仍然保留 |
+| ------ | ------ | ------ |
+| `tool_result_clearing` | Snip / Micro 压缩、idle TimeDecayMicro、handle 折叠预览 | Collapse / Auto 归档、renewal |
+| `compaction` | Collapse / Auto 归档（只委托这一档时降级为 Micro） | 工具结果清理、renewal |
+
+委托的档位只会被跳过，不会被升级成更重的档位。**Renewal 永不委托**：内核在完整的本地 history 上判断压力，压力取 Provider 观测值与本地估算值的较大者，所以服务端清理后上报的较小 input usage 不会压住续期，renewal 仍是安全网。
+
+只在 Anthropic Provider 上开启：
+
+```python
+AnthropicProvider(api_key, model="claude-opus-5-5", context_editing={"trigger_input_tokens": 100_000, "keep_tool_uses": 4})
+```
+
+```ts
+new AnthropicProvider({ apiKey, model: "claude-opus-5-5", contextEditing: { triggerInputTokens: 100_000, keepToolUses: 4 } })
+```
+
+WASM 用构造参数 `options.contextEditing`，Rust 用 `AnthropicProvider::with_context_editing`。未设置的字段使用 API 默认值。Provider 自动加上 `context-management-2025-06-27` beta，并把 edit 追加在调用方自带的 edits 之后；调用方已经传了 `clear_tool_uses` 时不重复添加。没有任何委托时，wire 配置与 golden fixture 字节不变。
+
+Anthropic Provider 目前只声明 `tool_result_clearing`。服务端 compaction 要求把不透明的 compaction block 原样回传，这需要内核 history 能保存它，所以 `compaction` 档位暂不委托。
+
+---
+
 ## 运行时行为摘要
 
 1. **压缩**：Snip 截断过长消息，Micro 缩减旧工具结果，Collapse / Auto 归档较低价值的旧对话，并由内核 `RuleSummarizer` 生成确定性摘要。无需配置 LLM 摘要器；Node 的 `asyncSummarizer` 可在后台升级摘要。

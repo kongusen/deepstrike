@@ -37,6 +37,38 @@ export interface AnthropicProviderConfig {
   baseURL?: string
   authMode?: "api-key" | "bearer"
   runtimePolicy?: RuntimePolicy
+  /** Clear old tool results server-side (context editing, `clear_tool_uses_20250919`). The
+   *  provider then declares the tier native and the kernel stops clearing tool results itself;
+   *  `true` takes the API defaults. */
+  contextEditing?: true | AnthropicContextEditing
+}
+
+/** `clear_tool_uses_20250919` settings. Unset fields take the API defaults. */
+export interface AnthropicContextEditing {
+  /** Input tokens above which clearing starts. */
+  triggerInputTokens?: number
+  /** Most recent tool uses kept intact. */
+  keepToolUses?: number
+  /** Skip a clearing that would remove fewer tokens than this — each clearing rewrites the cached prefix. */
+  clearAtLeastInputTokens?: number
+  /** Tools whose uses and results are never cleared. */
+  excludeTools?: string[]
+  /** Also clear the tool-call inputs, not only the results. */
+  clearToolInputs?: boolean
+}
+
+const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
+
+function clearToolUsesEdit(config: true | AnthropicContextEditing): Record<string, unknown> {
+  const c = config === true ? {} : config
+  return {
+    type: "clear_tool_uses_20250919",
+    ...(c.triggerInputTokens !== undefined ? { trigger: { type: "input_tokens", value: c.triggerInputTokens } } : {}),
+    ...(c.keepToolUses !== undefined ? { keep: { type: "tool_uses", value: c.keepToolUses } } : {}),
+    ...(c.clearAtLeastInputTokens !== undefined ? { clear_at_least: { type: "input_tokens", value: c.clearAtLeastInputTokens } } : {}),
+    ...(c.excludeTools?.length ? { exclude_tools: [...c.excludeTools] } : {}),
+    ...(c.clearToolInputs !== undefined ? { clear_tool_inputs: c.clearToolInputs } : {}),
+  }
 }
 
 type ResolvedAnthropicRuntime = CanonicalAdapterInput["resolved"]
@@ -52,6 +84,7 @@ export class AnthropicProvider implements LLMProvider {
   private readonly resolvedRuntimePolicy: RuntimePolicy
   private readonly directNativeTokenCounting: boolean
   private readonly defaultTextualToolCallPolicy: "off" | "reject"
+  private readonly contextEditing?: Record<string, unknown>
   private resolvedRuntime?: ResolvedAnthropicRuntime
 
   constructor(config: AnthropicProviderConfig) {
@@ -82,6 +115,7 @@ export class AnthropicProvider implements LLMProvider {
     this.directNativeTokenCounting = configuredBaseURL === undefined
       || configuredBaseURL === officialBaseURL
     this.defaultTextualToolCallPolicy = this.directNativeTokenCounting ? "off" : "reject"
+    if (c.contextEditing) this.contextEditing = clearToolUsesEdit(c.contextEditing)
   }
 
   runtimePolicy(): RuntimePolicy {
@@ -107,6 +141,7 @@ export class AnthropicProvider implements LLMProvider {
         supported: true,
         requiresStrictPairing: true,
       },
+      ...(this.contextEditing ? { nativeContext: { toolResultClearing: true } } : {}),
     }
   }
 
@@ -173,9 +208,24 @@ export class AnthropicProvider implements LLMProvider {
       extensions: {
         textualToolCallPolicy: this.defaultTextualToolCallPolicy,
         ...extensions,
+        ...this.contextEditingExtensions(extensions),
       },
       replayForMessage: message => this.peekProviderReplay(message),
     })
+  }
+
+  /** Context editing rides on every request, beside any betas or edits the caller passed: the
+   *  kernel stopped clearing tool results on the strength of it. */
+  private contextEditingExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
+    if (!this.contextEditing) return {}
+    const betas = Array.isArray(extensions?.betas) ? extensions.betas as string[] : []
+    const management = extensions?.context_management as { edits?: unknown[] } | undefined
+    const edits = Array.isArray(management?.edits) ? management.edits : []
+    const clearing = edits.some(edit => (edit as { type?: unknown })?.type === "clear_tool_uses_20250919")
+    return {
+      betas: betas.includes(CONTEXT_MANAGEMENT_BETA) ? betas : [...betas, CONTEXT_MANAGEMENT_BETA],
+      context_management: { ...management, edits: clearing ? edits : [...edits, this.contextEditing] },
+    }
   }
 
   private buildPlan(

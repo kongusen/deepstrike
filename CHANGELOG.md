@@ -21,6 +21,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The `memory` tool accepts `record_id` to read one record in full. The host answers with a point
   lookup (`memoryFetchRecall` / `memory_fetch_recall`), and the kernel refuses any record other
   than the one requested. A missing record is reported to the model as not found.
+- Providers can declare compaction tiers they perform natively (`nativeContext` /
+  `native_context` / `native_context_tiers()`). The runner forwards them as
+  `context_policy.delegated_tiers`, and the kernel skips its own tool-result clearing or
+  compaction for those tiers. Renewal is never delegated and remains the safety net.
+- `AnthropicProvider` accepts `contextEditing` (`context_editing` in Python,
+  `with_context_editing` in Rust) and sends `clear_tool_uses_20250919` with the
+  `context-management-2025-06-27` beta. It then declares tool-result clearing as native.
 
 ### Changed
 

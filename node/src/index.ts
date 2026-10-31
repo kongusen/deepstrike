@@ -37,7 +37,7 @@ export type { ToolEnvelope, ToolEnvelopeOk, ToolEnvelopeFail } from "./tools/err
 // Any backend — including a custom OpenAI-compatible endpoint — is reachable via `createProvider`.
 // Backend-specific classes (DeepSeek/Kimi/Qwen/GLM/Gemini/Ollama/MiniMax) live in `@deepstrike/sdk/providers`.
 export { AnthropicProvider } from "./providers/anthropic.js"
-export type { AnthropicProviderConfig } from "./providers/anthropic.js"
+export type { AnthropicContextEditing, AnthropicProviderConfig } from "./providers/anthropic.js"
 export { OpenAIProvider } from "./providers/openai.js"
 export type { OpenAIProviderOptions } from "./providers/openai.js"
 export { OpenAIResponsesProvider } from "./providers/openai-responses.js"
@@ -82,5 +82,5 @@ export type {
   PermissionRequestEvent, PermissionResolvedEvent, PermissionResponse,
   EntropySample, EntropySampleEvent, EntropyAlertEvent, EntropyWatchOptions,
   LLMProvider, RetryConfig, TokenUsage,
-  ProviderWireEvidence, ProviderTransportTelemetry,
+  ProviderWireEvidence, ProviderTransportTelemetry, NativeContextTiers,
 } from "./types.js"

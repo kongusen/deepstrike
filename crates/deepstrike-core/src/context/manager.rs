@@ -216,6 +216,10 @@ impl ContextManager {
     /// Check if Micro-Compact should trigger based on time decay (Layer 3).
     /// Returns true if idle time exceeds `micro_compact_idle_minutes`.
     pub fn should_time_decay_compact(&self, now_ms: u64) -> bool {
+        // Idle decay excerpts old tool results — the provider's tier when it clears them natively.
+        if self.config.delegate_tool_result_clearing {
+            return false;
+        }
         let idle_ms = if let Some(last_compact) = self.last_compact_ms {
             // Time since last compression
             now_ms.saturating_sub(last_compact)
@@ -243,8 +247,12 @@ impl ContextManager {
     /// the prefix is rewritten anyway, so the cache cost is already paid. Non-destructive:
     /// `partitions` is untouched. Spooled/paged-out handles are left as-is.
     pub fn recompute_handle_residency(&mut self) {
-        // Monotonic: below the threshold we never *un*-collapse, so there is nothing to do.
-        if self.rho() < self.config.collapse_threshold {
+        // Monotonic: below the threshold we never *un*-collapse, so there is nothing to do. A
+        // provider that clears tool results natively owns this projection: collapsing them here too
+        // would send the provider previews it could never have cleared from.
+        if self.config.delegate_tool_result_clearing
+            || self.rho() < self.config.collapse_threshold
+        {
             return;
         }
         let keep = self.config.preserved_tool_results;
@@ -392,7 +400,31 @@ impl ContextManager {
         // `micro_compact` paged out tool-result handles, the discounted rho fell below the
         // collapse/auto_compact thresholds and the heavy tiers never fired. Raw rho keeps
         // escalation intact (recoverable from git if a cache-aware planner ever lands).
-        self.pressure.recommend(self.rho())
+        self.kernel_owned_tier(self.pressure.recommend(self.rho()))
+    }
+
+    /// The highest compaction tier at or below `action` that the kernel still runs itself. A tier
+    /// the provider performs natively is skipped, never escalated past: delegated compaction falls
+    /// back to the kernel's own tool-result tier when that one is still kernel-owned. A forced
+    /// compaction (`force_compress`, the overflow ladder) is a recovery, not a pressure tier, and is
+    /// never filtered; renewal is decided apart from this and is never delegated.
+    pub fn kernel_owned_tier(&self, action: PressureAction) -> PressureAction {
+        let clearing = self.config.delegate_tool_result_clearing;
+        match action {
+            PressureAction::ContextCollapse | PressureAction::AutoCompact
+                if self.config.delegate_compaction =>
+            {
+                if clearing {
+                    PressureAction::None
+                } else {
+                    PressureAction::MicroCompact
+                }
+            }
+            PressureAction::SnipCompact | PressureAction::MicroCompact if clearing => {
+                PressureAction::None
+            }
+            other => other,
+        }
     }
 
     pub fn compress(
@@ -1718,6 +1750,63 @@ mod tests {
             mgr.handles.residency_for_source("c0"),
             Some(&Residency::Resident)
         );
+    }
+
+    fn delegating(clearing: bool, compaction: bool) -> ContextManager {
+        ContextManager::with_config(
+            1_000,
+            ContextConfig {
+                delegate_tool_result_clearing: clearing,
+                delegate_compaction: compaction,
+                ..ContextConfig::default()
+            },
+            ContextTokenEngine::char_approx(),
+        )
+    }
+
+    /// A tier the provider performs natively is skipped, never escalated past: with compaction
+    /// delegated but clearing kernel-owned, the heavy tiers fall back to micro-compact.
+    #[test]
+    fn delegated_tiers_are_filtered_out_of_the_pressure_recommendation() {
+        use PressureAction::*;
+        let cases = [
+            ((true, false), [None, None, None, ContextCollapse, AutoCompact]),
+            ((false, true), [None, SnipCompact, MicroCompact, MicroCompact, MicroCompact]),
+            ((true, true), [None, None, None, None, None]),
+            ((false, false), [None, SnipCompact, MicroCompact, ContextCollapse, AutoCompact]),
+        ];
+        for ((clearing, compaction), expected) in cases {
+            let mgr = delegating(clearing, compaction);
+            let got = [None, SnipCompact, MicroCompact, ContextCollapse, AutoCompact]
+                .map(|action| mgr.kernel_owned_tier(action));
+            assert_eq!(got, expected, "clearing={clearing} compaction={compaction}");
+        }
+        let mut mgr = delegating(true, true);
+        mgr.push_history(CoreMessage::user("large history"), 975);
+        assert_eq!(mgr.should_compress(), None);
+        assert!(!mgr.should_renew(), "below the renewal threshold nothing happens");
+        // Renewal is never delegated: it reads the full local history whatever the provider does.
+        mgr.push_history(CoreMessage::user("more"), 100);
+        assert!(mgr.should_renew());
+    }
+
+    #[test]
+    fn delegated_clearing_leaves_tool_results_to_the_provider() {
+        let mut mgr = delegating(true, false);
+        mgr.record_activity(0);
+        for i in 0..10 {
+            let m = CoreMessage::tool(vec![ContentPart::ToolResult {
+                call_id: format!("c{i}").into(),
+                output: "x".repeat(40),
+                is_error: false,
+                durable_content: None,
+            }]);
+            mgr.push_history(m, 40);
+        }
+        mgr.set_observed_prompt_tokens(950);
+        mgr.recompute_handle_residency();
+        assert_eq!(mgr.handles.residency_for_source("c0"), Some(&Residency::Resident));
+        assert!(!mgr.should_time_decay_compact(24 * 60 * 60_000));
     }
 
     #[test]

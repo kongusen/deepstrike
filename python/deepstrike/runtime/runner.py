@@ -452,6 +452,27 @@ def _control_request_rejection(
   }
 
 
+def delegated_context_tiers(provider: Any) -> dict[str, bool] | None:
+  descriptor_fn = getattr(provider, "descriptor", None)
+  descriptor = descriptor_fn() if callable(descriptor_fn) else None
+  native = getattr(descriptor, "native_context", None) if descriptor is not None else None
+  if not isinstance(native, dict):
+    return None
+  tiers = {key: True for key, value in native.items() if value and key in {"tool_result_clearing", "compaction"}}
+  return tiers or None
+
+
+def merge_delegated_context_policy(config: dict[str, Any], provider: Any) -> None:
+  delegated = delegated_context_tiers(provider)
+  if not delegated:
+    return
+  policy = dict(config.get("context_policy") or {})
+  current = dict(policy.get("delegated_tiers") or {})
+  current.update(delegated)
+  policy["delegated_tiers"] = current
+  config["context_policy"] = policy
+
+
 class RuntimeRunner:
   def __init__(self, opts: RuntimeOptions) -> None:
     if (
@@ -1147,6 +1168,7 @@ class RuntimeRunner:
       config["context_policy"] = normalize_context_policy(
         context_policy(self._opts.context_policy)
       )
+    merge_delegated_context_policy(config, self._opts.provider)
     scheduler_policy = _scheduler_policy_to_kernel(self._opts.scheduler_policy)
     if scheduler_policy is not None:
       config["scheduler_policy"] = scheduler_policy
@@ -2351,6 +2373,7 @@ class RuntimeRunner:
       config["context_policy"] = normalize_context_policy(
         context_policy(self._opts.context_policy)
       )
+    merge_delegated_context_policy(config, self._opts.provider)
     scheduler_policy = _scheduler_policy_to_kernel(self._opts.scheduler_policy)
     if scheduler_policy is not None:
       config["scheduler_policy"] = scheduler_policy

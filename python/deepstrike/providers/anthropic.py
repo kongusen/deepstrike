@@ -4,7 +4,7 @@ from .prepared_request import PreparedProviderRequest
 import json
 import logging
 from types import SimpleNamespace
-from typing import AsyncIterator
+from typing import AsyncIterator, TypedDict
 from anthropic import AsyncAnthropic
 from deepstrike._kernel import ModelMessage, ToolCall, ToolSchema
 from .stream import StreamEvent
@@ -14,6 +14,51 @@ from deepstrike.types.content import normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
 _OFFICIAL_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
+_CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
+
+
+class AnthropicContextEditing(TypedDict, total=False):
+    trigger_input_tokens: int
+    keep_tool_uses: int
+    clear_at_least_input_tokens: int
+    exclude_tools: list[str]
+    clear_tool_inputs: bool
+
+
+def _clear_tool_uses_edit(config: bool | AnthropicContextEditing) -> dict:
+    values = {} if config is True else config
+    edit: dict = {"type": "clear_tool_uses_20250919"}
+    if "trigger_input_tokens" in values:
+        edit["trigger"] = {"type": "input_tokens", "value": values["trigger_input_tokens"]}
+    if "keep_tool_uses" in values:
+        edit["keep"] = {"type": "tool_uses", "value": values["keep_tool_uses"]}
+    if "clear_at_least_input_tokens" in values:
+        edit["clear_at_least"] = {"type": "input_tokens", "value": values["clear_at_least_input_tokens"]}
+    if values.get("exclude_tools"):
+        edit["exclude_tools"] = list(values["exclude_tools"])
+    if "clear_tool_inputs" in values:
+        edit["clear_tool_inputs"] = values["clear_tool_inputs"]
+    return edit
+
+
+def _context_editing_extensions(
+    configured: dict | None,
+    extensions: dict | None,
+) -> dict:
+    if configured is None:
+        return {}
+    caller = dict(extensions or {})
+    betas = list(caller.get("betas", [])) if isinstance(caller.get("betas"), list) else []
+    if _CONTEXT_MANAGEMENT_BETA not in betas:
+        betas.append(_CONTEXT_MANAGEMENT_BETA)
+    management = caller.get("context_management")
+    management = dict(management) if isinstance(management, dict) else {}
+    edits = list(management.get("edits", [])) if isinstance(management.get("edits"), list) else []
+    if not any(isinstance(edit, dict) and edit.get("type") == "clear_tool_uses_20250919" for edit in edits):
+        edits.append(configured)
+    management["edits"] = edits
+    return {"betas": betas, "context_management": management}
+
 
 _CLAUDE_POLICIES: dict[str, RuntimePolicy] = {
     "claude-opus-4-1":           RuntimePolicy(max_turns=50),
@@ -35,6 +80,7 @@ class AnthropicProvider:
         retry_config: RetryConfig | None = None,
         base_url: str | None = None,
         auth_mode: str = "api_key",
+        context_editing: bool | AnthropicContextEditing = False,
     ):
         self._model = model
         self._retry = retry_config or RetryConfig()
@@ -53,6 +99,7 @@ class AnthropicProvider:
             if base_url is None or base_url.rstrip("/") == _OFFICIAL_ANTHROPIC_BASE_URL
             else "reject"
         )
+        self._context_editing = _clear_tool_uses_edit(context_editing) if context_editing else None
 
     def runtime_policy(self) -> RuntimePolicy:
         return _CLAUDE_POLICIES.get(self._model, RuntimePolicy())
@@ -68,6 +115,7 @@ class AnthropicProvider:
             model=self._model,
             reasoning={"supported": True, "preserve_across_tool_turns": True, "requires_replay_for_tool_turns": True},
             tool_calls={"supported": True, "requires_strict_pairing": True},
+            native_context={"tool_result_clearing": True} if self._context_editing else {},
         )
 
     def peek_provider_replay(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
@@ -161,6 +209,7 @@ class AnthropicProvider:
         adapter_extensions = {
             "textualToolCallPolicy": self._default_textual_tool_call_policy,
             **(extensions or {}),
+            **_context_editing_extensions(self._context_editing, extensions),
         }
         canonical = normalize_canonical_adapter_input(
             context, tools, extensions=adapter_extensions,
@@ -200,7 +249,8 @@ class AnthropicProvider:
         last_exc = None
         for attempt in range(self._retry.max_retries):
             try:
-                resp = await self._client.messages.create(**plan.params)
+                messages = self._client.beta.messages if plan.transport == "beta" else self._client.messages
+                resp = await messages.create(**plan.params)
                 self._circuit.record_success()
                 message, replay = self._adapter.decode_complete(resp, canonical)
                 if replay:
@@ -228,7 +278,8 @@ class AnthropicProvider:
 
     async def _stream_prepared(self, canonical, plan):
         stream_state = self._adapter.create_stream_state(canonical, plan.cache_slots)
-        async with self._client.messages.stream(**deepcopy(plan.params)) as stream:
+        messages = self._client.beta.messages if plan.transport == "beta" else self._client.messages
+        async with messages.stream(**deepcopy(plan.params)) as stream:
             async for event in stream:
                 for output in self._adapter.push_stream_chunk(event, stream_state).events:
                     yield output

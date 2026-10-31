@@ -13,6 +13,10 @@ pub struct ContextPolicy {
     pub renewal_carryover_ppm: u32,
     pub collapse_old_assistant_narration: bool,
     pub idle_micro_compact_minutes: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delegate_tool_result_clearing: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub delegate_compaction: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -65,6 +69,8 @@ impl ContextPolicy {
         config.carryover_ratio = ppm_ratio(self.renewal_carryover_ppm);
         config.collapse_assistant_narration = self.collapse_old_assistant_narration;
         config.micro_compact_idle_minutes = self.idle_micro_compact_minutes;
+        config.delegate_tool_result_clearing = self.delegate_tool_result_clearing;
+        config.delegate_compaction = self.delegate_compaction;
     }
 }
 
@@ -90,6 +96,8 @@ mod tests {
             renewal_carryover_ppm: 50_000,
             collapse_old_assistant_narration: true,
             idle_micro_compact_minutes: 60,
+            delegate_tool_result_clearing: false,
+            delegate_compaction: false,
         }
     }
 

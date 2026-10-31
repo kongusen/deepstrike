@@ -343,6 +343,31 @@ pub struct ContextPolicy {
     pub knowledge_budget_ppm: Option<Ppm>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_budget: Option<PromptBudget>,
+    /// Compaction tiers the provider performs natively, which the kernel then skips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_tiers: Option<DelegatedContextTiers>,
+}
+
+/// The compaction tiers a provider performs natively. The host declares them only when the
+/// provider it calls is configured to do the work; the kernel then skips its own tier rather than
+/// running both. Renewal has no flag: it is decided on the full local history and is never
+/// delegated, so it remains the safety net whatever the provider does.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DelegatedContextTiers {
+    /// Old tool results are cleared by the provider: no idle decay, snip, micro-compact or
+    /// collapsed-preview projection in the kernel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tool_result_clearing: bool,
+    /// History is compacted by the provider: no context collapse or auto-compact in the kernel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compaction: bool,
+}
+
+impl DelegatedContextTiers {
+    pub fn is_none(&self) -> bool {
+        !self.tool_result_clearing && !self.compaction
+    }
 }
 
 /// The five pressure thresholds. Replaced as one value: a partial threshold ladder is how the
@@ -701,6 +726,10 @@ pub struct ResolvedContextPolicy {
     pub idle_micro_compact_minutes: u32,
     pub knowledge_budget_ppm: Ppm,
     pub prompt_budget: PromptBudget,
+    /// Absent on the wire when nothing is delegated, so every configuration that predates
+    /// delegation resolves — and digests — exactly as before.
+    #[serde(default, skip_serializing_if = "DelegatedContextTiers::is_none")]
+    pub delegated_tiers: DelegatedContextTiers,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -981,6 +1010,7 @@ impl ConfigDefaults {
                         output_reserve_tokens: 0,
                         safety_margin_tokens: 0,
                     },
+                    delegated_tiers: DelegatedContextTiers::default(),
                 },
                 recovery_policy: ResolvedRecoveryPolicy {
                     provider_recovery_attempts: 1,
@@ -1786,6 +1816,9 @@ fn resolve_context(
         if let Some(value) = policy.prompt_budget {
             resolved.prompt_budget = value;
         }
+        if let Some(value) = policy.delegated_tiers {
+            resolved.delegated_tiers = value;
+        }
     }
 
     let t = &resolved.pressure_thresholds_ppm;
@@ -2257,6 +2290,7 @@ mod tests {
                     output_reserve_tokens: 4_000,
                     safety_margin_tokens: 500,
                 }),
+                delegated_tiers: None,
             }),
             recovery_policy: Some(RecoveryPolicy {
                 provider_recovery_attempts: Some(2),
@@ -2641,6 +2675,33 @@ mod tests {
         let text = serde_json::to_string(&resolved).unwrap();
         let back: ResolvedOperationConfig = serde_json::from_str(&text).unwrap();
         assert_eq!(back, resolved);
+    }
+
+    /// Delegation travels on the wire only when something is delegated, so a configuration that
+    /// predates it resolves — and digests — byte for byte as before.
+    #[test]
+    fn delegated_tiers_resolve_and_stay_off_the_wire_when_unset() {
+        let base = defaults().baseline.context_policy;
+        let unset = resolve_context(None, &base, 100_000).unwrap();
+        assert!(unset.delegated_tiers.is_none());
+        assert!(serde_json::to_value(&unset).unwrap().get("delegated_tiers").is_none());
+
+        let policy: ContextPolicy = serde_json::from_value(serde_json::json!({
+            "delegated_tiers": { "tool_result_clearing": true }
+        }))
+        .unwrap();
+        let resolved = resolve_context(Some(&policy), &base, 100_000).unwrap();
+        assert!(resolved.delegated_tiers.tool_result_clearing);
+        assert!(!resolved.delegated_tiers.compaction);
+        assert_eq!(
+            serde_json::to_value(&resolved).unwrap()["delegated_tiers"],
+            serde_json::json!({ "tool_result_clearing": true })
+        );
+        assert!(
+            serde_json::from_value::<DelegatedContextTiers>(serde_json::json!({ "renewal": true }))
+                .is_err(),
+            "renewal is never delegated"
+        );
     }
 
     #[test]
