@@ -652,6 +652,18 @@ impl MemoryCandidateSink for FileMemoryCandidateSink {
                 self.write_state(&state).await?;
                 return Ok(receipt);
             }
+            let duplicate = state.entries.iter()
+                .filter(|entry| entry.agent_id == agent_id && entry.payload_digest == digest)
+                .find_map(|entry| memory_candidate_duplicate_reason(&entry.receipt));
+            if let Some(reason) = duplicate {
+                let receipt = MemoryCandidateReceipt::Rejected {
+                    candidate_id: candidate.candidate_id.clone(), receipt_id: mint_receipt(&mut state),
+                    reason_code: reason.into(),
+                };
+                append_outbox(&mut state, "candidate_rejected", agent_id, &candidate.candidate_id, &receipt);
+                self.write_state(&state).await?;
+                return Ok(receipt);
+            }
             let receipt = MemoryCandidateReceipt::Pending {
                 candidate_id: candidate.candidate_id.clone(), receipt_id: mint_receipt(&mut state),
             };
@@ -734,6 +746,18 @@ pub fn memory_fetch_recall(
     }]
 }
 
+/// Why a sink refuses a payload it already holds for the agent under another id: the proposal is
+/// still in review, or already remembered. A rejected one does not count, so a proposal the host
+/// turned down may be made again. Each write path mints its own ids, so this is what keeps a model
+/// proposal and a child request for the same fact from both reaching review.
+pub fn memory_candidate_duplicate_reason(held: &MemoryCandidateReceipt) -> Option<&'static str> {
+    match held {
+        MemoryCandidateReceipt::Pending { .. } => Some("already_pending_review"),
+        MemoryCandidateReceipt::Accepted { .. } => Some("already_remembered"),
+        MemoryCandidateReceipt::Rejected { .. } => None,
+    }
+}
+
 struct HeldCandidate {
     agent_id: String,
     candidate: MemoryCandidate,
@@ -800,6 +824,18 @@ impl MemoryCandidateSink for InMemoryMemoryCandidateSink {
                 candidate_id: candidate.candidate_id,
                 receipt_id: state.mint_receipt_id(),
                 reason_code: "candidate_conflict".into(),
+            });
+        }
+        let duplicate = state
+            .held
+            .iter()
+            .filter(|held| held.agent_id == agent_id && held.payload_digest == payload_digest)
+            .find_map(|held| memory_candidate_duplicate_reason(&held.receipt));
+        if let Some(reason) = duplicate {
+            return Ok(MemoryCandidateReceipt::Rejected {
+                candidate_id: candidate.candidate_id,
+                receipt_id: state.mint_receipt_id(),
+                reason_code: reason.into(),
             });
         }
         let receipt = MemoryCandidateReceipt::Pending {
@@ -1157,6 +1193,53 @@ mod candidate_tests {
         assert_eq!(sink.candidates(Some("a")).len(), 1);
         assert_eq!(sink.candidates(Some("a"))[0].record.content, "fact");
         assert_eq!(sink.candidates(None).len(), 2);
+    }
+
+    /// A child request and a model proposal mint different ids for the same fact.
+    #[tokio::test]
+    async fn the_in_memory_sink_refuses_a_held_payload_under_a_new_id() {
+        let sink = InMemoryMemoryCandidateSink::new();
+        sink.submit("a", candidate("c-1", "fact")).await.unwrap();
+        let duplicate = MemoryCandidate {
+            source: MemoryCandidateSource::ModelProposal,
+            ..candidate("c-2", "fact")
+        };
+        assert!(matches!(
+            sink.submit("a", duplicate.clone()).await.unwrap(),
+            MemoryCandidateReceipt::Rejected { reason_code, .. } if reason_code == "already_pending_review"
+        ));
+        assert!(matches!(
+            sink.submit("b", duplicate).await.unwrap(),
+            MemoryCandidateReceipt::Pending { .. }
+        ));
+        assert_eq!(sink.candidates(Some("a")).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_durable_sink_refuses_a_held_payload_until_the_host_rejects_it() {
+        use super::{FileMemoryCandidateSink, MemoryCandidateResolution};
+        let dir = std::env::temp_dir().join(format!("ds-candidate-dedup-{}", std::process::id()));
+        let sink = FileMemoryCandidateSink::new(dir.join("ledger.json"));
+        let reason = |receipt: MemoryCandidateReceipt| match receipt {
+            MemoryCandidateReceipt::Rejected { reason_code, .. } => reason_code,
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        sink.submit("a", candidate("first", "fact")).await.unwrap();
+        assert_eq!(reason(sink.submit("a", candidate("second", "fact")).await.unwrap()), "already_pending_review");
+        let accepted = MemoryCandidateResolution::Accepted { record_ref: "memory:first".into(), digest: "sha256:first".into() };
+        sink.resolve("a", "first", accepted).await.unwrap();
+        assert_eq!(reason(sink.submit("a", candidate("third", "fact")).await.unwrap()), "already_remembered");
+        // A rejected proposal does not block the same fact from being proposed again.
+        sink.submit("a", candidate("fourth", "other")).await.unwrap();
+        let declined = MemoryCandidateResolution::Rejected { reason_code: "reviewer_declined".into() };
+        sink.resolve("a", "fourth", declined).await.unwrap();
+        assert!(matches!(
+            sink.submit("a", candidate("fifth", "other")).await.unwrap(),
+            MemoryCandidateReceipt::Pending { .. }
+        ));
+        let held: Vec<_> = sink.list(Some("a")).await.unwrap().into_iter().map(|entry| entry.candidate.candidate_id).collect();
+        assert_eq!(held, ["first", "fourth", "fifth"]);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

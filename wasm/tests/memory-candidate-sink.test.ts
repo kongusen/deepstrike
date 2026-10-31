@@ -52,6 +52,16 @@ describe("memory candidate sink (M2)", () => {
     expect(sink.candidates().map(held => held.record.content)).toEqual(["prefers numbered sections"])
   })
 
+  it("refuses the same payload under a new id while it is in review, for this agent only", async () => {
+    const sink = new InMemoryMemoryCandidateSink()
+    await sink.submit("agent", candidate("cand-1", "prefers numbered sections"))
+    // A child request and a model proposal mint different ids for the same fact.
+    const duplicate = await sink.submit("agent", { ...candidate("cand-2", "prefers numbered sections", { record_id: "memory:other" }), source: "child_request" })
+    expect(duplicate).toMatchObject({ status: "rejected", candidate_id: "cand-2", reason_code: "already_pending_review" })
+    expect(await sink.submit("other-agent", candidate("cand-2", "prefers numbered sections"))).toMatchObject({ status: "pending" })
+    expect(sink.candidates("agent")).toHaveLength(1)
+  })
+
   it("derives candidate ids from the write's identity, never at random", async () => {
     expect(await memoryCandidateId(["child_request", "op-1", "effect-3", "0"]))
       .toBe(await memoryCandidateId(["child_request", "op-1", "effect-3", "0"]))

@@ -254,7 +254,7 @@ DEC-3 只允许一个未结算的 PersistMemory。模型提案撞上时不再报
 
 尚未做的：
 
-- `model_proposal` 与 `child_request` 使用各自的 candidate ID 体系，sink 侧没有按 payload digest 跨来源去重。
+- ~~`model_proposal` 与 `child_request` 使用各自的 candidate ID 体系，sink 侧没有按 payload digest 跨来源去重。~~ 已于 2026-10-31 完成，见第 18 节。
 - 召回放置仍分两种：首轮预取进 history，renewal 重查进 keyed knowledge `memory:<record_id>`（第 12 节）。这是有意的：运行中的 canonical operation 只能经 effect 或外部事件写 history。
 
 ## 16. 召回改为索引推送 + 按需拉取（2026-10-30）
@@ -291,3 +291,13 @@ canonical 形式沿用 TypeScript SDK 一直使用的 `JSON.stringify` 紧凑数
 收敛顺带统一了三处分歧：issuer 与 key 不符时 Rust/Python 原来报 `scope_mismatch`，现在都报 `issuer_untrusted`；有效期倒置时 Rust/Python 的 HMAC 验证器原来报 `signature_invalid`，现在都报 `expired`；`host_verified` 缺认证时 Rust 原来先找验证器，现在直接报 `attestation_missing`。
 
 WASM 内核异步加载，所以 WASM 的身份与校验函数改为返回 Promise，`MemoryCandidateSourceVerifier.verify` 也可以返回 Promise。WASM 的 jest mock 只为测试实现了同样的规则，真实内核的字节一致性由 `memory-candidate-binding.node.mjs` 钉住。
+
+## 18. sink 按内容去重（2026-10-31）
+
+`model_proposal` 与 `child_request` 各自派生 candidate ID，同一事实经两条路径、或经同一路径的不同 effect 提出时，ID 不同。sink 现在在幂等检查（同 ID）和来源校验之后、落库之前，再查同一 agent 下是否已有相同 payload digest 的候选：
+
+- 已有的仍在审核（pending）：拒绝，`reason_code = "already_pending_review"`。
+- 已有的已被接受（accepted）：拒绝，`reason_code = "already_remembered"`。
+- 已有的被拒绝（rejected）：不算重复，可以再提。宿主可能改了主意。
+
+去重拒绝不占用 candidate ID，也不写入 ledger 条目；持久 sink 会照常记一条 `candidate_rejected` outbox 事件。模型看到的是 `not stored: memory candidate rejected: already_pending_review`。四端都导出同一个判定函数（Node/WASM `memoryCandidateDuplicateReason`，Python/Rust `memory_candidate_duplicate_reason`），宿主自己实现 sink 时也可以直接用。

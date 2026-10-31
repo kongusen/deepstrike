@@ -124,7 +124,9 @@ describe("memory candidate sink through the runner (M2)", () => {
       const first = await persist("effect-3")
       const second = await persist("effect-4")
       expect(second.candidate_id).not.toBe(first.candidate_id)
-      expect(sink.candidates()).toHaveLength(2)
+      // The same fact proposed by another effect is not reviewed twice.
+      expect(second).toMatchObject({ status: "rejected", reason_code: "already_pending_review" })
+      expect(sink.candidates()).toHaveLength(1)
     })
 
     it("writes to the store when candidate routing is not selected", async () => {

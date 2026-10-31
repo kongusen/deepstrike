@@ -15,6 +15,7 @@ from .candidate_sink import (
     MemoryCandidate,
     MemoryCandidateReceipt,
     MemoryCandidateSource,
+    memory_candidate_duplicate_reason,
     memory_candidate_payload_digest,
 )
 from .attestation import MemoryCandidateAttestation, memory_candidate_attestation_digest, verify_memory_candidate_source
@@ -117,6 +118,16 @@ class FileMemoryCandidateSink:
                                                                if candidate.attestation else {}),
                                                             "occurred_at": self._now()})
                     state["next_event"] += 1
+                    self._write(state)
+                    return copy.deepcopy(receipt)
+                duplicate = memory_candidate_duplicate_reason(next(
+                    (entry["receipt"]["status"] for entry in state["entries"]
+                     if entry["agent_id"] == agent_id and entry["payload_digest"] == digest
+                     and entry["receipt"]["status"] != "rejected"), None))
+                if duplicate:
+                    receipt = {"status": "rejected", "candidate_id": candidate.candidate_id,
+                               "receipt_id": self._mint_receipt(state), "reason_code": duplicate}
+                    self._outbox(state, "candidate_rejected", agent_id, candidate.candidate_id, receipt)
                     self._write(state)
                     return copy.deepcopy(receipt)
                 receipt = {"status": "pending", "candidate_id": candidate.candidate_id,

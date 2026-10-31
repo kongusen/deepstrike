@@ -245,7 +245,7 @@ export type { ContextPrepareJson, ContextVerifyJson, ContextPrepared, ContextPro
 
 export type { NativeContextTiers, PreparedProviderRequest } from "./types.js"
 
-export { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest } from "./memory/candidate-sink.js"
+export { InMemoryMemoryCandidateSink, memoryCandidateDuplicateReason, memoryCandidateId, memoryCandidatePayloadDigest } from "./memory/candidate-sink.js"
 export { memoryFetchRecall, memoryRecallTurn } from "./memory/recall-projection.js"
 export type { MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource } from "./memory/candidate-sink.js"
 export { resolveMemoryRuntimePolicy } from "./memory/runtime-policy.js"

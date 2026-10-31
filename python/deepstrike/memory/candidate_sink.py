@@ -67,6 +67,20 @@ def memory_candidate_payload_digest(record: MemoryRecord) -> str:
     return str(ask_memory_authority({"op": "candidate_payload_digest", "record": asdict(record)})["payload_digest"])
 
 
+def memory_candidate_duplicate_reason(held_status: str | None) -> str | None:
+    """Why a sink refuses a payload it already holds for the agent under another id.
+
+    Still in review, or already remembered. A rejected one does not count, so a proposal the host
+    turned down may be made again. Each write path mints its own ids, so this keeps a model
+    proposal and a child request for the same fact from both reaching review.
+    """
+    if held_status == "pending":
+        return "already_pending_review"
+    if held_status == "accepted":
+        return "already_remembered"
+    return None
+
+
 class InMemoryMemoryCandidateSink:
     """In-process candidate store with the shared source-admission boundary."""
 
@@ -96,6 +110,11 @@ class InMemoryMemoryCandidateSink:
         if not valid:
             return {"status": "rejected", "candidate_id": candidate.candidate_id,
                     "receipt_id": self._mint_receipt_id(), "reason_code": reason or "unspecified"}
+        duplicate = memory_candidate_duplicate_reason(next(
+            (held[3]["status"] for held in self._held.values() if held[0] == agent_id and held[2] == digest), None))
+        if duplicate:
+            return {"status": "rejected", "candidate_id": candidate.candidate_id,
+                    "receipt_id": self._mint_receipt_id(), "reason_code": duplicate}
         receipt: MemoryCandidateReceipt = {
             "status": "pending", "candidate_id": candidate.candidate_id,
             "receipt_id": self._mint_receipt_id(),

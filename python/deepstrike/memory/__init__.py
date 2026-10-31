@@ -12,7 +12,7 @@ from .durable_candidate_sink import (
 from .candidate_sink import (
     MemoryCandidateSource, MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink,
     PendingMemoryCandidateReceipt, AcceptedMemoryCandidateReceipt, RejectedMemoryCandidateReceipt,
-    InMemoryMemoryCandidateSink, memory_candidate_id, memory_candidate_payload_digest,
+    InMemoryMemoryCandidateSink, memory_candidate_duplicate_reason, memory_candidate_id, memory_candidate_payload_digest,
 )
 from .recall_projection import memory_fetch_recall, memory_recall_turn
 from .lifecycle import (
@@ -48,6 +48,7 @@ __all__ = [
     "Ed25519MemoryCandidateSourceVerifier", "HmacMemoryCandidateSourceVerifier", "MemoryCandidateAttestation", "admit_memory_candidate", "memory_candidate_attestation_canonical_payload", "memory_candidate_attestation_digest", "sign_memory_candidate_attestation", "verify_memory_candidate_source",
     "FileMemoryCandidateSink", "MemoryCandidateLedgerEntry", "MemoryCandidateOutboxEvent", "MemoryCandidateVerificationAttempt",
     "memory_candidate_id",
+    "memory_candidate_duplicate_reason",
     "memory_candidate_payload_digest",
     "memory_fetch_recall",
     "memory_recall_turn",

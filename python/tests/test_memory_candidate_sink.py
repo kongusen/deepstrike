@@ -168,3 +168,30 @@ async def test_retried_model_proposal_with_a_different_answer_proposes_new_candi
     assert changed["status"] == "pending"
     assert changed["candidate_id"] != first["candidate_id"]
     assert len(sink.candidates("agent")) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_same_payload_under_a_new_id_is_refused_while_in_review_for_this_agent_only():
+    sink = InMemoryMemoryCandidateSink()
+    await sink.submit("agent", MemoryCandidate("c1", "model_proposal", record()))
+    # A child request and a model proposal mint different ids for the same fact.
+    duplicate = await sink.submit("agent", MemoryCandidate("c2", "child_request", replace(record(), record_id="other")))
+    assert duplicate["status"] == "rejected" and duplicate["reason_code"] == "already_pending_review"
+    assert (await sink.submit("other", MemoryCandidate("c2", "model_proposal", record())))["status"] == "pending"
+    assert len(sink.candidates("agent")) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_durable_sink_refuses_a_held_payload_until_the_host_rejects_it(tmp_path: Path):
+    from deepstrike.memory import FileMemoryCandidateSink
+
+    sink = FileMemoryCandidateSink(tmp_path / "ledger.json")
+    await sink.submit("agent", MemoryCandidate("first", "model_proposal", record()))
+    assert (await sink.submit("agent", MemoryCandidate("second", "model_proposal", record())))["reason_code"] == "already_pending_review"
+    await sink.resolve("agent", "first", {"status": "accepted", "record_ref": "memory:first", "digest": "sha256:first"})
+    assert (await sink.submit("agent", MemoryCandidate("third", "model_proposal", record())))["reason_code"] == "already_remembered"
+    # A rejected proposal does not block the same fact from being proposed again.
+    await sink.submit("agent", MemoryCandidate("fourth", "model_proposal", record("prefers prose")))
+    await sink.resolve("agent", "fourth", {"status": "rejected", "reason_code": "reviewer_declined"})
+    assert (await sink.submit("agent", MemoryCandidate("fifth", "model_proposal", record("prefers prose"))))["status"] == "pending"
+    assert [entry.candidate.candidate_id for entry in await sink.list("agent")] == ["first", "fourth", "fifth"]

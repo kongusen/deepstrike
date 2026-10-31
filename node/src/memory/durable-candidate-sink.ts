@@ -3,6 +3,7 @@ import { dirname, join } from "node:path"
 import { randomUUID } from "node:crypto"
 
 import {
+  memoryCandidateDuplicateReason,
   memoryCandidatePayloadDigest,
   type MemoryCandidate,
   type MemoryCandidateReceipt,
@@ -127,6 +128,20 @@ export class FileMemoryCandidateSink implements MemoryCandidateSink {
           occurred_at: this.now(),
         })
         state.next_event += 1
+        await this.writeState(state)
+        return structuredClone(receipt)
+      }
+
+      const duplicate = memoryCandidateDuplicateReason(state.entries.find(entry =>
+        entry.agent_id === agentId && entry.payload_digest === payloadDigest && entry.receipt.status !== "rejected")?.receipt.status)
+      if (duplicate) {
+        const receipt: MemoryCandidateReceipt = {
+          status: "rejected",
+          candidate_id: candidate.candidate_id,
+          receipt_id: this.mintReceipt(state),
+          reason_code: duplicate,
+        }
+        this.appendOutbox(state, "candidate_rejected", agentId, candidate.candidate_id, receipt)
         await this.writeState(state)
         return structuredClone(receipt)
       }

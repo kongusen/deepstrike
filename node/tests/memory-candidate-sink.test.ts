@@ -48,6 +48,16 @@ describe("memory candidate sink (M2)", () => {
     expect(sink.candidates()).toHaveLength(1)
   })
 
+  it("refuses the same payload under a new id while it is in review, for this agent only", async () => {
+    const sink = new InMemoryMemoryCandidateSink()
+    await sink.submit("agent", candidate("cand-1", "prefers numbered sections"))
+    // A child request and a model proposal mint different ids for the same fact.
+    const duplicate = await sink.submit("agent", { ...candidate("cand-2", "prefers numbered sections", { record_id: "memory:other" }), source: "child_request" })
+    expect(duplicate).toMatchObject({ status: "rejected", candidate_id: "cand-2", reason_code: "already_pending_review" })
+    expect(await sink.submit("other-agent", candidate("cand-2", "prefers numbered sections"))).toMatchObject({ status: "pending" })
+    expect(sink.candidates("agent")).toHaveLength(1)
+  })
+
   it("rejects the same candidate id with a different payload and keeps what it holds", async () => {
     const sink = new InMemoryMemoryCandidateSink()
     const first = await sink.submit("agent", candidate("cand-1", "prefers numbered sections"))
@@ -146,6 +156,26 @@ it("requires and verifies host source attestation", async () => {
     const signed = { ...unsigned, signature: signMemoryCandidateAttestation(unsigned, "secret") }
     const accepted = await new FileMemoryCandidateSink({ path: join(root, "valid.json"), sourceVerifier: verifier }).submit("agent", { ...hostCandidate, attestation: signed })
     expect(accepted).toMatchObject({ status: "pending" })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+it("a durable sink refuses a held payload under a new id until the host rejects it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "deepstrike-candidate-dedup-"))
+  try {
+    const sink = new FileMemoryCandidateSink({ path: join(root, "ledger.json"), now: () => 100 })
+    await sink.submit("agent", candidate("first", "prefers numbered sections"))
+    expect(await sink.submit("agent", candidate("second", "prefers numbered sections")))
+      .toMatchObject({ status: "rejected", reason_code: "already_pending_review" })
+    await sink.resolve("agent", "first", { status: "accepted", record_ref: "memory:first", digest: "sha256:first" })
+    expect(await sink.submit("agent", candidate("third", "prefers numbered sections")))
+      .toMatchObject({ status: "rejected", reason_code: "already_remembered" })
+    // A rejected proposal does not block the same fact from being proposed again.
+    await sink.submit("agent", candidate("fourth", "prefers prose"))
+    await sink.resolve("agent", "fourth", { status: "rejected", reason_code: "reviewer_declined" })
+    expect(await sink.submit("agent", candidate("fifth", "prefers prose"))).toMatchObject({ status: "pending" })
+    expect((await sink.list("agent")).map(entry => entry.candidate.candidate_id)).toEqual(["first", "fourth", "fifth"])
   } finally {
     await rm(root, { recursive: true, force: true })
   }

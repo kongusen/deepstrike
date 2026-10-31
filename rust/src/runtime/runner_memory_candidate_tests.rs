@@ -391,8 +391,10 @@ async fn a_redelivered_persist_memory_effect_gets_the_original_receipt() {
         .runner
         .memory_candidate_effect_result("op-1", "effect-8", MemoryCandidateSource::ChildRequest, proposal("fact"))
         .await;
-    assert_eq!(other_effect["status"], "pending");
+    // Another effect is another candidate, but the same fact is not reviewed twice.
     assert_ne!(other_effect["candidate_id"], first["candidate_id"]);
+    assert_eq!(other_effect["status"], "rejected");
+    assert_eq!(other_effect["reason_code"], "already_pending_review");
     assert_eq!(h.puts.load(Ordering::SeqCst), 0);
 }
 
@@ -449,8 +451,14 @@ async fn model_proposals_use_one_candidate_per_effect() {
         .runner
         .memory_candidate_effect_result("op-1", "effect-2", MemoryCandidateSource::ModelProposal, proposal("fact"))
         .await;
-    assert_eq!(other["status"], "pending");
+    // Another effect is another candidate, but the same fact is not reviewed twice.
     assert_ne!(other["candidate_id"], first["candidate_id"]);
+    assert_eq!(other["reason_code"], "already_pending_review");
+    let distinct = h
+        .runner
+        .memory_candidate_effect_result("op-1", "effect-3", MemoryCandidateSource::ModelProposal, proposal("another fact"))
+        .await;
+    assert_eq!(distinct["status"], "pending");
     assert_eq!(h.sink.candidates(Some(AGENT)).len(), 2);
 }
 

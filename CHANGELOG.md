@@ -48,6 +48,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is consulted.
 - Payload digests write a fractional `confidence` or `ttl_days` as `JSON.stringify` does in every
   SDK. Python previously wrote `1e-06` where the TypeScript SDKs wrote `0.000001`.
+- Candidate sinks refuse a payload they already hold for the agent under another candidate id:
+  `already_pending_review` while it is in review, `already_remembered` once accepted. A model
+  proposal and a child request for the same fact no longer both reach review. A rejected
+  candidate does not block the same payload from being proposed again. Hosts with their own sink
+  can use `memoryCandidateDuplicateReason` / `memory_candidate_duplicate_reason`.
 - **Breaking (WASM):** `memoryCandidateId`, `memoryCandidatePayloadDigest`,
   `memoryCandidateAttestationCanonicalPayload`, `memoryCandidateAttestationDigest`,
   `memoryCandidateAttestationMatches`, `verifyMemoryCandidateSource` and `admitMemoryCandidate`

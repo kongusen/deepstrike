@@ -53,6 +53,16 @@ export async function memoryCandidatePayloadDigest(record: MemoryRecord): Promis
   return String((await askMemoryAuthority({ op: "candidate_payload_digest", record })).payload_digest)
 }
 
+/** Why a sink refuses a candidate whose payload it already holds for the agent under another id:
+ *  the proposal is still in review, or already remembered. A rejected one does not count, so a
+ *  proposal the host turned down may be made again. Each write path mints its own ids, so this is
+ *  what keeps a model proposal and a child request for the same fact from both reaching review. */
+export function memoryCandidateDuplicateReason(held: MemoryCandidateReceipt["status"] | undefined): string | undefined {
+  if (held === "pending") return "already_pending_review"
+  if (held === "accepted") return "already_remembered"
+  return undefined
+}
+
 interface HeldCandidate {
   agentId: string
   candidate: MemoryCandidate
@@ -88,6 +98,11 @@ export class InMemoryMemoryCandidateSink implements MemoryCandidateSink {
         receipt_id: this.mintReceiptId(),
         reason_code: verification.reason_code,
       }
+    }
+    const duplicate = memoryCandidateDuplicateReason([...this.held.values()]
+      .find(held => held.agentId === agentId && held.payloadDigest === payloadDigest)?.receipt.status)
+    if (duplicate) {
+      return { status: "rejected", candidate_id: candidate.candidate_id, receipt_id: this.mintReceiptId(), reason_code: duplicate }
     }
     const receipt: MemoryCandidateReceipt = {
       status: "pending",
