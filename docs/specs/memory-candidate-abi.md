@@ -128,7 +128,7 @@ Rust core 在 `wire/effect.rs` 定义互斥结果，在 `wire/driver/effects.rs`
 
 ## 8. 候选 sink（node，python/wasm 移植见第 9 节）
 
-> 2026-10-30 更新：本节描述的宿主漏斗候选路径（`sessionExtraction`、`semanticArchive` 取 `"candidate_sink"`）与会话抽取的 v3 身份已随两条自动写入路径一起删除。PersistMemory 现在有了产生方（`propose_memory` 与子 agent 请求），sink 只接在 PersistMemory 一处。当前状态见第 15 节。
+> **历史实现（截至 2026-10-29）。** 本节保留 M1/M2 候选 sink 的原始设计与实现记录。`sessionExtraction`、`semanticArchive` 和会话抽取的 v3 candidate identity 已于 2026-10-30 删除；当前运行时契约以第 15 节为准。
 
 实现前核实的事实：PersistMemory 效果在任何 SDK 中都没有产生方。F15 之后模型没有写入入口，四个 SDK 构造 `child_completed` 时都不会填写 `request_memory_write`。真实运行中的记忆写入全部走宿主漏斗 `writeMemory`（`sessionExtraction` 会话抽取、`semanticArchive` 语义归档、宿主显式的 `remember`）：内核只经 `admit_memory_write` 做准入，不参与结算。因此 sink 接在两处，共用一个接口：
 
@@ -154,6 +154,8 @@ Rust core 在 `wire/effect.rs` 定义互斥结果，在 `wire/driver/effects.rs`
 
 ## 9. Python / WASM 的 M1 + M2 移植（2026-10-26）
 
+> **历史实现（截至 2026-10-29）。** 本节中的四开关策略、会话抽取和语义归档候选路径已删除。当前 Python/WASM 策略字段和启用条件以第 15 节为准；本节保留跨 SDK 移植和兼容性记录。
+
 Python 导出 `MemoryRuntimePolicy`、`MemoryCandidateSink`、`InMemoryMemoryCandidateSink` 与身份函数。策略支持 dataclass 或完整 dict，字段为 `retrieval`、`session_extraction`、`model_writes`、`semantic_archive`；RuntimeOptions 使用 `memory_runtime_policy` 和 `memory_candidate_sink`。WASM 使用与 Node 相同的 camelCase 配置和类型，并从包入口及 memory 入口导出。未指定策略保留旧行为；指定策略要求四个开关完整有效，候选路径缺 sink 时构造失败。
 
 两端在预取 hook、会话抽取模型、归档 summarizer/备用模型之前检查开关。canonical memory binding 的 read/write 分别投影 retrieval/modelWrites。宿主漏斗与 PersistMemory 执行共用 sink；accepted 必须包含 record_ref/digest，rejected 必须有 reason_code，pending 不调用 store.put、不产生 memory_written。显式宿主写入保留原接口与直写行为。
@@ -168,6 +170,8 @@ Python 导出 `MemoryRuntimePolicy`、`MemoryCandidateSink`、`InMemoryMemoryCan
 
 ## 10. 跨 SDK 契约收敛（2026-10-26）
 
+> **历史实现记录。** 本节记录第 8、9 节候选路径在四端收敛时采用的身份和载荷规则。自动抽取路径删除后，仍适用于保留的 `PersistMemory` candidate sink，但不再意味着 `session_extraction` 或 `semantic_archive` 是当前可用策略字段。
+
 Node/Python/WASM 的运行时身份使用第 8 节 v2 数组规则。新运行即使复用 session_id，也使用新的 operation_id；恢复同一运行保留 operation_id。归档使用原始 effect_id，不用经过名称清洗后的 record_id 作为幂等身份。进程内 sink 按 `(agent_id, candidate_id)` 隔离，因此不同 agent 使用同一个自定义 ID 不会共享回执；同 agent 同 ID 的 source 变化视为冲突。输入候选、返回回执和查询结果均为深拷贝，调用方不能修改已持有状态。
 
 审核载荷包含 scope、kind、name、description、content、provenance 的 author/trust/session_id/evidence_refs，以及 confidence、links、pinned、ttl_days；source 单独比较。仅存储 record_id、时间戳、召回计数不参与冲突比较。数组顺序有意义。agent_id 是宿主提供的命名空间，不构成认证或防伪来源保证。
@@ -181,6 +185,8 @@ Node/Python/WASM 的运行时身份使用第 8 节 v2 数组规则。新运行�
 本轮验证：Node build 与全量 Jest 207 套/1399 项通过（6 套/14 项跳过）；WASM build 与全量 Jest 49 套/291 项通过；重建 binding 的 5 个候选集成场景、canonical binding 检查与 74 项 golden 检查通过；Python 实际 Linux 扩展相关回归 139 项通过，未跑全量；Rust 完整 SDK test target 中共享回执测试通过，遍历 61 例，本轮未跑完整 Rust 测试集。进程重启与并发持久化幂等仍待生产 sink 实现后验证。
 
 ## 11. Rust SDK 的 M1 + M2 移植（2026-10-27）
+
+> **历史实现记录。** 本节中的四开关策略和自动抽取/语义归档路径已删除；保留的 Rust candidate sink、PersistMemory 回执和身份函数仍以第 15 节描述的当前来源为准。
 
 `rust/src/memory.rs` 导出 `MemoryRuntimePolicy`（`retrieval`、`session_extraction`、`model_writes`、`semantic_archive`，serde 为 snake_case，四个开关必填、拒绝未知字段）、`MemoryCandidateSink` trait、`MemoryCandidate`/`MemoryCandidateReceipt`（以 `status` 为标签，JSON 即 `memory_candidate_result` 的主体）、`InMemoryMemoryCandidateSink`，以及 `memory_candidate_id`/`memory_candidate_payload_digest`。身份与载荷摘要沿用第 8、10 节规则；固定向量 `candidate:ead40e56…7043` 与其他 SDK 一致，整数值 confidence 按 JSON.stringify 写法序列化。
 
