@@ -1,4 +1,5 @@
 // Mock @deepstrike/wasm-kernel for tests (no .wasm binary needed)
+import { createHash, createHmac } from "node:crypto"
 export const kernelEvents: Record<string, unknown>[] = []
 
 export function kernelAbiVersion(): number {
@@ -751,6 +752,37 @@ export function memoryAuthorityJson(raw: string): string {
       }
     }
     return JSON.stringify({ recalls, promotions })
+  }
+  // M2 identity. Integral confidences only (JSON.stringify and the kernel agree on those); the
+  // kernel's own vectors pin the general number form.
+  const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
+  const payloadDigest = (record: Record<string, any>) => `sha256:${sha256(JSON.stringify([
+    record.scope.tenant_id, record.scope.namespace, record.kind, record.name, record.description,
+    record.content, record.provenance.author, record.provenance.trust, record.provenance.session_id ?? null,
+    record.provenance.evidence_refs ?? [], record.confidence ?? null, record.links ?? [], record.pinned ?? false,
+    record.ttl_days ?? null,
+  ]))}`
+  const canonical = (a: Record<string, any>) => JSON.stringify([
+    a.issuer, a.key_id, a.agent_id, a.tenant_id, a.namespace, a.candidate_id, a.source,
+    a.payload_digest, a.issued_at, a.expires_at, a.policy_version,
+  ])
+  if (request.op === "candidate_id") return JSON.stringify({ candidate_id: `candidate:${sha256(JSON.stringify(request.parts))}` })
+  if (request.op === "candidate_payload_digest") return JSON.stringify({ payload_digest: payloadDigest(request.record) })
+  if (request.op === "attestation") {
+    const a = request.attestation
+    return JSON.stringify({
+      canonical_payload: canonical(a),
+      digest: `sha256:${sha256(canonical(a))}`,
+      ...(request.secret !== undefined ? { signature: `hmac-sha256:${createHmac("sha256", request.secret).update(canonical(a)).digest("hex")}` } : {}),
+    })
+  }
+  if (request.op === "verify_source") {
+    const { record, attestation } = request.candidate
+    const refuse = (reason_code: string) => JSON.stringify({ valid: false, reason_code })
+    if (record.provenance.trust === "host_verified" && record.provenance.author !== "host") return refuse("host_verified_requires_host_author")
+    if (!attestation) return record.provenance.trust === "host_verified" ? refuse("attestation_missing") : JSON.stringify({ valid: true })
+    if (!request.verifier) return refuse("attestation_verifier_unconfigured")
+    throw new Error("the WASM SDK verifies attestations host-side; the mock has no verifier path")
   }
   throw new Error("invalid mock memory authority request")
 }

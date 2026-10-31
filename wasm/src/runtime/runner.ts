@@ -844,8 +844,8 @@ export class RuntimeRunner {
         const source: MemoryCandidateSource = modelProposal ? "model_proposal" : "child_request"
         // Child requests keep their v2 identity so in-flight redeliveries still match the sink.
         const candidateId = modelProposal
-          ? memoryCandidateId(["v3", agentId, "model_proposal", operationId, effectId, "0"])
-          : memoryCandidateId(["v2", agentId, "child_request", operationId, effectId, "0"])
+          ? await memoryCandidateId(["v3", agentId, "model_proposal", operationId, effectId, "0"])
+          : await memoryCandidateId(["v2", agentId, "child_request", operationId, effectId, "0"])
         const receipt = await this.submitMemoryCandidate(agentId, source, candidateId, record)
         return { kind: "memory_candidate_result", effect_id: effectId, ...receipt }
       } catch (cause) {

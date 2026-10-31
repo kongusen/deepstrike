@@ -1,4 +1,4 @@
-import { sha256Hex } from "../runtime/sha256.js"
+import { askMemoryAuthority } from "./authority.js"
 import { memoryCandidatePayloadDigest, type MemoryCandidate, type MemoryCandidateSource } from "./candidate-sink.js"
 
 export interface MemoryCandidateAttestation {
@@ -21,41 +21,48 @@ export type MemoryCandidateVerification =
   | { valid: false; reason_code: string }
 
 export interface MemoryCandidateSourceVerifier {
-  verify(agentId: string, candidate: MemoryCandidate): MemoryCandidateVerification
+  verify(agentId: string, candidate: MemoryCandidate): MemoryCandidateVerification | Promise<MemoryCandidateVerification>
 }
 
 /** Browser-safe verifier seam. Signature verification stays host-injected in WASM. */
 export class HostMemoryCandidateSourceVerifier implements MemoryCandidateSourceVerifier {
-  constructor(private readonly verifyFn: (agentId: string, candidate: MemoryCandidate) => MemoryCandidateVerification) {}
-  verify(agentId: string, candidate: MemoryCandidate): MemoryCandidateVerification { return this.verifyFn(agentId, candidate) }
+  constructor(private readonly verifyFn: (agentId: string, candidate: MemoryCandidate) => MemoryCandidateVerification | Promise<MemoryCandidateVerification>) {}
+  verify(agentId: string, candidate: MemoryCandidate): MemoryCandidateVerification | Promise<MemoryCandidateVerification> { return this.verifyFn(agentId, candidate) }
 }
 
-export function verifyMemoryCandidateSource(agentId: string, candidate: MemoryCandidate, verifier?: MemoryCandidateSourceVerifier): MemoryCandidateVerification {
-  if (candidate.record.provenance.trust === "host_verified" && candidate.record.provenance.author !== "host") return { valid: false, reason_code: "host_verified_requires_host_author" }
-  const requires = candidate.record.provenance.author === "host" && candidate.record.provenance.trust === "host_verified"
-  if (!candidate.attestation) return requires ? { valid: false, reason_code: "attestation_missing" } : { valid: true }
-  if (!verifier) return { valid: false, reason_code: "attestation_verifier_unconfigured" }
-  return verifier.verify(agentId, candidate)
+/** Timestamps the kernel can read: non-negative safe integers. */
+function wireTimestamps(attestation: Pick<MemoryCandidateAttestation, "issued_at" | "expires_at">): boolean {
+  return [attestation.issued_at, attestation.expires_at].every(value => Number.isSafeInteger(value) && value >= 0)
 }
 
-export function admitMemoryCandidate(agentId: string, candidate: MemoryCandidate, verifier?: MemoryCandidateSourceVerifier): MemoryCandidateVerification {
+/** The kernel's provenance rule, then the host's verifier: only the host may claim
+ *  `host_verified`, that claim must carry an attestation, and any attestation supplied is verified. */
+export async function verifyMemoryCandidateSource(agentId: string, candidate: MemoryCandidate, verifier?: MemoryCandidateSourceVerifier): Promise<MemoryCandidateVerification> {
+  // Asked with no verifier, the kernel admits a candidate that needs none, refuses a bad claim, and
+  // answers `attestation_verifier_unconfigured` for one whose attestation the host must judge.
+  if (candidate.attestation && !wireTimestamps(candidate.attestation)) {
+    return verifier ? verifier.verify(agentId, candidate) : { valid: false, reason_code: "attestation_verifier_unconfigured" }
+  }
+  const answer = await askMemoryAuthority({ op: "verify_source", agent_id: agentId, candidate })
+  if (answer.valid === true) return { valid: true }
+  if (answer.reason_code === "attestation_verifier_unconfigured" && verifier) return verifier.verify(agentId, candidate)
+  return { valid: false, reason_code: String(answer.reason_code) }
+}
+
+export async function admitMemoryCandidate(agentId: string, candidate: MemoryCandidate, verifier?: MemoryCandidateSourceVerifier): Promise<MemoryCandidateVerification> {
   return verifyMemoryCandidateSource(agentId, candidate, verifier)
 }
 
-export function memoryCandidateAttestationCanonicalPayload(attestation: Omit<MemoryCandidateAttestation, "signature">): string {
-  return JSON.stringify([
-    attestation.issuer, attestation.key_id, attestation.agent_id, attestation.tenant_id,
-    attestation.namespace, attestation.candidate_id, attestation.source, attestation.payload_digest,
-    attestation.issued_at, attestation.expires_at, attestation.policy_version,
-  ])
+export async function memoryCandidateAttestationCanonicalPayload(attestation: Omit<MemoryCandidateAttestation, "signature">): Promise<string> {
+  return String((await askMemoryAuthority({ op: "attestation", attestation })).canonical_payload)
 }
 
-export function memoryCandidateAttestationDigest(attestation: MemoryCandidateAttestation): string {
-  return sha256Hex(memoryCandidateAttestationCanonicalPayload(attestation))
+export async function memoryCandidateAttestationDigest(attestation: MemoryCandidateAttestation): Promise<string> {
+  return String((await askMemoryAuthority({ op: "attestation", attestation })).digest)
 }
 
-export function memoryCandidateAttestationMatches(candidate: MemoryCandidate, attestation: MemoryCandidateAttestation): boolean {
+export async function memoryCandidateAttestationMatches(candidate: MemoryCandidate, attestation: MemoryCandidateAttestation): Promise<boolean> {
   return attestation.candidate_id === candidate.candidate_id &&
     attestation.source === candidate.source &&
-    attestation.payload_digest === memoryCandidatePayloadDigest(candidate.record)
+    attestation.payload_digest === await memoryCandidatePayloadDigest(candidate.record)
 }

@@ -1,12 +1,11 @@
 """Candidate hand-off: pending is terminal, but is not a remembered record."""
 from __future__ import annotations
 
-import hashlib
-import json
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Sequence, TypedDict, runtime_checkable
 
+from .authority import ask_memory_authority
 from .protocols import MemoryRecord
 
 if TYPE_CHECKING:
@@ -58,24 +57,14 @@ class MemoryCandidateSink(Protocol):
     async def submit(self, agent_id: str, candidate: MemoryCandidate) -> MemoryCandidateReceipt: ...
 
 
-def _json_digest(parts: Sequence[Any]) -> str:
-    # Match JSON.stringify's compact array identity, including non-ASCII text.
-    normalized = [int(value) if isinstance(value, float) and value.is_integer() else value for value in parts]
-    return hashlib.sha256(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
-
-
 def memory_candidate_id(parts: Sequence[str]) -> str:
-    return "candidate:" + _json_digest(parts)
+    """A candidate id from the write's canonical identity, minted by the kernel."""
+    return str(ask_memory_authority({"op": "candidate_id", "parts": [str(part) for part in parts]})["candidate_id"])
 
 
 def memory_candidate_payload_digest(record: MemoryRecord) -> str:
-    """Compare review metadata, excluding store IDs, timestamps and recall counters."""
-    return "sha256:" + _json_digest([
-        record.scope.tenant_id, record.scope.namespace, record.kind,
-        record.name, record.description, record.content,
-        record.provenance.author, record.provenance.trust, record.provenance.session_id,
-        record.provenance.evidence_refs, record.confidence, record.links, record.pinned, record.ttl_days,
-    ])
+    """The kernel's digest of what a candidate proposes, excluding store IDs, timestamps and recall counters."""
+    return str(ask_memory_authority({"op": "candidate_payload_digest", "record": asdict(record)})["payload_digest"])
 
 
 class InMemoryMemoryCandidateSink:

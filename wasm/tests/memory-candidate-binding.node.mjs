@@ -12,7 +12,8 @@ const { InMemoryKernelJournal } = await import("../dist/runtime/kernel-journal.j
 const { RuntimeRunner, collectText } = await import("../dist/runtime/runner.js")
 const { InMemorySessionLog } = await import("../dist/runtime/session-log.js")
 const { LocalExecutionPlane } = await import("../dist/runtime/execution-plane.js")
-const { InMemoryMemoryCandidateSink } = await import("../dist/memory/candidate-sink.js")
+const { InMemoryMemoryCandidateSink, memoryCandidateId, memoryCandidatePayloadDigest } = await import("../dist/memory/candidate-sink.js")
+const { memoryCandidateAttestationDigest } = await import("../dist/memory/attestation.js")
 const off = { retrieval: "disabled", modelWrites: "disabled" }
 const provider = { async complete() { throw Error("unused") }, async *stream() { yield {type:"text_delta",delta:"done"} } }
 const scope = { tenant_id: "agent", namespace: "candidates" }
@@ -78,4 +79,19 @@ for (const status of ["pending", "accepted", "rejected", "disabled"]) {
   }
   checks++
 }
+// Identity comes from the real kernel and matches the vectors every SDK pins.
+assert.equal(await memoryCandidateId(["child_request", "op-1", "effect-3", "0"]),
+  "candidate:ead40e56240c408c06eeb95c7fe297bbb3b3c187c8cf181e0227aa269bcd7043")
+assert.equal(await memoryCandidateAttestationDigest({
+  issuer: "issuer-a", key_id: "ed-key-1", agent_id: "agent", tenant_id: "t", namespace: "n",
+  candidate_id: "host-candidate", source: "model_proposal",
+  payload_digest: "sha256:dfac225c1c832a2900dd59d0867840abbf7e396ef13d03308b7c5ff7516e145f",
+  issued_at: 1000, expires_at: 2000, policy_version: "memory-attestation-v1", signature: "",
+}), "sha256:d69f2de333253735f34e09cd5ef2d8d9c2c71b9b066d302e9a7716bb8b19b63e")
+assert.match(await memoryCandidatePayloadDigest({
+  record_id: "memory:1", scope, name: "n", kind: "user", content: "c", description: "",
+  provenance: { author: "model", trust: "untrusted", evidence_refs: [] },
+  created_at: 1, updated_at: 1, recall_count: 0, confidence: 0.000001, links: [], pinned: false,
+}), /^sha256:[0-9a-f]{64}$/)
+checks++
 console.log(`Passed ${checks} real WASM candidate scenarios`)

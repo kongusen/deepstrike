@@ -52,61 +52,61 @@ describe("memory candidate sink (M2)", () => {
     expect(sink.candidates().map(held => held.record.content)).toEqual(["prefers numbered sections"])
   })
 
-  it("derives candidate ids from the write's identity, never at random", () => {
-    expect(memoryCandidateId(["child_request", "op-1", "effect-3", "0"]))
-      .toBe(memoryCandidateId(["child_request", "op-1", "effect-3", "0"]))
-    expect(memoryCandidateId(["child_request", "op-1", "effect-3", "0"]))
-      .not.toBe(memoryCandidateId(["child_request", "op-1", "effect-4", "0"]))
+  it("derives candidate ids from the write's identity, never at random", async () => {
+    expect(await memoryCandidateId(["child_request", "op-1", "effect-3", "0"]))
+      .toBe(await memoryCandidateId(["child_request", "op-1", "effect-3", "0"]))
+    expect(await memoryCandidateId(["child_request", "op-1", "effect-3", "0"]))
+      .not.toBe(await memoryCandidateId(["child_request", "op-1", "effect-4", "0"]))
     // Part boundaries are part of the identity: ["a", "bc"] and ["ab", "c"] differ.
-    expect(memoryCandidateId(["a", "bc"])).not.toBe(memoryCandidateId(["ab", "c"]))
+    expect(await memoryCandidateId(["a", "bc"])).not.toBe(await memoryCandidateId(["ab", "c"]))
   })
 
   it("a retried model proposal that answers differently proposes new candidates instead of conflicting", async () => {
     const sink = new InMemoryMemoryCandidateSink()
-    const propose = (content: string, overrides: Partial<MemoryRecord> = {}) => {
+    const propose = async (content: string, overrides: Partial<MemoryRecord> = {}) => {
       const proposed = record(content, overrides)
-      return { candidate_id: memoryCandidateId(["v3", "agent", "model_proposal", "s-1", "op-1", memoryCandidatePayloadDigest(proposed)]), source: "model_proposal" as const, record: proposed }
+      return { candidate_id: await memoryCandidateId(["v3", "agent", "model_proposal", "s-1", "op-1", await memoryCandidatePayloadDigest(proposed)]), source: "model_proposal" as const, record: proposed }
     }
-    const first = await sink.submit("agent", propose("prefers numbered sections"))
+    const first = await sink.submit("agent", await propose("prefers numbered sections"))
     // The retry re-asks the provider model: the same proposal (fresh store id and timestamps)
     // repeats the id and gets the original receipt; a changed answer is a different candidate.
-    const same = await sink.submit("agent", propose("prefers numbered sections", { record_id: "memory:retry", created_at: 9, updated_at: 9 }))
-    const changed = await sink.submit("agent", propose("prefers numbered headings"))
+    const same = await sink.submit("agent", await propose("prefers numbered sections", { record_id: "memory:retry", created_at: 9, updated_at: 9 }))
+    const changed = await sink.submit("agent", await propose("prefers numbered headings"))
     expect(same).toEqual(first)
     expect(changed).toMatchObject({ status: "pending" })
     expect(changed.candidate_id).not.toBe(first.candidate_id)
     expect(sink.candidates("agent")).toHaveLength(2)
   })
 
-  it("scopes a model proposal candidate id by agent, session and operation, and pins the cross-SDK vector", () => {
-    const proposed = record("prefers numbered sections")
-    const id = memoryCandidateId(["v3", "agent", "model_proposal", "s-1", "op-1", memoryCandidatePayloadDigest(proposed)])
-    expect(id).toBe(memoryCandidateId(["v3", "agent", "model_proposal", "s-1", "op-1", memoryCandidatePayloadDigest(proposed)]))
-    expect(memoryCandidateId(["v3", "agent", "model_proposal", "s-1", "op-2", memoryCandidatePayloadDigest(proposed)])).not.toBe(id)
-    expect(memoryCandidateId(["v3", "agent", "model_proposal", "s-2", "op-1", memoryCandidatePayloadDigest(proposed)])).not.toBe(id)
-    expect(memoryCandidateId(["v3", "other", "model_proposal", "s-1", "op-1", memoryCandidatePayloadDigest(proposed)])).not.toBe(id)
+  it("scopes a model proposal candidate id by agent, session and operation, and pins the cross-SDK vector", async () => {
+    const digest = await memoryCandidatePayloadDigest(record("prefers numbered sections"))
+    const id = await memoryCandidateId(["v3", "agent", "model_proposal", "s-1", "op-1", digest])
+    expect(id).toBe(await memoryCandidateId(["v3", "agent", "model_proposal", "s-1", "op-1", digest]))
+    expect(await memoryCandidateId(["v3", "agent", "model_proposal", "s-1", "op-2", digest])).not.toBe(id)
+    expect(await memoryCandidateId(["v3", "agent", "model_proposal", "s-2", "op-1", digest])).not.toBe(id)
+    expect(await memoryCandidateId(["v3", "other", "model_proposal", "s-1", "op-1", digest])).not.toBe(id)
     expect(id).toBe(MODEL_PROPOSAL_VECTOR)
   })
 })
 
 const MODEL_PROPOSAL_VECTOR = "candidate:d1d97d2e75c195fac9ca2bf3148de7ac88124f98d3517cf7038094eb0645a326"
 
-// Fixed cross-SDK SHA256 vector guards the browser hash helper's prefixed return value.
-it("matches the Node/Python/Rust attestation digest wire format", () => {
+// Fixed cross-SDK vector: the kernel's canonical form is the one every SDK has always signed.
+it("matches the Node/Python/Rust attestation digest wire format", async () => {
   const attestation = {
     issuer: "issuer-a", key_id: "ed-key-1", agent_id: "agent", tenant_id: "t", namespace: "n",
     candidate_id: "host-candidate", source: "model_proposal" as const,
     payload_digest: "sha256:dfac225c1c832a2900dd59d0867840abbf7e396ef13d03308b7c5ff7516e145f",
     issued_at: 1000, expires_at: 2000, policy_version: "memory-attestation-v1", signature: "ed25519:signature",
   }
-  expect(memoryCandidateAttestationCanonicalPayload(attestation)).toBe("[\"issuer-a\",\"ed-key-1\",\"agent\",\"t\",\"n\",\"host-candidate\",\"model_proposal\",\"sha256:dfac225c1c832a2900dd59d0867840abbf7e396ef13d03308b7c5ff7516e145f\",1000,2000,\"memory-attestation-v1\"]")
-  expect(memoryCandidateAttestationDigest(attestation)).toBe("sha256:d69f2de333253735f34e09cd5ef2d8d9c2c71b9b066d302e9a7716bb8b19b63e")
+  expect(await memoryCandidateAttestationCanonicalPayload(attestation)).toBe("[\"issuer-a\",\"ed-key-1\",\"agent\",\"t\",\"n\",\"host-candidate\",\"model_proposal\",\"sha256:dfac225c1c832a2900dd59d0867840abbf7e396ef13d03308b7c5ff7516e145f\",1000,2000,\"memory-attestation-v1\"]")
+  expect(await memoryCandidateAttestationDigest(attestation)).toBe("sha256:d69f2de333253735f34e09cd5ef2d8d9c2c71b9b066d302e9a7716bb8b19b63e")
 })
 
-it("matches the Node/Python candidate identity wire format", () => {
-  expect(memoryCandidateId(["child_request", "op-1", "effect-3", "0"]))
+it("matches the Node/Python candidate identity wire format", async () => {
+  expect(await memoryCandidateId(["child_request", "op-1", "effect-3", "0"]))
     .toBe("candidate:ead40e56240c408c06eeb95c7fe297bbb3b3c187c8cf181e0227aa269bcd7043")
-  expect(memoryCandidatePayloadDigest(record("content"))).toMatch(/^sha256:[a-f0-9]{64}$/)
+  expect(await memoryCandidatePayloadDigest(record("content"))).toMatch(/^sha256:[a-f0-9]{64}$/)
 })
 
 it("isolates an identical caller-supplied ID by agent", async () => {

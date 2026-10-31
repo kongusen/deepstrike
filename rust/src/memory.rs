@@ -1,8 +1,7 @@
 use async_trait::async_trait;
 use deepstrike_core::memory::durable::SessionData;
 use deepstrike_core::mm::memory::{
-    MemoryAuthor, MemoryKind, MemoryQuery, MemoryRecall, MemoryRecallLifecycle,
-    MemoryRecord, MemoryScope, MemoryTrustLevel,
+    MemoryKind, MemoryQuery, MemoryRecall, MemoryRecallLifecycle, MemoryRecord, MemoryScope,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -199,72 +198,19 @@ impl MemoryRuntimePolicy {
     }
 }
 
-/// Which write path produced a candidate. `ChildRequest` is the kernel's PersistMemory effect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemoryCandidateSource {
-    ChildRequest,
-    ModelProposal,
-}
-
-impl MemoryCandidateSource {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::ChildRequest => "child_request",
-            Self::ModelProposal => "model_proposal",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemoryCandidateAttestation {
-    pub issuer: String,
-    pub key_id: String,
-    pub agent_id: String,
-    pub tenant_id: String,
-    pub namespace: String,
-    pub candidate_id: String,
-    pub source: MemoryCandidateSource,
-    pub payload_digest: String,
-    pub issued_at: u64,
-    pub expires_at: u64,
-    pub policy_version: String,
-    pub signature: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MemoryCandidateAttestationReasonCode {
-    AttestationMissing,
-    AttestationVerifierUnconfigured,
-    AttestationIssuerUntrusted,
-    AttestationScopeMismatch,
-    AttestationCandidateMismatch,
-    AttestationSourceMismatch,
-    AttestationDigestMismatch,
-    AttestationNotYetValid,
-    AttestationExpired,
-    AttestationSignatureInvalid,
-    HostVerifiedRequiresHostAuthor,
-}
-
-impl MemoryCandidateAttestationReasonCode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::AttestationMissing => "attestation_missing",
-            Self::AttestationVerifierUnconfigured => "attestation_verifier_unconfigured",
-            Self::AttestationIssuerUntrusted => "attestation_issuer_untrusted",
-            Self::AttestationScopeMismatch => "attestation_scope_mismatch",
-            Self::AttestationCandidateMismatch => "attestation_candidate_mismatch",
-            Self::AttestationSourceMismatch => "attestation_source_mismatch",
-            Self::AttestationDigestMismatch => "attestation_digest_mismatch",
-            Self::AttestationNotYetValid => "attestation_not_yet_valid",
-            Self::AttestationExpired => "attestation_expired",
-            Self::AttestationSignatureInvalid => "attestation_signature_invalid",
-            Self::HostVerifiedRequiresHostAuthor => "host_verified_requires_host_author",
-        }
-    }
-}
+// Candidate identity and the attestation checks are kernel functions: one implementation, so
+// every SDK mints the same ids and refuses a source for the same reason.
+pub use deepstrike_core::mm::memory_candidate::{
+    AttestationWindow, MemoryCandidateAttestation, MemoryCandidateAttestationReasonCode,
+    MemoryCandidateSource, memory_candidate_attestation_canonical_payload,
+    memory_candidate_attestation_digest, memory_candidate_id, memory_candidate_payload_digest,
+    sign_memory_candidate_attestation,
+};
+use deepstrike_core::mm::memory_candidate::{
+    AttestedCandidate, MemoryCandidatePayload, MemoryCandidateSourceCheck,
+    check_memory_candidate_attestation, memory_candidate_source_check,
+    verify_memory_candidate_attestation_hmac,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemoryCandidate {
@@ -335,18 +281,33 @@ pub fn admit_memory_candidate(
     candidate: &MemoryCandidate,
     verifier: Option<&dyn MemoryCandidateSourceVerifier>,
 ) -> std::result::Result<(), MemoryCandidateAttestationReasonCode> {
-    if candidate.record.provenance.trust == MemoryTrustLevel::HostVerified
-        && candidate.record.provenance.author != MemoryAuthor::Host
-    {
-        return Err(MemoryCandidateAttestationReasonCode::HostVerifiedRequiresHostAuthor);
+    let payload = MemoryCandidatePayload::of(&candidate.record);
+    match memory_candidate_source_check(
+        &payload.provenance.author,
+        &payload.provenance.trust,
+        candidate.attestation.is_some(),
+    ) {
+        MemoryCandidateSourceCheck::Admit => Ok(()),
+        MemoryCandidateSourceCheck::Reject(code) => Err(code),
+        MemoryCandidateSourceCheck::Verify => verifier
+            .ok_or(MemoryCandidateAttestationReasonCode::AttestationVerifierUnconfigured)
+            .and_then(|source_verifier| source_verifier.verify(agent_id, candidate)),
     }
-    let requires = candidate.record.provenance.author == MemoryAuthor::Host
-        && candidate.record.provenance.trust == MemoryTrustLevel::HostVerified;
-    if requires || candidate.attestation.is_some() {
-        return verifier.ok_or(MemoryCandidateAttestationReasonCode::AttestationVerifierUnconfigured)
-            .and_then(|source_verifier| source_verifier.verify(agent_id, candidate));
-    }
-    Ok(())
+}
+
+/// Every check the kernel makes of an attestation, short of its signature. `key` is the issuer
+/// and key material the host's table holds for `attestation.key_id`.
+fn check_attestation<'a>(
+    agent_id: &str,
+    candidate: &'a MemoryCandidate,
+    key: Option<&(String, String)>,
+    window: AttestationWindow,
+) -> std::result::Result<&'a MemoryCandidateAttestation, MemoryCandidateAttestationReasonCode> {
+    let attestation = candidate.attestation.as_ref().ok_or(MemoryCandidateAttestationReasonCode::AttestationMissing)?;
+    let payload = MemoryCandidatePayload::of(&candidate.record);
+    let attested = AttestedCandidate { agent_id, candidate_id: &candidate.candidate_id, source: candidate.source, payload: &payload };
+    check_memory_candidate_attestation(&attested, attestation, key.map(|(issuer, _)| issuer.as_str()), &window)?;
+    Ok(attestation)
 }
 
 pub struct Ed25519MemoryCandidateSourceVerifier {
@@ -370,26 +331,19 @@ impl Ed25519MemoryCandidateSourceVerifier {
     }
 }
 
+impl Ed25519MemoryCandidateSourceVerifier {
+    fn window(&self) -> AttestationWindow {
+        AttestationWindow { now_ms: (self.now_ms)(), allowed_clock_skew_ms: self.allowed_clock_skew_ms, max_lifetime_ms: self.max_lifetime_ms, policy_version: self.policy_version.clone() }
+    }
+}
+
 impl MemoryCandidateSourceVerifier for Ed25519MemoryCandidateSourceVerifier {
     fn verify(&self, agent_id: &str, candidate: &MemoryCandidate) -> std::result::Result<(), MemoryCandidateAttestationReasonCode> {
         use base64::Engine as _;
         use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-        let attestation = candidate.attestation.as_ref().ok_or(MemoryCandidateAttestationReasonCode::AttestationMissing)?;
-        let (issuer, public_key) = self.trusted_issuers.get(&attestation.key_id).ok_or(MemoryCandidateAttestationReasonCode::AttestationIssuerUntrusted)?;
-        if issuer != &attestation.issuer || attestation.agent_id != agent_id { return Err(MemoryCandidateAttestationReasonCode::AttestationScopeMismatch); }
-        if attestation.tenant_id != candidate.record.scope.tenant_id || attestation.namespace != candidate.record.scope.namespace {
-            return Err(MemoryCandidateAttestationReasonCode::AttestationScopeMismatch);
-        }
-        if attestation.candidate_id != candidate.candidate_id { return Err(MemoryCandidateAttestationReasonCode::AttestationCandidateMismatch); }
-        if attestation.source != candidate.source { return Err(MemoryCandidateAttestationReasonCode::AttestationSourceMismatch); }
-        if attestation.payload_digest != memory_candidate_payload_digest(&candidate.record) { return Err(MemoryCandidateAttestationReasonCode::AttestationDigestMismatch); }
-        if attestation.policy_version != self.policy_version { return Err(MemoryCandidateAttestationReasonCode::AttestationSignatureInvalid); }
-        if attestation.expires_at <= attestation.issued_at || attestation.expires_at - attestation.issued_at > self.max_lifetime_ms {
-            return Err(MemoryCandidateAttestationReasonCode::AttestationExpired);
-        }
-        let now = (self.now_ms)();
-        if now.saturating_add(self.allowed_clock_skew_ms) < attestation.issued_at { return Err(MemoryCandidateAttestationReasonCode::AttestationNotYetValid); }
-        if now.saturating_sub(self.allowed_clock_skew_ms) > attestation.expires_at { return Err(MemoryCandidateAttestationReasonCode::AttestationExpired); }
+        let key = candidate.attestation.as_ref().and_then(|attestation| self.trusted_issuers.get(&attestation.key_id));
+        let attestation = check_attestation(agent_id, candidate, key, self.window())?;
+        let public_key = &key.expect("a checked attestation has a trusted key").1;
         let encoded_signature = attestation.signature.strip_prefix("ed25519:").ok_or(MemoryCandidateAttestationReasonCode::AttestationSignatureInvalid)?;
         let signature_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded_signature).map_err(|_| MemoryCandidateAttestationReasonCode::AttestationSignatureInvalid)?;
         let signature = Signature::from_slice(&signature_bytes).map_err(|_| MemoryCandidateAttestationReasonCode::AttestationSignatureInvalid)?;
@@ -421,64 +375,22 @@ impl HmacMemoryCandidateSourceVerifier {
     }
 }
 
+impl HmacMemoryCandidateSourceVerifier {
+    fn window(&self) -> AttestationWindow {
+        AttestationWindow { now_ms: (self.now_ms)(), allowed_clock_skew_ms: self.allowed_clock_skew_ms, max_lifetime_ms: self.max_lifetime_ms, policy_version: self.policy_version.clone() }
+    }
+}
+
 impl MemoryCandidateSourceVerifier for HmacMemoryCandidateSourceVerifier {
     fn verify(&self, agent_id: &str, candidate: &MemoryCandidate) -> std::result::Result<(), MemoryCandidateAttestationReasonCode> {
-        let attestation = candidate.attestation.as_ref().ok_or(MemoryCandidateAttestationReasonCode::AttestationMissing)?;
-        let (issuer, key) = self.trusted_issuers.get(&attestation.key_id).ok_or(MemoryCandidateAttestationReasonCode::AttestationIssuerUntrusted)?;
-        if issuer != &attestation.issuer || attestation.agent_id != agent_id { return Err(MemoryCandidateAttestationReasonCode::AttestationScopeMismatch); }
-        if attestation.tenant_id != candidate.record.scope.tenant_id || attestation.namespace != candidate.record.scope.namespace {
-            return Err(MemoryCandidateAttestationReasonCode::AttestationScopeMismatch);
-        }
-        if attestation.candidate_id != candidate.candidate_id { return Err(MemoryCandidateAttestationReasonCode::AttestationCandidateMismatch); }
-        if attestation.source != candidate.source { return Err(MemoryCandidateAttestationReasonCode::AttestationSourceMismatch); }
-        if attestation.payload_digest != memory_candidate_payload_digest(&candidate.record) { return Err(MemoryCandidateAttestationReasonCode::AttestationDigestMismatch); }
-        if attestation.policy_version != self.policy_version { return Err(MemoryCandidateAttestationReasonCode::AttestationSignatureInvalid); }
-        if attestation.expires_at <= attestation.issued_at { return Err(MemoryCandidateAttestationReasonCode::AttestationSignatureInvalid); }
-        if attestation.expires_at - attestation.issued_at > self.max_lifetime_ms { return Err(MemoryCandidateAttestationReasonCode::AttestationExpired); }
-        let now = (self.now_ms)();
-        if now.saturating_add(self.allowed_clock_skew_ms) < attestation.issued_at { return Err(MemoryCandidateAttestationReasonCode::AttestationNotYetValid); }
-        if now.saturating_sub(self.allowed_clock_skew_ms) > attestation.expires_at { return Err(MemoryCandidateAttestationReasonCode::AttestationExpired); }
-        if !constant_time_equal(&sign_memory_candidate_attestation(attestation, key), &attestation.signature) {
+        let key = candidate.attestation.as_ref().and_then(|attestation| self.trusted_issuers.get(&attestation.key_id));
+        let attestation = check_attestation(agent_id, candidate, key, self.window())?;
+        let secret = &key.expect("a checked attestation has a trusted key").1;
+        if !verify_memory_candidate_attestation_hmac(attestation, secret) {
             return Err(MemoryCandidateAttestationReasonCode::AttestationSignatureInvalid);
         }
         Ok(())
     }
-}
-
-pub fn memory_candidate_attestation_canonical_payload(attestation: &MemoryCandidateAttestation) -> String {
-    serde_json::to_string(&[
-        serde_json::json!(attestation.issuer), serde_json::json!(attestation.key_id), serde_json::json!(attestation.agent_id), serde_json::json!(attestation.tenant_id),
-        serde_json::json!(attestation.namespace), serde_json::json!(attestation.candidate_id), serde_json::json!(attestation.source), serde_json::json!(attestation.payload_digest),
-        serde_json::json!(attestation.issued_at), serde_json::json!(attestation.expires_at), serde_json::json!(attestation.policy_version),
-    ]).expect("attestation canonical form serializes")
-}
-
-pub fn memory_candidate_attestation_digest(attestation: &MemoryCandidateAttestation) -> String {
-    format!("sha256:{}", sha256_hex(&memory_candidate_attestation_canonical_payload(attestation)))
-}
-
-pub fn sign_memory_candidate_attestation(attestation: &MemoryCandidateAttestation, key: &str) -> String {
-    let canonical = memory_candidate_attestation_canonical_payload(attestation);
-    let digest = hmac_sha256(key.as_bytes(), canonical.as_bytes());
-    format!("hmac-sha256:{}", digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>())
-}
-
-fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    use sha2::Digest;
-    let mut padded = [0u8; 64];
-    if key.len() > 64 { padded[..32].copy_from_slice(&sha2::Sha256::digest(key)); } else { padded[..key.len()].copy_from_slice(key); }
-    let mut inner = [0u8; 64];
-    let mut outer = [0u8; 64];
-    for index in 0..64 { inner[index] = padded[index] ^ 0x36; outer[index] = padded[index] ^ 0x5c; }
-    let mut inner_input = inner.to_vec(); inner_input.extend_from_slice(message);
-    let inner_digest = sha2::Sha256::digest(inner_input);
-    let mut outer_input = outer.to_vec(); outer_input.extend_from_slice(&inner_digest);
-    sha2::Sha256::digest(outer_input).into()
-}
-
-fn constant_time_equal(left: &str, right: &str) -> bool {
-    left.as_bytes().len() == right.as_bytes().len()
-        && left.as_bytes().iter().zip(right.as_bytes()).fold(0u8, |acc, (a, b)| acc | (a ^ b)) == 0
 }
 
 #[async_trait]
@@ -773,44 +685,6 @@ fn append_outbox(state: &mut FileCandidateState, event_type: &str, agent_id: &st
     state.next_event += 1;
 }
 
-/// A candidate id from the write's canonical identity — never random, so a retry repeats it.
-/// The parts are hashed as a compact JSON array, byte-identical to the Node/Python/WASM rule.
-pub fn memory_candidate_id(parts: &[&str]) -> String {
-    format!(
-        "candidate:{}",
-        sha256_hex(&serde_json::to_string(parts).expect("string parts serialize"))
-    )
-}
-
-/// The part of a record a candidate is judged by. Store ids, timestamps and recall counters are
-/// excluded: a retry of the same write may mint them afresh without changing what is proposed.
-pub fn memory_candidate_payload_digest(record: &MemoryRecord) -> String {
-    // JSON.stringify writes an integral number without a fraction; match it so the digest is the
-    // same one the other SDKs compute.
-    let confidence = if record.confidence.fract() == 0.0 && record.confidence.abs() < 1e15 {
-        serde_json::json!(record.confidence as i64)
-    } else {
-        serde_json::json!(record.confidence)
-    };
-    let payload = serde_json::json!([
-        record.scope.tenant_id,
-        record.scope.namespace,
-        record.kind,
-        record.name,
-        record.description,
-        record.content,
-        record.provenance.author,
-        record.provenance.trust,
-        record.provenance.session_id,
-        record.provenance.evidence_refs,
-        confidence,
-        record.links,
-        record.pinned,
-        record.ttl_days,
-    ]);
-    format!("sha256:{}", sha256_hex(&payload.to_string()))
-}
-
 /// M5 · the index line one recalled record becomes. Recall pushes an index line, not the record:
 /// the header names the record, its kind and its trust level so the model can tell host-verified
 /// facts from untrusted ones, and the body is the record's one-line description (its name when it
@@ -858,14 +732,6 @@ pub fn memory_fetch_recall(
         score: 1.0,
         why: "record_id".to_string(),
     }]
-}
-
-fn sha256_hex(text: &str) -> String {
-    use sha2::Digest;
-    sha2::Sha256::digest(text.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
 }
 
 struct HeldCandidate {

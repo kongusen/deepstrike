@@ -35,6 +35,24 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[MEMORY record_id=… kind=… trust=…] <description>`, instead of the record content. The model
   reads relevant records with `memory(record_id=…)`. Hosts whose records have no description
   fall back to the record name.
+- Memory candidate identity moved into the kernel (`mm::memory_candidate`, served by
+  `memoryAuthorityJson` ops `candidate_id`, `candidate_payload_digest`, `attestation` and
+  `verify_source`). Candidate ids, payload digests, attestation canonical payloads and HMAC
+  signatures, and every attestation check except an Ed25519 signature, now come from one
+  implementation. The SDKs keep key lookup and Ed25519 verification only. Existing ids and digests
+  are unchanged.
+- Attestation refusals are now the same in every SDK. In Rust and Python an issuer that does not
+  match the key's issuer is `attestation_issuer_untrusted`, not `attestation_scope_mismatch`; an
+  attestation that expires at or before it is issued is `attestation_expired` with either verifier;
+  and a `host_verified` record without an attestation is `attestation_missing` before any verifier
+  is consulted.
+- Payload digests write a fractional `confidence` or `ttl_days` as `JSON.stringify` does in every
+  SDK. Python previously wrote `1e-06` where the TypeScript SDKs wrote `0.000001`.
+- **Breaking (WASM):** `memoryCandidateId`, `memoryCandidatePayloadDigest`,
+  `memoryCandidateAttestationCanonicalPayload`, `memoryCandidateAttestationDigest`,
+  `memoryCandidateAttestationMatches`, `verifyMemoryCandidateSource` and `admitMemoryCandidate`
+  return promises, because the WASM kernel loads asynchronously. A `MemoryCandidateSourceVerifier`
+  may now return a promise.
 
 ## [0.2.76] - 2026-10-20
 

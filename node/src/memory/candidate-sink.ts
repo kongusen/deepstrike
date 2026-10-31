@@ -3,8 +3,7 @@
 // host's sink as a candidate, and the sink answers whether it is pending review, accepted, or
 // rejected. Only an accepted candidate is a remembered record.
 
-import { createHash } from "node:crypto"
-
+import { askMemoryAuthority } from "./authority.js"
 import type { MemoryRecord } from "./protocols.js"
 import { admitMemoryCandidate, type MemoryCandidateAttestation, type MemoryCandidateSourceVerifier } from "./attestation.js"
 
@@ -41,31 +40,17 @@ export interface MemoryCandidateSink {
   submit(agentId: string, candidate: MemoryCandidate): Promise<MemoryCandidateReceipt>
 }
 
-/** A candidate id from the write's canonical identity — never random, so a retry repeats it. */
+/** A candidate id from the write's canonical identity — never random, so a retry repeats it.
+ *  The kernel mints it, so every SDK hands the same write the same id. */
 export function memoryCandidateId(parts: readonly string[]): string {
-  return `candidate:${createHash("sha256").update(JSON.stringify(parts)).digest("hex")}`
+  return String(askMemoryAuthority({ op: "candidate_id", parts }).candidate_id)
 }
 
-/** The part of a record a candidate is judged by. Store ids, timestamps and recall counters are excluded: a retry
- *  of the same write may mint them afresh without changing what is being proposed. */
+/** The kernel's digest of the part of a record a candidate is judged by. Store ids, timestamps and
+ *  recall counters are excluded: a retry of the same write may mint them afresh without changing
+ *  what is being proposed. */
 export function memoryCandidatePayloadDigest(record: MemoryRecord): string {
-  const payload = JSON.stringify([
-    record.scope.tenant_id,
-    record.scope.namespace,
-    record.kind,
-    record.name,
-    record.description,
-    record.content,
-    record.provenance.author,
-    record.provenance.trust,
-    record.provenance.session_id ?? null,
-    record.provenance.evidence_refs,
-    record.confidence,
-    record.links,
-    record.pinned,
-    record.ttl_days ?? null,
-  ])
-  return `sha256:${createHash("sha256").update(payload).digest("hex")}`
+  return String(askMemoryAuthority({ op: "candidate_payload_digest", record }).payload_digest)
 }
 
 interface HeldCandidate {

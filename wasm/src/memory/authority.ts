@@ -23,10 +23,13 @@ export interface KernelMemoryPolicyWire {
 
 export interface MemoryPromotion { record_id: string; recall_count: number }
 
-async function ask(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+/** One stateless question to the kernel's memory authority. */
+export async function askMemoryAuthority(request: Record<string, unknown>): Promise<Record<string, unknown>> {
   const kernel = await getKernel()
   return JSON.parse(kernel.memoryAuthorityJson(JSON.stringify(request))) as Record<string, unknown>
 }
+
+const ask = askMemoryAuthority
 
 /** Would the kernel admit this write? Resolves to the refusal reason, or `undefined` when admitted. */
 export async function checkMemoryWrite(

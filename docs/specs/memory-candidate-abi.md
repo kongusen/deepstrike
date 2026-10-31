@@ -270,3 +270,24 @@ DEC-3 只允许一个未结算的 PersistMemory。模型提案撞上时不再报
 - `memory_queried` 观察的 `query` 字段对点查记为 `record_id=<id>`，未新增事件字段。
 
 模型主动的 `memory(query)` 检索仍返回全文，索引化只针对宿主推送。
+
+## 17. 候选身份与来源校验收进内核（2026-10-31）
+
+候选 ID、载荷摘要、认证的 canonical payload、HMAC 签名，以及除 Ed25519 签名外的全部认证检查，现在只在 Rust core 实现一份（`mm::memory_candidate`）。Rust SDK 直接 re-export；Node、Python、WASM 经已有的 `memoryAuthorityJson` 桥调用，绑定层没有新增函数。
+
+新增四个操作：
+
+| op | 请求 | 回答 |
+|---|---|---|
+| `candidate_id` | `parts: string[]` | `{ candidate_id }` |
+| `candidate_payload_digest` | `record`（SDK 的记录 JSON，未知字段忽略） | `{ payload_digest }` |
+| `attestation` | `attestation`，可选 `secret` | `{ canonical_payload, digest, signature? }`（给 `secret` 时附 HMAC 签名） |
+| `verify_source` | `agent_id`、`candidate`、可选 `verifier { trusted_issuer?, hmac_secret?, window }` | `{ valid, reason_code?, signed_payload? }` |
+
+`verify_source` 先做来源规则：只有 host 能声明 `host_verified`，且必须带认证；带了认证的一律要验证。没有 `verifier` 时，需要验证的候选得到 `attestation_verifier_unconfigured`，SDK 据此把它交给宿主验证器。有 `verifier` 时按固定顺序检查：issuer 不受信 → agent/tenant/namespace 不符 → candidate 不符 → source 不符 → 摘要不符 → policy_version 不符（报 `signature_invalid`）→ 有效期倒置或超长（报 `expired`）→ 尚未生效 → 已过期。给了 `hmac_secret` 时内核再校验签名；否则通过的回答带 `signed_payload`，由宿主用 Ed25519 公钥校验这段字节。Ed25519 密钥不进内核。
+
+canonical 形式沿用 TypeScript SDK 一直使用的 `JSON.stringify` 紧凑数组，所以已有的 ID 和摘要都不变（四个固定向量照旧通过）。数字按 ECMAScript `Number#toString` 输出，这修正了 Python 对小数的写法（原来 `1e-06`，现在 `0.000001`）。
+
+收敛顺带统一了三处分歧：issuer 与 key 不符时 Rust/Python 原来报 `scope_mismatch`，现在都报 `issuer_untrusted`；有效期倒置时 Rust/Python 的 HMAC 验证器原来报 `signature_invalid`，现在都报 `expired`；`host_verified` 缺认证时 Rust 原来先找验证器，现在直接报 `attestation_missing`。
+
+WASM 内核异步加载，所以 WASM 的身份与校验函数改为返回 Promise，`MemoryCandidateSourceVerifier.verify` 也可以返回 Promise。WASM 的 jest mock 只为测试实现了同样的规则，真实内核的字节一致性由 `memory-candidate-binding.node.mjs` 钉住。

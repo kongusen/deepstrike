@@ -3,8 +3,7 @@
 // host's sink as a candidate, and the sink answers whether it is pending review, accepted, or
 // rejected. Only an accepted candidate is a remembered record.
 
-import { sha256Hex } from "../runtime/sha256.js"
-
+import { askMemoryAuthority } from "./authority.js"
 import type { MemoryRecord } from "./index.js"
 import { admitMemoryCandidate, type MemoryCandidateAttestation, type MemoryCandidateSourceVerifier } from "./attestation.js"
 
@@ -41,31 +40,17 @@ export interface MemoryCandidateSink {
   submit(agentId: string, candidate: MemoryCandidate): Promise<MemoryCandidateReceipt>
 }
 
-/** A candidate id from the write's canonical identity — never random, so a retry repeats it. */
-export function memoryCandidateId(parts: readonly string[]): string {
-  return sha256Hex(JSON.stringify(parts)).replace(/^sha256:/, "candidate:")
+/** A candidate id from the write's canonical identity — never random, so a retry repeats it.
+ *  The kernel mints it, so every SDK hands the same write the same id. */
+export async function memoryCandidateId(parts: readonly string[]): Promise<string> {
+  return String((await askMemoryAuthority({ op: "candidate_id", parts })).candidate_id)
 }
 
-/** The part of a record a candidate is judged by. Store ids, timestamps and recall counters are excluded: a retry
- *  of the same write may mint them afresh without changing what is being proposed. */
-export function memoryCandidatePayloadDigest(record: MemoryRecord): string {
-  const payload = JSON.stringify([
-    record.scope.tenant_id,
-    record.scope.namespace,
-    record.kind,
-    record.name,
-    record.description,
-    record.content,
-    record.provenance.author,
-    record.provenance.trust,
-    record.provenance.session_id ?? null,
-    record.provenance.evidence_refs,
-    record.confidence,
-    record.links,
-    record.pinned,
-    record.ttl_days ?? null,
-  ])
-  return sha256Hex(payload)
+/** The kernel's digest of the part of a record a candidate is judged by. Store ids, timestamps and
+ *  recall counters are excluded: a retry of the same write may mint them afresh without changing
+ *  what is being proposed. */
+export async function memoryCandidatePayloadDigest(record: MemoryRecord): Promise<string> {
+  return String((await askMemoryAuthority({ op: "candidate_payload_digest", record })).payload_digest)
 }
 
 interface HeldCandidate {
@@ -83,7 +68,7 @@ export class InMemoryMemoryCandidateSink implements MemoryCandidateSink {
   constructor(private readonly sourceVerifier?: MemoryCandidateSourceVerifier) {}
 
   async submit(agentId: string, candidate: MemoryCandidate): Promise<MemoryCandidateReceipt> {
-    const payloadDigest = memoryCandidatePayloadDigest(candidate.record)
+    const payloadDigest = await memoryCandidatePayloadDigest(candidate.record)
     const key = JSON.stringify([agentId, candidate.candidate_id])
     const existing = this.held.get(key)
     if (existing) {
@@ -95,7 +80,7 @@ export class InMemoryMemoryCandidateSink implements MemoryCandidateSink {
         reason_code: "candidate_conflict",
       }
     }
-    const verification = admitMemoryCandidate(agentId, candidate, this.sourceVerifier)
+    const verification = await admitMemoryCandidate(agentId, candidate, this.sourceVerifier)
     if (!verification.valid) {
       return {
         status: "rejected",
