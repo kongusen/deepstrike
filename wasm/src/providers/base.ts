@@ -115,6 +115,16 @@ export function toAnthropicMessages(
       continue
     }
 
+    if (msg.role === "assistant" && !msg.toolCalls?.length) {
+      // A turn that carries a server compaction block goes back as the API sent it: the block is
+      // what tells the API to drop everything before it.
+      const replay = nativeReplay?.(msg)
+      if (replay?.some(block => block.type === "compaction")) {
+        result.push({ role: "assistant", content: replay })
+        continue
+      }
+    }
+
     if (msg.role === "assistant" && msg.toolCalls?.length) {
       const replay = nativeReplay?.(msg)
       if (replay) {

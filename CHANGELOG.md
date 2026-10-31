@@ -28,6 +28,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `AnthropicProvider` accepts `contextEditing` (`context_editing` in Python,
   `with_context_editing` in Rust) and sends `clear_tool_uses_20250919` with the
   `context-management-2025-06-27` beta. It then declares tool-result clearing as native.
+- `AnthropicProvider` accepts `compaction` (`compaction` in Python, `.with_compaction(..)` in Rust)
+  and sends `compact_20260112` with the `compact-2026-01-12` beta. It then declares compaction
+  as native, so the kernel skips context collapse and auto-compact. The `compaction` block the API
+  returns is captured from streamed and complete responses and replayed in front of that turn on
+  later requests. Set the trigger below the kernel's renewal threshold; renewal still decides on
+  the full local history.
+
+### Fixed
+
+- The WASM `AnthropicProvider` no longer sends `betas` in the request body when context editing
+  is on. They travel only in the `anthropic-beta` header, as the Messages API requires.
 
 ### Changed
 

@@ -15,6 +15,7 @@ from deepstrike.types.content import normalize_canonical_adapter_input
 logger = logging.getLogger(__name__)
 _OFFICIAL_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 _CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
+_COMPACTION_BETA = "compact-2026-01-12"
 
 
 class AnthropicContextEditing(TypedDict, total=False):
@@ -41,21 +42,39 @@ def _clear_tool_uses_edit(config: bool | AnthropicContextEditing) -> dict:
     return edit
 
 
-def _context_editing_extensions(
-    configured: dict | None,
+class AnthropicCompaction(TypedDict, total=False):
+    trigger_input_tokens: int
+    instructions: str
+
+
+def _compact_edit(config: bool | AnthropicCompaction) -> dict:
+    values = {} if config is True else config
+    edit: dict = {"type": "compact_20260112"}
+    if "trigger_input_tokens" in values:
+        edit["trigger"] = {"type": "input_tokens", "value": values["trigger_input_tokens"]}
+    if "instructions" in values:
+        edit["instructions"] = values["instructions"]
+    return edit
+
+
+def _native_context_extensions(
+    configured: list[tuple[str, dict]],
     extensions: dict | None,
 ) -> dict:
-    if configured is None:
+    """The native edits ride on every request, beside any betas or edits the caller passed: the
+    kernel stopped running those tiers on the strength of them."""
+    if not configured:
         return {}
     caller = dict(extensions or {})
     betas = list(caller.get("betas", [])) if isinstance(caller.get("betas"), list) else []
-    if _CONTEXT_MANAGEMENT_BETA not in betas:
-        betas.append(_CONTEXT_MANAGEMENT_BETA)
     management = caller.get("context_management")
     management = dict(management) if isinstance(management, dict) else {}
     edits = list(management.get("edits", [])) if isinstance(management.get("edits"), list) else []
-    if not any(isinstance(edit, dict) and edit.get("type") == "clear_tool_uses_20250919" for edit in edits):
-        edits.append(configured)
+    for beta, edit in configured:
+        if beta not in betas:
+            betas.append(beta)
+        if not any(isinstance(held, dict) and held.get("type") == edit["type"] for held in edits):
+            edits.append(edit)
     management["edits"] = edits
     return {"betas": betas, "context_management": management}
 
@@ -81,6 +100,7 @@ class AnthropicProvider:
         base_url: str | None = None,
         auth_mode: str = "api_key",
         context_editing: bool | AnthropicContextEditing = False,
+        compaction: bool | AnthropicCompaction = False,
     ):
         self._model = model
         self._retry = retry_config or RetryConfig()
@@ -99,7 +119,14 @@ class AnthropicProvider:
             if base_url is None or base_url.rstrip("/") == _OFFICIAL_ANTHROPIC_BASE_URL
             else "reject"
         )
-        self._context_editing = _clear_tool_uses_edit(context_editing) if context_editing else None
+        # Clearing runs first so the compaction trigger reads the input after tool results are cleared.
+        # Compaction is summarized server-side; set its trigger below the kernel's renewal threshold,
+        # since renewal stays the safety net.
+        self._native_context_edits: list[tuple[str, dict]] = []
+        if context_editing:
+            self._native_context_edits.append((_CONTEXT_MANAGEMENT_BETA, _clear_tool_uses_edit(context_editing)))
+        if compaction:
+            self._native_context_edits.append((_COMPACTION_BETA, _compact_edit(compaction)))
 
     def runtime_policy(self) -> RuntimePolicy:
         return _CLAUDE_POLICIES.get(self._model, RuntimePolicy())
@@ -115,7 +142,10 @@ class AnthropicProvider:
             model=self._model,
             reasoning={"supported": True, "preserve_across_tool_turns": True, "requires_replay_for_tool_turns": True},
             tool_calls={"supported": True, "requires_strict_pairing": True},
-            native_context={"tool_result_clearing": True} if self._context_editing else {},
+            native_context={
+                **({"tool_result_clearing": True} if any(edit["type"] == "clear_tool_uses_20250919" for _, edit in self._native_context_edits) else {}),
+                **({"compaction": True} if any(edit["type"] == "compact_20260112" for _, edit in self._native_context_edits) else {}),
+            },
         )
 
     def peek_provider_replay(self, content: str, tool_calls: list[ToolCall]) -> dict | None:
@@ -195,7 +225,7 @@ class AnthropicProvider:
     def _remember_native_blocks(self, content: str, tool_calls: list[ToolCall], blocks: list[dict]) -> None:
         if not blocks:
             return
-        if not tool_calls and not any(b.get("type") == "thinking" for b in blocks):
+        if not tool_calls and not any(b.get("type") in ("thinking", "compaction") for b in blocks):
             return
         self._native_assistant_blocks[self._assistant_replay_key_parts(content, tool_calls)] = blocks
 
@@ -209,7 +239,7 @@ class AnthropicProvider:
         adapter_extensions = {
             "textualToolCallPolicy": self._default_textual_tool_call_policy,
             **(extensions or {}),
-            **_context_editing_extensions(self._context_editing, extensions),
+            **_native_context_extensions(self._native_context_edits, extensions),
         }
         canonical = normalize_canonical_adapter_input(
             context, tools, extensions=adapter_extensions,

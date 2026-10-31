@@ -257,6 +257,14 @@ def to_anthropic_messages(
                 result.append({"role": "user", "content": parts})
             continue
 
+        if msg.role == "assistant" and native_replay is not None and not getattr(msg, "tool_calls", None):
+            # A turn that carries a server compaction block goes back as the API sent it: the
+            # block is what tells the API to drop everything before it.
+            replay = native_replay(msg)
+            if replay and any(block.get("type") == "compaction" for block in replay):
+                result.append({"role": "assistant", "content": replay})
+                continue
+
         if msg.role == "assistant" and getattr(msg, "tool_calls", None):
             replay = native_replay(msg) if native_replay else None
             if replay is not None:

@@ -14,6 +14,17 @@ use crate::{Error, Result};
 
 const CONTEXT_MANAGEMENT_BETA: &str = "context-management-2025-06-27";
 const CLEAR_TOOL_USES_EDIT: &str = "clear_tool_uses_20250919";
+const COMPACTION_BETA: &str = "compact-2026-01-12";
+const COMPACT_EDIT: &str = "compact_20260112";
+
+/// Anthropic threshold compaction (`compact_20260112`). Unset fields take the API defaults.
+#[derive(Debug, Clone, Default)]
+pub struct AnthropicCompaction {
+    /// Input tokens at which the API summarizes earlier history (at least 50,000; default 150,000).
+    pub trigger_input_tokens: Option<u32>,
+    /// A summarization prompt that replaces the API's default one.
+    pub instructions: Option<String>,
+}
 
 /// Anthropic context editing (`clear_tool_uses_20250919`). Unset fields take the API defaults.
 #[derive(Debug, Clone, Default)]
@@ -31,6 +42,7 @@ pub struct AnthropicProvider {
     model: String,
     max_tokens: u32,
     context_editing: Option<Value>,
+    compaction: Option<Value>,
     native_assistant_blocks: Mutex<HashMap<String, Vec<Value>>>,
     stream_native_blocks: Arc<Mutex<HashMap<usize, Value>>>,
 }
@@ -64,9 +76,25 @@ impl AnthropicProvider {
             model: model.into(),
             max_tokens: 8096,
             context_editing,
+            compaction: None,
             native_assistant_blocks: Mutex::new(HashMap::new()),
             stream_native_blocks: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Summarize earlier history server-side once input reaches a threshold. The provider then
+    /// declares compaction native and the kernel stops compacting itself; its renewal stays the
+    /// safety net, so set the trigger below the kernel's renewal threshold.
+    pub fn with_compaction(mut self, config: AnthropicCompaction) -> Self {
+        let mut edit = json!({"type": COMPACT_EDIT});
+        if let Some(value) = config.trigger_input_tokens {
+            edit["trigger"] = json!({"type": "input_tokens", "value": value});
+        }
+        if let Some(instructions) = config.instructions {
+            edit["instructions"] = json!(instructions);
+        }
+        self.compaction = Some(edit);
+        self
     }
 
     fn remember_native_blocks(&self, content: &str, tool_calls: &[ToolCall], blocks: Vec<Value>) {
@@ -76,7 +104,7 @@ impl AnthropicProvider {
         if tool_calls.is_empty()
             && !blocks
                 .iter()
-                .any(|b| b.get("type").and_then(|v| v.as_str()) == Some("thinking"))
+                .any(|b| matches!(b.get("type").and_then(|v| v.as_str()), Some("thinking" | "compaction")))
         {
             return;
         }
@@ -179,6 +207,18 @@ fn context_to_anthropic(
                 }
             }
             continue;
+        }
+
+        if message.role == Role::Assistant && message.tool_calls.is_empty() {
+            // A turn that carries a server compaction block goes back as the API sent it: the
+            // block is what tells the API to drop everything before it.
+            let content = message.content.as_text().unwrap_or("");
+            if let Some(replay) = native_replay(content, &message.tool_calls)
+                && replay.iter().any(|block| block["type"] == "compaction")
+            {
+                msgs.push(json!({ "role": "assistant", "content": replay }));
+                continue;
+            }
         }
 
         if message.role == Role::Assistant && !message.tool_calls.is_empty() {
@@ -414,7 +454,10 @@ impl LLMProvider for AnthropicProvider {
     }
 
     fn native_context_tiers(&self) -> NativeContextTiers {
-        NativeContextTiers { tool_result_clearing: self.context_editing.is_some(), compaction: false }
+        NativeContextTiers {
+            tool_result_clearing: self.context_editing.is_some(),
+            compaction: self.compaction.is_some(),
+        }
     }
 
     fn runtime_policy(&self) -> RuntimePolicy {
@@ -534,9 +577,17 @@ impl LLMProvider for AnthropicProvider {
             .and_then(Value::as_array)
             .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).collect())
             .unwrap_or_default();
-        if let Some(configured) = &self.context_editing {
-            if !betas.iter().any(|beta| beta == CONTEXT_MANAGEMENT_BETA) {
-                betas.push(CONTEXT_MANAGEMENT_BETA.to_owned());
+        // The native edits ride on every request, beside any the caller passed: the kernel stopped
+        // running those tiers on the strength of them. Clearing runs first so the compaction
+        // trigger reads the input after tool results are cleared.
+        let native = [
+            (CONTEXT_MANAGEMENT_BETA, CLEAR_TOOL_USES_EDIT, &self.context_editing),
+            (COMPACTION_BETA, COMPACT_EDIT, &self.compaction),
+        ];
+        for (beta, kind, configured) in native {
+            let Some(configured) = configured else { continue };
+            if !betas.iter().any(|held| held == beta) {
+                betas.push(beta.to_owned());
             }
             let management = body
                 .as_object_mut()
@@ -555,7 +606,7 @@ impl LLMProvider for AnthropicProvider {
                 *edits = json!([]);
             }
             let edits = edits.as_array_mut().expect("edits is an array");
-            if !edits.iter().any(|edit| edit.get("type").and_then(Value::as_str) == Some(CLEAR_TOOL_USES_EDIT)) {
+            if !edits.iter().any(|edit| edit.get("type").and_then(Value::as_str) == Some(kind)) {
                 edits.push(configured.clone());
             }
         }
@@ -722,6 +773,13 @@ fn parse_anthropic_sse(
                                     (stream, buf, tool_blocks, native_blocks, acc),
                                 ));
                             }
+                        } else if d["type"] == "compaction_delta" {
+                            // The summary arrives whole in one delta; it is replayed, never shown.
+                            if let Some(block) = native_blocks.lock().unwrap().get_mut(&idx) {
+                                let held = block.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                                let delta = d["content"].as_str().unwrap_or("");
+                                block["content"] = json!(format!("{held}{delta}"));
+                            }
                         } else if d["type"] == "signature_delta" {
                             if let Some(block) = native_blocks.lock().unwrap().get_mut(&idx) {
                                 let sig = block
@@ -879,6 +937,55 @@ mod tests {
             prepared["body"]["context_management"]["edits"],
             json!([{"type": "clear_thinking_20251015"}, {"type": "clear_tool_uses_20250919"}])
         );
+    }
+
+    #[test]
+    fn compaction_sends_compact_beside_clear_tool_uses_and_declares_both_tiers() {
+        let provider = AnthropicProvider::with_context_editing("test-key", "claude-opus-5-5", Some(Default::default()))
+            .with_compaction(AnthropicCompaction { trigger_input_tokens: Some(120_000), instructions: None });
+        assert_eq!(
+            provider.native_context_tiers(),
+            NativeContextTiers { tool_result_clearing: true, compaction: true }
+        );
+        let prepared = provider.prepare_context_request(&question_context(), &[], None, None).unwrap();
+        assert_eq!(prepared["betas"], json!(["context-management-2025-06-27", "compact-2026-01-12"]));
+        assert_eq!(
+            prepared["body"]["context_management"]["edits"],
+            json!([
+                {"type": "clear_tool_uses_20250919"},
+                {"type": "compact_20260112", "trigger": {"type": "input_tokens", "value": 120_000}},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_streamed_compaction_block_is_replayed_on_the_next_request() {
+        use futures::StreamExt;
+        let provider = AnthropicProvider::with_model("test-key", "claude-opus-5-5")
+            .with_compaction(AnthropicCompaction::default());
+        let events = [
+            json!({"type": "content_block_start", "index": 0, "content_block": {"type": "compaction", "content": null}}),
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "compaction_delta", "content": "Summary: the user wants a scraper."}}),
+            json!({"type": "content_block_stop", "index": 0}),
+            json!({"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}),
+            json!({"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Here it is."}}),
+            json!({"type": "content_block_stop", "index": 1}),
+        ];
+        let sse: String = events.iter().map(|event| format!("data: {event}\n\n")).collect();
+        let bytes = futures::stream::iter(vec![Ok::<_, reqwest::Error>(bytes::Bytes::from(sse))]);
+        let streamed: Vec<_> = parse_anthropic_sse(bytes, provider.stream_native_blocks.clone()).collect().await;
+        assert!(streamed.iter().all(Result::is_ok));
+        provider.commit_stream_replay("Here it is.", &[]);
+
+        let context = InternalRenderedContext {
+            turns: vec![CoreMessage::user("question"), CoreMessage::assistant("Here it is."), CoreMessage::user("add retries")],
+            ..question_context()
+        };
+        let prepared = provider.prepare_context_request(&context, &[], None, None).unwrap();
+        let assistant = &prepared["body"]["messages"][1];
+        assert_eq!(assistant["role"], "assistant");
+        assert_eq!(assistant["content"][0], json!({"type": "compaction", "content": "Summary: the user wants a scraper."}));
+        assert_eq!(assistant["content"][1]["text"], "Here it is.");
     }
 
     #[test]

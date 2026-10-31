@@ -189,6 +189,8 @@ class AnthropicMessagesAdapter:
                 native_blocks.append({"type": "tool_use", "id": _get(block, "id"), "name": _get(block, "name"), "input": _get(block, "input") or {}})
             elif kind == "thinking":
                 native_blocks.append({"type": "thinking", "thinking": _get(block, "thinking"), "signature": _get(block, "signature")})
+            elif kind == "compaction":
+                native_blocks.append({"type": "compaction", "content": _get(block, "content") or ""})
         if (
             _textual_tool_call_policy(input) == "reject"
             and ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER in content
@@ -254,6 +256,8 @@ class AnthropicMessagesAdapter:
                 state.final_text += visible_text
                 if visible_text:
                     events.append(TextDelta(delta=visible_text))
+            elif block_type == "compaction":
+                state.native_blocks[idx]["content"] = _get(block, "content") or ""
             elif block_type == "tool_use":
                 state.saw_native_tool_call = True
                 state.native_blocks[idx].update({"id": _get(block, "id"), "name": _get(block, "name"), "input": _get(block, "input") or {}})
@@ -273,6 +277,10 @@ class AnthropicMessagesAdapter:
                 text = _get(delta, "thinking") or ""
                 state.native_blocks.setdefault(idx, {"type": "thinking"})["thinking"] = state.native_blocks.get(idx, {}).get("thinking", "") + text
                 events.append(ThinkingDelta(delta=text))
+            elif delta_type == "compaction_delta":
+                # The summary arrives whole in one delta; it is replayed, never shown.
+                block = state.native_blocks.setdefault(idx, {"type": "compaction"})
+                block["content"] = (block.get("content") or "") + (_get(delta, "content") or "")
             elif delta_type == "signature_delta":
                 state.native_blocks.setdefault(idx, {"type": "thinking"})["signature"] = _get(delta, "signature") or ""
             elif delta_type == "input_json_delta" and idx in state.tool_blocks:

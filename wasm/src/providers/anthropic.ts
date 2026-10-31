@@ -137,13 +137,35 @@ export interface AnthropicContextEditing {
   clearToolInputs?: boolean
 }
 
+/** `compact_20260112` settings. Unset fields take the API defaults. */
+export interface AnthropicCompaction {
+  /** Input tokens at which the API summarizes earlier history (at least 50,000; API default 150,000). */
+  triggerInputTokens?: number
+  /** A summarization prompt that replaces the API's default one. */
+  instructions?: string
+}
+
 export interface AnthropicProviderOptions {
   /** Clear old tool results server-side (context editing). The provider then declares the tier
    *  native and the kernel stops clearing tool results itself; `true` takes the API defaults. */
   contextEditing?: true | AnthropicContextEditing
+  /** Summarize earlier history server-side once input reaches a threshold (`compact_20260112`).
+   *  The provider then declares compaction native and the kernel stops compacting itself; its
+   *  renewal stays the safety net, so set the trigger below the kernel's renewal threshold. */
+  compaction?: true | AnthropicCompaction
 }
 
 const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
+const COMPACTION_BETA = "compact-2026-01-12"
+
+function compactEdit(config: true | AnthropicCompaction): Record<string, unknown> {
+  const c = config === true ? {} : config
+  return {
+    type: "compact_20260112",
+    ...(c.triggerInputTokens !== undefined ? { trigger: { type: "input_tokens", value: c.triggerInputTokens } } : {}),
+    ...(c.instructions !== undefined ? { instructions: c.instructions } : {}),
+  }
+}
 
 function clearToolUsesEdit(config: true | AnthropicContextEditing): Record<string, unknown> {
   const c = config === true ? {} : config
@@ -159,7 +181,8 @@ function clearToolUsesEdit(config: true | AnthropicContextEditing): Record<strin
 
 export class AnthropicProvider implements LLMProvider {
   private nativeAssistantBlocks = new Map<string, Array<Record<string, unknown>>>()
-  private readonly contextEditing?: Record<string, unknown>
+  /** Server-side context edits and the beta each needs. */
+  private readonly nativeContextEdits: Array<{ beta: string; edit: Record<string, unknown> }> = []
 
   constructor(
     private readonly apiKey: string,
@@ -167,7 +190,9 @@ export class AnthropicProvider implements LLMProvider {
     private readonly maxTokens = 8096,
     options: AnthropicProviderOptions = {},
   ) {
-    if (options.contextEditing) this.contextEditing = clearToolUsesEdit(options.contextEditing)
+    // Clearing runs first so the compaction trigger reads the input after tool results are cleared.
+    if (options.contextEditing) this.nativeContextEdits.push({ beta: CONTEXT_MANAGEMENT_BETA, edit: clearToolUsesEdit(options.contextEditing) })
+    if (options.compaction) this.nativeContextEdits.push({ beta: COMPACTION_BETA, edit: compactEdit(options.compaction) })
   }
 
   descriptor(): ProviderDescriptor {
@@ -184,7 +209,12 @@ export class AnthropicProvider implements LLMProvider {
         supported: true,
         requiresStrictPairing: true,
       },
-      ...(this.contextEditing ? { nativeContext: { toolResultClearing: true } } : {}),
+      ...(this.nativeContextEdits.length ? {
+        nativeContext: {
+          ...(this.nativeContextEdits.some(native => native.edit.type === "clear_tool_uses_20250919") ? { toolResultClearing: true } : {}),
+          ...(this.nativeContextEdits.some(native => native.edit.type === "compact_20260112") ? { compaction: true } : {}),
+        },
+      } : {}),
     }
   }
 
@@ -254,18 +284,19 @@ export class AnthropicProvider implements LLMProvider {
     if (extensions?.enable_thinking) {
       body.thinking = { type: "enabled", budget_tokens: 8000 }
     }
-    // The kernel stopped clearing tool results on the strength of this edit, so it rides on every request.
-    if (this.contextEditing) {
-      const callerBetas = Array.isArray(extensions?.betas) ? extensions.betas.filter((value): value is string => typeof value === "string") : []
-      const betas = callerBetas.includes(CONTEXT_MANAGEMENT_BETA)
-        ? callerBetas
-        : [...callerBetas, CONTEXT_MANAGEMENT_BETA]
-      body.betas = betas
+    // The kernel stopped running these tiers on the strength of the edits, so they ride on every
+    // request beside any betas or edits the caller passed.
+    if (this.nativeContextEdits.length) {
+      const betas = Array.isArray(extensions?.betas) ? extensions.betas.filter((value): value is string => typeof value === "string") : []
       const callerManagement = extensions?.context_management && typeof extensions.context_management === "object"
         ? extensions.context_management as { edits?: unknown[] }
         : {}
       const edits = Array.isArray(callerManagement.edits) ? [...callerManagement.edits] : []
-      if (!edits.some(edit => (edit as { type?: unknown })?.type === "clear_tool_uses_20250919")) edits.push(this.contextEditing)
+      for (const native of this.nativeContextEdits) {
+        if (!betas.includes(native.beta)) betas.push(native.beta)
+        if (!edits.some(edit => (edit as { type?: unknown })?.type === native.edit.type)) edits.push(native.edit)
+      }
+      body.betas = betas
       body.context_management = { ...callerManagement, edits }
     }
 
@@ -292,7 +323,8 @@ export class AnthropicProvider implements LLMProvider {
           ...(Array.isArray(body.betas) ? body.betas.filter((value): value is string => typeof value === "string" && value !== "prompt-caching-2024-07-31") : []),
         ].filter((value, index, values) => values.indexOf(value) === index).join(","),
       },
-      body: JSON.stringify(body),
+      // Betas travel in the header; the Messages API refuses them as a body field.
+      body: JSON.stringify({ ...body, betas: undefined }),
       ...(signal ? { signal } : {}), // #2-B-ii: a preempt aborts the in-flight request at the socket.
     })
     if (!resp.ok) {
@@ -369,6 +401,9 @@ export class AnthropicProvider implements LLMProvider {
             } else if (d.type === "thinking_delta") {
               nativeBlocks[idx] = { ...nativeBlocks[idx], thinking: String(nativeBlocks[idx]?.thinking ?? "") + d.thinking }
               yield { type: "thinking_delta", delta: d.thinking } as ThinkingDelta
+            } else if (d.type === "compaction_delta") {
+              // The summary arrives whole in one delta; it is replayed, never shown.
+              nativeBlocks[idx] = { ...nativeBlocks[idx], content: String(nativeBlocks[idx]?.content ?? "") + String(d.content ?? "") }
             } else if (d.type === "signature_delta") {
               nativeBlocks[idx] = { ...nativeBlocks[idx], signature: String(nativeBlocks[idx]?.signature ?? "") + d.signature }
             } else if (d.type === "input_json_delta" && toolBlocks[idx]) {
@@ -398,7 +433,7 @@ export class AnthropicProvider implements LLMProvider {
     blocks: Array<Record<string, unknown>>,
   ): void {
     if (!blocks.length) return
-    if (!message.toolCalls?.length && !blocks.some(b => b.type === "thinking")) return
+    if (!message.toolCalls?.length && !blocks.some(b => b.type === "thinking" || b.type === "compaction")) return
     this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
 }

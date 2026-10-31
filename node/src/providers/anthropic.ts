@@ -5,6 +5,7 @@ import type {
   CacheBreakpointStrategy,
   LLMProvider,
   ModelMessage,
+  NativeContextTiers,
   PromptMeasurement,
   ProviderDescriptor,
   ProviderReplay,
@@ -41,6 +42,19 @@ export interface AnthropicProviderConfig {
    *  provider then declares the tier native and the kernel stops clearing tool results itself;
    *  `true` takes the API defaults. */
   contextEditing?: true | AnthropicContextEditing
+  /** Summarize earlier history server-side once input reaches a threshold (`compact_20260112`).
+   *  The provider then declares compaction native and the kernel stops compacting itself; its
+   *  renewal stays the safety net, so set the trigger below the kernel's renewal threshold.
+   *  `true` takes the API defaults. */
+  compaction?: true | AnthropicCompaction
+}
+
+/** `compact_20260112` settings. Unset fields take the API defaults. */
+export interface AnthropicCompaction {
+  /** Input tokens at which the API summarizes earlier history (at least 50,000; API default 150,000). */
+  triggerInputTokens?: number
+  /** A summarization prompt that replaces the API's default one. */
+  instructions?: string
 }
 
 /** `clear_tool_uses_20250919` settings. Unset fields take the API defaults. */
@@ -58,6 +72,22 @@ export interface AnthropicContextEditing {
 }
 
 const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
+const COMPACTION_BETA = "compact-2026-01-12"
+
+/** One server-side context edit and the beta that enables it. */
+interface NativeContextEdit {
+  beta: string
+  edit: Record<string, unknown>
+}
+
+function compactEdit(config: true | AnthropicCompaction): Record<string, unknown> {
+  const c = config === true ? {} : config
+  return {
+    type: "compact_20260112",
+    ...(c.triggerInputTokens !== undefined ? { trigger: { type: "input_tokens", value: c.triggerInputTokens } } : {}),
+    ...(c.instructions !== undefined ? { instructions: c.instructions } : {}),
+  }
+}
 
 function clearToolUsesEdit(config: true | AnthropicContextEditing): Record<string, unknown> {
   const c = config === true ? {} : config
@@ -84,7 +114,7 @@ export class AnthropicProvider implements LLMProvider {
   private readonly resolvedRuntimePolicy: RuntimePolicy
   private readonly directNativeTokenCounting: boolean
   private readonly defaultTextualToolCallPolicy: "off" | "reject"
-  private readonly contextEditing?: Record<string, unknown>
+  private readonly nativeContextEdits: NativeContextEdit[] = []
   private resolvedRuntime?: ResolvedAnthropicRuntime
 
   constructor(config: AnthropicProviderConfig) {
@@ -115,7 +145,9 @@ export class AnthropicProvider implements LLMProvider {
     this.directNativeTokenCounting = configuredBaseURL === undefined
       || configuredBaseURL === officialBaseURL
     this.defaultTextualToolCallPolicy = this.directNativeTokenCounting ? "off" : "reject"
-    if (c.contextEditing) this.contextEditing = clearToolUsesEdit(c.contextEditing)
+    // Clearing runs first so the compaction trigger reads the input after tool results are cleared.
+    if (c.contextEditing) this.nativeContextEdits.push({ beta: CONTEXT_MANAGEMENT_BETA, edit: clearToolUsesEdit(c.contextEditing) })
+    if (c.compaction) this.nativeContextEdits.push({ beta: COMPACTION_BETA, edit: compactEdit(c.compaction) })
   }
 
   runtimePolicy(): RuntimePolicy {
@@ -141,7 +173,7 @@ export class AnthropicProvider implements LLMProvider {
         supported: true,
         requiresStrictPairing: true,
       },
-      ...(this.contextEditing ? { nativeContext: { toolResultClearing: true } } : {}),
+      ...(this.nativeContextEdits.length ? { nativeContext: this.nativeContextTiers() } : {}),
     }
   }
 
@@ -208,24 +240,32 @@ export class AnthropicProvider implements LLMProvider {
       extensions: {
         textualToolCallPolicy: this.defaultTextualToolCallPolicy,
         ...extensions,
-        ...this.contextEditingExtensions(extensions),
+        ...this.nativeContextExtensions(extensions),
       },
       replayForMessage: message => this.peekProviderReplay(message),
     })
   }
 
-  /** Context editing rides on every request, beside any betas or edits the caller passed: the
-   *  kernel stopped clearing tool results on the strength of it. */
-  private contextEditingExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
-    if (!this.contextEditing) return {}
-    const betas = Array.isArray(extensions?.betas) ? extensions.betas as string[] : []
-    const management = extensions?.context_management as { edits?: unknown[] } | undefined
-    const edits = Array.isArray(management?.edits) ? management.edits : []
-    const clearing = edits.some(edit => (edit as { type?: unknown })?.type === "clear_tool_uses_20250919")
+  private nativeContextTiers(): NativeContextTiers {
+    const types = new Set(this.nativeContextEdits.map(native => native.edit.type))
     return {
-      betas: betas.includes(CONTEXT_MANAGEMENT_BETA) ? betas : [...betas, CONTEXT_MANAGEMENT_BETA],
-      context_management: { ...management, edits: clearing ? edits : [...edits, this.contextEditing] },
+      ...(types.has("clear_tool_uses_20250919") ? { toolResultClearing: true } : {}),
+      ...(types.has("compact_20260112") ? { compaction: true } : {}),
     }
+  }
+
+  /** The native edits ride on every request, beside any betas or edits the caller passed: the
+   *  kernel stopped running those tiers on the strength of them. */
+  private nativeContextExtensions(extensions?: Record<string, unknown>): Record<string, unknown> {
+    if (!this.nativeContextEdits.length) return {}
+    const betas = Array.isArray(extensions?.betas) ? [...extensions.betas as string[]] : []
+    const management = extensions?.context_management as { edits?: unknown[] } | undefined
+    const edits = Array.isArray(management?.edits) ? [...management.edits] : []
+    for (const native of this.nativeContextEdits) {
+      if (!betas.includes(native.beta)) betas.push(native.beta)
+      if (!edits.some(edit => (edit as { type?: unknown })?.type === native.edit.type)) edits.push(native.edit)
+    }
+    return { betas, context_management: { ...management, edits } }
   }
 
   private buildPlan(
@@ -389,7 +429,7 @@ export class AnthropicProvider implements LLMProvider {
     blocks: Array<Record<string, unknown>>,
   ): void {
     if (!blocks.length) return
-    if (!message.toolCalls?.length && !blocks.some(block => block.type === "thinking")) return
+    if (!message.toolCalls?.length && !blocks.some(block => block.type === "thinking" || block.type === "compaction")) return
     this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
 }

@@ -215,12 +215,15 @@ function toolResult(result: CanonicalToolResult): Record<string, unknown> {
 }
 
 function canonicalMessage(message: CanonicalMessage): Record<string, unknown> | undefined {
+  // A turn that carries a server compaction block goes back as the API sent it: the block is what
+  // tells the API to drop everything before it.
+  const native = message.providerReplay?.native_blocks
   if (
     message.role === "assistant"
-    && message.toolCalls?.length
-    && message.providerReplay?.native_blocks?.length
+    && native?.length
+    && (message.toolCalls?.length || native.some(block => block.type === "compaction"))
   ) {
-    return { role: "assistant", content: ensureAssistantToolText(message.providerReplay.native_blocks) }
+    return { role: "assistant", content: ensureAssistantToolText(native) }
   }
   const content: Array<Record<string, unknown>> = []
   for (const item of message.blocks) {
@@ -537,6 +540,12 @@ export class AnthropicMessagesAdapter implements ProtocolAdapter<
           thinking: String(state.nativeBlocks[chunk.index]?.thinking ?? "") + delta.thinking,
         }
         events.push({ type: "thinking_delta", delta: delta.thinking } as ThinkingDelta)
+      } else if (delta.type === "compaction_delta") {
+        // The summary arrives whole in one delta; it is replayed, never shown.
+        state.nativeBlocks[chunk.index] = {
+          ...state.nativeBlocks[chunk.index],
+          content: String(state.nativeBlocks[chunk.index]?.content ?? "") + String(delta.content ?? ""),
+        }
       } else if (delta.type === "signature_delta") {
         state.nativeBlocks[chunk.index] = {
           ...state.nativeBlocks[chunk.index],

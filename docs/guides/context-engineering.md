@@ -158,7 +158,24 @@ new AnthropicProvider({ apiKey, model: "claude-opus-5-5", contextEditing: { trig
 
 WASM 用构造参数 `options.contextEditing`，Rust 用 `AnthropicProvider::with_context_editing`。未设置的字段使用 API 默认值。Provider 自动加上 `context-management-2025-06-27` beta，并把 edit 追加在调用方自带的 edits 之后；调用方已经传了 `clear_tool_uses` 时不重复添加。没有任何委托时，wire 配置与 golden fixture 字节不变。
 
-Anthropic Provider 目前只声明 `tool_result_clearing`。服务端 compaction 要求把不透明的 compaction block 原样回传，这需要内核 history 能保存它，所以 `compaction` 档位暂不委托。
+服务端阈值压缩（`compact_20260112`）同样可以交给 Anthropic：
+
+```python
+AnthropicProvider(api_key, model="claude-opus-5-5", context_editing=True, compaction={"trigger_input_tokens": 120_000})
+```
+
+```ts
+new AnthropicProvider({ apiKey, model: "claude-opus-5-5", contextEditing: true, compaction: { triggerInputTokens: 120_000 } })
+```
+
+WASM 用 `options.compaction`，Rust 用 `.with_compaction(AnthropicCompaction { .. })`。Provider 加上 `compact-2026-01-12` beta 并声明 `compaction`。两者同时开启时，`clear_tool_uses` 排在 `compact` 前面，让压缩触发值按清理后的输入计算。
+
+API 在输入达到阈值时，在 assistant 回复开头返回一个 `compaction` 块。之后的请求必须原样带回这个块，API 会忽略它之前的全部内容。内核 history 里只保存这一轮的文本，块本身存在 Provider 的 replay 里（流式和非流式都会捕获，会随 `llm_completed` 写进会话日志，恢复时重新注入）。渲染请求时，带 `compaction` 块的 assistant 轮按原生块回放，其余轮次不变。
+
+两点要注意：
+
+- 本地 history 并不会因此变短。内核压力仍取 Provider 观测值与本地估算值中的较大者，所以 renewal 照常在本地阈值触发。服务端阈值要设得低于内核的 renewal 阈值，否则服务端还没压缩，内核已经先续期了。
+- 内核如果改写了这一轮的文本（例如 `collapse_old_assistant_narration`），replay 就对不上了。此时块不会再发出，API 收到的是未压缩的完整历史，多花一些输入 token，但不会出错。
 
 ---
 

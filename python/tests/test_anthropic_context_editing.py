@@ -93,3 +93,63 @@ def test_native_tiers_lower_onto_delegated_tiers():
     config: dict = {"context_policy": {"preserve_recent_turns": 3}}
     merge_delegated_context_policy(config, provider)
     assert config["context_policy"] == {"preserve_recent_turns": 3, "delegated_tiers": {"tool_result_clearing": True}}
+
+
+@pytest.mark.asyncio
+async def test_compaction_sends_compact_beside_clear_tool_uses_and_declares_both_tiers():
+    provider = AnthropicProvider("k", context_editing=True, compaction={"trigger_input_tokens": 120_000, "instructions": "Keep the open questions."})
+    assert provider.descriptor().native_context == {"tool_result_clearing": True, "compaction": True}
+    cap = await _sent(provider)
+    assert cap["kwargs"]["betas"] == ["context-management-2025-06-27", "compact-2026-01-12"]
+    assert cap["kwargs"]["context_management"]["edits"] == [
+        {"type": "clear_tool_uses_20250919"},
+        {"type": "compact_20260112", "trigger": {"type": "input_tokens", "value": 120_000}, "instructions": "Keep the open questions."},
+    ]
+
+
+class _ChunkStreamCtx:
+    def __init__(self, chunks: list[dict]):
+        self._chunks = chunks
+
+    async def __aenter__(self):
+        async def gen():
+            for chunk in self._chunks:
+                yield chunk
+        return gen()
+
+    async def __aexit__(self, *a):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_a_streamed_compaction_block_is_replayed_on_the_next_request():
+    provider = AnthropicProvider("k", compaction=True)
+    chunks = [
+        {"type": "message_start", "message": {"id": "msg_1", "usage": {"input_tokens": 10, "output_tokens": 0}}},
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "compaction", "content": None}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "compaction_delta", "content": "Summary: the user wants a scraper."}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "Here it is."}},
+        {"type": "content_block_stop", "index": 1},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}},
+    ]
+    sent: list[dict] = []
+
+    class Messages:
+        def stream(self, **kwargs):
+            sent.append(kwargs)
+            return _ChunkStreamCtx(chunks if len(sent) == 1 else [])
+
+    provider._client = SimpleNamespace(messages=Messages(), beta=SimpleNamespace(messages=Messages()))
+    _ = [event async for event in provider.stream(CTX, [])]
+    follow_up = RenderedContext(turns=[
+        ModelMessage(role="user", content="hi"),
+        ModelMessage(role="assistant", content="Here it is."),
+        ModelMessage(role="user", content="add retries"),
+    ])
+    _ = [event async for event in provider.stream(follow_up, [])]
+    assistant = sent[1]["messages"][1]
+    assert assistant["role"] == "assistant"
+    assert [block["type"] for block in assistant["content"]] == ["compaction", "text"]
+    assert assistant["content"][0]["content"] == "Summary: the user wants a scraper."

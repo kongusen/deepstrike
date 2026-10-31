@@ -72,7 +72,7 @@ pub use memory::{
     admit_memory_candidate, consume_memory_lease_write, memory_candidate_attestation_canonical_payload, memory_candidate_attestation_digest, memory_candidate_duplicate_reason, memory_candidate_id, memory_candidate_payload_digest, memory_fetch_recall, memory_record_expired, memory_recall_turn, revoke_memory_lease, sign_memory_candidate_attestation, verify_memory_lease,
 };
 pub use providers::RuntimePolicy;
-pub use providers::anthropic::{AnthropicContextEditing, AnthropicProvider};
+pub use providers::anthropic::{AnthropicCompaction, AnthropicContextEditing, AnthropicProvider};
 pub use providers::openai::{OpenAIProvider, deepseek, kimi, minimax, ollama, qwen};
 pub use providers::request_plan::{
     CostObservation, NormalizedProviderUsage, PricingRates, PricingSnapshot,
