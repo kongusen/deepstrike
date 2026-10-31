@@ -1,6 +1,5 @@
 import { prepareProviderRequest } from "../providers/prepared-request.js"
 import { createNativeContextPreparationAdapter } from "./context.js"
-import { sha256Hex } from "./sha256.js"
 import type {
   LLMProvider, ModelMessage, ToolCall, ToolExecutionResult, ToolSchema, ContentPart,
   StreamEvent, TextDelta, ToolCallEvent, ToolResultEvent, DoneEvent, ErrorEvent,
@@ -23,6 +22,7 @@ import { stripSkillFrontmatter } from "./execution-plane.js"
 import { getKernel } from "./kernel.js"
 import { checkMemoryWrite, deriveMemoryRecall, type KernelMemoryPolicyWire } from "../memory/authority.js"
 import { memoryFetchRecall, memoryRecallTurn } from "../memory/recall-projection.js"
+import { MemoryWriter } from "../memory/writer.js"
 import {
   CanonicalRunnerRuntime,
   canonicalKernelAction,
@@ -773,7 +773,7 @@ export class RuntimeRunner {
       return false
     }
     if (candidate) {
-      const receipt = await this.submitMemoryCandidate(this.opts.agentId, candidate.source, candidate.candidateId, memory)
+      const receipt = await this.memoryWriter().propose(this.opts.agentId, { candidate_id: candidate.candidateId, source: candidate.source, record: memory })
       if (sessionId) await this.opts.sessionLog.append(sessionId, this.memoryCandidateEvent(receipt, candidate.source, memory))
       return receipt.status !== "rejected"
     }
@@ -814,7 +814,6 @@ export class RuntimeRunner {
     effectId: string,
     canonicalMemory: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
-    let error: string | undefined
     const agentId = this.opts.agentId
     const record: MemoryRecord = {
       record_id: `memory:${crypto.randomUUID()}`,
@@ -846,7 +845,7 @@ export class RuntimeRunner {
         const candidateId = modelProposal
           ? await memoryCandidateId(["v3", agentId, "model_proposal", operationId, effectId, "0"])
           : await memoryCandidateId(["v2", agentId, "child_request", operationId, effectId, "0"])
-        const receipt = await this.submitMemoryCandidate(agentId, source, candidateId, record)
+        const receipt = await this.memoryWriter().propose(agentId, { candidate_id: candidateId, source, record })
         return { kind: "memory_candidate_result", effect_id: effectId, ...receipt }
       } catch (cause) {
         return { kind: "memory_candidate_result", effect_id: effectId, error: formatToolError(cause) }
@@ -857,46 +856,17 @@ export class RuntimeRunner {
         throw new Error("model memory writes are disabled by memoryRuntimePolicy.modelWrites")
       }
       if (!agentId) throw new Error("memory persistence requires RuntimeOptions.agentId")
-      if (!this.opts.memoryStore) throw new Error("memory persistence requires RuntimeOptions.memoryStore")
-      await this.opts.memoryStore.put(agentId, record)
-    } catch (cause) {
-      error = formatToolError(cause)
-    }
-    return {
-      kind: "memory_persist_result",
-      effect_id: effectId,
       // The receipt names what the store now holds: the record's id and its content digest.
-      ...(error ? { error } : {
-        record_ref: record.record_id,
-        digest: sha256Hex(record.content),
-      }),
+      const receipt = await this.memoryWriter().persist(agentId, record)
+      return { kind: "memory_persist_result", effect_id: effectId, ...receipt }
+    } catch (cause) {
+      return { kind: "memory_persist_result", effect_id: effectId, error: formatToolError(cause) }
     }
   }
 
-  /** M2 · hand a write to the candidate sink and check its answer names this candidate. A sink
-   *  that throws has given no answer; the same candidate id may be redelivered. */
-  private async submitMemoryCandidate(
-    agentId: string,
-    source: MemoryCandidateSource,
-    candidateId: string,
-    record: MemoryRecord,
-  ): Promise<MemoryCandidateReceipt> {
-    const sink = this.opts.memoryCandidateSink
-    if (!sink) throw new Error("memory candidate writes require RuntimeOptions.memoryCandidateSink")
-    const receipt = await sink.submit(agentId, { candidate_id: candidateId, source, record })
-    if (receipt.candidate_id !== candidateId || typeof receipt.receipt_id !== "string" || !receipt.receipt_id) {
-      throw new Error(`memory candidate sink answered for ${String(receipt.candidate_id)} without a receipt for ${candidateId}`)
-    }
-    if (receipt.status === "accepted" && (typeof receipt.record_ref !== "string" || !receipt.record_ref || typeof receipt.digest !== "string" || !receipt.digest)) {
-      throw new Error("memory candidate sink accepted a write without record_ref/digest")
-    }
-    if (!["pending", "accepted", "rejected"].includes(receipt.status)) {
-      throw new Error(`memory candidate sink answered with unknown status ${String(receipt.status)}`)
-    }
-    if (receipt.status === "rejected" && (typeof receipt.reason_code !== "string" || !receipt.reason_code)) {
-      throw new Error("memory candidate sink rejected a write without reason_code")
-    }
-    return receipt
+  /** The host's side of every memory write: the store, or the candidate sink's receipt contract. */
+  private memoryWriter(): MemoryWriter {
+    return new MemoryWriter({ store: this.opts.memoryStore, sink: this.opts.memoryCandidateSink })
   }
 
   /** The audit fact for a sink's answer. Only an accepted candidate is a written record. */

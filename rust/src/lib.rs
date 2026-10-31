@@ -62,7 +62,7 @@ pub use harness_loop::{
 };
 pub use knowledge::KnowledgeSource;
 pub use memory::{
-    DurableMemory, FileMemoryCandidateSink, InMemoryMemoryCandidateSink, InMemoryMemoryStore, MemoryCandidate,
+    DurableMemory, FileMemoryCandidateSink, MemoryPersistReceipt, MemoryWriter, InMemoryMemoryCandidateSink, InMemoryMemoryStore, MemoryCandidate,
     Ed25519MemoryCandidateSourceVerifier, HmacMemoryCandidateSourceVerifier, MemoryCandidateAttestation, MemoryCandidateAttestationReasonCode,
     MemoryLease, MemoryLeaseRejection,
     MemoryCandidateLedgerEntry, MemoryCandidateOutboxEvent, MemoryCandidateReceipt, MemoryCandidateResolution,

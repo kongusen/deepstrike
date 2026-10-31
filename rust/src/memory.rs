@@ -746,6 +746,63 @@ pub fn memory_fetch_recall(
     }]
 }
 
+/// What a direct write settles with: the record the store now holds and its content digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryPersistReceipt {
+    pub record_ref: String,
+    pub digest: String,
+}
+
+/// The host's side of a memory write, in one place. The runner decides which path a write takes
+/// (the store, or the candidate sink for review); the writer decides what its answer names: the
+/// stored record and its digest, or the sink's receipt under its contract (spec §2.3).
+pub struct MemoryWriter<'a> {
+    pub store: Option<&'a dyn MemoryStore>,
+    pub sink: Option<&'a dyn MemoryCandidateSink>,
+}
+
+impl MemoryWriter<'_> {
+    /// Write `record` to the store.
+    pub async fn persist(&self, agent_id: &str, record: MemoryRecord) -> crate::Result<MemoryPersistReceipt> {
+        let store = self.store.ok_or_else(|| {
+            crate::Error::Other("memory persistence is unavailable without memory_store".into())
+        })?;
+        let receipt = MemoryPersistReceipt {
+            record_ref: record.record_id.clone(),
+            digest: deepstrike_core::runtime::kernel::wire::canonical_digest(record.content.as_bytes())
+                .as_str()
+                .to_string(),
+        };
+        store.put(agent_id, record).await?;
+        Ok(receipt)
+    }
+
+    /// Hand `candidate` to the sink and check its answer names this candidate. A sink error is no
+    /// answer; the same candidate may be redelivered.
+    pub async fn propose(&self, agent_id: &str, candidate: MemoryCandidate) -> crate::Result<MemoryCandidateReceipt> {
+        let sink = self.sink.ok_or_else(|| {
+            crate::Error::Other("memory candidate writes require RuntimeOptions::memory_candidate_sink".into())
+        })?;
+        let candidate_id = candidate.candidate_id.clone();
+        let receipt = sink.submit(agent_id, candidate).await?;
+        if receipt.candidate_id() != candidate_id || receipt.receipt_id().is_empty() {
+            return Err(crate::Error::Other(format!(
+                "memory candidate sink answered for {} without a receipt for {candidate_id}",
+                receipt.candidate_id()
+            )));
+        }
+        match &receipt {
+            MemoryCandidateReceipt::Accepted { record_ref, digest, .. } if record_ref.is_empty() || digest.is_empty() => Err(
+                crate::Error::Other("memory candidate sink accepted a write without record_ref/digest".into()),
+            ),
+            MemoryCandidateReceipt::Rejected { reason_code, .. } if reason_code.is_empty() => Err(
+                crate::Error::Other("memory candidate sink rejected a write without reason_code".into()),
+            ),
+            _ => Ok(receipt),
+        }
+    }
+}
+
 /// Why a sink refuses a payload it already holds for the agent under another id: the proposal is
 /// still in review, or already remembered. A rejected one does not count, so a proposal the host
 /// turned down may be made again. Each write path mints its own ids, so this is what keeps a model

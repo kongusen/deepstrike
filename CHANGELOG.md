@@ -53,6 +53,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   proposal and a child request for the same fact no longer both reach review. A rejected
   candidate does not block the same payload from being proposed again. Hosts with their own sink
   can use `memoryCandidateDuplicateReason` / `memory_candidate_duplicate_reason`.
+- Host memory writes go through one `MemoryWriter` per SDK (`node/src/memory/writer.ts`,
+  `deepstrike.memory.writer`, `wasm/src/memory/writer.ts`, `deepstrike_sdk::MemoryWriter`). It owns
+  lease admission, the store write and its receipt digest, and the candidate sink's receipt
+  contract. The runners only choose the path a write takes. Behaviour is unchanged.
 - **Breaking (WASM):** `memoryCandidateId`, `memoryCandidatePayloadDigest`,
   `memoryCandidateAttestationCanonicalPayload`, `memoryCandidateAttestationDigest`,
   `memoryCandidateAttestationMatches`, `verifyMemoryCandidateSource` and `admitMemoryCandidate`

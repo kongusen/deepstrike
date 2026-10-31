@@ -24,6 +24,7 @@ from deepstrike._kernel import (
 )
 from deepstrike.memory.runtime_policy import MemoryRuntimePolicy, resolve_memory_runtime_policy
 from deepstrike.memory.recall_projection import memory_fetch_recall, memory_recall_turn
+from deepstrike.memory.writer import MemoryWriter
 from deepstrike.memory.candidate_sink import (
   MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
   memory_candidate_id,
@@ -658,22 +659,16 @@ class RuntimeRunner:
   def _memory_path_to_candidate_sink(self, path: str) -> bool:
     return getattr(self._memory_runtime_gates, f"{path}_to_candidate_sink", False)
 
+  def _memory_writer(self) -> MemoryWriter:
+    """The host's side of every memory write: lease, store and the sink's receipt contract."""
+    return MemoryWriter(
+      store=self._opts.memory_store, lifecycle=self._opts.memory_lifecycle, sink=self._opts.memory_candidate_sink,
+    )
+
   async def _submit_memory_candidate(
     self, agent_id: str, source: MemoryCandidateSource, candidate_id: str, record: "MemoryRecord",
   ) -> MemoryCandidateReceipt:
-    sink = self._opts.memory_candidate_sink
-    if sink is None:
-      raise RuntimeError("memory candidate writes require memory_candidate_sink")
-    receipt = await sink.submit(agent_id, MemoryCandidate(candidate_id, source, record))
-    if receipt.get("candidate_id") != candidate_id or not isinstance(receipt.get("receipt_id"), str) or not receipt["receipt_id"]:
-      raise ValueError(f"memory candidate sink answered without a receipt for {candidate_id}")
-    if receipt.get("status") not in ("pending", "accepted", "rejected"):
-      raise ValueError(f"memory candidate sink answered with unknown status {receipt.get('status')}")
-    if receipt["status"] == "accepted" and (not isinstance(receipt.get("record_ref"), str) or not receipt["record_ref"] or not isinstance(receipt.get("digest"), str) or not receipt["digest"]):
-      raise ValueError("memory candidate sink accepted a write without record_ref/digest")
-    if receipt["status"] == "rejected" and (not isinstance(receipt.get("reason_code"), str) or not receipt["reason_code"]):
-      raise ValueError("memory candidate sink rejected a write without reason_code")
-    return receipt
+    return await self._memory_writer().propose(agent_id, MemoryCandidate(candidate_id, source, record))
 
   def _memory_candidate_event(
     self, receipt: MemoryCandidateReceipt, source: MemoryCandidateSource, memory: "MemoryRecord",
@@ -734,15 +729,8 @@ class RuntimeRunner:
         raise RuntimeError("model memory writes are disabled by memory_runtime_policy.model_writes")
       if not (self._opts.memory_store and self._opts.agent_id):
         raise RuntimeError("memory persistence requires memory_store and agent_id")
-      if self._opts.memory_lifecycle is not None:
-        admission = await self._opts.memory_lifecycle.consume_write(self._opts.agent_id, record.scope, f"model:{operation_id}:{effect_id}", int(time.time() * 1000))
-        if not admission.get("valid"):
-          raise RuntimeError(f"memory lease rejected: {admission.get('reason_code')}")
-      await self._opts.memory_store.put(self._opts.agent_id, record)
-      return {
-        "kind": "memory_persist_result", "effect_id": effect_id, "record_ref": record.record_id,
-        "digest": "sha256:" + hashlib.sha256(record.content.encode("utf-8")).hexdigest(),
-      }
+      receipt = await self._memory_writer().persist(self._opts.agent_id, record, f"model:{operation_id}:{effect_id}")
+      return {"kind": "memory_persist_result", "effect_id": effect_id, **receipt}
     except Exception as cause:
       return {"kind": "memory_persist_result", "effect_id": effect_id, "error": format_tool_error(cause)}
 
@@ -779,11 +767,10 @@ class RuntimeRunner:
       if resolved_session_id:
         await self._opts.session_log.append(resolved_session_id, self._memory_candidate_event(receipt, candidate.source, memory))
       return receipt["status"] != "rejected"
-    if self._opts.memory_lifecycle is not None:
-      admission = await self._opts.memory_lifecycle.consume_write(resolved_agent_id, memory.scope, f"host:{resolved_agent_id}:{memory.record_id}", int(time.time() * 1000))
-      if not admission.get("valid"):
-        return False
-    await self._opts.memory_store.put(resolved_agent_id, memory)
+    try:
+      await self._memory_writer().persist(resolved_agent_id, memory, f"host:{resolved_agent_id}:{memory.record_id}")
+    except RuntimeError:
+      return False
     if resolved_session_id:
       await self._opts.session_log.append(resolved_session_id, {
         "kind": "memory_written",

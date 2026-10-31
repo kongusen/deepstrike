@@ -301,3 +301,12 @@ WASM 内核异步加载，所以 WASM 的身份与校验函数改为返回 Promi
 - 已有的被拒绝（rejected）：不算重复，可以再提。宿主可能改了主意。
 
 去重拒绝不占用 candidate ID，也不写入 ledger 条目；持久 sink 会照常记一条 `candidate_rejected` outbox 事件。模型看到的是 `not stored: memory candidate rejected: already_pending_review`。四端都导出同一个判定函数（Node/WASM `memoryCandidateDuplicateReason`，Python/Rust `memory_candidate_duplicate_reason`），宿主自己实现 sink 时也可以直接用。
+
+## 19. 写入治理移出 runner（2026-10-31）
+
+宿主侧的写入治理原来散在四个 runner 里：Node 和 Python 在 runner 里扣租约预算，四端都在 runner 里校验 sink 回执、计算落库回执的摘要。现在每个 SDK 的 memory 模块里有一个 `MemoryWriter`：
+
+- `persist(agentId, record, writeId)`：有租约存储时先 `consumeWrite`（`writeId` 让重投只扣一次），再写 store，返回 `{ record_ref, digest }`。WASM 和 Rust 没有租约存储，签名里也没有 `writeId`。
+- `propose(agentId, candidate)`：交给 sink，按 §2.3 校验回执（必须点名本候选、带 `receipt_id`；accepted 带 `record_ref`/`digest`；rejected 带 `reason_code`）。
+
+runner 只负责选路（store 还是 sink）和记会话事件，不再直接接触租约和回执契约。行为与之前一致，四端原有测试不变，Node 和 Python 另有 `MemoryWriter` 的单元测试。

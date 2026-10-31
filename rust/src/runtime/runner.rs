@@ -19,7 +19,7 @@ use crate::governance::Governance;
 use crate::knowledge::KnowledgeSource;
 use crate::memory::{
     MemoryCandidate, MemoryCandidateReceipt, MemoryCandidateSink, MemoryCandidateSource,
-    MemoryRetrievalPolicy, MemoryRuntimePolicy, MemoryStore, MemoryWritePolicy,
+    MemoryRetrievalPolicy, MemoryRuntimePolicy, MemoryStore, MemoryWritePolicy, MemoryWriter,
     memory_candidate_id, memory_fetch_recall, memory_recall_turn,
 };
 use crate::providers::{LLMProvider, StreamEvent};
@@ -457,9 +457,9 @@ impl RuntimeRunner {
         agent_id: Option<&str>,
         candidate: Option<(MemoryCandidateSource, String)>,
     ) -> Result<bool> {
-        let Some(store) = &self.opts.memory_store else {
+        if self.opts.memory_store.is_none() {
             return Ok(false);
-        };
+        }
         let Some(agent_id) = agent_id.or(self.opts.agent_id.as_deref()) else {
             return Ok(false);
         };
@@ -497,7 +497,7 @@ impl RuntimeRunner {
             return Ok(accepted);
         }
 
-        store.put(agent_id, memory.clone()).await?;
+        self.memory_writer().persist(agent_id, memory.clone()).await?;
         self.append_memory_syscall_observations(
             session_id,
             vec![KernelObservation::MemoryWritten {
@@ -513,8 +513,14 @@ impl RuntimeRunner {
         Ok(true)
     }
 
-    /// M2 · hand a write to the candidate sink and check its answer names this candidate. A sink
-    /// error is no answer; the same candidate id may be redelivered.
+    /// The host's side of every memory write: the store, or the candidate sink's receipt contract.
+    fn memory_writer(&self) -> MemoryWriter<'_> {
+        MemoryWriter {
+            store: self.opts.memory_store.as_deref(),
+            sink: self.opts.memory_candidate_sink.as_deref(),
+        }
+    }
+
     async fn submit_memory_candidate(
         &self,
         agent_id: &str,
@@ -522,39 +528,8 @@ impl RuntimeRunner {
         candidate_id: String,
         record: MemoryRecord,
     ) -> Result<MemoryCandidateReceipt> {
-        let Some(sink) = &self.opts.memory_candidate_sink else {
-            return Err(Error::Other(
-                "memory candidate writes require RuntimeOptions::memory_candidate_sink".into(),
-            ));
-        };
-        let receipt = sink
-            .submit(
-                agent_id,
-                MemoryCandidate {
-                    candidate_id: candidate_id.clone(),
-                    source,
-                    record,
-                    attestation: None,
-                },
-            )
-            .await?;
-        if receipt.candidate_id() != candidate_id || receipt.receipt_id().is_empty() {
-            return Err(Error::Other(format!(
-                "memory candidate sink answered for {} without a receipt for {candidate_id}",
-                receipt.candidate_id()
-            )));
-        }
-        match &receipt {
-            MemoryCandidateReceipt::Accepted {
-                record_ref, digest, ..
-            } if record_ref.is_empty() || digest.is_empty() => Err(Error::Other(
-                "memory candidate sink accepted a write without record_ref/digest".into(),
-            )),
-            MemoryCandidateReceipt::Rejected { reason_code, .. } if reason_code.is_empty() => Err(
-                Error::Other("memory candidate sink rejected a write without reason_code".into()),
-            ),
-            _ => Ok(receipt),
-        }
+        let candidate = MemoryCandidate { candidate_id, source, record, attestation: None };
+        self.memory_writer().propose(agent_id, candidate).await
     }
 
     /// The host's answer to a PersistMemory effect when `model_writes` is `CandidateSink`: the
@@ -2068,24 +2043,17 @@ impl RuntimeRunner {
                             ))
                             .await
                         } else {
-                            let error = if !self
-                                .memory_write_enabled(source)
-                            {
-                                Some(
-                                    "model memory writes are disabled by memory_runtime_policy.model_writes"
-                                        .to_string(),
-                                )
+                            let receipt = if !self.memory_write_enabled(source) {
+                                Err("model memory writes are disabled by memory_runtime_policy.model_writes"
+                                    .to_string())
                             } else {
-                                match (
-                                    self.opts.memory_store.as_ref(),
-                                    self.opts.agent_id.as_deref(),
-                                ) {
-                                    (Some(store), Some(agent_id)) => store
-                                        .put(agent_id, memory.clone())
+                                match self.opts.agent_id.as_deref() {
+                                    Some(agent_id) => self
+                                        .memory_writer()
+                                        .persist(agent_id, memory)
                                         .await
-                                        .err()
-                                        .map(|error| error.to_string()),
-                                    _ => Some(
+                                        .map_err(|error| error.to_string()),
+                                    None => Err(
                                         "memory persistence is unavailable without memory_store and agent_id"
                                             .to_string(),
                                     ),
@@ -2093,19 +2061,17 @@ impl RuntimeRunner {
                             };
                             // The receipt names what the store now holds: the record id and a
                             // digest of its content.
-                            match error {
-                                Some(error) => serde_json::json!({
+                            match receipt {
+                                Err(error) => serde_json::json!({
                                     "kind": "memory_persist_result",
                                     "effect_id": effect_id,
                                     "error": error,
                                 }),
-                                None => serde_json::json!({
+                                Ok(receipt) => serde_json::json!({
                                     "kind": "memory_persist_result",
                                     "effect_id": effect_id,
-                                    "record_ref": memory.record_id,
-                                    "digest": deepstrike_core::runtime::kernel::wire::canonical_digest(
-                                        memory.content.as_bytes(),
-                                    ).as_str(),
+                                    "record_ref": receipt.record_ref,
+                                    "digest": receipt.digest,
                                 }),
                             }
                         };
