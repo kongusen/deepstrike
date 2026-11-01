@@ -3,9 +3,8 @@
  * dropping earlier memory hits with it. The runner now re-fires the `preQueryMemory` prefetch on
  * the live `renewed` observation (phase: "renewal") so the new sprint starts with a fresh recall
  * pass — the symmetric counterpart of the turn-1 fetch (phase: "initial"). A running operation
- * accepts history only through effects or external events, so the renewal hits enter as keyed
- * `memory:<record_id>` knowledge entries carrying the canonical recall index line (M5); the turn-1 hits
- * are ordinary history turns.
+ * accepts history only through effects or external events, so both the turn-1 and the renewal hits
+ * enter as keyed `memory:<record_id>` knowledge entries carrying the canonical recall index line (M5).
  */
 import { createRunner, tool } from "./runtime/helpers.js"
 import { collectText } from "../src/runtime/runner.js"
@@ -46,8 +45,8 @@ describe("renewal-boundary memory re-query (K4)", () => {
       },
       async *stream(context: RenderedContext): AsyncIterable<StreamEvent> {
         call += 1
-        // The renewal summary may carry the turn-1 hit forward in `turns`; only the re-fetch
-        // puts the recall text in knowledge.
+        // Renewal carries knowledge over, so the turn-1 entry may still be there; the re-fetch
+        // upserts the same key, which is what the `phase` record proves.
         if (sawRenewal && (context.systemKnowledge ?? "").includes(RECALL_TURN)) {
           sawRecallAfterRenewal = true
         }
@@ -88,8 +87,10 @@ describe("renewal-boundary memory re-query (K4)", () => {
     const events = await sessionLog.read("renewal-requery")
     expect(events.some(e => e.event.kind === "context_renewed")).toBe(true)
     const eventKinds = events.map(e => e.event.kind)
-    expect(eventKinds).toContain("compressed")
-    expect(eventKinds.indexOf("compressed")).toBeLessThan(eventKinds.indexOf("context_renewed"))
+    // A compaction the ladder ran on the way to renewal is journaled before it.
+    if (eventKinds.includes("compressed")) {
+      expect(eventKinds.indexOf("compressed")).toBeLessThan(eventKinds.indexOf("context_renewed"))
+    }
 
     // Turn-1 fetch first, then at least one renewal-boundary re-fetch.
     expect(phases[0]).toBe("initial")

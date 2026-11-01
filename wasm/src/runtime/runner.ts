@@ -1307,13 +1307,11 @@ export class RuntimeRunner {
     }
     if (!resumeMidRun) await this.applyKernelPolicies(runtime)
 
-    // I4: pre-fetch memory before the first LLM turn (mirrors Node). Strict dynamic context
-    // control: single-use retrieval content, not a stable skill — lands in `history` like an
-    // ordinary `memory` tool result, so it decays with the compression pyramid instead of
-    // pinning itself in `knowledge` forever.
+    // I4: pre-fetch memory before the first LLM turn (mirrors Node). Each hit is an unpinned keyed
+    // `memory:<record_id>` knowledge entry, evicted at a boundary when usage needs the room.
     this.currentGoal = goal
     if (!resumeMidRun) {
-      await this.prefetchMemoryIntoHistory(runtime, "initial")
+      await this.prefetchMemory("initial")
     }
 
     let action: KernelRunnerAction = resumeMidRun
@@ -2669,23 +2667,19 @@ export class RuntimeRunner {
       // K4: a sprint renewal dropped the old history — including any earlier memory hits — so
       // re-run the preQueryMemory prefetch for the new sprint (live observations only).
       if (obs.kind === "renewed") {
-        await this.prefetchMemoryIntoHistory(runtime, "renewal")
+        await this.prefetchMemory("renewal")
       }
     }
     return nextArchiveStart
   }
 
   /** I4 + K4 · M5: fetch long-term memory hits for the current goal and put each one in context as
-   *  the canonical recall index line ({@link memoryRecallTurn}). `phase: "initial"` = once before turn 1,
-   *  each hit an ordinary `history` user turn. `phase: "renewal"` = re-fired after each sprint
-   *  renewal, which drops the old history with the earlier hits: a running operation accepts
-   *  history only through effects or external events, so each hit is a keyed
-   *  `memory:<record_id>` knowledge entry instead. One prefetch is one dedupe horizon and one
-   *  `memory_retrieval_result`. Errs-open. */
-  private async prefetchMemoryIntoHistory(
-    runtime: CanonicalRunnerRuntime,
-    phase: "initial" | "renewal",
-  ): Promise<void> {
+   *  the canonical recall index line ({@link memoryRecallTurn}), as a keyed `memory:<record_id>`
+   *  knowledge entry. `phase: "initial"` = once before turn 1; `phase: "renewal"` = re-fired after
+   *  each sprint renewal. Both phases land in knowledge: a running operation accepts history only
+   *  through effects or external events, and one placement lets the key dedupe a record across
+   *  phases. One prefetch is one dedupe horizon and one `memory_retrieval_result`. Errs-open. */
+  private async prefetchMemory(phase: "initial" | "renewal"): Promise<void> {
     if (!this.memoryPathEnabled("retrievalEnabled")) return
     if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     // P10: recall is default-on (CC session-start recall) — with no hook configured,
@@ -2707,15 +2701,8 @@ export class RuntimeRunner {
           seen.add(hit.record.record_id)
           accepted.push(hit)
           const content = memoryRecallTurn(hit.record)
-          if (phase === "initial") {
-            await this.commitKernelApply(runtime, this.pendingObservations, {
-              kind: "add_history_message",
-              message: { role: "user", content },
-            })
-          } else {
-            // pushKnowledge estimates the tokens the same way every host-seeded entry does.
-            await this.pushKnowledge({ role: "system", content, toolCalls: [] }, undefined, { key: `memory:${hit.record.record_id}` })
-          }
+          // pushKnowledge estimates the tokens the same way every host-seeded entry does.
+          await this.pushKnowledge({ role: "system", content, toolCalls: [] }, undefined, { key: `memory:${hit.record.record_id}` })
         }
       }
       if (accepted.length === 0) return

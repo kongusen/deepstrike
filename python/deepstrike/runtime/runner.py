@@ -2464,10 +2464,10 @@ class RuntimeRunner:
       })
 
     self._current_goal = goal
-    # I4/T5: initial memory prefetch is host-side before root start (add_history_message);
+    # I4/T5: initial memory prefetch is host-side before root start (keyed knowledge);
     # renewal re-seeds the same way after the history drop.
     if not resume_mid_run:
-      await self._prefetch_memory_into_history(runtime, "initial")
+      await self._prefetch_memory(runtime, "initial")
 
     # Multimodal upload: seed the user's attachments (images/audio) as a history
     # message before root start pushes the "[TASK STATE]" anchor. init_task does not
@@ -3517,7 +3517,7 @@ class RuntimeRunner:
       # re-run the pre_query_memory prefetch for the new sprint (live observations only: this
       # consumer sits on the live drain path, same placement as the semantic page-out archival).
       if obs.get("kind") == "renewed":
-        await self._prefetch_memory_into_history(runtime, "renewal")
+        await self._prefetch_memory(runtime, "renewal")
     return next_archive_start
 
   async def _apply_host_memory_recall_lifecycle(
@@ -3574,15 +3574,14 @@ class RuntimeRunner:
       result = await result
     return list(result or [])
 
-  async def _prefetch_memory_into_history(self, runtime: CanonicalRunnerRuntime, phase: str) -> None:
+  async def _prefetch_memory(self, runtime: CanonicalRunnerRuntime, phase: str) -> None:
     """I4 + K4 · M5: put each recalled hit in context as the canonical recall index line.
 
-    Called once before ``start_operation`` (``phase="initial"``): each hit is an ordinary
-    ``history`` user turn. Re-fired after each sprint renewal (``phase="renewal"``), which drops
-    the old history with the earlier hits: a running operation accepts history only through
-    effects or external events, so each hit is a keyed ``memory:<record_id>`` knowledge entry
-    instead. One prefetch is one dedupe horizon and one ``memory_retrieval_result``. Errs-open: a
-    faulty prefetch never breaks the run.
+    Called once before ``start_operation`` (``phase="initial"``) and re-fired after each sprint
+    renewal (``phase="renewal"``). Both phases land each hit as a keyed ``memory:<record_id>``
+    knowledge entry: a running operation accepts history only through effects or external events,
+    and one placement lets the key dedupe a record across phases. One prefetch is one dedupe
+    horizon and one ``memory_retrieval_result``. Errs-open: a faulty prefetch never breaks the run.
     """
     from deepstrike.memory.protocols import MemoryQuery
     if not (self._opts.memory_store and self._opts.agent_id and self._opts.memory_scope):
@@ -3602,9 +3601,6 @@ class RuntimeRunner:
           accepted.append(hit)
           content = memory_recall_turn(hit.record)
           await apply_host(runtime, self._pending_observations, {
-            "kind": "add_history_message",
-            "message": {"role": "user", "content": content},
-          } if phase == "initial" else {
             "kind": "add_knowledge_message",
             "key": f"memory:{rid}",
             "content": content,

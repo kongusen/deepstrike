@@ -1,7 +1,7 @@
-"""I4 (pre_query_memory) rerouted: strict dynamic context control means a proactive pre-turn-1
-memory fetch is still single-use retrieval content, not a stable skill — so it lands in
-``history`` (an ordinary turn the model sees on turn 1) rather than pinning itself into the
-durable ``knowledge`` slot forever. Mirrors node/tests/pre-query-memory.test.ts."""
+"""I4 (pre_query_memory): the proactive pre-turn-1 memory fetch lands each hit as an unpinned keyed
+``memory:<record_id>`` knowledge entry — the same placement the renewal re-query uses, so one key
+dedupes a record across both. Unpinned entries are evicted at a boundary when usage needs the room.
+Mirrors node/tests/pre-query-memory.test.ts."""
 
 import pytest
 
@@ -54,7 +54,7 @@ class CapturingProvider:
 
 
 @pytest.mark.asyncio
-async def test_pre_query_memory_lands_in_history_not_knowledge():
+async def test_pre_query_memory_lands_in_knowledge_not_history():
     provider = CapturingProvider()
     runner = RuntimeRunner(RuntimeOptions(
         provider=provider,
@@ -71,5 +71,5 @@ async def test_pre_query_memory_lands_in_history_not_knowledge():
     async for _ in runner.run(goal="use the fact"):
         pass
 
-    assert provider.saw_in_turns is True
-    assert provider.saw_in_knowledge is False
+    assert provider.saw_in_knowledge is True
+    assert provider.saw_in_turns is False

@@ -3000,7 +3000,7 @@ export class RuntimeRunner {
       }
     }
     this.currentGoal = goal
-    if (!resumeMidRun) await this.prefetchMemoryIntoHistory(runtime, "initial")
+    if (!resumeMidRun) await this.prefetchMemory("initial")
 
     // Multimodal upload: seed the user's attachments (images/audio) as a history
     // message before root start pushes the "[TASK STATE]" anchor. init_task does not
@@ -4054,18 +4054,14 @@ export class RuntimeRunner {
   }
 
   /** I4 + K4 · M5: fetch long-term memory hits for the current goal and put each one in context as
-   *  the canonical recall index line ({@link memoryRecallTurn}). Called once before turn 1
-   *  (`phase: "initial"`): each hit is an ordinary `history` user turn — single-use retrieval
-   *  content that decays with the compression pyramid. Re-fired after each sprint renewal
-   *  (`phase: "renewal"`), which drops the old history with the earlier hits: a running operation
-   *  accepts history only through effects or external events, so each hit is a keyed
-   *  `memory:<record_id>` knowledge entry instead, through the same admission path as any other
-   *  dynamic knowledge. One prefetch is one dedupe horizon and one `memory_retrieval_result`.
+   *  the canonical recall index line ({@link memoryRecallTurn}), as a keyed `memory:<record_id>`
+   *  knowledge entry through the same admission path as any other dynamic knowledge. Called once
+   *  before turn 1 (`phase: "initial"`) and re-fired after each sprint renewal (`phase:
+   *  "renewal"`). Both phases land in knowledge: a running operation accepts history only through
+   *  effects or external events, and one placement lets the key dedupe a record across phases.
+   *  One prefetch is one dedupe horizon and one `memory_retrieval_result`.
    *  Errs-open throughout: a faulty prefetch never breaks the run. */
-  private async prefetchMemoryIntoHistory(
-    runtime: CanonicalRunnerRuntime,
-    phase: "initial" | "renewal",
-  ): Promise<void> {
+  private async prefetchMemory(phase: "initial" | "renewal"): Promise<void> {
     if (!this.opts.memoryStore || !this.opts.agentId || !this.opts.memoryScope) return
     // P10: recall is default-on (CC session-start recall) — with no hook configured,
     // the goal itself is the query. preQueryMemory stays as the targeting override.
@@ -4092,18 +4088,11 @@ export class RuntimeRunner {
           seen.add(hit.record.record_id)
           accepted.push(hit)
           const content = memoryRecallTurn(hit.record)
-          if (phase === "initial") {
-            await this.commitKernelApply(runtime, this.pendingObservations, {
-              kind: "add_history_message",
-              message: { role: "user", content },
-            })
-          } else {
-            await this.pushKnowledge(
-              { role: "system", content, toolCalls: [] },
-              estimateTextTokens(content),
-              { key: `memory:${hit.record.record_id}` },
-            )
-          }
+          await this.pushKnowledge(
+            { role: "system", content, toolCalls: [] },
+            estimateTextTokens(content),
+            { key: `memory:${hit.record.record_id}` },
+          )
         }
       }
       if (accepted.length === 0) return
@@ -4170,7 +4159,7 @@ export class RuntimeRunner {
       // re-run the preQueryMemory prefetch for the new sprint (live observations only: this
       // consumer sits on the live drain path).
       if (obs.kind === "renewed") {
-        await this.prefetchMemoryIntoHistory(runtime, "renewal")
+        await this.prefetchMemory("renewal")
       }
     }
     return nextArchiveStart

@@ -42,8 +42,8 @@ const provider = {
   async complete() { return { role: "assistant", content: "", toolCalls: [] } },
   async *stream(context) {
     call += 1
-    // The renewal summary may carry the turn-1 hit forward in `turns`; only the re-fetch puts
-    // the recall text in knowledge.
+    // Renewal carries knowledge over, so the turn-1 entry may still be there; the re-fetch
+    // upserts the same key, which the `phase` record proves.
     if (sawRenewal && (context.systemKnowledge ?? "").includes(RECALL_TURN)) sawRecallAfterRenewal = true
     if (call <= 10 && !sawRecallAfterRenewal) {
       yield { type: "tool_call", id: `b${call}`, name: "bulk", arguments: {} }

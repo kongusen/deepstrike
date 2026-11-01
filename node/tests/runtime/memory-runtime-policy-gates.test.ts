@@ -86,7 +86,7 @@ describe("memory runtime policy gates (M1, end-to-end through the runner)", () =
     let sawRecall = false
     const runner = new RuntimeRunner({
       provider: textProvider(context => {
-        if (JSON.stringify(context.turns).includes("gate fixture")) sawRecall = true
+        if (`${JSON.stringify(context.turns)}${context.systemKnowledge ?? ""}`.includes("gate fixture")) sawRecall = true
       }),
       sessionLog: new InMemorySessionLog(),
       executionPlane: new LocalExecutionPlane(),
@@ -107,7 +107,7 @@ describe("memory runtime policy gates (M1, end-to-end through the runner)", () =
     let sawRecall = false
     const runner = new RuntimeRunner({
       provider: textProvider(context => {
-        if (JSON.stringify(context.turns).includes("gate fixture")) sawRecall = true
+        if (`${JSON.stringify(context.turns)}${context.systemKnowledge ?? ""}`.includes("gate fixture")) sawRecall = true
       }),
       sessionLog: new InMemorySessionLog(),
       executionPlane: new LocalExecutionPlane(),

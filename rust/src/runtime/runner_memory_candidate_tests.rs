@@ -29,6 +29,8 @@ struct CountingProvider {
     calls: Arc<AtomicUsize>,
     /// The text of every turn of every context the provider was shown, call by call.
     seen_turns: Arc<std::sync::Mutex<Vec<Vec<(String, String)>>>>,
+    /// The rendered knowledge of every context the provider was shown, call by call.
+    seen_knowledge: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 const MODEL_OUTPUT: &str = "done";
@@ -53,6 +55,10 @@ impl LLMProvider for CountingProvider {
     ) -> crate::Result<Box<dyn futures::Stream<Item = crate::Result<StreamEvent>> + Send + Unpin>>
     {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.seen_knowledge
+            .lock()
+            .unwrap()
+            .push(context.system_knowledge.clone());
         self.seen_turns.lock().unwrap().push(
             context
                 .turns
@@ -123,6 +129,7 @@ struct Harness {
     puts: Arc<AtomicUsize>,
     searches: Arc<AtomicUsize>,
     seen_turns: Arc<std::sync::Mutex<Vec<Vec<(String, String)>>>>,
+    seen_knowledge: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 fn policy(write: MemoryWritePolicy) -> MemoryRuntimePolicy {
@@ -155,6 +162,7 @@ fn harness_with_hits(
     let sink = Arc::new(InMemoryMemoryCandidateSink::new());
     let model_calls = Arc::new(AtomicUsize::new(0));
     let seen_turns = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_knowledge = Arc::new(std::sync::Mutex::new(Vec::new()));
     let store = CountingStore {
         hits,
         ..CountingStore::default()
@@ -177,6 +185,7 @@ fn harness_with_hits(
         provider: Box::new(CountingProvider {
             calls: model_calls.clone(),
             seen_turns: seen_turns.clone(),
+            seen_knowledge: seen_knowledge.clone(),
         }),
         execution_plane: None,
         session_log: Some(log.clone()),
@@ -227,6 +236,7 @@ fn harness_with_hits(
         puts,
         searches,
         seen_turns,
+        seen_knowledge,
     }
 }
 
@@ -610,10 +620,10 @@ fn the_recall_turn_matches_the_other_sdks() {
     );
 }
 
-/// M5 · the turn-1 prefetch puts each hit in history as its own canonical recall turn, once per
-/// record however many queries hit it, and audits the prefetch.
+/// M5 · the turn-1 prefetch puts each hit in keyed knowledge as its canonical recall line, once
+/// per record however many queries hit it, never in history, and audits the prefetch.
 #[tokio::test]
-async fn the_initial_prefetch_lands_each_hit_as_a_canonical_history_turn() {
+async fn the_initial_prefetch_lands_each_hit_as_canonical_keyed_knowledge() {
     let h = harness_with_hits(
         None,
         false,
@@ -625,19 +635,19 @@ async fn the_initial_prefetch_lands_each_hit_as_a_canonical_history_turn() {
     );
     run_to_end(&h.runner, "prefetch").await;
 
-    let first = h.seen_turns.lock().unwrap()[0].clone();
-    let recall_turns: Vec<_> = first
-        .into_iter()
-        .filter(|(_, content)| content.starts_with("[MEMORY "))
+    let knowledge = h.seen_knowledge.lock().unwrap()[0].clone();
+    let recall_lines: Vec<_> = knowledge
+        .lines()
+        .filter(|line| line.starts_with("[MEMORY "))
         .collect();
     assert_eq!(
-        recall_turns,
-        vec![(
-            "user".to_string(),
-            "[MEMORY record_id=record-a kind=reference trust=host_verified] proposed by a child agent"
-                .to_string()
-        )]
+        recall_lines,
+        vec!["[MEMORY record_id=record-a kind=reference trust=host_verified] proposed by a child agent"]
     );
+    let first = h.seen_turns.lock().unwrap()[0].clone();
+    assert!(first
+        .iter()
+        .all(|(_, content)| !content.starts_with("[MEMORY ")));
     let audited: Vec<_> = events(&h.log, "prefetch")
         .await
         .into_iter()

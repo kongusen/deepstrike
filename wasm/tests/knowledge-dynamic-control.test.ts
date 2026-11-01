@@ -122,7 +122,7 @@ describe("knowledgeBudgetRatio reaches the kernel via configure_operation (K2)",
   })
 })
 
-describe("preQueryMemory prefetch lands in initial history, not knowledge", () => {
+describe("preQueryMemory prefetch lands in initial knowledge, keyed per record", () => {
   it("M5 · the recall turn matches the vector every SDK pins", () => {
     const vector = {
       record_id: "record-v", scope: { tenant_id: "t", namespace: "n" }, name: "fact", kind: "project",
@@ -135,7 +135,7 @@ describe("preQueryMemory prefetch lands in initial history, not knowledge", () =
   })
 
 
-  it("seeds start_operation history with prefetch content, never seed_knowledge/page_in", async () => {
+  it("seeds start_operation knowledge with prefetch content, never history/page_in", async () => {
     kernelEvents.length = 0
     const scope = { tenant_id: "agent-prequery", namespace: "prefetch" }
     const memoryStore: MemoryStore = {
@@ -177,16 +177,19 @@ describe("preQueryMemory prefetch lands in initial history, not knowledge", () =
     for await (const _e of runner.run({ sessionId: "prequery", goal: "use the fact" })) { /* drain */ }
 
     const start = kernelEvents.find((e: { kind?: string }) => e.kind === "start_operation") as
-      | { initial_context?: { messages?: Array<{ role?: string; content?: string }> } }
+      | { initial_context?: {
+        messages?: Array<{ role?: string; content?: string }>
+        knowledge?: Array<{ key?: string; content?: string }>
+      } }
       | undefined
-    // M5 · one canonical recall turn per hit (the same text every SDK writes), and an audit.
-    expect((start?.initial_context?.messages ?? []).filter(m => String(m.content).startsWith("[MEMORY "))
-      .map(m => [m.role, m.content])).toEqual([
-      ["user", "[MEMORY record_id=record-prefetch kind=reference trust=host_verified] fixture"],
+    // M5 · one keyed canonical recall entry per hit (the same text every SDK writes), and an audit.
+    expect((start?.initial_context?.knowledge ?? []).filter(k => String(k.content).startsWith("[MEMORY "))
+      .map(k => [k.key, k.content])).toEqual([
+      ["memory:record-prefetch", "[MEMORY record_id=record-prefetch kind=reference trust=host_verified] fixture"],
     ])
+    expect((start?.initial_context?.messages ?? []).some(m => String(m.content).startsWith("[MEMORY "))).toBe(false)
     const audited = (await sessionLog.read("prequery")).filter(entry => entry.event.kind === "memory_retrieval_result")
     expect(audited).toHaveLength(1)
-    expect(hostControls().some(event => event.command?.kind === "seed_knowledge")).toBe(false)
     expect(kernelEvents.some((e: { kind?: string }) => e.kind === "page_in")).toBe(false)
   })
 })

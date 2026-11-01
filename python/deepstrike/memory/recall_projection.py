@@ -3,11 +3,10 @@
 Recall pushes an index line, not the record: the header names the record, and the body is its
 one-line description (its name when it has none). The model reads a record in full with
 ``memory(record_id)`` when it judges it relevant, so a prefetch costs a line per hit, not a record
-per hit. The turn-1 prefetch lands every accepted hit in ``history`` as its own ordinary user turn —
-single-use retrieval content that decays with the compression pyramid
-(docs/guides/context-engineering.md, Level 5). A renewal re-query cannot append to the history of a
-running operation, so its hits go to keyed knowledge ``memory:<record_id>`` instead, carrying the
-same text. One rule in every SDK, pinned by the same vectors in each SDK's test.
+per hit. Every prefetch — the turn-1 one and each renewal re-query — lands its hits as keyed
+knowledge ``memory:<record_id>``: a running operation cannot append to its own history, and one
+placement lets the key dedupe a record across phases. One rule in every SDK, pinned by the same
+vectors in each SDK's test.
 """
 
 from __future__ import annotations

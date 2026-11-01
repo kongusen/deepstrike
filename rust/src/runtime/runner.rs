@@ -274,13 +274,6 @@ pub struct RuntimeRunner {
     current_goal: std::sync::Mutex<Option<String>>,
 }
 
-/// When a memory prefetch runs: before turn 1, or after a sprint renewal dropped the history.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MemoryPrefetchPhase {
-    Initial,
-    Renewal,
-}
-
 struct PendingControl {
     event: serde_json::Value,
     done: tokio::sync::oneshot::Sender<Result<()>>,
@@ -705,17 +698,16 @@ impl RuntimeRunner {
     /// next counts (the same derivation a model `query_memory` resolution journals as
     /// `memory_recalled`) and the store only mirrors them.
     /// I4 + K4 · M5: fetch long-term memory hits for `goal` and put each one in context as the
-    /// canonical recall index line (`memory_recall_turn`). Before turn 1 (`MemoryPrefetchPhase::Initial`)
-    /// each hit is an ordinary `history` user turn. After a sprint renewal, which drops the old
-    /// history with the earlier hits, a running operation accepts history only through effects or
-    /// external events, so each hit is a keyed `memory:<record_id>` knowledge entry instead. One
-    /// prefetch is one dedupe horizon and one `memory_retrieval_result`. A failing store or hook
+    /// canonical recall index line (`memory_recall_turn`), as a keyed `memory:<record_id>`
+    /// knowledge entry. Runs before turn 1 and again after each sprint renewal; both land in
+    /// knowledge, because a running operation accepts history only through effects or external
+    /// events and one placement lets the key dedupe a record across phases. One prefetch is one
+    /// dedupe horizon and one `memory_retrieval_result`. A failing store or hook
     /// skips the prefetch; only a kernel refusal of the seed command is an error.
     async fn prefetch_memory(
         &self,
         kernel: &Arc<tokio::sync::Mutex<CanonicalRunnerRuntime>>,
         pending_observations: &mut Vec<KernelObservation>,
-        phase: MemoryPrefetchPhase,
         goal: &str,
         session_id: &str,
     ) -> Result<()> {
@@ -756,18 +748,12 @@ impl RuntimeRunner {
                     continue;
                 }
                 let content = memory_recall_turn(&hit.record);
-                let command = match phase {
-                    MemoryPrefetchPhase::Initial => serde_json::json!({
-                        "kind": "add_history_message",
-                        "message": CoreMessage::user(content),
-                    }),
-                    MemoryPrefetchPhase::Renewal => serde_json::json!({
-                        "kind": "add_knowledge_message",
-                        "key": format!("memory:{}", hit.record.record_id),
-                        "tokens": ((content.len() / 4) as u32).max(1),
-                        "content": content,
-                    }),
-                };
+                let command = serde_json::json!({
+                    "kind": "add_knowledge_message",
+                    "key": format!("memory:{}", hit.record.record_id),
+                    "tokens": ((content.len() / 4) as u32).max(1),
+                    "content": content,
+                });
                 kernel_apply(kernel, pending_observations, command).await?;
                 accepted.push(hit);
             }
@@ -1461,14 +1447,13 @@ impl RuntimeRunner {
                     ).await?;
                 }
 
-                // I4 · M5: pre-fetch memory into history before the first LLM turn; the prefetch
-                // re-fires into knowledge after each sprint renewal (`append_observations`).
+                // I4 · M5: pre-fetch memory into knowledge before the first LLM turn; the prefetch
+                // re-fires after each sprint renewal (`append_observations`).
                 *self.current_goal.lock().unwrap() = Some(goal.clone());
                 if !resume_mid_run {
                     self.prefetch_memory(
                         &kernel,
                         &mut pending_observations,
-                        MemoryPrefetchPhase::Initial,
                         &goal,
                         &session_id,
                     )
@@ -2677,7 +2662,6 @@ impl RuntimeRunner {
                         let _ = Box::pin(self.prefetch_memory(
                             kernel_mutex,
                             observations,
-                            MemoryPrefetchPhase::Renewal,
                             &goal,
                             session_id,
                         ))

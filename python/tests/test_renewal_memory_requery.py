@@ -2,9 +2,9 @@
 
 A sprint renewal drops the old history — including earlier memory hits — so the runner re-fires
 the ``pre_query_memory`` prefetch on the live ``renewed`` observation (``phase="renewal"``).
-A running operation accepts history only through effects or external events, so the renewal
-hits enter as keyed ``memory:<record_id>`` knowledge entries carrying the canonical recall index
-(M5). Pre-K4 hooks that don't accept ``phase`` keep working (signature-sniffed).
+A running operation accepts history only through effects or external events, so the turn-1 and
+the renewal hits both enter as keyed ``memory:<record_id>`` knowledge entries carrying the
+canonical recall index (M5). Pre-K4 hooks that don't accept ``phase`` keep working (signature-sniffed).
 """
 
 import json
@@ -61,8 +61,8 @@ async def test_renewal_refires_prefetch_with_phase_and_lands_in_context():
 
         async def stream(self, context: RenderedContext, tools, extensions=None, state=None):
             st["call"] += 1
-            # The renewal summary may carry the turn-1 hit forward in ``turns``; only the
-            # re-fetch puts the canonical recall text in knowledge.
+            # Renewal carries knowledge over, so the turn-1 entry may still be there; the
+            # re-fetch upserts the same key, which the ``phase`` record proves.
             if st["saw_renewal"] and RECALL_TURN in (context.system_knowledge or ""):
                 st["saw_recall_after_renewal"] = True
             if st["call"] <= 10 and not st["saw_recall_after_renewal"]:
