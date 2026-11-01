@@ -82,10 +82,12 @@ test("a streamed compaction block is replayed on the next request", async () => 
   } finally {
     globalThis.fetch = originalFetch
   }
+  // The API ignores everything before the block, so the turn that carries it is sent first.
   const messages = bodies[1].messages as Array<{ role: string; content: Array<Record<string, unknown>> }>
-  expect(messages[1].role).toBe("assistant")
-  expect(messages[1].content.map(block => block.type)).toEqual(["compaction", "text"])
-  expect(messages[1].content[0].content).toBe("Summary: the user wants a scraper.")
+  expect(messages).toHaveLength(2)
+  expect(messages[0].role).toBe("assistant")
+  expect(messages[0].content.map(block => block.type)).toEqual(["compaction", "text"])
+  expect(messages[0].content[0].content).toBe("Summary: the user wants a scraper.")
 })
 
 test("native tiers lower onto the kernel's delegated_tiers, and nothing when none", () => {

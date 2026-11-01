@@ -164,7 +164,13 @@ export type {
   MemoryInput, RecallOptions, DelegationResult, AgentRuntimeBinding, AgentSession,
 } from "./agent.js"
 export { AnthropicProvider } from "./providers/anthropic.js"
-export type { AnthropicContextEditing, AnthropicProviderOptions } from "./providers/anthropic.js"
+export type {
+  AnthropicCompaction,
+  AnthropicContextEditing,
+  AnthropicOnDemandCompaction,
+  AnthropicProviderOptions,
+  AnthropicThresholdCompaction,
+} from "./providers/anthropic.js"
 export { OpenAIProvider, qwen, deepseek, minimax, kimi } from "./providers/openai.js"
 export type { OpenAIProviderOptions, BackendProviderOptions } from "./providers/openai.js"
 export { ProviderError, classifyProviderError } from "./providers/provider-error.js"

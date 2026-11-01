@@ -3,6 +3,21 @@ import type { PreparedProviderRequest, ProviderRunState } from "../types.js"
 import type { CacheBreakpointStrategy, RenderedContext, ToolSchema, StreamEvent, TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent, LLMProvider, ModelMessage, ProviderDescriptor, ProviderReplay } from "../types.js"
 import { assistantReplayKey, collectStreamMessage, toAnthropicMessages } from "./base.js"
 import { malformedToolArguments, toolArgumentsText } from "../runtime/tool-arguments.js"
+import {
+  OnDemandCompactor,
+  THRESHOLD_COMPACTION_BETA,
+  compactionBlock,
+  resolveCompaction,
+  resumeAfterCompactionPause,
+  withoutCompactionPause,
+  type AnthropicCompaction,
+} from "./anthropic-compaction.js"
+
+export type {
+  AnthropicCompaction,
+  AnthropicOnDemandCompaction,
+  AnthropicThresholdCompaction,
+} from "./anthropic-compaction.js"
 
 /** Anthropic accepts at most this many cache_control breakpoints per request. */
 const MAX_CACHE_BREAKPOINTS = 4
@@ -137,34 +152,33 @@ export interface AnthropicContextEditing {
   clearToolInputs?: boolean
 }
 
-/** `compact_20260112` settings. Unset fields take the API defaults. */
-export interface AnthropicCompaction {
-  /** Input tokens at which the API summarizes earlier history (at least 50,000; API default 150,000). */
-  triggerInputTokens?: number
-  /** A summarization prompt that replaces the API's default one. */
-  instructions?: string
-}
-
 export interface AnthropicProviderOptions {
   /** Clear old tool results server-side (context editing). The provider then declares the tier
    *  native and the kernel stops clearing tool results itself; `true` takes the API defaults. */
   contextEditing?: true | AnthropicContextEditing
-  /** Summarize earlier history server-side once input reaches a threshold (`compact_20260112`).
-   *  The provider then declares compaction native and the kernel stops compacting itself; its
-   *  renewal stays the safety net, so set the trigger below the kernel's renewal threshold. */
+  /** Summarize earlier history server-side: at a threshold on every request (`compact_20260112`,
+   *  the default mode), or on demand once a turn passes a limit (`compact-2026-09-04`, `mode:
+   *  "on_demand"`). The provider then declares compaction native and the kernel stops compacting
+   *  itself; its renewal stays the safety net, so set the trigger below the kernel's renewal
+   *  threshold. */
   compaction?: true | AnthropicCompaction
 }
 
 const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
-const COMPACTION_BETA = "compact-2026-01-12"
+const PROMPT_CACHING_BETA = "prompt-caching-2024-07-31"
 
-function compactEdit(config: true | AnthropicCompaction): Record<string, unknown> {
-  const c = config === true ? {} : config
-  return {
-    type: "compact_20260112",
-    ...(c.triggerInputTokens !== undefined ? { trigger: { type: "input_tokens", value: c.triggerInputTokens } } : {}),
-    ...(c.instructions !== undefined ? { instructions: c.instructions } : {}),
-  }
+/** What one streamed response left behind once its events were yielded. */
+interface StreamOutcome {
+  nativeBlocks: Array<Record<string, unknown>>
+  finalText: string
+  finalToolCalls: Array<{ id: string; name: string; arguments: string }>
+  stopReason?: string
+  totalTokens: number
+}
+
+/** The leading wire messages that are history; the state turn follows them. */
+function historyCount(wireTurns: number[]): number {
+  return wireTurns.filter(index => index >= 0).length
 }
 
 function clearToolUsesEdit(config: true | AnthropicContextEditing): Record<string, unknown> {
@@ -183,6 +197,9 @@ export class AnthropicProvider implements LLMProvider {
   private nativeAssistantBlocks = new Map<string, Array<Record<string, unknown>>>()
   /** Server-side context edits and the beta each needs. */
   private readonly nativeContextEdits: Array<{ beta: string; edit: Record<string, unknown> }> = []
+  /** Threshold compaction with a pause: how many history messages stay verbatim behind the block. */
+  private readonly compactionPauseKeep?: number
+  private readonly onDemandCompactor?: OnDemandCompactor
 
   constructor(
     private readonly apiKey: string,
@@ -192,7 +209,18 @@ export class AnthropicProvider implements LLMProvider {
   ) {
     // Clearing runs first so the compaction trigger reads the input after tool results are cleared.
     if (options.contextEditing) this.nativeContextEdits.push({ beta: CONTEXT_MANAGEMENT_BETA, edit: clearToolUsesEdit(options.contextEditing) })
-    if (options.compaction) this.nativeContextEdits.push({ beta: COMPACTION_BETA, edit: compactEdit(options.compaction) })
+    const compaction = options.compaction ? resolveCompaction(options.compaction) : undefined
+    if (compaction?.mode === "threshold") {
+      this.nativeContextEdits.push({ beta: THRESHOLD_COMPACTION_BETA, edit: compaction.edit })
+      if (compaction.edit.pause_after_compaction) this.compactionPauseKeep = compaction.keepRecentMessages ?? 0
+    } else if (compaction?.mode === "on_demand") {
+      this.onDemandCompactor = new OnDemandCompactor(compaction.config, body => this.createMessage(body))
+    }
+  }
+
+  /** On-demand compaction in flight settles; for tests and orderly shutdown. */
+  compactionIdle(): Promise<void> {
+    return this.onDemandCompactor?.idle() ?? Promise.resolve()
   }
 
   descriptor(): ProviderDescriptor {
@@ -209,10 +237,10 @@ export class AnthropicProvider implements LLMProvider {
         supported: true,
         requiresStrictPairing: true,
       },
-      ...(this.nativeContextEdits.length ? {
+      ...(this.nativeContextEdits.length || this.onDemandCompactor ? {
         nativeContext: {
           ...(this.nativeContextEdits.some(native => native.edit.type === "clear_tool_uses_20250919") ? { toolResultClearing: true } : {}),
-          ...(this.nativeContextEdits.some(native => native.edit.type === "compact_20260112") ? { compaction: true } : {}),
+          ...(this.onDemandCompactor || this.nativeContextEdits.some(native => native.edit.type === "compact_20260112") ? { compaction: true } : {}),
         },
       } : {}),
     }
@@ -253,20 +281,40 @@ export class AnthropicProvider implements LLMProvider {
       systemBlocks.push({ type: "text", text: context.systemKnowledge, ...(emitOnSystemBlocks ? { cache_control: cc } : {}) })
     }
     const system = systemBlocks.length ? systemBlocks : (context.systemText || undefined)
-    const msgs = toAnthropicMessages(context, message =>
-      this.nativeAssistantBlocks.get(assistantReplayKey(message))
+    const replay = (message: ModelMessage) => this.nativeAssistantBlocks.get(assistantReplayKey(message))
+    let msgs: Array<Record<string, unknown>> = []
+    // For each wire message, the index of the rendered turn it came from; the state turn is -1.
+    let wireTurns: number[] = []
+    context.turns.forEach((turn, index) => {
+      for (const message of toAnthropicMessages({ systemText: "", turns: [turn] }, replay)) {
+        msgs.push(message)
+        wireTurns.push(index)
+      }
+    })
+    // The API ignores everything before a compaction block, so it is not sent.
+    let head = -1
+    for (let index = msgs.length - 1; index >= 0 && head < 0; index--) {
+      const content = msgs[index].content
+      if (Array.isArray(content) && (content as Array<Record<string, unknown>>).some(block => block.type === "compaction")) head = index
+    }
+    if (head > 0) {
+      msgs = msgs.slice(head)
+      wireTurns = wireTurns.slice(head)
+    }
+    applyMessageCacheControl(
+      msgs,
+      typeof context.frozenPrefixLen === "number" && head > 0 ? context.frozenPrefixLen - head : context.frozenPrefixLen,
+      strategy,
     )
-    applyMessageCacheControl(msgs, context.frozenPrefixLen, strategy)
     // Append the volatile State turn AFTER the cache breakpoints (uncached tail);
     // absent on un-rebuilt bindings, where the state is already inside `turns`.
     // Render through toAnthropicMessages so assistant tool_use blocks are
     // serialized correctly — raw content would silently drop toolCalls.
     if (context.stateTurn) {
       const stateCtx: RenderedContext = { systemText: "", turns: [context.stateTurn] }
-      const stateMsgs = toAnthropicMessages(stateCtx, message =>
-        this.nativeAssistantBlocks.get(assistantReplayKey(message))
-      )
+      const stateMsgs = toAnthropicMessages(stateCtx, replay)
       msgs.push(...stateMsgs)
+      wireTurns.push(...stateMsgs.map(() => -1))
     }
     assertCacheBudget(system, tools.length)
 
@@ -299,30 +347,107 @@ export class AnthropicProvider implements LLMProvider {
       body.betas = betas
       body.context_management = { ...callerManagement, edits }
     }
+    this.onDemandCompactor?.apply(body)
 
     const frozenBody = requestSnapshot(body)
     return {
       scope: "encoded_body", request: requestSnapshot(frozenBody), state: requestSnapshot(state ?? null),
-      stream: signal => this.streamBody(frozenBody, slotBp, signal),
+      stream: signal => this.streamTurn(context, frozenBody, wireTurns, slotBp, signal),
     }
+  }
+
+  /** One turn: the response's events, or — when a compaction pause stops the response at the
+   *  summary — the continuation's. With a pause configured, events are held until the response
+   *  shows it is not a pause (any non-usage event) or ends. */
+  private async *streamTurn(
+    context: RenderedContext,
+    body: Record<string, unknown>,
+    wireTurns: number[],
+    slotBp: ReturnType<typeof countCacheControlSlots>,
+    signal?: AbortSignal,
+  ): AsyncIterable<StreamEvent> {
+    const first = this.streamBody(body, slotBp, signal)[Symbol.asyncIterator]()
+    let held: StreamEvent[] | undefined = this.compactionPauseKeep !== undefined ? [] : undefined
+    let outcome: StreamOutcome
+    for (;;) {
+      const next = await first.next()
+      if (next.done) { outcome = next.value; break }
+      if (held && next.value.type !== "usage") {
+        yield* held
+        held = undefined
+      }
+      if (held) held.push(next.value)
+      else yield next.value
+    }
+    const paused = held && outcome.stopReason === "compaction" ? compactionBlock(outcome.nativeBlocks) : undefined
+    let unanchoredBlock: Record<string, unknown> | undefined
+    if (paused) {
+      const resumed = resumeAfterCompactionPause(
+        body.messages as Array<Record<string, unknown>>,
+        historyCount(wireTurns),
+        paused,
+        this.compactionPauseKeep,
+      )
+      if (resumed.anchor) {
+        const turn = context.turns[wireTurns[resumed.anchor.wireIndex]]
+        if (turn) this.nativeAssistantBlocks.set(assistantReplayKey(turn), resumed.anchor.content)
+      } else {
+        unanchoredBlock = paused
+      }
+      const continuation = this.streamBody({ ...withoutCompactionPause(body), messages: resumed.messages }, slotBp, signal)[Symbol.asyncIterator]()
+      for (;;) {
+        const next = await continuation.next()
+        if (next.done) { outcome = next.value; break }
+        yield next.value
+      }
+    } else if (held) {
+      yield* held
+    }
+    this.rememberNativeBlocks(
+      { content: outcome.finalText, toolCalls: outcome.finalToolCalls },
+      [...(unanchoredBlock ? [unanchoredBlock] : []), ...outcome.nativeBlocks],
+    )
+    this.onDemandCompactor?.observe(body, historyCount(wireTurns), outcome.totalTokens)
+  }
+
+  private headers(body: Record<string, unknown>): Record<string, string> {
+    return {
+      "x-api-key": this.apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+      "anthropic-beta": [
+        PROMPT_CACHING_BETA,
+        ...(Array.isArray(body.betas) ? body.betas.filter((value): value is string => typeof value === "string" && value !== PROMPT_CACHING_BETA) : []),
+      ].filter((value, index, values) => values.indexOf(value) === index).join(","),
+    }
+  }
+
+  /** A non-streaming request; the on-demand compaction request goes this way. */
+  private async createMessage(body: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: this.headers(body),
+      // Betas travel in the header; the Messages API refuses them as a body field.
+      body: JSON.stringify({ ...body, stream: undefined, betas: undefined }),
+    })
+    if (!resp.ok) {
+      throw Object.assign(new Error(`Anthropic ${resp.status}: ${await resp.text()}`), { status: resp.status })
+    }
+    return await resp.json() as Record<string, unknown>
   }
 
   async *stream(context: RenderedContext, tools: ToolSchema[], extensions?: Record<string, unknown>, state?: ProviderRunState, signal?: AbortSignal): AsyncIterable<StreamEvent> {
     yield* this.prepareRequest(context, tools, extensions, state).stream(signal)
   }
 
-  private async *streamBody(body: Record<string, unknown>, slotBp: ReturnType<typeof countCacheControlSlots>, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+  private async *streamBody(
+    body: Record<string, unknown>,
+    slotBp: ReturnType<typeof countCacheControlSlots>,
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamEvent, StreamOutcome> {
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: {
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-        "anthropic-beta": [
-          "prompt-caching-2024-07-31",
-          ...(Array.isArray(body.betas) ? body.betas.filter((value): value is string => typeof value === "string" && value !== "prompt-caching-2024-07-31") : []),
-        ].filter((value, index, values) => values.indexOf(value) === index).join(","),
-      },
+      headers: this.headers(body),
       // Betas travel in the header; the Messages API refuses them as a body field.
       body: JSON.stringify({ ...body, betas: undefined }),
       ...(signal ? { signal } : {}), // #2-B-ii: a preempt aborts the in-flight request at the socket.
@@ -342,6 +467,14 @@ export class AnthropicProvider implements LLMProvider {
     let cacheReadTokens = 0
     let cacheCreationTokens = 0
     let outputTokens = 0
+    let stopReason: string | undefined
+    const outcome = (): StreamOutcome => ({
+      nativeBlocks: Object.keys(nativeBlocks).map(Number).sort((a, b) => a - b).map(index => nativeBlocks[index]),
+      finalText,
+      finalToolCalls,
+      ...(stopReason ? { stopReason } : {}),
+      totalTokens: uncachedInput + cacheReadTokens + cacheCreationTokens + outputTokens,
+    })
 
     while (true) {
       const { done, value } = await reader.read()
@@ -352,10 +485,14 @@ export class AnthropicProvider implements LLMProvider {
       for (const line of lines) {
         if (!line.startsWith("data: ")) continue
         const data = line.slice(6).trim()
-        if (data === "[DONE]") return
+        if (data === "[DONE]") return outcome()
         try {
           const evt = JSON.parse(data) as Record<string, unknown>
           if (evt.type === "message_start" || evt.type === "message_delta") {
+            // stop_reason rides on message_delta; "max_tokens" drives output-cap recovery and
+            // "compaction" marks a paused threshold compaction.
+            const eventStopReason = (evt as { delta?: { stop_reason?: string | null } }).delta?.stop_reason ?? undefined
+            if (eventStopReason) stopReason = eventStopReason
             const usage = (evt.usage ?? (evt.message as Record<string, unknown> | undefined)?.usage) as
               | { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
               | undefined
@@ -371,8 +508,6 @@ export class AnthropicProvider implements LLMProvider {
               const inputTokens = uncachedInput + cacheReadTokens + cacheCreationTokens
               if (inputTokens > 0 || outputTokens > 0) {
                 const bySlot = estimateCacheReadBySlot(cacheReadTokens, slotBp)
-                // stop_reason rides on message_delta; "max_tokens" drives output-cap recovery.
-                const stopReason = (evt as { delta?: { stop_reason?: string | null } }).delta?.stop_reason
                 yield {
                   type: "usage",
                   totalTokens: inputTokens + outputTokens,
@@ -381,7 +516,7 @@ export class AnthropicProvider implements LLMProvider {
                   cacheReadInputTokens: cacheReadTokens,
                   cacheCreationInputTokens: cacheCreationTokens,
                   ...(bySlot ? { cacheReadInputTokensBySlot: bySlot } : {}),
-                  ...(stopReason ? { stopReason } : {}),
+                  ...(eventStopReason ? { stopReason: eventStopReason } : {}),
                 } as UsageEvent
               }
             }
@@ -425,7 +560,7 @@ export class AnthropicProvider implements LLMProvider {
       }
     }
 
-    this.rememberNativeBlocks({ content: finalText, toolCalls: finalToolCalls }, Object.keys(nativeBlocks).map(Number).sort((a, b) => a - b).map(index => nativeBlocks[index]))
+    return outcome()
   }
 
   private rememberNativeBlocks(

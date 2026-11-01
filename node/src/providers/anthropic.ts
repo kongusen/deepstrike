@@ -29,6 +29,21 @@ import {
   type CanonicalAdapterInput,
 } from "./content-normalization.js"
 import { endpointProfiles, type ProviderId } from "./endpoints.js"
+import {
+  OnDemandCompactor,
+  THRESHOLD_COMPACTION_BETA,
+  compactionBlock,
+  resolveCompaction,
+  resumeAfterCompactionPause,
+  withoutCompactionPause,
+  type AnthropicCompaction,
+} from "./anthropic-compaction.js"
+
+export type {
+  AnthropicCompaction,
+  AnthropicOnDemandCompaction,
+  AnthropicThresholdCompaction,
+} from "./anthropic-compaction.js"
 import { circuitOpenError, classifyProviderError } from "./provider-error.js"
 
 export interface AnthropicProviderConfig {
@@ -42,19 +57,12 @@ export interface AnthropicProviderConfig {
    *  provider then declares the tier native and the kernel stops clearing tool results itself;
    *  `true` takes the API defaults. */
   contextEditing?: true | AnthropicContextEditing
-  /** Summarize earlier history server-side once input reaches a threshold (`compact_20260112`).
-   *  The provider then declares compaction native and the kernel stops compacting itself; its
-   *  renewal stays the safety net, so set the trigger below the kernel's renewal threshold.
-   *  `true` takes the API defaults. */
+  /** Summarize earlier history server-side: at a threshold on every request (`compact_20260112`,
+   *  the default mode), or on demand once a turn passes a limit (`compact-2026-09-04`, `mode:
+   *  "on_demand"`). The provider then declares compaction native and the kernel stops compacting
+   *  itself; its renewal stays the safety net, so set the trigger below the kernel's renewal
+   *  threshold. `true` takes the threshold API defaults. */
   compaction?: true | AnthropicCompaction
-}
-
-/** `compact_20260112` settings. Unset fields take the API defaults. */
-export interface AnthropicCompaction {
-  /** Input tokens at which the API summarizes earlier history (at least 50,000; API default 150,000). */
-  triggerInputTokens?: number
-  /** A summarization prompt that replaces the API's default one. */
-  instructions?: string
 }
 
 /** `clear_tool_uses_20250919` settings. Unset fields take the API defaults. */
@@ -72,21 +80,11 @@ export interface AnthropicContextEditing {
 }
 
 const CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
-const COMPACTION_BETA = "compact-2026-01-12"
 
 /** One server-side context edit and the beta that enables it. */
 interface NativeContextEdit {
   beta: string
   edit: Record<string, unknown>
-}
-
-function compactEdit(config: true | AnthropicCompaction): Record<string, unknown> {
-  const c = config === true ? {} : config
-  return {
-    type: "compact_20260112",
-    ...(c.triggerInputTokens !== undefined ? { trigger: { type: "input_tokens", value: c.triggerInputTokens } } : {}),
-    ...(c.instructions !== undefined ? { instructions: c.instructions } : {}),
-  }
 }
 
 function clearToolUsesEdit(config: true | AnthropicContextEditing): Record<string, unknown> {
@@ -115,6 +113,9 @@ export class AnthropicProvider implements LLMProvider {
   private readonly directNativeTokenCounting: boolean
   private readonly defaultTextualToolCallPolicy: "off" | "reject"
   private readonly nativeContextEdits: NativeContextEdit[] = []
+  /** Threshold compaction with a pause: how many history messages stay verbatim behind the block. */
+  private readonly compactionPauseKeep?: number
+  private readonly onDemandCompactor?: OnDemandCompactor
   private resolvedRuntime?: ResolvedAnthropicRuntime
 
   constructor(config: AnthropicProviderConfig) {
@@ -147,7 +148,16 @@ export class AnthropicProvider implements LLMProvider {
     this.defaultTextualToolCallPolicy = this.directNativeTokenCounting ? "off" : "reject"
     // Clearing runs first so the compaction trigger reads the input after tool results are cleared.
     if (c.contextEditing) this.nativeContextEdits.push({ beta: CONTEXT_MANAGEMENT_BETA, edit: clearToolUsesEdit(c.contextEditing) })
-    if (c.compaction) this.nativeContextEdits.push({ beta: COMPACTION_BETA, edit: compactEdit(c.compaction) })
+    const compaction = c.compaction ? resolveCompaction(c.compaction) : undefined
+    if (compaction?.mode === "threshold") {
+      this.nativeContextEdits.push({ beta: THRESHOLD_COMPACTION_BETA, edit: compaction.edit })
+      if (compaction.edit.pause_after_compaction) this.compactionPauseKeep = compaction.keepRecentMessages ?? 0
+    } else if (compaction?.mode === "on_demand") {
+      this.onDemandCompactor = new OnDemandCompactor(
+        compaction.config,
+        body => this.createMessage(body, "beta"),
+      )
+    }
   }
 
   runtimePolicy(): RuntimePolicy {
@@ -173,7 +183,7 @@ export class AnthropicProvider implements LLMProvider {
         supported: true,
         requiresStrictPairing: true,
       },
-      ...(this.nativeContextEdits.length ? { nativeContext: this.nativeContextTiers() } : {}),
+      ...(this.nativeContextEdits.length || this.onDemandCompactor ? { nativeContext: this.nativeContextTiers() } : {}),
     }
   }
 
@@ -250,7 +260,7 @@ export class AnthropicProvider implements LLMProvider {
     const types = new Set(this.nativeContextEdits.map(native => native.edit.type))
     return {
       ...(types.has("clear_tool_uses_20250919") ? { toolResultClearing: true } : {}),
-      ...(types.has("compact_20260112") ? { compaction: true } : {}),
+      ...(types.has("compact_20260112") || this.onDemandCompactor ? { compaction: true } : {}),
     }
   }
 
@@ -274,7 +284,35 @@ export class AnthropicProvider implements LLMProvider {
     extensions?: Record<string, unknown>,
   ): { input: CanonicalAdapterInput; plan: AnthropicRequestPlan } {
     const input = this.adapterInput(context, tools, extensions)
-    return { input, plan: this.adapter.buildRequest(input) }
+    const plan = this.adapter.buildRequest(input)
+    if (this.onDemandCompactor?.apply(plan.params)) plan.transport = "beta"
+    return { input, plan }
+  }
+
+  /** On-demand compaction in flight settles; for tests and orderly shutdown. */
+  compactionIdle(): Promise<void> {
+    return this.onDemandCompactor?.idle() ?? Promise.resolve()
+  }
+
+  /** The continuation of a paused threshold compaction. When recent turns are kept, the block now
+   *  heads an earlier assistant turn, and that turn's replay is rewritten so every later request
+   *  renders the same messages the continuation sent. */
+  private resumeCompactionPause(
+    context: RenderedContext,
+    plan: AnthropicRequestPlan,
+    block: Record<string, unknown>,
+  ): { params: Record<string, unknown>; anchored: boolean } {
+    const resumed = resumeAfterCompactionPause(
+      plan.params.messages as Array<Record<string, unknown>>,
+      historyCount(plan),
+      block,
+      this.compactionPauseKeep,
+    )
+    if (resumed.anchor) {
+      const turn = context.turns[plan.wireTurns[resumed.anchor.wireIndex]]
+      if (turn) this.nativeAssistantBlocks.set(assistantReplayKey(turn), resumed.anchor.content)
+    }
+    return { params: { ...withoutCompactionPause(plan.params), messages: resumed.messages }, anchored: !!resumed.anchor }
   }
 
   async complete(
@@ -296,13 +334,23 @@ export class AnthropicProvider implements LLMProvider {
     for (let attempt = 0; attempt < this.maxRetries; attempt++) {
       try {
         this.lastTelemetry = { rungs: attempt + 1 }
-        const raw = await this.createMessage(plan.params, plan.transport)
+        let raw = await this.createMessage(plan.params, plan.transport)
+        const paused = this.compactionPauseKeep !== undefined && raw.stop_reason === "compaction"
+          ? compactionBlock(raw.content)
+          : undefined
+        let unanchoredBlock: Record<string, unknown> | undefined
+        if (paused) {
+          const resumed = this.resumeCompactionPause(context, plan, paused)
+          if (!resumed.anchored) unanchoredBlock = paused
+          raw = await this.createMessage(resumed.params, "beta")
+        }
         this.circuit.recordSuccess()
         if (typeof raw.id === "string") this.lastTelemetry = { rungs: attempt + 1, responseId: raw.id }
         const decoded = this.adapter.decodeComplete(raw, { input })
-        if (decoded.replay?.native_blocks) {
-          this.rememberNativeBlocks(decoded.message, decoded.replay.native_blocks)
-        }
+        const replay = [...(unanchoredBlock ? [unanchoredBlock] : []), ...(decoded.replay?.native_blocks ?? [])]
+        if (replay.length) this.rememberNativeBlocks(decoded.message, replay)
+        const usage = this.adapter.normalizeUsage(raw.usage)
+        if (usage) this.onDemandCompactor?.observe(plan.params, historyCount(plan), usage.inputTokens + usage.outputTokens)
         return decoded.message
       } catch (error) {
         lastErr = error
@@ -331,13 +379,17 @@ export class AnthropicProvider implements LLMProvider {
     if (!enabled) {
       throw new Error(`Native token counting is unavailable on ${this.providerName()} Anthropic-compatible endpoint`)
     }
-    const { model, system, messages, tools: requestTools } = plan.params
-    const response = await this.client.messages.countTokens(requestSnapshot({
+    const { model, system, messages, tools: requestTools, betas } = plan.params
+    const body = requestSnapshot({
       model,
       ...(system ? { system } : {}),
       messages,
       ...(requestTools ? { tools: requestTools } : {}),
-    }) as unknown as Anthropic.MessageCountTokensParams)
+    })
+    // A history that carries a compaction block is only readable under its beta.
+    const response = plan.transport === "beta" && Array.isArray(betas)
+      ? await this.client.beta.messages.countTokens({ ...body, betas } as unknown as Parameters<typeof this.client.beta.messages.countTokens>[0])
+      : await this.client.messages.countTokens(body as unknown as Anthropic.MessageCountTokensParams)
     return {
       inputTokens: response.input_tokens,
       source: { kind: "native", provider: "anthropic" },
@@ -351,7 +403,7 @@ export class AnthropicProvider implements LLMProvider {
     plan.params.stream = true
     return {
       scope: "encoded_body", request: requestSnapshot({ body: plan.params, transport: plan.transport }), state: requestSnapshot(state ?? null),
-      stream: signal => this.streamPlan(input, plan, signal),
+      stream: signal => this.streamPlan(context, input, plan, signal),
       countTokens: () => this.countPlan(plan),
     }
   }
@@ -360,26 +412,59 @@ export class AnthropicProvider implements LLMProvider {
     yield* this.prepareRequest(context, tools, extensions, state).stream(signal)
   }
 
-  private async *streamPlan(input: CanonicalAdapterInput, plan: AnthropicRequestPlan, signal?: AbortSignal): AsyncIterable<StreamEvent> {
+  private async *streamPlan(
+    context: RenderedContext,
+    input: CanonicalAdapterInput,
+    plan: AnthropicRequestPlan,
+    signal?: AbortSignal,
+  ): AsyncIterable<StreamEvent> {
     const provider = this.providerName()
     try {
-      const state = this.adapter.createStreamState({ input })
+      let state = this.adapter.createStreamState({ input })
       this.lastTelemetry = { rungs: 1 }
+      // With a compaction pause configured, a response that opens with a compaction block is held
+      // back: if it stops there, it is the pause, and the continuation's events are the turn's.
+      let held: StreamEvent[] | undefined = this.compactionPauseKeep !== undefined ? [] : undefined
+      let paused = false
       for await (const chunk of this.streamMessage(plan.params, plan.transport, signal)) {
         if (this.lastTelemetry.responseId === undefined && chunk.type === "message_start") {
           const id = (chunk as Record<string, any>).message?.id
           if (typeof id === "string") this.lastTelemetry = { rungs: 1, responseId: id }
         }
-        for (const event of this.adapter.pushStreamChunkAtBoundary({ chunk, state }).events) yield event
+        const events = this.adapter.pushStreamChunkAtBoundary({ chunk, state }).events
+        if (held && chunk.type === "content_block_start" && chunk.content_block?.type !== "compaction") {
+          yield* held
+          held = undefined
+        }
+        if (held && chunk.type === "message_delta" && chunk.delta?.stop_reason === "compaction") paused = true
+        if (held) held.push(...events)
+        else yield* events
+      }
+      const pausedBlock = paused
+        ? Object.values(state.nativeBlocks).find(block => block.type === "compaction")
+        : undefined
+      let unanchoredBlock: Record<string, unknown> | undefined
+      if (pausedBlock) {
+        const resumed = this.resumeCompactionPause(context, plan, pausedBlock)
+        if (!resumed.anchored) unanchoredBlock = pausedBlock
+        state = this.adapter.createStreamState({ input })
+        for await (const chunk of this.streamMessage(resumed.params, "beta", signal)) {
+          yield* this.adapter.pushStreamChunkAtBoundary({ chunk, state }).events
+        }
+      } else if (held) {
+        yield* held
       }
       const final = this.adapter.finishStreamAtBoundary({ state })
-      for (const event of final.events) yield event
-      if (final.replay?.native_blocks) {
-        this.rememberNativeBlocks(
-          { content: state.finalText, toolCalls: state.finalToolCalls },
-          final.replay.native_blocks,
-        )
+      yield* final.events
+      const replay = [...(unanchoredBlock ? [unanchoredBlock] : []), ...(final.replay?.native_blocks ?? [])]
+      if (replay.length) {
+        this.rememberNativeBlocks({ content: state.finalText, toolCalls: state.finalToolCalls }, replay)
       }
+      this.onDemandCompactor?.observe(
+        plan.params,
+        historyCount(plan),
+        state.uncachedInput + state.cacheReadTokens + state.cacheCreationTokens + state.outputTokens,
+      )
     } catch (error) {
       throw classifyProviderError(provider, error)
     }
@@ -432,6 +517,11 @@ export class AnthropicProvider implements LLMProvider {
     if (!message.toolCalls?.length && !blocks.some(block => block.type === "thinking" || block.type === "compaction")) return
     this.nativeAssistantBlocks.set(assistantReplayKey(message), blocks)
   }
+}
+
+/** The leading wire messages that are history; the state turn and placeholder follow them. */
+function historyCount(plan: AnthropicRequestPlan): number {
+  return plan.wireTurns.filter(index => index >= 0).length
 }
 
 function compatibilityCapabilities(): ResolvedAnthropicRuntime["effectiveCapabilities"] {

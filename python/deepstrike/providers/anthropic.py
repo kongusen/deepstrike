@@ -1,5 +1,6 @@
 from __future__ import annotations
 from copy import deepcopy
+from dataclasses import replace
 from .prepared_request import PreparedProviderRequest
 import json
 import logging
@@ -10,12 +11,20 @@ from deepstrike._kernel import ModelMessage, ToolCall, ToolSchema
 from .stream import StreamEvent
 from .base import RetryConfig, CircuitBreaker, ProviderDescriptor, RenderedContext, RuntimePolicy, normalize_tool_call, parse_tool_arguments, to_anthropic_content, to_anthropic_messages
 from .anthropic_adapter import AnthropicMessagesAdapter
+from .anthropic_compaction import (
+    THRESHOLD_COMPACTION_BETA,
+    AnthropicCompaction,
+    OnDemandCompactor,
+    compaction_block,
+    resolve_compaction,
+    resume_after_compaction_pause,
+    without_compaction_pause,
+)
 from deepstrike.types.content import normalize_canonical_adapter_input
 
 logger = logging.getLogger(__name__)
 _OFFICIAL_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 _CONTEXT_MANAGEMENT_BETA = "context-management-2025-06-27"
-_COMPACTION_BETA = "compact-2026-01-12"
 
 
 class AnthropicContextEditing(TypedDict, total=False):
@@ -39,21 +48,6 @@ def _clear_tool_uses_edit(config: bool | AnthropicContextEditing) -> dict:
         edit["exclude_tools"] = list(values["exclude_tools"])
     if "clear_tool_inputs" in values:
         edit["clear_tool_inputs"] = values["clear_tool_inputs"]
-    return edit
-
-
-class AnthropicCompaction(TypedDict, total=False):
-    trigger_input_tokens: int
-    instructions: str
-
-
-def _compact_edit(config: bool | AnthropicCompaction) -> dict:
-    values = {} if config is True else config
-    edit: dict = {"type": "compact_20260112"}
-    if "trigger_input_tokens" in values:
-        edit["trigger"] = {"type": "input_tokens", "value": values["trigger_input_tokens"]}
-    if "instructions" in values:
-        edit["instructions"] = values["instructions"]
     return edit
 
 
@@ -125,8 +119,19 @@ class AnthropicProvider:
         self._native_context_edits: list[tuple[str, dict]] = []
         if context_editing:
             self._native_context_edits.append((_CONTEXT_MANAGEMENT_BETA, _clear_tool_uses_edit(context_editing)))
-        if compaction:
-            self._native_context_edits.append((_COMPACTION_BETA, _compact_edit(compaction)))
+        # Threshold compaction with a pause: how many history messages stay verbatim behind the block.
+        self._compaction_pause_keep: int | None = None
+        self._on_demand: OnDemandCompactor | None = None
+        resolved_compaction = resolve_compaction(compaction) if compaction else None
+        if resolved_compaction is not None and resolved_compaction.mode == "threshold":
+            self._native_context_edits.append((THRESHOLD_COMPACTION_BETA, resolved_compaction.edit))
+            if resolved_compaction.edit.get("pause_after_compaction"):
+                self._compaction_pause_keep = resolved_compaction.keep_recent_messages or 0
+        elif resolved_compaction is not None:
+            self._on_demand = OnDemandCompactor(
+                resolved_compaction.on_demand,
+                lambda body: self._client.beta.messages.create(**body),
+            )
 
     def runtime_policy(self) -> RuntimePolicy:
         return _CLAUDE_POLICIES.get(self._model, RuntimePolicy())
@@ -144,7 +149,7 @@ class AnthropicProvider:
             tool_calls={"supported": True, "requires_strict_pairing": True},
             native_context={
                 **({"tool_result_clearing": True} if any(edit["type"] == "clear_tool_uses_20250919" for _, edit in self._native_context_edits) else {}),
-                **({"compaction": True} if any(edit["type"] == "compact_20260112" for _, edit in self._native_context_edits) else {}),
+                **({"compaction": True} if self._on_demand is not None or any(edit["type"] == "compact_20260112" for _, edit in self._native_context_edits) else {}),
             },
         )
 
@@ -177,13 +182,32 @@ class AnthropicProvider:
         return blocks or None
 
     def _build_messages(self, turns: list[ModelMessage], state_turn=None, frozen_prefix_len=None, strategy: str = "default", cache_control: dict | None = None) -> list[dict]:
-        msgs = to_anthropic_messages(
-            turns,
-            native_replay=lambda message: self._native_assistant_blocks.get(
-                self._assistant_replay_key(message)
-            ),
-            resolved=getattr(self, "_resolved_runtime", None),
+        return self._build_wire_messages(turns, state_turn, frozen_prefix_len, strategy, cache_control)[0]
+
+    def _build_wire_messages(self, turns: list[ModelMessage], state_turn=None, frozen_prefix_len=None, strategy: str = "default", cache_control: dict | None = None) -> tuple[list[dict], list[int]]:
+        """The wire messages and, for each, the index of the turn it came from (``-1`` for the
+        state turn, which always comes last)."""
+        def native(message):
+            return self._native_assistant_blocks.get(self._assistant_replay_key(message))
+
+        resolved = getattr(self, "_resolved_runtime", None)
+        msgs: list[dict] = []
+        wire_turns: list[int] = []
+        for index, turn in enumerate(turns):
+            for message in to_anthropic_messages([turn], native_replay=native, resolved=resolved):
+                msgs.append(message)
+                wire_turns.append(index)
+        # The API ignores everything before a compaction block, so it is not sent.
+        head = next(
+            (i for i in range(len(msgs) - 1, -1, -1)
+             if isinstance(msgs[i].get("content"), list)
+             and any(isinstance(b, dict) and b.get("type") == "compaction" for b in msgs[i]["content"])),
+            -1,
         )
+        if head > 0:
+            msgs, wire_turns = msgs[head:], wire_turns[head:]
+            if isinstance(frozen_prefix_len, int):
+                frozen_prefix_len -= head
         # Cache breakpoints anchor on the stable history; the volatile State turn
         # is appended AFTER them as the uncached tail. On un-rebuilt bindings
         # state_turn is None and the state is already inside turns (rendered above).
@@ -195,15 +219,10 @@ class AnthropicProvider:
             # and tool-role tool_result parts are serialized correctly —
             # to_anthropic_content only handles contentParts/content and would
             # silently drop tool_calls.
-            state_msgs = to_anthropic_messages(
-                [state_turn],
-                native_replay=lambda message: self._native_assistant_blocks.get(
-                    self._assistant_replay_key(message)
-                ),
-                resolved=getattr(self, "_resolved_runtime", None),
-            )
+            state_msgs = to_anthropic_messages([state_turn], native_replay=native, resolved=resolved)
             msgs.extend(state_msgs)
-        return msgs
+            wire_turns.extend(-1 for _ in state_msgs)
+        return msgs, wire_turns
 
     def _build_tools(self, tools: list[ToolSchema], anchor_cache: bool, strategy: str = "default", cache_control: dict | None = None) -> list[dict] | None:
         if not tools:
@@ -232,7 +251,7 @@ class AnthropicProvider:
     def _build_request_plan(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None):
         strategy = _resolve_cache_breakpoint_strategy(extensions)
         cc = _resolve_cache_control(extensions)
-        msgs = self._build_messages(context.turns, context.state_turn, context.frozen_prefix_len, strategy, cc)
+        msgs, wire_turns = self._build_wire_messages(context.turns, context.state_turn, context.frozen_prefix_len, strategy, cc)
         system = self._build_system(context, strategy, cc)
         tool_defs = self._build_tools(tools, anchor_cache=not isinstance(system, list), strategy=strategy, cache_control=cc)
         _assert_cache_budget(system, len(tools))
@@ -245,9 +264,34 @@ class AnthropicProvider:
             context, tools, extensions=adapter_extensions,
             resolved=getattr(self, "_resolved_runtime", None),
         )
-        return canonical, self._adapter.build_request(
-            canonical, messages=msgs, system=system, tools=tool_defs
+        plan = self._adapter.build_request(canonical, messages=msgs, system=system, tools=tool_defs)
+        plan = replace(plan, wire_turns=wire_turns)
+        if self._on_demand is not None and self._on_demand.apply(plan.params):
+            plan = replace(plan, transport="beta")
+        return canonical, plan
+
+    async def compaction_idle(self) -> None:
+        """On-demand compaction in flight settles; for tests and orderly shutdown."""
+        if self._on_demand is not None:
+            await self._on_demand.idle()
+
+    def _resume_compaction_pause(self, context: RenderedContext, plan, block: dict) -> tuple[dict, bool]:
+        """The continuation of a paused threshold compaction. When recent turns are kept, the block
+        now heads an earlier assistant turn, and that turn's replay is rewritten so every later
+        request renders the same messages the continuation sent."""
+        messages, anchor = resume_after_compaction_pause(
+            plan.params["messages"], _history_count(plan), block, self._compaction_pause_keep,
         )
+        if anchor is not None:
+            wire_index, content = anchor
+            turn_index = plan.wire_turns[wire_index]
+            if 0 <= turn_index < len(context.turns):
+                self._native_assistant_blocks[self._assistant_replay_key(context.turns[turn_index])] = content
+        return {**without_compaction_pause(plan.params), "messages": messages}, anchor is not None
+
+    def _observe_usage(self, plan, total_tokens: int) -> None:
+        if self._on_demand is not None:
+            self._on_demand.observe(plan.params, _history_count(plan), total_tokens)
 
     async def count_tokens(self, context: RenderedContext, tools: list[ToolSchema], extensions: dict | None = None):
         return await self.prepare_request(context, tools, extensions).count_tokens()
@@ -263,7 +307,11 @@ class AnthropicProvider:
             for key in ("model", "system", "messages", "tools")
             if key in plan.params
         }
-        response = await self._client.messages.count_tokens(**params)
+        # A history that carries a compaction block is only readable under its beta.
+        if plan.transport == "beta" and plan.params.get("betas"):
+            response = await self._client.beta.messages.count_tokens(**params, betas=list(plan.params["betas"]))
+        else:
+            response = await self._client.messages.count_tokens(**params)
         return SimpleNamespace(
             input_tokens=response.input_tokens,
             source={"kind": "native", "provider": "anthropic"},
@@ -281,10 +329,25 @@ class AnthropicProvider:
             try:
                 messages = self._client.beta.messages if plan.transport == "beta" else self._client.messages
                 resp = await messages.create(**plan.params)
+                paused = (
+                    compaction_block(_field(resp, "content"))
+                    if self._compaction_pause_keep is not None and _field(resp, "stop_reason") == "compaction"
+                    else None
+                )
+                unanchored: list[dict] = []
+                if paused is not None:
+                    params, anchored = self._resume_compaction_pause(context, plan, paused)
+                    if not anchored:
+                        unanchored = [paused]
+                    resp = await self._client.beta.messages.create(**params)
                 self._circuit.record_success()
                 message, replay = self._adapter.decode_complete(resp, canonical)
-                if replay:
-                    self._remember_native_blocks(message.content, message.tool_calls or [], replay["native_blocks"])
+                blocks = [*unanchored, *((replay or {}).get("native_blocks") or [])]
+                if blocks:
+                    self._remember_native_blocks(message.content, message.tool_calls or [], blocks)
+                usage = self._adapter.normalize_usage(_field(resp, "usage"))
+                if usage is not None:
+                    self._observe_usage(plan, usage.input_tokens + usage.output_tokens)
                 return message
             except Exception as exc:
                 last_exc = exc
@@ -304,20 +367,57 @@ class AnthropicProvider:
         canonical, plan = self._build_request_plan(context, tools, extensions)
         plan = deepcopy(plan)
         return PreparedProviderRequest("encoded_body", deepcopy(plan.params), deepcopy(state),
-            lambda: self._stream_prepared(canonical, plan), lambda: self._count_prepared(plan))
+            lambda: self._stream_prepared(context, canonical, plan), lambda: self._count_prepared(plan))
 
-    async def _stream_prepared(self, canonical, plan):
+    async def _stream_prepared(self, context, canonical, plan):
         stream_state = self._adapter.create_stream_state(canonical, plan.cache_slots)
         messages = self._client.beta.messages if plan.transport == "beta" else self._client.messages
+        # With a compaction pause configured, a response that opens with a compaction block is held
+        # back: if it stops there, it is the pause, and the continuation's events are the turn's.
+        held: list | None = [] if self._compaction_pause_keep is not None else None
+        paused = False
         async with messages.stream(**deepcopy(plan.params)) as stream:
             async for event in stream:
-                for output in self._adapter.push_stream_chunk(event, stream_state).events:
-                    yield output
+                outputs = self._adapter.push_stream_chunk(event, stream_state).events
+                kind = _field(event, "type")
+                if held is not None and kind == "content_block_start" and _field(_field(event, "content_block"), "type") != "compaction":
+                    for output in held:
+                        yield output
+                    held = None
+                if held is not None and kind == "message_delta" and _field(_field(event, "delta"), "stop_reason") == "compaction":
+                    paused = True
+                if held is not None:
+                    held.extend(outputs)
+                else:
+                    for output in outputs:
+                        yield output
+        paused_block = next(
+            (dict(block) for block in stream_state.native_blocks.values() if block.get("type") == "compaction"),
+            None,
+        ) if paused else None
+        unanchored: list[dict] = []
+        if paused_block is not None:
+            params, anchored = self._resume_compaction_pause(context, plan, paused_block)
+            if not anchored:
+                unanchored = [paused_block]
+            stream_state = self._adapter.create_stream_state(canonical, plan.cache_slots)
+            async with self._client.beta.messages.stream(**deepcopy(params)) as stream:
+                async for event in stream:
+                    for output in self._adapter.push_stream_chunk(event, stream_state).events:
+                        yield output
+        elif held:
+            for output in held:
+                yield output
         finalized = self._adapter.finish_stream(stream_state)
         for event in finalized.events:
             yield event
-        if finalized.replay:
-            self._remember_native_blocks(stream_state.final_text, stream_state.final_tool_calls, finalized.replay["native_blocks"])
+        blocks = [*unanchored, *((finalized.replay or {}).get("native_blocks") or [])]
+        if blocks:
+            self._remember_native_blocks(stream_state.final_text, stream_state.final_tool_calls, blocks)
+        self._observe_usage(
+            plan,
+            stream_state.uncached_input + stream_state.cache_read + stream_state.cache_creation + stream_state.output_tokens,
+        )
 
     def _assistant_replay_key(self, message: ModelMessage) -> str:
         return self._assistant_replay_key_parts(message.content, message.tool_calls or [])
@@ -438,6 +538,15 @@ def _assert_cache_budget(system: object, tool_count: int) -> None:
             f"Anthropic cache_control budget exceeded: {system_breakpoints} system + "
             f"{tool_breakpoints} tool + {_MESSAGE_CACHE_BREAKPOINTS} message > {_MAX_CACHE_BREAKPOINTS}"
         )
+
+
+def _history_count(plan) -> int:
+    """The leading wire messages that are history; the state turn and placeholder follow them."""
+    return sum(1 for index in plan.wire_turns if index >= 0)
+
+
+def _field(raw: object, key: str) -> object:
+    return raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
 
 
 def _tc_field(tc: object, field_name: str) -> object:

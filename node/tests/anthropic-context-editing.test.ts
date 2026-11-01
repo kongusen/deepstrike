@@ -108,8 +108,10 @@ describe("Anthropic context editing and compaction delegate their tiers", () => 
       turns: [...context.turns, { role: "assistant", content: "Here it is." }, { role: "user", content: "add retries" }],
     }
     for await (const _ of provider.stream(next, [])) void _
+    // The API ignores everything before the block, so the turn that carries it is sent first.
     const messages = bodies[1].messages as Array<{ role: string; content: unknown }>
-    expect(messages[1]).toEqual({
+    expect(messages).toHaveLength(2)
+    expect(messages[0]).toEqual({
       role: "assistant",
       content: [
         { type: "compaction", content: "Summary: the user wants a scraper." },

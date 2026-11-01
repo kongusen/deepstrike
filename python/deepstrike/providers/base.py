@@ -262,13 +262,14 @@ def to_anthropic_messages(
             # block is what tells the API to drop everything before it.
             replay = native_replay(msg)
             if replay and any(block.get("type") == "compaction" for block in replay):
-                result.append({"role": "assistant", "content": replay})
+                # Copies: request-time annotations such as cache_control must not land on the replay.
+                result.append({"role": "assistant", "content": [dict(block) for block in replay]})
                 continue
 
         if msg.role == "assistant" and getattr(msg, "tool_calls", None):
             replay = native_replay(msg) if native_replay else None
             if replay is not None:
-                result.append({"role": "assistant", "content": replay})
+                result.append({"role": "assistant", "content": [dict(block) for block in replay]})
                 continue
 
             blocks: list[dict] = []

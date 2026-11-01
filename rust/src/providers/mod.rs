@@ -6,6 +6,7 @@ use deepstrike_core::types::message::{Content, CoreMessage, Role, ToolCall, Tool
 use futures::{Stream, StreamExt};
 
 pub mod anthropic;
+pub mod anthropic_compaction;
 pub mod openai;
 pub mod provider_error;
 pub mod request_plan;

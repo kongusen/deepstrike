@@ -149,7 +149,9 @@ async def test_a_streamed_compaction_block_is_replayed_on_the_next_request():
         ModelMessage(role="user", content="add retries"),
     ])
     _ = [event async for event in provider.stream(follow_up, [])]
-    assistant = sent[1]["messages"][1]
+    # The API ignores everything before the block, so the turn that carries it is sent first.
+    assert len(sent[1]["messages"]) == 2
+    assistant = sent[1]["messages"][0]
     assert assistant["role"] == "assistant"
     assert [block["type"] for block in assistant["content"]] == ["compaction", "text"]
     assert assistant["content"][0]["content"] == "Summary: the user wants a scraper."

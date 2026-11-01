@@ -12,6 +12,7 @@ from deepstrike.providers.protocol_adapter import AdapterOutput, ProtocolRespons
 from deepstrike.providers.stop_reason import canonicalize_stop_reason
 from deepstrike.providers.stream import TextDelta, ThinkingDelta, ToolCallEvent, UsageEvent
 from deepstrike.providers.usage import ProviderUsage
+from deepstrike.providers.anthropic_compaction import compaction_block
 from deepstrike.types.content import CanonicalAdapterInput
 from deepstrike.runtime.tool_arguments import malformed_tool_arguments
 
@@ -48,6 +49,9 @@ class AnthropicRequestPlan:
     transport: str
     params: dict[str, Any]
     cache_slots: dict[str, bool]
+    # For each wire message, the index of the rendered turn it came from; the volatile state turn
+    # and the empty-history placeholder are -1, and always come last.
+    wire_turns: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -190,7 +194,8 @@ class AnthropicMessagesAdapter:
             elif kind == "thinking":
                 native_blocks.append({"type": "thinking", "thinking": _get(block, "thinking"), "signature": _get(block, "signature")})
             elif kind == "compaction":
-                native_blocks.append({"type": "compaction", "content": _get(block, "content") or ""})
+                # Kept exactly as returned: an on-demand block's signature must go back with it.
+                native_blocks.append(compaction_block([block]) or {"type": "compaction", "content": ""})
         if (
             _textual_tool_call_policy(input) == "reject"
             and ANTHROPIC_TEXTUAL_TOOL_CALL_START_MARKER in content
