@@ -41,6 +41,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Node and Python OpenAI-chat providers (DeepSeek, Kimi, Qwen, MiniMax, GLM) store a tool-call
+  turn's reasoning replay under its tool calls alone. The kernel collapses an old turn's
+  narration to a stub at render time, and the lookup by the original text then missed: DeepSeek
+  runs with thinking on failed with `replay requires non-empty reasoning_content` once a narrated
+  tool turn left the recent window.
 - The WASM `AnthropicProvider` no longer sends `betas` in the request body when context editing
   is on. They travel only in the `anthropic-beta` header, as the Messages API requires.
 
@@ -50,6 +55,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`initial_context.dependencies`). When the brief clips an output, it says so and the model reads
   the whole output with `read_result(call_id="dep:<agent_id>")`, answered by the kernel without a
   host effect. A new `dependencyMode: "handle"` shows only a 600-character preview of each output.
+  Only an output the brief clipped is sent in the spawn's `dependency_outputs`; an output the brief
+  shows whole is not offered through `read_result`.
+- On turn 1 the `→ focus:` footer repeats only the goal's first paragraph, clipped to 240
+  characters. It used to repeat the whole goal, so a workflow node's dependency brief appended to
+  the goal was sent twice per call.
 - Long-term memory recall moved into the kernel. With `memory_policy.recall` on (the SDKs turn
   it on when a memory store, agent id and memory scope are configured), the kernel issues a
   `query_memory` effect for the goal before the first provider call and after each renewal, and

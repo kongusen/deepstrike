@@ -13,7 +13,7 @@ import type {
   ToolSchema,
   UsageEvent,
 } from "../types.js"
-import { assistantReplayKey } from "../runtime/provider-replay.js"
+import { reasoningReplayKey } from "../runtime/provider-replay.js"
 import {
   openAICachedPromptTokens,
   stablePromptCacheKey,
@@ -527,11 +527,11 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
       requireNonEmptyReasoningForToolCalls: options.requireNonEmptyReasoningForToolCalls,
       degradeMissingReasoning: options.degradeMissingReasoning,
       degradeMissingToolResult: options.degradeMissingToolResult,
-      replayForAssistant: message => compatibilityReplayStore(this).get(assistantReplayKey(message)),
+      replayForAssistant: message => compatibilityReplayStore(this).get(reasoningReplayKey(message)),
     })
     const canonical = normalizeCanonicalContext(
       context,
-      message => compatibilityReplayStore(this).get(assistantReplayKey(message)),
+      message => compatibilityReplayStore(this).get(reasoningReplayKey(message)),
     )
     const dialect: OpenAIChatWireDialect = {
       ...openAIChatDialects.openai,
@@ -548,7 +548,7 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
 
   assessReasoning(context: RenderedContext): ReplayabilityAssessment {
     return assessReasoningReplay(context.turns, {
-      replayForAssistant: message => compatibilityReplayStore(this).get(assistantReplayKey(message)),
+      replayForAssistant: message => compatibilityReplayStore(this).get(reasoningReplayKey(message)),
     })
   }
 
@@ -560,13 +560,13 @@ export class OpenAIChatAdapter implements ProtocolAdapter<
   }
 
   rememberReplayFields(message: Pick<ModelMessage, "content" | "toolCalls">, fields: Record<string, unknown>): void {
-    compatibilityReplayStore(this).set(assistantReplayKey(message), {
+    compatibilityReplayStore(this).set(reasoningReplayKey(message), {
       protocol: "openai-chat",
       ...fields,
     } as ProviderReplay)
   }
 
   peekReplayFields(message: Pick<ModelMessage, "content" | "toolCalls">): Record<string, unknown> | undefined {
-    return compatibilityReplayStore(this).get(assistantReplayKey(message)) as Record<string, unknown> | undefined
+    return compatibilityReplayStore(this).get(reasoningReplayKey(message)) as Record<string, unknown> | undefined
   }
 }

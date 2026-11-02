@@ -140,6 +140,15 @@ ContextItem {
 
 - [ ] 任务 4.3：离线调参
   - 第一步（2026-11-02）：`benchmark/context-lifecycle/run.mjs` 用脚本化 provider 驱动真实 kernel，对比两个 checkout 渲染出的上下文（不测任务成功率）。相对基线 `5b5308d3`：长任务 prefix 复用 0.761→0.785，cache 下的 knowledge 改写 2→0，输入总量不变；fan-out→synthesize 在 `handle` 模式下首个调用 48.5k→4.5k 字符（−91%），且能用 `read_result` 读全文。3.2 的继承默认值在此场景不可见（workflow root 没有父 transcript）。任务成功率需要真实 provider 跑。
+  - 第二步（2026-11-02）：`benchmark/context-lifecycle/live.mjs` 用真实模型测 fan-out→synthesize 的答题正确率。三个 explore 节点直接返回固定的 16k 字符报告（不调模型），只有 synthesize 调真实 provider；12 道题，访问码分别位于 600 字符预览内、8k 截断内、截断外。`--provider deepseek` 读 `.env` 的 `DEEPSEEK_*`（`openai` 读 `OPENAI_*`；yinli.one 的 key 返回 401，暂不可用），`--repo` 指向基线 worktree。DeepSeek `deepseek-flash` 结果（修复下文两处问题后）：
+
+    | 变体 | 正确 | 发送字符 | 调用 | 首个调用 |
+    |------|------|----------|------|----------|
+    | 基线 full（`5b5308d3`） | 11/12 | 593k | 12 | 49.4k |
+    | 分支 full | 12/12 | 904k | 20 | 25.1k |
+    | 分支 handle | 9/12 | 699k | 26 | 31.3k |
+
+    handle 的 3 个失败都是 DeepSeek replay 报错（见“交接”中的已知问题），不是答错。分支 full 首个调用减半，但模型会用 `read_result` 读被截断的依赖，总发送量高于基线；准确率 12/12。默认 edge mode 还不能定，需要先修 replay 问题再重跑 handle。
   - 验收：`crates/deepstrike-lab` 提供工具，用 lifecycle report 和任务结果（成功/失败、成本）比较不同 `ContextPolicy`（阈值、lease 默认值、edge mode）。不依赖已删除的 evolution 模块。
   - 文件：`crates/deepstrike-lab`、`benchmark/`
 
@@ -164,6 +173,35 @@ ContextItem {
 
 - [ ] 任务 6.3：补齐 SDK
   - 验收：宿主程序 API 按 Python、Rust、WASM 的顺序移植，接口与 Node 一致。重放沿用 `DynamicWorkflowReplayFact` 作为已记录输入（D1），不需要跨 SDK 字节一致。
+
+## 交接（2026-11-02）
+
+分支 `feat/context-lifecycle-stage0`。已提交：`cbd7fe96`（阶段 0–3、4.1、6.1）、`382ce943`（确定性基准）。以下改动尚未提交：
+
+- `orchestration/workflow/mod.rs`：新增 `DependencyContext::readable`，只有被 brief 截掉部分的依赖输出才随 spawn 下发（`dependency_outputs`），完整显示的输出不再提供 `read_result`。测试 `only_a_clipped_output_is_readable`；golden `golden_lifecycle_workflow_root.json` 已重新 bless。
+- `context/renderer.rs`：turn 1 的 `→ focus:` 页脚只重复目标的第一段（最多 240 字符）。之前页脚复制整个 goal，而 goal 后面拼了 dependency brief，导致 brief 每次调用发两遍（24k → 49k）。测试 `the_focus_footer_repeats_only_the_goal_head`。
+- `benchmark/context-lifecycle/live.mjs`：新文件，见任务 4.3 第二步；provider 错误会写进结果的 `error`，不再表现为空答案。
+- 已验证：core 1101 通过，Node 1403 通过。**未跑**：Rust SDK、WASM、Python、`npm run contracts:check`、`npm run test:conformance`、`node scripts/check-sdk-parity.mjs`。提交前补跑，并在 CHANGELOG / MIGRATION 记录这两处行为变化。
+
+已知问题：
+
+- ~~DeepSeek replay~~（已修）：不是模型没给 reasoning，也不是流式累积丢了。kernel 在渲染时把移出保护窗口的旧 assistant 叙述（≥40 字符且带 tool call）替换成 `NARRATION_STUB`，而 Node / Python 的 reasoning replay 按 `content + tool_calls` 存取，内容一变就查不到，`requireReasoningReplay` 随即抛错。handle 模式工具调用多，旧叙述轮次更容易移出窗口，所以更常暴露。修复：OpenAI-chat 的 reasoning replay 对带 tool call 的轮次只按 tool calls 作 key（Node `reasoningReplayKey`、Python `reasoning_replay_key`）；Anthropic 的 native blocks 仍按内容作 key，未改。WASM 和 Rust 的 OpenAI provider 不回放 `reasoning_content`，不受影响。测试：Node `provider-narration-replay.test.ts`，Python `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`。
+- `benchmark-0.2.74` 的版本守卫（0.2.74 vs 0.2.77）早已失效，未处理。
+
+下一步（按顺序）：
+
+1. ~~补跑上面未跑的测试，提交未提交的改动和 `live.mjs`~~（已完成：Rust SDK、WASM、Python、contracts、conformance、parity 均通过）。
+2. ~~修 DeepSeek replay 问题~~（已修），重跑 `live.mjs --provider deepseek --tasks 12` 的三个变体（基线 full、分支 full、分支 handle），据此决定默认 edge mode 是否改为 `handle`（任务 3.1 的未做项）。
+3. 任务 6.3 的 Rust 部分：Rust runner 目前所有 workflow spawn 都会失败，先补 Rust workflow 编排，再按 Python、WASM 顺序补宿主程序 API。
+4. 任务 1.1（ContextItem），之后是 4.1 的逐 item 明细、4.2、4.3 的 lab 工具、5.1（被 1.1 和 ABI 扩展阻塞）、6.2。
+
+换设备时的环境准备：
+
+- 基线 worktree 在本机临时目录，新设备上重建：`git worktree add ../deepstrike-base 5b5308d3`，然后在其中构建 `node/dist`（`crates/deepstrike-node` 下 `npx napi build --platform --release`，`node` 下 `npm run build`）。
+- 本分支同样要先重建 napi addon 和 `node/dist`，否则 Node 测试和基准跑的是旧 kernel。
+- `.env` 不在仓库里，需要 `DEEPSEEK_API_KEY`、`DEEPSEEK_MODEL`（本次用 `deepseek-flash`）。
+- WASM 测试要求 rustup 工具链在 PATH 上；Python 测试用独立 venv（仓库自带的 venv 不可用）。
+- golden 变化时用 `BLESS_KERNEL_RECORD_FIXTURES=1 cargo test -p deepstrike-core --lib <测试名>` 重新生成。
 
 ## 删除清单
 
