@@ -2338,6 +2338,13 @@ fn rendered_context_from_wire(
         state_turn,
         frozen_prefix_len: context.frozen_prefix_len.map(|v| v as usize),
         budget_overflow: None,
+        turn_items: context
+            .turns
+            .iter()
+            .map(|turn| turn.item_id.unwrap_or(0))
+            .collect(),
+        estimated_tokens: context.estimated_tokens,
+        turn_replays: context.turns.iter().map(|turn| turn.replay.as_ref().map(|replay| replay.get().clone())).collect(),
     })
 }
 
@@ -2685,6 +2692,12 @@ fn provider_message(raw: &Map<String, Value>) -> Value {
             .as_object_mut()
             .unwrap()
             .insert("tool_calls".into(), Value::Array(tool_calls));
+    }
+    if let Some(replay) = raw.get("replay").filter(|replay| replay.is_object()) {
+        message
+            .as_object_mut()
+            .unwrap()
+            .insert("replay".into(), replay.clone());
     }
     message
 }

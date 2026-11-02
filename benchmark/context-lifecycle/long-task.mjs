@@ -5,7 +5,7 @@
 //        [--policy '<ContextPolicy overrides JSON>'] [--tasks N] [--provider deepseek|openai]
 //        [--max-tokens N] [--out trials.jsonl]
 //
-// The model reads a 12-page ledger one page at a time with `read_ledger` and reports the total of
+// The model reads an 8-page ledger (`--pages`) one page at a time with `read_ledger` and reports the total of
 // one account's flagged transactions. The window (`--max-tokens`, default 8000) holds a few pages,
 // so the run compacts. The answer depends on a rule only memory holds (REVIEW-HOLD counts as
 // REVIEW): the kernel recalls it at run start, and losing it costs the answer. Three knowledge
@@ -32,7 +32,7 @@ const provider = new MeteredProvider(inner)
 
 // ── fixtures ───────────────────────────────────────────────────────────────────────────────────
 
-const PAGES = 12
+const PAGES = Number(arg("--pages", "8"))
 const ROWS = 30
 const ACCOUNTS = 6
 const FLAGS = ["OK", "OK", "OK", "REVIEW", "OK", "REVIEW-HOLD", "OK"]
@@ -105,7 +105,7 @@ async function runTask(index) {
   const plane = new LocalExecutionPlane()
   plane.register(root.tool(
     "read_ledger",
-    "Read one page of the ledger (pages 1 to 12).",
+    `Read one page of the ledger (pages 1 to ${PAGES}).`,
     { type: "object", properties: { page: { type: "integer", minimum: 1, maximum: PAGES } }, required: ["page"] },
     async ({ page }) => ledgerPage(Math.min(PAGES, Math.max(1, Number(page) || 1))),
   ))
@@ -145,11 +145,12 @@ async function runTask(index) {
   return trialFrom({ scenario: "ledger-audit", variant, task: `${account}#${index}`, success, error, provider, events: recorder.events })
 }
 
+// Each trial is written as soon as it finishes, so an interrupted run keeps what it measured.
 const trials = []
 for (let index = 0; index < taskCount; index++) {
   const trial = await runTask(index)
   trials.push(trial)
+  await writeTrials(out, [trial])
   console.error(`${trial.task}: ${trial.success ? "correct" : "wrong"} ${trial.cost.calls} calls ${trial.cost.sent_chars} chars${trial.error ? ` (${trial.error})` : ""}`)
 }
-await writeTrials(out, trials)
 console.error(`${variant} on ${model}: ${trials.filter(trial => trial.success).length}/${trials.length} correct`)

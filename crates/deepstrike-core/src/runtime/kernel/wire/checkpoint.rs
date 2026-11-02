@@ -684,6 +684,15 @@ pub struct ContextVmState {
     /// Retired history items the cap dropped from `retired_history`.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub retired_history_omitted: u32,
+    /// Plan task 5.1 · the uncalibrated estimate of the last provider request still waiting for
+    /// its observed count, and the calibration factor in parts per million (absent = identity).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub last_request_estimate: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate_calibration_ppm: Option<u32>,
+    /// Plan task 1.1c · provider replay state kept with assistant history items.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub item_replays: Vec<ItemReplayState>,
     /// History messages waiting for the tool results of the current batch, in arrival order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held_history: Vec<StoredMessageState>,
@@ -730,6 +739,13 @@ pub enum MessagePartition {
 /// This is the *source* the renderer reads, not the rendered result: no prompt assembly, no
 /// residency projection, no salience footer. A restore rebuilds the partitions from these and then
 /// renders exactly what an uninterrupted run would have rendered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemReplayState {
+    pub item: u64,
+    pub replay: serde_json::Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StoredMessageState {

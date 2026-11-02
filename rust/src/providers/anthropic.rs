@@ -1155,6 +1155,9 @@ mod tests {
             state_turn: None,
             frozen_prefix_len: None,
             budget_overflow: None,
+            turn_items: Vec::new(),
+            estimated_tokens: 0,
+            turn_replays: Vec::new(),
         }
     }
 
@@ -1276,6 +1279,9 @@ mod tests {
             state_turn: None,
             frozen_prefix_len: None,
             budget_overflow: None,
+            turn_items: Vec::new(),
+            estimated_tokens: 0,
+            turn_replays: Vec::new(),
         };
         let before = provider
             .prepare_context_request(&context, &[], None, None)
@@ -1359,6 +1365,9 @@ mod tests {
             state_turn: None,
             frozen_prefix_len: None,
             budget_overflow: None,
+            turn_items: Vec::new(),
+            estimated_tokens: 0,
+            turn_replays: Vec::new(),
         };
 
         let (system, messages, _) =
@@ -1414,6 +1423,9 @@ mod tests {
             state_turn: None,
             frozen_prefix_len: None,
             budget_overflow: None,
+            turn_items: Vec::new(),
+            estimated_tokens: 0,
+            turn_replays: Vec::new(),
         };
         let (system, _msgs, _) =
             context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None).unwrap();
@@ -1435,6 +1447,9 @@ mod tests {
             state_turn: Some(CoreMessage::user("[TASK STATE] goal: g\n\nProceed.")),
             frozen_prefix_len: None,
             budget_overflow: None,
+            turn_items: Vec::new(),
+            estimated_tokens: 0,
+            turn_replays: Vec::new(),
         };
         let (_system, messages, _) =
             context_to_anthropic(&context, CacheBreakpointStrategy::Default, |_, _| None).unwrap();

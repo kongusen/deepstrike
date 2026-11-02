@@ -642,6 +642,7 @@ function canonicalProviderMessage(
         }
       : {}),
     ...(raw.token_count !== undefined ? { tokens: Number(raw.token_count) } : {}),
+    ...(raw.replay && typeof raw.replay === "object" ? { replay: raw.replay } : {}),
   }
 }
 

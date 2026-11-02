@@ -48,7 +48,9 @@
       ],
       "inferred": [
         "contentParts",
-        "toolCalls"
+        "toolCalls",
+        "itemId",
+        "providerReplay"
       ]
     },
     "derived": [

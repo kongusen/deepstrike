@@ -345,23 +345,29 @@ struct ModelMessage {
     content_parts: Option<Vec<ContentPartObj>>,
     #[pyo3(get)]
     tool_calls: Vec<ToolCall>,
+    /// The kernel item this rendered turn is (plan task 1.1c); `None` on messages the kernel did
+    /// not render.
+    #[pyo3(get, set)]
+    item_id: Option<u64>,
 }
 
 #[pymethods]
 impl ModelMessage {
     #[new]
-    #[pyo3(signature = (role, content, tool_calls = None, content_parts = None))]
+    #[pyo3(signature = (role, content, tool_calls = None, content_parts = None, item_id = None))]
     fn new(
         role: String,
         content: String,
         tool_calls: Option<Vec<ToolCall>>,
         content_parts: Option<Vec<ContentPartObj>>,
+        item_id: Option<u64>,
     ) -> Self {
         Self {
             role,
             content,
             content_parts,
             tool_calls: tool_calls.unwrap_or_default(),
+            item_id,
         }
     }
 
@@ -563,6 +569,7 @@ impl ModelMessage {
             content,
             content_parts,
             tool_calls: msg.tool_calls.iter().map(ToolCall::from_rust).collect(),
+            item_id: None,
         }
     }
 }

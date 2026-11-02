@@ -1425,6 +1425,7 @@ class CanonicalRunnerRuntime:
                              append_base,
                            )}
                           for c in raw.get("tool_calls") or []]} if raw.get("tool_calls") else {}),
+      **({"replay": raw["replay"]} if isinstance(raw.get("replay"), dict) else {}),
     }
 
   def _provider_tool_arguments(self, name: str, arguments: dict[str, Any], append_base: int | str) -> dict[str, Any]:

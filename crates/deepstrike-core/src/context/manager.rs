@@ -76,6 +76,9 @@ pub(crate) fn is_exposure_exempt_meta_tool(name: &str) -> bool {
     EXPOSURE_EXEMPT_META_TOOLS.contains(&name)
 }
 
+/// The calibration factor that leaves an estimate unchanged, in parts per million.
+pub const ESTIMATE_CALIBRATION_IDENTITY: u32 = 1_000_000;
+
 /// End-of-run context lifecycle metrics (plan task 4.1).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LifecycleMetrics {
@@ -132,6 +135,11 @@ pub struct ContextManager {
     pub knowledge_enabled: bool,
     pub plan_tool_enabled: bool,
     last_observed_prompt_tokens: Option<u32>,
+    /// Plan task 5.1 · the uncalibrated estimate of the last provider request, and the factor (in
+    /// parts per million) that brings an estimate to what the provider counted. Both move only on
+    /// recorded inputs (the provider's observed count), so replay reproduces them.
+    pub(crate) last_request_estimate: u32,
+    pub(crate) estimate_calibration_ppm: u32,
     compression: CompressionPipeline,
     pressure: PressureMonitor,
     renewal: RenewalPolicy,
@@ -195,6 +203,10 @@ pub struct ContextManager {
     /// resolving before a sibling tool in the same batch). A provider requires a call's results to
     /// follow it directly, so these wait until the last result lands.
     pub(crate) held_history: Vec<(CoreMessage, u32)>,
+    /// Plan task 1.1c · provider replay state kept with assistant history items, by item id.
+    pub(crate) item_replays: std::collections::BTreeMap<ItemId, serde_json::Value>,
+    /// Replay for the assistant message being admitted now (set around one provider completion).
+    pub(crate) pending_assistant_replay: Option<serde_json::Value>,
 }
 
 impl ContextManager {
@@ -229,6 +241,8 @@ impl ContextManager {
             knowledge_enabled: false,
             plan_tool_enabled: false,
             last_observed_prompt_tokens: None,
+            last_request_estimate: 0,
+            estimate_calibration_ppm: ESTIMATE_CALIBRATION_IDENTITY,
             compression,
             pressure,
             renewal,
@@ -250,6 +264,8 @@ impl ContextManager {
             retired_history: std::collections::VecDeque::new(),
             retired_history_omitted: 0,
             held_history: Vec::new(),
+            item_replays: std::collections::BTreeMap::new(),
+            pending_assistant_replay: None,
         }
     }
 
@@ -493,11 +509,44 @@ impl ContextManager {
         );
         // A provider sees a selected projection, not the entire resident history. Its smaller
         // count must not suppress compaction while the unselected history still triggers renewal.
-        observed.max(self.pressure.pressure(&self.partitions, &self.engine, None))
+        // Calibration may raise the estimate (the provider counts more than the kernel does, as
+        // for CJK text) but never lowers it: a provider or proxy reporting too little must not
+        // delay compaction past the point the kernel's own count calls for.
+        let estimated = self.pressure.pressure(&self.partitions, &self.engine, None)
+            * f64::from(self.estimate_calibration_ppm.max(ESTIMATE_CALIBRATION_IDENTITY))
+            / f64::from(ESTIMATE_CALIBRATION_IDENTITY);
+        observed.max(estimated)
     }
 
     pub fn set_observed_prompt_tokens(&mut self, tokens: u32) {
         self.last_observed_prompt_tokens = Some(tokens);
+        // Each observation moves the calibration halfway toward what it shows, so one odd count
+        // (a cache-heavy request, a provider rounding) cannot swing it, and a steady bias is
+        // absorbed within a few calls. A sample is bounded to 1/4..4x of the estimate.
+        if self.last_request_estimate > 0 {
+            let sample = (u64::from(tokens) * u64::from(ESTIMATE_CALIBRATION_IDENTITY)
+                / u64::from(self.last_request_estimate))
+            .clamp(
+                u64::from(ESTIMATE_CALIBRATION_IDENTITY / 4),
+                u64::from(ESTIMATE_CALIBRATION_IDENTITY) * 4,
+            ) as u32;
+            self.estimate_calibration_ppm =
+                ((u64::from(self.estimate_calibration_ppm) + u64::from(sample)) / 2) as u32;
+            self.last_request_estimate = 0;
+        }
+    }
+
+    /// Remember `raw`, the uncalibrated estimate of the request about to be sent, and return it
+    /// calibrated.
+    pub fn note_request_estimate(&mut self, raw: u32) -> u32 {
+        self.last_request_estimate = raw;
+        self.calibrated(raw)
+    }
+
+    fn calibrated(&self, tokens: u32) -> u32 {
+        (u64::from(tokens) * u64::from(self.estimate_calibration_ppm)
+            / u64::from(ESTIMATE_CALIBRATION_IDENTITY))
+        .min(u64::from(u32::MAX)) as u32
     }
 
     pub fn should_compress(&self) -> PressureAction {
@@ -592,6 +641,7 @@ impl ContextManager {
         // Archived messages have left history — drop their now-orphaned handles (bounds the table).
         if !archived.is_empty() {
             self.prune_orphaned_handles();
+            self.prune_item_replays();
             // Compaction rewrote the history prefix — start a fresh collapse generation so
             // surviving handles re-evaluate from Resident (P0-C: the one cache-free un-collapse point).
             self.reset_collapse_generation();
@@ -655,6 +705,7 @@ impl ContextManager {
         // History was rebuilt wholesale — drop handles anchored to messages it no longer carries,
         // and start a fresh collapse generation (P0-C) since the whole prefix changed.
         self.prune_orphaned_handles();
+        self.prune_item_replays();
         self.reset_collapse_generation();
         // K1: renewal is a boundary — apply deferred knowledge upserts/removals now.
         self.sweep_knowledge_at_boundary();
@@ -674,7 +725,7 @@ impl ContextManager {
     }
 
     pub fn render(&self) -> InternalRenderedContext {
-        super::renderer::render_projected(
+        let mut rendered = super::renderer::render_projected(
             &self.partitions,
             self.available_input_tokens(),
             &self.engine,
@@ -682,10 +733,28 @@ impl ContextManager {
             &self.handles,
             self.frozen_history_len,
             self.config.collapse_assistant_narration,
-        )
+        );
+        if !self.item_replays.is_empty() {
+            rendered.turn_replays = rendered
+                .turn_items
+                .iter()
+                .map(|id| self.item_replays.get(id).cloned())
+                .collect();
+        }
+        rendered
     }
 
     // ── History / Knowledge ───────────────────────────────────────────────────
+
+    /// Drop replay state whose item left history.
+    fn prune_item_replays(&mut self) {
+        if self.item_replays.is_empty() {
+            return;
+        }
+        let live: std::collections::HashSet<ItemId> =
+            self.partitions.history.tags().iter().map(|tag| tag.id).collect();
+        self.item_replays.retain(|id, _| live.contains(id));
+    }
 
     /// Append `msg` to history after the tool results the last assistant turn still waits for.
     /// Used for content an effect delivers mid-batch (a memory hit that resolves before a sibling
@@ -776,6 +845,11 @@ impl ContextManager {
         let tally = self.tally(tag.origin);
         tally.items += 1;
         tally.tokens += u64::from(tokens);
+        if tag.origin == ItemOrigin::Assistant {
+            if let Some(replay) = self.pending_assistant_replay.take() {
+                self.item_replays.insert(tag.id, replay);
+            }
+        }
         self.partitions.history.push_tagged(msg, tokens, tag);
     }
 
@@ -795,6 +869,7 @@ impl ContextManager {
             ));
         }
         self.partitions.history.truncate(len);
+        self.prune_item_replays();
     }
 
     fn retire_history_item(&mut self, record: HistoryItemRecord) {
@@ -1815,6 +1890,38 @@ mod tests {
         assert_eq!(metrics.history_items.len(), HISTORY_ITEM_DETAIL_CAP);
         assert_eq!(metrics.history_items_omitted, 10);
         assert_eq!(metrics.history_items.last().unwrap().id, (HISTORY_ITEM_DETAIL_CAP + 10) as u64);
+    }
+
+    #[test]
+    fn the_estimate_calibrates_toward_what_the_provider_counts() {
+        let mut mgr = ContextManager::new(100_000);
+        assert_eq!(mgr.note_request_estimate(1_000), 1_000, "uncalibrated at first");
+        for _ in 0..6 {
+            mgr.note_request_estimate(1_000);
+            mgr.set_observed_prompt_tokens(1_300);
+        }
+        let calibrated = mgr.note_request_estimate(1_000);
+        assert!((1_280..=1_300).contains(&calibrated), "{calibrated}");
+        // An observation with no estimate pending (a test, a restore) leaves the factor alone.
+        let before = mgr.estimate_calibration_ppm;
+        mgr.last_request_estimate = 0;
+        mgr.set_observed_prompt_tokens(50);
+        assert_eq!(mgr.estimate_calibration_ppm, before);
+        // One wild count moves it at most halfway, and never past 4x.
+        mgr.note_request_estimate(1_000);
+        mgr.set_observed_prompt_tokens(1_000_000);
+        assert!(mgr.estimate_calibration_ppm <= (before + 4 * ESTIMATE_CALIBRATION_IDENTITY) / 2);
+    }
+
+    #[test]
+    fn calibration_raises_pressure_but_never_lowers_it() {
+        let mut mgr = ContextManager::new(1_000);
+        mgr.push_history(CoreMessage::user("x".repeat(400)), 400);
+        let raw = mgr.pressure.pressure(&mgr.partitions, &mgr.engine, None);
+        mgr.estimate_calibration_ppm = ESTIMATE_CALIBRATION_IDENTITY / 2;
+        assert!((mgr.rho() - raw).abs() < 1e-9, "a low count does not delay compaction");
+        mgr.estimate_calibration_ppm = ESTIMATE_CALIBRATION_IDENTITY * 2;
+        assert!((mgr.rho() - raw * 2.0).abs() < 1e-9, "an undercount raises pressure");
     }
 
     #[test]

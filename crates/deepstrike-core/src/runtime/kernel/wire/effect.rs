@@ -446,6 +446,14 @@ pub struct RenderedContext {
     /// Number of leading `turns` that form the byte-stable frozen prefix.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen_prefix_len: Option<u32>,
+    /// The kernel's estimate of the request's input tokens, tool schemas included, calibrated
+    /// against what the provider counted for earlier requests. `0` = no estimate.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub estimated_tokens: u32,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 /// A message on the provider boundary. Distinct from
@@ -466,6 +474,16 @@ pub struct ProviderMessage {
     pub is_error: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u32>,
+    /// Plan task 1.1c · the history item a rendered turn is, stable across compaction, renewal and
+    /// restore. A provider keeps per-turn state (reasoning, native blocks) under this id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<u64>,
+    /// Plan task 1.1c · provider state a turn must be sent back with (reasoning, native blocks),
+    /// opaque to the kernel. The host attaches it to the assistant message it completes a call
+    /// with; the kernel keeps it with that history item and renders it back with the turn, through
+    /// compaction, renewal and restore, until the item leaves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay: Option<super::scalar::BoundedJson>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1539,6 +1557,8 @@ mod tests {
                         tool_call_id: None,
                         is_error: false,
                         tokens: None,
+                        item_id: None,
+                        replay: None,
                     },
                     observed_input_tokens: Some(120),
                     observed_output_tokens: Some(8),

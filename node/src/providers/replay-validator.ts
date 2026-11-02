@@ -160,7 +160,7 @@ export function assessReasoningReplay(
   const offendingCallIds: string[] = []
   for (const message of turns) {
     if (message.role !== "assistant" || !message.toolCalls?.length) continue
-    const replay = options.replayForAssistant?.(message)
+    const replay = (message.providerReplay ?? options.replayForAssistant?.(message))
     if (typeof replay?.reasoning_content !== "string") {
       for (const tc of message.toolCalls) offendingCallIds.push(tc.id)
     }

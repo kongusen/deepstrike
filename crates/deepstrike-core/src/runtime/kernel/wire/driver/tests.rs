@@ -560,6 +560,8 @@ fn provider_result(
                                 tool_call_id: None,
                                 is_error: false,
                                 tokens: None,
+                                item_id: None,
+                                replay: None,
                             },
                             observed_input_tokens: None,
                             observed_output_tokens: None,
@@ -1912,6 +1914,43 @@ fn agent_awaiting_provider() -> (Runtime, EffectId) {
         "the turn must actually expose the meta-tool the model is about to call"
     );
     (runtime, effect.effect_id.clone())
+}
+
+#[test]
+fn provider_replay_travels_with_its_item_through_restore() {
+    let (mut runtime, provider) = agent_awaiting_provider();
+    let mut answer = provider_result(
+        "in-plan",
+        1_700_000_002_000,
+        &provider,
+        vec![tool_call("call-1", "update_plan", json!({ "progress": "read page one" }))],
+    );
+    let replay = json!({ "protocol": "openai-chat", "reasoning_content": "first I plan" });
+    let KernelInput::ResolveEffect(resolve) = &mut answer.input else { unreachable!() };
+    let EffectOutcome::Succeeded(succeeded) = &mut resolve.outcome else { unreachable!() };
+    let EffectSuccess::Provider(success) = &mut succeeded.result else { unreachable!() };
+    let ProviderOutcome::Completed(completed) = &mut success.outcome else { unreachable!() };
+    completed.message.replay = Some(super::super::scalar::BoundedJson::new(replay.clone()).unwrap());
+
+    let next = runtime.submit(&answer);
+    let rendered_replay = |effect: &KernelEffect| {
+        let EffectKind::CallProvider(call) = &effect.effect else {
+            panic!("expected a provider call");
+        };
+        call.context
+            .turns
+            .iter()
+            .find(|turn| !turn.tool_calls.is_empty())
+            .map(|turn| (turn.item_id.is_some(), turn.replay.as_ref().map(|r| r.get().clone())))
+    };
+    assert_eq!(rendered_replay(sole_effect(&next)), Some((true, Some(replay.clone()))));
+
+    let checkpoint = runtime.checkpoint().decode().expect("verifies");
+    let restored = Runtime::restore_with(Some(&checkpoint), &[]);
+    let engine = restored.driver.engine().unwrap();
+    assert_eq!(engine.ctx.item_replays.values().next(), Some(&replay));
+    let rendered = engine.ctx.render();
+    assert!(rendered.turn_replays.iter().any(|kept| kept.as_ref() == Some(&replay)));
 }
 
 #[test]
@@ -4453,6 +4492,8 @@ fn provider_answer(id: &str, at: u64, effect: &EffectId, text: &str) -> WireEnve
                     tool_call_id: None,
                     is_error: false,
                     tokens: None,
+                    item_id: None,
+                    replay: None,
                 },
                 observed_input_tokens: None,
                 observed_output_tokens: None,

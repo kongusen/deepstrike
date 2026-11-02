@@ -6,6 +6,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Every rendered turn carries the id of its kernel item (`item_id`; `itemId` / `item_id` on SDK
+  messages), and the rendered request carries the kernel's token estimate (`estimated_tokens`;
+  `estimatedTokens` / `estimated_tokens` on `RenderedContext`), tool schemas included and calibrated
+  against the provider's counts of earlier requests. Calibration may raise the pressure estimate
+  but never lowers it.
+- Provider replay state (reasoning content, Anthropic native blocks) is kept by the kernel with the
+  assistant turn's item and rendered back with it, so it survives narration collapse, compaction,
+  renewal and restore. All four SDKs send it with the completion and prefer it to their
+  content-keyed stores.
+- `crates/deepstrike-lab` and the `ledger-audit` / `fan-out` live benchmarks (plan task 4.3).
+
 ### Fixed
 
 - A memory search the model issued in the same turn as a host tool could put its hits between

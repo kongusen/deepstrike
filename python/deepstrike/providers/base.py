@@ -431,6 +431,12 @@ class RenderedContext:
     # Fail-closed evidence from the kernel renderer. Provider effects are never emitted with this
     # set; direct projections expose it so hosts cannot mistake an invalid context for a sendable one.
     budget_overflow: "ContextBudgetOverflow | None" = None
+    # Plan task 5.1 · the kernel's estimate of the request's input tokens, tool schemas included,
+    # calibrated against what the provider counted for earlier requests. None = no estimate.
+    estimated_tokens: "int | None" = None
+    # Plan task 1.1c · the provider replay the kernel keeps with each turn's item, aligned with
+    # ``turns`` (None where a turn has none). The runner seeds it into the provider before a call.
+    turn_replays: "list[dict | None] | None" = None
 
 
 # Opaque per-run state owned by the provider (e.g. OpenAI Responses continuation).

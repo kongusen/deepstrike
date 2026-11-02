@@ -73,6 +73,12 @@ export interface ModelMessage {
   /** Structured multimodal content. When present, takes precedence over `content` for provider calls. */
   contentParts?: ContentPart[]
   toolCalls?: ToolCall[]
+  /** The kernel item this rendered turn is (plan task 1.1c): stable across compaction, renewal
+   *  and restore. Absent on messages the kernel did not render. */
+  itemId?: number
+  /** Provider state the kernel keeps with this turn's item (reasoning, native blocks) and renders
+   *  back with it; providers prefer it to their own content-keyed store (plan task 1.1c). */
+  providerReplay?: ProviderReplay
 }
 
 /** Stored durable representation. It references the semantic message without becoming a second content authority. */
@@ -548,6 +554,9 @@ export interface RenderedContext {
    */
   frozenPrefixLen?: number
   budgetOverflow?: ContextBudgetOverflow
+  /** The kernel's estimate of this request's input tokens, tool schemas included, calibrated
+   *  against what the provider counted for earlier requests (plan task 5.1). */
+  estimatedTokens?: number
 }
 
 export interface ContextBudgetOverflow {

@@ -31,6 +31,12 @@ export interface ModelMessage {
   /** Multimodal parts (text + image/audio). When present, providers render these
    *  instead of the plain `content` string. */
   contentParts?: ContentPart[]
+  /** The kernel item this rendered turn is (plan task 1.1c): stable across compaction, renewal
+   *  and restore. Absent on messages the kernel did not render. */
+  itemId?: number
+  /** Provider state the kernel keeps with this turn's item (reasoning, native blocks) and renders
+   *  back with it; the runner seeds it into the provider before a call (plan task 1.1c). */
+  providerReplay?: ProviderReplay
 }
 
 export interface ToolCall {
@@ -75,6 +81,9 @@ export interface RenderedContext {
    *  Anthropic pins a deep cache breakpoint here instead of the rolling pair. */
   frozenPrefixLen?: number
   budgetOverflow?: ContextBudgetOverflow
+  /** The kernel's estimate of this request's input tokens, tool schemas included, calibrated
+   *  against what the provider counted for earlier requests (plan task 5.1). */
+  estimatedTokens?: number
 }
 
 export interface ContextBudgetOverflow {

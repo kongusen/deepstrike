@@ -1,7 +1,7 @@
 {
   "description": "One whole agent turn cycle on the canonical wire (spec 7.9 · Task 12): configure → atomic agent start → provider result carrying a tool call → tool results → final provider answer → agent terminal. Every step after the start is a single `ResolveEffect` input, and each one publishes exactly the next effect the loop is waiting on — until the last, whose disposition is the terminal itself and which publishes nothing.",
   "genesis_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
-  "head_digest": "sha256:70aebc2388f18eb0ac97c4a0a62f87f5a428ff3c71a090914031a15bd102084a",
+  "head_digest": "sha256:116d061ab036984a44b1677daec89f4929e7696f8e7def95278690146d8e6a75",
   "links": [
     {
       "envelope": {
@@ -146,8 +146,8 @@
         "input_id": "in-start",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:f0c74c583c62e9c70b0144b1abdfc48a847fc8040427f8be03c870a7a09f5e44",
-        "record_digest": "sha256:ad02c6b34be537d5d34143ec72e4dfdbe3b8c94c79437e122cc35e4025453a25",
-        "step_digest": "sha256:c72277f45ca6a7c874e5753623a578e3858c1227da6b85c62c4bba18e63c3eb5",
+        "record_digest": "sha256:828c0f621c57a8d62bc1f7ee8bab84544eadaeef9eb45604e2e171286feda47d",
+        "step_digest": "sha256:67ce43c3b28b30e80322643ce891aef627e1df72e9f4eba884ee90d93f611ab6",
         "step_seq": "1"
       },
       "step": {
@@ -157,6 +157,7 @@
               "causation_input_id": "in-start",
               "effect": {
                 "context": {
+                  "estimated_tokens": 283,
                   "state_turn": {
                     "content": "[TASK STATE] goal: write the research brief\n\n→ focus: write the research brief\n\nProceed.",
                     "role": "user"
@@ -164,6 +165,7 @@
                   "turns": [
                     {
                       "content": "Proceed with the task described in [TASK STATE].",
+                      "item_id": 1,
                       "role": "user"
                     }
                   ]
@@ -283,8 +285,8 @@
         "input_digest": "sha256:8d01c323dcb5b9059957a498afed825d767f916cc919abce37f8e9317a2b53bd",
         "input_id": "in-acted",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:ad02c6b34be537d5d34143ec72e4dfdbe3b8c94c79437e122cc35e4025453a25",
-        "record_digest": "sha256:79c3e44a4935ed60bbe94e045b9a361b26c529acd5cda3842d38bf589000b600",
+        "previous_record_digest": "sha256:828c0f621c57a8d62bc1f7ee8bab84544eadaeef9eb45604e2e171286feda47d",
+        "record_digest": "sha256:ee0e33e24fbc61591e256bdf83d397083be20e628520a0bf6a912bc118aff743",
         "step_digest": "sha256:fc4df7785f97d163e1d7579cd8a6d63f57eafa0b1ac102da9925500d64614b29",
         "step_seq": "2"
       },
@@ -351,9 +353,9 @@
         "input_digest": "sha256:f34c6835df793f83d0b33bcb423af480f951224abd057156f1609b28865a8f1b",
         "input_id": "in-results",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:79c3e44a4935ed60bbe94e045b9a361b26c529acd5cda3842d38bf589000b600",
-        "record_digest": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
-        "step_digest": "sha256:d1175759ebe270ec797f82453bcf11770527dda0e3840555dcb7be41b4bc1a0f",
+        "previous_record_digest": "sha256:ee0e33e24fbc61591e256bdf83d397083be20e628520a0bf6a912bc118aff743",
+        "record_digest": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
+        "step_digest": "sha256:e2491404277fa09bc9525e4f2aa7933c9b4e333830bdd811374ad2ed1da26e9e",
         "step_seq": "3"
       },
       "step": {
@@ -363,6 +365,7 @@
               "causation_input_id": "in-results",
               "effect": {
                 "context": {
+                  "estimated_tokens": 291,
                   "state_turn": {
                     "content": "[TASK STATE] goal: write the research brief\n\n→ did: search · next: advance the goal\n\nProceed.",
                     "role": "user"
@@ -370,10 +373,12 @@
                   "turns": [
                     {
                       "content": "Proceed with the task described in [TASK STATE].",
+                      "item_id": 1,
                       "role": "user"
                     },
                     {
                       "content": "",
+                      "item_id": 2,
                       "role": "assistant",
                       "tool_calls": [
                         {
@@ -387,6 +392,7 @@
                     },
                     {
                       "content": "three sources found",
+                      "item_id": 3,
                       "role": "tool",
                       "tool_call_id": "call-1"
                     }
@@ -509,8 +515,8 @@
         "input_digest": "sha256:2775633498351ebb9a99cc2b6dffb425012a04201368f71633f5bd6dde9e9028",
         "input_id": "in-answer",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:c160c153244549d9266070cba55278b5a2f508e89b9d4e95527f4675ec36e6fb",
-        "record_digest": "sha256:70aebc2388f18eb0ac97c4a0a62f87f5a428ff3c71a090914031a15bd102084a",
+        "previous_record_digest": "sha256:5e865374dbca6f77f6fab6b89cc64bb5ee9bdef5e260b0c9663152d1223cd034",
+        "record_digest": "sha256:116d061ab036984a44b1677daec89f4929e7696f8e7def95278690146d8e6a75",
         "step_digest": "sha256:be82bea99a7233011a80c82c2140bfc1ec852ad982b9e62f927677e7aa992962",
         "step_seq": "4"
       },

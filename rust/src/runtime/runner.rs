@@ -1601,6 +1601,21 @@ impl RuntimeRunner {
                 match &action.effect {
                     HostEffect::CallProvider { context, tools } => {
                         let provider_effect_id = action.effect_id.clone();
+                        // Plan task 1.1c · the kernel keeps provider replay with each turn's item;
+                        // hand it to the provider keyed by the turn exactly as rendered.
+                        for (turn, replay) in context.turns.iter().zip(&context.turn_replays) {
+                            let Some(replay) = replay
+                                .as_ref()
+                                .and_then(|value| serde_json::from_value::<deepstrike_core::runtime::session::ProviderReplay>(value.clone()).ok())
+                            else {
+                                continue;
+                            };
+                            let text = match &turn.content {
+                                deepstrike_core::types::message::Content::Text(text) => text.clone(),
+                                _ => String::new(),
+                            };
+                            self.opts.provider.seed_provider_replay(&text, &turn.tool_calls, &replay);
+                        }
                         let mut final_text = String::new();
                         let mut final_tool_calls: Vec<ToolCall> = Vec::new();
                         let mut turn_tokens: u32 = 0;
@@ -1785,13 +1800,21 @@ impl RuntimeRunner {
                             replay_state: provider_replay,
                         };
 
+                        // Plan task 1.1c · the kernel keeps the replay with the turn's item.
+                        let mut kernel_message = serde_json::to_value(&assistant).unwrap_or_default();
+                        if let (Some(replay), Some(object)) = (
+                            wire_evidence.replay_state.as_ref().and_then(|replay| serde_json::to_value(replay).ok()),
+                            kernel_message.as_object_mut(),
+                        ) {
+                            object.insert("replay".into(), replay);
+                        }
                         action = kernel_action(
                             &kernel,
                             &mut pending_observations,
                             serde_json::json!({
                                 "kind": "provider_result",
                                 "effect_id": provider_effect_id,
-                                "message": assistant,
+                                "message": kernel_message,
                                 // Phase 4: stop_reason drives the kernel's max-output-tokens recovery.
                                 "stop_reason": turn_stop_reason,
                             }),
@@ -3130,6 +3153,9 @@ fn rendered_context_from_messages(
         state_turn: None,
         frozen_prefix_len: None,
         budget_overflow: None,
+        turn_items: Vec::new(),
+        estimated_tokens: 0,
+        turn_replays: Vec::new(),
     }
 }
 

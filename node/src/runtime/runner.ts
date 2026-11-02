@@ -3341,6 +3341,10 @@ export class RuntimeRunner {
         // describes the transport fact, which exists regardless of what the kernel decides next.
         const attemptTelemetry = this.opts.provider.peekTransportTelemetry?.()
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
+        // Plan task 1.1c · the kernel keeps the replay with the turn's item from here on.
+        if (providerReplay !== undefined) {
+          providerEvent.message = { ...(providerEvent.message as Record<string, unknown>), replay: providerReplay }
+        }
         const wireEvidence: ProviderWireEvidence = {
           protocol: this.providerRoute.protocol,
           request_fingerprint: providerPlan.fingerprint,

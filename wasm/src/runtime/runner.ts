@@ -1388,6 +1388,11 @@ export class RuntimeRunner {
         // I5: the kernel itself withholds statically denied tools (`hide_denied_tools`) and renders
         // the denial note — the host sends exactly the context and surface the kernel committed.
         const context = action.context
+        // Plan task 1.1c · the kernel keeps provider replay with each turn's item; hand it to the
+        // provider keyed by the turn exactly as rendered, so its own lookup finds it.
+        for (const turn of context.turns) {
+          if (turn.providerReplay) this.opts.provider.seedProviderReplay?.(turn, turn.providerReplay)
+        }
         const tools = action.tools
         let turnTokens = 0
         let turnInputTokens = 0
@@ -1590,6 +1595,10 @@ export class RuntimeRunner {
         // P4-S1: land the attempt evidence BEFORE the kernel resolution commits — the record
         // describes the transport fact, which exists regardless of what the kernel decides next.
         const providerReplay = peekProviderReplay(this.opts.provider, finalText, finalToolCalls)
+        // Plan task 1.1c · the kernel keeps the replay with the turn's item from here on.
+        if (providerReplay !== undefined) {
+          providerEvent.message = { ...(providerEvent.message as Record<string, unknown>), replay: providerReplay }
+        }
         const wireEvidence = {
           protocol: this.providerRoute.protocol,
           request_fingerprint: providerPlan.fingerprint,

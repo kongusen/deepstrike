@@ -101,11 +101,12 @@ async function runTask(task) {
   })
 }
 
+// Each trial is written as soon as it finishes, so an interrupted run keeps what it measured.
 const trials = []
 for (const task of TASKS) {
   const trial = await runTask(task)
   trials.push(trial)
+  await writeTrials(out, [trial])
   console.error(`${trial.task}: ${trial.success ? "correct" : "wrong"} ${trial.cost.calls} calls ${trial.cost.sent_chars} chars${trial.error ? ` (${trial.error})` : ""}`)
 }
-await writeTrials(out, trials)
 console.error(`${variant} on ${model}: ${trials.filter(trial => trial.success).length}/${trials.length} correct`)

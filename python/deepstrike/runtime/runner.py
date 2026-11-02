@@ -575,6 +575,7 @@ class RuntimeRunner:
         content=msg.content,
         tool_calls=list(getattr(msg, "tool_calls", None) or []),
         content_parts=new_parts,
+        item_id=getattr(msg, "item_id", None),
       )
 
     turns = [attach(m) for m in context.turns]
@@ -589,6 +590,8 @@ class RuntimeRunner:
       state_turn=state_turn,
       frozen_prefix_len=context.frozen_prefix_len,
       budget_overflow=context.budget_overflow,
+      estimated_tokens=context.estimated_tokens,
+      turn_replays=context.turn_replays,
     )
 
   def resolve_kernel_journal(self) -> KernelJournal:
@@ -2477,6 +2480,13 @@ class RuntimeRunner:
         context = self._with_structured_tool_outputs(
           action.context or RenderedContext(), tool_output_overlay,
         )
+        # Plan task 1.1c · the kernel keeps provider replay with each turn's item; hand it to the
+        # provider keyed by the turn exactly as rendered, so its own lookup finds it.
+        seed = getattr(self._opts.provider, "seed_provider_replay", None)
+        if seed is not None and context.turn_replays:
+          for turn, replay in zip(context.turns, context.turn_replays):
+            if replay is not None:
+              seed(turn.content, list(getattr(turn, "tool_calls", None) or []), replay)
         # I5: the kernel itself withholds statically denied tools (``hide_denied_tools``) and renders
         # the denial note — the host sends exactly the context and surface the kernel committed.
         turn_tools = action.tools or []
@@ -2823,6 +2833,9 @@ class RuntimeRunner:
         # describes the transport fact, which exists regardless of what the kernel decides next.
         from deepstrike.runtime.provider_replay import peek_provider_replay
         provider_replay = peek_provider_replay(self._opts.provider, final_text, final_tool_calls)
+        # Plan task 1.1c · the kernel keeps the replay with the turn's item from here on.
+        if provider_replay is not None:
+          provider_event["message"] = {**provider_event["message"], "replay": provider_replay}
         wire_evidence: dict[str, Any] = {
           "protocol": self._provider_route.protocol,
           "request_fingerprint": provider_plan.fingerprint,

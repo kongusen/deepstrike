@@ -70,9 +70,12 @@ export class MeteredProvider {
     this.sentChars = 0
     this.calls = 0
     this.lastError = undefined
+    this.kernelEstimates = []
   }
   measure(context) {
     this.calls += 1
+    // The kernel's own estimate of the request (0.2.80+); older checkouts do not send one.
+    if (typeof context.estimatedTokens === "number") this.kernelEstimates.push(context.estimatedTokens)
     this.sentChars += JSON.stringify([
       context.systemStable ?? context.systemText ?? "",
       context.systemKnowledge ?? "",
@@ -120,9 +123,14 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
   const observedByEffect = new Map(attempts
     .filter(attempt => attempt.usage?.inputTokens)
     .map(attempt => [attempt.effect_id, attempt.usage.inputTokens]))
-  const tokenEstimates = events
-    .filter(event => event.kind === "prompt_measured" && observedByEffect.has(event.effect_id))
-    .map(event => ({ estimated: event.measurement.inputTokens, observed: observedByEffect.get(event.effect_id) }))
+  // Prefer the kernel's estimate, paired with the provider's counts in call order; a checkout that
+  // does not send one falls back to the SDK's pre-call measurement, paired by effect id.
+  const counted = attempts.filter(attempt => attempt.usage?.inputTokens).map(attempt => attempt.usage.inputTokens)
+  const tokenEstimates = provider.kernelEstimates.length === counted.length && counted.length > 0
+    ? counted.map((observed, index) => ({ estimated: provider.kernelEstimates[index], observed }))
+    : events
+      .filter(event => event.kind === "prompt_measured" && observedByEffect.has(event.effect_id))
+      .map(event => ({ estimated: event.measurement.inputTokens, observed: observedByEffect.get(event.effect_id) }))
   return {
     scenario,
     variant,

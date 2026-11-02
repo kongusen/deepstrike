@@ -338,6 +338,18 @@ impl CanonicalOperationDriver {
             history_tally: ctx.history_tally.values().copied().collect(),
             retired_history: ctx.retired_history.iter().copied().collect(),
             retired_history_omitted: ctx.retired_history_omitted,
+            last_request_estimate: ctx.last_request_estimate,
+            item_replays: ctx
+                .item_replays
+                .iter()
+                .map(|(item, replay)| super::super::checkpoint::ItemReplayState {
+                    item: *item,
+                    replay: replay.clone(),
+                })
+                .collect(),
+            estimate_calibration_ppm: (ctx.estimate_calibration_ppm
+                != crate::context::manager::ESTIMATE_CALIBRATION_IDENTITY)
+                .then_some(ctx.estimate_calibration_ppm),
             held_history: ctx
                 .held_history
                 .iter()

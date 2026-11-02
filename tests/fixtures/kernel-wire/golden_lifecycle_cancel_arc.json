@@ -1,7 +1,7 @@
 {
   "description": "The cancellation arc on the canonical wire (spec 7.5 / 7.7 / 11.1 · Task 12b): configure → workflow root start → spawn ack → a critical signal that preempts the running child → the host's preempt resolution → `HostControl::Cancel`, whose step is the cancelled terminal itself. Two things this chain fixes in place: the only host action a signal can cause is the preemption (its queueing/dropping/expiry are audit facts and publish nothing), and cancellation settles every downstream wait inside the same transition that commits the root terminal — §7.12 admits effects or a terminal and never both, so there is no second round trip in which the operation is neither running nor cancelled.",
   "genesis_digest": "sha256:cae40c7b4bb1667cfb5663806a6a6db52e821292301aa188361d643b4a1badd7",
-  "head_digest": "sha256:d888071188e60607eef863a8f2a2d8ae95c5ee86f117f74bca27e879e107cf11",
+  "head_digest": "sha256:3d0d1670d7376f32972d2f9f4722144a4c80a0e9bc12382e8944a4657997d361",
   "links": [
     {
       "envelope": {
@@ -435,8 +435,8 @@
         "input_id": "in-preempted",
         "operation_id": "op-driver-1",
         "previous_record_digest": "sha256:c096429fe9ecb9fb56a3174c5c0e1939550dd1554825ec3365b51cc676a5bc46",
-        "record_digest": "sha256:8d49c5614b97845869468eca681835c7e229f78c79040bcab58b9acc5d843e03",
-        "step_digest": "sha256:d449190ab104f437d2c2feef2feab06882128c601cba8628f3bcb9b9c4fcb61b",
+        "record_digest": "sha256:7395dd60eee3a4d95de58352699094e014b0dff230989033960c43656421f39c",
+        "step_digest": "sha256:6bc1c253a15a191d7dd186b5aa81163b13cb3c2912f6561031e947399db3a383",
         "step_seq": "4"
       },
       "step": {
@@ -446,6 +446,7 @@
               "causation_input_id": "in-preempted",
               "effect": {
                 "context": {
+                  "estimated_tokens": 161,
                   "state_turn": {
                     "content": "[INTERRUPT] sig-abort\n\nProceed.",
                     "role": "user"
@@ -556,8 +557,8 @@
         "input_digest": "sha256:5434adf3f7e2db621abbfb3b7d4d28802319247b0f47cd5ee5ab86e86de04398",
         "input_id": "in-cancel",
         "operation_id": "op-driver-1",
-        "previous_record_digest": "sha256:8d49c5614b97845869468eca681835c7e229f78c79040bcab58b9acc5d843e03",
-        "record_digest": "sha256:d888071188e60607eef863a8f2a2d8ae95c5ee86f117f74bca27e879e107cf11",
+        "previous_record_digest": "sha256:7395dd60eee3a4d95de58352699094e014b0dff230989033960c43656421f39c",
+        "record_digest": "sha256:3d0d1670d7376f32972d2f9f4722144a4c80a0e9bc12382e8944a4657997d361",
         "step_digest": "sha256:5d0d5d5bb258bf512457df7280c81b2280b0613b3b430b12d6f51eacd7bff3a2",
         "step_seq": "5"
       },

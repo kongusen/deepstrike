@@ -222,7 +222,7 @@ function normalizeMessage(
   message: ModelMessage,
   replayForMessage?: (message: ModelMessage) => ProviderReplay | undefined,
 ): CanonicalMessage {
-  const providerReplay = replayForMessage?.(message)
+  const providerReplay = message.providerReplay ?? replayForMessage?.(message)
   const blocks: CanonicalMessageBlock[] = message.contentParts === undefined
     ? [{ type: "text", text: message.content }]
     : message.contentParts.map(part => {

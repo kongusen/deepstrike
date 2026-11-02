@@ -255,6 +255,8 @@ fn provider_result(
                     tool_calls: calls,
                     tool_call_id: None,
                     tokens: None,
+                    item_id: None,
+                    replay: None,
                     is_error: false,
                 },
                 observed_input_tokens: None,

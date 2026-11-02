@@ -1267,6 +1267,15 @@ fn restore_context_vm(
     ctx.partitions.knowledge.turn = state.item_turn;
     ctx.last_item_id = state.last_item_id;
     ctx.retired_history = state.retired_history.iter().copied().collect();
+    ctx.item_replays = state
+        .item_replays
+        .iter()
+        .map(|entry| (entry.item, entry.replay.clone()))
+        .collect();
+    ctx.last_request_estimate = state.last_request_estimate;
+    ctx.estimate_calibration_ppm = state
+        .estimate_calibration_ppm
+        .unwrap_or(crate::context::manager::ESTIMATE_CALIBRATION_IDENTITY);
     ctx.held_history = state
         .held_history
         .iter()
@@ -2527,9 +2536,24 @@ fn rendered_context(
     WireRenderedContext {
         system_stable: context.system_stable.clone(),
         system_knowledge: context.system_knowledge.clone(),
-        turns: context.turns.iter().map(provider_message).collect(),
+        turns: context
+            .turns
+            .iter()
+            .enumerate()
+            .map(|(index, message)| ProviderMessage {
+                item_id: context.turn_items.get(index).copied().filter(|id| *id != 0),
+                replay: context
+                    .turn_replays
+                    .get(index)
+                    .cloned()
+                    .flatten()
+                    .and_then(|replay| super::scalar::BoundedJson::new(replay).ok()),
+                ..provider_message(message)
+            })
+            .collect(),
         state_turn: context.state_turn.as_ref().map(provider_message),
         frozen_prefix_len: context.frozen_prefix_len.map(|len| len as u32),
+        estimated_tokens: context.estimated_tokens,
     }
 }
 
@@ -2559,6 +2583,8 @@ fn provider_message(message: &CoreMessage) -> ProviderMessage {
         tool_call_id: tool_call_id.and_then(|call_id| super::scalar::CallId::new(call_id).ok()),
         is_error,
         tokens: None,
+        item_id: None,
+        replay: None,
     }
 }
 
