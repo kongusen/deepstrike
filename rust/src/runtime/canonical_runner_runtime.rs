@@ -315,6 +315,41 @@ impl CanonicalRunnerRuntime {
         Ok(action)
     }
 
+    /// Plan task 6.3 · open a dynamic workflow root: the host program appends nodes to it.
+    pub async fn start_dynamic_workflow(&mut self) -> Result<Option<HostAction>> {
+        self.ensure_configured().await?;
+        let action = self
+            .commit(json!({
+                "kind": "start_operation",
+                "entry": { "kind": "dynamic_workflow" },
+                "initial_context": self.initial_context_json(),
+            }))
+            .await?;
+        self.started = true;
+        Ok(action)
+    }
+
+    /// Append host-program nodes (with the plan the kernel records for them) to the active
+    /// dynamic workflow root.
+    pub async fn append_workflow_nodes(&mut self, spec: Value, plan: Value) -> Result<Option<HostAction>> {
+        self.ensure_configured().await?;
+        if !self.started {
+            return Err(Error::Other("cannot append dynamic workflow nodes before operation start".into()));
+        }
+        let lowered = self.workflow_spec(object(Some(&spec)));
+        self.commit(json!({
+            "kind": "host_control",
+            "command": { "kind": "append_workflow_nodes", "nodes": lowered["nodes"], "plan": plan },
+        }))
+        .await
+    }
+
+    /// Close the dynamic workflow root so the kernel commits its terminal.
+    pub async fn complete_dynamic_workflow(&mut self) -> Result<Option<HostAction>> {
+        self.commit(json!({ "kind": "host_control", "command": { "kind": "complete_dynamic_workflow" } }))
+            .await
+    }
+
     /// Lower one SDK-owned host fact into the canonical five-class input taxonomy.
     ///
     /// This is intentionally a JSON-shaped host boundary: the canonical wire DTOs remain owned by
@@ -2009,6 +2044,7 @@ fn protocol_action_from_wire(
                 unreachable!("spawn_tasks effect must project to spawn action");
             };
             let mut dependency_outputs = std::collections::BTreeMap::new();
+            let mut inherited_knowledge = std::collections::BTreeMap::new();
             let nodes = spawn
                 .tasks
                 .iter()
@@ -2053,6 +2089,13 @@ fn protocol_action_from_wire(
                     if !outputs.is_empty() {
                         dependency_outputs.insert(task.task_id.as_str().to_string(), outputs);
                     }
+                    let inherited: Vec<crate::runtime::host_projection::InheritedKnowledge> = metadata
+                        .get("inherited_knowledge")
+                        .and_then(|value| serde_json::from_value(value.clone()).ok())
+                        .unwrap_or_default();
+                    if !inherited.is_empty() {
+                        inherited_knowledge.insert(task.task_id.as_str().to_string(), inherited);
+                    }
                     deepstrike_core::orchestration::workflow::WorkflowSpawnInfo {
                         agent_id: task.task_id.as_str().to_string(),
                         goal,
@@ -2081,6 +2124,7 @@ fn protocol_action_from_wire(
                 nodes,
                 budget: None,
                 dependency_outputs,
+                inherited_knowledge,
             }
         }
         EffectKind::PreemptTasks(_) => {
@@ -3784,6 +3828,7 @@ mod tests {
                 system_prompt: None,
                 initial_memory: vec![],
                 dependency_outputs: Default::default(),
+                inherited_knowledge: Vec::new(),
                 skill_dir: None,
                 memory_store: None,
                 knowledge_source: None,

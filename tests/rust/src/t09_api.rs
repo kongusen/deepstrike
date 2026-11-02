@@ -53,6 +53,7 @@ where
         system_prompt: None,
         initial_memory: vec![],
         dependency_outputs: Default::default(),
+        inherited_knowledge: Vec::new(),
         skill_dir: None,
         memory_store: None,
         knowledge_source: None,

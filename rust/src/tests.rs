@@ -571,6 +571,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -685,6 +686,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -814,6 +816,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: Some(dir.clone()),
             memory_store: None,
             knowledge_source: None,
@@ -943,6 +946,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -1184,6 +1188,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -1296,6 +1301,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -1389,6 +1395,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -1499,6 +1506,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -1691,6 +1699,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: Some(Box::new(store)),
             knowledge_source: None,
@@ -1841,6 +1850,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: Some(Box::new(Store {
                 memories: memories.clone(),
@@ -1963,6 +1973,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: Some(Box::new(Store {
                 commits: commits.clone(),
@@ -2139,6 +2150,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: Some(Box::new(Store { memories, sessions })),
             knowledge_source: None,
@@ -2254,6 +2266,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: Some(Box::new(Store)),
             knowledge_source: None,
@@ -2442,6 +2455,7 @@ mod tests {
             system_prompt: Some("s".repeat(32_768)),
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -2550,6 +2564,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -2674,6 +2689,7 @@ mod tests {
             system_prompt: None,
             initial_memory: vec![],
             dependency_outputs: Default::default(),
+            inherited_knowledge: Vec::new(),
             skill_dir: None,
             memory_store: None,
             knowledge_source: None,
@@ -2864,6 +2880,7 @@ mod tests {
                 system_prompt: None,
                 initial_memory: vec![],
                 dependency_outputs: Default::default(),
+                inherited_knowledge: Vec::new(),
                 skill_dir: None,
                 memory_store: None,
                 knowledge_source: None,
@@ -2945,6 +2962,75 @@ mod tests {
                 events.last(),
                 Some(RunEvent::Done { status, .. }) if status == "completed"
             ));
+        }
+
+        /// Plan tasks 6.2 / 6.3 · a host program runs agents on a dynamic workflow root and shares
+        /// state with them through the blackboard, by scope.
+        #[tokio::test]
+        async fn a_dynamic_workflow_program_runs_agents_and_shares_a_blackboard() {
+            use crate::runtime::dynamic_workflow::{
+                AgentOptions, BlackboardScope, DynamicWorkflowLimits, DynamicWorkflowOptions, agent_task,
+            };
+            let contexts = Arc::new(Mutex::new(Vec::new()));
+            let provider = Scripted { turns: vec![], contexts: contexts.clone() };
+            let runner = RuntimeRunner::new(options(
+                provider,
+                crate::runtime::execution_plane::LocalExecutionPlane::new(),
+                &[],
+            ));
+            let run = runner
+                .run_dynamic_workflow(DynamicWorkflowOptions::default(), |ctx| {
+                    Box::pin(async move {
+                        let first = ctx.agent("survey the field", AgentOptions::default()).await?;
+                        ctx.blackboard().put("criteria", "primary sources only", BlackboardScope::Workflow).await?;
+                        let drafts = ctx
+                            .phase("draft", || async {
+                                ctx.blackboard()
+                                    .put("outline", serde_json::json!({ "sections": 3 }), BlackboardScope::Phase)
+                                    .await?;
+                                ctx.parallel_agents(vec![
+                                    agent_task("draft part one", AgentOptions::default()),
+                                    agent_task("draft part two", AgentOptions::default()),
+                                ])
+                                .await
+                            })
+                            .await?;
+                        let review = ctx
+                            .agent("review", AgentOptions { label: Some("reviewer".into()), ..Default::default() })
+                            .await?;
+                        Ok((first, drafts, review, ctx.blackboard().get("outline")))
+                    })
+                })
+                .await
+                .expect("dynamic workflow runs");
+            let (first, drafts, review, outline) = run.value;
+            assert_eq!(first.map(|r| r.text), Some("done".to_string()));
+            assert!(drafts.iter().all(|r| r.as_ref().is_some_and(|r| r.text == "done")));
+            assert_eq!(review.map(|r| r.node_id), Some("reviewer".to_string()));
+            assert_eq!(outline, None, "a phase-scoped entry left with its phase");
+            assert_eq!(run.progress.agents_completed, 4);
+
+            {
+                let contexts = contexts.lock().unwrap();
+                let of = |goal: &str| contexts.iter().find(|c| c.contains(goal)).cloned().unwrap_or_default();
+                assert!(!of("survey the field").contains("primary sources only"));
+                for draft in ["draft part one", "draft part two"] {
+                    assert!(of(draft).contains("primary sources only") && of(draft).contains("sections"), "{draft}");
+                }
+                assert!(of("review").contains("primary sources only") && !of("review").contains("sections"));
+            }
+
+            let refused = runner
+                .run_dynamic_workflow(
+                    DynamicWorkflowOptions { limits: DynamicWorkflowLimits { max_agents_per_run: 1, ..Default::default() }, ..Default::default() },
+                    |ctx| Box::pin(async move {
+                        ctx.agent("one", AgentOptions::default()).await?;
+                        ctx.agent("two", AgentOptions::default()).await?;
+                        Ok(())
+                    }),
+                )
+                .await;
+            assert!(refused.is_err(), "past max_agents_per_run the program fails before spawning");
         }
 
         /// P1-13 · argument text that is not a JSON object fails the call; the tool never runs.

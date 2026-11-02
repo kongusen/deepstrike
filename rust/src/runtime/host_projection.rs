@@ -13,6 +13,19 @@ use deepstrike_core::types::message::{CoreMessage, ToolCall, ToolSchema};
 use deepstrike_core::types::milestone::MilestoneVerifier;
 use deepstrike_core::types::result::LoopResult;
 
+/// Plan task 1.1 · one parent knowledge item a child run starts with, chosen by the kernel from
+/// the item's scope and the node's context inheritance (a blackboard entry, for one).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InheritedKnowledge {
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct HostAction {
     pub effect_id: String,
@@ -41,6 +54,9 @@ pub(crate) enum HostEffect {
         /// Plan task 3.1 · per node, the dependency outputs its child run holds, by agent id.
         #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
         dependency_outputs: std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
+        /// Plan task 1.1 · per node, the parent knowledge its child run starts with, by agent id.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        inherited_knowledge: std::collections::BTreeMap<String, Vec<InheritedKnowledge>>,
     },
     PreemptSubAgents {
         agent_ids: Vec<String>,
