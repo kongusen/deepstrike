@@ -284,7 +284,13 @@ all follow this rule.
     The recall hit rate (share expanded with `memory(record_id)`) and waste are in the same report.
   - Files: new `context/lifecycle_report.rs`; SDK `on_turn_metrics` adds the summary
 
-- [ ] Task 4.2: reference evidence and relevance judgment
+- [x] Task 4.2 (2026-11-03, partial): reference evidence in grades — strong (`memory(record_id)`, the key
+  or record id in tool arguments, the key named in text) and lexical (distinctive terms only: common
+  words and the index-line header removed); `ItemValue` records `strong_refs` / `lexical_refs`, and
+  retention weighs a strong reference as four lexical ones. Not done: the model `RelevanceJudge`
+  (an effect) — neither benchmark reaches knowledge-budget eviction, so the lab cannot show its
+  value; it waits for a scenario with budget pressure.
+- ~~Original task 4.2: reference evidence and relevance judgment~~
   - Acceptance: reference evidence has three strengths: the model explicitly calls a handle or
     `memory(record_id)` > the item's key appears in tool call arguments > lexical overlap.
     `RelevanceJudge` has a lexical (fallback) and a model implementation; the model one is an
@@ -295,7 +301,25 @@ all follow this rule.
     version and success rate does not drop.
   - Files: `context/utility.rs`, `context/partitions.rs`, new `context/relevance.rs`
 
-- [ ] Task 4.3: offline tuning
+- [x] Task 4.3 (2026-11-03): `crates/deepstrike-lab` (`report` / `gate`) and two live benchmarks
+  (`long-task.mjs` ledger-audit, `live.mjs` fan-out) writing one trial per line: success, cost, the
+  kernel estimate next to the provider count of the same call, and the lifecycle reports.
+  0.2.80 results (2026-11-03, DeepSeek `deepseek-flash`, baseline 0.2.79 + the memory fix `30e93db5`,
+  `benchmark/context-lifecycle/results/`):
+
+  | Scenario | Variant | Correct | Input tokens / task | Estimate error (size-weighted) |
+  |----------|---------|---------|---------------------|--------------------------------|
+  | ledger-audit | 0.2.79 → 0.2.80 | 11/12 → 11/12 | 52.4k → 56.5k | 11.6% → 0.7% |
+  | fan-out full | 0.2.79 → 0.2.80 | 12/12 → 12/12 | 24.3k → 24.0k | 8.4% → 4.7% |
+  | fan-out handle | 0.2.79 → 0.2.80 | 12/12 → 12/12 | 10.1k → 12.5k | 8.0% → 7.4% |
+
+  All three gates (success not lower, size-weighted estimate error ≤10%) pass. Ledger archives 15.5
+  items per task instead of 4.1: replay (reasoning) now counts toward pressure, where the kernel used
+  to undercount what the model sees. Waste rising from 2 to 68 tokens is a change in counting
+  (common words no longer mark unrelated notes as used) and is not compared. Measuring lesson: a
+  metering wrapper that does not forward the provider's other members loses replay and the
+  descriptor, so it measures something other than the real path (fixed; earlier results discarded).
+- ~~Original task 4.3: offline tuning~~
   - Step one (2026-11-02): `benchmark/context-lifecycle/run.mjs` drives the real kernel with a
     scripted provider and compares the contexts two checkouts render (task success is not measured).
     Against baseline `5b5308d3`: long-task prefix reuse 0.761→0.785, knowledge rewrites under cache
@@ -346,7 +370,15 @@ all follow this rule.
 
 ### Stage 5: one context authority (fixes Q5)
 
-- [ ] Task 5.1: absorb provider rewrites of the context
+- [x] Task 5.1 (2026-11-03, kernel side): the message ABI gains `item_id` and an opaque `replay` (the
+  kernel keeps reasoning / native blocks with the item and renders them back; all four SDKs send and
+  prefer it); the rendered request carries `estimated_tokens` (tool schemas and replay included,
+  calibrated by the least-squares line through the last eight estimate/count pairs, raising but never
+  lowering pressure); `ProviderCompleted` gains `provider_compaction` (a summary through an item
+  becomes one `provider_summary` item) and `cleared_tool_results` (rendered as handles), passed
+  through by all SDKs from an optional `takeContextEdits` hook. Not done: the Anthropic provider
+  reporting either fact (no Anthropic key to test its three compaction flows).
+- ~~Original task 5.1: absorb provider rewrites of the context~~
   - Checked (2026-11-01): the kernel message ABI carries plain text only, and native blocks such as
     compaction/thinking stay inside the host provider. Replacing covered history with a
     provider_summary item therefore first needs opaque blocks on `ProviderMessage`/`LogicalMessage`
@@ -378,13 +410,21 @@ all follow this rule.
     three node kinds, with no same-name template.
   - Files: `orchestration/workflow/mod.rs`, `run.rs`, `scheduler/state_machine/workflow.rs`
 
-- [ ] Task 6.2: write orchestration program shared state as items
+- [x] Task 6.2 (2026-11-03): `ctx.blackboard.put/get/delete`; entries are `blackboard:<key>` items on
+  the operation (origin `blackboard`, scope `workflow`: every agent spawned afterwards inherits them
+  whatever its context inheritance), and phase-scoped entries leave when their phase ends. All four
+  SDKs.
+- ~~Original task 6.2: write orchestration program shared state as items~~
   - Acceptance: data shared across phases is written as items with
     `blackboard.put(key, value, {scope, lease})` and is visible to sub-agents by scope; it is no
     longer spliced into prompts through closure variables.
   - Files: `node/src/workflow/dynamic.ts`
 
-- [ ] Task 6.3: bring the SDKs level
+- [x] Task 6.3 (2026-11-03): Python `run_dynamic_workflow`, WASM `runDynamicWorkflow` and Rust
+  `run_dynamic_workflow` with the Node vocabulary; Rust's workflow driving loop became
+  `drive_workflow`, and its children now receive `inherited_knowledge`. Replay of saved runs and the
+  sandboxed script executors remain Node-only.
+- ~~Original task 6.3: bring the SDKs level~~
   - Acceptance: the host program API is ported to Python, Rust and WASM in that order, with the same
     interface as Node. Replay keeps using `DynamicWorkflowReplayFact` as a recorded input (D1);
     byte equality across SDKs is not required.
@@ -421,8 +461,8 @@ Known issues:
   `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`.
 - The `benchmark-0.2.74` version guard (0.2.74 vs 0.2.77) has long been stale; not handled.
 
-Next: see "Release plan" below. 0.2.78 is merged into main; 0.2.79 is complete on branch
-`feat/context-items-0.2.79`, awaiting the version bump and PR.
+Next: 0.2.78 and 0.2.79 are released. 0.2.80 is complete on branch `feat/0.2.80`, awaiting the
+version bump and PR.
 
 Setting up on another machine:
 
@@ -448,7 +488,7 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 |---------|---------|--------|
 | 0.2.78 | Merged into main (PR #4), from branch `feat/context-lifecycle-stage0`: stages 0, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 6.1; the item identity parts of 1.1a and 1.1b; replay fixes; default edge mode `handle`; Rust workflow orchestration | Merged into main |
 | 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Done on branch `feat/context-items-0.2.79`, awaiting release |
-| 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence and `RelevanceJudge`; 6.2 blackboard; 6.3 Python and WASM host program APIs. One `MIGRATION-0.2.79-to-0.2.80.md` | Not started |
+| 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Done on branch `feat/0.2.80`, awaiting release (deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
 
 Order inside 0.2.80 (the lab comes before the changes it measures; otherwise a metric change cannot be
 attributed):
