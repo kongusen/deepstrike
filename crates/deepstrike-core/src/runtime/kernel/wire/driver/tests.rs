@@ -1172,6 +1172,7 @@ fn a_full_inheritance_launch_carries_the_knowledge_its_scope_allows() {
         ..LogicalAgentSpec::new("collect the sources")
     });
     let entry = |key: &str, content: &str| super::super::root::KnowledgeEntry {
+        inherited_from: None,
         content: content.to_string(),
         key: Some(key.to_string()),
         tokens: Some(4),
@@ -1199,7 +1200,13 @@ fn a_full_inheritance_launch_carries_the_knowledge_its_scope_allows() {
     let metadata = serde_json::to_value(&spawn.tasks[0].spec.metadata).unwrap();
     assert_eq!(
         metadata["inherited_knowledge"],
-        json!([{ "content": "the house style forbids bullet lists", "key": "style", "tokens": 4, "pinned": true }]),
+        json!([{
+            "content": "the house style forbids bullet lists",
+            "key": "style",
+            "tokens": 4,
+            "pinned": true,
+            "inherited_from": { "operation": "op-driver-1", "item": 1 },
+        }]),
     );
 }
 
@@ -1220,12 +1227,14 @@ fn a_blackboard_entry_reaches_every_spawned_agent_whatever_its_inheritance() {
             initial_context: InitialContext {
                 knowledge: vec![
                     super::super::root::KnowledgeEntry {
+                        inherited_from: None,
                         content: "sources must be primary".to_string(),
                         key: Some("blackboard:criteria".to_string()),
                         tokens: Some(4),
                         pinned: false,
                     },
                     super::super::root::KnowledgeEntry {
+                        inherited_from: None,
                         content: "parent-only reference".to_string(),
                         key: Some("notes".to_string()),
                         tokens: Some(3),
@@ -1242,7 +1251,12 @@ fn a_blackboard_entry_reaches_every_spawned_agent_whatever_its_inheritance() {
     let metadata = serde_json::to_value(&spawn.tasks[0].spec.metadata).unwrap();
     assert_eq!(
         metadata["inherited_knowledge"],
-        json!([{ "content": "sources must be primary", "key": "blackboard:criteria", "tokens": 4 }]),
+        json!([{
+            "content": "sources must be primary",
+            "key": "blackboard:criteria",
+            "tokens": 4,
+            "inherited_from": { "operation": "op-driver-1", "item": 1 },
+        }]),
     );
 }
 
@@ -8141,6 +8155,7 @@ fn seeded_and_mutated_knowledge_enter_the_same_partition() {
         1_700_000_002_000,
         HostCommand::SeedKnowledge(SeedKnowledgeCommand {
             entries: vec![super::super::root::KnowledgeEntry {
+                inherited_from: None,
                 content: "the house style forbids bullet lists".to_string(),
                 key: Some("style".to_string()),
                 tokens: Some(9),
@@ -8163,6 +8178,7 @@ fn seeded_and_mutated_knowledge_enter_the_same_partition() {
         HostCommand::ApplyKnowledgeMutation(ApplyKnowledgeMutationCommand {
             mutation: super::super::command::KnowledgeMutation {
                 upsert: vec![super::super::root::KnowledgeEntry {
+                    inherited_from: None,
                     content: "cite at least three sources".to_string(),
                     key: Some("sources".to_string()),
                     tokens: Some(6),
@@ -8207,6 +8223,7 @@ fn a_host_command_may_not_rewrite_kernel_items_or_an_active_skill_body() {
             mutation: super::super::command::KnowledgeMutation {
                 upsert: upsert
                     .map(|key| super::super::root::KnowledgeEntry {
+                        inherited_from: None,
                         content: "host text".to_string(),
                         key: Some(key.to_string()),
                         tokens: Some(2),

@@ -659,10 +659,12 @@
       "optional": [
         "edges",
         "edges_omitted",
+        "external_edges",
         "history",
         "history_items",
         "history_items_omitted",
         "items",
+        "parent_items_used",
         "waste_items"
       ],
       "sample": {
@@ -708,7 +710,12 @@
           { "from": 8, "to": 7, "relation": "reads_back", "turn": 4 }
         ],
         "edges_omitted": 1,
-        "waste_items": [2]
+        "waste_items": [2],
+        "external_edges": [
+          { "from": 1, "to": { "operation": "op-parent", "item": 4 }, "relation": "inherited_from", "turn": 0 },
+          { "from": 8, "to": { "agent": "wf-node0" }, "relation": "depends_on", "turn": 4 }
+        ],
+        "parent_items_used": [{ "operation": "op-parent", "item": 4 }]
       }
     },
     {

@@ -504,7 +504,20 @@ graph store. Constraints:
   - Verification: the random-transcript pairing property tests still pass; existing goldens render
     byte for byte the same.
 
-- [ ] Task 7.3: retention and eviction along edges
+- [x] Task 7.3 (2026-11-02): evidence counts by its source. Lexical overlap counts as use only in
+  the model's own words and the user's; tool output counts only when it names the item (key or
+  record id); a memory hit (the record's own text) never counts. A new `expands` edge (memory hit →
+  the recall it expands) carries the model's use of a hit's content one hop to the recall. An item
+  a resident history item strongly references or read back neither expires nor yields to the
+  budget. Results (DeepSeek, 12 tasks, against 0.2.80): the `knowledge-pressure` gate passes,
+  with distractor references down from 33 to 9.6, self-reported waste up from 24 to 156 (real idle
+  residency 233), no required rule dropped, and 9/12 → 10/12 correct; the fan-out full and handle
+  gates pass (12/12); ledger scored 10/12 against 11/12 and failed its gate. Both misses there are
+  arithmetic errors (the rule stayed resident and referenced throughout), with 8 knowledge
+  departures against 10; to be re-measured. Where it differs from the acceptance: the retention
+  score still uses reference counts (which now hold only counted evidence) rather than a separate
+  weighted sum of resident in-edges, and the one-hop propagation runs along `expands` edges.
+- ~~Original task 7.3: retention and eviction along edges~~
   - Acceptance: an item's retention score adds its incoming edges from items still present (strong
     weighs more than lexical, one hop only, integer weights, deterministic); knowledge-budget
     eviction and recall lease expiry consult incoming edges — an entry a present item strongly
@@ -512,7 +525,14 @@ graph store. Constraints:
   - Verification: `deepstrike-lab gate` on `knowledge-pressure`: regret and waste no higher than
     the 7.0 baseline, success not lower; ledger and fan-out do not regress.
 
-- [ ] Task 7.4: edges across runs (report only)
+- [x] Task 7.4 (2026-11-02): a spawn's `inherited_knowledge` entries carry
+  `inherited_from { operation, item }`, `KnowledgeEntry` accepts the field, and all four SDKs pass it
+  to the child. The child records an `inherited_from` external edge, and
+  `read_result("dep:<agent>")` records a `depends_on` external edge (the reading assistant item →
+  the dependency agent). The lifecycle report gains `external_edges` and `parent_items_used` (the
+  parent items the child used). External edges are checkpointed (`item_external_edges`), the latest
+  128 kept. Also fixes Python's initial context dropping `pinned`.
+- ~~Original task 7.4: edges across runs (report only)~~
   - Acceptance: inherited knowledge carries `inherited_from { operation, item }` and the child run
     records the edge; dependency-output reads are recorded as `depends_on` / `reads_back`. A child
     run's lifecycle report names which parent items it used.

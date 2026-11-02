@@ -58,7 +58,22 @@ export interface ContextItemRecord {
 export interface ContextItemEdge {
   from: number
   to: number
-  relation: "answers" | "references_strong" | "references_lexical" | "reads_back" | "summarizes"
+  relation: "answers" | "references_strong" | "references_lexical" | "reads_back" | "summarizes" | "expands"
+  turn: number
+}
+
+/** An item of another run: a parent operation's item, or a workflow dependency's output. */
+export interface ContextExternalItem {
+  operation?: string
+  agent?: string
+  item?: number
+}
+
+/** An edge from an item of this run to an item of another run. */
+export interface ContextExternalEdge {
+  from: number
+  to: ContextExternalItem
+  relation: "inherited_from" | "depends_on"
   turn: number
 }
 
@@ -139,6 +154,10 @@ export type SessionEvent =
       edges_omitted?: number
       /** Knowledge item ids nothing referenced or read back. */
       waste_items?: number[]
+      /** Edges to items of other runs: inherited copies and dependency reads. */
+      external_edges?: ContextExternalEdge[]
+      /** The parent run's items whose inherited copies this run used. */
+      parent_items_used?: ContextExternalItem[]
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }

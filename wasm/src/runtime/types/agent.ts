@@ -369,6 +369,8 @@ export interface InheritedKnowledge {
   key?: string
   tokens?: number
   pinned?: boolean
+  /** Plan task 7.4 · the parent run's item this is a copy of; reported as an `inherited_from` edge. */
+  inherited_from?: { operation?: string; agent?: string; item?: number }
 }
 
 /** Per-node spawn descriptor carried in the `workflow_batch_spawned` observation. */

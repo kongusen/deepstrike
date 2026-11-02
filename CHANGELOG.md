@@ -22,6 +22,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ground truth the kernel cannot see (required rules dropped or unreferenced, references credited
   to distractors, distractor tokens still resident); `deepstrike-lab` reports and gates on them as
   `oracle.<name>`.
+- Edges across runs (plan task 7.4), report only: a workflow child's inherited knowledge carries
+  `inherited_from { operation, item }` (on the spawn's `inherited_knowledge` entries and on
+  `KnowledgeEntry`), all four SDKs pass it to the child, and the child records an
+  `inherited_from` edge; reading a dependency output back with `read_result("dep:<agent>")`
+  records a `depends_on` edge. `context_lifecycle_reported` gains `external_edges` and
+  `parent_items_used` (the parent items whose inherited copies the child used).
+
+### Changed
+
+- Retention follows the item graph (plan task 7.3). Lexical overlap counts as use of a knowledge
+  item only in the model's own words and the user's; host tool output counts only when it names
+  the item, and a memory hit (the record's own text) never. A model's use of a memory hit's content
+  reaches the recalled item it expands, one hop along a new `expands` edge. An item that a resident
+  history item strongly references or read back neither expires nor yields to the knowledge budget.
+  On `knowledge-pressure`, references credited to distractors fall from 33 to 9.6 per task and the
+  reported waste rises from 24 to 156 tokens, closer to the 233 tokens of distractors really idle;
+  required rules are never dropped.
+
+### Fixed
+
+- Python: knowledge added before a run starts (`add_knowledge_message` into the initial context)
+  kept its key and tokens but dropped `pinned`; it now keeps the pin, as the other SDKs do.
 
 ## [0.2.80] - 2026-11-03
 

@@ -365,10 +365,16 @@ impl KnowledgePartition {
 
     /// Mark every item whose lease ran out at the current turn to leave at the next boundary.
     /// Returns the keys newly marked.
-    pub fn expire_leases(&mut self) -> Vec<String> {
+    /// Items in `held` (plan task 7.3: strongly referenced or read back by a resident item) do not
+    /// expire.
+    pub fn expire_leases(&mut self, held: &std::collections::BTreeSet<ItemId>) -> Vec<String> {
         let turn = self.turn;
         let mut expired = Vec::new();
-        for entry in self.entries.iter_mut().filter(|entry| !entry.is_leaving()) {
+        for entry in self
+            .entries
+            .iter_mut()
+            .filter(|entry| !entry.is_leaving() && !held.contains(&entry.id))
+        {
             if entry.lease_expired(turn) {
                 entry.leaving = Some(ItemEnd::Expired);
                 if let Some(key) = &entry.key {
@@ -436,8 +442,14 @@ impl KnowledgePartition {
     /// Lexical, the fallback: the message shares the item's distinctive terms (two, or one for an
     /// item with a single one) — common words and the kernel's own index-line vocabulary do not
     /// count. Driven by committed input only, never by a wall clock.
-    /// Returns the items it credited, each with whether the evidence was strong.
-    pub fn observe_references(&mut self, message: &CoreMessage, step: u64) -> Vec<(ItemId, bool)> {
+    /// Returns every item the message mentions, each with whether the evidence was strong; only
+    /// what `evidence` admits is counted as use (plan task 7.3).
+    pub fn observe_references(
+        &mut self,
+        message: &CoreMessage,
+        step: u64,
+        evidence: Evidence,
+    ) -> Vec<(ItemId, bool)> {
         let mut credited = Vec::new();
         let text = searchable_message_text(message);
         if text.is_empty() {
@@ -466,12 +478,17 @@ impl KnowledgePartition {
             }) || record
                 .as_deref()
                 .is_some_and(|id| arguments.iter().any(|args| args.contains(id)));
-            let lexical = !strong && {
-                let entry_terms = distinctive_terms(&item_text(&entry.message));
-                let overlap = entry_terms.intersection(&input_terms).count();
-                !entry_terms.is_empty() && overlap >= if entry_terms.len() == 1 { 1 } else { 2 }
+            let lexical = !strong && overlaps(&input_terms, &entry.message);
+            if !strong && !lexical {
+                continue;
+            }
+            credited.push((entry.id, strong));
+            let counted = match evidence {
+                Evidence::Any => true,
+                Evidence::StrongOnly => strong,
+                Evidence::None => false,
             };
-            if strong || lexical {
+            if counted {
                 entry.value.ref_count = entry.value.ref_count.saturating_add(1);
                 if strong {
                     entry.value.strong_refs = entry.value.strong_refs.saturating_add(1);
@@ -480,10 +497,25 @@ impl KnowledgePartition {
                 }
                 entry.value.last_referenced_step = Some(step);
                 entry.value.last_referenced_turn = Some(turn);
-                credited.push((entry.id, strong));
             }
         }
         credited
+    }
+
+    /// Plan task 7.3 · count a lexical use of item `id` that reached it along an edge (the model
+    /// used the content a memory hit expanded it into).
+    pub fn credit_lexical(&mut self, id: ItemId, step: u64) -> bool {
+        let turn = self.turn;
+        match self.entries.iter_mut().find(|entry| entry.id == id && !entry.is_leaving()) {
+            Some(entry) => {
+                entry.value.ref_count = entry.value.ref_count.saturating_add(1);
+                entry.value.lexical_refs = entry.value.lexical_refs.saturating_add(1);
+                entry.value.last_referenced_step = Some(step);
+                entry.value.last_referenced_turn = Some(turn);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn retention_score(&self, index: usize, current_step: u64) -> Option<i64> {
@@ -662,6 +694,27 @@ fn searchable_message_text(message: &CoreMessage) -> String {
         values.push(call.arguments.to_string());
     }
     values.join(" ")
+}
+
+/// Plan task 7.3 · what a history item's mention of a knowledge item is evidence of. The model's
+/// own words and the user's are evidence of use by any grade; host output (tool results) only when
+/// it names the item; a memory hit, which is the record's own text, never.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Evidence {
+    Any,
+    StrongOnly,
+    None,
+}
+
+/// Whether `message` shares enough of `item`'s distinctive terms to be about it.
+pub(crate) fn mentions(message: &CoreMessage, item: &CoreMessage) -> bool {
+    overlaps(&distinctive_terms(&searchable_message_text(message)), item)
+}
+
+fn overlaps(input_terms: &std::collections::BTreeSet<String>, item: &CoreMessage) -> bool {
+    let entry_terms = distinctive_terms(&item_text(item));
+    let overlap = entry_terms.intersection(input_terms).count();
+    !entry_terms.is_empty() && overlap >= if entry_terms.len() == 1 { 1 } else { 2 }
 }
 
 /// An item's own words: a kernel index line's bracketed header (`[MEMORY record_id=… kind=…]`)
@@ -976,6 +1029,7 @@ mod tests {
         p.observe_references(
             &CoreMessage::user("[MEMORY record_ref=x kind=project] ledger page 1: the amounts in dollars for every account"),
             1,
+            Evidence::Any,
         );
         // The model reads a record by id: strong evidence.
         let mut read = CoreMessage::assistant("");
@@ -984,7 +1038,7 @@ mod tests {
             name: "memory".into(),
             arguments: serde_json::json!({ "record_id": "audit-rule" }),
         }];
-        p.observe_references(&read, 2);
+        p.observe_references(&read, 2, Evidence::Any);
 
         let value = |key: &str| p.entries.iter().find(|e| e.key.as_deref() == Some(key)).unwrap().value;
         assert_eq!((value("initial:0").strong_refs, value("initial:0").lexical_refs), (0, 1));
@@ -1010,7 +1064,7 @@ mod tests {
             false,
         );
 
-        p.observe_references(&CoreMessage::assistant("Use project:orchid and Atlas"), 7);
+        p.observe_references(&CoreMessage::assistant("Use project:orchid and Atlas"), 7, Evidence::Any);
 
         assert_eq!(p.entries[0].value.ref_count, 1);
         assert_eq!(p.entries[0].value.last_referenced_step, Some(7));

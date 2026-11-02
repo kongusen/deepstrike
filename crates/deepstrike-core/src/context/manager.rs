@@ -1,8 +1,8 @@
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
 use super::item::{
-    Authority, HISTORY_ITEM_DETAIL_CAP, HistoryItemRecord, ItemEdge, ItemEnd, ItemId, ItemOrigin,
-    ItemRecord, ItemTag, LeaseEvent, OriginTally, Relation,
+    Authority, ExternalEdge, ExternalItem, HISTORY_ITEM_DETAIL_CAP, HistoryItemRecord, ItemEdge,
+    ItemEnd, ItemId, ItemOrigin, ItemRecord, ItemTag, LeaseEvent, OriginTally, Relation,
 };
 use super::partitions::ContextPartitions;
 use super::policy::ContextPolicy;
@@ -106,6 +106,10 @@ pub struct LifecycleMetrics {
     /// Knowledge items nothing referenced and no recorded edge points to (a subset of what
     /// `waste_tokens` counts: a recall the model read back is not waste).
     pub waste_items: Vec<ItemId>,
+    /// Plan task 7.4 · edges to items of other runs (inherited copies, dependency reads).
+    pub external_edges: Vec<ExternalEdge>,
+    /// The parent run's items whose inherited copies this run used.
+    pub parent_items_used: Vec<ExternalItem>,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -941,10 +945,11 @@ impl ContextManager {
     fn admit_history(&mut self, msg: CoreMessage, tokens: u32) {
         self.knowledge_reference_step = self.knowledge_reference_step.saturating_add(1);
         let item = self.alloc_item_id();
+        let evidence = Self::evidence_of(&msg);
         let references = self
             .partitions
             .knowledge
-            .observe_references(&msg, self.knowledge_reference_step);
+            .observe_references(&msg, self.knowledge_reference_step, evidence);
         for (to, strong) in references {
             let relation = if strong { Relation::ReferencesStrong } else { Relation::ReferencesLexical };
             self.add_edge(item, to, relation);
@@ -956,6 +961,22 @@ impl ContextManager {
                 {
                     self.add_edge(item, call, Relation::Answers);
                 }
+            }
+        }
+        if evidence == super::partitions::Evidence::Any {
+            self.credit_expansions(item, &msg);
+        }
+        if let Some(record) = Self::memory_hit_record(&msg) {
+            let key = format!("memory:{record}");
+            let recalled = self
+                .partitions
+                .knowledge
+                .entries
+                .iter()
+                .find(|entry| entry.key.as_deref() == Some(key.as_str()))
+                .map(|entry| entry.id);
+            if let Some(recalled) = recalled {
+                self.add_edge(item, recalled, Relation::Expands);
             }
         }
         // P3 (3a): index each tool result entering working context as a handle on its item,
@@ -1040,6 +1061,17 @@ impl ContextManager {
             ItemOrigin::ToolResult
         };
         self.tally(origin).read_back += 1;
+        if let Some(agent) = address.strip_prefix("dep:")
+            && let Some(reader) = self.last_assistant_item()
+        {
+            let turn = self.partitions.knowledge.turn;
+            self.graph.add_external(ExternalEdge {
+                from: reader,
+                to: ExternalItem { agent: Some(agent.to_string()), ..ExternalItem::default() },
+                relation: Relation::DependsOn,
+                turn,
+            });
+        }
         let target = self
             .handles
             .all()
@@ -1066,6 +1098,25 @@ impl ContextManager {
             .map(|entry| entry.id);
         if let (Some(reader), Some(target)) = (self.last_assistant_item(), target) {
             self.add_edge(reader, target, Relation::ReadsBack);
+        }
+    }
+
+    /// Plan task 7.4 · the knowledge entry just seeded under `key` (the last entry when unkeyed) is
+    /// a copy of `source`, a parent run's item. Report only.
+    pub fn note_inherited_from(&mut self, key: Option<&str>, source: ExternalItem) {
+        let entries = &self.partitions.knowledge.entries;
+        let copy = match key {
+            Some(key) => entries.iter().find(|entry| entry.key.as_deref() == Some(key)),
+            None => entries.last(),
+        };
+        if let Some(from) = copy.map(|entry| entry.id) {
+            let turn = self.partitions.knowledge.turn;
+            self.graph.add_external(ExternalEdge {
+                from,
+                to: source,
+                relation: Relation::InheritedFrom,
+                turn,
+            });
         }
     }
 
@@ -1218,7 +1269,78 @@ impl ContextManager {
     /// next boundary. Runs at the head of every event, like the skill lease sweep.
     pub fn sweep_expired_item_leases(&mut self, turn: u32) {
         self.partitions.knowledge.turn = turn;
-        self.partitions.knowledge.expire_leases();
+        let held = self.held_by_resident_items();
+        self.partitions.knowledge.expire_leases(&held);
+    }
+
+    /// Plan task 7.3 · knowledge items a resident item still holds by a strong reference or a
+    /// read-back: they neither expire nor yield to the knowledge budget.
+    fn held_by_resident_items(&self) -> std::collections::BTreeSet<ItemId> {
+        let history: std::collections::BTreeSet<ItemId> = (0..self.partitions.history.len())
+            .map(|index| self.partitions.history.tag(index).id)
+            .collect();
+        self.graph
+            .edges()
+            .iter()
+            .filter(|edge| {
+                matches!(edge.relation, Relation::ReferencesStrong | Relation::ReadsBack)
+                    && history.contains(&edge.from)
+            })
+            .map(|edge| edge.to)
+            .collect()
+    }
+
+    /// Plan task 7.3 · how a history message's mentions of knowledge count: the model's words and
+    /// the user's by any evidence, host output only by name, a memory hit (the record's own text,
+    /// written into history by the kernel) never.
+    fn evidence_of(message: &CoreMessage) -> super::partitions::Evidence {
+        use super::partitions::Evidence;
+        match message.role {
+            crate::types::message::Role::Assistant => Evidence::Any,
+            crate::types::message::Role::User if Self::memory_hit_record(message).is_some() => {
+                Evidence::None
+            }
+            crate::types::message::Role::User => Evidence::Any,
+            _ => Evidence::StrongOnly,
+        }
+    }
+
+    /// The record a kernel-written memory hit (`[MEMORY record_ref=<id> kind=…] <content>`) carries.
+    fn memory_hit_record(message: &CoreMessage) -> Option<&str> {
+        if message.role != crate::types::message::Role::User {
+            return None;
+        }
+        let text = message.content.as_text()?;
+        let rest = text.strip_prefix("[MEMORY record_ref=")?;
+        let end = rest.find([' ', ']'])?;
+        Some(&rest[..end]).filter(|id| !id.is_empty())
+    }
+
+    /// Plan task 7.3 · one hop: `item` (counted evidence) used the content of a resident memory hit
+    /// that expands a recalled item; the use reaches the recalled item along the `expands` edge.
+    fn credit_expansions(&mut self, item: ItemId, message: &CoreMessage) {
+        let history = &self.partitions.history;
+        let carriers: Vec<(ItemId, ItemId, usize)> = self
+            .graph
+            .edges()
+            .iter()
+            .filter(|edge| edge.relation == Relation::Expands)
+            .filter_map(|edge| {
+                (0..history.len())
+                    .find(|index| history.tag(*index).id == edge.from)
+                    .map(|index| (edge.from, edge.to, index))
+            })
+            .collect();
+        for (carrier, recalled, index) in carriers {
+            let carried = &self.partitions.history.messages()[index];
+            if !super::partitions::mentions(message, carried) {
+                continue;
+            }
+            self.add_edge(item, carrier, Relation::ReferencesLexical);
+            self.partitions
+                .knowledge
+                .credit_lexical(recalled, self.knowledge_reference_step);
+        }
     }
 
     /// The rendered context is about to go to a provider: from now on system[1] is cached.
@@ -1288,7 +1410,23 @@ impl ContextManager {
             })
             .map(|item| item.id)
             .collect();
+        let used: std::collections::BTreeSet<ItemId> = items
+            .iter()
+            .filter(|item| item.value.ref_count > 0 || self.graph.in_edges(item.id).next().is_some())
+            .map(|item| item.id)
+            .collect();
+        let parent_items_used = self
+            .graph
+            .external()
+            .iter()
+            .filter(|edge| edge.relation == Relation::InheritedFrom && used.contains(&edge.from))
+            .map(|edge| edge.to.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
         LifecycleMetrics {
+            external_edges: self.graph.external().to_vec(),
+            parent_items_used,
             edges: self.graph.edges().to_vec(),
             edges_omitted: self.graph.omitted(),
             waste_items,
@@ -1386,14 +1524,14 @@ impl ContextManager {
     /// K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
     /// Errs-open: unknown key is a no-op (returns false).
     /// Plan task 1.1 · scope: the parent's knowledge a child spawned with `inheritance` starts with,
-    /// as `(key, content, tokens, pinned)`. Besides what the scope allows, a child never inherits
+    /// as `(key, content, tokens, pinned, item id)`. Besides what the scope allows, a child never inherits
     /// an item whose life is tied to the parent's own state: one leased until a parent event (an
     /// active skill's body) or one the kernel derived for the parent (the child's kernel derives
     /// its own).
     pub fn inheritable_knowledge(
         &self,
         inheritance: crate::types::agent::ContextInheritance,
-    ) -> Vec<(Option<String>, String, u32, bool)> {
+    ) -> Vec<(Option<String>, String, u32, bool, ItemId)> {
         self.partitions
             .knowledge
             .entries
@@ -1404,7 +1542,13 @@ impl ContextManager {
             .filter(|entry| entry.defaults().authority != Authority::Kernel)
             .filter_map(|entry| {
                 let text = entry.message.content.as_text()?.to_string();
-                Some((entry.key.as_ref().map(ToString::to_string), text, entry.tokens, entry.pinned))
+                Some((
+                    entry.key.as_ref().map(ToString::to_string),
+                    text,
+                    entry.tokens,
+                    entry.pinned,
+                    entry.id,
+                ))
             })
             .collect()
     }
@@ -1523,6 +1667,7 @@ impl ContextManager {
             .map(|e| e.tokens)
             .sum();
         let mut projected = used.saturating_sub(marked);
+        let held = self.held_by_resident_items();
         let mut candidates = self
             .partitions
             .knowledge
@@ -1531,6 +1676,7 @@ impl ContextManager {
             .enumerate()
             .filter(|(_, entry)| {
                 !entry.is_leaving()
+                    && !held.contains(&entry.id)
                     && !entry.pinned
                     && !entry
                         .key
@@ -2057,6 +2203,109 @@ mod tests {
         assert_eq!(metrics.waste_items, vec![r2], "r1 was read back, orchid referenced");
         let recorded: Vec<_> = metrics.items.iter().map(|item| item.id).collect();
         assert_eq!(recorded, ids);
+    }
+
+    #[test]
+    fn host_output_and_memory_hits_do_not_count_as_use_but_the_models_words_do() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        mgr.push_recalled(vec![
+            ("vat".into(), "[MEMORY record_id=vat kind=project] tax ledger VAT rounding per transaction".into()),
+        ]);
+        let refs = |mgr: &ContextManager| mgr.partitions.knowledge.entries[0].value.ref_count;
+        // A ledger page and a search hit share the record's words: recorded, not counted.
+        mgr.push_history(tool_result_msg("c1", "transaction ledger page 1: rounding totals"), 10);
+        mgr.push_history(
+            CoreMessage::user("[MEMORY record_ref=other kind=project] the tax ledger rounds each transaction"),
+            10,
+        );
+        assert_eq!(refs(&mgr), 0);
+        assert_eq!(mgr.graph.edges().iter().filter(|e| e.relation == Relation::ReferencesLexical).count(), 2);
+        mgr.push_history(CoreMessage::assistant("VAT rounding in the tax ledger applies here"), 10);
+        assert_eq!(refs(&mgr), 1, "the model's own words are evidence");
+    }
+
+    #[test]
+    fn using_a_memory_hits_content_reaches_the_recall_it_expands() {
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        mgr.push_recalled(vec![(
+            "flag-rule".into(),
+            "[MEMORY record_id=flag-rule kind=project] ledger audit: which flags count".into(),
+        )]);
+        let recalled = mgr.partitions.knowledge.entries[0].id;
+        mgr.push_history(
+            CoreMessage::user("[MEMORY record_ref=flag-rule kind=project] REVIEW-HOLD counts as REVIEW in audit totals"),
+            10,
+        );
+        let hit = mgr.partitions.history.tag(mgr.partitions.history.len() - 1).id;
+        assert!(mgr.graph.edges().contains(&ItemEdge { from: hit, to: recalled, relation: Relation::Expands, turn: 0 }));
+        assert_eq!(mgr.partitions.knowledge.entries[0].value.ref_count, 0);
+        mgr.push_history(CoreMessage::assistant("T0042 is REVIEW-HOLD, so it counts toward the totals"), 10);
+        let used = mgr.partitions.history.tag(mgr.partitions.history.len() - 1).id;
+        assert!(mgr.graph.edges().iter().any(|e| e.from == used && e.to == hit));
+        assert_eq!(mgr.partitions.knowledge.entries[0].value.ref_count, 1, "one hop along expands");
+    }
+
+    #[test]
+    fn an_item_a_resident_item_names_neither_expires_nor_yields_to_the_budget() {
+        use crate::context::item::RECALL_LEASE_TURNS;
+        let mut mgr = ContextManager::new(1_000);
+        mgr.config.knowledge_budget_ratio = 0.01;
+        mgr.init_task("goal".to_string(), vec![]);
+        mgr.push_recalled(vec![
+            ("kept".into(), "[MEMORY record_id=kept kind=project] orchid storage layout".into()),
+            ("idle".into(), "[MEMORY record_id=idle kind=project] mercury deploy freeze".into()),
+        ]);
+        let mut call = CoreMessage::assistant("reading");
+        call.tool_calls = vec![crate::types::message::ToolCall {
+            id: "c1".into(),
+            name: "memory".into(),
+            arguments: serde_json::json!({ "record_id": "kept" }),
+        }];
+        mgr.push_history(call, 10);
+        mgr.enforce_knowledge_budget();
+        let leaving = |mgr: &ContextManager| -> Vec<_> {
+            mgr.partitions.knowledge.entries.iter().map(|e| (e.key.clone().unwrap(), e.is_leaving())).collect()
+        };
+        assert_eq!(leaving(&mgr), vec![("memory:kept".into(), false), ("memory:idle".into(), true)]);
+        mgr.sweep_expired_item_leases(10 * RECALL_LEASE_TURNS);
+        assert!(!mgr.partitions.knowledge.entries[0].is_leaving(), "held by the resident call");
+    }
+
+    #[test]
+    fn a_child_reports_which_inherited_parent_items_it_used_and_what_it_read_from_dependencies() {
+        use crate::types::message::ToolCall;
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        let parent = |item| ExternalItem { operation: Some("op-parent".into()), item, ..ExternalItem::default() };
+        mgr.push_knowledge_entry(Some("style".into()), CoreMessage::system("house style forbids bullets"), 4, true);
+        mgr.note_inherited_from(Some("style"), parent(7));
+        mgr.push_knowledge_entry(Some("notes".into()), CoreMessage::system("orchid storage layout"), 4, false);
+        mgr.note_inherited_from(Some("notes"), parent(9));
+        let mut call = CoreMessage::assistant("no bullets per the house style");
+        call.tool_calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "read_result".into(),
+            arguments: serde_json::json!({ "call_id": "dep:wf-node0" }),
+        }];
+        mgr.push_history(call, 10);
+        let reader = mgr.partitions.history.tag(0).id;
+        mgr.note_read_back("dep:wf-node0");
+
+        let metrics = mgr.lifecycle_metrics();
+        assert_eq!(metrics.parent_items_used, vec![parent(7)], "the notes copy went unused");
+        let relations: Vec<_> = metrics.external_edges.iter().map(|e| (e.from, e.relation)).collect();
+        let (style, notes) = (mgr.partitions.knowledge.entries[0].id, mgr.partitions.knowledge.entries[1].id);
+        assert_eq!(
+            relations,
+            vec![
+                (style, Relation::InheritedFrom),
+                (notes, Relation::InheritedFrom),
+                (reader, Relation::DependsOn),
+            ]
+        );
+        assert_eq!(metrics.external_edges[2].to.agent.as_deref(), Some("wf-node0"));
     }
 
     #[test]

@@ -264,6 +264,11 @@ pub enum SessionEvent {
         /// Knowledge items nothing referenced or read back.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         waste_items: Vec<crate::context::item::ItemId>,
+        /// Plan task 7.4 · edges to items of other runs, and the parent items this run used.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        external_edges: Vec<crate::context::item::ExternalEdge>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        parent_items_used: Vec<crate::context::item::ExternalItem>,
     },
 
     /// Execution paused (waiting for human-in-the-loop interaction or long-running tasks).

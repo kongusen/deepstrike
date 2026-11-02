@@ -240,11 +240,13 @@ ContextItem {
   - 验收：压缩、renderer、renewal、provider 摘要覆盖范围、held history 都按 `answers` 边的连通分量确定"不可拆开的单元"，删除按位置推断的 `unit_boundaries`（或降为恢复旧 checkpoint 的兜底）。
   - 验证：随机 transcript 的配对性质测试照常通过；现有 golden 的渲染结果逐字节不变。
 
-- [ ] 任务 7.3：沿边传播的保留与淘汰
+- [x] 任务 7.3（2026-11-02）：证据按来源计：词法重叠只在模型自己的话和用户消息里算"用过"，工具输出只有点名（key / record id）才算，memory 命中（记录原文）不算；新增 `expands` 边（memory 命中 → 它展开的 recall），模型用到命中内容时，使用沿这条边传一跳记到 recall 上；被在场 history item 强引用或读回的条目不过期、不被预算淘汰。结果（DeepSeek，12 题，对 0.2.80）：`knowledge-pressure` gate 通过，干扰项引用 33 → 9.6，自报 waste 24 → 156（真实无用驻留 233），必需规则 0 丢失，正确 9/12 → 10/12；fan-out full / handle gate 通过（12/12）；ledger 10/12 对 11/12，gate 未过，两题错误均为算术错误（规则全程在场且被引用），knowledge 离场次数 8 对 10，待复测。与验收的出入：保留分数仍用引用计数（计数已只含有效证据），没有另算"在场入边加权"；只传一跳的传播落在 `expands` 边上。
+- ~~原任务 7.3：沿边传播的保留与淘汰~~
   - 验收：item 的保留分数加上来自仍在场 item 的入边（强引用权重高于词法，只传一跳，整数权重，确定性）；knowledge 预算淘汰与 recall lease 到期都看入边——仍被在场 item 强引用的条目不淘汰、不过期。
   - 验证：`deepstrike-lab gate` 在 `knowledge-pressure` 上 regret、waste 不高于 7.0 基线，成功率不降；ledger / fan-out 不回退。
 
-- [ ] 任务 7.4：跨 run 的边（只上报）
+- [x] 任务 7.4（2026-11-02）：派生的 `inherited_knowledge` 条目带 `inherited_from { operation, item }`，`KnowledgeEntry` 接受这个字段，四端 SDK 原样传给子 run；子 run 记 `inherited_from` 外部边，`read_result("dep:<agent>")` 记 `depends_on` 外部边（读取方的 assistant item → 依赖 agent）。lifecycle report 增加 `external_edges` 与 `parent_items_used`（子 run 用到的父 item）。外部边进 checkpoint（`item_external_edges`），最多保留最近 128 条。顺带修复 Python 起始上下文丢 `pinned`。
+- ~~原任务 7.4：跨 run 的边（只上报）~~
   - 验收：继承下发的 knowledge 带 `inherited_from { operation, item }`，子 run 的 item 记录这条边；依赖输出读回记为 `depends_on` / `reads_back`。子 run 的 lifecycle report 能指出父 run 的哪些 item 被用到。
   - 文件：`orchestration/workflow`、`runtime/kernel/wire/driver/continuation.rs`、四端 SDK 的 `inherited_knowledge`
 

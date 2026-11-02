@@ -1195,6 +1195,7 @@ export class RuntimeRunner {
         ...(entry.key ? { key: entry.key } : {}),
         tokens: entry.tokens ?? Math.max(1, Math.ceil(entry.content.length / 4)),
         ...(entry.pinned ? { pinned: true } : {}),
+        ...(entry.inherited_from ? { inherited_from: entry.inherited_from } : {}),
       })
     }
 

@@ -889,6 +889,12 @@ impl CanonicalRunnerRuntime {
                         .unwrap()
                         .insert("pinned".into(), json!(true));
                 }
+                if let Some(source) = event.get("inherited_from").filter(|v| !v.is_null()) {
+                    entry
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("inherited_from".into(), source.clone());
+                }
                 self.commit(json!({
                     "kind": "host_control",
                     "command": { "kind": "seed_knowledge", "entries": [entry] },
@@ -1306,6 +1312,12 @@ impl CanonicalRunnerRuntime {
                         .as_object_mut()
                         .unwrap()
                         .insert("pinned".into(), json!(true));
+                }
+                if let Some(source) = event.get("inherited_from").filter(|v| !v.is_null()) {
+                    entry
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("inherited_from".into(), source.clone());
                 }
                 self.initial_context.knowledge.push(entry);
                 true

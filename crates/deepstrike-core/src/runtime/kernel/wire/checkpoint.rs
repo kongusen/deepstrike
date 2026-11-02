@@ -680,6 +680,9 @@ pub struct ContextVmState {
     pub item_edges: Vec<crate::context::item::ItemEdge>,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub item_edges_omitted: u32,
+    /// Plan task 7.4 · edges to items of other runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub item_external_edges: Vec<crate::context::item::ExternalEdge>,
     /// History items admitted and read back, by origin.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history_tally: Vec<OriginTally>,

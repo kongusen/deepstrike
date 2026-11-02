@@ -2259,6 +2259,7 @@ class RuntimeRunner:
           **({"key": entry["key"]} if entry.get("key") else {}),
           **({"tokens": int(entry["tokens"])} if entry.get("tokens") is not None else {}),
           **({"pinned": True} if entry.get("pinned") else {}),
+          **({"inherited_from": entry["inherited_from"]} if entry.get("inherited_from") else {}),
         })
 
     if not resume_mid_run and self._opts.initial_memory:

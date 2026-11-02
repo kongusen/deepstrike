@@ -6,7 +6,7 @@ import type {
   ToolSchema,
   MediaSource,
 } from "../types.js"
-import type { ContextHistoryItemRecord, ContextItemEdge, ContextItemRecord, ContextOriginTally, RollbackReason } from "./session-log.js"
+import type { ContextExternalEdge, ContextExternalItem, ContextHistoryItemRecord, ContextItemEdge, ContextItemRecord, ContextOriginTally, RollbackReason } from "./session-log.js"
 import { toolArgumentsFromWire, toolArgumentsToWire } from "./tool-arguments.js"
 
 interface TaskUpdate {
@@ -134,6 +134,8 @@ export interface KernelObservation {
   edges?: ContextItemEdge[]
   edges_omitted?: number
   waste_items?: number[]
+  external_edges?: ContextExternalEdge[]
+  parent_items_used?: ContextExternalItem[]
   archived_count?: number
   turn?: number
   checkpoint_history_len?: number

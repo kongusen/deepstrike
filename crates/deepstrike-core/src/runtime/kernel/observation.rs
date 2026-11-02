@@ -81,6 +81,11 @@ pub enum KernelObservation {
         /// Knowledge items nothing referenced or read back: what `waste_tokens` counts.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         waste_items: Vec<crate::context::item::ItemId>,
+        /// Plan task 7.4 · edges to items of other runs, and the parent items this run used.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        external_edges: Vec<crate::context::item::ExternalEdge>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        parent_items_used: Vec<crate::context::item::ExternalItem>,
     },
     /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
     /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in

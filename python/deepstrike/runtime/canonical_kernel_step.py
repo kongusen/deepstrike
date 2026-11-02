@@ -888,6 +888,7 @@ class CanonicalRunnerRuntime:
         "content": str(event.get("content") or ""), **({"key": event["key"]} if event.get("key") else {}),
         **({"tokens": int(event["tokens"])} if event.get("tokens") is not None else {}),
         **({"pinned": True} if event.get("pinned") else {}),
+        **({"inherited_from": event["inherited_from"]} if event.get("inherited_from") else {}),
       }]}})
     if kind == "remove_knowledge":
       return await self._commit({"kind": "host_control", "command": {
@@ -1227,7 +1228,10 @@ class CanonicalRunnerRuntime:
         return False
       self._initial_context["knowledge"].append({"content": str(event.get("content") or ""),
                                                  **({"key": event["key"]} if event.get("key") else {}),
-                                                 **({"tokens": event["tokens"]} if event.get("tokens") is not None else {})})
+                                                 **({"tokens": event["tokens"]} if event.get("tokens") is not None else {}),
+                                                 **({"pinned": True} if event.get("pinned") else {}),
+                                                 **({"inherited_from": event["inherited_from"]}
+                                                    if event.get("inherited_from") else {})})
       return True
     if kind == "preload_history":
       self._initial_context["messages"].extend(

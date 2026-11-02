@@ -378,7 +378,23 @@ class ContextItemRecord(TypedDict, total=False):
 ContextItemEdge = TypedDict("ContextItemEdge", {
     "from": int,
     "to": int,
-    "relation": Literal["answers", "references_strong", "references_lexical", "reads_back", "summarizes"],
+    "relation": Literal["answers", "references_strong", "references_lexical", "reads_back", "summarizes", "expands"],
+    "turn": int,
+})
+
+
+class ContextExternalItem(TypedDict, total=False):
+    """An item of another run: a parent operation's item, or a workflow dependency's output."""
+    operation: str
+    agent: str
+    item: int
+
+
+# An edge from an item of this run to an item of another run.
+ContextExternalEdge = TypedDict("ContextExternalEdge", {
+    "from": int,
+    "to": ContextExternalItem,
+    "relation": Literal["inherited_from", "depends_on"],
     "turn": int,
 })
 
@@ -409,6 +425,8 @@ class _ContextLifecycleItems(TypedDict, total=False):
     edges: list[ContextItemEdge]
     edges_omitted: int
     waste_items: list[int]
+    external_edges: list[ContextExternalEdge]
+    parent_items_used: list[ContextExternalItem]
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):

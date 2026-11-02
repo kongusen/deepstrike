@@ -399,6 +399,10 @@ pub struct KnowledgeEntry {
     pub tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// Plan task 7.4 · the parent run's item this entry is a copy of, for a child's inherited
+    /// knowledge. Reported as an `inherited_from` edge; it changes nothing about the entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherited_from: Option<crate::context::item::ExternalItem>,
 }
 
 /// A capability the operation may use, by logical identity.

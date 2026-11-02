@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::context::item::{HISTORY_ITEM_DETAIL_CAP, ItemEdge, ItemId};
+use crate::context::item::{ExternalEdge, HISTORY_ITEM_DETAIL_CAP, ItemEdge, ItemId};
 
 /// Edges touching a retired item that the graph keeps, newest last.
 pub const RETIRED_EDGE_CAP: usize = HISTORY_ITEM_DETAIL_CAP;
@@ -23,6 +23,8 @@ pub const EDGE_PRUNE_AT: usize = 1024;
 pub struct ItemGraph {
     edges: Vec<ItemEdge>,
     omitted: u32,
+    /// Plan task 7.4 · edges to items of other runs, the latest [`RETIRED_EDGE_CAP`] kept.
+    external: Vec<ExternalEdge>,
 }
 
 impl ItemGraph {
@@ -68,6 +70,23 @@ impl ItemGraph {
         self.omitted = self.omitted.saturating_add((before - self.edges.len()) as u32);
     }
 
+    /// Record an edge to another run's item; the oldest goes past [`RETIRED_EDGE_CAP`].
+    pub fn add_external(&mut self, edge: ExternalEdge) -> bool {
+        if edge.from == 0 || self.external.contains(&edge) {
+            return false;
+        }
+        self.external.push(edge);
+        if self.external.len() > RETIRED_EDGE_CAP {
+            self.external.remove(0);
+            self.omitted = self.omitted.saturating_add(1);
+        }
+        true
+    }
+
+    pub fn external(&self) -> &[ExternalEdge] {
+        &self.external
+    }
+
     pub fn edges(&self) -> &[ItemEdge] {
         &self.edges
     }
@@ -83,8 +102,9 @@ impl ItemGraph {
     }
 
     /// Rebuild from a checkpoint.
-    pub fn restore(&mut self, edges: Vec<ItemEdge>, omitted: u32) {
+    pub fn restore(&mut self, edges: Vec<ItemEdge>, external: Vec<ExternalEdge>, omitted: u32) {
         self.edges = edges;
+        self.external = external;
         self.omitted = omitted;
     }
 }

@@ -1435,7 +1435,11 @@ export class RuntimeRunner {
    *  K1: `opts.key` gives the entry identity — a same-key push upserts (applied at the next
    *  compaction/renewal boundary, where the cached system[1] block is rewritten anyway) instead
    *  of appending a duplicate. `opts.pinned` exempts the entry from the knowledge-budget sweep. */
-  async pushKnowledge(message: ModelMessage, tokens?: number, opts?: { key?: string; pinned?: boolean }): Promise<void> {
+  async pushKnowledge(
+    message: ModelMessage,
+    tokens?: number,
+    opts?: { key?: string; pinned?: boolean; inheritedFrom?: InheritedKnowledge["inherited_from"] },
+  ): Promise<void> {
     if (!this.activeKernel) return
     const content = message.content ?? ""
     const itemId = opts?.key ?? `context:${createHash("sha256").update(content).digest("hex").slice(0, 16)}`
@@ -1460,6 +1464,7 @@ export class RuntimeRunner {
       tokens: tokens ?? estimateTextTokens(content),
       ...(opts?.key !== undefined ? { key: opts.key } : {}),
       ...(opts?.pinned ? { pinned: true } : {}),
+      ...(opts?.inheritedFrom ? { inherited_from: opts.inheritedFrom } : {}),
     })
   }
 
@@ -2768,7 +2773,11 @@ export class RuntimeRunner {
       await this.pushKnowledge(
         { role: "system", content: entry.content, toolCalls: [] },
         entry.tokens,
-        { ...(entry.key ? { key: entry.key } : {}), ...(entry.pinned ? { pinned: true } : {}) },
+        {
+          ...(entry.key ? { key: entry.key } : {}),
+          ...(entry.pinned ? { pinned: true } : {}),
+          ...(entry.inherited_from ? { inheritedFrom: entry.inherited_from } : {}),
+        },
       )
     }
 

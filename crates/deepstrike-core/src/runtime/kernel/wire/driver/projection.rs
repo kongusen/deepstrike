@@ -340,6 +340,7 @@ impl CanonicalOperationDriver {
             last_item_id: ctx.last_item_id,
             item_edges: ctx.graph.edges().to_vec(),
             item_edges_omitted: ctx.graph.omitted(),
+            item_external_edges: ctx.graph.external().to_vec(),
             history_tally: ctx.history_tally.values().copied().collect(),
             retired_history: ctx.retired_history.iter().copied().collect(),
             retired_history_omitted: ctx.retired_history_omitted,

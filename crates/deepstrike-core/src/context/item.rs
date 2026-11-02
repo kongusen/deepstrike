@@ -34,6 +34,12 @@ pub enum Relation {
     ReadsBack,
     /// A provider summary stands in for the item it covered.
     Summarizes,
+    /// A memory hit in history gives a recalled index line's record in full.
+    Expands,
+    /// Plan task 7.4 · a child run's copy of knowledge it inherited → the parent run's item.
+    InheritedFrom,
+    /// Plan task 7.4 · the item that read a dependency output back → the run that produced it.
+    DependsOn,
 }
 
 impl Relation {
@@ -44,6 +50,9 @@ impl Relation {
             Self::ReferencesLexical => "references_lexical",
             Self::ReadsBack => "reads_back",
             Self::Summarizes => "summarizes",
+            Self::Expands => "expands",
+            Self::InheritedFrom => "inherited_from",
+            Self::DependsOn => "depends_on",
         }
     }
 }
@@ -55,6 +64,30 @@ impl Relation {
 pub struct ItemEdge {
     pub from: ItemId,
     pub to: ItemId,
+    pub relation: Relation,
+    #[serde(default)]
+    pub turn: u32,
+}
+
+/// Plan task 7.4 · an item of another run: a parent operation's item, or a dependency's output.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+    /// The workflow agent whose output it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub item: ItemId,
+}
+
+/// Plan task 7.4 · an edge from an item of this run to an item of another run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExternalEdge {
+    pub from: ItemId,
+    pub to: ExternalItem,
     pub relation: Relation,
     #[serde(default)]
     pub turn: u32,
