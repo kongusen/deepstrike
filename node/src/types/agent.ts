@@ -306,7 +306,7 @@ export type WorkflowDependencyPolicy = "all_success" | "accept_partial" | "all_t
 /** How a node's dependency outputs reach its brief: each output clipped to `maxTokens` (`full`), a
  *  600-character preview (`handle`), only the dependency ids (`reference`), or nothing (`none`).
  *  The kernel composes the brief; a clipped or previewed output is read in full with
- *  `read_result(call_id="dep:<agent_id>")`. */
+ *  `read_result(call_id="dep:<agent_id>")`. Default `handle`. */
 export type WorkflowDependencyMode = "full" | "handle" | "reference" | "none"
 export interface WorkflowContextPolicy {
   dependencyMode?: WorkflowDependencyMode

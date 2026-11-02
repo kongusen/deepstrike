@@ -58,10 +58,11 @@ pub enum DependencyPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum DependencyMode {
     /// Each dependency's output, clipped to the token cap; a clipped one names how to read the rest.
-    #[default]
     Full,
     /// A short preview of each output; the node reads one in full with
-    /// `read_result(call_id="dep:<agent_id>")` when it needs it.
+    /// `read_result(call_id="dep:<agent_id>")` when it needs it. The default: a node's starting
+    /// context does not grow with how many dependencies it has.
+    #[default]
     Handle,
     /// Only the ids of the dependencies that produced output.
     Reference,
@@ -637,7 +638,7 @@ mod tests {
             ("wf-node1".to_string(), "x".repeat(9_000)),
             ("wf-node2".to_string(), String::new()),
         ];
-        let full = DependencyContext::default().brief(&outputs);
+        let full = DependencyContext { mode: DependencyMode::Full, max_tokens: None }.brief(&outputs);
         assert!(full.starts_with("[dependency wf-node0 output]\nalpha findings\n\n"));
         assert!(full.contains("[dependency wf-node1 output, 9000 characters]"));
         assert!(full.ends_with("…[read_result(call_id=\"dep:wf-node1\") reads it in full]"));
@@ -664,7 +665,8 @@ mod tests {
     fn only_a_clipped_output_is_readable() {
         let short = "y".repeat(700);
         let long = "x".repeat(9_000);
-        let full = DependencyContext::default();
+        assert_eq!(DependencyContext::default().mode, DependencyMode::Handle);
+        let full = DependencyContext { mode: DependencyMode::Full, max_tokens: None };
         assert!(!full.readable(&short), "a whole output is not offered again");
         assert!(full.readable(&long));
         let handle = DependencyContext { mode: DependencyMode::Handle, max_tokens: None };

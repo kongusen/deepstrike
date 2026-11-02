@@ -19,7 +19,7 @@ DeepStrike 的核心原则从“可验证的 effect 内核”转为：
 | Q3 | knowledge 渲染在 turns 之前，运行中追加会让整段 history 的缓存失效，注释却称之为“cheap direction” | `context/partitions.rs:117` |
 | Q4 | 引用检测和淘汰只靠词法重叠 | `partitions.rs:observe_references`、`context/utility.rs` |
 | Q5 | 开启 `delegate_compaction` 后，模型可见的上下文和 kernel 计算 pressure 用的不是同一份 | `context/manager.rs:415`、b0dadad0 |
-| Q6 | DAG 边是字符串拼接、按字符截断；`summary` 模式实为头尾截取 | `node/src/runtime/workflow-control-flow.ts:28-57` |
+| Q6 | DAG 边是字符串拼接、按字符截断；`summary` 模式实为头尾截取 | `workflow-control-flow.ts:28-57`（已在 2.2 删除） |
 | Q7 | Plan/Implement 子 agent 默认 `Full` 继承 | `types/agent.rs:172` |
 | Q8 | 动态编排有**三条**路径：声明式 `NodeKind::Loop/Classify/Tournament`、模型运行时 `submit_workflow_nodes`、宿主程序 `dynamic.ts`（仅 Node） | `orchestration/workflow/mod.rs:76`、`node/src/workflow/dynamic.ts` |
 | Q9 | 记忆召回只有 turn 1 和 renewal 两个时机，无质量反馈 | 四个 runner 的 `prefetchMemory` 调用点 |
@@ -112,7 +112,7 @@ ContextItem {
 
 ### 阶段 3：DAG 边一等化（修 Q6、Q7）
 
-- [x] 任务 3.1（2026-11-02）：子 run 的 kernel 通过 `initial_context.dependencies` 持有依赖输出，`read_result(call_id="dep:<agent_id>")` 由 kernel 直接作答（无宿主 effect，不依赖 payload store）。brief 截断时注明读取方式；新增 `handle` 模式只给 600 字符预览。四个 SDK 把 spawn 的 `dependency_outputs` 传进子 run（Rust SDK 只有子 run 一侧，其 workflow 编排属于 6.3）。未做：按 output schema 的 `fields` 结构化切片；默认模式仍为 `full`。
+- [x] 任务 3.1（2026-11-02）：子 run 的 kernel 通过 `initial_context.dependencies` 持有依赖输出，`read_result(call_id="dep:<agent_id>")` 由 kernel 直接作答（无宿主 effect，不依赖 payload store）。brief 截断时注明读取方式；新增 `handle` 模式只给 600 字符预览。四个 SDK 把 spawn 的 `dependency_outputs` 传进子 run（Rust SDK 只有子 run 一侧，其 workflow 编排属于 6.3）。未做：按 output schema 的 `fields` 结构化切片。默认模式已改为 `handle`（2026-11-02，依据 4.3 第二步重跑）。
 - ~~原任务 3.1：`EdgeSpec` 与节点结构化输出~~
   - 验收：`depends_on` 带 `{ mode: full | handle, max_tokens, fields? }`，取代现有的 `full | summary | reference`。节点输出存为 handle item（`scope = edge`）。默认 `handle`：下游只看到 preview，通过 `read_dependency(id, range|field)` 调入全文。`fields` 配合节点的 output schema 给出结构化切片。预算全部按 token 计。删除 `summarizeDependency` 和 `summary` 模式：需要压缩时由上游节点自己按 output schema 产出精简结构，不在边上另做摘要。
   - 验证：fan-out(5)→synthesize 时，下游初始上下文不超过 Σ preview；page-in 能取到完整输出。
@@ -215,17 +215,17 @@ ContextItem {
 
 | 版本 | 内容 | 状态 |
 |------|------|------|
-| 0.2.78 | 当前分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1 汇总、6.1；replay 修复；默认 edge mode；Rust workflow 编排 | 进行中 |
+| 0.2.78 | 当前分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1 汇总、6.1；replay 修复；默认 edge mode 改为 `handle`；Rust workflow 编排 | 待合并 |
 | 0.2.79 | 1.1a/1.1b：ContextItem 与 origin 默认值表，knowledge、history、handle 都映射为 item，lease 到期；4.1 逐 item 明细与 recall 命中率 | 未开始 |
 | 0.2.80 | 4.3 lab 工具（`deepstrike-lab`）；4.2 引用证据分级与 `RelevanceJudge`，用 lab 对比纯词法版本 | 未开始 |
 | 0.2.81 | 1.1c：item 稳定 id 进入消息 ABI，provider replay 改按 id 作 key（替代按内容作 key，Anthropic native blocks 一并改）；5.1 吸收 provider 改写（与 1.1c 共用一次 ABI 扩展）；6.2 blackboard；6.3 Python、WASM 宿主程序 API | 未开始 |
 
 0.2.78 剩余步骤：
 
-1. ~~重跑三个变体，每组 24 题~~（已完成，结果见 4.3 第二步重跑）。默认 edge mode 待定。
+1. ~~重跑三个变体，每组 24 题~~（已完成，结果见 4.3 第二步重跑）。~~默认 edge mode~~：已改为 `handle`，见 MIGRATION。
    附带修复：DeepSeek 不给 reasoning 的 tool call 轮次改为回放空的 `reasoning_content`。
 2. ~~任务 6.3 的 Rust 部分~~（已完成，`34850587`）：workflow 节点作为子 run 在父 runner 的 provider 和 plane 上运行，带依赖输出；模型提交的 `start_workflow` / `submit_workflow_nodes` 参数降为 canonical DAG。未做：信号驱动的抢占监控（Node 的 `monitorWorkflowPreemption`）、节点完成写入会话日志以支持恢复、Rust 侧 `start_workflow` 工具 schema 的导出。
-3. 同步删除清单，升版本号到 0.2.78，开 PR。
+3. ~~同步删除清单，升版本号到 0.2.78，开 PR~~（已完成）。
 
 零散未做项（2.1 plan 变更时召回、3.2 Full 的 token 代价、3.1 的 `fields` 切片、`benchmark-0.2.74` 版本守卫）不单独排期，在碰到相关代码的版本里顺带完成。
 
