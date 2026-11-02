@@ -1,6 +1,6 @@
 {
   "id": "provider-stream.decode.OllamaAdapter.pushStreamChunkAtBoundary",
-  "version": "0.2.79",
+  "version": "0.2.80",
   "protocol": {
     "family": "host-provider",
     "direction": "decode",

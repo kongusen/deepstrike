@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.80] - 2026-11-03
+
 ### Added
 
 - Every rendered turn carries the id of its kernel item (`item_id`; `itemId` / `item_id` on SDK
