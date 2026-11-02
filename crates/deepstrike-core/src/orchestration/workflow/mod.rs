@@ -93,6 +93,27 @@ impl DependencyContext {
             .map_or(8_000, |tokens| (tokens as usize).saturating_mul(4).max(256))
     }
 
+    /// How many characters of an output the brief shows before it clips; `None` when the brief
+    /// shows none of it.
+    fn shown_chars(&self) -> Option<usize> {
+        match self.mode {
+            DependencyMode::Full => Some(self.max_chars()),
+            DependencyMode::Handle => Some(HANDLE_PREVIEW_CHARS.min(self.max_chars())),
+            DependencyMode::Reference => Some(0),
+            DependencyMode::None => None,
+        }
+    }
+
+    /// Whether the node may read this output through `read_result(call_id="dep:<id>")`: only when
+    /// the brief left part of it out. An output the brief shows whole is not offered again, so the
+    /// model is not invited to re-read what it already has.
+    pub fn readable(&self, output: &str) -> bool {
+        !output.is_empty()
+            && self
+                .shown_chars()
+                .is_some_and(|shown| output.char_indices().nth(shown).is_some())
+    }
+
     /// The text a dependent node's goal is followed by. `outputs` pairs each dependency agent id
     /// with its output, in dependency order; an empty output is skipped.
     pub fn brief(&self, outputs: &[(String, String)]) -> String {
@@ -108,10 +129,7 @@ impl DependencyContext {
                 }
             }
             DependencyMode::Full | DependencyMode::Handle => {
-                let max_chars = match self.mode {
-                    DependencyMode::Handle => HANDLE_PREVIEW_CHARS.min(self.max_chars()),
-                    _ => self.max_chars(),
-                };
+                let max_chars = self.shown_chars().unwrap_or_default();
                 produced
                     .map(|(id, output)| match output.char_indices().nth(max_chars) {
                         Some((cut, _)) => format!(
@@ -639,5 +657,23 @@ mod tests {
         let none = DependencyContext { mode: DependencyMode::None, max_tokens: None };
         assert_eq!(none.brief(&outputs), "");
         assert_eq!(DependencyContext::default().brief(&[]), "");
+    }
+
+    /// Only an output the brief left part of is offered through `read_result`.
+    #[test]
+    fn only_a_clipped_output_is_readable() {
+        let short = "y".repeat(700);
+        let long = "x".repeat(9_000);
+        let full = DependencyContext::default();
+        assert!(!full.readable(&short), "a whole output is not offered again");
+        assert!(full.readable(&long));
+        let handle = DependencyContext { mode: DependencyMode::Handle, max_tokens: None };
+        assert!(handle.readable(&short), "past the 600-character preview");
+        assert!(!handle.readable("tiny"));
+        let reference = DependencyContext { mode: DependencyMode::Reference, max_tokens: None };
+        assert!(reference.readable("tiny"));
+        assert!(!reference.readable(""));
+        let none = DependencyContext { mode: DependencyMode::None, max_tokens: None };
+        assert!(!none.readable(&long), "a none edge carries no data");
     }
 }

@@ -220,11 +220,25 @@ fn salience_footer(ts: &TaskState) -> Option<String> {
     // Lead with the goal only when no forward clause fills the footer (turn 1, nothing done yet);
     // otherwise the forward clauses carry the salience and the goal stays in the block above.
     let body = if clauses.is_empty() {
-        format!("→ focus: {}", ts.goal)
+        format!("→ focus: {}", focus_line(&ts.goal))
     } else {
         format!("→ {}", clauses.join(" · "))
     };
     Some(body)
+}
+
+/// The most of the goal the focus footer repeats.
+const FOCUS_MAX_CHARS: usize = 240;
+
+/// The goal's first paragraph, clipped: the footer is a reminder of the goal shown in full above,
+/// so material appended to the goal (a dependency brief, a budget note) is not sent twice.
+fn focus_line(goal: &str) -> String {
+    let first = goal.trim().split("\n\n").next().unwrap_or_default().trim();
+    match first.char_indices().nth(FOCUS_MAX_CHARS) {
+        Some((cut, _)) => format!("{}…", &first[..cut]),
+        None if first.len() < goal.trim().len() => format!("{first} …"),
+        None => first.to_string(),
+    }
 }
 
 /// Build the State turn (the volatile tail): task_state + signals + a recency focus footer +
@@ -862,6 +876,19 @@ mod tests {
             !last_block.contains("focus: ship the cache work"),
             "got: {last_block}"
         );
+    }
+
+    /// The footer repeats only the goal's first paragraph: a dependency brief appended to the
+    /// goal is shown once, in the goal line.
+    #[test]
+    fn the_focus_footer_repeats_only_the_goal_head() {
+        assert_eq!(focus_line("build the thing"), "build the thing");
+        assert_eq!(
+            focus_line("answer q\n\n[dependency wf-node0 output]\nlong body"),
+            "answer q …"
+        );
+        let long = "z".repeat(1_000);
+        assert_eq!(focus_line(&long).chars().count(), FOCUS_MAX_CHARS + 1);
     }
 
     #[test]

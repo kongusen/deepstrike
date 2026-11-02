@@ -460,6 +460,7 @@ impl CanonicalOperationDriver {
                 serde_json::Value::Object(
                     produced
                         .into_iter()
+                        .filter(|(_, output)| info.dependency_context.readable(output))
                         .map(|(id, output)| (id, serde_json::Value::String(output)))
                         .collect(),
                 ),

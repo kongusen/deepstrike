@@ -34,6 +34,10 @@ seq. Node, Python, and WASM return them unchanged, with a `kind` outside the `Se
   child (`dependencyOutputs` / `dependency_outputs` option, or the `add_dependency_output` host
   event before start). Without it, `read_result(call_id="dep:…")` reports that the run has no
   such dependency output.
+  The spawn carries only outputs the brief clipped; `read_result` on a dependency the brief
+  showed whole reports the same missing output.
+- The turn-1 `→ focus:` footer repeats only the goal's first paragraph (at most 240 characters),
+  not the whole goal. Tests matching the full goal in the footer need to match its first paragraph.
 - The session log gains `context_lifecycle_reported`, written once at the end of each run.
 
 ## Removed APIs
