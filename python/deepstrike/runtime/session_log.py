@@ -365,11 +365,22 @@ class ContextRenewedEvent(TypedDict):
 
 
 class ContextItemRecord(TypedDict, total=False):
+    id: int
     key: str
     origin: str
     tokens: int
     value: dict[str, Any]
     end: Literal["evicted", "expired", "removed", "compacted", "renewed"]
+
+
+# One directed edge of the item graph: ``from`` answers, references, reads back or summarizes
+# ``to``. ``from`` is a keyword, hence the functional form.
+ContextItemEdge = TypedDict("ContextItemEdge", {
+    "from": int,
+    "to": int,
+    "relation": Literal["answers", "references_strong", "references_lexical", "reads_back", "summarizes"],
+    "turn": int,
+})
 
 
 class ContextHistoryItemRecord(TypedDict, total=False):
@@ -395,6 +406,9 @@ class _ContextLifecycleItems(TypedDict, total=False):
     history: list[ContextOriginTally]
     history_items: list[ContextHistoryItemRecord]
     history_items_omitted: int
+    edges: list[ContextItemEdge]
+    edges_omitted: int
+    waste_items: list[int]
 
 
 class ContextLifecycleReportedEvent(_ContextLifecycleItems):

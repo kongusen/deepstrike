@@ -10326,6 +10326,44 @@ fn context_optimization_evidence_and_pending_knowledge_survive_checkpoint_restor
     assert_eq!(canonical(before), canonical(after));
 }
 
+#[test]
+fn item_ids_and_the_item_graph_survive_checkpoint_restore() {
+    let mut runtime = Runtime::new();
+    runtime.submit(&configure());
+    runtime.submit(&agent_start("in-start", 1_700_000_001_000));
+    {
+        let ctx = &mut runtime.driver.engine_mut().unwrap().ctx;
+        ctx.push_knowledge_entry(Some("project:orchid".into()), CoreMessage::system("orchid layout"), 3, false);
+        ctx.push_history(CoreMessage::user("see project:orchid"), 4);
+    }
+    let checkpoint = runtime.checkpoint().decode().unwrap();
+    let restored = runtime.restore(&checkpoint);
+    let before = &runtime.driver.engine().unwrap().ctx;
+    let after = &restored.driver.engine().unwrap().ctx;
+    let ids = |ctx: &crate::context::manager::ContextManager| {
+        ctx.partitions.knowledge.entries.iter().map(|entry| entry.id).collect::<Vec<_>>()
+    };
+    assert_ne!(ids(before), vec![0]);
+    assert_eq!(ids(before), ids(after));
+    assert_eq!(before.graph.edges().len(), 1, "the history item referenced the entry");
+    assert_eq!(before.graph, after.graph);
+    assert_eq!(before.last_item_id, after.last_item_id);
+
+    // A checkpoint older than knowledge ids: its slots take the next ids on restore.
+    let mut state = runtime.driver.project_logical_state().context_vm;
+    for slot in &mut state.knowledge {
+        slot.id = 0;
+    }
+    let mut legacy = Runtime::new();
+    legacy.submit(&configure());
+    legacy.submit(&agent_start("in-start", 1_700_000_001_000));
+    let engine = legacy.driver.engine_mut().unwrap();
+    engine.ctx.partitions.knowledge.entries.clear();
+    restore_context_vm(engine, &state).unwrap();
+    assert_eq!(ids(&engine.ctx), vec![state.last_item_id + 1]);
+    assert_eq!(engine.ctx.last_item_id, state.last_item_id + 1);
+}
+
 /// **Verification 1 (rebase form)** · the same differential over a checkpoint whose logical
 /// state sits *below* its covered head.
 ///

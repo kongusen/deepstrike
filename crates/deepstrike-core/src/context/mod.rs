@@ -1,6 +1,7 @@
 pub mod compression;
 pub mod config;
 pub mod fault;
+pub mod graph;
 pub mod item;
 pub mod manager;
 pub mod measurement;

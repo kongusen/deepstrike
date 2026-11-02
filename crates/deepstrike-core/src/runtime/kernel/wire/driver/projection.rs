@@ -294,6 +294,7 @@ impl CanonicalOperationDriver {
                 .entries
                 .iter()
                 .map(|entry| KnowledgeSlotState {
+                    id: entry.id,
                     key: entry.key.as_ref().map(|key| key.to_string()),
                     role: role_label(entry.message.role).to_string(),
                     body: self.project_body(&entry.message),
@@ -337,6 +338,8 @@ impl CanonicalOperationDriver {
                 .map(|index| ctx.partitions.history.tag(index))
                 .collect(),
             last_item_id: ctx.last_item_id,
+            item_edges: ctx.graph.edges().to_vec(),
+            item_edges_omitted: ctx.graph.omitted(),
             history_tally: ctx.history_tally.values().copied().collect(),
             retired_history: ctx.retired_history.iter().copied().collect(),
             retired_history_omitted: ctx.retired_history_omitted,

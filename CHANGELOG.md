@@ -6,6 +6,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The item graph (plan task 7.1), report only: knowledge items take ids from the same allocator as
+  history items, and the kernel records typed edges between items: `answers` (tool result → the
+  assistant item that made the call), `references_strong` / `references_lexical` (history →
+  knowledge), `reads_back` (the assistant item whose `read_result` or `memory(record_id)` call read an item
+  back → that item) and `summarizes` (provider summary → each item it covered). Edges are
+  checkpointed and bounded: edges between resident items are all kept, of the rest only the latest
+  128. `context_lifecycle_reported` gains `edges`, `edges_omitted` and `waste_items` (knowledge
+  items nothing referenced or read back), and item records carry `id`. No decision reads the graph
+  yet; rendering and compaction are unchanged.
+- `knowledge-pressure` live benchmark (plan task 7.0): a ledger audit whose two rules live only in
+  memory among ten distractors, under a tight knowledge budget. Trials carry `oracle` counts from
+  ground truth the kernel cannot see (required rules dropped or unreferenced, references credited
+  to distractors, distractor tokens still resident); `deepstrike-lab` reports and gates on them as
+  `oracle.<name>`.
+
 ## [0.2.80] - 2026-11-03
 
 ### Added

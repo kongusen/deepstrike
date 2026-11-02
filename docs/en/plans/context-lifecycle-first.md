@@ -451,14 +451,39 @@ graph store. Constraints:
 - report first, change behavior later: edges take part in decisions only after the lab shows a
   gain (the same lab-first order as 0.2.80).
 
-- [ ] Task 7.0: benchmark first
+- [x] Task 7.0 (2026-11-02): `benchmark/context-lifecycle/knowledge-pressure.mjs`: the ledger
+  audit's two rules live only in memory, among ten distractors (several also about audits and
+  ledgers), with a 4% knowledge budget and a 7000-token window. Trials carry `oracle` counts (the
+  scenario knows which items are required): `required_dropped`, `required_unreferenced`,
+  `distractor_refs`, `distractor_resident_tokens`, reported and gated by the lab as
+  `oracle.<name>`. The 0.2.80 baseline (DeepSeek, 12 tasks, `results/knowledge.jsonl`): 9/12
+  correct, regret 0, waste_tokens 24, 0.67 read-backs; the required rules were never evicted and
+  always referenced; distractors were credited 33 references on average and 246 tokens of them were
+  still resident at the end. The finding: under this budget 0.2.80 does not lose required items;
+  the gap is the evidence. Lexical overlap counts distractors as used, so the kernel's own waste
+  (24) is far below the real idle residency (246). Task 7.3's target follows: lower
+  `oracle.distractor_refs` and `oracle.distractor_resident_tokens` while `required_dropped` stays 0
+  and success does not drop.
+- ~~Original task 7.0: benchmark first~~
   - Acceptance: a new `knowledge-pressure` scenario: a tight knowledge budget, many irrelevant
     entries and a few the answer needs (memory recall included), with the answer depending on the
     needed ones; a baseline on 0.2.80 (success, regret, waste, read-backs). The ledger and fan-out
     scenarios stay as regressions.
   - Files: `benchmark/context-lifecycle/`
 
-- [ ] Task 7.1: every item has an id; the edge table only reports
+- [x] Task 7.1 (2026-11-02): knowledge items share one id allocator with history (an older
+  checkpoint's slots take ids on restore, in slot order); new `context/graph.rs`, with the edge table
+  checkpointed (`item_edges`): every edge between resident items is kept, of the rest only the
+  latest 128. Recorded edges: `answers`, `references_strong` / `references_lexical`, `reads_back`
+  (the assistant item whose `read_result` / `memory(record_id)` call read an item back → that item; a memory search hit is not a read) and
+  `summarizes` (provider summary → each covered item). The lifecycle report gains `edges`,
+  `edges_omitted` and `waste_items`, and item records carry `id`; the four SDK projections and the
+  contract follow. Goldens change only in checkpoint / report fields and their digests. Where it
+  differs from the acceptance: the kernel's own compaction creates no summary item, so `summarizes`
+  comes from provider summaries only; and a regretted item is put back by a kernel recall, with no
+  reading item, so regret is located by the item record's `id` and `paged_in_after_evict` plus the
+  edges into it rather than by "a read-back edge".
+- ~~Original task 7.1: every item has an id; the edge table only reports~~
   - Acceptance: knowledge items take an `ItemId` from the same allocator (checkpointed; an older
     slot without one is assigned one on restore). The manager holds the edge table and records
     `answers` (tool result → the assistant item holding the call), `references{strong|lexical}`

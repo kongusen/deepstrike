@@ -1,6 +1,6 @@
 use super::config::ContextConfig;
 use super::item::{
-    ContextItem, Fidelity, ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease, LeaseEvent,
+    ContextItem, Fidelity, ItemEnd, ItemId, ItemOrigin, ItemRecord, ItemTag, Lease, LeaseEvent,
 };
 use super::measurement::TokenMeasurement;
 use super::task_state::TaskState;
@@ -436,10 +436,12 @@ impl KnowledgePartition {
     /// Lexical, the fallback: the message shares the item's distinctive terms (two, or one for an
     /// item with a single one) — common words and the kernel's own index-line vocabulary do not
     /// count. Driven by committed input only, never by a wall clock.
-    pub fn observe_references(&mut self, message: &CoreMessage, step: u64) {
+    /// Returns the items it credited, each with whether the evidence was strong.
+    pub fn observe_references(&mut self, message: &CoreMessage, step: u64) -> Vec<(ItemId, bool)> {
+        let mut credited = Vec::new();
         let text = searchable_message_text(message);
         if text.is_empty() {
-            return;
+            return credited;
         }
         let input_terms = distinctive_terms(&text);
         let folded = text.to_lowercase();
@@ -478,8 +480,10 @@ impl KnowledgePartition {
                 }
                 entry.value.last_referenced_step = Some(step);
                 entry.value.last_referenced_turn = Some(turn);
+                credited.push((entry.id, strong));
             }
         }
+        credited
     }
 
     pub fn retention_score(&self, index: usize, current_step: u64) -> Option<i64> {

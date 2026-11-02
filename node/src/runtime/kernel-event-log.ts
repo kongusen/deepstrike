@@ -123,6 +123,9 @@ function projectKernelObservation(
         ...(obs.history && obs.history.length > 0 ? { history: obs.history } : {}),
         ...(obs.history_items && obs.history_items.length > 0 ? { history_items: obs.history_items } : {}),
         ...(obs.history_items_omitted ? { history_items_omitted: obs.history_items_omitted } : {}),
+        ...(obs.edges && obs.edges.length > 0 ? { edges: obs.edges } : {}),
+        ...(obs.edges_omitted ? { edges_omitted: obs.edges_omitted } : {}),
+        ...(obs.waste_items && obs.waste_items.length > 0 ? { waste_items: obs.waste_items } : {}),
       }
     case "rollbacked":
       return {

@@ -19,6 +19,47 @@ pub const RECALL_LEASE_TURNS: u32 = 8;
 /// (a message restored from a checkpoint without item ids).
 pub type ItemId = u64;
 
+/// Plan task 7.1 · what an edge of the item graph says about its two ends. Fixed and small: the
+/// graph records relations the kernel already acts on, not arbitrary links.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Relation {
+    /// A tool result answers the call its assistant item made.
+    Answers,
+    /// A history item names a knowledge item (its key or record id).
+    ReferencesStrong,
+    /// A history item shares a knowledge item's distinctive terms.
+    ReferencesLexical,
+    /// The item that asked (`read_result`, `memory`) read the target back.
+    ReadsBack,
+    /// A provider summary stands in for the item it covered.
+    Summarizes,
+}
+
+impl Relation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Answers => "answers",
+            Self::ReferencesStrong => "references_strong",
+            Self::ReferencesLexical => "references_lexical",
+            Self::ReadsBack => "reads_back",
+            Self::Summarizes => "summarizes",
+        }
+    }
+}
+
+/// One directed edge `from → to`, recorded on the turn the kernel observed it. Built only from
+/// committed input (D1), so a replay rebuilds the same graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ItemEdge {
+    pub from: ItemId,
+    pub to: ItemId,
+    pub relation: Relation,
+    #[serde(default)]
+    pub turn: u32,
+}
+
 /// The identity a history message carries as an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -330,6 +371,9 @@ impl HistoryItemRecord {
 /// One knowledge-tier item.
 #[derive(Debug, Clone)]
 pub struct ContextItem {
+    /// From the operation's item allocator, shared with history; an upsert keeps it. `0` until the
+    /// manager admits the item (a partition used on its own never allocates).
+    pub id: ItemId,
     /// `None` appends an unkeyed item. Keyed items upsert.
     pub key: Option<CompactString>,
     pub origin: ItemOrigin,
@@ -395,6 +439,7 @@ impl ContextItem {
     ) -> Self {
         let lease = Lease::for_item(origin, pinned);
         Self {
+            id: 0,
             key,
             origin,
             lease,
@@ -441,6 +486,7 @@ impl ContextItem {
 
     pub fn record(&self, end: Option<ItemEnd>) -> ItemRecord {
         ItemRecord {
+            id: self.id,
             key: self.key.as_ref().map(ToString::to_string),
             origin: self.origin,
             tokens: self.tokens,
@@ -454,6 +500,8 @@ impl ContextItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ItemRecord {
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub id: ItemId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     pub origin: ItemOrigin,

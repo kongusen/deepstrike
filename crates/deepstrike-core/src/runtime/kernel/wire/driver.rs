@@ -1226,6 +1226,7 @@ fn restore_context_vm(
             slot.pinned,
             slot.injected_turn,
         );
+        entry.id = slot.id;
         if let Some(lease) = slot.lease {
             entry.lease = lease;
         }
@@ -1268,6 +1269,15 @@ fn restore_context_vm(
     ctx.partitions.knowledge.retired = state.retired_items.clone();
     ctx.partitions.knowledge.turn = state.item_turn;
     ctx.last_item_id = state.last_item_id;
+    // A knowledge slot from a checkpoint older than item ids takes the next ones, in slot order.
+    for index in 0..ctx.partitions.knowledge.entries.len() {
+        if ctx.partitions.knowledge.entries[index].id == 0 {
+            let id = ctx.alloc_item_id();
+            ctx.partitions.knowledge.entries[index].id = id;
+        }
+    }
+    ctx.graph
+        .restore(state.item_edges.clone(), state.item_edges_omitted);
     ctx.retired_history = state.retired_history.iter().copied().collect();
     for entry in &state.item_replays {
         ctx.keep_item_replay(entry.item, entry.replay.clone());

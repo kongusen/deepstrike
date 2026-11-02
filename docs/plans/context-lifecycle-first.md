@@ -226,11 +226,13 @@ ContextItem {
 - 边进 checkpoint，数量有上限：两端都在场的边全部保留，指向已退场 item 的边只保留最近 `HISTORY_ITEM_DETAIL_CAP` 条；
 - 先只上报不改行为，lab 证明有收益后再让边参与决策（与 0.2.80 相同的 lab 先行顺序）。
 
-- [ ] 任务 7.0：基准先行
+- [x] 任务 7.0（2026-11-02）：`benchmark/context-lifecycle/knowledge-pressure.mjs`：账本审计的两条规则只在 memory 里，另有十条干扰记录（多条同样涉及 audit / ledger），knowledge 预算 4%，窗口 7000。trial 带 `oracle`（场景知道哪些条目是必需的）：`required_dropped`、`required_unreferenced`、`distractor_refs`、`distractor_resident_tokens`，lab 以 `oracle.<name>` 报告和 gate。0.2.80 基线（DeepSeek，12 题，`results/knowledge.jsonl`）：正确 9/12，regret 0，waste_tokens 24，读回 0.67；必需规则从未被淘汰、始终被引用；干扰项平均被记 33 次引用，结束时仍有 246 token 在场。结论：在这个预算下 0.2.80 不丢必需条目，缺口在证据：词法重叠把干扰项也算作"用过"，kernel 自报的 waste（24）远低于真实的无用驻留（246）。7.3 的目标据此改为降低 `oracle.distractor_refs` / `oracle.distractor_resident_tokens`，同时 `required_dropped` 保持 0、正确率不降。
+- ~~原任务 7.0：基准先行~~
   - 验收：新增 `knowledge-pressure` 场景：knowledge 预算偏紧，种入大量无关条目和少量答题必需的条目（含 memory recall），答案依赖必需条目；在 0.2.80 上跑出基线（成功率、regret、waste、读回次数）。现有 ledger / fan-out 场景照常作为回归。
   - 文件：`benchmark/context-lifecycle/`
 
-- [ ] 任务 7.1：所有 item 都有 id，边表只上报
+- [x] 任务 7.1（2026-11-02）：knowledge item 与 history 共用一个 id 分配器（旧 checkpoint 的 slot 恢复时按顺序补发）；新增 `context/graph.rs`，边表进 checkpoint（`item_edges`），两端在场的边全留、其余只留最近 128 条。记录的边：`answers`、`references_strong` / `references_lexical`、`reads_back`（发出 `read_result` / `memory(record_id)` 调用的 assistant item；memory 搜索命中不算读回 → 被读回的 item）、`summarizes`（provider 摘要 → 被覆盖的 item）。lifecycle report 增加 `edges`、`edges_omitted`、`waste_items`，item 记录带 `id`；四端 SDK 投影与 contract 已同步。golden 只有 checkpoint / report 字段和摘要值变化。与验收的出入：kernel 自己的压缩不产生摘要 item，所以 `summarizes` 只来自 provider 摘要；regret 的条目由 kernel recall 重新放入，没有发起读取的 item，因此 regret 用 item 记录的 `id` + `paged_in_after_evict` 加上指向它的边来定位，而不是"某条读回边"。
+- ~~原任务 7.1：所有 item 都有 id，边表只上报~~
   - 验收：knowledge item 从同一个分配器取 `ItemId`（checkpoint 携带，缺 id 的旧 slot 恢复时补发）。manager 持有边表，产生 `answers`（tool result → call 所在的 assistant item）、`references{strong|lexical}`（history → knowledge，取代只计数）、`reads_back`（`read_result` / `memory(record_id)` → 目标）、`summarizes`（摘要 → 被覆盖的 item）。lifecycle report 增加有上限的 `edges`，regret 记录是哪条读回边把被淘汰的 item 拉回来的，waste 列出没有任何入边的 knowledge。渲染与压缩不变：golden 只在 checkpoint / report 字段上变化。
   - 文件：`context/item.rs`（`ItemEdge`、`Relation`）、新增 `context/graph.rs`、`context/manager.rs`、`context/partitions.rs`、`runtime/kernel/wire/checkpoint.rs`；session event 注册表与四端 SDK 投影
 

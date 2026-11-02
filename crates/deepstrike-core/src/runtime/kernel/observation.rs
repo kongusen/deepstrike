@@ -72,6 +72,15 @@ pub enum KernelObservation {
         history_items: Vec<crate::context::item::HistoryItemRecord>,
         #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
         history_items_omitted: u32,
+        /// Plan task 7.1 · the item graph: resident edges, then the latest edges touching a
+        /// retired item; older ones are counted in `edges_omitted`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        edges: Vec<crate::context::item::ItemEdge>,
+        #[serde(default, skip_serializing_if = "crate::context::item::is_zero_u32")]
+        edges_omitted: u32,
+        /// Knowledge items nothing referenced or read back: what `waste_tokens` counts.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        waste_items: Vec<crate::context::item::ItemId>,
     },
     /// K1: a boundary sweep of the knowledge partition applied deferred upserts and/or dropped
     /// marked entries. `removed_keys` lists keyed removals (unkeyed drops count only in

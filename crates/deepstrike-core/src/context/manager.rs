@@ -1,8 +1,8 @@
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
 use super::item::{
-    Authority, HISTORY_ITEM_DETAIL_CAP, HistoryItemRecord, ItemEnd, ItemId, ItemOrigin,
-    ItemRecord, ItemTag, LeaseEvent, OriginTally,
+    Authority, HISTORY_ITEM_DETAIL_CAP, HistoryItemRecord, ItemEdge, ItemEnd, ItemId, ItemOrigin,
+    ItemRecord, ItemTag, LeaseEvent, OriginTally, Relation,
 };
 use super::partitions::ContextPartitions;
 use super::policy::ContextPolicy;
@@ -100,6 +100,12 @@ pub struct LifecycleMetrics {
     pub history_items: Vec<HistoryItemRecord>,
     /// History items too old to be listed in `history_items`.
     pub history_items_omitted: u32,
+    /// Plan task 7.1 · the item graph's edges and how many pruning dropped.
+    pub edges: Vec<ItemEdge>,
+    pub edges_omitted: u32,
+    /// Knowledge items nothing referenced and no recorded edge points to (a subset of what
+    /// `waste_tokens` counts: a recall the model read back is not waste).
+    pub waste_items: Vec<ItemId>,
 }
 
 /// Internal context engine backing the canonical operation driver.
@@ -194,8 +200,11 @@ pub struct ContextManager {
     /// Plan task 3.1 · dependency outputs by agent id, read in full with
     /// `read_result(call_id="dep:<agent_id>")`. Only previews are in the rendered context.
     pub dependency_bodies: std::collections::BTreeMap<String, String>,
-    /// Plan task 1.1b · the last item id handed to a history message.
+    /// Plan task 1.1b · the last item id handed out, to a history message or (plan task 7.1) a
+    /// knowledge entry: one allocator for both.
     pub(crate) last_item_id: ItemId,
+    /// Plan task 7.1 · typed edges between items. Reported, checkpointed; no decision reads it yet.
+    pub(crate) graph: super::graph::ItemGraph,
     /// History items admitted and read back, by origin (plan task 4.1).
     pub(crate) history_tally: std::collections::BTreeMap<ItemOrigin, OriginTally>,
     /// History items that left, latest [`HISTORY_ITEM_DETAIL_CAP`] kept, in the order they left.
@@ -265,6 +274,7 @@ impl ContextManager {
             dependency_bodies: std::collections::BTreeMap::new(),
             cache_invalidated_tokens: 0,
             last_item_id: 0,
+            graph: super::graph::ItemGraph::default(),
             history_tally: std::collections::BTreeMap::new(),
             retired_history: std::collections::VecDeque::new(),
             retired_history_omitted: 0,
@@ -812,12 +822,14 @@ impl ContextManager {
             );
             self.retire_history_item(record);
         }
-        self.last_item_id += 1;
         let tag = ItemTag::new(
-            self.last_item_id,
+            self.alloc_item_id(),
             ItemOrigin::ProviderSummary,
             self.partitions.knowledge.turn,
         );
+        for row in &rows {
+            self.add_edge(tag.id, row.tag.id, Relation::Summarizes);
+        }
         let message = CoreMessage::assistant("[earlier conversation summarized by the provider]");
         let tally = self.tally(ItemOrigin::ProviderSummary);
         tally.items += 1;
@@ -928,11 +940,24 @@ impl ContextManager {
 
     fn admit_history(&mut self, msg: CoreMessage, tokens: u32) {
         self.knowledge_reference_step = self.knowledge_reference_step.saturating_add(1);
-        self.partitions
+        let item = self.alloc_item_id();
+        let references = self
+            .partitions
             .knowledge
             .observe_references(&msg, self.knowledge_reference_step);
-        self.last_item_id += 1;
-        let item = self.last_item_id;
+        for (to, strong) in references {
+            let relation = if strong { Relation::ReferencesStrong } else { Relation::ReferencesLexical };
+            self.add_edge(item, to, relation);
+        }
+        if let Content::Parts(parts) = &msg.content {
+            for part in parts {
+                if let ContentPart::ToolResult { call_id, .. } = part
+                    && let Some(call) = self.item_of_call(call_id)
+                {
+                    self.add_edge(item, call, Relation::Answers);
+                }
+            }
+        }
         // P3 (3a): index each tool result entering working context as a handle on its item,
         // anchored to its call_id. The handle's residency is the item's: a collapsed or paged-out
         // body makes the item render as a handle, without mutating the stored message.
@@ -984,6 +1009,7 @@ impl ContextManager {
         }
         self.partitions.history.truncate(len);
         self.prune_item_replays();
+        self.prune_item_graph();
     }
 
     fn retire_history_item(&mut self, record: HistoryItemRecord) {
@@ -1014,6 +1040,83 @@ impl ContextManager {
             ItemOrigin::ToolResult
         };
         self.tally(origin).read_back += 1;
+        let target = self
+            .handles
+            .all()
+            .iter()
+            .find(|handle| {
+                handle.source.as_deref() == Some(address) || handle.id.to_string() == address
+            })
+            .map(|handle| handle.item);
+        if let (Some(reader), Some(target)) = (self.last_assistant_item(), target) {
+            self.add_edge(reader, target, Relation::ReadsBack);
+        }
+    }
+
+    /// Plan task 7.1 · the model fetched record `record_id` with `memory(record_id)`: if the kernel
+    /// recalled it, the call read that recall back. Report only.
+    pub fn note_memory_read(&mut self, record_id: &str) {
+        let key = format!("memory:{record_id}");
+        let target = self
+            .partitions
+            .knowledge
+            .entries
+            .iter()
+            .find(|entry| entry.key.as_deref() == Some(key.as_str()))
+            .map(|entry| entry.id);
+        if let (Some(reader), Some(target)) = (self.last_assistant_item(), target) {
+            self.add_edge(reader, target, Relation::ReadsBack);
+        }
+    }
+
+    pub(crate) fn alloc_item_id(&mut self) -> ItemId {
+        self.last_item_id += 1;
+        self.last_item_id
+    }
+
+    /// Record an edge of the item graph, pruning it against residency when it has grown large.
+    fn add_edge(&mut self, from: ItemId, to: ItemId, relation: Relation) {
+        let turn = self.partitions.knowledge.turn;
+        if self.graph.add(ItemEdge { from, to, relation, turn }) && self.graph.over_limit() {
+            self.prune_item_graph();
+        }
+    }
+
+    /// Ids of every item still in context: history rows and knowledge entries.
+    fn resident_item_ids(&self) -> std::collections::BTreeSet<ItemId> {
+        let history = &self.partitions.history;
+        (0..history.len())
+            .map(|index| history.tag(index).id)
+            .chain(self.partitions.knowledge.entries.iter().map(|entry| entry.id))
+            .filter(|id| *id != 0)
+            .collect()
+    }
+
+    pub(crate) fn prune_item_graph(&mut self) {
+        let resident = self.resident_item_ids();
+        self.graph.prune(&resident);
+    }
+
+    /// The assistant history item that made tool call `call_id`.
+    fn item_of_call(&self, call_id: &str) -> Option<ItemId> {
+        let history = &self.partitions.history;
+        (0..history.len()).rev().find_map(|index| {
+            let message = &history.messages()[index];
+            (message.role == crate::types::message::Role::Assistant
+                && message.tool_calls.iter().any(|call| call.id.as_str() == call_id))
+            .then(|| history.tag(index).id)
+            .filter(|id| *id != 0)
+        })
+    }
+
+    /// The latest assistant history item: the one whose tool calls are being answered.
+    fn last_assistant_item(&self) -> Option<ItemId> {
+        let history = &self.partitions.history;
+        (0..history.len()).rev().find_map(|index| {
+            (history.tag(index).origin == ItemOrigin::Assistant)
+                .then(|| history.tag(index).id)
+                .filter(|id| *id != 0)
+        })
     }
 
     fn alloc_handle_id(&mut self) -> HandleId {
@@ -1176,7 +1279,19 @@ impl ContextManager {
             self.retired_history.iter().copied().chain(resident).collect();
         let overflow = history_items.len().saturating_sub(HISTORY_ITEM_DETAIL_CAP);
         history_items.drain(..overflow);
+        let waste_items = items
+            .iter()
+            .filter(|item| {
+                item.id != 0
+                    && item.value.ref_count == 0
+                    && self.graph.in_edges(item.id).next().is_none()
+            })
+            .map(|item| item.id)
+            .collect();
         LifecycleMetrics {
+            edges: self.graph.edges().to_vec(),
+            edges_omitted: self.graph.omitted(),
+            waste_items,
             history_items,
             history_items_omitted: self.retired_history_omitted + overflow as u32,
             history: history.into_values().collect(),
@@ -1201,8 +1316,15 @@ impl ContextManager {
     /// re-caching the history behind system[1] until the staged tokens reach a quarter of the
     /// history, at which point every staged entry is promoted at once.
     fn place_appended_knowledge(&mut self, entries_before: usize) {
+        if self.partitions.knowledge.entries.len() == entries_before {
+            return;
+        }
+        let id = self.alloc_item_id();
         let knowledge = &mut self.partitions.knowledge;
-        if !self.prefix_sent || knowledge.entries.len() == entries_before {
+        if let Some(entry) = knowledge.entries.last_mut() {
+            entry.id = id;
+        }
+        if !self.prefix_sent {
             return;
         }
         if let Some(entry) = knowledge.entries.last_mut() {
@@ -1371,6 +1493,7 @@ impl ContextManager {
         // K2: a boundary starts a fresh cache generation — the budget warning may fire again.
         self.knowledge_budget_warned = false;
         self.prefix_sent = false;
+        self.prune_item_graph();
     }
 
     /// K2: knowledge-budget check, run per turn before render. Over budget ⇒ mark the LOWEST-VALUE
@@ -1891,6 +2014,52 @@ mod tests {
     }
 
     #[test]
+    fn the_item_graph_records_answers_references_reads_back_and_waste() {
+        use crate::types::message::ToolCall;
+        let mut mgr = ContextManager::new(100_000);
+        mgr.init_task("goal".to_string(), vec![]);
+        mgr.push_knowledge_entry(Some("project:orchid".into()), CoreMessage::system("orchid storage layout"), 6, false);
+        mgr.push_recalled(vec![
+            ("r1".into(), "[MEMORY record_id=r1 kind=project] mercury deploy freeze".into()),
+            ("r2".into(), "[MEMORY record_id=r2 kind=project] office wifi rotation".into()),
+        ]);
+        let ids: Vec<ItemId> = mgr.partitions.knowledge.entries.iter().map(|entry| entry.id).collect();
+        assert_eq!(ids, vec![1, 2, 3], "knowledge items draw from the item allocator");
+        let (orchid, r1, r2) = (ids[0], ids[1], ids[2]);
+
+        mgr.push_history(CoreMessage::user("question"), 5);
+        let mut call = CoreMessage::assistant("reading");
+        call.tool_calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "read".into(),
+            arguments: serde_json::json!({ "key": "project:orchid" }),
+        }];
+        mgr.push_history(call, 10);
+        mgr.push_history(tool_result_msg("c1", "the layout"), 10);
+        let tag = |index: usize| mgr.partitions.history.tag(index).id;
+        let (assistant, result) = (tag(1), tag(2));
+        assert!(assistant > r2, "history and knowledge share one allocator");
+        mgr.note_read_back("c1");
+        mgr.note_memory_read("r1");
+        mgr.note_memory_read("no-such-record");
+
+        let metrics = mgr.lifecycle_metrics();
+        let edges: Vec<_> = metrics.edges.iter().map(|e| (e.from, e.to, e.relation)).collect();
+        assert_eq!(
+            edges,
+            vec![
+                (assistant, orchid, Relation::ReferencesStrong),
+                (result, assistant, Relation::Answers),
+                (assistant, result, Relation::ReadsBack),
+                (assistant, r1, Relation::ReadsBack),
+            ]
+        );
+        assert_eq!(metrics.waste_items, vec![r2], "r1 was read back, orchid referenced");
+        let recorded: Vec<_> = metrics.items.iter().map(|item| item.id).collect();
+        assert_eq!(recorded, ids);
+    }
+
+    #[test]
     fn a_recall_left_unused_expires_and_leaves_at_the_next_boundary() {
         use crate::context::item::RECALL_LEASE_TURNS;
         let mut mgr = ContextManager::new(100_000);
@@ -2088,6 +2257,16 @@ mod tests {
         assert_eq!(rendered.turn_replays[summary], Some(block));
         let ends: Vec<_> = mgr.lifecycle_metrics().history_items.iter().map(|item| item.end).collect();
         assert_eq!(ends.iter().filter(|end| **end == Some(ItemEnd::Compacted)).count(), 3);
+        let summarized: Vec<_> = mgr
+            .graph
+            .edges()
+            .iter()
+            .filter(|edge| edge.relation == Relation::Summarizes)
+            .map(|edge| (edge.from, edge.to))
+            .collect();
+        assert_eq!(summarized.len(), 3, "the summary stands in for each item it covered");
+        assert!(summarized.iter().all(|(from, _)| *from == tags[0].id));
+        assert!(summarized.contains(&(tags[0].id, tool)));
         assert!(!mgr.absorb_provider_compaction(9_999, serde_json::json!({}), 1), "unknown item");
     }
 

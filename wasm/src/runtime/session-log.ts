@@ -47,6 +47,8 @@ export interface ContextOriginTally {
 
 /** One knowledge item's lifecycle in a `context_lifecycle_reported` event (plan task 4.1). */
 export interface ContextItemRecord {
+  /** The item's id, shared with history items and item-graph edges. */
+  id?: number
   key?: string
   origin: "system" | "skill" | "memory_recall" | "reference" | "blackboard" | "tool_result" | "dependency_output" | "user" | "assistant" | "task_state" | "signal" | "provider_summary"
   tokens: number
@@ -55,6 +57,8 @@ export interface ContextItemRecord {
     ref_count: number
     last_referenced_step?: number
     last_referenced_turn?: number
+    strong_refs?: number
+    lexical_refs?: number
     expanded?: boolean
     paged_in_after_evict?: boolean
   }
@@ -63,6 +67,14 @@ export interface ContextItemRecord {
 }
 
 /** One history item's lifecycle in a `context_lifecycle_reported` event (plan task 4.1). */
+/** One directed edge of the item graph: `from` answers, references, reads back or summarizes `to`. */
+export interface ContextItemEdge {
+  from: number
+  to: number
+  relation: "answers" | "references_strong" | "references_lexical" | "reads_back" | "summarizes"
+  turn: number
+}
+
 export interface ContextHistoryItemRecord {
   id: number
   origin: ContextItemRecord["origin"]
@@ -132,6 +144,11 @@ export type SessionEvent =
       /** The latest history items one by one (at most 128); older ones are only counted. */
       history_items?: ContextHistoryItemRecord[]
       history_items_omitted?: number
+      /** The item graph: resident edges, then the latest edges touching an item that left. */
+      edges?: ContextItemEdge[]
+      edges_omitted?: number
+      /** Knowledge item ids nothing referenced or read back. */
+      waste_items?: number[]
     }
   | { kind: "suspended"; turn: number; reason: string; pending_calls?: string[] }
   | { kind: "resumed"; turn: number; approved?: string[]; denied?: string[] }
