@@ -1267,6 +1267,14 @@ fn restore_context_vm(
     ctx.partitions.knowledge.turn = state.item_turn;
     ctx.last_item_id = state.last_item_id;
     ctx.retired_history = state.retired_history.iter().copied().collect();
+    ctx.held_history = state
+        .held_history
+        .iter()
+        .map(|entry| {
+            restore_message(&entry.role, &entry.body, &entry.tool_calls)
+                .map(|message| (message, entry.tokens))
+        })
+        .collect::<Result<_, _>>()?;
     ctx.retired_history_omitted = state.retired_history_omitted;
     ctx.history_tally = state
         .history_tally

@@ -6,6 +6,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A memory search the model issued in the same turn as a host tool could put its hits between
+  that turn's tool results; OpenAI-compatible providers then rejected the next request
+  ("assistant tool_calls with no tool result"). The hits now follow the batch's last result.
+
 ## [0.2.79] - 2026-11-02
 
 ### Added

@@ -338,6 +338,13 @@ impl CanonicalOperationDriver {
             history_tally: ctx.history_tally.values().copied().collect(),
             retired_history: ctx.retired_history.iter().copied().collect(),
             retired_history_omitted: ctx.retired_history_omitted,
+            held_history: ctx
+                .held_history
+                .iter()
+                .map(|(message, tokens)| {
+                    self.project_message(MessagePartition::History, message, *tokens)
+                })
+                .collect(),
             signals: ctx.partitions.signals.clone(),
             messages: ctx
                 .partitions

@@ -3124,15 +3124,18 @@ fn a_mixed_syscall_and_host_tool_batch_resolves_without_re_emitting_the_tool_bat
     );
     let tools_effect = tools_effect.clone();
     assert!(
-        history_text(&runtime)
+        !history_text(&runtime)
             .iter()
             .any(|line| line.contains("prefers numbered sections")),
-        "the recall is in the context the resumed turn renders"
+        "the recall waits for call-2's result: placed now, it would split the batch's results"
     );
+    // A crash between the two effects restores the held recall with everything else.
+    let checkpoint = runtime.checkpoint().decode().expect("verifies");
+    let mut restored = Runtime::restore_with(Some(&checkpoint), &[]);
 
     // (3) resolving the tool batch resumes the loop; the next provider call renders a context
     //     that carries both the recall and the tool result
-    let resumed = runtime.submit(&payloads_resolved(
+    let tool_results = payloads_resolved(
         "in-tools",
         1_700_000_004_000,
         &tools_effect.effect_id,
@@ -3145,17 +3148,24 @@ fn a_mixed_syscall_and_host_tool_batch_resolves_without_re_emitting_the_tool_bat
                 disposition: ToolResultDisposition::Recoverable,
             },
         })],
-    ));
+    );
+    let resumed = runtime.submit(&tool_results);
+    restored.submit(&tool_results);
+    assert_eq!(history_text(&restored), history_text(&runtime));
     assert_eq!(
         kinds(&resumed),
         vec![EffectKindTag::CallProvider],
         "results plus recalls are in, so the loop calls the provider again"
     );
-    let text = history_text(&runtime).join("\n");
+    let lines = history_text(&runtime);
+    let position = |needle: &str| lines.iter().position(|line| line.contains(needle));
     assert!(
-        text.contains("prefers numbered sections") && text.contains("kpi: 12%"),
-        "the resumed context carries the recall and the tool result"
+        position("kpi: 12%") < position("prefers numbered sections")
+            && position("prefers numbered sections").is_some(),
+        "the recall follows the batch's last result: {lines:?}"
     );
+    let history = &runtime.driver.engine().unwrap().ctx.partitions.history;
+    assert!(crate::context::units::strict_tool_pairing_is_valid(history.messages()));
 }
 
 // -----------------------------------------------------------------------------------------

@@ -175,7 +175,9 @@ impl CanonicalOperationDriver {
                     );
                     let engine = self.engine_mut()?;
                     let tokens = engine.ctx.engine.count(&content).max(1);
-                    engine.ctx.push_history(CoreMessage::user(content), tokens);
+                    engine
+                        .ctx
+                        .push_history_after_tool_results(CoreMessage::user(content), tokens);
                 }
                 if let Some(record_id) = &query.record_id
                     && !queried.recalls.is_empty()
@@ -218,7 +220,9 @@ impl CanonicalOperationDriver {
                     );
                     let engine = self.engine_mut()?;
                     let tokens = engine.ctx.engine.count(&content).max(1);
-                    engine.ctx.push_history(CoreMessage::user(content), tokens);
+                    engine
+                        .ctx
+                        .push_history_after_tool_results(CoreMessage::user(content), tokens);
                 }
                 // The recalls are in history now, so the turn that asked for them resumes with a
                 // rendered context that contains them. The observation is pushed *after* the

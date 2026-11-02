@@ -191,6 +191,10 @@ pub struct ContextManager {
     pub(crate) retired_history: std::collections::VecDeque<HistoryItemRecord>,
     /// Retired history items dropped from `retired_history` by the cap.
     pub(crate) retired_history_omitted: u32,
+    /// Messages that arrived while the history tail still waited for tool results (a memory hit
+    /// resolving before a sibling tool in the same batch). A provider requires a call's results to
+    /// follow it directly, so these wait until the last result lands.
+    pub(crate) held_history: Vec<(CoreMessage, u32)>,
 }
 
 impl ContextManager {
@@ -245,6 +249,7 @@ impl ContextManager {
             history_tally: std::collections::BTreeMap::new(),
             retired_history: std::collections::VecDeque::new(),
             retired_history_omitted: 0,
+            held_history: Vec::new(),
         }
     }
 
@@ -682,7 +687,63 @@ impl ContextManager {
 
     // ── History / Knowledge ───────────────────────────────────────────────────
 
+    /// Append `msg` to history after the tool results the last assistant turn still waits for.
+    /// Used for content an effect delivers mid-batch (a memory hit that resolves before a sibling
+    /// tool): placed now, it would split the batch's results, which a provider rejects.
+    pub fn push_history_after_tool_results(&mut self, msg: CoreMessage, tokens: u32) {
+        if self.awaits_tool_results() {
+            self.held_history.push((msg, tokens));
+        } else {
+            self.push_history(msg, tokens);
+        }
+    }
+
+    /// Append whatever is still held, whether or not the batch completed. Called before a provider
+    /// call, so held content is never lost to a batch whose results never all arrived.
+    pub fn release_held_history(&mut self) {
+        for (held, tokens) in std::mem::take(&mut self.held_history) {
+            self.admit_history(held, tokens);
+        }
+    }
+
     pub fn push_history(&mut self, msg: CoreMessage, tokens: u32) {
+        let is_tool = msg.role == crate::types::message::Role::Tool;
+        self.admit_history(msg, tokens);
+        if is_tool && !self.held_history.is_empty() && !self.awaits_tool_results() {
+            for (held, tokens) in std::mem::take(&mut self.held_history) {
+                self.admit_history(held, tokens);
+            }
+        }
+    }
+
+    /// Whether the last assistant message in history asked for a call whose result is not in
+    /// history yet.
+    fn awaits_tool_results(&self) -> bool {
+        let mut answered = std::collections::HashSet::new();
+        for message in self.partitions.history.messages().iter().rev() {
+            match message.role {
+                crate::types::message::Role::Tool => {
+                    if let Content::Parts(parts) = &message.content {
+                        for part in parts {
+                            if let ContentPart::ToolResult { call_id, .. } = part {
+                                answered.insert(call_id.as_str());
+                            }
+                        }
+                    }
+                }
+                crate::types::message::Role::Assistant => {
+                    return message
+                        .tool_calls
+                        .iter()
+                        .any(|call| !answered.contains(call.id.as_str()));
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    fn admit_history(&mut self, msg: CoreMessage, tokens: u32) {
         self.knowledge_reference_step = self.knowledge_reference_step.saturating_add(1);
         self.partitions
             .knowledge
@@ -720,6 +781,8 @@ impl ContextManager {
 
     /// Drop history from `len` on (a rolled-back turn); its items leave as removed.
     pub fn truncate_history(&mut self, len: usize) {
+        // Held messages belong to the turn being rolled back.
+        self.held_history.clear();
         for index in len..self.partitions.history.len() {
             let tag = self.partitions.history.tag(index);
             let tokens = self.partitions.history.measured_tokens(index, &self.engine);

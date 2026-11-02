@@ -1903,6 +1903,8 @@ impl LoopStateMachine {
         // Calling the provider is definitionally "running" — the single funnel for entering the
         // Running lifecycle (covers start, resume, signal-driven turns, budget final-call).
         self.set_lifecycle(TaskLifecycle::Running, None);
+        // Content held for a tool batch that never completed still reaches the model.
+        self.ctx.release_held_history();
 
         // Plan task 2.1 · a recall owed at run start or after a renewal goes out before the
         // provider call, so its hits are in system knowledge before that knowledge is cached.

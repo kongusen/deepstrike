@@ -684,6 +684,9 @@ pub struct ContextVmState {
     /// Retired history items the cap dropped from `retired_history`.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub retired_history_omitted: u32,
+    /// History messages waiting for the tool results of the current batch, in arrival order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub held_history: Vec<StoredMessageState>,
     #[serde(default)]
     pub signals: Vec<String>,
     /// §5q-2 · the stored messages of the system and history partitions, in render order. **The**
