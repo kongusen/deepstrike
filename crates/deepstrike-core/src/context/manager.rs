@@ -1,6 +1,8 @@
 use super::compression::CompressionPipeline;
 use super::config::{ContextConfig, PromptBudgetConfig};
-use super::item::{ItemEnd, ItemId, ItemOrigin, ItemRecord, ItemTag, OriginTally};
+use super::item::{
+    Authority, ItemEnd, ItemId, ItemOrigin, ItemRecord, ItemTag, LeaseEvent, OriginTally,
+};
 use super::partitions::ContextPartitions;
 use super::policy::ContextPolicy;
 use super::pressure::{PressureAction, PressureMonitor};
@@ -883,6 +885,63 @@ impl ContextManager {
 
     /// K1: mark a keyed knowledge entry for removal at the next compaction/renewal boundary.
     /// Errs-open: unknown key is a no-op (returns false).
+    /// Plan task 1.1 · authority: whether the host may upsert `upserts` and remove `removals`. A host
+    /// command may not touch an item the kernel or the provider wrote, and may not remove a skill
+    /// body while the model's activation holds it (deactivating the skill removes it). Returns the
+    /// first refused key and why.
+    pub fn check_host_knowledge_write<'a>(
+        &self,
+        upserts: impl IntoIterator<Item = &'a str>,
+        removals: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), String> {
+        let live = |key: &str| {
+            self.partitions
+                .knowledge
+                .entries
+                .iter()
+                .find(|entry| !entry.is_leaving() && entry.key.as_deref() == Some(key))
+        };
+        for key in upserts {
+            if let Some(entry) = live(key) {
+                let authority = entry.defaults().authority;
+                if matches!(authority, Authority::Kernel | Authority::Provider) {
+                    return Err(format!(
+                        "knowledge {key:?} is a {} item written by the {}; a host may not \
+                         overwrite it",
+                        entry.origin.label(),
+                        authority.label()
+                    ));
+                }
+            }
+        }
+        for key in removals {
+            let Some(entry) = live(key) else { continue };
+            match entry.defaults().authority {
+                Authority::Kernel | Authority::Provider => {
+                    return Err(format!(
+                        "knowledge {key:?} is a {} item written by the {}; a host may not remove \
+                         it",
+                        entry.origin.label(),
+                        entry.defaults().authority.label()
+                    ));
+                }
+                Authority::Model
+                    if entry.origin == ItemOrigin::Skill
+                        && key
+                            .strip_prefix("skill:")
+                            .is_some_and(|name| self.active_skills.contains_key(name)) =>
+                {
+                    return Err(format!(
+                        "knowledge {key:?} is the body of an active skill; deactivate the skill \
+                         instead of removing its body"
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     pub fn remove_knowledge(&mut self, key: &str) -> bool {
         let removed = self.partitions.knowledge.remove(key);
         if removed {
@@ -1089,7 +1148,11 @@ impl ContextManager {
         if self.active_skills.remove(name).is_none() {
             return false;
         }
-        self.partitions.knowledge.remove(&format!("skill:{name}"));
+        let key = format!("skill:{name}");
+        // A skill body restored from an older checkpoint may hold a permanent lease.
+        if !self.partitions.knowledge.end_lease(LeaseEvent::SkillDeactivated, &key) {
+            self.partitions.knowledge.remove(&key);
+        }
         true
     }
 
@@ -1455,6 +1518,29 @@ mod tests {
         assert_eq!((metrics.recalled, metrics.recall_expanded), (2, 1));
         assert_eq!(metrics.items[0].end, Some(ItemEnd::Expired));
         assert_eq!(metrics.items[0].origin, ItemOrigin::MemoryRecall);
+    }
+
+    #[test]
+    fn a_skill_body_leaves_when_its_skill_is_deactivated_even_if_pinned() {
+        use crate::context::item::{Lease, LeaseEvent};
+        let mut mgr = ContextManager::new(100_000);
+        mgr.activate_skill("debug");
+        mgr.push_knowledge_entry(
+            Some("skill:debug".into()),
+            CoreMessage::system("debug skill body"),
+            10,
+            true,
+        );
+        let skill = &mgr.partitions.knowledge.entries[0];
+        assert_eq!(skill.lease, Lease::Until(LeaseEvent::SkillDeactivated));
+        mgr.sweep_expired_item_leases(1_000);
+        assert!(!mgr.partitions.knowledge.entries[0].is_leaving(), "no turn limit");
+
+        assert!(mgr.deactivate_skill("debug"));
+        assert_eq!(mgr.partitions.knowledge.entries[0].leaving, Some(ItemEnd::Expired));
+        mgr.sweep_knowledge_at_boundary();
+        assert!(mgr.partitions.knowledge.is_empty());
+        assert_eq!(mgr.lifecycle_metrics().items[0].end, Some(ItemEnd::Expired));
     }
 
     #[test]

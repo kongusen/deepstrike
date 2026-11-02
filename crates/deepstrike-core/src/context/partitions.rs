@@ -1,5 +1,7 @@
 use super::config::ContextConfig;
-use super::item::{ContextItem, Fidelity, ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease};
+use super::item::{
+    ContextItem, Fidelity, ItemEnd, ItemOrigin, ItemRecord, ItemTag, Lease, LeaseEvent,
+};
 use super::measurement::TokenMeasurement;
 use super::task_state::TaskState;
 use super::token_engine::ContextTokenEngine;
@@ -301,7 +303,7 @@ impl KnowledgePartition {
                 entry.pending = Some(Box::new((msg, tokens)));
                 entry.leaving = None;
                 entry.pinned = pinned;
-                entry.lease = if pinned { Lease::Permanent } else { entry.origin.defaults().lease };
+                entry.lease = Lease::for_item(entry.origin, pinned);
                 entry.value.injected_turn = turn;
                 return;
             }
@@ -366,6 +368,23 @@ impl KnowledgePartition {
             }
         }
         expired
+    }
+
+    /// `event` happened to the item keyed `key`: if its lease waits for that event, it leaves at the
+    /// next boundary. Returns whether a live item's lease ended.
+    pub fn end_lease(&mut self, event: LeaseEvent, key: &str) -> bool {
+        match self.entries.iter_mut().find(|entry| {
+            !entry.is_leaving()
+                && entry.key.as_deref() == Some(key)
+                && entry.lease == Lease::Until(event)
+        }) {
+            Some(entry) => {
+                entry.leaving = Some(ItemEnd::Expired);
+                entry.pending = None;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Promote every staged entry into system[1]. Returns the promoted tokens.

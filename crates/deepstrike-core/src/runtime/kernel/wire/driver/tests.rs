@@ -8045,6 +8045,61 @@ fn seeded_and_mutated_knowledge_enter_the_same_partition() {
     );
 }
 
+#[test]
+fn a_host_command_may_not_rewrite_kernel_items_or_an_active_skill_body() {
+    let (mut runtime, _) = agent_awaiting_provider();
+    {
+        let ctx = &mut runtime.driver.engine_mut().unwrap().ctx;
+        ctx.push_knowledge_item(
+            crate::context::item::ItemOrigin::System,
+            Some("governance:denied-tools".into()),
+            CoreMessage::system("tools denied"),
+            3,
+            true,
+        );
+        ctx.activate_skill("debug");
+        ctx.push_knowledge_entry(
+            Some("skill:debug".into()),
+            CoreMessage::system("debug body"),
+            3,
+            true,
+        );
+    }
+    let mutation = |upsert: Option<&str>, remove: &[&str]| {
+        HostCommand::ApplyKnowledgeMutation(ApplyKnowledgeMutationCommand {
+            mutation: super::super::command::KnowledgeMutation {
+                upsert: upsert
+                    .map(|key| super::super::root::KnowledgeEntry {
+                        content: "host text".to_string(),
+                        key: Some(key.to_string()),
+                        tokens: Some(2),
+                        pinned: false,
+                    })
+                    .into_iter()
+                    .collect(),
+                remove: remove.iter().map(|key| key.to_string()).collect(),
+            },
+        })
+    };
+    for (id, command) in [
+        ("in-overwrite-kernel", mutation(Some("governance:denied-tools"), &[])),
+        ("in-remove-kernel", mutation(None, &["governance:denied-tools"])),
+        ("in-remove-active-skill", mutation(Some("notes"), &["skill:debug"])),
+    ] {
+        let fault = runtime.reject(&control(id, 1_700_000_002_000, command));
+        assert_eq!(fault.code, KernelFaultCode::InvalidAuthority, "{id}");
+    }
+    assert!(
+        !knowledge_text(&runtime).iter().any(|text| text == "host text"),
+        "a refused command applies none of its halves"
+    );
+
+    // The host may still deliver the skill body (an upsert), and remove it once inactive.
+    runtime.submit(&control("in-skill-body", 1_700_000_003_000, mutation(Some("skill:debug"), &[])));
+    runtime.driver.engine_mut().unwrap().ctx.active_skills.clear();
+    runtime.submit(&control("in-remove-stale", 1_700_000_004_000, mutation(None, &["skill:debug"])));
+}
+
 fn knowledge_text(runtime: &Runtime) -> Vec<String> {
     runtime
         .driver

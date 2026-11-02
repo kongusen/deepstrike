@@ -133,9 +133,9 @@ impl ItemOrigin {
         use Lease as L;
         let (scope, fidelity, lease, authority) = match self {
             Self::System => (S::Operation, F::Full, L::Permanent, A::Kernel),
-            // A skill leaves when it is deactivated or its activation lease runs out
-            // (`ContextManager::deactivate_skill`); the item itself does not expire.
-            Self::Skill => (S::Task, F::Full, L::Permanent, A::Model),
+            // A skill body stays while the skill is active: it leaves when the skill is deactivated
+            // or its activation lease runs out (`ContextManager::deactivate_skill`).
+            Self::Skill => (S::Task, F::Full, L::Until(LeaseEvent::SkillDeactivated), A::Model),
             Self::MemoryRecall => (S::Session, F::Handle, L::Turns(RECALL_LEASE_TURNS), A::Host),
             Self::Reference => (S::Operation, F::Full, L::Permanent, A::Host),
             Self::ToolResult => (S::Task, F::Full, L::Permanent, A::Host),
@@ -193,6 +193,30 @@ pub enum Lease {
     Turns(u32),
     /// Leaves once it has been referenced.
     SingleUse,
+    /// Leaves when the kernel sees `event` happen to the item (see [`LeaseEvent`]).
+    Until(LeaseEvent),
+}
+
+impl Lease {
+    /// The lease an item gets: its origin's, unless the host pinned it. A pin keeps an item past
+    /// any time limit (turns, a boundary, a first use); it does not keep it past an event that ends
+    /// what the item is for.
+    pub fn for_item(origin: ItemOrigin, pinned: bool) -> Self {
+        match origin.defaults().lease {
+            event @ Self::Until(_) => event,
+            _ if pinned => Self::Permanent,
+            lease => lease,
+        }
+    }
+}
+
+/// Something that ends an item's purpose. Each event names the items it ends by key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseEvent {
+    /// The skill whose body the item holds (`skill:<name>`) was deactivated or its activation
+    /// lease ran out.
+    SkillDeactivated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +226,17 @@ pub enum Authority {
     Kernel,
     Model,
     Provider,
+}
+
+impl Authority {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Host => "host",
+            Self::Kernel => "kernel",
+            Self::Model => "model",
+            Self::Provider => "provider",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,7 +318,7 @@ impl ContextItem {
         pinned: bool,
         turn: u32,
     ) -> Self {
-        let lease = if pinned { Lease::Permanent } else { origin.defaults().lease };
+        let lease = Lease::for_item(origin, pinned);
         Self {
             key,
             origin,
@@ -323,7 +358,7 @@ impl ContextItem {
     /// Whether the lease has run out at `current_turn`.
     pub fn lease_expired(&self, current_turn: u32) -> bool {
         match self.lease {
-            Lease::Permanent | Lease::UntilBoundary => false,
+            Lease::Permanent | Lease::UntilBoundary | Lease::Until(_) => false,
             Lease::Turns(_) => self.lease_remaining_turns(current_turn) == Some(0),
             Lease::SingleUse => self.value.ref_count > 0,
         }
@@ -383,6 +418,17 @@ mod tests {
         recall.value.last_referenced_turn = Some(6);
         assert!(!recall.lease_expired(3 + RECALL_LEASE_TURNS));
         assert!(recall.lease_expired(6 + RECALL_LEASE_TURNS));
+    }
+
+    #[test]
+    fn a_pinned_skill_still_leaves_with_its_skill() {
+        let skill = item(ItemOrigin::Skill, true);
+        assert_eq!(skill.lease, Lease::Until(LeaseEvent::SkillDeactivated));
+        assert!(!skill.lease_expired(u32::MAX));
+        assert_eq!(
+            serde_json::to_value(skill.lease).unwrap(),
+            serde_json::json!({"until": "skill_deactivated"})
+        );
     }
 
     #[test]
