@@ -1,6 +1,6 @@
 {
   "id": "provider-stream.decode.AnthropicMessagesAdapter.pushStreamChunkAtBoundary",
-  "version": "0.2.80",
+  "version": "0.2.81",
   "protocol": {
     "family": "host-provider",
     "direction": "decode",

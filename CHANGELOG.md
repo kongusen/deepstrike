@@ -6,6 +6,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.81] - 2026-11-03
+
 ### Added
 
 - The item graph (plan task 7.1), report only: knowledge items take ids from the same allocator as

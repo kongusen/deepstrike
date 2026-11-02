@@ -241,7 +241,7 @@ ContextItem {
   - 验收：压缩、renderer、renewal、provider 摘要覆盖范围、held history 都按 `answers` 边的连通分量确定"不可拆开的单元"，删除按位置推断的 `unit_boundaries`（或降为恢复旧 checkpoint 的兜底）。
   - 验证：随机 transcript 的配对性质测试照常通过；现有 golden 的渲染结果逐字节不变。
 
-- [x] 任务 7.3（2026-11-02）：证据按来源计：词法重叠只在模型自己的话和用户消息里算"用过"，工具输出只有点名（key / record id）才算，memory 命中（记录原文）不算；新增 `expands` 边（memory 命中 → 它展开的 recall），模型用到命中内容时，使用沿这条边传一跳记到 recall 上；被在场 history item 强引用或读回的条目不过期、不被预算淘汰。结果（DeepSeek，12 题，对 0.2.80）：`knowledge-pressure` gate 通过，干扰项引用 33 → 9.6，自报 waste 24 → 156（真实无用驻留 233），必需规则 0 丢失，正确 9/12 → 10/12；fan-out full / handle gate 通过（12/12）；ledger 10/12 对 11/12，gate 未过，两题错误均为算术错误（规则全程在场且被引用），knowledge 离场次数 8 对 10，待复测。与验收的出入：保留分数仍用引用计数（计数已只含有效证据），没有另算"在场入边加权"；只传一跳的传播落在 `expands` 边上。
+- [x] 任务 7.3（2026-11-02）：证据按来源计：词法重叠只在模型自己的话和用户消息里算"用过"，工具输出只有点名（key / record id）才算，memory 命中（记录原文）不算；新增 `expands` 边（memory 命中 → 它展开的 recall），模型用到命中内容时，使用沿这条边传一跳记到 recall 上；被在场 history item 强引用或读回的条目不过期、不被预算淘汰。结果（DeepSeek，12 题，对 0.2.80）：`knowledge-pressure` gate 通过，干扰项引用 33 → 9.6，自报 waste 24 → 156（真实无用驻留 233），必需规则 0 丢失，正确 9/12 → 10/12；fan-out full / handle gate 通过（12/12）；ledger 首批 10/12 对 11/12 未过 gate（两题均为算术错误，规则全程在场且被引用），两边各加测 12 题后 22/24 对 20/24（0.2.80 有一题运行报错），gate 通过。与验收的出入：保留分数仍用引用计数（计数已只含有效证据），没有另算"在场入边加权"；只传一跳的传播落在 `expands` 边上。
 - ~~原任务 7.3：沿边传播的保留与淘汰~~
   - 验收：item 的保留分数加上来自仍在场 item 的入边（强引用权重高于词法，只传一跳，整数权重，确定性）；knowledge 预算淘汰与 recall lease 到期都看入边——仍被在场 item 强引用的条目不淘汰、不过期。
   - 验证：`deepstrike-lab gate` 在 `knowledge-pressure` 上 regret、waste 不高于 7.0 基线，成功率不降；ledger / fan-out 不回退。
@@ -265,7 +265,7 @@ ContextItem {
 - ~~DeepSeek replay~~（已修）：不是模型没给 reasoning，也不是流式累积丢了。kernel 在渲染时把移出保护窗口的旧 assistant 叙述（≥40 字符且带 tool call）替换成 `NARRATION_STUB`，而 Node / Python 的 reasoning replay 按 `content + tool_calls` 存取，内容一变就查不到，`requireReasoningReplay` 随即抛错。handle 模式工具调用多，旧叙述轮次更容易移出窗口，所以更常暴露。修复：OpenAI-chat 的 reasoning replay 对带 tool call 的轮次只按 tool calls 作 key（Node `reasoningReplayKey`、Python `reasoning_replay_key`）；Anthropic 的 native blocks 仍按内容作 key，未改。WASM 和 Rust 的 OpenAI provider 不回放 `reasoning_content`，不受影响。测试：Node `provider-narration-replay.test.ts`，Python `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`。
 - `benchmark-0.2.74` 的版本守卫（0.2.74 vs 0.2.77）早已失效，未处理。
 
-下一步：0.2.78–0.2.80 已发布。0.2.81 做阶段 7（item 图），从 7.0 的 `knowledge-pressure` 基准开始，分支 `feat/0.2.81`。
+下一步：0.2.78–0.2.81 已发布，阶段 0–7 完成。暂缓项：模型版 `RelevanceJudge`（作为入边权重的另一来源，用 `knowledge-pressure` 对比）、Anthropic 上报 compaction fact。
 
 换设备时的环境准备：
 
@@ -284,7 +284,7 @@ ContextItem {
 | 0.2.78 | 已发布（PR #4）；原分支 `feat/context-lifecycle-stage0`：阶段 0、1.2、2.1、2.2、3.1、3.2、4.1、6.1；1.1a 与 1.1b 的 item 身份部分；replay 修复；默认 edge mode 改为 `handle`；Rust workflow 编排 | 已发布 |
 | 0.2.79 | 1.1 收尾：`ContextPartitions` 改为 item 表上的渲染视图，压缩管线按 item 操作；`until(event)` lease；scope / fidelity / authority 产生行为（scope 决定 renewal 与子 run 继承，fidelity 决定渲染形态，authority 决定谁能改）；handle 并入 item 表；history item 逐条明细（有上限） | 已发布（PR #5） |
 | 0.2.80 | 较大的版本，含原 0.2.81：4.3 lab 工具；1.1c item 稳定 id 进入消息 ABI 与 5.1 吸收 provider 改写；4.2 引用证据分级；6.2 blackboard；6.3 Python、WASM、Rust 宿主程序 API。`MIGRATION-0.2.79-to-0.2.80.md` | 已发布（PR #6；暂缓：模型版 `RelevanceJudge`、Anthropic 上报 compaction fact） |
-| 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 计划中，分支 `feat/0.2.81` |
+| 0.2.81 | 阶段 7：item 图。7.0 `knowledge-pressure` 基准与 0.2.80 基线；7.1 全部 item 有 id、边表只上报；7.2 交易单元来自 `answers` 边；7.3 沿边传播的保留与淘汰；7.4 跨 run 的边（只上报）。`MIGRATION-0.2.80-to-0.2.81.md` | 已发布（2026-11-03；7.2 决定不做） |
 
 0.2.81 内部顺序：7.0 → 7.1 → 7.2 → 7.3，7.4 可与 7.2 / 7.3 穿插。7.1 与 7.2 不改变渲染结果，只有 7.3 改变决策，必须先过 lab gate。模型版 `RelevanceJudge` 若做，放在 7.3 之后，作为入边权重的另一来源，用同一个场景对比。
 

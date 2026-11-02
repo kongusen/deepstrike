@@ -517,9 +517,9 @@ graph store. Constraints:
   budget. Results (DeepSeek, 12 tasks, against 0.2.80): the `knowledge-pressure` gate passes,
   with distractor references down from 33 to 9.6, self-reported waste up from 24 to 156 (real idle
   residency 233), no required rule dropped, and 9/12 → 10/12 correct; the fan-out full and handle
-  gates pass (12/12); ledger scored 10/12 against 11/12 and failed its gate. Both misses there are
-  arithmetic errors (the rule stayed resident and referenced throughout), with 8 knowledge
-  departures against 10; to be re-measured. Where it differs from the acceptance: the retention
+  gates pass (12/12); ledger's first 12 scored 10/12 against 11/12 and failed the gate (both misses
+  arithmetic, with the rule resident and referenced throughout); with 12 more tasks on each side
+  it is 22/24 against 20/24 (one 0.2.80 run ended in an error) and the gate passes. Where it differs from the acceptance: the retention
   score still uses reference counts (which now hold only counted evidence) rather than a separate
   weighted sum of resident in-edges, and the one-hop propagation runs along `expands` edges.
 - ~~Original task 7.3: retention and eviction along edges~~
@@ -576,8 +576,9 @@ Known issues:
   `test_deepseek_replays_reasoning_after_the_kernel_rewrites_the_turn_text`.
 - The `benchmark-0.2.74` version guard (0.2.74 vs 0.2.77) has long been stale; not handled.
 
-Next: 0.2.78–0.2.80 are released. 0.2.81 is stage 7 (the item graph), starting with the 7.0
-`knowledge-pressure` benchmark, on branch `feat/0.2.81`.
+Next: 0.2.78–0.2.81 are released and stages 0–7 are done. Deferred: the model `RelevanceJudge`
+(another source of in-edge weight, compared on `knowledge-pressure`) and Anthropic reporting
+compaction facts.
 
 Setting up on another machine:
 
@@ -604,7 +605,7 @@ breaking changes gets its own `MIGRATION-<previous>-to-<this>.md`.
 | 0.2.78 | Merged into main (PR #4), from branch `feat/context-lifecycle-stage0`: stages 0, 1.2, 2.1, 2.2, 3.1, 3.2, 4.1, 6.1; the item identity parts of 1.1a and 1.1b; replay fixes; default edge mode `handle`; Rust workflow orchestration | Released |
 | 0.2.79 | Finish 1.1 completely: `ContextPartitions` as a render view over the item table, with the compression pipeline operating on items; the `until(event)` lease; scope / fidelity / authority with behavior (scope decides renewal and child-run inheritance, fidelity decides the rendered form, authority decides who may change an item); handles folded into the item table; per-item history detail (capped) | Released (PR #5) |
 | 0.2.80 | A larger release that includes the former 0.2.81: 4.3 lab tool; 1.1c stable item ids in the message ABI and 5.1 absorbing provider rewrites; 4.2 graded reference evidence; 6.2 blackboard; 6.3 Python, WASM and Rust host program APIs. `MIGRATION-0.2.79-to-0.2.80.md` | Released (PR #6; deferred: the model `RelevanceJudge`, Anthropic reporting compaction facts) |
-| 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Planned, branch `feat/0.2.81` |
+| 0.2.81 | Stage 7: the item graph. 7.0 the `knowledge-pressure` benchmark and a 0.2.80 baseline; 7.1 ids for every item, an edge table that only reports; 7.2 transaction units from `answers` edges; 7.3 retention and eviction along edges; 7.4 edges across runs (report only). `MIGRATION-0.2.80-to-0.2.81.md` | Released (2026-11-03; 7.2 decided against) |
 
 0.2.81 internal order: 7.0 → 7.1 → 7.2 → 7.3, with 7.4 interleavable with 7.2 / 7.3. 7.1 and 7.2
 leave rendering unchanged; only 7.3 changes decisions and must pass the lab gate first. If the model
