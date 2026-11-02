@@ -625,6 +625,11 @@ class CanonicalRunnerRuntime:
            if event.get("observed_output_tokens") is not None else {}),
         **({"stop_reason": self._provider_stop_reason(event.get("stop_reason"))}
            if self._provider_stop_reason(event.get("stop_reason")) else {}),
+        # Plan task 5.1 · what the provider did to the context server-side.
+        **({"provider_compaction": event["provider_compaction"]}
+           if isinstance(event.get("provider_compaction"), dict) else {}),
+        **({"cleared_tool_results": [str(c) for c in event["cleared_tool_results"]]}
+           if event.get("cleared_tool_results") else {}),
       }})
       # The host's view advances only once the kernel committed the turn: a refused input must
       # leave the host exactly where the kernel still is.

@@ -1116,6 +1116,13 @@ export class CanonicalRunnerRuntime {
                 ...(providerStopReason(event.stop_reason)
                   ? { stop_reason: providerStopReason(event.stop_reason) }
                   : {}),
+                // Plan task 5.1 · what the provider did to the context server-side.
+                ...(event.provider_compaction && typeof event.provider_compaction === "object"
+                  ? { provider_compaction: event.provider_compaction }
+                  : {}),
+                ...(Array.isArray(event.cleared_tool_results) && event.cleared_tool_results.length
+                  ? { cleared_tool_results: event.cleared_tool_results.map(String) }
+                  : {}),
               },
             },
           },

@@ -228,6 +228,12 @@ export interface PromptMeasurement {
   confidence: MeasurementConfidence
 }
 
+/** Server-side context edits a provider reports for one call (plan task 5.1). */
+export interface ProviderContextEdits {
+  compaction?: { throughItem: number; replay: ProviderReplay; summaryTokens: number }
+  clearedToolResults?: string[]
+}
+
 export interface ProviderReplay {
   provider?: string
   protocol: GenerationProtocol
@@ -276,6 +282,10 @@ export interface LLMProvider {
     endpoint?: { id?: string; protocol?: string; baseURL?: string }
   }
   peekProviderReplay?(message: Pick<ModelMessage, "content" | "toolCalls">): ProviderReplay | undefined
+  /** Plan task 5.1 · what the last call did to the context server-side, for the kernel to absorb:
+   *  a summary of history through `throughItem` (the `itemId` of the last rendered turn it covers)
+   *  and the call ids of tool results it cleared. Read once per completed call. */
+  takeContextEdits?(): ProviderContextEdits | undefined
   seedProviderReplay?(message: Pick<ModelMessage, "content" | "toolCalls">, replay: ProviderReplay): void
   /** P4-S1 mirror: transport facts of the most recent execution (host evidence only, B7). */
   peekTransportTelemetry?(): ProviderTransportTelemetry | undefined

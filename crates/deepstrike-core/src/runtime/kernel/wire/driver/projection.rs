@@ -350,6 +350,9 @@ impl CanonicalOperationDriver {
             estimate_calibration_ppm: (ctx.estimate_calibration_ppm
                 != crate::context::manager::ESTIMATE_CALIBRATION_IDENTITY)
                 .then_some(ctx.estimate_calibration_ppm),
+            estimate_calibration_weight: (ctx.estimate_calibration_weight
+                != crate::context::manager::ESTIMATE_CALIBRATION_PRIOR_WEIGHT)
+                .then_some(ctx.estimate_calibration_weight),
             held_history: ctx
                 .held_history
                 .iter()

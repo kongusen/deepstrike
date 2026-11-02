@@ -262,6 +262,8 @@ fn provider_result(
                 observed_input_tokens: None,
                 observed_output_tokens: None,
                 stop_reason: None,
+                provider_compaction: None,
+                cleared_tool_results: Vec::new(),
             }),
         }),
     )

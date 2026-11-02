@@ -1276,6 +1276,9 @@ fn restore_context_vm(
     ctx.estimate_calibration_ppm = state
         .estimate_calibration_ppm
         .unwrap_or(crate::context::manager::ESTIMATE_CALIBRATION_IDENTITY);
+    ctx.estimate_calibration_weight = state
+        .estimate_calibration_weight
+        .unwrap_or(crate::context::manager::ESTIMATE_CALIBRATION_PRIOR_WEIGHT);
     ctx.held_history = state
         .held_history
         .iter()

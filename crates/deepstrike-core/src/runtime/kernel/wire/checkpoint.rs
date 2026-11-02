@@ -690,6 +690,9 @@ pub struct ContextVmState {
     pub last_request_estimate: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimate_calibration_ppm: Option<u32>,
+    /// The estimated tokens the calibration was fitted on (absent = the prior weight).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimate_calibration_weight: Option<u32>,
     /// Plan task 1.1c · provider replay state kept with assistant history items.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub item_replays: Vec<ItemReplayState>,

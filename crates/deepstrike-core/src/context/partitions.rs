@@ -160,6 +160,14 @@ impl Partition {
         self.token_count = self.token_count.saturating_sub(dropped);
     }
 
+    /// Put `row` before every other row (a provider summary heading the history it replaced).
+    pub fn prepend_row(&mut self, row: PartitionRow) {
+        self.token_count += row.measurement.tokens;
+        self.messages.insert(0, row.message);
+        self.measurements.insert(0, row.measurement);
+        self.items.insert(0, row.tag);
+    }
+
     /// Every row, in order (renewal re-admits the ones it keeps).
     pub fn rows(&self) -> impl Iterator<Item = PartitionRow> + '_ {
         self.messages

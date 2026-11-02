@@ -173,6 +173,20 @@ impl CanonicalOperationDriver {
         // The syscalls' own observations happened before `feed`, which clears the buffer at the
         // head of every event — carry them across, exactly as the child-completion path does.
         let syscall_observations = engine.take_observations();
+        // Plan task 5.1 · what the provider did to the context server-side, absorbed before the
+        // answer joins history, so the render after it is what the model will see next.
+        if let Some(compaction) = &completed.provider_compaction {
+            engine.ctx.absorb_provider_compaction(
+                compaction.through_item,
+                compaction.replay.get().clone(),
+                compaction.summary_tokens,
+            );
+        }
+        if !completed.cleared_tool_results.is_empty() {
+            engine
+                .ctx
+                .absorb_cleared_tool_results(completed.cleared_tool_results.iter().map(|id| id.as_str()));
+        }
         engine.ctx.pending_assistant_replay = completed
             .message
             .replay

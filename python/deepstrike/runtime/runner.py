@@ -2836,6 +2836,18 @@ class RuntimeRunner:
         # Plan task 1.1c · the kernel keeps the replay with the turn's item from here on.
         if provider_replay is not None:
           provider_event["message"] = {**provider_event["message"], "replay": provider_replay}
+        # Plan task 5.1 · server-side context edits become facts the kernel absorbs.
+        take_edits = getattr(self._opts.provider, "take_context_edits", None)
+        context_edits = take_edits() if take_edits is not None else None
+        if context_edits and context_edits.get("compaction"):
+          compaction = context_edits["compaction"]
+          provider_event["provider_compaction"] = {
+            "through_item": int(compaction["through_item"]),
+            "replay": compaction["replay"],
+            "summary_tokens": int(compaction["summary_tokens"]),
+          }
+        if context_edits and context_edits.get("cleared_tool_results"):
+          provider_event["cleared_tool_results"] = list(context_edits["cleared_tool_results"])
         wire_evidence: dict[str, Any] = {
           "protocol": self._provider_route.protocol,
           "request_fingerprint": provider_plan.fingerprint,

@@ -353,6 +353,8 @@ fn provider_result(
                 observed_input_tokens: None,
                 observed_output_tokens: None,
                 stop_reason: None,
+                provider_compaction: None,
+                cleared_tool_results: Vec::new(),
             }),
         }),
     )
@@ -408,6 +410,8 @@ fn provider_answer(id: &str, at: u64, effect: &EffectId, text: &str) -> WireEnve
                 observed_input_tokens: None,
                 observed_output_tokens: None,
                 stop_reason: Some(ProviderStopReason::EndTurn),
+                provider_compaction: None,
+                cleared_tool_results: Vec::new(),
             }),
         }),
     )

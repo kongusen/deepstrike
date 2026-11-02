@@ -128,8 +128,8 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
   const counted = attempts.filter(attempt => attempt.usage?.inputTokens).map(attempt => attempt.usage.inputTokens)
   const tokenEstimates = provider.kernelEstimates.length === counted.length && counted.length > 0
     ? counted.map((observed, index) => ({ estimated: provider.kernelEstimates[index], observed }))
-    : events
-      .filter(event => event.kind === "prompt_measured" && observedByEffect.has(event.effect_id))
+    : firstMeasurements(events)
+      .filter(event => observedByEffect.has(event.effect_id))
       .map(event => ({ estimated: event.measurement.inputTokens, observed: observedByEffect.get(event.effect_id) }))
   return {
     scenario,
@@ -147,6 +147,18 @@ export function trialFrom({ scenario, variant, task, success, error, provider, e
     token_estimates: tokenEstimates,
     lifecycle: events.filter(event => event.kind === "context_lifecycle_reported"),
   }
+}
+
+/** The pre-call measurement of each provider effect. The SDK records a second, post-call
+ *  `prompt_measured` that repeats the provider's own count; pairing that one would read as a
+ *  perfect estimate. */
+function firstMeasurements(events) {
+  const seen = new Set()
+  return events.filter(event => {
+    if (event.kind !== "prompt_measured" || seen.has(event.effect_id)) return false
+    seen.add(event.effect_id)
+    return true
+  })
 }
 
 /** Append trials to `--out` as JSON Lines, or print them when no file is given. */

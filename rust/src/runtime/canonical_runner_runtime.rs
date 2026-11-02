@@ -349,6 +349,12 @@ impl CanonicalRunnerRuntime {
                         .unwrap()
                         .insert("observed_input_tokens".into(), v.clone());
                 }
+                // Plan task 5.1 · what the provider did to the context server-side.
+                for field in ["provider_compaction", "cleared_tool_results"] {
+                    if let Some(v) = event.get(field).filter(|v| !v.is_null()) {
+                        outcome.as_object_mut().unwrap().insert(field.into(), v.clone());
+                    }
+                }
                 if let Some(v) = event.get("observed_output_tokens") {
                     outcome
                         .as_object_mut()

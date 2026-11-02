@@ -1599,6 +1599,16 @@ export class RuntimeRunner {
         if (providerReplay !== undefined) {
           providerEvent.message = { ...(providerEvent.message as Record<string, unknown>), replay: providerReplay }
         }
+        // Plan task 5.1 · server-side context edits become facts the kernel absorbs.
+        const contextEdits = this.opts.provider.takeContextEdits?.()
+        if (contextEdits?.compaction) {
+          providerEvent.provider_compaction = {
+            through_item: contextEdits.compaction.throughItem,
+            replay: contextEdits.compaction.replay,
+            summary_tokens: contextEdits.compaction.summaryTokens,
+          }
+        }
+        if (contextEdits?.clearedToolResults?.length) providerEvent.cleared_tool_results = contextEdits.clearedToolResults
         const wireEvidence = {
           protocol: this.providerRoute.protocol,
           request_fingerprint: providerPlan.fingerprint,

@@ -479,6 +479,12 @@ export interface NativeContextTiers {
 }
 
 /** Provider-native fields required to replay a turn across requests (thinking blocks, reasoning_content, etc.). */
+/** Server-side context edits a provider reports for one call (plan task 5.1). */
+export interface ProviderContextEdits {
+  compaction?: { throughItem: number; replay: ProviderReplay; summaryTokens: number }
+  clearedToolResults?: string[]
+}
+
 export interface ProviderReplay {
   provider?: string
   protocol: GenerationProtocol
@@ -597,6 +603,10 @@ export interface LLMProvider {
   runtimePolicy?(): RuntimePolicy
   /** Read provider-native replay fields captured after the most recent assistant turn. */
   peekProviderReplay?(message: Pick<ModelMessage, "content" | "toolCalls">): ProviderReplay | undefined
+  /** Plan task 5.1 · what the last call did to the context server-side, for the kernel to absorb:
+   *  a summary of history through `throughItem` (the `itemId` of the last rendered turn it covers)
+   *  and the call ids of tool results it cleared. Read once per completed call. */
+  takeContextEdits?(): ProviderContextEdits | undefined
   /**
    * P4-S1: read the transport facts captured during the most recent execution (HTTP rung count,
    * wire response id). Optional — a provider without it simply omits the telemetry and the
